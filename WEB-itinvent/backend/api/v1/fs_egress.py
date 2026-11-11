@@ -11,7 +11,7 @@ import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, Response
 
-from backend.api.deps import get_current_admin_user
+from backend.api.deps import ensure_user_permission, get_current_admin_user, get_current_user
 from backend.services import dlp_report_service, fs_egress_store_service as store
 from backend.utils.upload_limits import read_json_body_limited
 
@@ -199,6 +199,53 @@ def dlp_attention(day: str = Query("")) -> Dict[str, Any]:
     except store.EgressStoreUnavailableError as exc:
         raise HTTPException(status_code=503, detail="Egress store unavailable", headers={"Retry-After": "30"}) from exc
     return {"success": True, "hosts": hosts}
+
+
+PERM_DLP_SCHEDULE_MANAGE = "scan.schedules.manage"
+
+
+@router.get("/dlp/work-schedules")
+def list_dlp_work_schedules(current_user=Depends(get_current_user)) -> Dict[str, Any]:
+    """Branch work schedules + known branch names for the admin editor."""
+    ensure_user_permission(current_user, PERM_DLP_SCHEDULE_MANAGE)
+    try:
+        data = store.list_work_schedules()
+    except store.EgressStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Egress store unavailable", headers={"Retry-After": "30"}) from exc
+    return {"success": True, **data}
+
+
+@router.put("/dlp/work-schedules/{branch_name}")
+def save_dlp_work_schedule(
+    branch_name: str,
+    payload: Dict[str, Any],
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    ensure_user_permission(current_user, PERM_DLP_SCHEDULE_MANAGE)
+    body = payload if isinstance(payload, dict) else {}
+    body["branch_name"] = branch_name
+    try:
+        row = store.save_work_schedule(body, updated_by=str(getattr(current_user, "username", "") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except store.EgressStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Egress store unavailable", headers={"Retry-After": "30"}) from exc
+    return {"success": True, "schedule": row}
+
+
+@router.delete("/dlp/work-schedules/{branch_name}")
+def delete_dlp_work_schedule(
+    branch_name: str,
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    ensure_user_permission(current_user, PERM_DLP_SCHEDULE_MANAGE)
+    try:
+        deleted = store.delete_work_schedule(branch_name)
+    except store.EgressStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Egress store unavailable", headers={"Retry-After": "30"}) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="График для филиала не задан")
+    return {"success": True}
 
 
 @router.post("/telegram-probe")

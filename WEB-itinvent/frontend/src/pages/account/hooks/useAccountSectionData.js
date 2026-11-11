@@ -75,6 +75,7 @@ export function useAccountSectionData(area = 'settings') {
   const canAccessMail = hasPermission('mail.access');
   const canReadMyFilesAudit = isAdmin || hasPermission('my_files.stats.read');
 const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
+  const canManageDlpSchedules = isAdmin || hasPermission('scan.schedules.manage');
   const adminSections = useMemo(
     () => getAvailableAdminSections({ user, hasPermission }),
     [hasPermission, user],
@@ -967,6 +968,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     canManageReferences,
     canReadMyFilesAudit,
     canDeployHubDesktop,
+    canManageDlpSchedules,
     canAccessMail,
     adminSections,
     activeSection,

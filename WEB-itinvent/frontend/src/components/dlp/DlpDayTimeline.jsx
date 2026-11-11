@@ -6,8 +6,15 @@ import { formatDwell } from './utils';
 const CELL_MINUTES = 5;
 const CELL_COUNT = (24 * 60) / CELL_MINUTES; // 288
 
-const STATE_KEYS = ['active', 'passive', 'away', 'locked'];
-const STATE_LABELS = { active: 'работал', passive: 'пассивно', away: 'отошёл', locked: 'заблокирован' };
+const STATE_KEYS = ['active', 'passive', 'away', 'locked', 'break', 'offshift'];
+const STATE_LABELS = {
+  active: 'работал',
+  passive: 'пассивно',
+  away: 'отошёл',
+  locked: 'заблокирован',
+  break: 'перерыв',
+  offshift: 'вне смены',
+};
 
 function clockLabel(minutes) {
   const h = String(Math.floor(minutes / 60)).padStart(2, '0');
@@ -23,6 +30,8 @@ export default function DlpDayTimeline({ buckets, day }) {
       passive: theme.palette.success.light || theme.palette.info.main,
       away: theme.palette.warning.main,
       locked: theme.palette.action.disabled,
+      break: theme.palette.info.main,
+      offshift: theme.palette.grey[400] || theme.palette.action.disabledBackground,
     }),
     [theme],
   );

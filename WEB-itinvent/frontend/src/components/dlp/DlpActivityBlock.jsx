@@ -99,6 +99,16 @@ export default function DlpActivityBlock({ computerName, day }) {
             <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
               Заблокирован <b>{formatDwell(summary.locked_sec)}</b>
             </Typography>
+            {(Number(summary.break_sec) || 0) > 0 ? (
+              <Typography variant="body2" color="info.main" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                Перерыв <b>{formatDwell(summary.break_sec)}</b>
+              </Typography>
+            ) : null}
+            {(Number(summary.offshift_sec) || 0) > 0 ? (
+              <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                Вне смены <b>{formatDwell(summary.offshift_sec)}</b>
+              </Typography>
+            ) : null}
             {summary.activity_pct != null ? (
               <Typography variant="body2" color="success.main" sx={{ fontVariantNumeric: 'tabular-nums' }}>
                 Активность <b>{summary.activity_pct}%</b>

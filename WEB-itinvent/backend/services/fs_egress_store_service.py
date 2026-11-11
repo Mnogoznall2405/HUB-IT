@@ -340,11 +340,35 @@ def get_dlp_activity(*, computer_name: str, day: str = "") -> Dict[str, Any]:
     getter = getattr(store, "list_dlp_activity", None)
     if not callable(getter):
         return {"buckets": [], "summary": {}, "apps_top": []}
-    return getter(computer_name=computer_name, day=day) or {
+    payload = getter(computer_name=computer_name, day=day) or {
         "buckets": [],
         "summary": {},
         "apps_top": [],
     }
+    try:
+        from backend.services import dlp_work_schedule_service as schedules_service
+
+        schedule = None
+        schedules = schedules_service.load_schedules(store)
+        if schedules:
+            host_key = str(computer_name or "").strip().upper()
+            host_row = next(
+                (
+                    row
+                    for row in list_dlp_hosts()
+                    if str(row.get("computer_name") or "").upper() == host_key
+                ),
+                None,
+            )
+            schedule = schedules_service.schedule_for_branch(
+                schedules, (host_row or {}).get("branch_name")
+            )
+        # Always runs: with no schedule it just tags zone=work and zeroes the new
+        # fields, keeping the response shape consistent for the frontend.
+        schedules_service.apply_to_activity_payload(schedule, payload)
+    except Exception:
+        logger.warning("dlp schedules: activity reclassification skipped", exc_info=True)
+    return payload
 
 
 def get_dlp_attention(day: str = "") -> List[Dict[str, Any]]:
@@ -379,10 +403,66 @@ def get_dlp_attention(day: str = "") -> List[Dict[str, Any]]:
             row["user_full_name"] = info.get("user_full_name") or ""
             row["branch_no"] = info.get("branch_no")
             row["branch_name"] = info.get("branch_name")
+    try:
+        from backend.services import dlp_work_schedule_service as schedules_service
+
+        schedules_service.apply_to_attention_rows(store, stats, day_key)
+    except Exception:
+        logger.warning("dlp schedules: attention reclassification skipped", exc_info=True)
     with _dlp_cache_lock:
         _dlp_cache["attention_expires"] = time.time() + _DLP_CACHE_TTL_SEC
         _dlp_cache["attention"] = {"day": day_key, "hosts": stats}
     return stats
+
+
+def list_work_schedules() -> Dict[str, Any]:
+    """Configured branch schedules plus the known branch list for the admin UI."""
+    store = get_egress_store()
+    rows = store.list_branch_work_schedules() if callable(getattr(store, "list_branch_work_schedules", None)) else []
+    branches = sorted(
+        {
+            str(row.get("branch_name") or "").strip()
+            for row in list_dlp_hosts()
+            if str(row.get("branch_name") or "").strip()
+        }
+        | {str(row.get("branch_name") or "").strip() for row in rows if str(row.get("branch_name") or "").strip()},
+        key=lambda name: name.lower(),
+    )
+    from backend.services import dlp_work_schedule_service as schedules_service
+
+    return {
+        "items": [schedules_service.serialize_schedule(row) for row in rows],
+        "branches": branches,
+    }
+
+
+def save_work_schedule(payload: Dict[str, Any], *, updated_by: str = "") -> Dict[str, Any]:
+    store = get_egress_store()
+    data = payload if isinstance(payload, dict) else {}
+    row = store.upsert_branch_work_schedule(
+        branch_name=data.get("branch_name"),
+        work_start_min=data.get("work_start_min"),
+        work_end_min=data.get("work_end_min"),
+        lunch_start_min=data.get("lunch_start_min"),
+        lunch_end_min=data.get("lunch_end_min"),
+        tz_offset_minutes=data.get("tz_offset_minutes") or 0,
+        workdays_mask=data.get("workdays_mask") if data.get("workdays_mask") is not None else 31,
+        updated_by=updated_by,
+    )
+    from backend.services import dlp_work_schedule_service as schedules_service
+
+    schedules_service.invalidate_schedules_cache()
+    return schedules_service.serialize_schedule(row)
+
+
+def delete_work_schedule(branch_name: str) -> bool:
+    store = get_egress_store()
+    deleted = bool(store.delete_branch_work_schedule(branch_name=branch_name))
+    if deleted:
+        from backend.services import dlp_work_schedule_service as schedules_service
+
+        schedules_service.invalidate_schedules_cache()
+    return deleted
 
 
 def get_dlp_summary() -> Dict[str, Any]:

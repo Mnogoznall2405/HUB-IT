@@ -25,6 +25,7 @@ import { AiBotsAdminSection } from './admin/AiBotsAdminSection';
 import { ChatGroupsAdminSection } from './admin/ChatGroupsAdminSection';
 import { FeedbackAdminSection } from './admin/FeedbackAdminSection';
 import HubDesktopDeploySection from './admin/HubDesktopDeploySection';
+import WorkSchedulesAdminSection from './admin/WorkSchedulesAdminSection';
 import DepartmentsTab from './admin/DepartmentsTab';
 import ItinventReferencesTab from './admin/ItinventReferencesTab';
 import MyFilesAdminTab from './admin/MyFilesAdminTab';
@@ -159,6 +160,8 @@ function AccountWorkspace({ area = 'settings' }) {
     } else if (data.activeSection === 'hub-desktop') {
       // Section is filtered by scan.tasks (getAvailableAdminSections).
       adminContent = <HubDesktopDeploySection canScanTasks={data.canDeployHubDesktop} />;
+    } else if (data.activeSection === 'work-schedules' && data.canManageDlpSchedules) {
+      adminContent = <WorkSchedulesAdminSection />;
     } else if (data.activeSection === 'chat-groups' && data.isAdmin) {
       adminContent = <ChatGroupsAdminSection />;
     } else if (data.activeSection === 'my-files' && data.canReadMyFilesAudit) {

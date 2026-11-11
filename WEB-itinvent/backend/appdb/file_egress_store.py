@@ -20,6 +20,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from backend.appdb.db import app_session, ensure_app_schema_initialized, is_app_database_configured
 from backend.appdb.models import (
+    AppBranchWorkSchedule,
     AppBrowserProbeFocusEvent,
     AppDlpActivityBucket,
     AppBrowserProbeMedia,
@@ -1460,6 +1461,125 @@ class AppFileEgressStore:
             },
             "apps_top": apps_top,
         }
+
+    def list_branch_work_schedules(self) -> List[Dict[str, Any]]:
+        """All configured branch schedules; absence of a row means "no reclassification"."""
+        ensure_app_schema_initialized(self.database_url)
+        with app_session(database_url=self.database_url) as session:
+            rows = session.execute(
+                select(AppBranchWorkSchedule).order_by(AppBranchWorkSchedule.branch_name)
+            ).scalars().all()
+        return [
+            {
+                "branch_name": row.branch_name,
+                "work_start_min": int(row.work_start_min),
+                "work_end_min": int(row.work_end_min),
+                "lunch_start_min": row.lunch_start_min,
+                "lunch_end_min": row.lunch_end_min,
+                "tz_offset_minutes": int(row.tz_offset_minutes or 0),
+                "workdays_mask": int(row.workdays_mask if row.workdays_mask is not None else 31),
+                "updated_by": row.updated_by or "",
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in rows
+        ]
+
+    def upsert_branch_work_schedule(
+        self,
+        *,
+        branch_name: str,
+        work_start_min: int,
+        work_end_min: int,
+        lunch_start_min: Optional[int],
+        lunch_end_min: Optional[int],
+        tz_offset_minutes: int,
+        workdays_mask: int,
+        updated_by: str = "",
+    ) -> Dict[str, Any]:
+        ensure_app_schema_initialized(self.database_url)
+        name = str(branch_name or "").strip()
+        if not name:
+            raise ValueError("branch_name is required")
+        if not (0 <= int(work_start_min) < int(work_end_min) <= 24 * 60):
+            raise ValueError("work_start/work_end must be a valid day interval")
+        lunch_set = lunch_start_min is not None and lunch_end_min is not None
+        if lunch_set and not (int(work_start_min) <= int(lunch_start_min) < int(lunch_end_min) <= int(work_end_min)):
+            raise ValueError("lunch must lie inside the workday")
+        with app_session(database_url=self.database_url) as session:
+            row = session.get(AppBranchWorkSchedule, name)
+            if row is None:
+                row = AppBranchWorkSchedule(branch_name=name[:255])
+                session.add(row)
+            row.work_start_min = int(work_start_min)
+            row.work_end_min = int(work_end_min)
+            row.lunch_start_min = int(lunch_start_min) if lunch_set else None
+            row.lunch_end_min = int(lunch_end_min) if lunch_set else None
+            row.tz_offset_minutes = int(tz_offset_minutes)
+            row.workdays_mask = int(workdays_mask) & 0x7F
+            row.updated_by = str(updated_by or "")[:255]
+            row.updated_at = _utcnow()
+            session.commit()
+        return {
+            "branch_name": name[:255],
+            "work_start_min": int(work_start_min),
+            "work_end_min": int(work_end_min),
+            "lunch_start_min": int(lunch_start_min) if lunch_set else None,
+            "lunch_end_min": int(lunch_end_min) if lunch_set else None,
+            "tz_offset_minutes": int(tz_offset_minutes),
+            "workdays_mask": int(workdays_mask) & 0x7F,
+        }
+
+    def delete_branch_work_schedule(self, *, branch_name: str) -> bool:
+        ensure_app_schema_initialized(self.database_url)
+        name = str(branch_name or "").strip()
+        if not name:
+            return False
+        with app_session(database_url=self.database_url) as session:
+            row = session.get(AppBranchWorkSchedule, name)
+            if row is None:
+                return False
+            session.delete(row)
+            session.commit()
+        return True
+
+    def list_dlp_activity_buckets(self, *, computer_names: List[str], day: str = "") -> Dict[str, List[Dict[str, Any]]]:
+        """Raw 5-minute buckets for a set of hosts, merged per (host, bucket_start).
+
+        Used to reclassify passive/away/locked seconds against the branch work
+        schedule (lunch → перерыв, outside the workday → вне смены).
+        """
+        ensure_app_schema_initialized(self.database_url)
+        names = [str(n or "").strip() for n in (computer_names or []) if str(n or "").strip()]
+        if not names:
+            return {}
+        day_start, day_end = self._day_range(day)
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        with app_session(database_url=self.database_url) as session:
+            rows = session.execute(
+                select(
+                    AppDlpActivityBucket.computer_name,
+                    AppDlpActivityBucket.bucket_start,
+                    AppDlpActivityBucket.passive_sec,
+                    AppDlpActivityBucket.away_sec,
+                    AppDlpActivityBucket.locked_sec,
+                )
+                .where(
+                    AppDlpActivityBucket.computer_name.in_(names),
+                    AppDlpActivityBucket.bucket_start >= day_start,
+                    AppDlpActivityBucket.bucket_start < day_end,
+                )
+                .order_by(AppDlpActivityBucket.computer_name, AppDlpActivityBucket.bucket_start)
+            ).all()
+        merged: Dict[tuple, Dict[str, float]] = {}
+        for computer_name, bucket_start, passive, away, locked in rows:
+            key = (str(computer_name), _local_aware(bucket_start))
+            acc = merged.setdefault(key, {"passive": 0.0, "away": 0.0, "locked": 0.0})
+            acc["passive"] += float(passive or 0)
+            acc["away"] += float(away or 0)
+            acc["locked"] += float(locked or 0)
+        for (computer_name, bucket_start), acc in merged.items():
+            out.setdefault(computer_name, []).append({"bucket_start": bucket_start, **acc})
+        return out
 
     def dlp_attention_stats(self, *, day: str = "") -> List[Dict[str, Any]]:
         """Per-host day rollup: activity + browser focus + usb/messenger files."""

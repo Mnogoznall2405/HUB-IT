@@ -140,6 +140,7 @@ const permissionGroups = [
       { value: 'scan.read', label: 'Scan Center и DLP: просмотр' },
       { value: 'scan.ack', label: 'Scan Center и DLP: ACK инцидентов' },
       { value: 'scan.tasks', label: 'Scan Center и DLP: задачи агентам' },
+      { value: 'scan.schedules.manage', label: 'DLP: графики работы филиалов' },
       { value: 'vcs.read', label: 'Терминалы ВКС: просмотр' },
       { value: 'vcs.manage', label: 'Терминалы ВКС: управление' },
     ],

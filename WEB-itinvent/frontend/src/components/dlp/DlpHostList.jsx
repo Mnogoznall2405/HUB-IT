@@ -351,6 +351,16 @@ export default function DlpHostList({ hosts, attentionMap, onOpenHost }) {
                               <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
                                 {stat && (Number(stat.away_sec) || 0) > 0 ? formatDwell(stat.away_sec) : '—'}
                               </Typography>
+                              {stat && (Number(stat.offshift_sec) || 0) > 0 ? (
+                                <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                  {`вне смены ${formatDwell(stat.offshift_sec)}`}
+                                  {(Number(stat.break_sec) || 0) > 0 ? ` · перерыв ${formatDwell(stat.break_sec)}` : ''}
+                                </Typography>
+                              ) : stat && (Number(stat.break_sec) || 0) > 0 ? (
+                                <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                  {`перерыв ${formatDwell(stat.break_sec)}`}
+                                </Typography>
+                              ) : null}
                             </TableCell>
                             <TableCell>
                               <CountCell value={fileCount} />

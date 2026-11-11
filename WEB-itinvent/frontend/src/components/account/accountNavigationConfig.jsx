@@ -13,6 +13,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import LightbulbOutlinedIcon from '@mui/icons-material/LightbulbOutlined';
+import ScheduleOutlinedIcon from '@mui/icons-material/ScheduleOutlined';
 
 export const ADMIN_AREA_PERMISSIONS = [
   'departments.manage',
@@ -25,6 +26,7 @@ export const ADMIN_AREA_PERMISSIONS = [
   'database.references.manage',
   'feedback.manage',
   'scan.tasks',
+  'scan.schedules.manage',
 ];
 
 export const PERSONAL_SETTINGS_SECTIONS = [
@@ -132,6 +134,13 @@ const ADMIN_SECTION_DEFINITIONS = [
     description: 'Установка приложения на компьютеры',
     icon: <InstallDesktopOutlinedIcon />,
     permission: 'scan.tasks',
+  },
+  {
+    key: 'work-schedules',
+    label: 'Графики работы',
+    description: 'Рабочее время и обеды филиалов для DLP',
+    icon: <ScheduleOutlinedIcon />,
+    permission: 'scan.schedules.manage',
   },
   {
     key: 'chat-groups',

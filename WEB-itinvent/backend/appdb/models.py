@@ -2403,6 +2403,24 @@ class AppDlpActivityBucket(AppBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppBranchWorkSchedule(AppBase):
+    """Work schedule per resolved inventory branch_name (DLP activity reclassification)."""
+
+    __tablename__ = "branch_work_schedules"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    branch_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    work_start_min: Mapped[int] = mapped_column(Integer, nullable=False, default=9 * 60)
+    work_end_min: Mapped[int] = mapped_column(Integer, nullable=False, default=18 * 60)
+    lunch_start_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lunch_end_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Minutes added to server-local time to get branch-local time (e.g. Moscow = -120 vs Tyumen).
+    tz_offset_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    workdays_mask: Mapped[int] = mapped_column(Integer, nullable=False, default=31)
+    updated_by: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppBrowserProbeMedia(AppBase):
     __tablename__ = "browser_probe_media"
     __table_args__ = _table_args(
