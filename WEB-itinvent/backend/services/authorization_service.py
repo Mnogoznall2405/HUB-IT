@@ -1,0 +1,320 @@
+"""
+Centralized role -> permission mapping.
+"""
+from __future__ import annotations
+
+from typing import Iterable
+
+
+PERM_DATABASE_READ = "database.read"
+PERM_DATABASE_WRITE = "database.write"
+PERM_DATABASE_DELETE = "database.delete"
+PERM_DATABASE_DELETE_EQUIPMENT = "database.delete_equipment"
+PERM_DATABASE_DELETE_EQUIPMENT_HISTORY = "database.delete_equipment_history"
+PERM_DATABASE_ONE_C_MARK = "database.one_c_mark"
+PERM_DATABASE_REFERENCES_MANAGE = "database.references.manage"
+PERM_DATABASE_AD_SYNC = "database.ad_sync"
+PERM_DATABASE_PHOTO_VERIFY = "database.photo_verify"
+PERM_MFU_READ = "mfu.read"
+PERM_DASHBOARD_READ = "dashboard.read"
+PERM_ANNOUNCEMENTS_READ = "announcements.read"
+PERM_ANNOUNCEMENTS_WRITE = "announcements.write"
+PERM_ANNOUNCEMENTS_MODERATE = "announcements.moderate"
+PERM_HUB_ABSENCES_MANAGE = "hub.absences.manage"
+PERM_TASKS_READ = "tasks.read"
+PERM_TASKS_CREATE = "tasks.create"
+PERM_TASKS_WRITE = "tasks.write"
+PERM_TASKS_REVIEW = "tasks.review"
+PERM_TASKS_MANAGE_ALL = "tasks.manage_all"
+PERM_NETWORKS_READ = "networks.read"
+PERM_NETWORKS_WRITE = "networks.write"
+PERM_MONITORING_READ = "monitoring.read"
+PERM_MONITORING_MANAGE = "monitoring.manage"
+PERM_FEEDBACK_MANAGE = "feedback.manage"
+PERM_COMPUTERS_READ = "computers.read"
+PERM_COMPUTERS_READ_ALL = "computers.read_all"
+PERM_COMPUTERS_MANAGE = "computers.manage"
+PERM_SCAN_READ = "scan.read"
+PERM_SCAN_ACK = "scan.ack"
+PERM_SCAN_TASKS = "scan.tasks"
+PERM_VOICE_READ = "voice.read"
+PERM_VOICE_UPLOAD = "voice.upload"
+PERM_VOICE_MANAGE = "voice.manage"
+PERM_STATISTICS_READ = "statistics.read"
+PERM_KB_READ = "kb.read"
+PERM_KB_WRITE = "kb.write"
+PERM_KB_PUBLISH = "kb.publish"
+PERM_KB_MANAGE_ALL = "kb.manage_all"
+PERM_DEPARTMENTS_MANAGE = "departments.manage"
+PERM_COMPANY_STRUCTURE_READ = "company_structure.read"
+PERM_COMPANY_STRUCTURE_WRITE = "company_structure.write"
+PERM_CONSTRUCTION_READ = "construction.read"
+PERM_CONSTRUCTION_WRITE = "construction.write"
+PERM_IT_OBJECTS_READ = "it_objects.read"
+PERM_IT_OBJECTS_MANAGE = "it_objects.manage"
+PERM_SETTINGS_READ = "settings.read"
+PERM_SETTINGS_USERS_MANAGE = "settings.users.manage"
+PERM_SETTINGS_SESSIONS_MANAGE = "settings.sessions.manage"
+PERM_SETTINGS_AI_MANAGE = "settings.ai.manage"
+PERM_MAIL_ACCESS = "mail.access"
+PERM_MAIL_QUOTAS_READ = "mail.quotas.read"
+PERM_CHAT_READ = "chat.read"
+PERM_CHAT_WRITE = "chat.write"
+PERM_CHAT_AI_USE = "chat.ai.use"
+PERM_CHAT_AI_SANDBOX = "chat.ai.sandbox"
+PERM_ADDRESS_BOOK_READ = "address_book.read"
+PERM_ADDRESS_BOOK_DISMISSED_READ = "address_book.dismissed.read"
+PERM_ADDRESS_BOOK_AGE_READ = "address_book.age.read"
+PERM_ADDRESS_BOOK_HIRE_DATE_READ = "address_book.hire_date.read"
+PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ = "address_book.personal_phone.read"
+PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ = "address_book.personal_email.read"
+PERM_ADDRESS_BOOK_INN_READ = "address_book.inn.read"
+PERM_WAREHOUSE_1C_READ = "warehouse_1c.read"
+PERM_WAREHOUSE_1C_IT_REQUESTS_READ = "warehouse_1c.it_requests.read"
+PERM_WAREHOUSE_1C_RECONCILE_WRITE = "warehouse_1c.reconcile.write"
+PERM_DOCFLOW_READ = "docflow.read"
+PERM_DOCFLOW_ACT = "docflow.act"
+PERM_DOCFLOW_CREATE = "docflow.create"
+PERM_DOCFLOW_ADMIN = "docflow.admin"
+
+PERM_AD_USERS_READ = "ad_users.read"
+PERM_AD_USERS_MANAGE = "ad_users.manage"
+PERM_GROUPS_ACCESS_READ = "groups_access.read"
+
+PERM_VCS_READ = "vcs.read"
+PERM_VCS_MANAGE = "vcs.manage"
+
+PERM_TICKETS_READ = "tickets.read"
+PERM_TICKETS_WRITE = "tickets.write"
+PERM_TICKETS_PERSONAL_DATA_READ = "tickets.personal_data.read"
+PERM_PASSWORDS_READ = "passwords.read"
+PERM_PASSWORDS_WRITE = "passwords.write"
+PERM_MY_FILES_READ = "my_files.read"
+PERM_MY_FILES_WRITE = "my_files.write"
+PERM_MY_FILES_SHARE = "my_files.share"
+PERM_MY_FILES_AUDIT_READ = "my_files.audit.read"
+PERM_MY_FILES_STATS_READ = "my_files.stats.read"
+PERM_MY_FILES_LIBRARIES_MANAGE = "my_files.libraries.manage"
+
+_ALWAYS_GRANTED_PERMISSIONS = {
+    PERM_ADDRESS_BOOK_READ,
+    PERM_ANNOUNCEMENTS_READ,
+    PERM_CHAT_READ,
+    PERM_CHAT_WRITE,
+    PERM_COMPANY_STRUCTURE_READ,
+}
+
+_VIEWER_PERMISSIONS = {
+    PERM_DASHBOARD_READ,
+    PERM_TASKS_READ,
+    PERM_TASKS_CREATE,
+    PERM_SETTINGS_READ,
+    PERM_CHAT_READ,
+    PERM_CHAT_WRITE,
+    PERM_CHAT_AI_USE,
+    PERM_MAIL_ACCESS,
+    PERM_MY_FILES_READ,
+    PERM_MY_FILES_WRITE,
+    PERM_MY_FILES_SHARE,
+    PERM_COMPANY_STRUCTURE_READ,
+    PERM_DOCFLOW_READ,
+    PERM_DOCFLOW_ACT,
+    PERM_KB_READ,
+}
+
+_OPERATOR_EXTRA_PERMISSIONS = {
+    PERM_ANNOUNCEMENTS_WRITE,
+    PERM_TASKS_WRITE,
+    PERM_DATABASE_READ,
+    PERM_DATABASE_WRITE,
+    PERM_MFU_READ,
+    PERM_NETWORKS_READ,
+    PERM_NETWORKS_WRITE,
+    PERM_COMPUTERS_READ,
+    PERM_COMPUTERS_MANAGE,
+    PERM_IT_OBJECTS_READ,
+    PERM_SCAN_READ,
+    PERM_SCAN_ACK,
+    PERM_SCAN_TASKS,
+    PERM_STATISTICS_READ,
+    PERM_KB_WRITE,
+    PERM_VCS_READ,
+    PERM_DOCFLOW_CREATE,
+}
+
+_ADMIN_EXTRA_PERMISSIONS = {
+    PERM_MONITORING_READ,
+    PERM_MONITORING_MANAGE,
+    PERM_FEEDBACK_MANAGE,
+    PERM_CHAT_AI_SANDBOX,
+    PERM_ANNOUNCEMENTS_MODERATE,
+    PERM_TASKS_REVIEW,
+    PERM_TASKS_MANAGE_ALL,
+    PERM_COMPUTERS_READ_ALL,
+    PERM_KB_PUBLISH,
+    PERM_KB_MANAGE_ALL,
+    PERM_DEPARTMENTS_MANAGE,
+    PERM_COMPANY_STRUCTURE_WRITE,
+    PERM_CONSTRUCTION_READ,
+    PERM_CONSTRUCTION_WRITE,
+    PERM_IT_OBJECTS_MANAGE,
+    PERM_SETTINGS_USERS_MANAGE,
+    PERM_SETTINGS_SESSIONS_MANAGE,
+    PERM_SETTINGS_AI_MANAGE,
+    PERM_MAIL_ACCESS,
+    PERM_MAIL_QUOTAS_READ,
+    PERM_AD_USERS_READ,
+    PERM_AD_USERS_MANAGE,
+    PERM_GROUPS_ACCESS_READ,
+    PERM_VCS_MANAGE,
+    PERM_ADDRESS_BOOK_READ,
+    PERM_ADDRESS_BOOK_DISMISSED_READ,
+    PERM_WAREHOUSE_1C_READ,
+    PERM_WAREHOUSE_1C_IT_REQUESTS_READ,
+    PERM_WAREHOUSE_1C_RECONCILE_WRITE,
+    PERM_DOCFLOW_ADMIN,
+    PERM_HUB_ABSENCES_MANAGE,
+    PERM_TICKETS_READ,
+    PERM_TICKETS_WRITE,
+    PERM_TICKETS_PERSONAL_DATA_READ,
+    PERM_PASSWORDS_READ,
+    PERM_PASSWORDS_WRITE,
+    PERM_DATABASE_DELETE,
+    PERM_DATABASE_DELETE_EQUIPMENT,
+    PERM_DATABASE_DELETE_EQUIPMENT_HISTORY,
+    PERM_DATABASE_ONE_C_MARK,
+    PERM_DATABASE_REFERENCES_MANAGE,
+    PERM_DATABASE_AD_SYNC,
+    PERM_DATABASE_PHOTO_VERIFY,
+    PERM_MY_FILES_AUDIT_READ,
+    PERM_MY_FILES_STATS_READ,
+    PERM_MY_FILES_LIBRARIES_MANAGE,
+    PERM_VOICE_READ,
+    PERM_VOICE_UPLOAD,
+    PERM_VOICE_MANAGE,
+    PERM_ADDRESS_BOOK_AGE_READ,
+    PERM_ADDRESS_BOOK_HIRE_DATE_READ,
+    PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ,
+    PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ,
+    PERM_ADDRESS_BOOK_INN_READ,
+}
+
+
+class AuthorizationService:
+    """Provides permission checks based on user role."""
+
+    def __init__(self) -> None:
+        viewer = set(_VIEWER_PERMISSIONS) | set(_ALWAYS_GRANTED_PERMISSIONS)
+        operator = viewer | set(_OPERATOR_EXTRA_PERMISSIONS)
+        admin = operator | set(_ADMIN_EXTRA_PERMISSIONS)
+        self._permissions_by_role = {
+            "viewer": viewer,
+            "operator": operator,
+            "admin": admin,
+        }
+        self._all_permissions = sorted(admin)
+
+    def get_permissions_for_role(self, role: str | None) -> list[str]:
+        normalized_role = str(role or "").strip().lower() or "viewer"
+        permissions = self._permissions_by_role.get(normalized_role, self._permissions_by_role["viewer"])
+        return sorted(permissions)
+
+    def get_all_permissions(self) -> list[str]:
+        return list(self._all_permissions)
+
+    def normalize_permissions(self, permissions: Iterable[str] | None) -> list[str]:
+        if permissions is None:
+            return []
+        normalized = {
+            str(permission or "").strip()
+            for permission in permissions
+            if str(permission or "").strip() in self._all_permissions
+        }
+        return sorted(normalized)
+
+    def get_effective_permissions(
+        self,
+        role: str | None,
+        *,
+        use_custom_permissions: bool = False,
+        custom_permissions: Iterable[str] | None = None,
+    ) -> list[str]:
+        if bool(use_custom_permissions):
+            return sorted(
+                set(self.normalize_permissions(custom_permissions))
+                | set(self._permissions_by_role["viewer"])
+            )
+        return self.get_permissions_for_role(role)
+
+    def has_permission(
+        self,
+        role: str | None,
+        permission: str | None,
+        *,
+        use_custom_permissions: bool = False,
+        custom_permissions: Iterable[str] | None = None,
+    ) -> bool:
+        target = str(permission or "").strip()
+        if not target:
+            return False
+        return target in self.get_effective_permissions(
+            role,
+            use_custom_permissions=use_custom_permissions,
+            custom_permissions=custom_permissions,
+        )
+
+    def has_any_permission(
+        self,
+        role: str | None,
+        permissions: Iterable[str],
+        *,
+        use_custom_permissions: bool = False,
+        custom_permissions: Iterable[str] | None = None,
+    ) -> bool:
+        role_permissions = set(
+            self.get_effective_permissions(
+                role,
+                use_custom_permissions=use_custom_permissions,
+                custom_permissions=custom_permissions,
+            )
+        )
+        for permission in permissions:
+            target = str(permission or "").strip()
+            if target and target in role_permissions:
+                return True
+        return False
+
+
+authorization_service = AuthorizationService()
+
+
+def has_permission(
+    role: str | None,
+    permission: str | None,
+    *,
+    use_custom_permissions: bool = False,
+    custom_permissions: Iterable[str] | None = None,
+) -> bool:
+    """Compatibility facade for callers that imported this module as the service."""
+    return authorization_service.has_permission(
+        role,
+        permission,
+        use_custom_permissions=use_custom_permissions,
+        custom_permissions=custom_permissions,
+    )
+
+
+def has_any_permission(
+    role: str | None,
+    permissions: Iterable[str],
+    *,
+    use_custom_permissions: bool = False,
+    custom_permissions: Iterable[str] | None = None,
+) -> bool:
+    """Compatibility facade for callers that imported this module as the service."""
+    return authorization_service.has_any_permission(
+        role,
+        permissions,
+        use_custom_permissions=use_custom_permissions,
+        custom_permissions=custom_permissions,
+    )

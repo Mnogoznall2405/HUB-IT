@@ -1,0 +1,262 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import useChatSocketEvents from '../../components/chat/useChatSocketEvents';
+import useChatSocketLifecycle from '../../components/chat/useChatSocketLifecycle';
+import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
+import { chatSocket } from '../../lib/chatSocket';
+import { resolveActiveThreadTransportState } from './chatThreadTransport';
+
+export const SOCKET_ACTIVITY_COALESCE_MS = 10_000;
+
+export default function useChatSocketController({
+  activeConversationId,
+  deferredMessageText,
+  logChatDebugRef,
+  skippedInitialSocketRefreshRef,
+  watchedPresenceUserIds,
+  watchedPresenceUserIdsKey,
+}) {
+  // R1: страница монтируется после ChatSocketBootstrap — читаем реальное
+  // состояние сокета, а не предполагаем 'connecting' (иначе подпись
+  // «Соединение…» висит вечно и транспорт беседы залипает в degraded).
+  const initialSocketStatus = CHAT_WS_ENABLED
+    ? (typeof chatSocket.getConnectionState === 'function'
+      ? chatSocket.getConnectionState()
+      : 'connecting')
+    : 'disabled';
+  const socketStatusRef = useRef(initialSocketStatus);
+  // Уже подключённый сокет — свежий признак активности: без него транспорт
+  // стартует в 'degraded' (нет lastSocketActivityAt) и деградационный опрос
+  // сразу стреляет в ленту, хотя сокет жив.
+  const lastSocketActivityAtRef = useRef(initialSocketStatus === 'connected' ? Date.now() : 0);
+  const typingStartedRef = useRef(false);
+  const typingStopTimeoutRef = useRef(null);
+  const typingParticipantsTimeoutsRef = useRef(new Map());
+
+  const [socketStatus, setSocketStatus] = useState(initialSocketStatus);
+  const [lastSocketActivityAt, setLastSocketActivityAt] = useState(() => lastSocketActivityAtRef.current);
+  const [typingUsers, setTypingUsers] = useState([]);
+
+  socketStatusRef.current = socketStatus;
+
+  const markSocketActivity = useCallback((source = 'socket:event') => {
+    const nextTimestamp = Date.now();
+    lastSocketActivityAtRef.current = nextTimestamp;
+    setLastSocketActivityAt((current) => {
+      const previous = Number(current || 0);
+      if (previous > 0 && (nextTimestamp - previous) < SOCKET_ACTIVITY_COALESCE_MS) {
+        return current;
+      }
+      return nextTimestamp;
+    });
+    logChatDebugRef.current?.('socket:activity', {
+      source: String(source || '').trim() || 'socket:event',
+      lastSocketActivityAt: nextTimestamp,
+    });
+  }, [logChatDebugRef]);
+
+  const activeThreadTransportState = useMemo(
+    () => resolveActiveThreadTransportState({
+      activeConversationId,
+      socketStatus,
+      lastSocketActivityAt,
+    }),
+    [activeConversationId, lastSocketActivityAt, socketStatus],
+  );
+
+  const typingLine = useMemo(
+    () => (typingUsers.length > 0 ? `${typingUsers.join(', ')} печатает...` : ''),
+    [typingUsers],
+  );
+
+  useChatSocketLifecycle({
+    watchedPresenceUserIds,
+    watchedPresenceUserIdsKey,
+  });
+
+  useEffect(() => {
+    if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return;
+    // Переход в 'connected' до монтирования страницы считается тем самым
+    // первым событием, которое bootstrap-загрузка уже покрыла, — иначе
+    // skippedInitialSocketRefreshRef поглотит первый настоящий reconnect.
+    if (
+      socketStatusRef.current === 'connected'
+      && skippedInitialSocketRefreshRef
+      && !skippedInitialSocketRefreshRef.current
+    ) {
+      skippedInitialSocketRefreshRef.current = true;
+    }
+  }, [skippedInitialSocketRefreshRef]);
+
+  useEffect(() => {
+    if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
+    if (!activeConversationId) {
+      setTypingUsers([]);
+      return undefined;
+    }
+    chatSocket.subscribeConversation(activeConversationId);
+    return () => {
+      if (typingStartedRef.current) {
+        chatSocket.sendTyping(activeConversationId, false);
+        typingStartedRef.current = false;
+      }
+      chatSocket.unsubscribeConversation(activeConversationId);
+      setTypingUsers([]);
+    };
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED || !activeConversationId) return undefined;
+    const conversationId = activeConversationId;
+    const normalizedMessageText = String(deferredMessageText || '').trim();
+    if (!normalizedMessageText) {
+      if (typingStartedRef.current) {
+        chatSocket.sendTyping(conversationId, false);
+        typingStartedRef.current = false;
+      }
+      if (typingStopTimeoutRef.current) {
+        window.clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+      return undefined;
+    }
+    if (!typingStartedRef.current) {
+      chatSocket.sendTyping(conversationId, true);
+      typingStartedRef.current = true;
+    }
+    if (typingStopTimeoutRef.current) {
+      window.clearTimeout(typingStopTimeoutRef.current);
+    }
+    typingStopTimeoutRef.current = window.setTimeout(() => {
+      chatSocket.sendTyping(conversationId, false);
+      typingStartedRef.current = false;
+      typingStopTimeoutRef.current = null;
+    }, 1800);
+    // Only clear the idle timer here. Sending typing=false on every text change
+    // made the remote indicator flicker stop/start on each keystroke.
+    return () => {
+      if (typingStopTimeoutRef.current) {
+        window.clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+    };
+  }, [activeConversationId, deferredMessageText]);
+
+  useEffect(() => () => {
+    if (typingStopTimeoutRef.current) {
+      window.clearTimeout(typingStopTimeoutRef.current);
+      typingStopTimeoutRef.current = null;
+    }
+    typingParticipantsTimeoutsRef.current.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    typingParticipantsTimeoutsRef.current.clear();
+  }, []);
+
+  return {
+    activeThreadTransportState,
+    lastSocketActivityAt,
+    lastSocketActivityAtRef,
+    markSocketActivity,
+    setLastSocketActivityAt,
+    setSocketStatus,
+    setTypingUsers,
+    socketStatus,
+    socketStatusRef,
+    typingLine,
+    typingParticipantsTimeoutsRef,
+    typingStartedRef,
+    typingStopTimeoutRef,
+    typingUsers,
+  };
+}
+
+export function useChatSocketControllerEvents({
+  activeConversation,
+  activeConversationIdRef,
+  aiRunStartedAtByConversationRef,
+  applyMessageReadDelta,
+  buildActiveThreadPollLoadOptions,
+  conversationsLoadingRef,
+  hasPendingInitialAnchorForConversation,
+  hasPersistedThreadMessageEquivalent,
+  lastConversationsLoadAtRef,
+  latestActiveThreadSocketMessageRef,
+  loadChatFolders,
+  loadConversations,
+  loadMessages,
+  loadMessagesRef,
+  logChatDebug,
+  logChatDebugRef,
+  markConversationReadLiveRef,
+  markSocketActivity,
+  mergeAiStatusPayload,
+  mergeMessageIntoThread,
+  messagesHasNewerRef,
+  messagesLoadingRef,
+  messagesRef,
+  onConversationRemoved,
+  promoteConversationToTop,
+  queueAutoScroll,
+  setAiStatusByConversation,
+  setMessages,
+  setSocketStatus,
+  setTypingUsers,
+  setViewerLastReadAt,
+  setViewerLastReadMessageId,
+  shouldSkipActiveThreadRevalidate,
+  skippedInitialSnapshotRefreshRef,
+  skippedInitialSocketRefreshRef,
+  socketStatusRef,
+  syncConversationPreview,
+  threadNearBottomRef,
+  typingParticipantsTimeoutsRef,
+  updatePresenceInCollections,
+  upsertConversation,
+  userId,
+}) {
+  useChatSocketEvents({
+    activeConversation,
+    activeConversationIdRef,
+    aiRunStartedAtByConversationRef,
+    applyMessageReadDelta,
+    buildActiveThreadPollLoadOptions,
+    conversationsLoadingRef,
+    hasPendingInitialAnchorForConversation,
+    hasPersistedThreadMessageEquivalent,
+    lastConversationsLoadAtRef,
+    latestActiveThreadSocketMessageRef,
+    loadChatFolders,
+    loadConversations,
+    loadMessages,
+    loadMessagesRef,
+    logChatDebug,
+    logChatDebugRef,
+    markConversationReadLiveRef,
+    markSocketActivity,
+    mergeAiStatusPayload,
+    mergeMessageIntoThread,
+    messagesHasNewerRef,
+    messagesLoadingRef,
+    messagesRef,
+    onConversationRemoved,
+    promoteConversationToTop,
+    queueAutoScroll,
+    setAiStatusByConversation,
+    setMessages,
+    setSocketStatus,
+    setTypingUsers,
+    setViewerLastReadAt,
+    setViewerLastReadMessageId,
+    shouldSkipActiveThreadRevalidate,
+    skippedInitialSnapshotRefreshRef,
+    skippedInitialSocketRefreshRef,
+    socketStatusRef,
+    syncConversationPreview,
+    threadNearBottomRef,
+    typingParticipantsTimeoutsRef,
+    updatePresenceInCollections,
+    upsertConversation,
+    userId,
+  });
+}

@@ -1,0 +1,627 @@
+from __future__ import annotations
+import conftest
+
+import importlib
+import sys
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import select
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
+
+if str(WEB_ROOT) not in sys.path:
+    sys.path.insert(0, str(WEB_ROOT))
+
+chat_db_module = importlib.import_module("backend.chat.db")
+chat_models_module = importlib.import_module("backend.chat.models")
+chat_service_module = importlib.import_module("backend.chat.service")
+hub_service_module = importlib.import_module("backend.services.hub_service")
+
+
+def _raw_user(user_id: int, username: str, full_name: str, role: str, *, active: bool = True) -> dict:
+    return {
+        "id": user_id,
+        "username": username,
+        "full_name": full_name,
+        "role": role,
+        "is_active": active,
+        "use_custom_permissions": False,
+        "custom_permissions": [],
+        "permissions": [],
+    }
+
+
+@pytest.fixture
+def chat_env(temp_dir, monkeypatch):
+    raw_users = {
+        1: _raw_user(1, "author", "Task Author", "operator"),
+        2: _raw_user(2, "peer", "Task Peer", "operator"),
+        3: _raw_user(3, "controller", "Task Controller", "admin"),
+    }
+    users = list(raw_users.values())
+    users_by_id = dict(raw_users)
+    store = SimpleNamespace(
+        db_path=str(Path(temp_dir) / "hub.sqlite3"),
+        data_dir=str(Path(temp_dir) / "hub-data"),
+    )
+    Path(store.data_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(hub_service_module, "get_local_store", lambda: store)
+    monkeypatch.setattr(hub_service_module, "is_app_database_configured", lambda: False)
+    monkeypatch.setattr(hub_service_module.user_service, "list_users", lambda: list(users))
+    monkeypatch.setattr(hub_service_module.user_service, "get_by_id", lambda user_id: users_by_id.get(int(user_id)))
+    monkeypatch.setattr(hub_service_module.user_service, "get_users_map_by_ids", lambda user_ids: {
+        int(user_id): users_by_id[int(user_id)]
+        for user_id in set(user_ids or [])
+        if int(user_id) in users_by_id
+    })
+    monkeypatch.setattr(chat_service_module.user_service, "list_users", lambda: list(users))
+    monkeypatch.setattr(chat_service_module.user_service, "get_by_id", lambda user_id: users_by_id.get(int(user_id)))
+    monkeypatch.setattr(chat_service_module.user_service, "get_users_map_by_ids", lambda user_ids: {
+        int(user_id): users_by_id[int(user_id)]
+        for user_id in set(user_ids or [])
+        if int(user_id) in users_by_id
+    })
+    monkeypatch.setattr(chat_service_module.user_service, "to_public_user", lambda raw: dict(raw))
+
+    hub_service = hub_service_module.HubService()
+    monkeypatch.setattr(chat_service_module, "hub_service", hub_service)
+
+    chat_db_module._engine = None
+    chat_db_module._session_factory = None
+    monkeypatch.setattr(chat_db_module.config.chat, "enabled", True, raising=False)
+    monkeypatch.setattr(chat_db_module.config.chat, "database_url", f"sqlite:///{Path(temp_dir) / 'chat.sqlite3'}", raising=False)
+    monkeypatch.setattr(chat_db_module.config.chat, "pool_size", 5, raising=False)
+    monkeypatch.setattr(chat_db_module.config.chat, "max_overflow", 10, raising=False)
+
+    service = chat_service_module.ChatService()
+    direct = service.create_direct_conversation(current_user_id=1, peer_user_id=2)
+
+    yield {
+        "service": service,
+        "hub_service": hub_service,
+        "direct": direct,
+    }
+
+    chat_db_module._engine = None
+    chat_db_module._session_factory = None
+
+
+def test_reply_preview_is_returned_and_message_search_finds_matches(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    original = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Нужно обсудить договор по поставке",
+    )
+    reply = service.send_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        body="Смотрю договор прямо сейчас",
+        reply_to_message_id=original["id"],
+    )
+
+    messages = service.get_messages(current_user_id=1, conversation_id=conversation["id"], limit=20)
+    reply_payload = next(item for item in messages["items"] if item["id"] == reply["id"])
+    assert reply_payload["reply_preview"]["id"] == original["id"]
+    assert reply_payload["reply_preview"]["body"] == "Нужно обсудить договор по поставке"
+    assert reply_payload["reply_preview"]["sender_name"] == "Task Author"  # full name, as everywhere in chat
+
+    search = service.search_messages(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        q="договор",
+        limit=10,
+    )
+    found_ids = [item["id"] for item in search["items"]]
+    assert original["id"] in found_ids
+    assert reply["id"] in found_ids
+
+
+def test_forward_message_preserves_markdown_body_format(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    original = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="## Inventory\n\n| Name | Value |\n| --- | --- |\n| Printer | Ready |\n\n**Source:** ITinvent",
+        body_format="markdown",
+    )
+    forwarded = service.forward_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        source_message_id=original["id"],
+    )
+    legacy_forwarded = service.forward_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        source_message_id=original["id"],
+        body="Legacy comment must not replace the original",
+        body_format="plain",
+    )
+
+    assert forwarded["body_format"] == "markdown"
+    assert forwarded["body"] == original["body"]
+    assert legacy_forwarded["body_format"] == "markdown"
+    assert legacy_forwarded["body"] == original["body"]
+    assert forwarded["forward_preview"]["body"].startswith("Inventory")
+    assert "##" not in forwarded["forward_preview"]["body"]
+    assert "---" not in forwarded["forward_preview"]["body"]
+
+
+def test_forward_message_repeat_keeps_original_attribution(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    original = service.send_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        body="Original author text",
+    )
+    forwarded_once = service.forward_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        source_message_id=original["id"],
+    )
+    forwarded_twice = service.forward_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        source_message_id=forwarded_once["id"],
+    )
+
+    assert forwarded_once["forward_preview"]["id"] == original["id"]
+    assert forwarded_twice["forward_preview"]["id"] == original["id"]
+    assert forwarded_twice["body"] == original["body"]
+
+
+def test_forward_message_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    original = service.send_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        body="Original message",
+        defer_push_notifications=True,
+    )
+    forwarded = service.forward_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        source_message_id=original["id"],
+        defer_push_notifications=True,
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        forwarding_user_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+
+    assert [item.id for item in messages] == [original["id"], forwarded["id"]]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert messages[1].forward_from_message_id == original["id"]
+    assert conversation_row.last_message_id == forwarded["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert forwarding_user_state.last_read_message_id == forwarded["id"]
+    assert int(forwarding_user_state.last_read_seq) == 2
+    assert int(forwarding_user_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 1
+
+
+def test_message_reference_preview_payloads_share_body_rules(chat_env):
+    service = chat_env["service"]
+    users_by_id = {1: {"id": 1, "username": "author", "full_name": "Task Author"}}
+
+    file_message = SimpleNamespace(
+        id="msg-file",
+        sender_user_id=1,
+        kind="file",
+        body="",
+        is_deleted=False,
+    )
+    attachments = [SimpleNamespace(file_name="diagram.png")]
+
+    expected_file_preview = {
+        "id": "msg-file",
+        "sender_name": "Task Author",
+        "kind": "file",
+        "body": "diagram.png",
+        "task_title": None,
+        "attachments_count": 1,
+    }
+    assert service._reply_preview_payload(
+        message=file_message,
+        attachments=attachments,
+        users_by_id=users_by_id,
+    ) == expected_file_preview
+    assert service._forward_preview_payload(
+        message=file_message,
+        attachments=attachments,
+        users_by_id=users_by_id,
+    ) == expected_file_preview
+
+    task_message = SimpleNamespace(
+        id="msg-task",
+        sender_user_id=1,
+        kind="task_share",
+        body="Ignored body",
+        task_preview_json='{"id": "task-1", "title": "Check invoice"}',
+        is_deleted=False,
+    )
+    task_reply_preview = service._reply_preview_payload(
+        message=task_message,
+        attachments=[],
+        users_by_id=users_by_id,
+    )
+    assert task_reply_preview == service._forward_preview_payload(
+        message=task_message,
+        attachments=[],
+        users_by_id=users_by_id,
+    )
+    assert task_reply_preview["body"] == "Check invoice"
+    assert task_reply_preview["task_title"] == "Check invoice"
+
+    deleted_message = SimpleNamespace(
+        id="msg-deleted",
+        sender_user_id=99,
+        kind="file",
+        body="Hidden",
+        is_deleted=True,
+    )
+    deleted_reply_preview = service._reply_preview_payload(
+        message=deleted_message,
+        attachments=[SimpleNamespace(file_name="hidden.pdf")],
+        users_by_id={},
+    )
+    assert deleted_reply_preview == service._forward_preview_payload(
+        message=deleted_message,
+        attachments=[SimpleNamespace(file_name="hidden.pdf")],
+        users_by_id={},
+    )
+    assert deleted_reply_preview["sender_name"] == "Участник"
+    assert deleted_reply_preview["body"] == chat_service_module.CHAT_DELETED_MESSAGE_BODY
+    assert deleted_reply_preview["attachments_count"] == 0
+
+
+def test_conversation_settings_update_flags_and_muted_chat_skips_notifications(chat_env):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+
+    updated = service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        is_pinned=True,
+        is_muted=True,
+        is_archived=True,
+    )
+    assert updated["is_pinned"] is True
+    assert updated["is_muted"] is True
+    assert updated["is_archived"] is True
+
+    conversations = service.list_conversations(current_user_id=1, limit=20)["items"]
+    assert conversations[0]["id"] == conversation["id"]
+    assert conversations[0]["is_pinned"] is True
+    assert conversations[0]["is_muted"] is True
+    assert conversations[0]["is_archived"] is True
+
+    realtime_snapshot = service.get_realtime_snapshot(current_user_id=1)
+    assert realtime_snapshot["unread_summary"]["messages_unread_total"] == 0
+    assert realtime_snapshot["muted_conversation_ids"] == [conversation["id"]]
+
+    service.send_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        body="Проверка mute и archive",
+    )
+
+    polled = hub_service.poll_notifications(user_id=1, limit=50)
+    chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]
+    assert chat_items == []
+
+
+def test_muted_until_expires_and_future_deadline_mutes(chat_env):
+    """F-MUTE-TIMER: future deadline mutes and auto-expires; unmute clears it."""
+    from datetime import timedelta
+
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+
+    future = (chat_service_module._utc_now() + timedelta(hours=1)).isoformat()
+    muted = service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        muted_until=datetime.fromisoformat(future),
+    )
+    assert muted["is_muted"] is True
+    assert muted["muted_until"]
+
+    snapshot_muted = service.get_realtime_snapshot(current_user_id=1)
+    assert snapshot_muted["muted_conversation_ids"] == [conversation["id"]]
+
+    past = (chat_service_module._utc_now() - timedelta(seconds=1)).isoformat()
+    expired = service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        muted_until=datetime.fromisoformat(past),
+    )
+    assert expired["is_muted"] is False
+
+    # A stale deadline must not linger: serialization and the muted-id list
+    # report the conversation as unmuted.
+    listed = service.list_conversations(current_user_id=1, limit=20)["items"]
+    assert listed[0]["is_muted"] is False
+    snapshot_expired = service.get_realtime_snapshot(current_user_id=1)
+    assert conversation["id"] not in snapshot_expired["muted_conversation_ids"]
+
+    # Explicit unmute clears the deadline.
+    service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        muted_until=datetime.fromisoformat(future),
+    )
+    unmuted = service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        is_muted=False,
+    )
+    assert unmuted["is_muted"] is False
+    assert unmuted["muted_until"] is None
+
+
+def test_delete_direct_conversation_removes_history_for_all_members(chat_env):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+    message = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Delete this conversation",
+    )
+
+    deleted = service.delete_conversation(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+    )
+
+    assert deleted["conversation_id"] == conversation["id"]
+    assert deleted["member_user_ids"] == [1, 2]
+    with chat_db_module.chat_session() as session:
+        assert session.get(chat_models_module.ChatConversation, conversation["id"]) is None
+        assert session.get(chat_models_module.ChatMessage, message["id"]) is None
+    assert service.list_conversations(current_user_id=1, limit=20)["items"] == []
+    assert service.list_conversations(current_user_id=2, limit=20)["items"] == []
+    remaining_notifications = hub_service.poll_notifications(user_id=2, limit=50)["items"]
+    assert all(
+        not (
+            item.get("entity_type") == "chat"
+            and item.get("entity_id") == conversation["id"]
+        )
+        for item in remaining_notifications
+    )
+
+    recreated = service.create_direct_conversation(current_user_id=1, peer_user_id=2)
+    assert recreated["id"] != conversation["id"]
+
+
+def test_only_group_owner_can_delete_group_conversation(chat_env):
+    service = chat_env["service"]
+    group = service.create_group_conversation(
+        current_user_id=1,
+        title="Owned group",
+        member_user_ids=[2, 3],
+    )
+
+    assert group["viewer_member_role"] == "owner"
+    member_summary = service.get_conversation_summary(
+        current_user_id=2,
+        conversation_id=group["id"],
+    )
+    assert member_summary["viewer_member_role"] == "member"
+
+    with pytest.raises(PermissionError, match="Only group owner"):
+        service.delete_conversation(
+            current_user_id=2,
+            conversation_id=group["id"],
+        )
+
+    deleted = service.delete_conversation(
+        current_user_id=1,
+        conversation_id=group["id"],
+    )
+    assert deleted["member_user_ids"] == [1, 2, 3]
+
+
+def test_ai_conversation_summary_exposes_ai_bot_id(chat_env, tmp_path, monkeypatch):
+    """AI8: GET /chat/conversations must carry the mapped bot id even when the
+    bot row is disabled or absent from the bot catalog."""
+    service = chat_env["service"]
+    ai_conversation = chat_models_module.ChatConversation(
+        id="ai-orphan",
+        kind="ai",
+        title="AI",
+        created_by_user_id=1,
+    )
+    with chat_db_module.chat_session() as session:
+        session.add(ai_conversation)
+        session.add(chat_models_module.ChatMember(
+            conversation_id=ai_conversation.id,
+            user_id=1,
+            member_role="owner",
+        ))
+
+    from contextlib import contextmanager
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from backend.appdb.models import AppBase, AppAiBotConversation
+    from backend.appdb import db as appdb_db_module
+
+    conftest.copy_app_metadata_schema(tmp_path / "app.sqlite3")
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        execution_options={"schema_translate_map": {"app": None, "system": None}},
+    )
+
+    @contextmanager
+    def app_session():
+        with Session(engine) as db:
+            with db.begin():
+                yield db
+
+    monkeypatch.setattr(appdb_db_module, "app_session", app_session)
+    with app_session() as db:
+        db.add(AppAiBotConversation(
+            bot_id="removed-or-disabled-bot",
+            user_id=1,
+            conversation_id="ai-orphan",
+        ))
+
+    items = service.list_conversations(current_user_id=1, limit=20)["items"]
+    ai_item = next(item for item in items if item["id"] == "ai-orphan")
+    assert ai_item["ai_bot_id"] == "removed-or-disabled-bot"
+    engine.dispose()
+
+
+def test_task_and_ai_conversations_cannot_be_deleted_directly(chat_env):
+    service = chat_env["service"]
+    task_conversation = chat_models_module.ChatConversation(
+        id="task-conversation",
+        kind="task",
+        title="Task",
+        task_id="task-1",
+        created_by_user_id=1,
+    )
+    ai_conversation = chat_models_module.ChatConversation(
+        id="ai-conversation",
+        kind="ai",
+        title="AI",
+        created_by_user_id=1,
+    )
+    with chat_db_module.chat_session() as session:
+        session.add_all([task_conversation, ai_conversation])
+        session.add_all([
+            chat_models_module.ChatMember(
+                conversation_id=task_conversation.id,
+                user_id=1,
+                member_role="owner",
+            ),
+            chat_models_module.ChatMember(
+                conversation_id=ai_conversation.id,
+                user_id=1,
+                member_role="owner",
+            ),
+        ])
+
+    with pytest.raises(ValueError, match="together with the task"):
+        service.delete_conversation(current_user_id=1, conversation_id=task_conversation.id)
+    with pytest.raises(ValueError, match="AI conversations"):
+        service.delete_conversation(current_user_id=1, conversation_id=ai_conversation.id)
+
+
+def test_list_chat_folders_includes_system_unread_counts(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    group = service.create_group_conversation(
+        current_user_id=1,
+        title="Склад",
+        member_user_ids=[2],
+    )
+
+    def _set_unread(conversation_id: str, unread_count: int) -> None:
+        with chat_db_module.chat_session() as session:
+            state = session.execute(
+                select(chat_models_module.ChatConversationUserState).where(
+                    chat_models_module.ChatConversationUserState.conversation_id == conversation_id,
+                    chat_models_module.ChatConversationUserState.user_id == 1,
+                )
+            ).scalar_one_or_none()
+            if state is None:
+                session.add(chat_models_module.ChatConversationUserState(
+                    conversation_id=conversation_id,
+                    user_id=1,
+                    unread_count=unread_count,
+                ))
+            else:
+                state.unread_count = unread_count
+
+    _set_unread(conversation["id"], 3)
+    _set_unread(group["id"], 2)
+
+    folders = service.list_chat_folders(current_user_id=1)
+    assert folders["folder_unread_counts"]["personal"] == 3
+    assert folders["folder_unread_counts"]["groups"] == 2
+    assert folders["folder_unread_counts"]["tasks"] == 0
+    assert folders["folder_unread_counts"]["archived"] == 0
+
+
+def test_search_messages_global_finds_matches_across_memberships(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    original = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Нужно обсудить договор по поставке",
+        defer_push_notifications=True,
+    )
+    search = service.search_messages_global(current_user_id=1, q="договор", limit=10)
+    found_ids = [item["message_id"] for item in search["items"]]
+    assert original["id"] in found_ids
+    assert search["items"][0]["conversation_id"] == conversation["id"]
+    assert "договор" in search["items"][0]["preview"].lower()
+
+
+def test_set_pinned_message_is_shared_on_conversation(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    message = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Закрепите это",
+        defer_push_notifications=True,
+    )
+
+    pinned = service.set_pinned_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        message_id=message["id"],
+    )
+    assert pinned["pinned_message_id"] == message["id"]
+    peer_view = service.get_conversation(current_user_id=2, conversation_id=conversation["id"])
+    assert peer_view["pinned_message_id"] == message["id"]
+
+    bootstrap = service.get_thread_bootstrap(current_user_id=2, conversation_id=conversation["id"])
+    assert bootstrap["pinned_message_id"] == message["id"]
+    assert bootstrap["pinned_message"]["id"] == message["id"]
+
+    service.delete_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        message_id=message["id"],
+    )
+    after_delete = service.get_conversation(current_user_id=2, conversation_id=conversation["id"])
+    assert after_delete["pinned_message_id"] is None

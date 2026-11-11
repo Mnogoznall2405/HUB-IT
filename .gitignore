@@ -1,0 +1,256 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+dist-debug/
+downloads/
+!desktop/Hub.Desktop/Downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Collector deploy package (contains API key)
+deploy/mailbox_quota_collector/collector.env
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.slopo-venv/
+
+# Local Slopo index / reports
+.slopo/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+*.log.*
+logs/
+.coverage
+
+# Telegram bot specific
+.env
+temp_*.jpg
+temp_transfer_*.jpg
+*.session
+
+# Node.js (if used for frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+*.old
+*.restored
+*.corrupt
+temp/
+tmp/
+output/
+.tmp/
+.tmp*/
+.tmp_pytest/
+.pytest_cache/
+.pytest_basetemp/
+.pytest_runtime/
+.pytest_tmp/
+.pytest*/
+.pt_*/
+tests/pytest_tmp_run/
+tmp_pytest_*/
+pytest-of-*/
+codex_tmp_*/
+_codex_*/
+iz/Py.txt
+iz/move_log_*.csv
+mailbox_quotas_*.csv
+mailbox_quotas_*.json
+iz/moved_files/
+WEB-itinvent/.tmp_*/
+WEB-itinvent/backend/.tmp_test_chat_uploads/
+WEB-itinvent/frontend/*_output.txt
+WEB-itinvent/frontend/vitest-*.txt
+C*CHAT_IMAGE_FIX.md
+
+# Documentation build
+docs/_build/
+
+# Project specific
+/transfer_acts/
+exports/*.*
+!exports/.gitkeep
+.git_corrupt_*/
+codex-write-test.txt
+recovered_records*.json
+Снимок экрана 2026-02-25 120245.png
+/IT База знаний/
+/_Сети/
+/documentation/archive/
+LLM_PROJECT_CONTEXT.md
+CHANGELOG.md
+data/*
+!data/.gitignore
+!data/README.md
+!data/custom_snmp.json
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.db-shm
+data/*.db-wal
+data/scan_server/
+
+# VoiceVideo pipeline: code is tracked, runtime data/models/secrets are not.
+voice_video/input/
+voice_video/output/
+voice_video/processed/
+voice_video/temp/
+voice_video/logs/
+voice_video/checkpoints/
+voice_video/models/
+voice_video/reference_voices/
+voice_video/unassigned_speakers/
+voice_video/voice_fingerprints/
+voice_video/.trash/
+voice_video/data/
+voice_video/labeling/
+data/scan_server/*.backup_*
+/archive/
+/backups/
+/htmlcov/
+/cxfreeze-*/
+/tools/
+.build-tmp/
+.gradle-hub/
+mobile-hub-build/
+bot.log*
+
+# Claude
+.claude/
+
+# Kiro
+.kiro/
+
+# OpenCode
+.opencode/
+
+# Cursor project skills (junction -> .opencode/skills); recreate: scripts/link-cursor-skills.ps1
+.cursor/skills
+*.7z
+
+# Local agent/runtime artifacts
+.codex_tmp/
+.playwright-cli/
+/.npm-cache/
+/.codex-npm-cache/
+/.codex-work/
+/artifacts/
+WEB-itinvent/uploads/
+/*.xlsx
+/google-services.json
+/hub-it-mobile-firebase-adminsdk-fbsvc-89580c6a80.json
+
+# Local deployment rollback snapshots
+/deploy_backups/
+
+# Local staging builds and preview copies
+/deploy_staging/
+/one-boat-bitrix-build-staging/
+/one-boat-bitrix-ui-staging/
+
+# One-off local diagnostics
+/_timed.ps1*
+/testwrite.txt
+/scripts/_tmp*
+
+# HUB Desktop build artifacts
+/desktop/**/bin/
+/desktop/**/obj/
+/desktop/.vs/
+
+# SSO relay build artifacts
+/sso_relay/bin/
+/sso_relay/obj/
+/sso_relay/publish/
+
+# Recovery / session temp artifacts
+_restored_from_git_*/
+_recovery_probe/
+pm2-jlist-temp.json
+
+# Test files
+test_*.py
+test_*.bat
+*_test.py
+*_test.bat
+quick_test.py
+temp_test_*.py
+!tests/test_*.py
+!tests/**/*_test.py
+!WEB-itinvent/backend/tests/test_*.py
+!WEB-itinvent/backend/tests/**/test_*.py
+!WEB-itinvent/frontend/src/lib/
+!WEB-itinvent/frontend/src/lib/**
+
+# Local e2e stack artifacts
+WEB-itinvent/frontend/e2e/stack/.state/
+WEB-itinvent/frontend/e2e/stack/.state*/
+WEB-itinvent/frontend/test-results/
+
+# LiveKit: боевой конфиг с реальным ключом/секретом (шаблон — scripts/livekit/livekit.example.yaml)
+scripts/livekit/livekit.yaml
+
+# --- Secrets hygiene (2026-10-18): env-варианты и персональные данные не должны попадать в git ---
+.env.*
+!.env.example
+!**/.env.example
+# Файлы вида .env1/.env2
+.env[0-9]*
+# Логи бота (bot.log*) и debug-*.log уже покрыты выше (bot.log*, *.log)
+# Персональные данные (выгрузки пользователей, дубликаты порталов, локальные профили)
+/users_export_test.csv
+/portal_upload_duplicates.tsv
+/VEL/
+/Microsoft/

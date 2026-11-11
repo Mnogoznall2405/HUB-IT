@@ -1,0 +1,33 @@
+Файлы для доменного ПК-сборщика
+================================
+
+Корень: C:\ProgramData\HUB-IT\Mail\
+
+1) mail_box_sync_domain.ps1
+   -> C:\ProgramData\HUB-IT\Mail\scripts\mail_box_sync_domain.ps1
+
+2) install_mailbox_quota_task.ps1
+   -> C:\ProgramData\HUB-IT\Mail\scripts\install_mailbox_quota_task.ps1
+
+3) diagnose_mailbox_quota_task.ps1
+   -> C:\ProgramData\HUB-IT\Mail\scripts\diagnose_mailbox_quota_task.ps1
+
+4) .env  (создать вручную)
+   -> C:\ProgramData\HUB-IT\Mail\.env
+
+Перед запуском: в .env впишите ZSGP\логин и пароль Exchange,
+MAIL_QUOTA_IMPORT_API_URL и MAIL_QUOTA_IMPORT_API_KEY (как на HUB).
+
+Тест (5 ящиков, без отправки на сервер):
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\mail_box_sync_domain.ps1 -ResultSize 5 -WhatIf -SaveLocalJson
+
+Полный прогон:
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\mail_box_sync_domain.ps1
+
+Автозапуск (от администратора):
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\install_mailbox_quota_task.ps1 -RepeatHours 4 -StartAfterRegister
+
+Диагностика:
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\HUB-IT\Mail\scripts\diagnose_mailbox_quota_task.ps1
+
+Лог: C:\ProgramData\HUB-IT\Mail\sync.log

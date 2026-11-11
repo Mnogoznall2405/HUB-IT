@@ -1,0 +1,232 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { useContext, useEffect, useMemo, useState } from 'react';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
+import type { ChatUserSummary } from '../../api/types';
+import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+import { ScreenSheet } from './ScreenSheet';
+import { useSheetDeviceLog } from './sheetDeviceLog';
+
+export function ChatRenameSheet({
+  visible,
+  initialTitle,
+  busy,
+  heading = 'Название группы',
+  inputLabel = 'Новое название группы',
+  onClose,
+  onSave,
+}: {
+  visible: boolean;
+  initialTitle: string;
+  busy?: boolean;
+  heading?: string;
+  inputLabel?: string;
+  onClose: () => void;
+  onSave: (title: string) => void;
+}) {
+  const { styles } = useChatStyles(createStyles);
+  const reduceMotion = useReducedMotion();
+  // AUD-8: edge-to-edge — the centered prompt must clear the system bars
+  // (landscape nav bar, tall status bar).
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const [title, setTitle] = useState(initialTitle);
+  useEffect(() => {
+    if (visible) setTitle(initialTitle);
+  }, [initialTitle, visible]);
+  const markClose = useSheetDeviceLog('group_edit', visible);
+  const close = () => {
+    setTitle(initialTitle);
+    onClose();
+  };
+  return (
+    <Modal
+      visible={visible}
+      animationType={reduceMotion ? 'none' : 'fade'}
+      transparent
+      onRequestClose={() => {
+        markClose('back');
+        close();
+      }}
+    >
+      <ChatKeyboardAvoidingHost style={[styles.centerBackdrop, {
+        paddingTop: Math.max(24, insets?.top || 0),
+        paddingBottom: Math.max(24, insets?.bottom || 0),
+        paddingLeft: Math.max(24, insets?.left || 0),
+        paddingRight: Math.max(24, insets?.right || 0),
+      }]}
+      >
+        <View style={styles.prompt} accessibilityViewIsModal>
+          <Text style={styles.title}>{heading}</Text>
+          <TextInput
+            value={title}
+            onChangeText={setTitle}
+            autoFocus
+            maxLength={255}
+            style={styles.search}
+            accessibilityLabel={inputLabel}
+          />
+          <View style={styles.actions}>
+            <Action
+              label="Отмена"
+              onPress={() => {
+                markClose('button');
+                close();
+              }}
+            />
+            <Action
+              label="Сохранить"
+              onPress={() => onSave(title.trim())}
+              disabled={busy || !title.trim() || title.trim() === initialTitle.trim()}
+              primary
+            />
+          </View>
+        </View>
+      </ChatKeyboardAvoidingHost>
+    </Modal>
+  );
+}
+
+export function ChatMemberPickerSheet({
+  visible,
+  users,
+  excludedUserIds,
+  busy,
+  onClose,
+  onAdd,
+}: {
+  visible: boolean;
+  users: ChatUserSummary[];
+  excludedUserIds: number[];
+  busy?: boolean;
+  onClose: () => void;
+  onAdd: (userIds: number[]) => void;
+}) {
+  const { chatTokens, styles } = useChatStyles(createStyles);
+  const reduceMotion = useReducedMotion();
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState<number[]>([]);
+  const excluded = useMemo(() => new Set(excludedUserIds), [excludedUserIds]);
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return users.filter((user) => {
+      if (excluded.has(user.id)) return false;
+      return !normalized || `${user.full_name || ''} ${user.username}`.toLowerCase().includes(normalized);
+    });
+  }, [excluded, query, users]);
+  const markClose = useSheetDeviceLog('group_edit', visible);
+  const close = () => {
+    setQuery('');
+    setSelected([]);
+    onClose();
+  };
+
+  return (
+    <ScreenSheet
+      visible={visible}
+      onClose={close}
+      onDismissReason={markClose}
+      dismissAccessibilityLabel="Закрыть выбор участников"
+      sheetStyle={styles.sheet}
+    >
+          <Text style={styles.title}>Добавить участников</Text>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Поиск по имени"
+            placeholderTextColor={chatTokens.textSecondary}
+            style={styles.search}
+            accessibilityLabel="Поиск участников"
+          />
+          <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
+            {filtered.map((user) => {
+              const picked = selected.includes(user.id);
+              const label = user.full_name || user.username;
+              return (
+                <Pressable
+                  key={user.id}
+                  onPress={() => setSelected((current) => picked
+                    ? current.filter((id) => id !== user.id)
+                    : [...current, user.id])}
+                  style={({ pressed }) => [styles.userRow, picked && styles.selected, pressed && styles.pressed]}
+                  accessibilityRole="checkbox"
+                  accessibilityLabel={label}
+                  accessibilityState={{ checked: picked }}
+                >
+                  {picked ? (
+                    <MaterialCommunityIcons name="check" size={20} color={chatTokens.accentText} style={styles.check} />
+                  ) : (
+                    <View style={styles.check} />
+                  )}
+                  <View style={styles.userText}>
+                    <Text style={styles.userName}>{label}</Text>
+                    <Text style={styles.userMeta}>@{user.username}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+            {!filtered.length ? <Text style={styles.empty}>Доступных пользователей нет</Text> : null}
+          </ScrollView>
+          <View style={styles.actions}>
+            <Action
+              label="Отмена"
+              onPress={() => {
+                markClose('button');
+                close();
+              }}
+            />
+            <Action
+              label={`Добавить${selected.length ? ` (${selected.length})` : ''}`}
+              onPress={() => onAdd(selected)}
+              disabled={busy || !selected.length}
+              primary
+            />
+          </View>
+    </ScreenSheet>
+  );
+}
+
+function Action({ label, onPress, disabled, primary }: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+}) {
+  const { styles } = useChatStyles(createStyles);
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [styles.action, primary && styles.actionPrimary, disabled && styles.disabled, pressed && styles.pressed]}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+    >
+      <Text style={[styles.actionText, primary && styles.actionTextPrimary]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
+  centerBackdrop: { flex: 1, justifyContent: 'center', padding: 24, backgroundColor: chatTokens.overlayBg },
+  sheet: { maxHeight: '84%', padding: 16, paddingTop: 8 },
+  prompt: { padding: 18, borderRadius: 18, backgroundColor: chatTokens.panelBg },
+  title: { marginBottom: 12, color: chatTokens.textPrimary, fontSize: 19, fontWeight: '700' },
+  search: { minHeight: 46, paddingHorizontal: 13, borderRadius: 14, color: chatTokens.textPrimary, backgroundColor: chatTokens.sidebarSearchBg },
+  list: { maxHeight: 400, marginTop: 8 },
+  userRow: { minHeight: 54, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, borderRadius: 12 },
+  selected: { backgroundColor: chatTokens.sidebarRowSoftActive },
+  check: { width: 30 },
+  userText: { flex: 1 },
+  userName: { color: chatTokens.textPrimary, fontSize: 15, fontWeight: '600' },
+  userMeta: { marginTop: 2, color: chatTokens.textSecondary, fontSize: 12 },
+  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 14 },
+  action: { minHeight: 44, minWidth: 92, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, borderRadius: 12 },
+  actionPrimary: { backgroundColor: chatTokens.composerActionBg },
+  actionText: { color: chatTokens.accentText, fontSize: 15, fontWeight: '700' },
+  actionTextPrimary: { color: chatTokens.composerActionText },
+  empty: { padding: 20, color: chatTokens.textSecondary, textAlign: 'center' },
+  disabled: { opacity: 0.45 },
+  pressed: { opacity: 0.72 },
+});

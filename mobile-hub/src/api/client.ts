@@ -1,0 +1,393 @@
+import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
+import { API_V1_BASE, CLIENT_DEVICE_HEADER, HUB_WEB_ORIGIN, MOBILE_AUTH_HEADER, MOBILE_AUTH_VALUE } from './config';
+import * as tokenStore from '../auth/tokenStore';
+import { publishSessionExpired } from '../auth/sessionEvents';
+import {
+  createNativeOfflineReadOnlyError,
+  isNativeOfflineMutationBlocked,
+} from '../offline/nativeOfflinePolicy';
+import { noteApiRequestEnd, noteApiRequestStart } from '../diagnostics/apiInflight';
+import { noteRequestEnd, noteRequestStart } from '../diagnostics/perfProbes';
+
+type RetryConfig = InternalAxiosRequestConfig & {
+  _retry?: boolean;
+  _hubitSessionGeneration?: number;
+  _hubitDeadlineAtMs?: number;
+  hubitTotalTimeoutMs?: number;
+};
+
+const AUTH_REFRESH_TIMEOUT_MS = 30_000;
+const MAIL_EXCHANGE_TIMEOUT_MS = 120_000;
+const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
+
+const apiClient = axios.create({
+  baseURL: API_V1_BASE,
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+/**
+ * Fire-and-forget: opens the TCP+TLS connection to the API origin while the
+ * auth bootstrap still reads SecureStore. The first authenticated request then
+ * reuses the warm connection from the shared OkHttp pool instead of paying the
+ * handshake on the critical path. Any status (even 404) warms the pool.
+ */
+export function warmApiConnection(): void {
+  if (typeof fetch !== 'function') return;
+  void fetch(`${HUB_WEB_ORIGIN}/health`, { method: 'GET' }).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+function remainingTotalTimeoutMs(config: RetryConfig): number | null {
+  const total = Number(config.hubitTotalTimeoutMs || 0);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  if (!Number.isFinite(config._hubitDeadlineAtMs) || Number(config._hubitDeadlineAtMs) <= 0) {
+    config._hubitDeadlineAtMs = Date.now() + Math.max(1, Math.trunc(total));
+  }
+  return Math.max(0, Math.trunc(Number(config._hubitDeadlineAtMs) - Date.now()));
+}
+
+function applyRemainingTotalTimeout(config: RetryConfig): void {
+  const remaining = remainingTotalTimeoutMs(config);
+  if (remaining === null) return;
+  const requested = Number(config.timeout || 0);
+  config.timeout = Math.max(1, Math.min(
+    remaining,
+    Number.isFinite(requested) && requested > 0 ? Math.trunc(requested) : remaining,
+  ));
+}
+
+function createTotalTimeoutError(config: RetryConfig): Error {
+  return Object.assign(new Error(`timeout of ${Number(config.hubitTotalTimeoutMs || 0)}ms exceeded`), {
+    code: 'ECONNABORTED',
+    config,
+    isAxiosError: true,
+    response: undefined,
+  });
+}
+
+function assertRequestSession(config: RetryConfig): void {
+  if (config._hubitSessionGeneration !== tokenStore.getSessionGeneration()) {
+    throw new Error('Mobile session changed during request');
+  }
+}
+
+// In-flight accounting (plan S11). Axios runs request interceptors LIFO and
+// response interceptors FIFO, so registering this pair first means: the counter
+// increments only after the auth/offline request checks passed, and decrements
+// for every dispatch — including 401 retries re-dispatched below.
+apiClient.interceptors.request.use((config) => {
+  noteApiRequestStart();
+  noteRequestStart(config);
+  return config;
+});
+apiClient.interceptors.response.use(
+  (result) => {
+    noteApiRequestEnd();
+    noteRequestEnd(result.config, false);
+    return result;
+  },
+  (error: unknown) => {
+    noteApiRequestEnd();
+    noteRequestEnd((error as { config?: object } | null)?.config, true);
+    return Promise.reject(error);
+  },
+);
+
+apiClient.interceptors.request.use(async (config) => {
+  const request = config as RetryConfig;
+  if (request._hubitSessionGeneration === undefined) request._hubitSessionGeneration = tokenStore.getSessionGeneration();
+  assertRequestSession(request);
+  applyRemainingTotalTimeout(config as RetryConfig);
+  if (isNativeOfflineMutationBlocked(config.method)) {
+    throw createNativeOfflineReadOnlyError();
+  }
+  // Let RN/axios set multipart boundary. A bare "multipart/form-data" header
+  // without boundary makes FastAPI see zero files and reject chat uploads.
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    const headers = config.headers;
+    if (headers?.delete) {
+      headers.delete('Content-Type');
+      headers.delete('content-type');
+    } else if (headers?.set) {
+      headers.set('Content-Type', undefined as unknown as string);
+      headers.set('content-type', undefined as unknown as string);
+    } else if (headers) {
+      delete (headers as Record<string, unknown>)['Content-Type'];
+      delete (headers as Record<string, unknown>)['content-type'];
+    }
+  }
+  if (
+    String(config.url || '').split('?')[0].startsWith('/mail/')
+    && Number(config.timeout || 0) < MAIL_EXCHANGE_TIMEOUT_MS
+  ) {
+    config.timeout = MAIL_EXCHANGE_TIMEOUT_MS;
+  }
+  let accessToken = await tokenStore.getAccessToken();
+  if (accessToken && accessTokenExpiresSoon(accessToken)) {
+    try {
+      // Access tokens live ~15 minutes; refresh ahead of expiry instead of
+      // paying a 401 + refresh + retry round trip on the next request.
+      accessToken = await getAuthenticatedAccessToken();
+    } catch {
+      // Keep the stale token: transient refresh failures fall back to the
+      // reactive 401 path; a real expiry bumps the session generation and
+      // assertRequestSession below aborts this request anyway.
+    }
+  }
+  assertRequestSession(request);
+  if (accessToken) {
+    config.headers.Authorization = `Bearer ${accessToken}`;
+  }
+  applyRemainingTotalTimeout(config as RetryConfig);
+  return config;
+});
+
+const refreshPromises = new Map<string, Promise<string | null>>();
+
+function isAuthRequestWithoutRefresh(url: string | undefined): boolean {
+  const normalized = String(url || '').split('?')[0];
+  return [
+    '/auth/login',
+    '/auth/enable-2fa',
+    '/auth/verify-2fa',
+    '/auth/verify-2fa-login',
+    '/auth/mobile-biometric/session',
+    '/auth/refresh',
+    '/auth/logout',
+  ].some((path) => normalized.endsWith(path));
+}
+
+async function expireSession(expectedRefresh: string | null): Promise<void> {
+  await tokenStore.clearExpiredTokens(expectedRefresh, publishSessionExpired);
+}
+
+async function deactivateSession(expectedRefresh: string | null): Promise<void> {
+  await tokenStore.clearDeactivatedTokens(expectedRefresh, publishSessionExpired);
+}
+
+type ErrorResponse = { status?: unknown; headers?: unknown; data?: unknown };
+
+function errorResponse(error: unknown): ErrorResponse | undefined {
+  return error && typeof error === 'object'
+    ? (error as { response?: ErrorResponse }).response
+    : undefined;
+}
+
+function responseHeader(headers: unknown, name: string): string {
+  if (!headers || typeof headers !== 'object') return '';
+  const getter = (headers as { get?: unknown }).get;
+  if (typeof getter === 'function') {
+    return String((getter as (header: string) => unknown).call(headers, name) ?? '').trim();
+  }
+  const record = headers as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (key.toLowerCase() === name) return String(record[key] ?? '').trim();
+  }
+  return '';
+}
+
+function isJsonResponse(response: ErrorResponse | undefined): boolean {
+  return responseHeader(response?.headers, 'content-type').toLowerCase().includes('application/json');
+}
+
+/**
+ * Reads the HUB-IT refusal kind: a 401 or 403 answered as `application/json`
+ * comes from the FastAPI backend itself — the backend always reports auth
+ * errors as JSON. An equally coded HTML page from IIS, a captive portal, a
+ * VPN proxy or a WAF is a transport failure and returns 0.
+ */
+function hubitRejectionStatus(error: unknown): 401 | 403 | 0 {
+  const response = errorResponse(error);
+  const status = Number(response?.status || 0);
+  if (status !== 401 && status !== 403) return 0;
+  return isJsonResponse(response) ? status as 401 | 403 : 0;
+}
+
+/**
+ * A local session ends only on an unambiguous HUB-IT refusal: HTTP 401
+ * answered as `application/json`. Credentials and offline data must survive
+ * every other failure.
+ */
+export function isDefinitiveAuthRejection(error: unknown): boolean {
+  return hubitRejectionStatus(error) === 401;
+}
+
+/**
+ * A JSON 403 from HUB-IT means the network itself is not allowed for this
+ * account (the admin IP allowlist is the only such path today). The session
+ * stays valid — tokens and offline data are preserved and reconnect keeps
+ * running until the user returns to an allowed network.
+ */
+export function isNetworkRestrictedRejection(error: unknown): boolean {
+  return hubitRejectionStatus(error) === 403;
+}
+
+/**
+ * A deactivated HUB-IT account is the only refusal that requires a full local
+ * wipe: HTTP 401 answered as `application/json` with
+ * `X-Hubit-Auth-Reason: user_inactive`. Servers before the C-1 rollout
+ * answered `/auth/me` with 400 {"detail":"Inactive user"} — the same signal,
+ * kept for compatibility and accepted only on that endpoint.
+ */
+export function isUserDeactivatedRejection(error: unknown): boolean {
+  const response = errorResponse(error);
+  if (!isJsonResponse(response)) return false;
+  const status = Number(response?.status || 0);
+  if (status === 401) {
+    return responseHeader(response?.headers, 'x-hubit-auth-reason') === 'user_inactive';
+  }
+  if (status === 400) {
+    const url = String(
+      error && typeof error === 'object'
+        ? (error as { config?: { url?: unknown } }).config?.url ?? ''
+        : '',
+    ).split('?')[0];
+    if (!url.endsWith('/auth/me')) return false;
+    const detail = (response?.data as { detail?: unknown } | undefined)?.detail;
+    return String(detail || '').trim() === 'Inactive user';
+  }
+  return false;
+}
+
+function boundedRefreshTimeout(timeoutMs?: number): number {
+  const requested = Number(timeoutMs || 0);
+  if (!Number.isFinite(requested) || requested <= 0) return AUTH_REFRESH_TIMEOUT_MS;
+  return Math.min(AUTH_REFRESH_TIMEOUT_MS, Math.max(1, Math.trunc(requested)));
+}
+
+async function refreshAccessToken(refreshToken: string, timeoutMs?: number): Promise<string | null> {
+  if (!refreshToken) return null;
+  const clientDeviceId = await tokenStore.getClientDeviceId();
+  const response = await axios.post(
+    `${API_V1_BASE}/auth/refresh`,
+    { refresh_token: refreshToken },
+    {
+      timeout: boundedRefreshTimeout(timeoutMs),
+      headers: {
+        'Content-Type': 'application/json',
+        [MOBILE_AUTH_HEADER]: MOBILE_AUTH_VALUE,
+        ...(clientDeviceId ? { [CLIENT_DEVICE_HEADER]: clientDeviceId } : {}),
+      },
+    },
+  );
+  const access = String(response.data?.access_token || '').trim();
+  const refresh = String(response.data?.refresh_token || '').trim();
+  if (!access || !refresh) throw new Error('Incomplete mobile refresh response');
+  if (!await tokenStore.replaceRefreshedTokens(refreshToken, access, refresh)) {
+    throw new Error('Mobile session changed during refresh');
+  }
+  return access;
+}
+
+function accessTokenExpiresSoon(accessToken: string): boolean {
+  const payload = String(accessToken || '').split('.')[1];
+  if (!payload || typeof globalThis.atob !== 'function') return false;
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = globalThis.atob(`${normalized}${'='.repeat(-normalized.length & 3)}`);
+    const parsed = JSON.parse(decoded) as { exp?: unknown };
+    const expiresAt = Number(parsed.exp || 0) * 1000;
+    return Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= Date.now() + ACCESS_TOKEN_REFRESH_SKEW_MS;
+  } catch {
+    return false;
+  }
+}
+
+async function sharedRefreshAccessToken(refreshToken: string | null, timeoutMs?: number): Promise<string | null> {
+  if (!refreshToken) return null;
+  const existing = refreshPromises.get(refreshToken);
+  if (existing) return existing;
+  const pending = refreshAccessToken(refreshToken, timeoutMs).finally(() => {
+    refreshPromises.delete(refreshToken);
+  });
+  refreshPromises.set(refreshToken, pending);
+  return pending;
+}
+
+export async function getAuthenticatedAccessToken(
+  options: {
+    forceRefresh?: boolean;
+    preserveSessionOnRefreshFailure?: boolean;
+    refreshTimeoutMs?: number;
+  } = {},
+): Promise<string> {
+  const currentAccessToken = String((await tokenStore.getAccessToken()) || '').trim();
+  const shouldRefresh = Boolean(options.forceRefresh) || !currentAccessToken || accessTokenExpiresSoon(currentAccessToken);
+  if (!shouldRefresh) return currentAccessToken;
+
+  const expectedRefresh = await tokenStore.getRefreshToken();
+  let refreshedAccessToken: string | null = null;
+  try {
+    refreshedAccessToken = await sharedRefreshAccessToken(expectedRefresh, options.refreshTimeoutMs);
+  } catch (refreshError) {
+    if (await tokenStore.getRefreshToken() !== expectedRefresh) throw new Error('Mobile session changed during refresh');
+    if (axios.isAxiosError(refreshError) && !refreshError.response) {
+      if (currentAccessToken && !options.forceRefresh) return currentAccessToken;
+      throw refreshError;
+    }
+    // A deactivated account is wiped even for preserve-session callers —
+    // the rejection is definitive and the offline data must go.
+    if (isUserDeactivatedRejection(refreshError)) {
+      await deactivateSession(expectedRefresh);
+    } else if (isDefinitiveAuthRejection(refreshError) && !options.preserveSessionOnRefreshFailure) {
+      await expireSession(expectedRefresh);
+    }
+    throw refreshError;
+  }
+  if (!refreshedAccessToken) {
+    if (!options.preserveSessionOnRefreshFailure) await expireSession(expectedRefresh);
+    throw new Error('Authenticated mobile session expired');
+  }
+  return refreshedAccessToken;
+}
+
+apiClient.interceptors.response.use(
+  (response) => {
+    assertRequestSession(response.config as RetryConfig);
+    return response;
+  },
+  async (error: AxiosError) => {
+    const config = error.config as RetryConfig | undefined;
+    if (!config || config._retry || error.response?.status !== 401) {
+      return Promise.reject(error);
+    }
+    if (isAuthRequestWithoutRefresh(config.url)) {
+      return Promise.reject(error);
+    }
+    assertRequestSession(config);
+    config._retry = true;
+    const refreshBudget = remainingTotalTimeoutMs(config);
+    if (refreshBudget !== null && refreshBudget <= 0) {
+      return Promise.reject(createTotalTimeoutError(config));
+    }
+    let newAccess: string | null = null;
+    try {
+      newAccess = await getAuthenticatedAccessToken({
+        forceRefresh: true,
+        refreshTimeoutMs: refreshBudget ?? (Number(config.timeout || 0) || undefined),
+      });
+    } catch (refreshError) {
+      return Promise.reject(refreshError);
+    }
+    assertRequestSession(config);
+    const retryBudget = remainingTotalTimeoutMs(config);
+    if (retryBudget !== null && retryBudget <= 0) {
+      return Promise.reject(createTotalTimeoutError(config));
+    }
+    if (retryBudget !== null) config.timeout = Math.max(1, retryBudget);
+    config.headers.Authorization = `Bearer ${newAccess}`;
+    return apiClient(config);
+  },
+);
+
+export function withMobileAuthHeaders(clientDeviceId?: string | null) {
+  return {
+    [MOBILE_AUTH_HEADER]: MOBILE_AUTH_VALUE,
+    ...(clientDeviceId ? { [CLIENT_DEVICE_HEADER]: clientDeviceId } : {}),
+  };
+}
+
+export default apiClient;

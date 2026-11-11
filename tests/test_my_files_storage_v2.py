@@ -1,0 +1,236 @@
+"""Focused regression tests for My Files per-user blob storage v2."""
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+import pytest
+
+from backend.appdb.db import app_session
+from backend.appdb.models import AppMyFile, AppMyFileBlob
+from backend.models.auth import User
+from backend.services.my_files_antivirus_service import SecurityScanResult
+from backend.services.my_files_service import MyFilesService
+from backend.services.my_files_storage_layout import (
+    _same_unc_share,
+    _unc_share_root,
+    publish_local_to_blob,
+)
+from backend.services.secret_crypto_service import _build_fernet
+
+
+@pytest.fixture(autouse=True)
+def _configure_share_token_key(monkeypatch):
+    monkeypatch.setenv("MY_FILES_SHARE_TOKEN_KEY", "test-my-files-share-token-key")
+    monkeypatch.setenv("MY_FILES_STORAGE_V2_ENABLED", "0")
+    _build_fernet.cache_clear()
+    yield
+    _build_fernet.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _prebuilt_app_schema(prebuilt_app_db):
+    return prebuilt_app_db
+
+
+def _sqlite_url(path: Path) -> str:
+    return f"sqlite:///{path.as_posix()}"
+
+
+def _user(user_id: int = 7) -> User:
+    return User(id=user_id, username=f"user-{user_id}", role="viewer", is_active=True)
+
+
+def _new_service(tmp_path: Path) -> MyFilesService:
+    return MyFilesService(
+        database_url=_sqlite_url(tmp_path / "app.db"),
+        storage_root=tmp_path / "users",
+        antivirus_scanner=lambda _path: SecurityScanResult(status="clean", engine="test"),
+    )
+
+
+def _upload(service: MyFilesService, user: User, name: str, payload: bytes) -> dict:
+    spool = service.new_spool_path(name)
+    spool.write_bytes(payload)
+    created = service.create_pending_upload(
+        actor=user,
+        original_file_name=name,
+        mime_type="application/octet-stream",
+        spool_path=spool,
+        original_size_bytes=len(payload),
+        retention_days=1,
+    )
+    result = service.process_file(created["id"])
+    assert result is not None
+    assert result["status"] == "ready"
+    return result
+
+
+def test_same_user_same_sha_reuses_blob(tmp_path: Path):
+    service = _new_service(tmp_path)
+    first = _upload(service, _user(7), "a.bin", b"same-bytes")
+    second = _upload(service, _user(7), "b.bin", b"same-bytes")
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row1 = session.get(AppMyFile, first["id"])
+        row2 = session.get(AppMyFile, second["id"])
+        assert row1.blob_id == row2.blob_id
+        blob = session.get(AppMyFileBlob, row1.blob_id)
+        assert blob is not None
+        assert blob.owner_user_id == 7
+        assert blob.ref_count == 2
+        assert blob.storage_path.startswith("7/my_files/blobs/")
+
+
+def test_different_users_same_sha_get_separate_blobs(tmp_path: Path):
+    service = _new_service(tmp_path)
+    first = _upload(service, _user(7), "a.bin", b"shared-content")
+    second = _upload(service, _user(9), "b.bin", b"shared-content")
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row1 = session.get(AppMyFile, first["id"])
+        row2 = session.get(AppMyFile, second["id"])
+        assert row1.blob_id != row2.blob_id
+        blob1 = session.get(AppMyFileBlob, row1.blob_id)
+        blob2 = session.get(AppMyFileBlob, row2.blob_id)
+        assert blob1.owner_user_id == 7
+        assert blob2.owner_user_id == 9
+        assert blob1.storage_path != blob2.storage_path
+        assert service._resolve_stored_path(blob1.storage_path).exists()
+        assert service._resolve_stored_path(blob2.storage_path).exists()
+
+
+def test_spool_stays_under_local_spool_root(tmp_path: Path):
+    service = _new_service(tmp_path)
+    spool = service.new_spool_path("x.bin")
+    assert spool.is_relative_to(service.spool_root)
+    assert "users" not in spool.as_posix().split("/")[-2:] or spool.parent.name == "spool"
+
+
+def test_delete_user_a_does_not_remove_user_b_blob(tmp_path: Path):
+    service = _new_service(tmp_path)
+    first = _upload(service, _user(7), "a.bin", b"twin")
+    second = _upload(service, _user(9), "b.bin", b"twin")
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row_b = session.get(AppMyFile, second["id"])
+        blob_b_id = row_b.blob_id
+        path_b = service._resolve_stored_path(session.get(AppMyFileBlob, blob_b_id).storage_path)
+    service.delete_file(file_id=first["id"], user_id=7, actor=_user(7))
+    assert path_b.exists()
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        blob_b = session.get(AppMyFileBlob, blob_b_id)
+        assert blob_b is not None
+        assert blob_b.ref_count == 1
+
+
+def test_unc_share_root_parsing():
+    assert _unc_share_root(Path(r"\\10.1.2.3\hubit\spool\x.bin")) == r"\\10.1.2.3\hubit"
+    assert _unc_share_root(Path("//NAS/Share/dir/y.bin")) == r"\\nas\share"
+    assert _unc_share_root(Path(r"C:\local\x.bin")) == ""
+    assert _unc_share_root(Path(r"\\srv")) == ""
+
+
+def test_same_unc_share_matches_share_prefix_only():
+    assert _same_unc_share(Path(r"\\s\hubit\spool\a"), Path(r"\\S\HUBIT\users\b\c"))
+    assert not _same_unc_share(Path(r"\\s\hubit\a"), Path(r"\\s\other\b"))
+    assert not _same_unc_share(Path(r"\\s1\hubit\a"), Path(r"\\s2\hubit\b"))
+    assert not _same_unc_share(Path(r"C:\x\a"), Path(r"C:\x\b"))
+
+
+def test_publish_same_unc_share_uses_rename(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "backend.services.my_files_storage_layout._same_unc_share", lambda _s, _d: True
+    )
+    source = tmp_path / "spool" / "x.bin"
+    source.parent.mkdir(parents=True)
+    payload = b"rename-me"
+    source.write_bytes(payload)
+    sha = hashlib.sha256(payload).hexdigest()
+    destination = tmp_path / "users" / "1" / "blobs" / "re" / "na" / "rename.bin"
+    result = publish_local_to_blob(
+        source=source,
+        destination=destination,
+        expected_sha256=sha,
+        expected_size=len(payload),
+    )
+    assert result == destination
+    assert destination.read_bytes() == payload
+    assert not source.exists()
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
+def test_publish_same_unc_share_size_mismatch_keeps_source(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "backend.services.my_files_storage_layout._same_unc_share", lambda _s, _d: True
+    )
+    source = tmp_path / "src.bin"
+    source.write_bytes(b"abc")
+    destination = tmp_path / "users" / "1" / "blobs" / "deadbeef.bin"
+    with pytest.raises(ValueError, match="size mismatch"):
+        publish_local_to_blob(
+            source=source,
+            destination=destination,
+            expected_sha256="0" * 64,
+            expected_size=999,
+        )
+    assert source.exists()
+    assert not destination.exists()
+
+
+def test_process_file_on_ready_row_is_noop(tmp_path: Path):
+    service = _new_service(tmp_path)
+    uploaded = _upload(service, _user(7), "a.bin", b"same-bytes")
+    again = service.process_file(uploaded["id"])
+    assert again is not None
+    assert again["status"] == "ready"
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row = session.get(AppMyFile, uploaded["id"])
+        assert row.status == "ready"
+        blob = session.get(AppMyFileBlob, row.blob_id)
+        assert blob.ref_count == 1
+        assert service._resolve_stored_path(blob.storage_path).exists()
+
+
+def test_publish_sha_mismatch_does_not_leave_final(tmp_path: Path):
+    source = tmp_path / "src.bin"
+    source.write_bytes(b"abc")
+    destination = tmp_path / "users" / "1" / "my_files" / "blobs" / "ab" / "cd" / "deadbeef.bin"
+    with pytest.raises(ValueError, match="SHA-256"):
+        publish_local_to_blob(
+            source=source,
+            destination=destination,
+            expected_sha256="0" * 64,
+            expected_size=3,
+        )
+    assert not destination.exists()
+    assert list(destination.parent.glob("*.tmp-*")) == [] if destination.parent.exists() else True
+
+
+def test_purge_keeps_blob_file_on_rollback_and_removes_it_after_commit(tmp_path: Path, monkeypatch):
+    service = _new_service(tmp_path)
+    database_url = _sqlite_url(tmp_path / "app.db")
+    uploaded = _upload(service, _user(7), "gone.bin", b"only-copy")
+    with app_session(database_url) as session:
+        blob_id = session.get(AppMyFile, uploaded["id"]).blob_id
+        blob_path = service._resolve_stored_path(session.get(AppMyFileBlob, blob_id).storage_path)
+    assert blob_path.exists()
+    service.delete_file(file_id=uploaded["id"], user_id=7, actor=_user(7))
+
+    # Сбой после освобождения блоба (ref_count -> 0), но до commit: откат транзакции.
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("audit write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(service, "_write_audit", _boom)
+        with pytest.raises(RuntimeError, match="audit write failed"):
+            service.purge_file(file_id=uploaded["id"], user_id=7, actor=_user(7))
+
+    assert blob_path.exists(), "физический файл не должен удаляться до commit"
+    with app_session(database_url) as session:
+        row = session.get(AppMyFile, uploaded["id"])
+        assert row.status == "ready"
+        assert session.get(AppMyFileBlob, blob_id) is not None
+
+    # Нормальный purge: файл удаляется после успешного commit.
+    service.purge_file(file_id=uploaded["id"], user_id=7, actor=_user(7))
+    assert not blob_path.exists()
+    with app_session(database_url) as session:
+        assert session.get(AppMyFileBlob, blob_id) is None

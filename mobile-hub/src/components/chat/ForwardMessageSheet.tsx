@@ -1,0 +1,148 @@
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useContext, useEffect, useMemo, useState } from 'react';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
+import { russianPlural } from '../../utils/russianPlural';
+import type { ChatConversationSummary, ChatMessage } from '../../api/types';
+import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
+import { ChatInlineSheet } from './ChatInlineSheet';
+import { useSheetDeviceLog } from './sheetDeviceLog';
+
+export function ForwardMessageSheet({
+  message,
+  count = 1,
+  conversations,
+  busy,
+  status = '',
+  error = '',
+  onClose,
+  onForward,
+}: {
+  message: ChatMessage | null;
+  count?: number;
+  conversations: ChatConversationSummary[];
+  busy: boolean;
+  status?: string;
+  error?: string;
+  onClose: () => void;
+  onForward: (conversation: ChatConversationSummary) => void;
+}) {
+  const { chatTokens, styles } = useChatStyles(createStyles);
+  const [query, setQuery] = useState('');
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const visible = Boolean(message);
+  useUiOpenTiming('forward-sheet', visible);
+  const markClose = useSheetDeviceLog('forward', visible);
+  useEffect(() => { if (!visible) setQuery(''); }, [visible]);
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return conversations;
+    return conversations.filter((item) => String(item.title || '').toLowerCase().includes(normalized));
+  }, [conversations, query]);
+
+  return (
+    // Inline (not a Modal window): a Modal sheet came out lifted above the
+    // screen bottom on some Android builds, hiding the list tail and «Отмена».
+    <ChatInlineSheet
+      visible={Boolean(message)}
+      onClose={() => {
+        if (busy) return;
+        markClose('gesture');
+        onClose();
+      }}
+      dismissAccessibilityLabel="Закрыть пересылку"
+      sheetStyle={[styles.sheet, {
+        paddingBottom: Math.max(20, insets?.bottom || 0),
+        paddingLeft: 12 + (insets?.left || 0), paddingRight: 12 + (insets?.right || 0),
+      }]}
+      sheetTestID="chat-forward-sheet"
+      contentStyle={styles.content}
+    >
+        <View accessibilityViewIsModal style={styles.content}>
+          <Text style={styles.title}>
+            {count > 1 ? `Переслать ${count} ${russianPlural(count, ['сообщение', 'сообщения', 'сообщений'])}` : 'Переслать сообщение'}
+          </Text>
+          {status ? <Text accessibilityLiveRegion="polite" style={styles.preview}>{status}</Text> : null}
+          {error ? <Text accessibilityRole="alert" style={styles.notice}>{error}</Text> : null}
+          {busy ? <Text accessibilityLiveRegion="polite" style={styles.preview}>Пересылаем…</Text> : null}
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Найти диалог"
+            placeholderTextColor={chatTokens.textSecondary}
+            style={styles.search}
+            accessibilityLabel="Поиск диалога для пересылки"
+          />
+          {query ? <Pressable disabled={busy} accessibilityRole="button" accessibilityLabel="Очистить поиск диалога"
+            onPress={() => setQuery('')} style={styles.cancel}><Text style={styles.cancelText}>Очистить поиск</Text></Pressable> : null}
+          <ScrollView
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            {filtered.map((conversation) => (
+              <Pressable
+                key={conversation.id}
+                onPress={() => onForward(conversation)}
+                disabled={busy}
+                style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+                accessibilityRole="button"
+                accessibilityLabel={`Переслать в ${conversation.title || 'диалог'}`}
+                accessibilityState={{ disabled: busy }}
+              >
+                <Text style={styles.rowTitle} numberOfLines={1}>{conversation.title || 'Диалог'}</Text>
+                <Text style={styles.preview} numberOfLines={1}>{conversation.last_message_preview || 'Нет сообщений'}</Text>
+              </Pressable>
+            ))}
+            {!filtered.length ? <Text style={styles.empty}>Диалоги не найдены</Text> : null}
+          </ScrollView>
+          <Pressable
+            onPress={() => {
+              markClose('button');
+              onClose();
+            }}
+            style={({ pressed }) => [styles.cancel, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Отмена"
+            disabled={busy}
+            accessibilityState={{ disabled: busy }}
+          >
+            <Text style={styles.cancelText}>Отмена</Text>
+          </Pressable>
+        </View>
+    </ChatInlineSheet>
+  );
+}
+
+const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
+  sheet: {
+    maxHeight: '72%',
+    paddingHorizontal: 12,
+    paddingBottom: 20,
+  },
+  content: { flexShrink: 1 },
+  title: { marginHorizontal: 8, marginBottom: 10, color: chatTokens.textPrimary, fontSize: 17, fontWeight: '700' },
+  search: {
+    minHeight: 44,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    color: chatTokens.textPrimary,
+    backgroundColor: chatTokens.sidebarSearchBg,
+    fontSize: 15,
+  },
+  // flexGrow:0 — ScrollView's base style inflates the sheet to maxHeight,
+  // leaving a dead zone under a short list (DEV-SHEET-1).
+  list: { maxHeight: 360, flexGrow: 0, flexShrink: 1 },
+  // Last row must clear the sheet edge; backdrop taps there close the sheet
+  // instead of selecting the conversation (DEV-FWD-1).
+  listContent: { paddingBottom: 12, flexGrow: 0 },
+  row: { minHeight: 58, justifyContent: 'center', paddingHorizontal: 10, borderRadius: 10 },
+  pressed: { transform: [{ scale: 0.96 }], backgroundColor: chatTokens.sidebarRowSoftActive },
+  rowTitle: { color: chatTokens.textPrimary, fontSize: 15, fontWeight: '700' },
+  preview: { marginTop: 2, color: chatTokens.textSecondary, fontSize: 13 },
+  notice: { marginVertical: 10, color: chatTokens.textPrimary, fontSize: 14, lineHeight: 20 },
+  empty: { paddingVertical: 24, color: chatTokens.textSecondary, textAlign: 'center' },
+  cancel: { minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
+  cancelText: { color: chatTokens.accentText, fontSize: 16, fontWeight: '700' },
+});

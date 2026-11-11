@@ -1,0 +1,66 @@
+import {
+  nativeDatabaseDestinationFromPortalPath,
+  nativeEquipmentDestination,
+  resolveNativeDatabaseEnabled,
+} from './nativeDatabaseFeature';
+
+describe('nativeDatabaseDestinationFromPortalPath', () => {
+  it('maps the search list and native-safe detail parameters', () => {
+    expect(nativeDatabaseDestinationFromPortalPath('/database?q=printer&mode=acts')).toEqual({
+      pathname: '/(shell)/database',
+      params: { q: 'printer', mode: 'acts' },
+    });
+    expect(nativeDatabaseDestinationFromPortalPath('/database?inv_no=INV%2F7&db_id=OBJ-ITINVENT&tab=history')).toEqual({
+      pathname: '/(shell)/database/[invNo]',
+      params: { invNo: 'INV/7', databaseId: 'OBJ-ITINVENT', tab: 'history' },
+    });
+    expect(nativeDatabaseDestinationFromPortalPath('/database?mode=consumables&q=12A')).toEqual({
+      pathname: '/(shell)/database',
+      params: { q: '12A', mode: 'consumables' },
+    });
+    expect(nativeDatabaseDestinationFromPortalPath('/database?inv_no=INV-9&tab=works')).toEqual({
+      pathname: '/(shell)/database/[invNo]',
+      params: { invNo: 'INV-9', tab: 'works' },
+    });
+    expect(nativeDatabaseDestinationFromPortalPath('/database?consumable=4821&db_id=OBJ-ITINVENT')).toEqual({
+      pathname: '/(shell)/database',
+      params: { consumable: '4821', databaseId: 'OBJ-ITINVENT' },
+    });
+    expect(nativeDatabaseDestinationFromPortalPath('/database?scan=1')).toEqual({
+      pathname: '/(shell)/database',
+      params: { scan: '1' },
+    });
+    expect(nativeDatabaseDestinationFromPortalPath('/database?consumable_id=12')).toEqual({
+      pathname: '/(shell)/database',
+      params: { consumable: '12' },
+    });
+    expect(nativeDatabaseDestinationFromPortalPath('/database?consumable=abc')).toBeNull();
+    expect(nativeDatabaseDestinationFromPortalPath('/database?consumable=CF283A')).toBeNull();
+  });
+
+  it('rejects unsupported upload, reminder and unknown workflows', () => {
+    expect(nativeDatabaseDestinationFromPortalPath('/database?upload_act=1&reminder_id=r1&source_task_id=t1')).toBeNull();
+    expect(nativeDatabaseDestinationFromPortalPath('/database?scan=2')).toBeNull();
+    expect(nativeDatabaseDestinationFromPortalPath('/database?scan=yes')).toBeNull();
+    expect(nativeDatabaseDestinationFromPortalPath('/database?mode=write')).toBeNull();
+    expect(nativeDatabaseDestinationFromPortalPath('/database?tab=warehouse1c')).toBeNull();
+    expect(nativeDatabaseDestinationFromPortalPath('/database/consumables')).toBeNull();
+  });
+
+  it('rejects overlong native identifiers', () => {
+    expect(nativeDatabaseDestinationFromPortalPath(`/database?inv_no=${'x'.repeat(201)}`)).toBeNull();
+  });
+});
+
+it('builds an internal native equipment destination', () => {
+  expect(nativeEquipmentDestination('INV/7', 'acts', 'OBJ-ITINVENT')).toEqual({
+    pathname: '/(shell)/database/[invNo]',
+    params: { invNo: 'INV/7', databaseId: 'OBJ-ITINVENT', tab: 'acts' },
+  });
+});
+
+it('keeps native Database default-on with an explicit rollback flag', () => {
+  expect(resolveNativeDatabaseEnabled(undefined)).toBe(true);
+  expect(resolveNativeDatabaseEnabled('true')).toBe(true);
+  expect(resolveNativeDatabaseEnabled('false')).toBe(false);
+});

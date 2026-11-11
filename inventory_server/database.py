@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+
+class InventoryQueueStore:
+    def __init__(self, *, db_path: Path, recover_interrupted: bool = False) -> None:
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._conn = self._connect()
+        self._stats_cache: tuple = (0.0, {})
+        self._stats_cache_ttl_sec = 8.0
+        self._initialize()
+        if recover_interrupted:
+            self.recover_interrupted()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        return conn
+
+    def _initialize(self) -> None:
+        with self._lock, self._conn as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inventory_ingest_queue (
+                    id TEXT PRIMARY KEY,
+                    created_at INTEGER NOT NULL,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at INTEGER NOT NULL,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    processed_at INTEGER NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inventory_ingest_queue_status_next_attempt ON inventory_ingest_queue(status, next_attempt_at, created_at)"
+            )
+            conn.commit()
+
+    def recover_interrupted(self) -> int:
+        """Requeue rows left in 'processing' by a previous worker instance.
+
+        Only the process that owns the worker may call this (at startup): opening a store for
+        maintenance (cleanup/vacuum) must not reset rows a live worker is processing."""
+        with self._lock, self._conn as conn:
+            cursor = conn.execute(
+                "UPDATE inventory_ingest_queue SET status = 'queued' WHERE status = 'processing'"
+            )
+            conn.commit()
+            self._invalidate_stats_cache()
+            return int(cursor.rowcount or 0)
+
+    def _invalidate_stats_cache(self) -> None:
+        self._stats_cache = (0.0, {})
+
+    def enqueue(self, payload: Dict[str, Any], dedupe_key: str) -> Dict[str, Any]:
+        now_ts = int(time.time())
+        queue_id = str(uuid.uuid4())
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        with self._lock, self._conn as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO inventory_ingest_queue (
+                        id, created_at, dedupe_key, payload_json, status,
+                        attempt_count, next_attempt_at, last_error, processed_at
+                    ) VALUES (?, ?, ?, ?, 'queued', 0, ?, '', NULL)
+                    """,
+                    (queue_id, now_ts, dedupe_key, payload_json, now_ts),
+                )
+                conn.commit()
+                self._invalidate_stats_cache()
+                return {
+                    "id": queue_id,
+                    "created_at": now_ts,
+                    "dedupe_key": dedupe_key,
+                    "status": "queued",
+                    "duplicate": False,
+                }
+            except sqlite3.IntegrityError:
+                row = conn.execute(
+                    "SELECT id, created_at, dedupe_key, status FROM inventory_ingest_queue WHERE dedupe_key = ?",
+                    (dedupe_key,),
+                ).fetchone()
+                return {
+                    "id": str((row or {})["id"]) if row is not None else "",
+                    "created_at": int((row or {})["created_at"]) if row is not None else now_ts,
+                    "dedupe_key": dedupe_key,
+                    "status": str((row or {})["status"]) if row is not None else "queued",
+                    "duplicate": True,
+                }
+
+    def claim_next_batch(self, *, limit: int) -> List[Dict[str, Any]]:
+        now_ts = int(time.time())
+        with self._lock, self._conn as conn:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, dedupe_key, payload_json, status, attempt_count, next_attempt_at, last_error, processed_at
+                FROM inventory_ingest_queue
+                WHERE status = 'queued' AND next_attempt_at <= ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (now_ts, int(limit)),
+            ).fetchall()
+            if not rows:
+                return []
+            ids = [str(row["id"]) for row in rows]
+            conn.executemany(
+                "UPDATE inventory_ingest_queue SET status = 'processing' WHERE id = ?",
+                [(row_id,) for row_id in ids],
+            )
+            conn.commit()
+            self._invalidate_stats_cache()
+
+        claimed: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = {}
+            try:
+                decoded = json.loads(str(row["payload_json"] or "{}"))
+                if isinstance(decoded, dict):
+                    payload = decoded
+            except Exception:
+                payload = {}
+            claimed.append(
+                {
+                    "id": str(row["id"]),
+                    "created_at": int(row["created_at"] or 0),
+                    "dedupe_key": str(row["dedupe_key"] or ""),
+                    "payload": payload,
+                    "status": str(row["status"] or ""),
+                    "attempt_count": int(row["attempt_count"] or 0),
+                    "next_attempt_at": int(row["next_attempt_at"] or 0),
+                    "last_error": str(row["last_error"] or ""),
+                    "processed_at": int(row["processed_at"] or 0) if row["processed_at"] is not None else None,
+                }
+            )
+        return claimed
+
+    def mark_done(self, queue_id: str, *, processed_at: Optional[int] = None) -> None:
+        processed_ts = int(processed_at or time.time())
+        with self._lock, self._conn as conn:
+            conn.execute(
+                "UPDATE inventory_ingest_queue SET status = 'done', processed_at = ?, last_error = '' WHERE id = ?",
+                (processed_ts, queue_id),
+            )
+            conn.commit()
+        self._invalidate_stats_cache()
+
+    def mark_retry(self, queue_id: str, *, error_text: str, next_attempt_at: int, attempt_count: int) -> None:
+        with self._lock, self._conn as conn:
+            conn.execute(
+                """
+                UPDATE inventory_ingest_queue
+                SET status = 'queued', attempt_count = ?, next_attempt_at = ?, last_error = ?, processed_at = NULL
+                WHERE id = ?
+                """,
+                (int(attempt_count), int(next_attempt_at), str(error_text or "")[:4000], queue_id),
+            )
+            conn.commit()
+        self._invalidate_stats_cache()
+
+    def mark_dead(self, queue_id: str, *, error_text: str, processed_at: Optional[int], attempt_count: int) -> None:
+        processed_ts = int(processed_at or time.time())
+        with self._lock, self._conn as conn:
+            conn.execute(
+                """
+                UPDATE inventory_ingest_queue
+                SET status = 'dead', attempt_count = ?, processed_at = ?, last_error = ?
+                WHERE id = ?
+                """,
+                (int(attempt_count), processed_ts, str(error_text or "")[:4000], queue_id),
+            )
+            conn.commit()
+        self._invalidate_stats_cache()
+
+    def cleanup_retention(self, *, done_retention_days: int, dead_retention_days: int) -> Dict[str, int]:
+        now_ts = int(time.time())
+        done_cutoff = now_ts - max(1, int(done_retention_days)) * 24 * 60 * 60
+        dead_cutoff = now_ts - max(1, int(dead_retention_days)) * 24 * 60 * 60
+        with self._lock, self._conn as conn:
+            done_cursor = conn.execute(
+                "DELETE FROM inventory_ingest_queue WHERE status = 'done' AND COALESCE(processed_at, created_at) < ?",
+                (done_cutoff,),
+            )
+            dead_cursor = conn.execute(
+                "DELETE FROM inventory_ingest_queue WHERE status = 'dead' AND COALESCE(processed_at, created_at) < ?",
+                (dead_cutoff,),
+            )
+            conn.commit()
+        return {
+            "done_removed": int(done_cursor.rowcount or 0),
+            "dead_removed": int(dead_cursor.rowcount or 0),
+        }
+
+    def vacuum(self) -> Dict[str, int]:
+        with self._lock:
+            # In WAL mode recent pages can still live only in the sidecar. Measure
+            # the materialized database on both sides of VACUUM, otherwise a small
+            # queue can be reported as growing from 4 KiB to its real schema size.
+            with self._conn as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            before_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
+            with self._conn as conn:
+                conn.execute("VACUUM")
+            with self._conn as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        after_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
+        return {"before_bytes": before_bytes, "after_bytes": after_bytes, "saved_bytes": max(0, before_bytes - after_bytes)}
+
+    def queue_stats(self, *, use_cache: bool = True) -> Dict[str, Any]:
+        if use_cache:
+            cached_at, cached_stats = self._stats_cache
+            if cached_stats and (time.monotonic() - cached_at) < self._stats_cache_ttl_sec:
+                return dict(cached_stats)
+
+        now_ts = int(time.time())
+        with self._connect() as conn:
+            active_count = int(
+                conn.execute(
+                    "SELECT COUNT(1) FROM inventory_ingest_queue WHERE status IN ('queued', 'processing')"
+                ).fetchone()[0]
+            )
+            oldest_row = conn.execute(
+                """
+                SELECT created_at
+                FROM inventory_ingest_queue
+                WHERE status IN ('queued', 'processing')
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            dead_count = int(
+                conn.execute(
+                    "SELECT COUNT(1) FROM inventory_ingest_queue WHERE status = 'dead'"
+                ).fetchone()[0]
+            )
+        oldest_created_at = int(oldest_row["created_at"]) if oldest_row is not None else None
+        oldest_age = max(0, now_ts - oldest_created_at) if oldest_created_at is not None else None
+        stats = {
+            "queue_depth": active_count,
+            "dead_letter_count": dead_count,
+            "oldest_queued_age_sec": oldest_age,
+        }
+        self._stats_cache = (time.monotonic(), dict(stats))
+        return stats

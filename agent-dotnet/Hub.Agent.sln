@@ -1,0 +1,56 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{3FB802FC-CC8C-465F-B098-CE8A5A1AA9C7}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hub.Agent.Core", "src\Hub.Agent.Core\Hub.Agent.Core.csproj", "{CA2412DB-E51C-46F2-830E-57AC606F8CF0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hub.Agent", "src\Hub.Agent\Hub.Agent.csproj", "{916CC784-A9E5-4E6E-9207-9B1D6761DC12}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{EE53C2D4-0B5D-4005-A267-1EA1A8DAD831}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hub.Agent.Tests", "tests\Hub.Agent.Tests\Hub.Agent.Tests.csproj", "{F16252A9-F36C-4F6A-81B8-B10A79D01F06}"
+EndProject
+Project("{B7DD6F7E-DEF8-4E67-B5B7-07EF123DB6F0}") = "Hub.Agent.Installer", "installer\Hub.Agent.Installer.wixproj", "{074E5130-0DD9-4C79-AA18-66C87F11DAD2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hub.BrowserProbe", "src\Hub.BrowserProbe\Hub.BrowserProbe.csproj", "{FACDD2C2-5C15-4A01-A472-7C30F2B9CFB6}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CA2412DB-E51C-46F2-830E-57AC606F8CF0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CA2412DB-E51C-46F2-830E-57AC606F8CF0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CA2412DB-E51C-46F2-830E-57AC606F8CF0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CA2412DB-E51C-46F2-830E-57AC606F8CF0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{916CC784-A9E5-4E6E-9207-9B1D6761DC12}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{916CC784-A9E5-4E6E-9207-9B1D6761DC12}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{916CC784-A9E5-4E6E-9207-9B1D6761DC12}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{916CC784-A9E5-4E6E-9207-9B1D6761DC12}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F16252A9-F36C-4F6A-81B8-B10A79D01F06}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F16252A9-F36C-4F6A-81B8-B10A79D01F06}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F16252A9-F36C-4F6A-81B8-B10A79D01F06}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F16252A9-F36C-4F6A-81B8-B10A79D01F06}.Release|Any CPU.Build.0 = Release|Any CPU
+		{074E5130-0DD9-4C79-AA18-66C87F11DAD2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{074E5130-0DD9-4C79-AA18-66C87F11DAD2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{074E5130-0DD9-4C79-AA18-66C87F11DAD2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{074E5130-0DD9-4C79-AA18-66C87F11DAD2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FACDD2C2-5C15-4A01-A472-7C30F2B9CFB6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FACDD2C2-5C15-4A01-A472-7C30F2B9CFB6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FACDD2C2-5C15-4A01-A472-7C30F2B9CFB6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FACDD2C2-5C15-4A01-A472-7C30F2B9CFB6}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{CA2412DB-E51C-46F2-830E-57AC606F8CF0} = {3FB802FC-CC8C-465F-B098-CE8A5A1AA9C7}
+		{916CC784-A9E5-4E6E-9207-9B1D6761DC12} = {3FB802FC-CC8C-465F-B098-CE8A5A1AA9C7}
+		{F16252A9-F36C-4F6A-81B8-B10A79D01F06} = {EE53C2D4-0B5D-4005-A267-1EA1A8DAD831}
+		{FACDD2C2-5C15-4A01-A472-7C30F2B9CFB6} = {3FB802FC-CC8C-465F-B098-CE8A5A1AA9C7}
+	EndGlobalSection
+EndGlobal

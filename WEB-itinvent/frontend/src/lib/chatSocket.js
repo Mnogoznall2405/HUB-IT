@@ -1,0 +1,1181 @@
+import { API_V1_BASE } from '../api/client';
+import { getWsTicket } from '../api/chatWsAuth';
+import {
+  getChatContactPreviewText,
+  getChatPollPreviewText,
+  parseChatContactBody,
+  resolveChatMessagePoll,
+} from '../components/chat/chatStructuredContent';
+import { CHAT_WS_ENABLED } from './chatFeature';
+import { emitAgentDebugLog } from './debugClientLog';
+import { invalidateSWRCacheByPrefix } from './swrCache';
+
+export const CHAT_SOCKET_STATUS_EVENT = 'chat-ws-status';
+export const CHAT_SOCKET_ACTIVITY_EVENT = 'chat-ws-activity';
+export const CHAT_SOCKET_SNAPSHOT_EVENT = 'chat-ws-snapshot';
+export const CHAT_SOCKET_SESSION_EXPIRED_EVENT = 'chat-ws-session-expired';
+export const CHAT_SOCKET_MESSAGE_CREATED_EVENT = 'chat-ws-message-created';
+export const CHAT_SOCKET_MESSAGE_DELETED_EVENT = 'chat-ws-message-deleted';
+export const CHAT_SOCKET_MESSAGE_UPDATED_EVENT = 'chat-ws-message-updated';
+export const CHAT_SOCKET_MESSAGE_READ_EVENT = 'chat-ws-message-read';
+export const CHAT_SOCKET_CONVERSATION_UPDATED_EVENT = 'chat-ws-conversation-updated';
+export const CHAT_SOCKET_CONVERSATION_REMOVED_EVENT = 'chat-ws-conversation-removed';
+export const CHAT_SOCKET_UNREAD_SUMMARY_EVENT = 'chat-ws-unread-summary';
+export const CHAT_SOCKET_PRESENCE_UPDATED_EVENT = 'chat-ws-presence-updated';
+export const CHAT_SOCKET_TYPING_EVENT = 'chat-ws-typing';
+export const CHAT_SOCKET_AI_RUN_UPDATED_EVENT = 'chat-ws-ai-run-updated';
+export const CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT = 'chat-ws-ai-sandbox-updated';
+export const CHAT_SOCKET_MESSAGE_REACTION_EVENT = 'chat-ws-message-reaction';
+export const CHAT_SOCKET_CALL_INVITE_EVENT = 'chat-ws-call-invite';
+export const CHAT_SOCKET_CALL_UPDATED_EVENT = 'chat-ws-call-updated';
+
+const HEARTBEAT_MS = 25_000;
+const HEARTBEAT_PROBE_TIMEOUT_MS = 5_000;
+const REQUEST_TIMEOUT_MS = 15_000;
+const SEND_MESSAGE_TIMEOUT_MS = 7_000;
+const RATE_LIMITED_CLOSE_CODE = 4429;
+const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
+const RECONNECT_JITTER_RATIO = 0.25;
+const STABLE_CONNECTION_MS = 5_000;
+// A handshake stuck in CONNECTING (TCP accepted, upgrade never completed) would
+// otherwise block connect()/probes forever: give up and reconnect with backoff.
+const CONNECT_TIMEOUT_MS = 10_000;
+const MAX_QUEUED_MESSAGES = 100;
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4000, 4400, 4401, 4403, 4404, 4503]);
+const VOLATILE_OFFLINE_COMMANDS = new Set(['chat.typing', 'chat.ping']);
+const CONVERSATION_SUBSCRIPTION_COMMANDS = new Set([
+  'chat.subscribe_conversation',
+  'chat.unsubscribe_conversation',
+]);
+
+const canUseBrowserSocket = () => typeof window !== 'undefined' && typeof window.WebSocket !== 'undefined';
+
+const dispatchWindowEvent = (eventName, detail) => {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  window.dispatchEvent(new CustomEvent(eventName, { detail }));
+};
+
+const normalizeConversationId = (value) => String(value || '').trim();
+
+const mutedConversationIds = new Set();
+
+const replaceMutedConversationIds = (values) => {
+  mutedConversationIds.clear();
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const conversationId = normalizeConversationId(value);
+    if (conversationId) mutedConversationIds.add(conversationId);
+  });
+};
+
+export const isChatConversationMuted = (conversationId) => (
+  mutedConversationIds.has(normalizeConversationId(conversationId))
+);
+
+// Survives Chat page unmount so sidebar can paint who just wrote after navigation.
+const inboxMessagePreviewByConversation = new Map();
+const INBOX_PREVIEW_TTL_MS = 10 * 60 * 1000;
+const INBOX_PREVIEW_MAX_ENTRIES = 200;
+
+export const pruneInboxMessagePreviews = ({
+  now = Date.now(),
+  maxEntries = INBOX_PREVIEW_MAX_ENTRIES,
+} = {}) => {
+  [...inboxMessagePreviewByConversation.entries()].forEach(([conversationId, entry]) => {
+    if ((now - Number(entry?.at || 0)) > INBOX_PREVIEW_TTL_MS) {
+      inboxMessagePreviewByConversation.delete(conversationId);
+    }
+  });
+  const safeMaxEntries = Math.max(0, Number(maxEntries) || 0);
+  while (inboxMessagePreviewByConversation.size > safeMaxEntries) {
+    const oldestConversationId = inboxMessagePreviewByConversation.keys().next().value;
+    if (oldestConversationId === undefined) break;
+    inboxMessagePreviewByConversation.delete(oldestConversationId);
+  }
+};
+
+export const noteInboxMessagePreview = (envelope = {}) => {
+  const payload = envelope?.payload || envelope || {};
+  const conversationId = normalizeConversationId(
+    envelope?.conversation_id || payload?.conversation_id,
+  );
+  const messageId = String(payload?.id || '').trim();
+  if (!conversationId || !messageId) return;
+  inboxMessagePreviewByConversation.delete(conversationId);
+  inboxMessagePreviewByConversation.set(conversationId, {
+    message: payload,
+    at: Date.now(),
+  });
+  pruneInboxMessagePreviews();
+};
+
+export const peekInboxMessagePreview = (conversationId) => {
+  const id = normalizeConversationId(conversationId);
+  if (!id) return null;
+  const entry = inboxMessagePreviewByConversation.get(id);
+  if (!entry) return null;
+  if ((Date.now() - Number(entry.at || 0)) > INBOX_PREVIEW_TTL_MS) {
+    inboxMessagePreviewByConversation.delete(id);
+    return null;
+  }
+  return entry.message || null;
+};
+
+const buildPreviewText = (message) => {
+  if (!message) return 'Сообщение';
+  if (message?.is_deleted) return 'Сообщение удалено';
+  if (message.kind === 'system') return String(message.body || 'Системное событие').trim() || 'Системное событие';
+  if (message.kind === 'task_share') return 'Поделились задачей';
+  if (message.kind === 'location') return 'Геопозиция';
+  if (message.kind === 'contact') return getChatContactPreviewText(parseChatContactBody(message.body));
+  if (message.kind === 'poll') return getChatPollPreviewText(resolveChatMessagePoll(message));
+  const body = String(message.body || '').trim();
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  if (message.kind === 'file' && body) return body;
+  if (attachments.length === 1) {
+    if (String(attachments[0]?.kind || attachments[0]?.media_kind || '').trim().toLowerCase() === 'sticker') {
+      return 'Стикер';
+    }
+    return `Файл: ${String(attachments[0]?.file_name || 'вложение').trim() || 'вложение'}`;
+  }
+  if (attachments.length > 1) return `Файлы: ${attachments.length}`;
+  return body || 'Сообщение';
+};
+
+export const mergeInboxPreviewsIntoConversations = (items = []) => {
+  const list = Array.isArray(items) ? items : [];
+  pruneInboxMessagePreviews();
+  if (list.length === 0 || inboxMessagePreviewByConversation.size === 0) return list;
+  const now = Date.now();
+  let changed = false;
+  const next = list.map((item) => {
+    const id = normalizeConversationId(item?.id);
+    if (!id) return item;
+    const entry = inboxMessagePreviewByConversation.get(id);
+    if (!entry?.message) return item;
+    if ((now - Number(entry.at || 0)) > INBOX_PREVIEW_TTL_MS) {
+      inboxMessagePreviewByConversation.delete(id);
+      return item;
+    }
+    const message = entry.message;
+    const messageAt = String(message?.created_at || '').trim();
+    const currentAt = String(item?.last_message_at || item?.updated_at || '').trim();
+    // Keep server row if it is already newer than the buffered socket message.
+    if (messageAt && currentAt && currentAt.localeCompare(messageAt) > 0) {
+      return item;
+    }
+    const nextPreview = buildPreviewText(message);
+    const sameStamp = Boolean(messageAt) && currentAt === messageAt;
+    const samePreview = sameStamp && String(item?.last_message_preview || '') === nextPreview;
+    if (samePreview) return item;
+    changed = true;
+    const isOwn = Boolean(message?.is_own);
+    return {
+      ...item,
+      last_message_at: messageAt || item.last_message_at,
+      updated_at: messageAt || item.updated_at,
+      last_message_preview: nextPreview,
+      last_message_is_own: isOwn,
+      last_message_delivery_status: isOwn
+        ? (String(message?.delivery_status || '').trim() || 'sent')
+        : null,
+      // Don't invent +1 on every merge (server unread may already be correct).
+      // Only lift a stale 0 when the buffered message is clearly newer.
+      unread_count: isOwn
+        ? Number(item.unread_count || 0)
+        : Math.max(Number(item.unread_count || 0), sameStamp ? Number(item.unread_count || 0) : 1),
+    };
+  });
+  return changed ? next : list;
+};
+
+const normalizePresenceUserIds = (userIds = []) => Array.from(new Set(
+  (Array.isArray(userIds) ? userIds : [])
+    .map((value) => Number(value || 0))
+    .filter((value) => Number.isFinite(value) && value > 0),
+)).slice(0, 50);
+
+const buildPresenceUserIdsKey = (userIds = []) => [...userIds].sort((a, b) => a - b).join(',');
+
+const buildSocketUrl = () => {
+  if (typeof window === 'undefined') return '';
+  const target = new URL(`${API_V1_BASE}/chat/ws`, window.location.origin);
+  target.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return target.toString();
+};
+
+const createRequestId = () => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // Fallback below.
+  }
+  return `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+class ChatSocketClient {
+  constructor() {
+    this.socket = null;
+    this.connectionState = 'disconnected';
+    this.retainCount = 0;
+    this.reconnectTimer = null;
+    this.connectTimeoutTimer = null;
+    this.heartbeatTimer = null;
+    this.wantInbox = false;
+    this.activeConversationIds = new Set();
+    this.watchedPresenceUserIds = new Set();
+    this.watchedPresenceUserIdsKey = '';
+    // HUB Desktop reports its window activity; browser tabs learn about it
+    // through chat.desktop_presence and silence their own notifications.
+    this.clientState = null;
+    this.desktopActiveUntil = 0;
+    this.pendingRequests = new Map();
+    this.reconnectAttempt = 0;
+    this.manualClose = false;
+    this.messageQueue = [];
+    this.pendingConversationSubscriptions = new Map();
+    this.missedPongs = 0;
+    this.maxMissedPongs = 2;
+    this.stableConnectionTimer = null;
+    this.authBlocked = false;
+    this.resumeRecoverInFlight = false;
+    this.socketOpenedAt = null;
+    this.failedHandshakeCount = 0;
+    this.rateLimitRetryAfterMs = 0;
+    this.connectivityWatchersAttached = false;
+    this.handleNetworkOnline = () => this.probeSocketConnection();
+    this.handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      this.probeSocketConnection();
+    };
+  }
+
+  hasActiveOrPendingSocket() {
+    if (!this.socket) return false;
+    const state = this.socket.readyState;
+    return state === WebSocket.CONNECTING
+      || state === WebSocket.OPEN
+      || state === WebSocket.CLOSING;
+  }
+
+  retain() {
+    if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) {
+      return () => {};
+    }
+    this.retainCount += 1;
+    this.connect();
+    return () => this.release();
+  }
+
+  release() {
+    this.retainCount = Math.max(0, Number(this.retainCount || 0) - 1);
+    if (this.retainCount === 0) {
+      this.wantInbox = false;
+      this.activeConversationIds.clear();
+      this.watchedPresenceUserIds.clear();
+      this.watchedPresenceUserIdsKey = '';
+      this.desktopActiveUntil = 0;
+      this.clientState = null;
+      this.close(true);
+    }
+  }
+
+  async subscribeInbox() {
+    if (!CHAT_WS_ENABLED) return;
+    this.wantInbox = true;
+    this.connect();
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return null;
+    }
+    return this.sendCommand({ type: 'chat.subscribe_inbox' });
+  }
+
+  unsubscribeInbox() {
+    this.wantInbox = false;
+  }
+
+  subscribeConversation(conversationId) {
+    const normalizedConversationId = normalizeConversationId(conversationId);
+    if (!CHAT_WS_ENABLED || !normalizedConversationId) return;
+    this.activeConversationIds.add(normalizedConversationId);
+    this.connect();
+    this.send({
+      type: 'chat.subscribe_conversation',
+      conversation_id: normalizedConversationId,
+    });
+  }
+
+  unsubscribeConversation(conversationId) {
+    const normalizedConversationId = normalizeConversationId(conversationId);
+    if (!normalizedConversationId) return;
+    this.activeConversationIds.delete(normalizedConversationId);
+    this.send({
+      type: 'chat.unsubscribe_conversation',
+      conversation_id: normalizedConversationId,
+    });
+  }
+
+  watchPresence(userIds = []) {
+    const normalizedUserIds = normalizePresenceUserIds(userIds);
+    const normalizedKey = buildPresenceUserIdsKey(normalizedUserIds);
+    if (!CHAT_WS_ENABLED) return Promise.resolve({ user_ids: normalizedUserIds });
+    this.connect();
+    if (normalizedKey === this.watchedPresenceUserIdsKey) {
+      return Promise.resolve({ user_ids: normalizedUserIds });
+    }
+    this.watchedPresenceUserIds = new Set(normalizedUserIds);
+    this.watchedPresenceUserIdsKey = normalizedKey;
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.resolve({ user_ids: normalizedUserIds });
+    }
+    return this.sendCommand({
+      type: 'chat.watch_presence',
+      payload: {
+        user_ids: normalizedUserIds,
+      },
+    });
+  }
+
+  async sendMessage(conversationId, body, options = {}) {
+    const normalizedConversationId = normalizeConversationId(conversationId);
+    return this.sendCommand({
+      type: 'chat.send_message',
+      conversation_id: normalizedConversationId,
+      payload: {
+        body,
+        body_format: options?.body_format || undefined,
+        client_message_id: options?.client_message_id || undefined,
+        database_id: options?.database_id || undefined,
+        reply_to_message_id: options?.reply_to_message_id || undefined,
+      },
+    }, {
+      requireOpen: true,
+      timeoutMs: SEND_MESSAGE_TIMEOUT_MS,
+    });
+  }
+
+  async markRead(conversationId, messageId) {
+    const normalizedConversationId = normalizeConversationId(conversationId);
+    return this.sendCommand({
+      type: 'chat.mark_read',
+      conversation_id: normalizedConversationId,
+      payload: {
+        message_id: String(messageId || '').trim(),
+      },
+    }, {
+      requireOpen: true,
+    });
+  }
+
+  isOpen() {
+    return Boolean(this.socket && this.socket.readyState === WebSocket.OPEN);
+  }
+
+  /**
+   * HUB Desktop only: report window activity. Re-sent on every (re)connect;
+   * never queued offline — the next open sends the latest state.
+   */
+  reportClientState({ clientKind = 'desktop', foreground = false } = {}) {
+    if (clientKind !== 'desktop') return false;
+    this.clientState = { client_kind: 'desktop', foreground: Boolean(foreground) };
+    if (!CHAT_WS_ENABLED || !this.isOpen()) return false;
+    try {
+      this.socket.send(JSON.stringify({ type: 'chat.client_state', payload: { ...this.clientState } }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  isDesktopActiveElsewhere(now = Date.now()) {
+    return Number(now) < Number(this.desktopActiveUntil || 0);
+  }
+
+  sendTyping(conversationId, isTyping) {
+    const normalizedConversationId = normalizeConversationId(conversationId);
+    if (!normalizedConversationId) return;
+    this.send({
+      type: 'chat.typing',
+      conversation_id: normalizedConversationId,
+      payload: { is_typing: Boolean(isTyping) },
+    });
+  }
+
+  connect() {
+    if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return;
+    this.ensureConnectivityWatchers();
+    if (this.authBlocked) {
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'chatSocket.js:connect',
+        message: 'connect skipped: authBlocked',
+        hypothesisId: 'H1',
+        data: {
+          connectionState: this.connectionState,
+          retainCount: this.retainCount,
+          wantInbox: this.wantInbox,
+          activeConversationIds: Array.from(this.activeConversationIds),
+        },
+      });
+      // #endregion
+      return;
+    }
+    if (this.hasActiveOrPendingSocket()) return;
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.manualClose = false;
+    const url = buildSocketUrl();
+    if (!url) return;
+    const socket = new window.WebSocket(url);
+    this.socket = socket;
+    this.socketOpenedAt = null;
+    this.armConnectTimeout(socket);
+    this.setStatus(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
+    socket.onopen = () => {
+      if (this.socket !== socket) return;
+      this.clearConnectTimeout();
+      this.resumeRecoverInFlight = false;
+      this.missedPongs = 0;
+      this.rateLimitRetryAfterMs = 0;
+      this.socketOpenedAt = Date.now();
+      this.failedHandshakeCount = 0;
+      this.setStatus('connected');
+      this.startHeartbeat();
+      this.flushQueue();
+      if (this.wantInbox) {
+        this.send({ type: 'chat.subscribe_inbox' });
+      }
+      this.activeConversationIds.forEach((conversationId) => {
+        this.send({
+          type: 'chat.subscribe_conversation',
+          conversation_id: conversationId,
+        });
+      });
+      if (this.watchedPresenceUserIds.size > 0) {
+        this.send({
+          type: 'chat.watch_presence',
+          payload: {
+            user_ids: Array.from(this.watchedPresenceUserIds),
+          },
+        });
+      }
+      if (this.clientState) {
+        this.send({ type: 'chat.client_state', payload: { ...this.clientState } });
+      }
+    };
+    socket.onmessage = (event) => {
+      if (this.socket !== socket) return;
+      this.handleMessage(event?.data);
+    };
+    socket.onerror = () => {
+      if (this.socket !== socket) return;
+      this.clearConnectTimeout();
+      this.resumeRecoverInFlight = false;
+      this.setStatus('disconnected');
+    };
+    socket.onclose = (event) => {
+      if (this.socket !== socket) return;
+      this.clearConnectTimeout();
+      this.resumeRecoverInFlight = false;
+      this.socket = null;
+      this.stopHeartbeat();
+      const closeCode = Number(event?.code || 0);
+      const authBlocked = NON_RECONNECTABLE_CLOSE_CODES.has(closeCode);
+      const nextStatus = closeCode === 4401 ? 'unauthorized' : closeCode === 4403 ? 'forbidden' : 'disconnected';
+      if (authBlocked) {
+        this.authBlocked = true;
+      }
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'chatSocket.js:onclose',
+        message: 'websocket closed',
+        hypothesisId: 'H1',
+        data: {
+          closeCode,
+          reason: String(event?.reason || '').slice(0, 200),
+          authBlocked,
+          willReconnect: !this.manualClose && !authBlocked && this.retainCount > 0,
+          nextStatus,
+          retainCount: this.retainCount,
+          missedPongs: this.missedPongs,
+          wantInbox: this.wantInbox,
+          activeConversationIds: Array.from(this.activeConversationIds),
+        },
+      });
+      // #endregion
+      this.rejectPendingRequests(new Error(authBlocked ? 'Chat websocket access denied' : 'Chat websocket disconnected'));
+      this.setStatus(nextStatus);
+      if (closeCode === 4401 && !this.manualClose && this.retainCount > 0) {
+        dispatchWindowEvent(CHAT_SOCKET_SESSION_EXPIRED_EVENT, {
+          closeCode,
+          reason: String(event?.reason || '').slice(0, 200),
+        });
+      }
+      // A WS handshake rejected with HTTP 401 surfaces as a bare 1006 in
+      // browsers. After a few instant failures refresh the session once via
+      // the shared recovery path instead of hammering the endpoint.
+      const neverOpened = !this.socketOpenedAt;
+      if (neverOpened && closeCode === 1006 && !this.manualClose && this.retainCount > 0) {
+        this.failedHandshakeCount = (this.failedHandshakeCount || 0) + 1;
+        if (this.failedHandshakeCount === 3) {
+          dispatchWindowEvent(CHAT_SOCKET_SESSION_EXPIRED_EVENT, {
+            closeCode,
+            reason: 'handshake denied, refreshing session',
+          });
+        }
+      }
+      if (!this.manualClose && !authBlocked && this.retainCount > 0) {
+        this.scheduleReconnect(
+          closeCode === RATE_LIMITED_CLOSE_CODE
+            ? this.resolveRateLimitRetryAfterMs(event?.reason)
+            : 0,
+        );
+      }
+    };
+  }
+
+  close(manual = false) {
+    this.manualClose = Boolean(manual);
+    this.resumeRecoverInFlight = false;
+    if (manual) {
+      this.authBlocked = false;
+      mutedConversationIds.clear();
+    }
+    this.messageQueue = [];
+    this.pendingConversationSubscriptions.clear();
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.stopHeartbeat();
+    this.clearConnectTimeout();
+    const socket = this.socket;
+    this.socket = null;
+    if (socket) {
+      try {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        socket.close();
+      } catch {
+        // Ignore socket close errors.
+      }
+    }
+    this.rejectPendingRequests(new Error('Chat websocket closed'));
+    this.setStatus('disconnected');
+  }
+
+  // Drop the current transport and reconnect immediately, keeping the offline
+  // queue intact (unlike close(), which is terminal and clears the queue).
+  reconnectNow() {
+    if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return;
+    this.manualClose = false;
+    this.resumeRecoverInFlight = false;
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.stopHeartbeat();
+    this.clearConnectTimeout();
+    const socket = this.socket;
+    this.socket = null;
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      try {
+        socket.close();
+      } catch {
+        // Ignore socket close errors.
+      }
+    }
+    this.rejectPendingRequests(new Error('Chat websocket reconnecting'));
+    this.setStatus('disconnected');
+    if (this.retainCount > 0) {
+      this.connect();
+    }
+  }
+
+  ensureConnectivityWatchers() {
+    if (this.connectivityWatchersAttached) return;
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+    this.connectivityWatchersAttached = true;
+    window.addEventListener('online', this.handleNetworkOnline);
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+  }
+
+  // Out-of-band liveness probe on network recovery / tab reactivation.
+  probeSocketConnection() {
+    if (this.retainCount <= 0 || this.authBlocked || this.manualClose) return;
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      // Backoff can outlive the offline period; retry immediately instead.
+      if (!this.hasActiveOrPendingSocket()) {
+        if (this.reconnectTimer) {
+          window.clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        this.connect();
+      }
+      return;
+    }
+    this.sendCommand({ type: 'chat.ping' }, { timeoutMs: HEARTBEAT_PROBE_TIMEOUT_MS })
+      .catch(() => {
+        if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+          this.forceSocketReconnect();
+        }
+      });
+  }
+
+  resolveRateLimitRetryAfterMs(reason) {
+    const match = /retry_after_ms=(\d+)/.exec(String(reason || ''));
+    if (match) return Math.max(0, Number(match[1]) || 0);
+    return Math.max(0, Number(this.rateLimitRetryAfterMs) || 0);
+  }
+
+  send(payload) {
+    if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return false;
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      this.enqueueOfflineMessage(payload);
+      if (!socket || socket.readyState === WebSocket.CLOSED) {
+        this.connect();
+      }
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify(payload));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  sendCommand(command, options = {}) {
+    if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) {
+      return Promise.reject(new Error('Chat websocket is disabled'));
+    }
+    if (options?.requireOpen && !this.isOpen()) {
+      this.connect();
+      return Promise.reject(new Error('Chat websocket is not connected'));
+    }
+    const requestId = createRequestId();
+    const timeoutMs = Math.max(1000, Number(options?.timeoutMs) || REQUEST_TIMEOUT_MS);
+    return new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error('Chat websocket command timed out'));
+      }, timeoutMs);
+      this.pendingRequests.set(requestId, { resolve, reject, timeoutId, timeoutMs });
+      const socket = this.socket;
+      const dispatched = this.send({
+        ...command,
+        request_id: requestId,
+      });
+      if (!dispatched && socket && socket.readyState === WebSocket.OPEN) {
+        window.clearTimeout(timeoutId);
+        this.pendingRequests.delete(requestId);
+        reject(new Error('Chat websocket send failed'));
+      }
+    });
+  }
+
+  handleMessage(rawPayload) {
+    let envelope;
+    try {
+      envelope = JSON.parse(rawPayload);
+    } catch {
+      return;
+    }
+    const eventType = String(envelope?.type || '').trim();
+    const requestId = String(envelope?.request_id || '').trim();
+    const payload = envelope?.payload || {};
+
+    dispatchWindowEvent(CHAT_SOCKET_ACTIVITY_EVENT, {
+      type: eventType,
+      received_at: Date.now(),
+    });
+
+    if (eventType === 'chat.auth.required') {
+      // D5/W8: the bound access token expired — prove fresh auth with a ticket.
+      if (!this.wsAuthInFlight) {
+        this.wsAuthInFlight = true;
+        getWsTicket()
+          .then((wsTicket) => this.send({ type: 'chat.auth', payload: { ws_ticket: wsTicket } }))
+          .catch(() => undefined)
+          .finally(() => { this.wsAuthInFlight = false; });
+      }
+      return;
+    }
+    if (eventType === 'chat.auth.ok' || eventType === 'chat.auth.rejected') {
+      this.resolvePendingRequest(requestId, payload);
+      return;
+    }
+    if (eventType === 'chat.pong') {
+      this.missedPongs = 0;
+      this.resolvePendingRequest(requestId, payload);
+      return;
+    }
+    if (eventType === 'chat.command.ok') {
+      this.resolvePendingRequest(requestId, payload);
+      return;
+    }
+    if (eventType === 'chat.error' || eventType === 'error') {
+      const code = String(payload?.code || '').trim();
+      const message = String(payload?.detail || code || 'Chat websocket error');
+      const error = new Error(message);
+      if (code) error.chatErrorCode = code;
+      if (requestId) error.requestId = requestId;
+      const retryAfterMs = Number(payload?.retry_after_ms);
+      if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+        error.retryAfterMs = retryAfterMs;
+        if (code === 'rate_limited') {
+          this.rateLimitRetryAfterMs = retryAfterMs;
+        }
+      }
+      this.rejectPendingRequest(requestId, error);
+      return;
+    }
+    if (eventType === 'chat.snapshot') {
+      if (Array.isArray(payload?.muted_conversation_ids)) {
+        replaceMutedConversationIds(payload.muted_conversation_ids);
+      }
+      this.resolvePendingRequest(requestId, payload);
+      dispatchWindowEvent(CHAT_SOCKET_SNAPSHOT_EVENT, envelope);
+      if (payload?.unread_summary) {
+        dispatchWindowEvent(CHAT_SOCKET_UNREAD_SUMMARY_EVENT, payload.unread_summary);
+      }
+      return;
+    }
+    if (eventType === 'chat.message.created') {
+      const conversationId = String(envelope?.conversation_id || payload?.conversation_id || '').trim();
+      const messageId = String(payload?.id || '').trim();
+      // Keep previews even when Chat page is unmounted — otherwise the sidebar
+      // reloads stale SWR/server cache and hides who just wrote.
+      noteInboxMessagePreview(envelope);
+      invalidateSWRCacheByPrefix('chat', 'conversations');
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'chatSocket.js:handleMessage',
+        message: 'chat.message.created received on socket',
+        hypothesisId: 'H2',
+        data: {
+          conversationId,
+          messageId,
+          isOwn: Boolean(payload?.is_own),
+          connectionState: this.connectionState,
+          activeConversationIds: Array.from(this.activeConversationIds),
+          previewBuffered: Boolean(conversationId && messageId),
+        },
+      });
+      // #endregion
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_CREATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.message.deleted') {
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_DELETED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.message.updated') {
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.message.read') {
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_READ_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.message.reaction') {
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_REACTION_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.conversation.updated') {
+      const conversation = payload?.conversation || {};
+      const conversationId = normalizeConversationId(
+        conversation?.id || envelope?.conversation_id,
+      );
+      if (conversationId && typeof conversation?.is_muted === 'boolean') {
+        if (conversation.is_muted) mutedConversationIds.add(conversationId);
+        else mutedConversationIds.delete(conversationId);
+      }
+      dispatchWindowEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.conversation.removed') {
+      mutedConversationIds.delete(normalizeConversationId(
+        envelope?.conversation_id || payload?.conversation_id,
+      ));
+      dispatchWindowEvent(CHAT_SOCKET_CONVERSATION_REMOVED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.unread.summary') {
+      dispatchWindowEvent(CHAT_SOCKET_UNREAD_SUMMARY_EVENT, payload);
+      return;
+    }
+    if (eventType === 'chat.presence.updated') {
+      dispatchWindowEvent(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.desktop_presence') {
+      const expiresInMs = Math.max(0, Number(payload?.expires_in_ms) || 0);
+      this.desktopActiveUntil = payload?.active === true && expiresInMs > 0
+        ? Date.now() + expiresInMs
+        : 0;
+      return;
+    }
+    if (eventType === 'chat.typing.started' || eventType === 'chat.typing.stopped') {
+      dispatchWindowEvent(CHAT_SOCKET_TYPING_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.ai.run.updated') {
+      dispatchWindowEvent(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.ai.sandbox.updated') {
+      dispatchWindowEvent(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.call.invite') {
+      dispatchWindowEvent(CHAT_SOCKET_CALL_INVITE_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.call.updated') {
+      dispatchWindowEvent(CHAT_SOCKET_CALL_UPDATED_EVENT, envelope);
+    }
+  }
+
+  armConnectTimeout(socket) {
+    this.clearConnectTimeout();
+    this.connectTimeoutTimer = window.setTimeout(() => {
+      this.connectTimeoutTimer = null;
+      this.handleConnectTimeout(socket);
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  clearConnectTimeout() {
+    if (this.connectTimeoutTimer) {
+      window.clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
+    }
+  }
+
+  handleConnectTimeout(socket) {
+    if (this.socket !== socket || socket.readyState !== WebSocket.CONNECTING) return;
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'chatSocket.js:connectTimeout',
+      message: 'websocket handshake timed out, dropping socket',
+      hypothesisId: 'H1',
+      data: {
+        timeoutMs: CONNECT_TIMEOUT_MS,
+        reconnectAttempt: this.reconnectAttempt,
+        retainCount: this.retainCount,
+      },
+    });
+    // #endregion
+    // Detach first so a late open/close of the abandoned socket cannot touch state.
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    try {
+      socket.close();
+    } catch {
+      // Ignore close errors on a half-open transport.
+    }
+    this.socket = null;
+    this.resumeRecoverInFlight = false;
+    this.rejectPendingRequests(new Error('Chat websocket connect timed out'));
+    this.setStatus('disconnected');
+    if (!this.manualClose && !this.authBlocked && this.retainCount > 0) {
+      this.scheduleReconnect();
+    }
+  }
+
+  scheduleReconnect(minDelayMs = 0) {
+    if (this.reconnectTimer || this.retainCount <= 0) return;
+    const baseDelay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
+    const jitter = baseDelay * RECONNECT_JITTER_RATIO * ((Math.random() * 2) - 1);
+    const delay = Math.max(
+      0,
+      Math.min(RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1], baseDelay + jitter),
+      Number(minDelayMs) || 0,
+    );
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.stableConnectionTimer = window.setTimeout(() => {
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        this.reconnectAttempt = 0;
+      }
+      this.stableConnectionTimer = null;
+    }, STABLE_CONNECTION_MS);
+    this.heartbeatTimer = window.setInterval(() => {
+      if (!this.isOpen()) {
+        return;
+      }
+      if (this.missedPongs >= this.maxMissedPongs) {
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'chatSocket.js:heartbeat',
+          message: 'missed pongs threshold, force reconnect',
+          hypothesisId: 'H1',
+          data: {
+            missedPongs: this.missedPongs,
+            connectionState: this.connectionState,
+            retainCount: this.retainCount,
+          },
+        });
+        // #endregion
+        // Connection is dead, force reconnect
+        this.forceSocketReconnect();
+        return;
+      }
+      this.missedPongs += 1;
+      this.sendCommand({
+        type: 'chat.ping',
+      }, { timeoutMs: HEARTBEAT_PROBE_TIMEOUT_MS }).catch(() => {
+        // Ping failed, will be handled by missedPongs check
+      });
+    }, HEARTBEAT_MS);
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.stableConnectionTimer) {
+      window.clearTimeout(this.stableConnectionTimer);
+      this.stableConnectionTimer = null;
+    }
+  }
+
+  // Forced reconnect on a dead transport: queued commands must not wait for
+  // their timeout to notice the socket is gone.
+  forceSocketReconnect() {
+    this.stopHeartbeat();
+    this.clearConnectTimeout();
+    const socket = this.socket;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {}
+    }
+    this.socket = null;
+    this.rejectPendingRequests(new Error('Chat websocket heartbeat timeout'));
+    this.setStatus('disconnected');
+    this.scheduleReconnect();
+  }
+
+  resetAuthBlock() {
+    const wasBlocked = Boolean(this.authBlocked);
+    this.authBlocked = false;
+    this.reconnectAttempt = 0;
+    this.failedHandshakeCount = 0;
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'chatSocket.js:resetAuthBlock',
+      message: 'auth block cleared, reconnecting socket',
+      hypothesisId: 'H1',
+      runId: 'post-fix',
+      data: {
+        wasBlocked,
+        retainCount: this.retainCount,
+        connectionState: this.connectionState,
+        wantInbox: this.wantInbox,
+        activeConversationIds: Array.from(this.activeConversationIds),
+      },
+    });
+    // #endregion
+    if (this.retainCount > 0) {
+      this.connect();
+    }
+  }
+
+  recoverAfterSystemResume() {
+    if (this.resumeRecoverInFlight) {
+      return false;
+    }
+    if (this.retainCount <= 0) {
+      return false;
+    }
+    if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) {
+      return false;
+    }
+
+    this.resumeRecoverInFlight = true;
+    try {
+      // Stale WS 401 from before sleep must not block reconnect after a live session refresh.
+      this.authBlocked = false;
+      this.stopHeartbeat();
+      this.clearConnectTimeout();
+      if (this.reconnectTimer) {
+        window.clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      const socket = this.socket;
+      this.socket = null;
+      this.manualClose = false;
+      this.reconnectAttempt = 0;
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        try {
+          if (
+            socket.readyState === WebSocket.OPEN
+            || socket.readyState === WebSocket.CONNECTING
+          ) {
+            socket.close();
+          }
+        } catch {
+          // Stale transport may already be gone after sleep.
+        }
+      }
+      this.setStatus('disconnected');
+      this.connect();
+      if (!this.hasActiveOrPendingSocket()) {
+        this.resumeRecoverInFlight = false;
+      }
+      return true;
+    } catch (error) {
+      this.resumeRecoverInFlight = false;
+      throw error;
+    }
+  }
+
+  getConnectionState() {
+    return String(this.connectionState || '').trim() || 'disconnected';
+  }
+
+  setStatus(status) {
+    this.connectionState = status;
+    dispatchWindowEvent(CHAT_SOCKET_STATUS_EVENT, { status });
+  }
+
+  resolvePendingRequest(requestId, payload) {
+    const normalizedRequestId = String(requestId || '').trim();
+    const pending = this.pendingRequests.get(normalizedRequestId);
+    if (!pending) return;
+    window.clearTimeout(pending.timeoutId);
+    this.pendingRequests.delete(normalizedRequestId);
+    pending.resolve(payload);
+  }
+
+  rejectPendingRequest(requestId, error) {
+    const normalizedRequestId = String(requestId || '').trim();
+    if (!normalizedRequestId) return;
+    const pending = this.pendingRequests.get(normalizedRequestId);
+    if (!pending) return;
+    window.clearTimeout(pending.timeoutId);
+    this.pendingRequests.delete(normalizedRequestId);
+    pending.reject(error);
+  }
+
+  rejectPendingRequests(error) {
+    Array.from(this.pendingRequests.entries()).forEach(([requestId, pending]) => {
+      window.clearTimeout(pending.timeoutId);
+      pending.reject(error);
+      this.pendingRequests.delete(requestId);
+    });
+  }
+
+  enqueueOfflineMessage(payload) {
+    const messageType = String(payload?.type || '').trim();
+    if (!messageType || VOLATILE_OFFLINE_COMMANDS.has(messageType)) {
+      return;
+    }
+    if (CONVERSATION_SUBSCRIPTION_COMMANDS.has(messageType)) {
+      const conversationId = normalizeConversationId(payload?.conversation_id);
+      if (!conversationId) return;
+      this.pendingConversationSubscriptions.set(conversationId, payload);
+      return;
+    }
+    if (this.messageQueue.length >= MAX_QUEUED_MESSAGES) {
+      this.messageQueue.shift();
+      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+        console.warn('chatSocket offline queue limit reached; dropped oldest queued message');
+      }
+    }
+    this.messageQueue.push(payload);
+  }
+
+  flushQueue() {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    // Conversation subscriptions are replayed from activeConversationIds on connect.
+    // Keep only the last offline intent so stale subscribe/unsubscribe commands do not flush.
+    this.pendingConversationSubscriptions.clear();
+    // Extend timeouts for pending requests that were queued while offline so
+    // their request_id is still registered when the server responds after flush.
+    this.pendingRequests.forEach((pending, requestId) => {
+      window.clearTimeout(pending.timeoutId);
+      // R7: preserve the per-command timeout (e.g. SEND_MESSAGE_TIMEOUT_MS)
+      // instead of re-arming the generic REQUEST_TIMEOUT_MS.
+      pending.timeoutId = window.setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        pending.reject(new Error('Chat websocket command timed out'));
+      }, Math.max(1000, Number(pending.timeoutMs) || REQUEST_TIMEOUT_MS));
+    });
+    const queued = [...this.messageQueue];
+    this.messageQueue = [];
+    if (queued.length === 0) return;
+    // Collapse mark_read bursts: only the latest marker per conversation matters
+    // and older ones would burn the per-user WS rate budget on flush.
+    const lastMarkReadIndexByConversation = new Map();
+    queued.forEach((payload, index) => {
+      if (String(payload?.type || '').trim() === 'chat.mark_read') {
+        lastMarkReadIndexByConversation.set(normalizeConversationId(payload?.conversation_id), index);
+      }
+    });
+    const flushed = lastMarkReadIndexByConversation.size === 0
+      ? queued
+      : queued.filter((payload, index) => {
+        if (String(payload?.type || '').trim() !== 'chat.mark_read') return true;
+        const key = normalizeConversationId(payload?.conversation_id);
+        const keep = lastMarkReadIndexByConversation.get(key) === index;
+        if (!keep) {
+          const surviving = queued[lastMarkReadIndexByConversation.get(key)];
+          const requestId = String(payload?.request_id || '').trim();
+          if (requestId) {
+            // Resolve with the surviving marker so callers don't HTTP-fallback
+            // a superseded (older) read position.
+            this.resolvePendingRequest(requestId, {
+              collapsed: true,
+              message_id: String(
+                surviving?.payload?.message_id || payload?.payload?.message_id || '',
+              ).trim(),
+            });
+          }
+        }
+        return keep;
+      });
+    flushed.forEach((payload) => {
+      const requestId = String(payload?.request_id || '').trim();
+      // Skip messages whose request_id already timed out (no longer in pendingRequests).
+      if (requestId && !this.pendingRequests.has(requestId)) return;
+      try {
+        this.socket.send(JSON.stringify(payload));
+      } catch {
+        this.enqueueOfflineMessage(payload);
+      }
+    });
+  }
+}
+
+export const chatSocket = new ChatSocketClient();

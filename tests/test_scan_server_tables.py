@@ -1,0 +1,2894 @@
+from __future__ import annotations
+
+import base64
+import json
+import sqlite3
+import time
+from pathlib import Path
+
+import scan_server.database as scan_database
+from agent_version import AGENT_VERSION
+from scan_server.database import ScanStore
+from scan_server.maintenance import scrub_scan_job_pdf_payloads
+
+
+def _make_store(temp_dir: str) -> ScanStore:
+    root = Path(temp_dir)
+    return ScanStore(
+        db_path=root / "scan-server.db",
+        archive_dir=root / "archive",
+        task_ack_timeout_sec=300,
+        agent_online_timeout_sec=1800,
+    )
+
+
+def _get_job(store: ScanStore, job_id: str) -> dict:
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT * FROM scan_jobs WHERE id=?", (job_id,)).fetchone()
+    return dict(row)
+
+
+def _get_task(store: ScanStore, task_id: str) -> dict:
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT * FROM scan_tasks WHERE id=?", (task_id,)).fetchone()
+    return dict(row)
+
+
+def _pdf_b64(value: bytes = b"%PDF-1.4 test\n") -> str:
+    return base64.b64encode(value).decode("ascii")
+
+
+def _set_incident_created_at(store: ScanStore, incident_id: str, created_at: int) -> None:
+    with store._lock, store._connect() as conn:
+        conn.execute("UPDATE scan_incidents SET created_at=? WHERE id=?", (int(created_at), incident_id))
+        conn.commit()
+
+
+def _seed_incident(
+    store: ScanStore,
+    *,
+    agent_id: str,
+    hostname: str,
+    branch: str,
+    user_login: str,
+    user_full_name: str,
+    file_path: str,
+    file_name: str,
+    source_kind: str,
+    severity: str,
+    pattern_id: str = "password",
+    status: str = "new",
+    created_at: int | None = None,
+) -> dict:
+    queued = store.queue_job(
+        {
+            "agent_id": agent_id,
+            "hostname": hostname,
+            "branch": branch,
+            "user_login": user_login,
+            "user_full_name": user_full_name,
+            "file_path": file_path,
+            "file_name": file_name,
+            "file_hash": f"hash-{agent_id}-{hostname}-{file_name}",
+            "file_size": 2048,
+            "source_kind": source_kind,
+            "event_id": f"{agent_id}:{hostname}:{file_name}:{severity}",
+        }
+    )
+    job = _get_job(store, queued["job_id"])
+    result = store.create_finding_and_incident(
+        job=job,
+        severity=severity,
+        category="secrets",
+        matched_patterns=[{"pattern": pattern_id, "pattern_name": pattern_id, "value": "secret"}],
+        short_reason="pattern match",
+    )
+    if created_at is not None:
+        _set_incident_created_at(store, result["incident_id"], created_at)
+    if status == "ack":
+        store.ack_incident(incident_id=result["incident_id"], ack_by="tester")
+    return result
+
+
+def test_ack_incident_does_not_overwrite_resolved_status(temp_dir):
+    store = _make_store(temp_dir)
+    incident = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\resolved.pdf",
+        file_name="resolved.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+    )
+    with store._lock, store._connect() as conn:
+        conn.execute("UPDATE scan_incidents SET status='resolved_clean' WHERE id=?", (incident["incident_id"],))
+        conn.commit()
+
+    result = store.ack_incident(incident_id=incident["incident_id"], ack_by="operator")
+
+    assert result == {"id": incident["incident_id"], "status": "resolved_clean", "changed": False}
+
+
+def test_incident_pattern_filter_returns_only_selected_rule_for_host(temp_dir):
+    store = _make_store(temp_dir)
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\dsp.pdf",
+        file_name="dsp.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+        pattern_id="dsp_official_use",
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\loan.pdf",
+        file_name="loan.pdf",
+        source_kind="pdf_slice",
+        severity="medium",
+        pattern_id="loan_keyword",
+    )
+
+    result = store.list_incidents(hostname="HOST-01", pattern_id="dsp_official_use", limit=20)
+
+    assert result["total"] == 1
+    assert result["items"][0]["file_name"] == "dsp.pdf"
+
+
+def test_incident_pattern_filter_group_returns_all_dsp_rules(temp_dir):
+    store = _make_store(temp_dir)
+    for file_name, pattern_id in (
+        ("dsp-exact.pdf", "dsp_official_use"),
+        ("dsp-ocr.pdf", "dsp_ocr_variant"),
+        ("dsp-context.pdf", "dsp_ocr_context"),
+        ("dsp-short.pdf", "dsp_with_exclusion"),
+        ("loan.pdf", "loan_keyword"),
+    ):
+        _seed_incident(
+            store,
+            agent_id="agent-1",
+            hostname="HOST-01",
+            branch="Тюмень",
+            user_login="user",
+            user_full_name="User",
+            file_path=rf"C:\Docs\{file_name}",
+            file_name=file_name,
+            source_kind="pdf_slice",
+            severity="high",
+            pattern_id=pattern_id,
+        )
+
+    result = store.list_incidents(hostname="HOST-01", pattern_id="dsp", limit=20)
+
+    assert result["total"] == 4
+    assert {item["file_name"] for item in result["items"]} == {
+        "dsp-exact.pdf",
+        "dsp-ocr.pdf",
+        "dsp-context.pdf",
+        "dsp-short.pdf",
+    }
+
+
+def test_list_agents_table_and_tasks_include_active_and_last_task(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Тюмень",
+            "ip_address": "10.10.1.1",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+        }
+    )
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-2",
+            "hostname": "HOST-02",
+            "branch": "Москва",
+            "ip_address": "10.10.1.2",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts - 3600,
+        }
+    )
+
+    active_task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    finished_task = store.create_task(agent_id="agent-2", command="ping", dedupe_key="ping:agent-2")
+    store.report_task_result(
+        agent_id="agent-2",
+        task_id=finished_task["id"],
+        status="completed",
+        result={"pong": True},
+        error_text="",
+    )
+
+    response = store.list_agents_table(
+        q="host-01",
+        branch="тюм",
+        online="online",
+        task_status="active",
+        limit=10,
+        offset=0,
+        sort_by="online",
+        sort_dir="desc",
+    )
+
+    assert response["total"] == 1
+    item = response["items"][0]
+    assert item["agent_id"] == "agent-1"
+    assert item["hostname"] == "HOST-01"
+    assert item["branch"] == "Тюмень"
+    assert item["ip_address"] == "10.10.1.1"
+    assert item["queue_size"] == 1
+    assert item["active_task"]["id"] == active_task["id"]
+    assert item["active_task"]["status"] == "queued"
+    assert item["last_task"]["id"] == active_task["id"]
+
+    tasks = store.list_tasks(
+        agent_id="agent-1",
+        status="active",
+        command="scan_now",
+        limit=10,
+        offset=0,
+    )
+    assert tasks["total"] == 1
+    assert tasks["items"][0]["id"] == active_task["id"]
+    assert tasks["items"][0]["status"] == "queued"
+
+
+def test_create_scan_task_returns_existing_active_scan_for_agent(temp_dir):
+    store = _make_store(temp_dir)
+
+    first = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    second = store.create_task(
+        agent_id="agent-1",
+        command="scan_now",
+        payload={"force_rescan": True},
+        dedupe_key="scan_now_force:agent-1",
+    )
+
+    assert second["id"] == first["id"]
+    with store._lock, store._connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM scan_tasks WHERE agent_id='agent-1' AND command='scan_now'").fetchone()[0]
+    assert total == 1
+
+
+def test_create_scan_task_reports_blocking_unlinked_job_without_fake_task_id(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\secret.pdf",
+            "file_name": "secret.pdf",
+            "file_hash": "hash-secret",
+            "file_size": 2048,
+            "source_kind": "text",
+            "event_id": "active-job",
+        }
+    )
+
+    created = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now_force:agent-1")
+
+    assert "id" not in created
+    assert created["blocked"] is True
+    assert created["blocking_job_id"] == queued["job_id"]
+    assert created["command"] == "scan_now"
+    assert created["status"] == "blocked"
+    with store._lock, store._connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM scan_tasks WHERE agent_id='agent-1'").fetchone()[0]
+    assert total == 0
+
+
+def test_list_agents_table_prefers_active_scan_jobs_over_ping_task(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-scan",
+            "hostname": "HOST-SCAN",
+            "branch": "РўСЋРјРµРЅСЊ",
+            "ip_address": "10.10.1.15",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+        }
+    )
+    store.create_task(agent_id="agent-scan", command="ping", dedupe_key="ping:agent-scan")
+    store.queue_job(
+        {
+            "agent_id": "agent-scan",
+            "hostname": "HOST-SCAN",
+            "branch": "РўСЋРјРµРЅСЊ",
+            "file_path": r"C:\Docs\scan.pdf",
+            "file_name": "scan.pdf",
+            "file_hash": "hash-scan",
+            "file_size": 2048,
+            "source_kind": "pdf",
+            "event_id": "agent-scan:event-1",
+        }
+    )
+
+    response = store.list_agents_table(online="online", limit=10, offset=0)
+
+    assert response["total"] == 1
+    item = response["items"][0]
+    assert item["active_task"]["command"] == "scan_now"
+    assert item["active_task"]["status"] == "queued"
+
+
+def test_list_hosts_table_filters_and_aggregates_host_context(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Тюмень",
+            "ip_address": "10.10.15.25",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+        }
+    )
+
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret.pdf",
+        file_name="secret.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="new",
+        created_at=now_ts - 30,
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\notes.txt",
+        file_name="notes.txt",
+        source_kind="text",
+        severity="low",
+        status="ack",
+        created_at=now_ts - 60,
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="HOST-02",
+        branch="Москва",
+        user_login="corp\\ivanov",
+        user_full_name="Иванов И.И.",
+        file_path=r"C:\Docs\other.pdf",
+        file_name="other.pdf",
+        source_kind="pdf",
+        severity="medium",
+        status="new",
+        created_at=now_ts - 90,
+    )
+
+    filtered = store.list_hosts_table(
+        q="host-01",
+        branch="тюм",
+        status="new",
+        severity="high",
+        limit=10,
+        offset=0,
+        sort_by="incidents_new",
+        sort_dir="desc",
+    )
+
+    assert filtered["total"] == 1
+    item = filtered["items"][0]
+    assert item["hostname"] == "HOST-01"
+    assert item["branch"] == "Тюмень"
+    assert item["user"] == "Петров П.П."
+    assert item["ip_address"] == "10.10.15.25"
+    assert item["incidents_new"] == 1
+    assert item["incidents_total"] == 1
+    assert item["top_severity"] == "high"
+    assert "pdf" in item["top_exts"]
+    assert "text" in item["top_source_kinds"]
+
+    ack_hosts = store.list_hosts_table(status="ack", limit=10, offset=0)
+    assert ack_hosts["total"] == 1
+    assert ack_hosts["items"][0]["hostname"] == "HOST-01"
+
+
+def test_scan_table_search_finds_agent_and_host_by_ip_address(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-ip-search",
+            "hostname": "HOST-IP-SEARCH",
+            "branch": "Test",
+            "ip_address": "10.77.88.99",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+        }
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-ip-search",
+        hostname="HOST-IP-SEARCH",
+        branch="Test",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\ip-search.txt",
+        file_name="ip-search.txt",
+        source_kind="text",
+        severity="high",
+        created_at=now_ts,
+    )
+
+    for query in ("10.77", "10.77.88.99"):
+        agents = store.list_agents_table(q=query, limit=10, offset=0)
+        hosts = store.list_hosts_table(q=query, limit=10, offset=0)
+
+        assert agents["total"] == 1
+        assert agents["items"][0]["agent_id"] == "agent-ip-search"
+        assert hosts["total"] == 1
+        assert hosts["items"][0]["hostname"] == "HOST-IP-SEARCH"
+
+
+def test_list_incident_inbox_groups_returns_host_file_groups(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    first = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret-a.pdf",
+        file_name="secret-a.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="new",
+        created_at=now_ts,
+    )
+    second = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret-b.pdf",
+        file_name="secret-b.pdf",
+        source_kind="pdf",
+        severity="medium",
+        status="new",
+        created_at=now_ts - 10,
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="HOST-02",
+        branch="Москва",
+        user_login="corp\\ivanov",
+        user_full_name="Иванов И.И.",
+        file_path=r"C:\Work\report.txt",
+        file_name="report.txt",
+        source_kind="text",
+        severity="low",
+        status="ack",
+        created_at=now_ts - 20,
+    )
+
+    payload = store.list_incident_inbox_groups(status="new", host_limit=10, host_offset=0, files_per_host=10)
+
+    assert payload["total_incidents"] == 2
+    assert payload["total_hosts"] == 1
+    assert payload["has_more"] is False
+    assert len(payload["items"]) == 1
+    host = payload["items"][0]
+    assert host["hostname"] == "HOST-01"
+    assert host["incidents_new"] == 2
+    assert len(host["files"]) == 2
+    assert host["files"][0]["preview_incident"]["id"] == first["incident_id"]
+    assert host["files"][0]["fragments"]
+    assert first["incident_id"] != second["incident_id"]
+
+
+def test_list_incidents_hostname_like_q_uses_fast_path_and_skips_json_blob(temp_dir):
+    store = _make_store(temp_dir)
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="TMN-PC-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\a.pdf",
+        file_name="a.pdf",
+        source_kind="pdf",
+        severity="high",
+        pattern_id="password",
+    )
+    other = _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="OTHER-HOST",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\b.pdf",
+        file_name="b.pdf",
+        source_kind="pdf",
+        severity="high",
+        pattern_id="password",
+    )
+    # Put the hostname needle only inside matched_patterns_json of the other host.
+    with store._lock, store._connect() as conn:
+        finding_id = conn.execute(
+            "SELECT finding_id FROM scan_incidents WHERE id=?",
+            (other["incident_id"],),
+        ).fetchone()["finding_id"]
+        conn.execute(
+            "UPDATE scan_findings SET matched_patterns_json=? WHERE id=?",
+            (
+                json.dumps(
+                    [
+                        {
+                            "pattern": "password",
+                            "pattern_name": "password",
+                            "value": "x",
+                            "snippet": "mention of TMN-PC-01 in OCR blob " + ("x" * 5000),
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                finding_id,
+            ),
+        )
+        conn.commit()
+
+    by_host_q = store.list_incidents(q="TMN-PC-01", limit=20)
+    assert by_host_q["total"] == 1
+    assert by_host_q["items"][0]["hostname"] == "TMN-PC-01"
+
+    by_prefix = store.list_incidents(q="TMN-PC", limit=20)
+    assert by_prefix["total"] == 1
+    assert by_prefix["items"][0]["hostname"] == "TMN-PC-01"
+
+
+def test_list_incidents_text_q_matches_file_name_not_json_and_slims_patterns(temp_dir):
+    store = _make_store(temp_dir)
+    seeded = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\unique-secret-name.pdf",
+        file_name="unique-secret-name.pdf",
+        source_kind="pdf",
+        severity="high",
+        pattern_id="password",
+    )
+    with store._lock, store._connect() as conn:
+        finding_id = conn.execute(
+            "SELECT finding_id FROM scan_incidents WHERE id=?",
+            (seeded["incident_id"],),
+        ).fetchone()["finding_id"]
+        huge_snippet = "OCR " + ("я" * 2000)
+        conn.execute(
+            "UPDATE scan_findings SET matched_patterns_json=? WHERE id=?",
+            (
+                json.dumps(
+                    [
+                        {
+                            "pattern": "password",
+                            "pattern_name": "Password pattern",
+                            "value": "v" * 400,
+                            "snippet": huge_snippet,
+                        }
+                    ]
+                    + [{"pattern": f"p{i}", "pattern_name": f"p{i}", "value": "x"} for i in range(20)],
+                    ensure_ascii=False,
+                ),
+                finding_id,
+            ),
+        )
+        conn.commit()
+
+    by_name = store.list_incidents(q="unique-secret-name", limit=20)
+    assert by_name["total"] == 1
+    item = by_name["items"][0]
+    assert item["file_name"] == "unique-secret-name.pdf"
+    assert len(item["matched_patterns"]) <= 8
+    assert len(str(item["matched_patterns"][0].get("snippet") or "")) <= 240
+    assert len(str(item["matched_patterns"][0].get("value") or "")) <= 120
+
+    # Searching only inside former JSON blobs must not hit.
+    by_json_only = store.list_incidents(q="OCR " + ("я" * 20), limit=20)
+    assert by_json_only["total"] == 0
+
+
+def test_looks_like_hostname_query_helpers():
+    from scan_server.database import looks_like_hostname_query
+
+    assert looks_like_hostname_query("TMN-PC-01") is True
+    assert looks_like_hostname_query("TMN-PC") is True
+    assert looks_like_hostname_query("host.example.local") is True
+    assert looks_like_hostname_query("unique-secret-name") is False
+    assert looks_like_hostname_query("ab") is False
+    assert looks_like_hostname_query("конфиденциально") is False
+    assert looks_like_hostname_query("host name") is False
+
+
+def test_list_incidents_pages_beyond_500_and_returns_page_metadata(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    for idx in range(520):
+        _seed_incident(
+            store,
+            agent_id="agent-1",
+            hostname="HOST-01",
+            branch="Тюмень",
+            user_login="corp\\petrov",
+            user_full_name="Петров П.П.",
+            file_path=fr"C:\Docs\secret-{idx}.pdf",
+            file_name=f"secret-{idx}.pdf",
+            source_kind="pdf",
+            severity="high",
+            status="new",
+            created_at=now_ts - idx,
+        )
+
+    first = store.list_incidents(hostname="HOST-01", limit=500, offset=0)
+    second = store.list_incidents(hostname="HOST-01", limit=500, offset=500)
+
+    assert first["total"] == 520
+    assert len(first["items"]) == 500
+    assert first["limit"] == 500
+    assert first["offset"] == 0
+    assert first["has_more"] is True
+    assert first["next_offset"] == 500
+    assert len(second["items"]) == 20
+    assert second["has_more"] is False
+    assert second["next_offset"] is None
+
+
+def test_list_incidents_filters_by_scan_task_with_other_filters(temp_dir):
+    store = _make_store(temp_dir)
+    first_task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan:agent-1")
+    second_task = store.create_task(agent_id="agent-2", command="scan_now", dedupe_key="scan:agent-2")
+
+    incident_ids = []
+    for agent_id, task_id, file_name, severity in (
+        ("agent-1", first_task["id"], "first-secret.txt", "high"),
+        ("agent-2", second_task["id"], "second-secret.txt", "high"),
+        ("agent-1", first_task["id"], "first-low.txt", "low"),
+    ):
+        queued = store.queue_job(
+            {
+                "agent_id": agent_id,
+                "hostname": "HOST-01",
+                "branch": "Тюмень",
+                "file_path": rf"C:\Docs\{file_name}",
+                "file_name": file_name,
+                "file_hash": f"hash-{file_name}",
+                "file_size": 100,
+                "source_kind": "text",
+                "event_id": f"event-{file_name}",
+                "scan_task_id": task_id,
+            }
+        )
+        incident = store.create_finding_and_incident(
+            job=_get_job(store, queued["job_id"]),
+            severity=severity,
+            category="secrets",
+            matched_patterns=[{"pattern_name": "secret", "value": file_name}],
+            short_reason="secret match",
+        )
+        incident_ids.append(incident["incident_id"])
+
+    result = store.list_incidents(
+        task_id=first_task["id"],
+        hostname="HOST-01",
+        severity="high",
+        q="first-secret",
+        limit=10,
+    )
+
+    assert result["total"] == 1
+    assert [item["id"] for item in result["items"]] == [incident_ids[0]]
+
+
+def test_bulk_ack_incidents_by_ids_only_updates_selected_new_rows(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    first = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret.pdf",
+        file_name="secret.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="new",
+        created_at=now_ts,
+    )
+    second = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\notes.txt",
+        file_name="notes.txt",
+        source_kind="text",
+        severity="low",
+        status="new",
+        created_at=now_ts - 1,
+    )
+    third = _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="HOST-02",
+        branch="Москва",
+        user_login="corp\\ivanov",
+        user_full_name="Иванов И.И.",
+        file_path=r"C:\Docs\other.pdf",
+        file_name="other.pdf",
+        source_kind="pdf",
+        severity="medium",
+        status="new",
+        created_at=now_ts - 2,
+    )
+
+    result = store.bulk_ack_incidents(
+        incident_ids=[first["incident_id"], second["incident_id"]],
+        ack_by="tester",
+    )
+
+    assert result == {"success": True, "acked_count": 2, "total_matched": 2}
+    assert store.list_incidents(status="new", limit=10, offset=0)["total"] == 1
+    assert store.list_incidents(status="new", hostname="HOST-02", limit=10, offset=0)["items"][0]["id"] == third["incident_id"]
+
+
+def test_bulk_ack_incidents_by_filters_reuses_incident_filters(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret.pdf",
+        file_name="secret.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="new",
+        created_at=now_ts,
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\notes.txt",
+        file_name="notes.txt",
+        source_kind="text",
+        severity="low",
+        status="new",
+        created_at=now_ts - 1,
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="HOST-02",
+        branch="Москва",
+        user_login="corp\\ivanov",
+        user_full_name="Иванов И.И.",
+        file_path=r"C:\Docs\other.pdf",
+        file_name="other.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="ack",
+        created_at=now_ts - 2,
+    )
+
+    result = store.bulk_ack_incidents(
+        filters={"hostname": "host-01", "source_kind": "pdf", "file_ext": "pdf", "has_fragment": True},
+        ack_by="tester",
+    )
+
+    assert result == {"success": True, "acked_count": 1, "total_matched": 1}
+    remaining = store.list_incidents(status="new", limit=10, offset=0)
+    assert remaining["total"] == 1
+    assert remaining["items"][0]["file_ext"] == "txt"
+
+
+def test_agent_online_timeout_is_used_for_agents_and_dashboard(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-recent",
+            "hostname": "HOST-RECENT",
+            "branch": "Тюмень",
+            "ip_address": "10.10.1.10",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts - 900,
+        }
+    )
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-old",
+            "hostname": "HOST-OLD",
+            "branch": "Тюмень",
+            "ip_address": "10.10.1.11",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts - 2400,
+        }
+    )
+
+    agents = {item["agent_id"]: item for item in store.list_agents()}
+    assert agents["agent-recent"]["is_online"] is True
+    assert agents["agent-old"]["is_online"] is False
+
+    dashboard = store.dashboard()
+    assert dashboard["totals"]["agents_total"] == 2
+    assert dashboard["totals"]["agents_online"] == 1
+    assert dashboard["totals"]["agents_offline"] == 1
+    assert dashboard["totals"]["agents_outdated"] == 2
+    assert dashboard["totals"]["agents_current_version"] == 0
+    assert dashboard["expected_agent_version"] == AGENT_VERSION
+
+
+def test_dashboard_reports_server_pdf_job_queue(temp_dir):
+    store = _make_store(temp_dir)
+    first = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\first.pdf",
+            "file_name": "first.pdf",
+            "file_hash": "hash-first",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "dashboard-pdf-first",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 first"),
+        }
+    )
+    store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\second.pdf",
+            "file_name": "second.pdf",
+            "file_hash": "hash-second",
+            "file_size": 2048,
+            "source_kind": "pdf",
+            "event_id": "dashboard-pdf-second",
+        }
+    )
+    store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\note.txt",
+            "file_name": "note.txt",
+            "file_hash": "hash-text",
+            "file_size": 128,
+            "source_kind": "text",
+            "event_id": "dashboard-text",
+        }
+    )
+
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == first["job_id"]
+
+    dashboard = store.dashboard()
+
+    assert dashboard["totals"]["server_pdf_pending"] == 2
+    assert dashboard["totals"]["server_pdf_queued"] == 1
+    assert dashboard["totals"]["server_pdf_processing"] == 1
+    assert dashboard["totals"]["server_queue_pending"] == 3
+    assert dashboard["job_queue"]["pdf_total"] == 2
+    assert dashboard["totals"]["server_pdf_processed"] == 0
+    assert dashboard["totals"]["server_pdf_done_clean"] == 0
+    assert dashboard["totals"]["server_pdf_done_with_incident"] == 0
+    assert dashboard["totals"]["server_pdf_failed"] == 0
+    # Exact business counters stay COUNT-based; performance samples are capped separately.
+    assert dashboard["performance"]["samples_capped"] is True
+    assert isinstance(dashboard["performance"]["samples"], int)
+
+    store.finalize_job(job_id=first["job_id"], status="done_clean", summary="clean")
+    store.record_job_metrics(
+        job_id=first["job_id"],
+        metrics={
+            "queue_wait_ms": 1200.0,
+            "processing_ms": 4800.0,
+            "ocr_ms": 4100.0,
+            "ocr": {
+                "full_effective_dpi_min": 280.0,
+                "focused_effective_dpi_min": 400.0,
+            },
+        },
+    )
+
+    dashboard = store.dashboard()
+    assert dashboard["totals"]["server_pdf_pending"] == 1
+    assert dashboard["totals"]["server_pdf_queued"] == 1
+    assert dashboard["totals"]["server_pdf_processing"] == 0
+    assert dashboard["totals"]["server_pdf_processed"] == 1
+    assert dashboard["totals"]["server_pdf_done_clean"] == 1
+    assert dashboard["totals"]["server_pdf_done_with_incident"] == 0
+    assert dashboard["totals"]["server_pdf_failed"] == 0
+    assert dashboard["performance"]["completed"] == 1
+    assert dashboard["performance"]["queue_wait_ms"]["p95"] == 1200.0
+    assert dashboard["performance"]["processing_ms"]["p95"] == 4800.0
+    assert dashboard["performance"]["ocr_ms"]["p95"] == 4100.0
+    assert dashboard["performance"]["large_pages_downscaled"] == 1
+    assert dashboard["performance"]["focused_effective_dpi_min"] == 400.0
+
+
+def test_scan_task_progress_tracks_linked_jobs_until_all_ocr_finishes(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    clock = [100.0]
+    monkeypatch.setattr(scan_database.time, "monotonic", lambda: clock[0])
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "server_processing",
+            "scanned": 2,
+            "queued": 2,
+            "skipped": 0,
+            "deferred": 0,
+            "jobs_total": 2,
+            "jobs_pending": 2,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+
+    clock[0] += store._reconcile_debounce_sec + 0.1
+    first_job = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Тюмень",
+            "user_login": "corp\\petrov",
+            "user_full_name": "Петров П.П.",
+            "file_path": r"C:\Docs\secret-1.pdf",
+            "file_name": "secret-1.pdf",
+            "file_hash": "hash-1",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "pdf_slice_b64": _pdf_b64(),
+            "event_id": "scan-task-1",
+            "scan_task_id": task["id"],
+        }
+    )
+    clock[0] += store._reconcile_debounce_sec + 0.1
+    second_job = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Тюмень",
+            "user_login": "corp\\petrov",
+            "user_full_name": "Петров П.П.",
+            "file_path": r"C:\Docs\secret-2.pdf",
+            "file_name": "secret-2.pdf",
+            "file_hash": "hash-2",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "pdf_slice_b64": _pdf_b64(),
+            "event_id": "scan-task-2",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    assert _get_job(store, first_job["job_id"])["scan_task_id"] == task["id"]
+    task_row = _get_task(store, task["id"])
+    assert task_row["status"] == "acknowledged"
+    assert json.loads(task_row["result_json"])["jobs_pending"] == 2
+
+    store.finalize_job(job_id=first_job["job_id"], status="done_clean", summary="clean")
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "acknowledged"
+    assert task_result["phase"] == "server_processing"
+    assert task_result["jobs_pending"] == 1
+    assert task_result["jobs_done_clean"] == 1
+
+    store.finalize_job(job_id=second_job["job_id"], status="done_with_incident", summary="incident")
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "completed"
+    assert task_result["phase"] == "completed"
+    assert task_result["jobs_pending"] == 0
+    assert task_result["jobs_done_with_incident"] == 1
+
+
+def test_scan_task_system_metrics_are_stored_and_summarized(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now")
+
+    store.record_system_metric_samples(
+        task_ids=[task["id"]],
+        sample={
+            "captured_at": 100,
+            "cpu_percent": 25.0,
+            "memory_percent": 50.0,
+            "memory_used_bytes": 1000,
+            "memory_available_bytes": 1000,
+            "disk_read_bytes": 100,
+            "disk_write_bytes": 200,
+            "disk_read_bps": 10.0,
+            "disk_write_bps": 20.0,
+            "network_sent_bytes": 300,
+            "network_received_bytes": 400,
+            "network_sent_bps": 30.0,
+            "network_received_bps": 40.0,
+            "process_rss_bytes": 500,
+        },
+    )
+    store.record_system_metric_samples(
+        task_ids=[task["id"]],
+        sample={
+            "captured_at": 105,
+            "cpu_percent": 75.0,
+            "memory_percent": 60.0,
+            "memory_used_bytes": 1200,
+            "memory_available_bytes": 800,
+            "disk_read_bytes": 200,
+            "disk_write_bytes": 400,
+            "disk_read_bps": 20.0,
+            "disk_write_bps": 40.0,
+            "network_sent_bytes": 500,
+            "network_received_bytes": 700,
+            "network_sent_bps": 40.0,
+            "network_received_bps": 60.0,
+            "process_rss_bytes": 600,
+        },
+    )
+
+    report = store.list_task_system_metrics(task_id=task["id"])
+
+    assert report["total"] == 2
+    assert [item["captured_at"] for item in report["items"]] == [100, 105]
+    assert report["summary"]["cpu_percent_avg"] == 50.0
+    assert report["summary"]["cpu_percent_max"] == 75.0
+    assert report["summary"]["memory_percent_max"] == 60.0
+    assert report["summary"]["disk_read_bytes_delta"] == 100
+    assert report["summary"]["disk_write_bytes_delta"] == 200
+    assert report["summary"]["network_sent_bytes_delta"] == 200
+    assert report["summary"]["network_received_bytes_delta"] == 300
+
+
+def test_queue_job_strips_pdf_from_payload_json_and_writes_transient_spool(temp_dir):
+    store = _make_store(temp_dir)
+
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "РўСЋРјРµРЅСЊ",
+            "file_path": r"C:\Docs\secret.pdf",
+            "file_name": "secret.pdf",
+            "file_hash": "hash-secret",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pdf-spool-1",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 spool"),
+        }
+    )
+
+    job_row = _get_job(store, queued["job_id"])
+    payload = json.loads(job_row["payload_json"])
+    assert "pdf_slice_b64" not in payload
+    assert store.read_job_pdf_spool(job_id=queued["job_id"]) == b"%PDF-1.4 spool"
+
+
+def test_claim_next_jobs_marks_batch_processing_and_keeps_spool_files(temp_dir):
+    store = _make_store(temp_dir)
+    job_ids: list[str] = []
+    for idx in range(5):
+        queued = store.queue_job(
+            {
+                "agent_id": "agent-1",
+                "hostname": "HOST-01",
+                "branch": "branch",
+                "file_path": rf"C:\Docs\secret-{idx}.pdf",
+                "file_name": f"secret-{idx}.pdf",
+                "file_hash": f"hash-secret-{idx}",
+                "file_size": 2048,
+                "source_kind": "pdf_slice",
+                "event_id": f"pdf-spool-batch-{idx}",
+                "pdf_slice_b64": _pdf_b64(f"%PDF-1.4 spool {idx}".encode("ascii")),
+            }
+        )
+        job_ids.append(queued["job_id"])
+
+    claimed = store.claim_next_jobs(4)
+
+    assert [row["id"] for row in claimed] == job_ids[:4]
+    assert [row["status"] for row in claimed] == ["processing"] * 4
+    assert [_get_job(store, job_id)["status"] for job_id in job_ids] == [
+        "processing",
+        "processing",
+        "processing",
+        "processing",
+        "queued",
+    ]
+    for idx, job_id in enumerate(job_ids):
+        assert store.read_job_pdf_spool(job_id=job_id) == f"%PDF-1.4 spool {idx}".encode("ascii")
+
+
+def test_claim_next_job_compatibility_and_finalize_deletes_only_finished_spool(temp_dir):
+    store = _make_store(temp_dir)
+    first = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\first.pdf",
+            "file_name": "first.pdf",
+            "file_hash": "hash-first",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pdf-spool-compat-first",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 first"),
+        }
+    )
+    second = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\second.pdf",
+            "file_name": "second.pdf",
+            "file_hash": "hash-second",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pdf-spool-compat-second",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 second"),
+        }
+    )
+
+    claimed = store.claim_next_job()
+
+    assert claimed is not None
+    assert claimed["id"] == first["job_id"]
+    assert _get_job(store, first["job_id"])["status"] == "processing"
+    assert _get_job(store, second["job_id"])["status"] == "queued"
+    assert store.read_job_pdf_spool(job_id=first["job_id"]) == b"%PDF-1.4 first"
+    assert store.read_job_pdf_spool(job_id=second["job_id"]) == b"%PDF-1.4 second"
+
+    store.finalize_job(job_id=first["job_id"], status="done_clean", summary="clean")
+
+    assert store.read_job_pdf_spool(job_id=first["job_id"]) == b""
+    assert store.read_job_pdf_spool(job_id=second["job_id"]) == b"%PDF-1.4 second"
+
+
+def test_worker_startup_requeues_interrupted_jobs_without_losing_spool(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\interrupted.pdf",
+            "file_name": "interrupted.pdf",
+            "file_hash": "hash-interrupted",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pdf-spool-interrupted",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 interrupted"),
+        }
+    )
+
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == queued["job_id"]
+    assert _get_job(store, queued["job_id"])["attempt_count"] == 1
+
+    assert store.requeue_interrupted_processing_jobs() == 1
+
+    recovered = _get_job(store, queued["job_id"])
+    assert recovered["status"] == "queued"
+    assert recovered["attempt_count"] == 1  # never lowered: it is the claim generation and the retry cap
+    assert store.read_job_pdf_spool(job_id=queued["job_id"]) == b"%PDF-1.4 interrupted"
+
+
+def _queue_pdf_job(store: ScanStore, name: str) -> str:
+    return store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": rf"C:\Docs\{name}.pdf",
+            "file_name": f"{name}.pdf",
+            "file_hash": f"hash-{name}",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": f"event-{name}",
+            "pdf_slice_b64": _pdf_b64(f"%PDF-1.4 {name}".encode()),
+        }
+    )["job_id"]
+
+
+def test_repeated_crash_recovery_ends_in_failed_instead_of_retrying_forever(temp_dir):
+    store = _make_store(temp_dir)
+    job_id = _queue_pdf_job(store, "crashy")
+
+    for expected_attempt in (1, 2, 3):
+        claimed = store.claim_next_job()
+        assert claimed is not None and claimed["attempt_count"] == expected_attempt
+        assert store.requeue_interrupted_processing_jobs(max_attempts=3) == (1 if expected_attempt < 3 else 0)
+
+    final = _get_job(store, job_id)
+    assert final["status"] == "failed"
+    assert final["attempt_count"] == 3
+    assert store.claim_next_job() is None
+
+
+def test_stale_owner_cannot_finish_or_record_findings_for_a_reclaimed_job(temp_dir):
+    store = _make_store(temp_dir)
+    job_id = _queue_pdf_job(store, "reclaimed")
+
+    old_claim = store.claim_next_job()
+    assert store.requeue_interrupted_processing_jobs(max_attempts=3) == 1
+    new_claim = store.claim_next_job()
+    assert new_claim["attempt_count"] == old_claim["attempt_count"] + 1
+
+    # The old worker finally finishes: nothing may change and the new attempt's PDF must survive.
+    assert store.finalize_job(
+        job_id=job_id, status="done_clean", claim_attempt=old_claim["attempt_count"]
+    ) is False
+    stale_result = store.create_finding_and_incident(
+        job=old_claim,
+        severity="high",
+        category="policy_match",
+        matched_patterns=[{"pattern": "p"}],
+        short_reason="p",
+        finalize_status="done_with_incident",
+    )
+    assert stale_result["incident_id"] == ""
+    store.requeue_job_for_retry(job_id=job_id, error_text="x", claim_attempt=old_claim["attempt_count"])
+
+    current = _get_job(store, job_id)
+    assert current["status"] == "processing"
+    assert store.read_job_pdf_spool(job_id=job_id) == b"%PDF-1.4 reclaimed"
+    with store._lock, store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM scan_incidents").fetchone()[0] == 0
+
+    # The current owner finishes normally.
+    assert store.finalize_job(job_id=job_id, status="done_clean", claim_attempt=new_claim["attempt_count"]) is True
+    assert _get_job(store, job_id)["status"] == "done_clean"
+    assert store.read_job_pdf_spool(job_id=job_id) == b""
+
+
+def test_queue_job_dedupes_stable_event_id_without_new_incident(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "branch",
+        "file_path": r"C:\Docs\secret.pdf",
+        "file_name": "secret.pdf",
+        "file_hash": "hash-secret",
+        "file_size": 2048,
+        "source_kind": "text",
+        "text_excerpt": "secret-token",
+        "local_pattern_hits": [{"pattern": "p1", "value": "secret-token"}],
+        "event_id": "stable-event-id",
+    }
+
+    first = store.queue_job(dict(payload))
+    second = store.queue_job(dict(payload))
+
+    assert first["deduped"] is False
+    assert second["deduped"] is True
+    assert second["job_id"] == first["job_id"]
+    with store._lock, store._connect() as conn:
+        jobs_total = conn.execute("SELECT COUNT(*) FROM scan_jobs WHERE event_id='stable-event-id'").fetchone()[0]
+        incidents_total = conn.execute("SELECT COUNT(*) FROM scan_incidents").fetchone()[0]
+    assert jobs_total == 1
+    assert incidents_total == 0
+
+
+def test_queue_job_records_duplicate_observation_for_scan_task(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "BR",
+        "user_login": "user",
+        "file_path": r"C:\Users\user\Documents\secret.txt",
+        "file_name": "secret.txt",
+        "file_hash": "hash-secret",
+        "file_size": 100,
+        "source_kind": "text",
+        "event_id": "stable-observation-event",
+    }
+    first = store.queue_job(dict(payload))
+    job = _get_job(store, first["job_id"])
+    incident = store.create_finding_and_incident(
+        job=job,
+        severity="high",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="password",
+    )
+    store.finalize_job(job_id=first["job_id"], status="done_with_incident", summary="incident")
+    task = store.create_task(agent_id="agent-1", command="scan_now", payload={"force_rescan": True}, dedupe_key="force:agent-1")
+
+    second = store.queue_job({**payload, "scan_task_id": task["id"]})
+
+    assert second["deduped"] is True
+    observations = store.list_task_observations(task_id=task["id"])
+    assert observations["total"] == 1
+    assert observations["items"][0]["observation_type"] == "found_duplicate"
+    assert observations["items"][0]["linked_incident_id"] == incident["incident_id"]
+
+
+def test_force_scan_deleted_event_resolves_incident_and_run_history(temp_dir):
+    store = _make_store(temp_dir)
+    store.upsert_agent_heartbeat({"agent_id": "agent-1", "hostname": "HOST-01", "last_seen_at": int(time.time())})
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\Users\user\Documents\secret.txt",
+            "file_name": "secret.txt",
+            "file_hash": "hash-secret",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "deleted-event-id",
+        }
+    )
+    incident = store.create_finding_and_incident(
+        job=_get_job(store, queued["job_id"]),
+        severity="medium",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="password",
+    )
+    store.finalize_job(job_id=queued["job_id"], status="done_with_incident", summary="incident")
+    task = store.create_task(agent_id="agent-1", command="scan_now", payload={"force_rescan": True}, dedupe_key="force:agent-1")
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={
+            "force_rescan": True,
+            "phase": "completed",
+            "deleted_file_events": [
+                {
+                    "file_path": r"C:\Users\user\Documents\secret.txt",
+                    "file_hash": "hash-secret",
+                    "event_id": "deleted-event-id",
+                    "source_kind": "text",
+                }
+            ],
+            "cleaned_file_events": [],
+        },
+        error_text="",
+    )
+
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT status, resolved_reason, resolved_by_task_id FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()
+    assert row["status"] == "resolved_deleted"
+    assert row["resolved_reason"] == "file_missing_on_force_scan"
+    assert row["resolved_by_task_id"] == task["id"]
+    observations = store.list_task_observations(task_id=task["id"])
+    assert observations["items"][0]["observation_type"] == "deleted"
+    runs = store.list_host_scan_runs(hostname="HOST-01")
+    assert runs["items"][0]["id"] == task["id"]
+    assert runs["items"][0]["observation_counts"]["deleted"] == 1
+
+
+def test_clean_queued_job_does_not_create_false_finding_observation(temp_dir):
+    store = _make_store(temp_dir)
+    store.upsert_agent_heartbeat({"agent_id": "agent-obs", "hostname": "HOST-OBS", "last_seen_at": int(time.time())})
+    task = store.create_task(
+        agent_id="agent-obs",
+        command="scan_now",
+        payload={"force_rescan": True},
+        dedupe_key="force:agent-obs",
+    )
+
+    store.queue_job(
+        {
+            "agent_id": "agent-obs",
+            "hostname": "HOST-OBS",
+            "branch": "BR",
+            "user_login": "user",
+            "file_path": r"C:\Users\user\Documents\observed.txt",
+            "file_name": "observed.txt",
+            "file_hash": "hash-observed",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "observation-only-host-event",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    observations = store.list_task_observations(task_id=task["id"])
+    assert observations["total"] == 0
+
+    runs = store.list_host_scan_runs(hostname="HOST-OBS")
+    assert runs["total"] == 1
+    assert runs["items"][0]["id"] == task["id"]
+    assert runs["items"][0]["observation_counts"]["found_new"] == 0
+
+
+def test_force_scan_cleaned_event_resolves_incident(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\Users\user\Documents\secret.txt",
+            "file_name": "secret.txt",
+            "file_hash": "hash-old",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "cleaned-event-id",
+        }
+    )
+    incident = store.create_finding_and_incident(
+        job=_get_job(store, queued["job_id"]),
+        severity="low",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="password",
+    )
+    store.finalize_job(job_id=queued["job_id"], status="done_with_incident", summary="incident")
+    task = store.create_task(agent_id="agent-1", command="scan_now", payload={"force_rescan": True}, dedupe_key="force:agent-1")
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={
+            "force_rescan": True,
+            "phase": "completed",
+            "deleted_file_events": [],
+            "cleaned_file_events": [
+                {
+                    "file_path": r"C:\Users\user\Documents\secret.txt",
+                    "file_hash": "hash-old",
+                    "current_file_hash": "hash-new-clean",
+                    "event_id": "cleaned-event-id",
+                    "source_kind": "text",
+                }
+            ],
+        },
+        error_text="",
+    )
+
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT status, resolved_reason FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()
+    assert row["status"] == "resolved_clean"
+    assert row["resolved_reason"] == "file_has_no_matches_on_force_scan"
+
+
+def test_force_scan_deleted_event_becomes_moved_when_same_hash_found(temp_dir):
+    store = _make_store(temp_dir)
+    old_path = r"C:\Users\user\Documents\old.txt"
+    new_path = r"C:\Users\user\Desktop\old.txt"
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": old_path,
+            "file_name": "old.txt",
+            "file_hash": "hash-moved",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "moved-old-event",
+        }
+    )
+    incident = store.create_finding_and_incident(
+        job=_get_job(store, queued["job_id"]),
+        severity="high",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="password",
+    )
+    store.finalize_job(job_id=queued["job_id"], status="done_with_incident", summary="incident")
+    task = store.create_task(agent_id="agent-1", command="scan_now", payload={"force_rescan": True}, dedupe_key="force:agent-1")
+    store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": new_path,
+            "file_name": "old.txt",
+            "file_hash": "hash-moved",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "moved-new-event",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "force_rescan": True,
+            "phase": "server_processing",
+            "deleted_file_events": [
+                {
+                    "file_path": old_path,
+                    "file_hash": "hash-moved",
+                    "event_id": "moved-old-event",
+                    "source_kind": "text",
+                }
+            ],
+            "cleaned_file_events": [],
+        },
+        error_text="",
+    )
+
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT status, resolved_reason FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()
+    assert row["status"] == "resolved_moved"
+    assert row["resolved_reason"] == "file_found_at_new_path"
+
+
+def test_deduped_previous_job_does_not_complete_new_force_scan_task(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "branch",
+        "file_path": r"C:\Docs\secret.pdf",
+        "file_name": "secret.pdf",
+        "file_hash": "hash-secret",
+        "file_size": 2048,
+        "source_kind": "text",
+        "text_excerpt": "secret-token",
+        "local_pattern_hits": [{"pattern": "p1", "value": "secret-token"}],
+        "event_id": "stable-force-event-id",
+    }
+    previous = store.queue_job(dict(payload))
+    store.finalize_job(job_id=previous["job_id"], status="done_with_incident", summary="old incident")
+
+    task = store.create_task(
+        agent_id="agent-1",
+        command="scan_now",
+        payload={"force_rescan": True},
+        dedupe_key="scan_now_force:agent-1",
+    )
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "local_scan",
+            "scanned": 0,
+            "queued": 0,
+            "skipped": 0,
+            "deferred": 0,
+            "deduped": 0,
+            "force_rescan": True,
+            "jobs_total": 0,
+            "jobs_pending": 0,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+
+    deduped = store.queue_job({**payload, "scan_task_id": task["id"]})
+
+    assert deduped["deduped"] is True
+    assert _get_job(store, previous["job_id"])["scan_task_id"] == ""
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "acknowledged"
+    assert task_result["phase"] == "local_scan"
+    assert task_result["jobs_total"] == 0
+    assert task_result["jobs_done_with_incident"] == 0
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={
+            "phase": "completed",
+            "scanned": 1,
+            "queued": 0,
+            "skipped": 0,
+            "deferred": 0,
+            "deduped": 1,
+            "force_rescan": True,
+            "jobs_total": 0,
+            "jobs_pending": 0,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "completed"
+    assert task_result["scanned"] == 1
+    assert task_result["deduped"] == 1
+    assert task_result["jobs_done_with_incident"] == 0
+
+
+def test_local_scan_waits_for_ingest_complete_before_finishing_linked_jobs(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    clock = [100.0]
+    monkeypatch.setattr(scan_database.time, "monotonic", lambda: clock[0])
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "local_scan",
+            "ingest_complete": False,
+            "scanned": 2,
+            "queued": 2,
+            "skipped": 0,
+            "deferred": 0,
+            "jobs_total": 0,
+            "jobs_pending": 0,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+    stale_updated_at = int(time.time()) - (store.task_ack_timeout_sec + 30)
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE scan_tasks
+            SET updated_at=?, acked_at=?, delivered_at=?
+            WHERE id=?
+            """,
+            (stale_updated_at, stale_updated_at, stale_updated_at, task["id"]),
+        )
+        conn.commit()
+
+    clock[0] += store._reconcile_debounce_sec + 0.1
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "РўСЋРјРµРЅСЊ",
+            "file_path": r"C:\Docs\later.pdf",
+            "file_name": "later.pdf",
+            "file_hash": "hash-later",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "scan-task-local-scan",
+            "scan_task_id": task["id"],
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "acknowledged"
+    assert task_result["phase"] == "local_scan"
+    assert task_result["jobs_total"] == 1
+    assert task_result["jobs_pending"] == 1
+
+    store.finalize_job(job_id=queued["job_id"], status="done_clean", summary="clean")
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "acknowledged"
+    assert task_result["phase"] == "local_scan"
+    assert task_result["jobs_pending"] == 0
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "server_processing",
+            "ingest_complete": True,
+            "jobs_total": 1,
+            "jobs_pending": 1,
+        },
+        error_text="",
+    )
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "completed"
+    assert task_result["phase"] == "completed"
+    assert task_result["ingest_complete"] is True
+
+
+def test_agent_completed_signal_waits_until_declared_job_is_processed(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now")
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\Docs\pending.pdf",
+            "file_name": "pending.pdf",
+            "file_hash": "hash-pending",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pending-event",
+            "scan_task_id": task["id"],
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+
+    reported = store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={
+            "phase": "server_processing",
+            "ingest_complete": True,
+            "jobs_total": 1,
+            "jobs_pending": 1,
+        },
+        error_text="",
+    )
+
+    assert reported["status"] == "acknowledged"
+    assert _get_task(store, task["id"])["status"] == "acknowledged"
+
+    store.finalize_job(job_id=queued["job_id"], status="done_clean", summary="clean")
+
+    assert _get_task(store, task["id"])["status"] == "completed"
+
+
+def test_queue_job_links_late_job_to_final_scan_task_without_reopening_task(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="failed",
+        result={"phase": "failed", "jobs_total": 0, "jobs_pending": 0, "jobs_done_clean": 0, "jobs_done_with_incident": 0, "jobs_failed": 0},
+        error_text="Deferred to outbox: 1",
+    )
+
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "РўСЋРјРµРЅСЊ",
+            "file_path": r"C:\Docs\replay.pdf",
+            "file_name": "replay.pdf",
+            "file_hash": "hash-replay",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "late-replay",
+            "scan_task_id": task["id"],
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+
+    job_row = _get_job(store, queued["job_id"])
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    observations = store.list_task_observations(task_id=task["id"])
+
+    assert job_row["scan_task_id"] == task["id"]
+    assert task_row["status"] == "failed"
+    assert task_row["error_text"] == "Deferred to outbox: 1"
+    assert task_result["jobs_total"] == 0
+    assert observations["total"] == 0
+
+
+def test_create_finding_links_pending_scan_observation_to_incident(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Тюмень",
+            "file_path": r"C:\Docs\linked.pdf",
+            "file_name": "linked.pdf",
+            "file_hash": "hash-linked",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "linked-observation",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    before = store.list_task_observations(task_id=task["id"])
+    incident = store.create_finding_and_incident(
+        job=_get_job(store, queued["job_id"]),
+        severity="high",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="pattern match",
+    )
+    after = store.list_task_observations(task_id=task["id"])["items"][0]
+
+    assert before["total"] == 0
+    assert after["linked_incident_id"] == incident["incident_id"]
+    assert after["severity"] == "high"
+
+
+def test_report_task_result_ignores_late_updates_for_final_task(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={"phase": "completed", "jobs_total": 0, "jobs_pending": 0, "jobs_done_clean": 0, "jobs_done_with_incident": 0, "jobs_failed": 0},
+        error_text="",
+    )
+
+    result = store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={"phase": "local_scan"},
+        error_text="",
+    )
+
+    task_row = _get_task(store, task["id"])
+    assert result == {"task_id": task["id"], "status": "completed"}
+    assert task_row["status"] == "completed"
+
+
+def test_scan_task_fails_when_any_linked_job_fails(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "server_processing",
+            "scanned": 1,
+            "queued": 1,
+            "skipped": 0,
+            "deferred": 0,
+            "jobs_total": 1,
+            "jobs_pending": 1,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+    job = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Тюмень",
+            "user_login": "corp\\petrov",
+            "user_full_name": "Петров П.П.",
+            "file_path": r"C:\Docs\secret-1.pdf",
+            "file_name": "secret-1.pdf",
+            "file_hash": "hash-1",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "pdf_slice_b64": _pdf_b64(),
+            "event_id": "scan-task-failed",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    store.finalize_job(job_id=job["job_id"], status="failed", error_text="OCR exploded")
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "failed"
+    assert task_row["error_text"] == "Linked scan jobs are incomplete or failed"
+    assert task_result["phase"] == "failed"
+    assert task_result["jobs_failed"] == 1
+    assert task_result["jobs_incomplete"] == 0
+
+
+def test_store_reconcile_completes_acknowledged_scan_task_after_restart(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "server_processing",
+            "scanned": 1,
+            "queued": 1,
+            "skipped": 0,
+            "deferred": 0,
+            "jobs_total": 1,
+            "jobs_pending": 1,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+    job = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Тюмень",
+            "user_login": "corp\\petrov",
+            "user_full_name": "Петров П.П.",
+            "file_path": r"C:\Docs\secret-1.pdf",
+            "file_name": "secret-1.pdf",
+            "file_hash": "hash-1",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "pdf_slice_b64": _pdf_b64(),
+            "event_id": "scan-task-restart",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE scan_jobs
+            SET status='done_clean', finished_at=?, summary='clean'
+            WHERE id=?
+            """,
+            (int(time.time()), job["job_id"]),
+        )
+        conn.execute(
+            """
+            UPDATE scan_tasks
+            SET status='acknowledged', completed_at=NULL, error_text=NULL
+            WHERE id=?
+            """,
+            (task["id"],),
+        )
+        conn.commit()
+
+    reopened = _make_store(temp_dir)
+    task_row = _get_task(reopened, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "completed"
+    assert task_result["phase"] == "completed"
+    assert task_result["jobs_done_clean"] == 1
+
+
+def test_store_reopen_does_not_reset_processing_jobs(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\active.pdf",
+            "file_name": "active.pdf",
+            "file_hash": "hash-active",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "processing-survives-reopen",
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+    claimed = store.claim_next_job()
+    assert claimed["id"] == queued["job_id"]
+
+    reopened = _make_store(temp_dir)
+    job_row = _get_job(reopened, queued["job_id"])
+
+    assert job_row["status"] == "processing"
+    assert int(job_row["started_at"] or 0) > 0
+
+
+def test_store_reconcile_fails_stale_local_scan_acknowledged_task(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "local_scan",
+            "scanned": 10,
+            "queued": 0,
+            "skipped": 10,
+            "deferred": 0,
+            "jobs_total": 0,
+            "jobs_pending": 0,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+
+    stale_updated_at = int(time.time()) - (store.task_ack_timeout_sec + 30)
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE scan_tasks
+            SET updated_at=?, acked_at=?, delivered_at=?
+            WHERE id=?
+            """,
+            (stale_updated_at, stale_updated_at, stale_updated_at, task["id"]),
+        )
+        conn.commit()
+
+    reopened = _make_store(temp_dir)
+    task_row = _get_task(reopened, task["id"])
+    task_result = json.loads(task_row["result_json"])
+
+    assert task_row["status"] == "failed"
+    assert task_row["error_text"] == "Local scan acknowledgement timed out"
+    assert task_result["phase"] == "failed"
+
+
+def test_purge_all_artifacts_removes_archive_files_and_rows(temp_dir):
+    store = _make_store(temp_dir)
+    archive_day = store.archive_dir / "2026" / "04" / "07"
+    archive_day.mkdir(parents=True, exist_ok=True)
+    tracked_path = archive_day / "tracked.pdf"
+    orphan_path = archive_day / "orphan.pdf"
+    tracked_path.write_bytes(b"%PDF-1.4 tracked")
+    orphan_path.write_bytes(b"%PDF-1.4 orphan")
+
+    store.add_artifact(
+        job_id="job-1",
+        artifact_type="pdf_slice",
+        storage_path=str(tracked_path),
+        size_bytes=tracked_path.stat().st_size,
+    )
+
+    result = store.purge_all_artifacts()
+
+    assert result["artifact_rows"] == 1
+    assert result["artifact_files"] == 2
+    assert store.archive_dir.exists()
+    assert not any(store.archive_dir.rglob("*"))
+    with store._lock, store._connect() as conn:
+        remaining = conn.execute("SELECT COUNT(*) AS cnt FROM scan_artifacts").fetchone()["cnt"]
+    assert remaining == 0
+
+
+def test_purge_all_artifacts_keeps_active_job_artifacts(temp_dir):
+    store = _make_store(temp_dir)
+    archive_day = store.archive_dir / "2026" / "04" / "07"
+    archive_day.mkdir(parents=True, exist_ok=True)
+    active_path = archive_day / "active.pdf"
+    orphan_path = archive_day / "orphan.pdf"
+    active_path.write_bytes(b"%PDF-1.4 active")
+    orphan_path.write_bytes(b"%PDF-1.4 orphan")
+
+    job = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Tyumen",
+            "file_path": r"C:\Docs\active.pdf",
+            "file_name": "active.pdf",
+            "file_hash": "hash-active",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "pdf_slice_b64": _pdf_b64(),
+            "event_id": "active-job",
+        }
+    )
+    store.add_artifact(
+        job_id=job["job_id"],
+        artifact_type="pdf_slice",
+        storage_path=str(active_path),
+        size_bytes=active_path.stat().st_size,
+    )
+    # Orphan artifact row referencing a job that never existed.
+    store.add_artifact(
+        job_id="missing-job",
+        artifact_type="pdf_slice",
+        storage_path=str(orphan_path),
+        size_bytes=orphan_path.stat().st_size,
+    )
+
+    result = store.purge_all_artifacts()
+
+    # Only the orphan row/file is removed; the still-queued job's artifact survives.
+    assert result["artifact_rows"] == 1
+    assert result["artifact_files"] == 1
+    assert active_path.exists()
+    assert not orphan_path.exists()
+    with store._lock, store._connect() as conn:
+        remaining = conn.execute("SELECT job_id FROM scan_artifacts").fetchall()
+    assert [row["job_id"] for row in remaining] == [job["job_id"]]
+
+
+def test_ingest_backpressure_status_covers_all_source_kinds_and_scales_retry_after(temp_dir):
+    store = _make_store(temp_dir)
+    for i in range(3):
+        store.queue_job(
+            {
+                "agent_id": "agent-1",
+                "hostname": "HOST-01",
+                "branch": "Tyumen",
+                "file_path": rf"C:\Docs\text-{i}.txt",
+                "file_name": f"text-{i}.txt",
+                "file_hash": f"hash-text-{i}",
+                "file_size": 128,
+                "source_kind": "text",
+                "event_id": f"text-event-{i}",
+            }
+        )
+
+    calm = store.ingest_backpressure_status(
+        max_pending_pdf_jobs=1000,
+        transient_max_gb=100,
+        max_pending_jobs=10,
+        retry_after_base_sec=60,
+        retry_after_max_sec=600,
+    )
+    assert calm["total_active"] is False
+    assert calm["total_pending"] == 3
+    assert calm["retry_after_sec"] == 60
+
+    overloaded = store.ingest_backpressure_status(
+        max_pending_pdf_jobs=1000,
+        transient_max_gb=100,
+        max_pending_jobs=2,
+        retry_after_base_sec=60,
+        retry_after_max_sec=600,
+    )
+    assert overloaded["total_active"] is True
+    assert "total_pending_limit" in overloaded["total_reasons"]
+    # 3 pending / 2 limit == 1.5x overload ratio -> retry_after scales above the base.
+    assert overloaded["retry_after_sec"] > 60
+    assert overloaded["retry_after_sec"] <= 600
+
+
+def test_cleanup_retention_keeps_artifacts_but_removes_old_history(temp_dir):
+    store = _make_store(temp_dir)
+    archive_day = store.archive_dir / "2026" / "04" / "07"
+    archive_day.mkdir(parents=True, exist_ok=True)
+    artifact_path = archive_day / "legacy.pdf"
+    artifact_path.write_bytes(b"%PDF-1.4 legacy")
+
+    old_ts = int(time.time()) - (3 * 24 * 60 * 60)
+    task = store.create_task(agent_id="agent-1", command="ping", dedupe_key="ping:agent-1")
+    job = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "РўСЋРјРµРЅСЊ",
+            "file_path": r"C:\Docs\old.pdf",
+            "file_name": "old.pdf",
+            "file_hash": "hash-old",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "pdf_slice_b64": _pdf_b64(),
+            "event_id": "old-job",
+        }
+    )
+    store.add_artifact(
+        job_id=job["job_id"],
+        artifact_type="pdf_slice",
+        storage_path=str(artifact_path),
+        size_bytes=artifact_path.stat().st_size,
+    )
+
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE scan_tasks
+            SET status='completed', updated_at=?, completed_at=?
+            WHERE id=?
+            """,
+            (old_ts, old_ts, task["id"]),
+        )
+        conn.execute(
+            """
+            UPDATE scan_jobs
+            SET status='done_clean', created_at=?, finished_at=?, summary='clean'
+            WHERE id=?
+            """,
+            (old_ts, old_ts, job["job_id"]),
+        )
+        conn.execute(
+            "UPDATE scan_artifacts SET created_at=? WHERE job_id=?",
+            (old_ts, job["job_id"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO scan_task_file_observations(
+                id, scan_task_id, agent_id, hostname, file_path, file_hash, event_id,
+                observation_type, linked_job_id, linked_incident_id, source_kind,
+                severity, created_at
+            ) VALUES ('old-observation', ?, 'agent-1', 'HOST-01', 'C:\\Docs\\old.pdf',
+                      'hash-old', 'old-job', 'found_new', ?, '', 'pdf_slice', '', ?)
+            """,
+            (task["id"], job["job_id"], old_ts),
+        )
+        conn.commit()
+
+    result = store.cleanup_retention(
+        retention_days=1,
+        clean_job_retention_days=1,
+        failed_job_retention_days=1,
+        incident_retention_days=1,
+    )
+
+    assert result["artifact_rows"] == 0
+    assert result["artifact_files"] == 0
+    assert result["tasks"] == 1
+    assert result["jobs_clean"] == 1
+    assert result["observations"] == 1
+    assert artifact_path.exists()
+    with store._lock, store._connect() as conn:
+        remaining_artifacts = conn.execute("SELECT COUNT(*) AS cnt FROM scan_artifacts").fetchone()["cnt"]
+        remaining_tasks = conn.execute("SELECT COUNT(*) AS cnt FROM scan_tasks").fetchone()["cnt"]
+        remaining_jobs = conn.execute("SELECT COUNT(*) AS cnt FROM scan_jobs").fetchone()["cnt"]
+        remaining_observations = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM scan_task_file_observations"
+        ).fetchone()["cnt"]
+    assert remaining_artifacts == 1
+    assert remaining_tasks == 0
+    assert remaining_jobs == 0
+    assert remaining_observations == 0
+
+
+def test_cleanup_retention_uses_split_job_and_incident_windows(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+    clean_old = now_ts - (20 * 24 * 60 * 60)
+    incident_old = now_ts - (20 * 24 * 60 * 60)
+
+    clean_job = store.queue_job(
+        {
+            "agent_id": "agent-clean",
+            "hostname": "HOST-CLEAN",
+            "file_path": r"C:\Docs\clean.pdf",
+            "file_name": "clean.pdf",
+            "file_hash": "hash-clean",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "retention-clean-job",
+        }
+    )
+    incident = _seed_incident(
+        store,
+        agent_id="agent-incident",
+        hostname="HOST-INCIDENT",
+        branch="branch",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\incident.pdf",
+        file_name="incident.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+        created_at=incident_old,
+    )
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            "UPDATE scan_jobs SET status='done_clean', created_at=?, finished_at=? WHERE id=?",
+            (clean_old, clean_old, clean_job["job_id"]),
+        )
+        conn.execute(
+            "UPDATE scan_jobs SET status='done_clean', created_at=?, finished_at=? WHERE id=(SELECT job_id FROM scan_incidents WHERE id=?)",
+            (incident_old, incident_old, incident["incident_id"]),
+        )
+        conn.execute(
+            "UPDATE scan_findings SET created_at=? WHERE id=?",
+            (incident_old, incident["finding_id"]),
+        )
+        conn.commit()
+
+    dry_run = store.cleanup_retention(
+        retention_days=90,
+        clean_job_retention_days=14,
+        failed_job_retention_days=30,
+        incident_retention_days=90,
+        batch_size=1,
+        dry_run=True,
+    )
+    assert dry_run["jobs_clean"] == 1
+    assert dry_run["incidents"] == 0
+    assert dry_run["findings"] == 0
+    assert dry_run["jobs_with_incident"] == 0
+
+    result = store.cleanup_retention(
+        retention_days=90,
+        clean_job_retention_days=14,
+        failed_job_retention_days=30,
+        incident_retention_days=90,
+        batch_size=1,
+    )
+    assert result["jobs_clean"] == 1
+    assert result["incidents"] == 0
+    with store._lock, store._connect() as conn:
+        clean_remaining = conn.execute("SELECT COUNT(*) AS cnt FROM scan_jobs WHERE id=?", (clean_job["job_id"],)).fetchone()["cnt"]
+        incident_remaining = conn.execute("SELECT COUNT(*) AS cnt FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()["cnt"]
+        incident_job_remaining = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM scan_jobs WHERE id=(SELECT job_id FROM scan_incidents WHERE id=?)",
+            (incident["incident_id"],),
+        ).fetchone()["cnt"]
+    assert clean_remaining == 0
+    assert incident_remaining == 1
+    assert incident_job_remaining == 1
+
+
+def test_sqlite_write_retry_handles_database_locked(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    store.sqlite_busy_retry_attempts = 3
+    store.sqlite_busy_retry_base_ms = 10
+    monkeypatch.setattr(scan_database.time, "sleep", lambda _seconds: None)
+    calls = 0
+
+    def operation():
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    assert store._run_write_transaction("test-lock", operation) == "ok"
+    assert calls == 3
+
+
+def test_reconcile_job_pdf_spool_fails_pending_pdf_jobs_without_payload(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_database.time, "monotonic", lambda: 100.0)
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "server_processing",
+            "jobs_total": 1,
+            "jobs_pending": 1,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "РўСЋРјРµРЅСЊ",
+            "file_path": r"C:\Docs\missing.pdf",
+            "file_name": "missing.pdf",
+            "file_hash": "hash-missing",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "missing-spool",
+            "scan_task_id": task["id"],
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+    store.delete_job_pdf_spool(job_id=queued["job_id"])
+
+    result = store.reconcile_job_pdf_spool()
+
+    job_row = _get_job(store, queued["job_id"])
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert result["failed_jobs"] == 1
+    assert job_row["status"] == "analysis_incomplete"
+    assert job_row["error_text"] == "Отсутствует временный файл PDF на сервере"
+    assert task_row["status"] == "failed"
+    assert task_result["jobs_failed"] == 0
+    assert task_result["jobs_incomplete"] == 1
+
+
+def test_reconcile_job_pdf_spool_waits_for_fresh_processing_job_without_payload(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\processing.pdf",
+            "file_name": "processing.pdf",
+            "file_hash": "hash-processing",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "processing-missing-spool",
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+    store.claim_next_job()
+    store.delete_job_pdf_spool(job_id=queued["job_id"])
+
+    result = store.reconcile_job_pdf_spool()
+    job_row = _get_job(store, queued["job_id"])
+
+    assert result["failed_jobs"] == 0
+    assert result["waiting_processing_missing"] == 1
+    assert job_row["status"] == "processing"
+
+
+def test_reconcile_job_pdf_spool_fails_stale_processing_job_without_payload(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\stale.pdf",
+            "file_name": "stale.pdf",
+            "file_hash": "hash-stale",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "stale-processing-missing-spool",
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+    store.claim_next_job()
+    store.delete_job_pdf_spool(job_id=queued["job_id"])
+    stale_started_at = int(time.time()) - (store.job_processing_timeout_sec + 60)
+    with store._lock, store._connect() as conn:
+        conn.execute("UPDATE scan_jobs SET started_at=? WHERE id=?", (stale_started_at, queued["job_id"]))
+        conn.commit()
+
+    result = store.reconcile_job_pdf_spool()
+    job_row = _get_job(store, queued["job_id"])
+
+    assert result["failed_jobs"] == 1
+    assert job_row["status"] == "analysis_incomplete"
+    assert job_row["error_text"] == "Отсутствует временный файл PDF на сервере"
+
+
+def test_queue_job_reopens_missing_transient_payload_job_with_same_event_id(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "branch",
+        "file_path": r"C:\Docs\retry.pdf",
+        "file_name": "retry.pdf",
+        "file_hash": "hash-retry",
+        "file_size": 2048,
+        "source_kind": "pdf_slice",
+        "event_id": "retry-missing-payload",
+        "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 first"),
+    }
+    first = store.queue_job(dict(payload))
+    store.finalize_job(
+        job_id=first["job_id"],
+        status="failed",
+        error_text="Отсутствует временный файл PDF на сервере",
+    )
+
+    reopened = store.queue_job({**payload, "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 second")})
+    job_row = _get_job(store, first["job_id"])
+
+    assert reopened["job_id"] == first["job_id"]
+    assert reopened["reopened"] is True
+    assert job_row["status"] == "queued"
+    assert job_row["error_text"] in (None, "")
+    assert store.read_job_pdf_spool(job_id=first["job_id"]).startswith(b"%PDF-1.4 second")
+
+
+def test_scrub_scan_job_pdf_payloads_removes_legacy_pdf_from_sqlite_payloads(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "РўСЋРјРµРЅСЊ",
+            "file_path": r"C:\Docs\legacy.pdf",
+            "file_name": "legacy.pdf",
+            "file_hash": "hash-legacy",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "legacy-payload",
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            "UPDATE scan_jobs SET payload_json=? WHERE id=?",
+            (json.dumps({"pdf_slice_b64": "legacy-data", "file_name": "legacy.pdf"}, ensure_ascii=False), queued["job_id"]),
+        )
+        conn.commit()
+
+    # Force SQLite path: ambient SCAN_DATABASE_URL must not redirect this unit test to PG.
+    result = scrub_scan_job_pdf_payloads(db_path=store.db_path, batch_size=10, database_url="")
+
+    job_row = _get_job(store, queued["job_id"])
+    payload = json.loads(job_row["payload_json"])
+    assert result["updated_rows"] == 1
+    assert "pdf_slice_b64" not in payload
+
+
+def test_list_agents_table_uses_job_branch_when_agent_branch_empty(monkeypatch, temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    monkeypatch.setattr(
+        scan_database,
+        "_resolve_agent_sql_context",
+        lambda mac_address, hostname: (_ for _ in ()).throw(AssertionError("sql context invent disabled")),
+    )
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "agent-sql-0004",
+            "hostname": "HOST-SQL-0004",
+            "branch": "",
+            "ip_address": "10.105.0.233",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+            "metadata": {"mac_address": "9C:2F:9D:B2:6A:E0"},
+        }
+    )
+    store.queue_job(
+        {
+            "agent_id": "agent-sql-0004",
+            "hostname": "HOST-SQL-0004",
+            "branch": "Тюмень",
+            "file_path": r"C:\Docs\a.pdf",
+            "file_name": "a.pdf",
+            "file_hash": "hash-sql-0004",
+            "source_kind": "pdf",
+        }
+    )
+
+    response = store.list_agents_table(branch="тюм", limit=10, offset=0)
+
+    assert response["total"] == 1
+    assert response["items"][0]["agent_id"] == "agent-sql-0004"
+    assert response["items"][0]["branch"] == "Тюмень"
+    assert response["items"][0]["branch_source"] == "job"
+
+
+def test_list_agents_table_does_not_invent_branch_from_hostname_prefix(monkeypatch, temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    monkeypatch.setattr(
+        scan_database,
+        "_resolve_agent_sql_context",
+        lambda mac_address, hostname: (_ for _ in ()).throw(AssertionError("SQL invent disabled")),
+    )
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "tmn-it-0004",
+            "hostname": "TMN-IT-0004",
+            "branch": "",
+            "ip_address": "10.105.0.233",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+        }
+    )
+
+    response = store.list_agents_table(limit=10, offset=0)
+
+    assert response["total"] == 1
+    assert response["items"][0]["branch"] == ""
+    assert response["items"][0]["branch_source"] == "unknown"
+
+
+def test_list_branches_returns_unique_sorted_values(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "tmn-it-0004",
+            "hostname": "TMN-IT-0004",
+            "branch": "",
+            "ip_address": "10.105.0.233",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+        }
+    )
+    store.upsert_agent_heartbeat(
+        {
+            "agent_id": "spb-it-0001",
+            "hostname": "SPB-IT-0001",
+            "branch": "Санкт-Петербург",
+            "ip_address": "10.105.0.234",
+            "version": "1.2.3",
+            "status": "online",
+            "last_seen_at": now_ts,
+        }
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="HOST-02",
+        branch="Москва",
+        user_login="corp\\ivanov",
+        user_full_name="Иванов И.И.",
+        file_path=r"C:\Docs\other.pdf",
+        file_name="other.pdf",
+        source_kind="pdf",
+        severity="medium",
+        status="new",
+        created_at=now_ts - 90,
+    )
+
+    assert store.list_branches() == ["Москва", "Санкт-Петербург"]
+
+
+def test_downsample_metric_points_preserves_endpoints_and_peaks():
+    from scan_server.database import downsample_metric_points
+
+    items = []
+    for idx in range(100):
+        cpu = 10.0
+        disk = 5.0
+        if idx == 40:
+            cpu = 99.0
+        if idx == 70:
+            cpu = 1.0
+        if idx == 55:
+            disk = 900.0
+        items.append(
+            {
+                "captured_at": 1000 + idx,
+                "cpu_percent": cpu,
+                "memory_percent": 20.0,
+                "disk_read_bps": disk,
+                "disk_write_bps": 1.0,
+                "network_sent_bps": 1.0,
+                "network_received_bps": 1.0,
+            }
+        )
+
+    out = downsample_metric_points(items, max_points=12)
+    assert len(out) <= 12
+    assert out[0]["captured_at"] == items[0]["captured_at"]
+    assert out[-1]["captured_at"] == items[-1]["captured_at"]
+    captured = {int(row["captured_at"]) for row in out}
+    assert (1000 + 40) in captured
+    assert (1000 + 70) in captured
+    assert (1000 + 55) in captured
+
+
+def test_list_task_system_metrics_range_and_downsample(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now")
+    for idx in range(30):
+        store.record_system_metric_samples(
+            task_ids=[task["id"]],
+            sample={
+                "captured_at": 1000 + idx,
+                "cpu_percent": float(idx),
+                "memory_percent": 50.0,
+                "memory_used_bytes": 1000,
+                "memory_available_bytes": 1000,
+                "disk_read_bytes": 100,
+                "disk_write_bytes": 200,
+                "disk_read_bps": 10.0,
+                "disk_write_bps": 20.0,
+                "network_sent_bytes": 300,
+                "network_received_bytes": 400,
+                "network_sent_bps": 30.0,
+                "network_received_bps": 40.0,
+                "process_rss_bytes": 500,
+            },
+        )
+
+    report = store.list_task_system_metrics(
+        task_id=task["id"],
+        from_ts=1005,
+        to_ts=1020,
+        max_points=5,
+        limit=1000,
+    )
+    assert report["total"] == 16
+    assert report["from_ts"] == 1005
+    assert report["to_ts"] == 1020
+    assert report["downsampled"] is True
+    assert len(report["items"]) <= 5
+    assert report["items"][0]["captured_at"] == 1005
+    assert report["items"][-1]["captured_at"] == 1020
+
+
+def test_list_tasks_summary_view_keeps_slim_payload(temp_dir):
+    store = _make_store(temp_dir)
+    store.create_task(
+        agent_id="agent-1",
+        command="scan_now",
+        payload={
+            "force_rescan": True,
+            "server_pdf_pattern_ids": ["password_strict"],
+            "huge_blob": "x" * 5000,
+        },
+    )
+    detail = store.list_tasks(view="detail")
+    summary = store.list_tasks(view="summary")
+    assert detail["view"] == "detail"
+    assert summary["view"] == "summary"
+    assert "huge_blob" in detail["items"][0]["payload"]
+    assert "huge_blob" not in summary["items"][0]["payload"]
+    assert summary["items"][0]["payload"]["force_rescan"] is True
+
+
+def test_list_host_scan_runs_returns_summary_view(temp_dir):
+    store = _make_store(temp_dir)
+    store.upsert_agent_heartbeat({"agent_id": "agent-run", "hostname": "HOST-RUN", "last_seen_at": int(time.time())})
+    task = store.create_task(
+        agent_id="agent-run",
+        command="scan_now",
+        payload={"force_rescan": True, "noise": "y" * 2000, "server_pdf_pattern_ids": ["p1"]},
+    )
+    store.report_task_result(
+        agent_id="agent-run",
+        task_id=task["id"],
+        status="completed",
+        result={"scanned": 3, "skipped": 1, "noise": "z" * 2000},
+        error_text="",
+    )
+    detail = store.list_host_scan_runs(hostname="HOST-RUN")
+    assert detail["view"] == "detail"
+    assert detail["items"][0]["payload"].get("noise") == "y" * 2000
+    runs = store.list_host_scan_runs(hostname="HOST-RUN", view="summary")
+    assert runs["view"] == "summary"
+    assert runs["items"][0]["id"] == task["id"]
+    assert runs["items"][0]["payload"].get("force_rescan") is True
+    assert "noise" not in runs["items"][0]["payload"]
+    assert runs["items"][0]["result"].get("scanned") == 3
+    assert "noise" not in runs["items"][0]["result"]
+
+
+def test_list_task_system_metrics_absent_max_points_keeps_legacy_rows(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now")
+    for idx in range(40):
+        store.record_system_metric_samples(
+            task_ids=[task["id"]],
+            sample={
+                "captured_at": 2000 + idx,
+                "cpu_percent": float(idx),
+                "memory_percent": 40.0,
+                "memory_used_bytes": 1000,
+                "memory_available_bytes": 1000,
+                "disk_read_bytes": 100,
+                "disk_write_bytes": 200,
+                "disk_read_bps": 10.0,
+                "disk_write_bps": 20.0,
+                "network_sent_bytes": 300,
+                "network_received_bytes": 400,
+                "network_sent_bps": 30.0,
+                "network_received_bps": 40.0,
+                "process_rss_bytes": 500,
+            },
+        )
+    legacy = store.list_task_system_metrics(task_id=task["id"], limit=40)
+    assert legacy["total"] == 40
+    assert legacy["downsampled"] is False
+    assert len(legacy["items"]) == 40
+    chart = store.list_task_system_metrics(task_id=task["id"], limit=40, max_points=10)
+    assert chart["downsampled"] is True
+    assert len(chart["items"]) <= 10
+
+
+def test_list_incident_inbox_groups_batches_file_previews(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+    for idx in range(3):
+        _seed_incident(
+            store,
+            agent_id="agent-1",
+            hostname="HOST-BATCH",
+            branch="Тюмень",
+            user_login="corp\\user",
+            user_full_name="User",
+            file_path=rf"C:\Docs\file-{idx}.pdf",
+            file_name=f"file-{idx}.pdf",
+            source_kind="pdf",
+            severity="high",
+            status="new",
+            created_at=now_ts - idx,
+        )
+    payload = store.list_incident_inbox_groups(status="new", host_limit=10, files_per_host=10)
+    assert payload["total_hosts"] == 1
+    assert len(payload["items"][0]["files"]) == 3
+    for file_row in payload["items"][0]["files"]:
+        assert file_row["preview_incident_id"]
+        assert isinstance(file_row["preview_incident"]["matched_patterns"], list)
+
+    hosts_only = store.list_incident_inbox_groups(
+        status="new", host_limit=10, files_per_host=0, view="summary"
+    )
+    assert hosts_only["total_hosts"] == 1
+    assert hosts_only["files_per_host"] == 0
+    assert hosts_only["items"][0]["files"] == []
+
+    expand = store.list_incident_inbox_groups(
+        status="new",
+        hostname="HOST-BATCH",
+        host_limit=1,
+        host_offset=0,
+        files_per_host=10,
+    )
+    assert expand["total_hosts"] == 1
+    assert expand["has_more"] is False
+    assert len(expand["items"]) == 1
+    assert len(expand["items"][0]["files"]) == 3
+
+
+def test_reconcile_spares_a_fresh_pdf_that_has_no_job_row_yet(temp_dir):
+    # queue_job writes the PDF first and inserts the job afterwards: reconcile must not eat it in between.
+    import os
+
+    store = _make_store(temp_dir)
+    path = store.write_job_pdf_spool(job_id="a" * 32, pdf_bytes=b"%PDF-1.4 in flight")
+
+    assert store.reconcile_job_pdf_spool()["removed_orphan_files"] == 0
+    assert path.exists()
+
+    old = time.time() - store.ORPHAN_SPOOL_GRACE_SEC - 60
+    os.utime(path, (old, old))
+    assert store.reconcile_job_pdf_spool()["removed_orphan_files"] == 1
+    assert not path.exists()

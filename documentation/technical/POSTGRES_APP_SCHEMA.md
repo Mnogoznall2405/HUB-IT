@@ -1,0 +1,409 @@
+# PostgreSQL — App runtime store (HUB-IT)
+
+Справочник по **собственной** БД платформы HUB-IT (`APP_DATABASE_URL`; в `.env` часто `APP_DATABASE_URL=${CHAT_DATABASE_URL}`).  
+Это **не** **Equipment catalog (ITINVENT)** (SQL Server). Scan Center runtime — отдельный URL `SCAN_DATABASE_URL` / schema `scan` (см. [SCAN_POSTGRES_MIGRATION.md](./SCAN_POSTGRES_MIGRATION.md)); legacy fallback — SQLite.
+
+**Язык домена:** [CONTEXT.md](../../CONTEXT.md)  
+**Колонки, PK, FK, индексы (live):** [POSTGRES_APP_SCHEMA_DDL.md](./POSTGRES_APP_SCHEMA_DDL.md)  
+**Миграции:** `WEB-itinvent/backend/alembic/versions/`  
+**Модели:** `WEB-itinvent/backend/appdb/models.py`, `tickets_models.py`, `chat/models.py`
+
+Секции ниже между маркерами `pg-schema-docs:auto` **пересобираются автоматически** после `alembic upgrade` и dev-инициализации PostgreSQL (`scripts/pg_schema_docs.py`). Отключить: `SKIP_PG_SCHEMA_DOCS=1`.
+
+<!-- pg-schema-docs:auto:begin -->
+
+## Снимок БД (авто)
+
+_Обновлено: 2026-11-10 09:30 UTC_ · инстанс `10.103.0.10:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+
+| Схема | Таблиц | Кратко |
+|-------|--------|--------|
+| **`app`** | **181** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`chat`** | **4** | Мессенджер, outbox, push |
+| **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
+| **`scan`** | **10** | — |
+| **`voice`** | **6** | — |
+
+Полные колонки: [POSTGRES_APP_SCHEMA_DDL.md](./POSTGRES_APP_SCHEMA_DDL.md).
+
+Документация пересобирается автоматически после `alembic upgrade` (см. `WEB-itinvent/backend/alembic/env.py`). Отключить: `SKIP_PG_SCHEMA_DOCS=1`.
+
+> **Chat:** на инстансе 4 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
+
+## Схема `app` (181 таблиц)
+
+### Auth и пользователи
+
+| Таблица | Назначение |
+|---------|------------|
+| `ad_user_branch_overrides` | Принудительный `branch_no` для AD-login |
+| `app_settings` | Глобальные key-value настройки приложения |
+| `department_memberships` | Связь user ↔ department |
+| `departments` | Подразделения (scope доступа) |
+| `sessions` | Сессии входа (cookie, idle, status) |
+| `trusted_devices` | WebAuthn / доверенные устройства |
+| `user_2fa_backup_codes` | Резервные коды 2FA |
+| `user_db_selection` | Выбор ITINVENT-БД по `telegram_id` (бот) |
+| `user_mailboxes` | Дополнительные почтовые ящики |
+| `user_settings` | UI: тема, шрифт, закреплённая БД ITINVENT |
+| `users` | Учётные записи web: role, permissions, Telegram, почта по умолчанию |
+
+### Hub
+
+| Таблица | Назначение |
+|---------|------------|
+| `hub_announcement_attachments` | Вложения объявлений |
+| `hub_announcement_bookmarks` | — |
+| `hub_announcement_categories` | — |
+| `hub_announcement_comment_attachments` | — |
+| `hub_announcement_comment_mentions` | — |
+| `hub_announcement_comment_reactions` | — |
+| `hub_announcement_comments` | — |
+| `hub_announcement_likes` | — |
+| `hub_announcement_poll_options` | — |
+| `hub_announcement_poll_votes` | — |
+| `hub_announcement_polls` | — |
+| `hub_announcement_reactions` | — |
+| `hub_announcement_reads` | Прочтение / ACK объявлений |
+| `hub_announcement_tag_links` | — |
+| `hub_announcement_tags` | — |
+| `hub_announcements` | **Hub announcement** |
+| `hub_notification_reads` | Прочитанность уведомлений |
+| `hub_notifications` | **Hub notification** |
+| `hub_task_attachment_previews` | — |
+| `hub_task_attachments` | Вложения к задаче |
+| `hub_task_canvases` | — |
+| `hub_task_comment_reads` | Прочитанность комментариев |
+| `hub_task_comments` | Комментарии |
+| `hub_task_email_outbox` | — |
+| `hub_task_objects` | Объекты (привязка к задачам) |
+| `hub_task_projects` | Проекты задач |
+| `hub_task_reports` | Отчёты исполнителя |
+| `hub_task_status_log` | История смены статуса |
+| `hub_tasks` | **Hub task** |
+| `task_delegate_user_links` | Делегирование задач (assistant) |
+
+### Tickets
+
+| Таблица | Назначение |
+|---------|------------|
+| `ticket_attachments` | Вложения |
+| `ticket_change_history` | Аудит изменений |
+| `ticket_comments` | Комментарии |
+| `ticket_employee_documents` | Документы сотрудника |
+| `ticket_employees` | Сотрудники в контуре tickets |
+| `ticket_financial_ops` | Финансовые операции |
+| `ticket_import_jobs` | Импорт (job) |
+| `ticket_import_raw_traces` | Сырой trace импорта |
+| `ticket_items` | Позиции заявки |
+| `ticket_notification_rules` | Правила уведомлений |
+| `ticket_objects` | Объекты обслуживания |
+| `ticket_requests` | **Ticket** — заявка |
+
+### Inventory
+
+| Таблица | Назначение |
+|---------|------------|
+| `inventory_change_events` | Диффы между снимками |
+| `inventory_host_sql_contexts` | Кэш контекста из ITINVENT (branch, location, inv №) |
+| `inventory_hosts` | **Inventory host** (MAC PK, snapshot JSON) |
+| `inventory_outlook_files` | PST/OST и архивы Outlook |
+| `inventory_user_profiles` | Профили пользователей на хосте |
+
+### Почта
+
+| Таблица | Назначение |
+|---------|------------|
+| `mail_draft_context` | Контекст черновика |
+| `mail_folder_favorites` | Избранные папки |
+| `mail_it_templates` | Шаблоны IT-писем |
+| `mail_messages_log` | Лог отправок |
+| `mail_restore_hints` | Подсказки восстановления |
+| `mail_runtime_snapshots` | — |
+| `mail_send_idempotency` | — |
+| `mail_user_preferences` | Почтовые настройки пользователя |
+| `mail_visible_custom_folders` | Видимые пользовательские папки |
+
+### Сети (network audit)
+
+| Таблица | Назначение |
+|---------|------------|
+| `network_audit_log` | Журнал изменений |
+| `network_branch_db_map` | Связь филиал ↔ ITINVENT db |
+| `network_branches` | Филиалы сетевого учёта |
+| `network_devices` | Устройства |
+| `network_import_jobs` | Импорт топологии |
+| `network_map_points` | Точки на карте |
+| `network_maps` | Карты |
+| `network_panels` | Панели |
+| `network_ports` | Порты |
+| `network_sites` | Площадки |
+| `network_socket_profiles` | Профили розеток |
+| `network_sockets` | Розетки |
+
+### JSON-store
+
+| Таблица | Назначение |
+|---------|------------|
+| `json_documents` | Один JSON-файл = одна строка (`file_name` PK) |
+| `json_records` | Списковые JSON (много записей на файл) |
+
+### AI и фоновые jobs
+
+| Таблица | Назначение |
+|---------|------------|
+| `ai_bot_access` | — |
+| `ai_bot_conversations` | Привязка bot ↔ user ↔ conversation_id |
+| `ai_bot_runs` | Запуски / стадии ответа |
+| `ai_bots` | Конфигурация AI-ботов в чате |
+| `ai_kb_chunks` | Чанки для поиска |
+| `ai_kb_documents` | Документы KB для RAG |
+| `ai_memory_events` | — |
+| `ai_memory_facts` | — |
+| `ai_memory_state` | — |
+| `ai_pending_actions` | Действия, ждущие подтверждения |
+| `ai_sandbox_files` | — |
+| `ai_sandbox_gateway_grants` | — |
+| `ai_sandbox_jobs` | — |
+| `ai_sandbox_permissions` | — |
+| `ai_sandbox_sessions` | — |
+| `ai_sandbox_transfer_grants` | — |
+| `ai_user_memories` | — |
+| `ai_user_memory_sources` | — |
+| `transfer_act_jobs` | Фоновые jobs по актам перемещения |
+
+### Прочее
+
+| Таблица | Назначение |
+|---------|------------|
+| `equipment_transfer_act_reminder_groups` | Группы напоминаний |
+| `equipment_transfer_act_reminders` | Напоминания по актам перемещения |
+| `native_push_tokens` | FCM/APNs токены (мобильный web) |
+| `vcs_computers` | Видеоконференц-компьютеры |
+
+### Без категории
+
+| Таблица | Назначение |
+|---------|------------|
+| `browser_probe_focus_events` | — |
+| `browser_probe_media` | — |
+| `browser_probe_visits` | — |
+| `construction_day_crews` | — |
+| `construction_direction_role_assignments` | — |
+| `construction_object_1c_groups` | — |
+| `construction_object_role_assignments` | — |
+| `construction_objects` | — |
+| `construction_planning_audit` | — |
+| `construction_week_plans` | — |
+| `construction_work_audit` | — |
+| `construction_work_entries` | — |
+| `construction_work_items` | — |
+| `desktop_presence` | — |
+| `docflow_audit_events` | — |
+| `docflow_commands` | — |
+| `docflow_credentials` | — |
+| `document_preview_jobs` | — |
+| `employee_absences` | — |
+| `equipment_one_c_marks` | — |
+| `equipment_photo_checks` | — |
+| `equipment_photo_ocr` | — |
+| `equipment_photo_upload_ledger` | — |
+| `equipment_recent_acts` | — |
+| `equipment_recent_cards` | — |
+| `feedback_suggestions` | — |
+| `file_left_events` | — |
+| `it_object_audit` | — |
+| `it_object_grants` | — |
+| `it_object_owners` | — |
+| `it_object_password_links` | — |
+| `it_object_role_assignments` | — |
+| `it_objects` | — |
+| `mailbox_quota_rows` | — |
+| `mailbox_quota_snapshots` | — |
+| `max_probe_chats` | — |
+| `max_probe_media` | — |
+| `mobile_biometric_credentials` | — |
+| `monitoring_aggregates` | — |
+| `monitoring_events` | — |
+| `monitoring_interfaces` | — |
+| `monitoring_profiles` | — |
+| `monitoring_samples` | — |
+| `monitoring_targets` | — |
+| `monitoring_worker_state` | — |
+| `my_file_audit` | — |
+| `my_file_blobs` | — |
+| `my_file_blobs_v1` | — |
+| `my_file_collaborators` | — |
+| `my_file_download_grants` | — |
+| `my_file_folder_collaborators` | — |
+| `my_file_folders` | — |
+| `my_file_libraries` | — |
+| `my_file_library_members` | — |
+| `my_file_previews` | — |
+| `my_file_previews_v1` | — |
+| `my_file_versions` | — |
+| `my_files` | — |
+| `one_c_catalog_entries` | — |
+| `one_c_catalog_search_documents` | — |
+| `one_c_catalog_search_index_state` | — |
+| `one_c_catalog_search_token_stats` | — |
+| `one_c_catalog_snapshots` | — |
+| `one_c_catalog_tokens` | — |
+| `one_c_employee_owner_links` | — |
+| `one_c_item_links` | — |
+| `one_c_reconcile_events` | — |
+| `one_c_warehouse_owner_links` | — |
+| `org_structure_department_links` | — |
+| `org_structure_nodes` | — |
+| `password_vault_audit` | — |
+| `password_vault_entries` | — |
+| `password_vault_groups` | — |
+| `push_outbox` | — |
+| `telegram_probe_chats` | — |
+| `telegram_probe_media` | — |
+| `telegram_probe_reports` | — |
+
+## Схема `chat` (4 таблиц)
+
+### Таблицы
+
+| Таблица | Назначение |
+|---------|------------|
+| `chat_event_outbox` | Очередь chat-событий (realtime / fan-out) |
+| `chat_sticker_packs` | — |
+| `chat_stickers` | — |
+| `chat_user_sticker_packs` | — |
+
+### В коде, но не на инстансе
+
+| Таблица | Назначение |
+|---------|------------|
+| `chat_conversations` | Диалог (direct / group) |
+| `chat_members` | Участники |
+| `chat_messages` | Сообщения (в т.ч. task preview) |
+| `chat_message_attachments` | Файлы |
+| `chat_message_reads` | Прочитано |
+| `chat_message_reactions` | Реакции |
+| `chat_conversation_user_state` | Состояние диалога у пользователя |
+| `chat_push_subscriptions` | Web Push подписки |
+| `chat_push_outbox` | Очередь push-уведомлений |
+| `migration_checkpoints` | Чекпоинты миграций |
+
+Логические FK: `user_id` → `app.users.id` (не всегда жёсткий FK в миграциях).
+
+## Схема `system` (8 таблиц)
+
+### Служебные
+
+| Таблица | Назначение |
+|---------|------------|
+| `alembic_version` | Текущая ревизия Alembic |
+| `auth_runtime_items` | Временные ключи auth (challenge, rate limit, …) |
+| `env_settings_audit` | Аудит изменений env из UI |
+| `mfu_page_baseline` | MFU: эталон счётчиков страниц |
+| `mfu_page_snapshots` | MFU: снимки по датам |
+| `mfu_runtime_state` | MFU: runtime / retry |
+| `migration_checkpoints` | Чекпоинты миграций |
+| `session_auth_context` | Exchange login + encrypted password для сессии |
+
+## Схема `scan` (10 таблиц)
+
+### Таблицы
+
+| Таблица | Назначение |
+|---------|------------|
+| `alembic_version` | Текущая ревизия Alembic |
+| `scan_agents` | — |
+| `scan_artifacts` | — |
+| `scan_findings` | — |
+| `scan_incidents` | — |
+| `scan_jobs` | — |
+| `scan_ocr_cache` | — |
+| `scan_task_file_observations` | — |
+| `scan_task_system_metrics` | — |
+| `scan_tasks` | — |
+
+## Схема `voice` (6 таблиц)
+
+### Таблицы
+
+| Таблица | Назначение |
+|---------|------------|
+| `alembic_version` | Текущая ревизия Alembic |
+| `glossary_terms` | — |
+| `label_projects` | — |
+| `share_links` | — |
+| `voice_assignment_statuses` | — |
+| `voice_jobs` | — |
+
+<!-- pg-schema-docs:auto:end -->
+
+---
+
+## Подключение
+
+| Переменная | Назначение |
+|------------|------------|
+| `APP_DATABASE_URL` | Основной PostgreSQL для app + (часто) тот же инстанс для chat/system |
+| `CHAT_DATABASE_URL` | Переопределение, если чат вынесен на другой инстанс |
+| `APP_SCHEMA` | Имя схемы приложения, по умолчанию `app` |
+| `SKIP_PG_SCHEMA_DOCS` | `1` — не обновлять эту документацию после миграций |
+
+На SQLite (dev) префиксы `app.` / `chat.` / `system.` могут отсутствовать — в production целевой вариант **три схемы**.
+
+Ручная пересборка документации:
+
+```powershell
+python scripts/introspect_pg_schema.py
+```
+
+---
+
+## Ключевые связи (логические)
+
+```text
+app.users ──┬── app.sessions
+            ├── app.department_memberships ── app.departments
+            ├── app.hub_tasks (assignees / controller / creator; assignee_user_id is the compatibility primary)
+            ├── app.ticket_requests ── items / comments / attachments
+            ├── app.inventory_hosts ── inventory_host_sql_contexts
+            └── (chat) chat_members ── chat_conversations ── chat_messages  [если развёрнуто]
+
+app.hub_tasks ── reports | comments | attachments | status_log
+chat.chat_event_outbox ── доставка событий подписчикам / realtime
+```
+
+**Hub task** и **Ticket** — разные графы; общей таблицы задач нет.
+
+---
+
+## Филиал: где что хранится
+
+| Понятие | Где | Поля |
+|---------|-----|------|
+| **ITINVENT branch** | SQL Server | `BRANCH_NO`, `BRANCH_NAME` |
+| **Inventory SQL context** | `app.inventory_host_sql_contexts` | `branch_no`, `branch_name` |
+| **Network branch** | `app.network_branches` | + `network_branch_db_map` |
+| **Scan branch label** | Scan runtime (`SCAN_DATABASE_URL` / SQLite) | строка `branch`, не FK в app schema |
+
+---
+
+## Вне этого PostgreSQL
+
+| Хранилище | Технология | Документ |
+|-----------|------------|----------|
+| Equipment catalog | SQL Server | `WEB-itinvent/backend/database/` |
+| Shared JSON ledger | `data/*.json` | [data/README.md](../../data/README.md) |
+| Scan runtime | PostgreSQL schema `scan` (`SCAN_DATABASE_URL`) или SQLite fallback | [SCAN_ARCHITECTURE.md](./SCAN_ARCHITECTURE.md), [SCAN_POSTGRES_MIGRATION.md](./SCAN_POSTGRES_MIGRATION.md) |
+
+---
+
+## История
+
+<!-- pg-schema-docs:history:begin -->
+
+- **2026-11-10:** авто-синхронизация с `10.103.0.10:5432/hubit_chat` (`app` 181, `chat` 4, `system` 8).
+
+<!-- pg-schema-docs:history:end -->
+
+- **2026-05-26:** включена авто-пересборка после миграций (`pg_schema_docs.py` + Alembic hook).

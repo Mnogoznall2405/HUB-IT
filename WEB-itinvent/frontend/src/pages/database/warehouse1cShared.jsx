@@ -1,0 +1,185 @@
+import { Box, Typography } from '@mui/material';
+import { alpha } from '@mui/material/styles';
+
+export const UNBOUNDED_MOVEMENT_PERIOD = Object.freeze({
+  dateFrom: '',
+  dateTo: '',
+});
+
+export function NomenclatureCell({ code, name }) {
+  const codeText = String(code || '').trim();
+  const nameText = String(name || '').trim() || '-';
+
+  return (
+    <Box>
+      {codeText ? (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
+          {codeText}
+        </Typography>
+      ) : null}
+      <Typography variant="body2" sx={{ lineHeight: 1.35 }}>
+        {nameText}
+      </Typography>
+    </Box>
+  );
+}
+
+export function formatWarehouseQty(value, digits = 3) {
+  const num = Number(value || 0);
+  return num.toLocaleString('ru-RU', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+export function resolveWarehouseErrorMessage(err, fallback) {
+  if (err?.code === 'ECONNABORTED') {
+    return '1С не ответила вовремя. Повторите запрос позже.';
+  }
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  return fallback;
+}
+
+const collator = typeof Intl !== 'undefined'
+  ? new Intl.Collator('ru', { numeric: true, sensitivity: 'base' })
+  : null;
+
+export function compareRuText(left, right) {
+  const a = String(left || '').trim();
+  const b = String(right || '').trim();
+  if (collator) return collator.compare(a, b);
+  return a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' });
+}
+
+/** Sort balance rows by nomenclature name (then code / warehouse). */
+export function sortBalancesByNomenclature(rows = []) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((left, right) => {
+    const byName = compareRuText(left?.nomenclature_name, right?.nomenclature_name);
+    if (byName !== 0) return byName;
+    const byCode = compareRuText(left?.nomenclature_code, right?.nomenclature_code);
+    if (byCode !== 0) return byCode;
+    return compareRuText(left?.warehouse_name, right?.warehouse_name);
+  });
+}
+
+/** Sort warehouse balance rows by warehouse / employee name. */
+export function sortBalancesByWarehouse(rows = []) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((left, right) => {
+    const leftName = left?.hub_employee_name || left?.warehouse_name || '';
+    const rightName = right?.hub_employee_name || right?.warehouse_name || '';
+    const byName = compareRuText(leftName, rightName);
+    if (byName !== 0) return byName;
+    return compareRuText(left?.warehouse_name, right?.warehouse_name);
+  });
+}
+
+function foldSearchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е');
+}
+
+export function filterBalancesByText(rows = [], query = '') {
+  const needle = foldSearchText(String(query || '').trim());
+  if (!needle) return Array.isArray(rows) ? rows : [];
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const haystack = [
+      row?.nomenclature_name,
+      row?.nomenclature_code,
+      row?.characteristic_name,
+      row?.series_name,
+      row?.series_number,
+      row?.warehouse_name,
+      row?.hub_employee_name,
+      row?.hub_employee_dept,
+    ]
+      .map((part) => foldSearchText(part))
+      .join(' ');
+    return haystack.includes(needle);
+  });
+}
+
+const COMPARE_STATUS_PALETTE = {
+  match: 'success',
+  diff: 'warning',
+  only_hub: 'error',
+  only_1c: 'info',
+};
+
+/** Highlight a Hub ↔ 1C row by its compare status (match/diff/only_hub/only_1c). */
+export function statusRowSx(theme, status) {
+  const paletteKey = COMPARE_STATUS_PALETTE[status];
+  const base = paletteKey ? theme.palette[paletteKey]?.main : null;
+  if (!base) return {};
+  return {
+    bgcolor: alpha(base, 0.3),
+    boxShadow: `inset 4px 0 0 ${base}`,
+    '&.MuiTableRow-hover:hover, &:hover': {
+      bgcolor: alpha(base, 0.42),
+    },
+  };
+}
+
+export const HUB_PART_NO_NOT_IN_1C = 'нет в 1С';
+
+const PART_NO_PLACEHOLDER_RE = /не\s*найден/i;
+const PART_NO_NOT_IN_1C_RE = /^нет\s+в\s+1[сc]/i;
+
+export function isNotIn1cPartNo(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return PART_NO_NOT_IN_1C_RE.test(text);
+}
+
+export function isUsableHubPartNo(value) {
+  const text = String(value || '').trim();
+  if (!text || text === '-' || text === '—') return false;
+  if (isNotIn1cPartNo(text)) return false;
+  if (PART_NO_PLACEHOLDER_RE.test(text)) return false;
+  return true;
+}
+
+export function isPendingHubPartNo(value) {
+  return !isUsableHubPartNo(value) && !isNotIn1cPartNo(value);
+}
+
+/** Compare 1C qty vs Hub count for a balance row. */
+export function resolveHubBalanceMatch(row = {}) {
+  const hubRaw = row?.hub_count;
+  if (hubRaw === null || hubRaw === undefined || hubRaw === '') {
+    return { status: 'unknown', label: '' };
+  }
+  const hubCount = Number(hubRaw);
+  const qty1c = Number(row?.qty_1c_total ?? row?.qty_balance ?? 0);
+  if (!Number.isFinite(hubCount) || !Number.isFinite(qty1c)) {
+    return { status: 'unknown', label: '' };
+  }
+  if (Math.abs(qty1c - hubCount) < 1e-6) {
+    return { status: 'match', label: 'Сходится' };
+  }
+  if (hubCount > qty1c) {
+    // Same left-to-right order as table columns: В 1С → В Хабе.
+    return { status: 'hub_over', label: '1С < Хаб' };
+  }
+  return { status: 'hub_under', label: '1С > Хаб' };
+}
+
+/** Aggregate match statuses for a balances table summary. */
+export function summarizeHubBalanceMatches(rows = []) {
+  const list = Array.isArray(rows) ? rows : [];
+  let match = 0;
+  let mismatch = 0;
+  let unknown = 0;
+  for (const row of list) {
+    const status = resolveHubBalanceMatch(row).status;
+    if (status === 'match') match += 1;
+    else if (status === 'unknown') unknown += 1;
+    else mismatch += 1;
+  }
+  return {
+    total: list.length,
+    match,
+    mismatch,
+    unknown,
+    allMatch: list.length > 0 && mismatch === 0 && unknown === 0,
+    hasComparable: match + mismatch > 0,
+  };
+}

@@ -1,0 +1,840 @@
+"""Pydantic models for chat API."""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field, StrictBool, field_validator
+
+
+class ChatUserSummary(BaseModel):
+    id: int
+    username: str
+    full_name: Optional[str] = None
+    department: Optional[str] = None
+    job_title: Optional[str] = None
+    city: Optional[str] = None
+    corporate_email: Optional[str] = None
+    corporate_phone: Optional[str] = None
+    work_profile_source: Optional[Literal["zup", "hub"]] = None
+    work_profile_updated_at: Optional[str] = None
+    role: str = "viewer"
+    is_active: bool = True
+    avatar_url: Optional[str] = None
+    presence: Optional["ChatPresenceSummary"] = None
+
+
+class ChatMemberResponse(BaseModel):
+    user: ChatUserSummary
+    member_role: str = "member"
+    joined_at: str
+    # Filled for the owner and moderators only: the member may not write (until the given time).
+    is_restricted: bool = False
+    restricted_until: Optional[str] = None
+
+
+ChatMessageKind = Literal["text", "task_share", "file", "system", "location", "contact", "poll"]
+
+
+class ChatReplyPreview(BaseModel):
+    id: str
+    sender_name: str
+    kind: ChatMessageKind = "text"
+    body: str = ""
+    task_title: Optional[str] = None
+    attachments_count: int = 0
+
+
+class ChatForwardPreview(BaseModel):
+    id: str
+    sender_name: str
+    kind: ChatMessageKind = "text"
+    body: str = ""
+    task_title: Optional[str] = None
+    attachments_count: int = 0
+
+
+class ChatReactionSummary(BaseModel):
+    emoji: str
+    count: int = 0
+    user_ids: list[int] = Field(default_factory=list)
+
+
+class ChatReactionToggleRequest(BaseModel):
+    emoji: str
+
+
+class ChatReactionToggleResponse(BaseModel):
+    message_id: str
+    conversation_id: str
+    action: Literal["added", "removed"]
+    emoji: str
+    user_id: int
+    reactions: list[ChatReactionSummary] = Field(default_factory=list)
+
+
+class ChatPollOption(BaseModel):
+    text: str = ""
+    votes: int = 0
+
+
+class ChatPollPayload(BaseModel):
+    question: str = ""
+    options: list[ChatPollOption] = Field(default_factory=list)
+    anonymous: bool = False
+    closed: bool = False
+    total_voters: int = 0
+    my_option_index: Optional[int] = None
+
+
+class ChatMessageResponse(BaseModel):
+    id: str
+    conversation_id: str
+    conversation_kind: Optional[Literal["direct", "group", "ai", "notes", "task"]] = None
+    task_id: Optional[str] = None
+    conversation_seq: int = 0
+    kind: ChatMessageKind = "text"
+    body_format: Literal["plain", "markdown"] = "plain"
+    client_message_id: Optional[str] = None
+    sender: ChatUserSummary
+    body: str
+    created_at: str
+    edited_at: Optional[str] = None
+    is_deleted: bool = False
+    deleted_at: Optional[str] = None
+    deleted_by_user_id: Optional[int] = None
+    deleted_reason: Optional[str] = None
+    is_own: bool = False
+    delivery_status: Optional[Literal["sent", "read"]] = None
+    read_by_count: int = 0
+    reply_preview: Optional["ChatReplyPreview"] = None
+    forward_preview: Optional["ChatForwardPreview"] = None
+    task_preview: Optional["ChatTaskPreview"] = None
+    poll: Optional["ChatPollPayload"] = None
+    attachments: list["ChatAttachmentResponse"] = Field(default_factory=list)
+    action_card: Optional[dict[str, Any]] = None
+    reactions: list[ChatReactionSummary] = Field(default_factory=list)
+
+
+class ChatConversationSummary(BaseModel):
+    # Group posting rule ("all" / "managers" / "closed"); clients show a plaque instead of the composer.
+    posting_policy: Optional[str] = None
+    # Group slow mode in seconds (0 / absent: off); owner and moderators are exempt.
+    slow_mode_seconds: Optional[int] = None
+    # False: plain members may not send files (owner and moderators may); absent means allowed.
+    members_send_files: Optional[bool] = None
+    # The viewer was barred from writing in this group (until the given time; None: until lifted).
+    viewer_restricted: Optional[bool] = None
+    viewer_restricted_until: Optional[str] = None
+    id: str
+    kind: Literal["direct", "group", "ai", "notes", "task"]
+    title: str
+    avatar_url: Optional[str] = None
+    task_id: Optional[str] = None
+    task_title: Optional[str] = None
+    task_status: Optional[str] = None
+    task_assignee_full_name: Optional[str] = None
+    task_due_at: Optional[str] = None
+    task_completed_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+    last_message_at: Optional[str] = None
+    last_message_seq: int = 0
+    viewer_last_read_seq: int = 0
+    last_message_preview: str = ""
+    last_message_is_own: bool = False
+    last_message_delivery_status: Optional[Literal["sent", "read"]] = None
+    unread_count: int = 0
+    unread_mention_count: int = 0
+    member_count: int = 0
+    online_member_count: int = 0
+    is_pinned: bool = False
+    is_muted: bool = False
+    muted_until: Optional[datetime] = None
+    is_archived: bool = False
+    pinned_message_id: Optional[str] = None
+    pinned_at: Optional[str] = None
+    viewer_member_role: Optional[str] = None
+    member_preview: list[ChatMemberResponse] = Field(default_factory=list)
+    direct_peer: Optional[ChatUserSummary] = None
+    # Direct dialog with the technical-support user, as seen by a regular user.
+    is_support: bool = False
+
+
+class ChatConversationListResponse(BaseModel):
+    items: list[ChatConversationSummary] = Field(default_factory=list)
+    has_more: bool = False
+    next_cursor: Optional[str] = None
+
+
+class ChatConversationDetailResponse(ChatConversationSummary):
+    members: list[ChatMemberResponse] = Field(default_factory=list)
+    description: Optional[str] = None
+
+
+class ChatMessageListResponse(BaseModel):
+    items: list[ChatMessageResponse] = Field(default_factory=list)
+    has_more: bool = False
+    has_older: bool = False
+    has_newer: bool = False
+    cursor_invalid: bool = False
+    older_cursor_message_id: Optional[str] = None
+    newer_cursor_message_id: Optional[str] = None
+    viewer_last_read_message_id: Optional[str] = None
+    viewer_last_read_at: Optional[str] = None
+
+
+class ChatPinnedMessagePreview(BaseModel):
+    id: str
+    sender_name: str = ""
+    preview: str = ""
+    created_at: str = ""
+
+
+class ChatThreadBootstrapResponse(ChatMessageListResponse):
+    initial_anchor_mode: Literal["bottom", "message", "first_unread"] = "bottom"
+    initial_anchor_message_id: Optional[str] = None
+    pinned_message_id: Optional[str] = None
+    pinned_message: Optional[ChatPinnedMessagePreview] = None
+    pinned_messages: list[ChatPinnedMessagePreview] = Field(default_factory=list)
+
+
+class ChatMessageReportRequest(BaseModel):
+    reason: Literal["spam", "abuse", "illegal", "other"]
+    comment: Optional[str] = Field(None, max_length=500)
+
+
+class ChatMessageReportResolveRequest(BaseModel):
+    resolution: Literal["dismissed", "resolved"]
+
+
+class ChatJoinApprovalRequest(BaseModel):
+    approval_required: bool
+
+
+class ChatJoinRequestDecision(BaseModel):
+    decision: Literal["approve", "reject"]
+
+
+class ChatPinnedMessagesResponse(BaseModel):
+    items: list[ChatPinnedMessagePreview] = Field(default_factory=list)
+
+
+class ChatThreadHydrateItem(BaseModel):
+    message_id: str
+    read_by_count: int = 0
+    delivery_status: Optional[str] = None
+    reactions: list[ChatReactionSummary] = Field(default_factory=list)
+    action_card: Optional[dict[str, Any]] = None
+
+
+class ChatThreadHydrateResponse(BaseModel):
+    items: list[ChatThreadHydrateItem] = Field(default_factory=list)
+
+
+class ChatMessageSearchResponse(BaseModel):
+    items: list[ChatMessageResponse] = Field(default_factory=list)
+    has_more: bool = False
+
+
+class ChatGlobalMessageSearchHit(BaseModel):
+    conversation_id: str
+    conversation_title: str
+    conversation_kind: str
+    message_id: str
+    created_at: str
+    sender_name: str = ""
+    preview: str = ""
+
+
+class ChatGlobalMessageSearchResponse(BaseModel):
+    items: list[ChatGlobalMessageSearchHit] = Field(default_factory=list)
+    has_more: bool = False
+
+
+class ChatHealthResponse(BaseModel):
+    enabled: bool = False
+    configured: bool = False
+    available: bool = False
+    database_url_masked: Optional[str] = None
+    realtime_mode: str = "local"
+    realtime_transport: str = "local"
+    realtime_configured: bool = False
+    realtime_available: bool = False
+    realtime_subscriber_ready: bool = False
+    redis_available: bool = False
+    redis_configured: bool = False
+    pubsub_subscribed: bool = False
+    realtime_node_id: Optional[str] = None
+    publish_queue_depth: int = 0
+    publish_queue_capacity: int = 0
+    publish_volatile_dropped: int = 0
+    publish_critical_waiters: int = 0
+    publish_batches_total: int = 0
+    publish_events_total: int = 0
+    publish_critical_total: int = 0
+    publish_background_total: int = 0
+    publish_volatile_total: int = 0
+    publish_batch_size_latest: int = 0
+    publish_batch_size_p95: float = 0.0
+    publish_batch_size_max: int = 0
+    publish_queue_wait_ms_critical_latest: float = 0.0
+    publish_queue_wait_ms_critical_p95: float = 0.0
+    publish_queue_wait_ms_critical_max: float = 0.0
+    publish_queue_wait_ms_background_latest: float = 0.0
+    publish_queue_wait_ms_background_p95: float = 0.0
+    publish_queue_wait_ms_background_max: float = 0.0
+    relay_cursor: int = 0
+    relay_caught_up: bool = False
+    relay_current_batch_size: int = 0
+    relay_last_batch_size: int = 0
+    relay_db_dispatch_lag_ms_latest: float = 0.0
+    relay_db_dispatch_lag_ms_p95: float = 0.0
+    relay_db_dispatch_lag_ms_max: float = 0.0
+    outbound_queue_depth: int = 0
+    slow_consumer_disconnects: int = 0
+    presence_watch_count: int = 0
+    local_connection_count: int = 0
+    push_outbox_backlog: int = 0
+    push_outbox_ready: int = 0
+    push_outbox_processing: int = 0
+    push_outbox_failed: int = 0
+    push_outbox_oldest_queued_age_sec: float = 0.0
+    event_outbox_backlog: int = 0
+    event_outbox_processing: int = 0
+    event_outbox_failed: int = 0
+    event_outbox_oldest_queued_age_sec: float = 0.0
+    event_dispatcher_active: bool = False
+    event_outbox_avg_job_ms: float = 0.0
+    ws_rate_limited_count: int = 0
+    ws_rate_limited_connections: int = 0
+    ai_worker_concurrency: int = 0
+    ai_kb_index_age_sec: float = 0.0
+    ai_last_run_duration_ms: float = 0.0
+    route_metrics: dict[str, dict[str, float]] = Field(default_factory=dict)
+    read_cache_metrics: dict[str, Any] = Field(default_factory=dict)
+    # Includes total/available PostgreSQL connections and the configured reserve.
+    # Detailed per-application rows are intentionally limited to local ops tooling.
+    postgres_connections: dict[str, Any] = Field(default_factory=dict)
+    write_path: dict[str, Any] = Field(default_factory=dict)
+
+
+class DirectConversationRequest(BaseModel):
+    peer_user_id: int = Field(..., gt=0)
+
+
+class ChatTaskPreview(BaseModel):
+    id: str
+    title: str
+    status: str = "new"
+    priority: str = "normal"
+    assignee_full_name: Optional[str] = None
+    assignee_username: Optional[str] = None
+    due_at: Optional[str] = None
+    is_overdue: bool = False
+
+
+class GroupConversationRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+    member_user_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _normalize_title(cls, value):
+        return str(value or "").strip()
+
+
+class ChatConversationMembersRequest(BaseModel):
+    member_user_ids: list[int] = Field(default_factory=list)
+
+
+class ChatMemberRoleUpdateRequest(BaseModel):
+    member_role: Literal["moderator", "member"]
+
+
+class ChatOwnershipTransferRequest(BaseModel):
+    owner_user_id: int = Field(..., gt=0)
+
+
+class ChatAutoOwnerRequest(BaseModel):
+    dry_run: bool = True
+    limit: int = Field(25, ge=1, le=100)
+
+
+class ChatMemberRestrictionRequest(BaseModel):
+    # None restricts until the restriction is lifted.
+    duration_seconds: Optional[Literal[3600, 86400, 604800]] = None
+
+
+class ChatLeaveGroupRequest(BaseModel):
+    # An owner must name the member who receives ownership when leaving.
+    successor_user_id: Optional[int] = Field(default=None, gt=0)
+
+
+class UpdateConversationProfileRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    posting_policy: Optional[Literal["all", "managers", "closed"]] = None
+    slow_mode_seconds: Optional[Literal[0, 10, 30, 60, 300, 900, 3600]] = None
+    members_send_files: Optional[bool] = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _normalize_title(cls, value):
+        if value is None:
+            return None
+        return str(value or "").strip()
+
+
+class SendMessageRequest(BaseModel):
+    body: str = Field(..., min_length=1, max_length=12000)
+    body_format: Literal["plain", "markdown"] = "plain"
+    kind: Literal["text", "location", "contact", "poll"] = "text"
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _normalize_body(cls, value):
+        return str(value or "").strip()
+
+    @field_validator("client_message_id", "reply_to_message_id", mode="before")
+    @classmethod
+    def _normalize_optional_message_id(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class PollVoteRequest(BaseModel):
+    option_index: int = Field(..., ge=0, le=9)
+
+
+class EditMessageRequest(BaseModel):
+    body: str = Field(..., min_length=1, max_length=12000)
+    body_format: Literal["plain", "markdown"] = "plain"
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _normalize_body(cls, value):
+        return str(value or "").strip()
+
+
+class ForwardMessageRequest(BaseModel):
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    source_message_id: str = Field(..., min_length=1, max_length=64)
+    body_format: Literal["plain", "markdown"] = "plain"
+    body: Optional[str] = Field(default=None, max_length=12000)
+    reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("source_message_id", mode="before")
+    @classmethod
+    def _normalize_source_message_id(cls, value):
+        return str(value or "").strip()
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _normalize_body(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+    @field_validator("reply_to_message_id", mode="before")
+    @classmethod
+    def _normalize_reply_to_message_id(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class MarkReadRequest(BaseModel):
+    message_id: str = Field(..., min_length=1, max_length=64)
+
+
+class ChatUsersResponse(BaseModel):
+    items: list[ChatUserSummary] = Field(default_factory=list)
+
+
+class TaskShareMessageRequest(BaseModel):
+    task_id: str = Field(..., min_length=1, max_length=64)
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("task_id", mode="before")
+    @classmethod
+    def _normalize_task_id(cls, value):
+        return str(value or "").strip()
+
+    @field_validator("client_message_id", "reply_to_message_id", mode="before")
+    @classmethod
+    def _normalize_reply_to_message_id(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class UpdateConversationSettingsRequest(BaseModel):
+    is_pinned: Optional[bool] = None
+    is_muted: Optional[bool] = None
+    muted_until: Optional[datetime] = None
+    is_archived: Optional[bool] = None
+
+
+class ChatPinnedMessageRequest(BaseModel):
+    message_id: Optional[str] = None
+
+    @field_validator("message_id", mode="before")
+    @classmethod
+    def _normalize_message_id(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class ChatShareableTasksResponse(BaseModel):
+    items: list[ChatTaskPreview] = Field(default_factory=list)
+
+
+class ChatAttachmentResponse(BaseModel):
+    id: str
+    kind: Literal["image", "video", "file", "audio", "sticker"] = "file"
+    file_name: str
+    mime_type: Optional[str] = None
+    media_kind: Optional[Literal["image", "video", "file", "audio", "sticker"]] = None
+    file_size: int = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
+    duration_seconds: Optional[int] = None
+    original_url: Optional[str] = None
+    download_url: Optional[str] = None
+    variant_urls: dict[str, str] = Field(default_factory=dict)
+    preview_url: Optional[str] = None
+    created_at: str
+
+
+class ChatConversationAttachmentItemResponse(BaseModel):
+    id: str
+    message_id: str
+    kind: Literal["image", "video", "file", "audio", "sticker"] = "file"
+    file_name: str
+    mime_type: Optional[str] = None
+    media_kind: Optional[Literal["image", "video", "file", "audio", "sticker"]] = None
+    file_size: int = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
+    duration_seconds: Optional[int] = None
+    original_url: Optional[str] = None
+    download_url: Optional[str] = None
+    variant_urls: dict[str, str] = Field(default_factory=dict)
+    preview_url: Optional[str] = None
+    created_at: str
+
+
+class ChatConversationAssetsSummaryResponse(BaseModel):
+    photos_count: int = 0
+    videos_count: int = 0
+    files_count: int = 0
+    audio_count: int = 0
+    shared_tasks_count: int = 0
+    recent_photos: list[ChatConversationAttachmentItemResponse] = Field(default_factory=list)
+    recent_videos: list[ChatConversationAttachmentItemResponse] = Field(default_factory=list)
+    recent_files: list[ChatConversationAttachmentItemResponse] = Field(default_factory=list)
+    recent_audio: list[ChatConversationAttachmentItemResponse] = Field(default_factory=list)
+
+
+class ChatConversationAttachmentsResponse(BaseModel):
+    items: list[ChatConversationAttachmentItemResponse] = Field(default_factory=list)
+    has_more: bool = False
+    next_before_attachment_id: Optional[str] = None
+
+
+class ChatUploadSessionFileRequest(BaseModel):
+    file_name: str = Field(..., min_length=1, max_length=255)
+    mime_type: Optional[str] = Field(default=None, max_length=255)
+    media_kind: Optional[Literal["image", "video", "file", "audio"]] = None
+    duration_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
+    size: int = Field(..., gt=0, le=1024 * 1024 * 1024)
+    original_size: int = Field(..., gt=0, le=1024 * 1024 * 1024)
+    transfer_encoding: Literal["identity", "gzip"] = "identity"
+
+    @field_validator("file_name", "mime_type", "media_kind", mode="before")
+    @classmethod
+    def _normalize_text(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+    @field_validator("transfer_encoding", mode="before")
+    @classmethod
+    def _normalize_transfer_encoding(cls, value):
+        text = str(value or "identity").strip().lower()
+        return text or "identity"
+
+
+class ChatUploadSessionCreateRequest(BaseModel):
+    body: Optional[str] = Field(default=None, max_length=12000)
+    reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    files: list[ChatUploadSessionFileRequest] = Field(default_factory=list)
+
+    @field_validator("body", "reply_to_message_id", "client_message_id", mode="before")
+    @classmethod
+    def _normalize_text(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class ChatUploadSessionFileResponse(BaseModel):
+    file_id: str
+    file_name: str
+    mime_type: Optional[str] = None
+    media_kind: Optional[Literal["image", "video", "file", "audio"]] = None
+    duration_seconds: Optional[int] = None
+    size: int = 0
+    original_size: int = 0
+    transfer_encoding: Literal["identity", "gzip"] = "identity"
+    chunk_count: int = 0
+    received_bytes: int = 0
+    received_chunks: list[int] = Field(default_factory=list)
+
+
+class ChatUploadSessionResponse(BaseModel):
+    session_id: str
+    chunk_size_bytes: int = 0
+    expires_at: str
+    status: Literal["pending", "completed"] = "pending"
+    message_id: Optional[str] = None
+    files: list[ChatUploadSessionFileResponse] = Field(default_factory=list)
+
+
+class ChatUploadSessionChunkResponse(BaseModel):
+    session_id: str
+    file_id: str
+    chunk_index: int = 0
+    already_present: bool = False
+    received_bytes: int = 0
+    received_chunks: list[int] = Field(default_factory=list)
+    file_complete: bool = False
+
+
+class ChatUploadSessionCancelResponse(BaseModel):
+    ok: bool = True
+
+
+class ChatStickerResponse(BaseModel):
+    id: str
+    emoji: str = ""
+    format: Literal["static", "video", "animated"]
+    mime_type: str
+    file_size: int = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
+    file_url: str
+    preview_url: Optional[str] = None
+
+
+class ChatStickerPackResponse(BaseModel):
+    id: str
+    short_name: str
+    title: str
+    sticker_type: str = "regular"
+    is_added: bool = False
+    stickers: list[ChatStickerResponse] = Field(default_factory=list)
+
+
+class ChatStickerPackListResponse(BaseModel):
+    items: list[ChatStickerPackResponse] = Field(default_factory=list)
+
+
+class ChatStickerPackImportRequest(BaseModel):
+    source: str = Field(..., min_length=1, max_length=512)
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source(cls, value):
+        return str(value or "").strip()
+
+
+class ChatStickerSendRequest(BaseModel):
+    sticker_id: str = Field(..., min_length=1, max_length=64)
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("sticker_id", "client_message_id", "reply_to_message_id", mode="before")
+    @classmethod
+    def _normalize_sticker_ids(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class ChatUnreadSummaryResponse(BaseModel):
+    messages_unread_total: int = 0
+    conversations_unread: int = 0
+    mentions_unread_total: int = 0
+
+
+class ChatConfigResponse(BaseModel):
+    group_max_members: int = 128
+    scheduled_messages_enabled: bool = False
+    # Id of the technical-support user for the viewer; None if absent or the viewer is that user.
+    support_user_id: Optional[int] = None
+
+
+class ChatScheduledMessageCreateRequest(BaseModel):
+    body: str = Field(..., min_length=1, max_length=12000)
+    body_format: Literal["plain", "markdown"] = "plain"
+    scheduled_for: datetime
+    reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _normalize_scheduled_body(cls, value):
+        return str(value or "").strip()
+
+
+class ChatScheduledMessageUpdateRequest(BaseModel):
+    body: Optional[str] = Field(default=None, min_length=1, max_length=12000)
+    scheduled_for: Optional[datetime] = None
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _normalize_scheduled_body(cls, value):
+        return None if value is None else str(value).strip()
+
+
+class ChatScheduledMessageResponse(BaseModel):
+    id: str
+    conversation_id: str
+    body: str
+    body_format: str = "plain"
+    reply_to_message_id: Optional[str] = None
+    scheduled_for: str
+    status: str
+    attempt_count: int = 0
+    sent_message_id: Optional[str] = None
+    error_text: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ChatScheduledMessageListResponse(BaseModel):
+    items: list[ChatScheduledMessageResponse] = Field(default_factory=list)
+
+
+class ChatPushConfigResponse(BaseModel):
+    enabled: bool = False
+    vapid_public_key: Optional[str] = None
+    requires_installed_pwa: bool = False
+    icon_url: str = "/pwa-192.png"
+    badge_url: str = "/hubit-badge.svg"
+
+
+class ChatPushSubscriptionKeysRequest(BaseModel):
+    p256dh: str = Field(..., min_length=1, max_length=512)
+    auth: str = Field(..., min_length=1, max_length=512)
+
+    @field_validator("p256dh", "auth", mode="before")
+    @classmethod
+    def _normalize_key(cls, value):
+        return str(value or "").strip()
+
+
+class ChatPushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(..., min_length=1, max_length=2048)
+    expiration_time: Optional[int] = None
+    keys: ChatPushSubscriptionKeysRequest
+    user_agent: Optional[str] = Field(default=None, max_length=512)
+    platform: Optional[str] = Field(default=None, max_length=128)
+    browser_family: Optional[str] = Field(default=None, max_length=64)
+    install_mode: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("endpoint", "user_agent", "platform", "browser_family", "install_mode", mode="before")
+    @classmethod
+    def _normalize_text(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class ChatPushSubscriptionDeleteRequest(BaseModel):
+    endpoint: str = Field(..., min_length=1, max_length=2048)
+
+    @field_validator("endpoint", mode="before")
+    @classmethod
+    def _normalize_endpoint(cls, value):
+        return str(value or "").strip()
+
+
+class ChatPushSubscriptionStatusResponse(BaseModel):
+    ok: bool = True
+    subscribed: bool = False
+    push_enabled: bool = False
+
+
+class ChatPresenceSummary(BaseModel):
+    is_online: bool = False
+    last_seen_at: Optional[str] = None
+    status_text: str = ""
+
+
+class ChatMessageReadReceipt(BaseModel):
+    user: ChatUserSummary
+    read_at: str
+
+
+class ChatMessageReadsResponse(BaseModel):
+    items: list[ChatMessageReadReceipt] = Field(default_factory=list)
+
+
+class ChatFolderSummary(BaseModel):
+    id: str
+    name: str
+    sort_order: int = 0
+    conversation_count: int = 0
+    unread_count: int = 0
+    conversation_ids: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class ChatFolderListResponse(BaseModel):
+    items: list[ChatFolderSummary] = Field(default_factory=list)
+    conversation_ids_by_folder: dict[str, list[str]] = Field(default_factory=dict)
+    folder_unread_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class ChatFolderCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _normalize_name(cls, value):
+        return str(value or "").strip()
+
+
+class ChatFolderUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    sort_order: Optional[int] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _normalize_name(cls, value):
+        if value is None:
+            return None
+        text = str(value or "").strip()
+        return text or None
+
+
+class ChatFolderMembershipUpdateRequest(BaseModel):
+    conversation_ids: list[str] = Field(default_factory=list)
+
+
+class ChatFolderMutationResponse(BaseModel):
+    ok: bool = True
+    item: ChatFolderSummary
+
+
+ChatMessageResponse.model_rebuild()
+ChatUserSummary.model_rebuild()
+ChatMessageReadReceipt.model_rebuild()
+
+
+class ChatWsClientStatePayload(BaseModel):
+    """`chat.client_state` WS command: HUB Desktop reports its window activity."""
+
+    model_config = {"extra": "ignore"}
+
+    client_kind: Literal["desktop", "browser"]
+    foreground: StrictBool = False

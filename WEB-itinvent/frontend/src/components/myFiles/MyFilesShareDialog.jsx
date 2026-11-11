@@ -1,0 +1,571 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  Autocomplete,
+  Button,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  TextField,
+  Typography,
+  useMediaQuery,
+} from '@mui/material';
+import { useTheme } from '@mui/material/styles';
+import CheckOutlinedIcon from '@mui/icons-material/CheckOutlined';
+import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import MailOutlineIcon from '@mui/icons-material/MailOutline';
+import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
+import { useNavigate } from 'react-router-dom';
+import { addressBookAPI } from '../../api/addressBook';
+import { chatDirectoryAPI } from '../../api/chatDirectory';
+import { useAuth } from '../../contexts/AuthContext';
+import { useNotification } from '../../contexts/NotificationContext';
+import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
+import {
+  buildTelegramShareUrl,
+  isPhoneDeepLinkReady,
+  openTelegramChat,
+} from '../../lib/messengerLinks';
+import {
+  buildMyFilesShareMessage,
+  formatAddressBookOptionLabel,
+  formatChatDirectoryUserLabel,
+  listAddressBookPhones,
+  openCorporateChat,
+  openMailCompose,
+} from '../../lib/myFilesShareDelivery';
+
+const SEND_CHANNELS = [
+  { id: 'mail', label: 'Почта' },
+  { id: 'chat', label: 'Корпоративный чат' },
+  { id: 'telegram', label: 'Telegram' },
+  { id: 'max', label: 'MAX' },
+];
+
+const SEARCH_DEBOUNCE_MS = 300;
+
+const formatExpiresAt = (expiresAt) => {
+  if (!expiresAt) return '';
+  const parsed = new Date(expiresAt);
+  if (Number.isNaN(parsed.getTime())) return '';
+  if (parsed.getTime() - Date.now() > 3650 * 86400 * 1000) return '';
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const isForeverExpiresAt = (expiresAt) => {
+  const parsed = new Date(expiresAt);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.getTime() - Date.now() > 3650 * 86400 * 1000;
+};
+
+const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [delayMs, value]);
+  return debounced;
+};
+
+export default function MyFilesShareDialog({
+  open,
+  url = '',
+  expiresAt = null,
+  fileName = '',
+  linkCopied = false,
+  onClose,
+  onRotateShare,
+}) {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+  const { notifySuccess, notifyWarning } = useNotification();
+
+  const [copyState, setCopyState] = useState('idle');
+  const [sendChannel, setSendChannel] = useState('mail');
+  const [telegramQuery, setTelegramQuery] = useState('');
+  const [telegramOptions, setTelegramOptions] = useState([]);
+  const [telegramLoading, setTelegramLoading] = useState(false);
+  const [selectedContact, setSelectedContact] = useState(null);
+  const [contactPhones, setContactPhones] = useState([]);
+  const [selectedPhoneId, setSelectedPhoneId] = useState('');
+  const [chatQuery, setChatQuery] = useState('');
+  const [chatOptions, setChatOptions] = useState([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [selectedChatUser, setSelectedChatUser] = useState(null);
+
+  const debouncedTelegramQuery = useDebouncedValue(telegramQuery);
+  const debouncedChatQuery = useDebouncedValue(chatQuery);
+  const canSearchAddressBook = hasPermission('address_book.read');
+  const canUseMail = hasPermission('mail.access');
+  const canUseChat = CHAT_FEATURE_ENABLED && hasPermission('chat.read');
+  const selectedPhone = useMemo(
+    () => contactPhones.find((phone) => phone.id === selectedPhoneId) || null,
+    [contactPhones, selectedPhoneId],
+  );
+  const shareMessage = useMemo(
+    () => buildMyFilesShareMessage({ fileName, url, expiresAt }),
+    [expiresAt, fileName, url],
+  );
+  const expiresLabel = useMemo(() => formatExpiresAt(expiresAt), [expiresAt]);
+  const isForeverShare = useMemo(() => isForeverExpiresAt(expiresAt), [expiresAt]);
+
+  useEffect(() => {
+    if (!open) return;
+    setCopyState(linkCopied ? 'copied' : 'idle');
+    setSendChannel('mail');
+    setTelegramQuery('');
+    setSelectedContact(null);
+    setContactPhones([]);
+    setSelectedPhoneId('');
+    setChatQuery('');
+    setSelectedChatUser(null);
+  }, [linkCopied, open, url]);
+
+  const visibleSendChannels = useMemo(
+    () => SEND_CHANNELS.filter((channel) => channel.id !== 'chat' || canUseChat),
+    [canUseChat],
+  );
+
+  useEffect(() => {
+    if (!open || sendChannel !== 'telegram' || !canSearchAddressBook) {
+      setTelegramOptions([]);
+      return undefined;
+    }
+    const query = String(debouncedTelegramQuery || '').trim();
+    if (query.length < 2) {
+      setTelegramOptions([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setTelegramLoading(true);
+    addressBookAPI.search({ q: query, limit: 12 })
+      .then((data) => {
+        if (cancelled) return;
+        setTelegramOptions(Array.isArray(data?.items) ? data.items : []);
+      })
+      .catch(() => {
+        if (!cancelled) setTelegramOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTelegramLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canSearchAddressBook, debouncedTelegramQuery, open, sendChannel]);
+
+  useEffect(() => {
+    if (!open || sendChannel !== 'chat' || !canUseChat) {
+      setChatOptions([]);
+      return undefined;
+    }
+    const query = String(debouncedChatQuery || '').trim();
+    if (query.length < 2) {
+      setChatOptions([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setChatLoading(true);
+    chatDirectoryAPI.getUsers({ q: query, limit: 12 })
+      .then((data) => {
+        if (cancelled) return;
+        const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+        setChatOptions(items);
+      })
+      .catch(() => {
+        if (!cancelled) setChatOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setChatLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canUseChat, debouncedChatQuery, open, sendChannel]);
+
+  useEffect(() => {
+    if (!selectedContact) {
+      setContactPhones([]);
+      setSelectedPhoneId('');
+      return;
+    }
+    const phones = listAddressBookPhones(selectedContact);
+    setContactPhones(phones);
+    if (phones.length === 1) {
+      setSelectedPhoneId(phones[0].id);
+      return;
+    }
+    setSelectedPhoneId('');
+  }, [selectedContact]);
+
+  const handleCopyLink = useCallback(async () => {
+    const text = String(url || '').trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard?.writeText(text);
+      setCopyState('copied');
+    } catch {
+      setCopyState('error');
+      notifyWarning('Не удалось скопировать. Выделите ссылку и скопируйте вручную.', {
+        source: 'my-files-share-copy',
+        dedupeMode: 'none',
+      });
+    }
+  }, [notifyWarning, url]);
+
+  const handleOpenMail = useCallback(() => {
+    openMailCompose({ navigate, fileName, url, expiresAt });
+    onClose?.();
+  }, [expiresAt, fileName, navigate, onClose, url]);
+
+  const handleOpenTelegram = useCallback(() => {
+    const digits = String(selectedPhone?.digits || '').trim();
+    if (!selectedContact) {
+      notifyWarning('Выберите сотрудника из адресной книги.', { source: 'my-files-share-telegram', dedupeMode: 'none' });
+      return;
+    }
+    if (!isPhoneDeepLinkReady(digits)) {
+      notifyWarning('Выберите номер телефона для Telegram.', { source: 'my-files-share-telegram', dedupeMode: 'none' });
+      return;
+    }
+    if (!openTelegramChat(digits, shareMessage)) {
+      const shareUrl = buildTelegramShareUrl({ text: shareMessage });
+      if (shareUrl) window.open(shareUrl, '_blank', 'noopener,noreferrer');
+      notifyWarning('Не удалось открыть чат Telegram. Попробуйте ещё раз.', { source: 'my-files-share-telegram', dedupeMode: 'none' });
+      return;
+    }
+    notifySuccess('Открываем Telegram.', {
+      source: 'my-files-share-telegram',
+      dedupeMode: 'none',
+      durationMs: 2800,
+    });
+    onClose?.();
+  }, [notifySuccess, notifyWarning, onClose, selectedContact, selectedPhone?.digits, shareMessage]);
+
+  const handleOpenChat = useCallback(() => {
+    const peerUserId = Number(selectedChatUser?.id || 0);
+    if (!Number.isFinite(peerUserId) || peerUserId <= 0) {
+      notifyWarning('Выберите сотрудника из списка.', { source: 'my-files-share-chat', dedupeMode: 'none' });
+      return;
+    }
+    openCorporateChat({
+      navigate,
+      peerUserId,
+      fileName,
+      url,
+      expiresAt,
+    });
+    onClose?.();
+  }, [expiresAt, fileName, navigate, notifyWarning, onClose, selectedChatUser?.id, url]);
+
+  const handleChatUserChange = useCallback((_event, value) => {
+    setSelectedChatUser(value || null);
+    if (value) {
+      setChatQuery(formatChatDirectoryUserLabel(value));
+    }
+  }, []);
+
+  const handleCopyForMax = useCallback(async () => {
+    try {
+      await navigator.clipboard?.writeText(shareMessage);
+      notifySuccess('Текст скопирован — вставьте его в MAX.', { source: 'my-files-share-max', dedupeMode: 'none' });
+    } catch {
+      notifyWarning('Не удалось скопировать текст.', { source: 'my-files-share-max', dedupeMode: 'none' });
+    }
+  }, [notifySuccess, notifyWarning, shareMessage]);
+
+  const handleContactChange = useCallback((_event, value) => {
+    setSelectedContact(value || null);
+    if (value) {
+      setTelegramQuery(formatAddressBookOptionLabel(value));
+    }
+  }, []);
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="sm"
+      fullWidth
+      fullScreen={isMobile}
+    >
+      <DialogTitle sx={{ pb: 1 }}>
+        <Typography component="div" variant="h6" sx={{ fontWeight: 700 }}>
+          Поделиться
+        </Typography>
+        {fileName ? (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {fileName}
+          </Typography>
+        ) : null}
+      </DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ pt: 0.5 }}>
+          <Stack spacing={1}>
+            <Paper variant="outlined" sx={{ p: 1.25, bgcolor: 'action.hover' }}>
+              <Typography variant="body2" sx={{ wordBreak: 'break-all' }} data-testid="my-files-share-url">
+                {url}
+              </Typography>
+            </Paper>
+            <Typography variant="caption" color="text.secondary">
+              {isForeverShare
+                ? 'Открывается без входа · бессрочно'
+                : expiresLabel
+                  ? `Открывается без входа · до ${expiresLabel}`
+                  : 'Открывается без входа'}
+            </Typography>
+            {copyState === 'error' ? (
+              <Typography variant="caption" color="warning.main">
+                Скопируйте ссылку вручную: выделите текст выше.
+              </Typography>
+            ) : null}
+            <Button
+              variant="contained"
+              startIcon={copyState === 'copied' ? <CheckOutlinedIcon /> : <ContentCopyOutlinedIcon />}
+              onClick={handleCopyLink}
+              fullWidth={isMobile}
+              color={copyState === 'copied' ? 'success' : 'primary'}
+              data-testid={copyState === 'copied' ? 'my-files-share-copied-alert' : 'my-files-share-copy'}
+              aria-live="polite"
+            >
+              {copyState === 'copied' ? 'Скопировано' : 'Скопировать ссылку'}
+            </Button>
+          </Stack>
+
+          <Divider />
+
+          <Stack spacing={1.25}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              Отправить
+            </Typography>
+            <FormControl fullWidth size="small">
+              <InputLabel id="my-files-share-channel-label">Куда</InputLabel>
+              <Select
+                labelId="my-files-share-channel-label"
+                label="Куда"
+                value={sendChannel}
+                onChange={(event) => setSendChannel(event.target.value)}
+                data-testid="my-files-share-channel"
+              >
+                {visibleSendChannels.map((channel) => (
+                  <MenuItem key={channel.id} value={channel.id}>{channel.label}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            {sendChannel === 'mail' ? (
+              <Stack spacing={1.25}>
+                <Button
+                  variant="outlined"
+                  startIcon={<MailOutlineIcon />}
+                  onClick={handleOpenMail}
+                  disabled={!canUseMail}
+                  fullWidth={isMobile}
+                  data-testid="my-files-share-open-mail"
+                >
+                  Открыть почту
+                </Button>
+                {!canUseMail ? (
+                  <Typography variant="caption" color="text.secondary">
+                    Нет доступа к почте — скопируйте ссылку выше.
+                  </Typography>
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    Откроется письмо с текстом и ссылкой.
+                  </Typography>
+                )}
+              </Stack>
+            ) : null}
+
+            {sendChannel === 'chat' ? (
+              <Stack spacing={1.25}>
+                <Autocomplete
+                  options={chatOptions}
+                  loading={chatLoading}
+                  value={selectedChatUser}
+                  inputValue={chatQuery}
+                  onInputChange={(_event, value, reason) => {
+                    setChatQuery(value);
+                    if (reason === 'clear' || !value) {
+                      setSelectedChatUser(null);
+                    }
+                  }}
+                  onChange={handleChatUserChange}
+                  getOptionLabel={(option) => formatChatDirectoryUserLabel(option)}
+                  isOptionEqualToValue={(option, value) => (
+                    String(option?.id || '') === String(value?.id || '')
+                  )}
+                  noOptionsText={chatQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Никого не найдено'}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Кому"
+                      size="small"
+                      placeholder="Фамилия"
+                      InputProps={{
+                        ...params.InputProps,
+                        endAdornment: (
+                          <>
+                            {chatLoading ? <CircularProgress color="inherit" size={18} /> : null}
+                            {params.InputProps.endAdornment}
+                          </>
+                        ),
+                      }}
+                      inputProps={{
+                        ...params.inputProps,
+                        'data-testid': 'my-files-share-chat-query',
+                      }}
+                    />
+                  )}
+                />
+                <Button
+                  variant="outlined"
+                  startIcon={<ForumOutlinedIcon />}
+                  onClick={handleOpenChat}
+                  disabled={!selectedChatUser}
+                  fullWidth={isMobile}
+                  data-testid="my-files-share-open-chat"
+                >
+                  Открыть чат
+                </Button>
+              </Stack>
+            ) : null}
+
+            {sendChannel === 'telegram' ? (
+              <Stack spacing={1.25}>
+                {!canSearchAddressBook ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Нужен доступ к адресной книге.
+                  </Typography>
+                ) : (
+                  <>
+                    <Autocomplete
+                      options={telegramOptions}
+                      loading={telegramLoading}
+                      value={selectedContact}
+                      inputValue={telegramQuery}
+                      onInputChange={(_event, value, reason) => {
+                        setTelegramQuery(value);
+                        if (reason === 'clear' || !value) {
+                          setSelectedContact(null);
+                        }
+                      }}
+                      onChange={handleContactChange}
+                      getOptionLabel={(option) => formatAddressBookOptionLabel(option)}
+                      isOptionEqualToValue={(option, value) => (
+                        String(option?.employee_code || option?.id || '') === String(value?.employee_code || value?.id || '')
+                      )}
+                      noOptionsText={telegramQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Никого не найдено'}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Кому"
+                          size="small"
+                          placeholder="Фамилия"
+                          InputProps={{
+                            ...params.InputProps,
+                            endAdornment: (
+                              <>
+                                {telegramLoading ? <CircularProgress color="inherit" size={18} /> : null}
+                                {params.InputProps.endAdornment}
+                              </>
+                            ),
+                          }}
+                          inputProps={{
+                            ...params.inputProps,
+                            'data-testid': 'my-files-share-telegram-query',
+                          }}
+                        />
+                      )}
+                    />
+                    {selectedContact && contactPhones.length === 0 ? (
+                      <Alert severity="warning" sx={{ py: 0.5 }}>У сотрудника нет номера для Telegram.</Alert>
+                    ) : null}
+                    {contactPhones.length > 1 ? (
+                      <FormControl fullWidth size="small">
+                        <InputLabel id="my-files-share-phone-label">Номер</InputLabel>
+                        <Select
+                          labelId="my-files-share-phone-label"
+                          label="Номер"
+                          value={selectedPhoneId}
+                          onChange={(event) => setSelectedPhoneId(event.target.value)}
+                          data-testid="my-files-share-telegram-phone"
+                        >
+                          {contactPhones.map((phone) => (
+                            <MenuItem key={phone.id} value={phone.id}>{phone.label}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : null}
+                    {selectedContact && contactPhones.length === 1 ? (
+                      <Typography variant="caption" color="text.secondary" data-testid="my-files-share-telegram-phone-auto">
+                        {contactPhones[0].label}
+                      </Typography>
+                    ) : null}
+                    <Button
+                      variant="outlined"
+                      startIcon={<SendOutlinedIcon />}
+                      onClick={handleOpenTelegram}
+                      disabled={!selectedContact || !selectedPhone}
+                      fullWidth={isMobile}
+                      data-testid="my-files-share-open-telegram"
+                    >
+                      Открыть Telegram
+                    </Button>
+                  </>
+                )}
+              </Stack>
+            ) : null}
+
+            {sendChannel === 'max' ? (
+              <Stack spacing={1.25}>
+                <Typography variant="body2" color="text.secondary" data-testid="my-files-share-max-help">
+                  Скопируйте текст и вставьте его в чат MAX.
+                </Typography>
+                <Button
+                  variant="outlined"
+                  startIcon={<ContentCopyOutlinedIcon />}
+                  onClick={handleCopyForMax}
+                  fullWidth={isMobile}
+                  data-testid="my-files-share-copy-max"
+                >
+                  Скопировать текст
+                </Button>
+              </Stack>
+            ) : null}
+          </Stack>
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ flexDirection: { xs: 'column', sm: 'row' }, alignItems: 'stretch', gap: 1, px: 2, pb: 2 }}>
+        {typeof onRotateShare === 'function' ? (
+          <Button onClick={onRotateShare} fullWidth={isMobile} data-testid="my-files-share-rotate">
+            Новая ссылка
+          </Button>
+        ) : null}
+        <Button onClick={onClose} fullWidth={isMobile} variant="text">Закрыть</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}

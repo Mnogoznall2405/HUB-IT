@@ -1,0 +1,361 @@
+import { useEffect, useState } from 'react';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
+import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
+import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined';
+import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
+import EditNoteRoundedIcon from '@mui/icons-material/EditNoteRounded';
+import FileCopyOutlinedIcon from '@mui/icons-material/FileCopyOutlined';
+import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
+import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
+import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
+import SelectAllRoundedIcon from '@mui/icons-material/SelectAllRounded';
+import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
+import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
+import StarRoundedIcon from '@mui/icons-material/StarRounded';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import { Divider, ListItemIcon, ListItemText, ListSubheader, Menu, MenuItem } from '@mui/material';
+
+import {
+  isDesktopCapabilityAvailable,
+  requestDesktopDownloadedFileAction,
+} from '../../lib/desktopBridge';
+import { isNativeShellRuntime } from '../../lib/platform';
+
+const DESKTOP_APPLICATION_EXTENSIONS = new Set([
+  'doc', 'docx', 'docm', 'dot', 'dotx', 'dotm',
+  'xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm',
+  'ppt', 'pptx', 'pptm', 'pps', 'ppsx', 'ppsm',
+  'odt', 'ods', 'odp', 'rtf', 'csv', 'pdf',
+]);
+
+export function canOpenInDesktopApplication(fileName) {
+  const normalized = String(fileName || '').trim().toLowerCase();
+  const extension = normalized.includes('.') ? normalized.split('.').pop() : '';
+  return Boolean(extension && DESKTOP_APPLICATION_EXTENSIONS.has(extension));
+}
+
+export function isFileActionsKeyboardShortcut(event) {
+  return event?.key === 'ContextMenu' || (event?.shiftKey && event?.key === 'F10');
+}
+
+export function getFileActionsAnchorPosition(event) {
+  const clientX = Number(event?.clientX || 0);
+  const clientY = Number(event?.clientY || 0);
+  if (clientX > 0 || clientY > 0) {
+    return { left: clientX, top: clientY };
+  }
+
+  const rect = event?.currentTarget?.getBoundingClientRect?.();
+  return {
+    left: Math.round((rect?.left || 0) + Math.min(rect?.width || 0, 32)),
+    top: Math.round((rect?.top || 0) + Math.min(rect?.height || 0, 32)),
+  };
+}
+
+export default function FileActionsContextMenu({
+  open = false,
+  anchorEl = null,
+  anchorPosition = null,
+  fileName = '',
+  canDownload = true,
+  busy = false,
+  paperSx = null,
+  onClose,
+  onPreview,
+  onEditOnline,
+  editOnlineLabel = 'Редактировать онлайн',
+  onCollaborators,
+  onVersions,
+  onDownload,
+  onSaveAll,
+  onRename,
+  onMove,
+  onCopyTo,
+  onDelete,
+  onSelectAll,
+  onToggleFavorite,
+  isFavorite = false,
+  onShare,
+  onRevokeShare,
+  isShared = false,
+  onAudit,
+}) {
+  const [requestingAction, setRequestingAction] = useState('');
+  const [openIntentMessage, setOpenIntentMessage] = useState('');
+  const nativeShell = isNativeShellRuntime();
+  const nativeFileActions = nativeShell && isDesktopCapabilityAvailable('file-actions-v2');
+  const canOpenInApplication = Boolean(
+    canDownload
+    && nativeShell
+    && canOpenInDesktopApplication(fileName),
+  );
+  const canPrintInApplication = canOpenInApplication && nativeFileActions;
+  const canCopyFile = Boolean(canDownload && nativeFileActions);
+
+  useEffect(() => {
+    if (!open) {
+      setRequestingAction('');
+      setOpenIntentMessage('');
+    }
+  }, [fileName, open]);
+
+  const runDownload = async (action = '') => {
+    if (action) {
+      setRequestingAction(action);
+      setOpenIntentMessage('');
+      const result = await requestDesktopDownloadedFileAction(action);
+      setRequestingAction('');
+      if (!result.accepted) {
+        setOpenIntentMessage(
+          result.status === 'busy'
+            ? 'Дождитесь завершения текущей загрузки и повторите действие'
+            : 'Не удалось выполнить действие. Повторите попытку',
+        );
+        return;
+      }
+    }
+
+    onClose?.();
+    onDownload?.();
+  };
+
+  const runDirectAction = (action) => {
+    onClose?.();
+    action?.();
+  };
+
+  const actionBusy = Boolean(busy || requestingAction);
+
+  return (
+    <Menu
+      open={Boolean(open)}
+      onClose={onClose}
+      anchorEl={anchorEl}
+      anchorReference={anchorPosition ? 'anchorPosition' : 'anchorEl'}
+      anchorPosition={anchorPosition || undefined}
+      MenuListProps={{ 'aria-label': `Действия с файлом ${fileName || 'файл'}` }}
+      PaperProps={{
+        sx: {
+          minWidth: 220,
+          borderRadius: '10px',
+          boxShadow: '0 14px 36px rgba(2, 6, 23, 0.24)',
+          ...(paperSx || {}),
+        },
+      }}
+    >
+      {typeof onPreview === 'function' ? (
+        <MenuItem
+          data-testid="file-action-preview"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onPreview)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><VisibilityOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Просмотр</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onEditOnline === 'function' ? (
+        <MenuItem
+          data-testid="file-action-edit-online"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onEditOnline)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><EditNoteRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{editOnlineLabel}</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onCollaborators === 'function' ? (
+        <MenuItem
+          data-testid="file-action-collaborators"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onCollaborators)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><GroupAddOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Совместный доступ</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onVersions === 'function' ? (
+        <MenuItem
+          data-testid="file-action-versions"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onVersions)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><RestoreRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Предыдущие версии</ListItemText>
+        </MenuItem>
+      ) : null}
+      {canOpenInApplication ? (
+        <MenuItem
+          data-testid="file-action-open-in-application"
+          disabled={actionBusy}
+          onClick={() => runDownload('open')}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><OpenInNewRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Открыть</ListItemText>
+        </MenuItem>
+      ) : null}
+      {canPrintInApplication ? (
+        <MenuItem
+          data-testid="file-action-quick-print"
+          disabled={actionBusy}
+          onClick={() => runDownload('print')}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><PrintRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Быстрая печать</ListItemText>
+        </MenuItem>
+      ) : null}
+      {openIntentMessage ? (
+        <ListSubheader
+          role="status"
+          aria-live="polite"
+          sx={{ maxWidth: 280, py: 0.75, lineHeight: 1.35, whiteSpace: 'normal' }}
+        >
+          {openIntentMessage}
+        </ListSubheader>
+      ) : null}
+      {typeof onDownload === 'function' ? (
+        <MenuItem
+          data-testid="file-action-download"
+          disabled={!canDownload || actionBusy}
+          onClick={() => runDownload(nativeFileActions ? 'saveAs' : '')}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{nativeFileActions ? 'Сохранить как' : 'Скачать'}</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onSaveAll === 'function' ? (
+        <MenuItem
+          data-testid="file-action-save-all"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onSaveAll)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Сохранить все вложения…</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onShare === 'function' ? (
+        <MenuItem
+          data-testid="file-action-share"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onShare)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{isShared ? 'Скопировать ссылку' : 'Поделиться'}</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onRevokeShare === 'function' ? (
+        <MenuItem
+          data-testid="file-action-revoke-share"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onRevokeShare)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Отключить ссылку</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onAudit === 'function' ? (
+        <MenuItem
+          data-testid="file-action-audit"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onAudit)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><HistoryRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Журнал</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onToggleFavorite === 'function' ? (
+        <MenuItem
+          data-testid="file-action-favorite"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onToggleFavorite)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon>
+            {isFavorite ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} /> : <StarOutlineRoundedIcon fontSize="small" />}
+          </ListItemIcon>
+          <ListItemText>{isFavorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onRename === 'function' ? (
+        <MenuItem
+          data-testid="file-action-rename"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onRename)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DriveFileRenameOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Переименовать</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onMove === 'function' ? (
+        <MenuItem
+          data-testid="file-action-move"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onMove)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><DriveFileMoveOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Переместить</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onCopyTo === 'function' ? (
+        <MenuItem
+          data-testid="file-action-copy-to"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onCopyTo)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><FileCopyOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Копировать в…</ListItemText>
+        </MenuItem>
+      ) : null}
+      {canCopyFile || typeof onDelete === 'function' || typeof onSelectAll === 'function' ? <Divider /> : null}
+      {canCopyFile ? (
+        <MenuItem
+          data-testid="file-action-copy"
+          disabled={actionBusy}
+          onClick={() => runDownload('copy')}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><ContentCopyRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Копировать</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onDelete === 'function' ? (
+        <MenuItem
+          data-testid="file-action-delete"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onDelete)}
+          sx={{ minHeight: 40, color: 'error.main' }}
+        >
+          <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Удалить вложение</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onSelectAll === 'function' ? (
+        <MenuItem
+          data-testid="file-action-select-all"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onSelectAll)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><SelectAllRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Выделить все</ListItemText>
+        </MenuItem>
+      ) : null}
+    </Menu>
+  );
+}

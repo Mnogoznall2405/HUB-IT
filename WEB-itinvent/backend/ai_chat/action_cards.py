@@ -1,0 +1,2503 @@
+from __future__ import annotations
+
+import json
+import logging
+import mimetypes
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from fastapi import UploadFile
+from sqlalchemy import select, update
+
+from backend.ai_chat.artifact_generator import GeneratedFileError, build_generated_uploads, normalize_generated_file_specs
+from backend.appdb.db import app_session
+from backend.appdb.models import AppAiPendingAction, AppMailSendIdempotency
+from backend.database import queries
+from backend.database.equipment_db import invalidate_equipment_cache
+from backend.services.authorization_service import (
+    PERM_CHAT_AI_USE,
+    PERM_CHAT_WRITE,
+    PERM_AD_USERS_MANAGE,
+    PERM_NETWORKS_WRITE,
+    PERM_DATABASE_WRITE,
+    PERM_MAIL_ACCESS,
+    PERM_TASKS_CREATE,
+    PERM_TASKS_READ,
+    PERM_TASKS_WRITE,
+    authorization_service,
+)
+from backend.services.equipment_transfer_execution_service import execute_equipment_transfer
+from backend.services.hub_service import hub_service
+from backend.services.mail_service import mail_service
+from backend.services.transfer_service import get_act_record
+
+logger = logging.getLogger(__name__)
+
+ACTION_STATUS_PENDING = "pending"
+ACTION_STATUS_EXECUTING = "executing"
+ACTION_STATUS_CONFIRMED = "confirmed"
+ACTION_STATUS_CANCELLED = "cancelled"
+ACTION_STATUS_EXPIRED = "expired"
+ACTION_STATUS_FAILED = "failed"
+
+ACTION_TRANSFER = "itinvent.transfer"
+ACTION_CONSUMABLE_CONSUME = "itinvent.consumable.consume"
+ACTION_CONSUMABLE_QTY = "itinvent.consumable.qty"
+ACTION_OFFICE_MAIL_SEND = "office.mail.send"
+ACTION_OFFICE_MAIL_REPLY = "office.mail.reply"
+ACTION_OFFICE_TASK_CREATE = "office.task.create"
+ACTION_OFFICE_TASK_COMMENT = "office.task.comment"
+ACTION_OFFICE_TASK_STATUS = "office.task.status"
+ACTION_REPORT_FORMAT_CHOICE = "ai.report.format_choice"
+ACTION_AI_CHOICE = "ai.choice.reply"
+AI_CHOICE_MAX_OPTIONS = 8
+ACTION_DOC_CONVERT_FORMAT_CHOICE = "ai.doc.convert.format_choice"
+ACTION_SANDBOX_PERMISSION = "ai.sandbox.permission"
+ACTION_WORKS_CARTRIDGE = "itinvent.works.cartridge"
+ACTION_WORKS_BATTERY = "itinvent.works.battery"
+ACTION_WORKS_COMPONENT = "itinvent.works.component"
+ACTION_WORKS_PC_CLEANING = "itinvent.works.pc_cleaning"
+ACTION_CHAT_MESSAGE_SEND = "chat.message.send"
+ACTION_HELPDESK_REQUEST_CREATE = "helpdesk.request.create"
+ACTION_AD_UNLOCK = "ad.unlock"
+ACTION_NETWORK_WOL = "network.wol"
+ACTION_WORKS_TYPES = frozenset(
+    {
+        ACTION_WORKS_CARTRIDGE,
+        ACTION_WORKS_BATTERY,
+        ACTION_WORKS_COMPONENT,
+        ACTION_WORKS_PC_CLEANING,
+    }
+)
+
+DRAFT_EXPIRES_IN = timedelta(hours=1)
+REPORT_FORMAT_CHOICES = ("xlsx", "pdf", "docx", "csv", "txt", "md", "json")
+DOC_CONVERT_FORMAT_CHOICES = ("docx", "txt", "md", "pdf", "xlsx")
+DOC_CONVERT_FORMAT_LABELS = {
+    "docx": "Word",
+    "txt": "Текст",
+    "md": "Markdown",
+    "pdf": "PDF",
+    "xlsx": "Excel",
+}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _action_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)).isoformat()
+
+
+def _normalize_text(value: object, default: object = "") -> str:
+    if value is None or value == "":
+        return str(default or "").strip()
+    return str(value).strip()
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value if value is not None else {}, ensure_ascii=False, default=str)
+
+
+def _json_loads(value: Any, default: Any = None) -> Any:
+    try:
+        return json.loads(str(value or ""))
+    except Exception:
+        return default
+
+
+def _to_int(value: Any) -> int | None:
+    if value in (None, "", "null"):
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _user_attr(user: Any, key: str, default: Any = None) -> Any:
+    if isinstance(user, dict):
+        return user.get(key, default)
+    return getattr(user, key, default)
+
+
+def _user_dict(user: Any) -> dict[str, Any]:
+    return {
+        "id": int(_user_attr(user, "id", 0) or 0),
+        "username": _normalize_text(_user_attr(user, "username")),
+        "full_name": _normalize_text(_user_attr(user, "full_name")),
+        "department": _normalize_text(_user_attr(user, "department")),
+        "role": _normalize_text(_user_attr(user, "role"), "viewer"),
+        "permissions": _user_attr(user, "permissions", []) or [],
+        "use_custom_permissions": bool(_user_attr(user, "use_custom_permissions", False)),
+        "custom_permissions": _user_attr(user, "custom_permissions", []) or [],
+    }
+
+
+def _has_permission(user: Any, permission: str) -> bool:
+    payload = _user_dict(user)
+    return authorization_service.has_permission(
+        payload.get("role"),
+        permission,
+        use_custom_permissions=bool(payload.get("use_custom_permissions")),
+        custom_permissions=payload.get("custom_permissions") or [],
+    )
+
+
+def _require_permission(user: Any, permission: str) -> None:
+    if not _has_permission(user, permission):
+        raise PermissionError(f"Permission required: {permission}")
+
+
+def _require_any_permission(user: Any, permissions: tuple[str, ...]) -> None:
+    if any(_has_permission(user, permission) for permission in permissions):
+        return
+    raise PermissionError(f"Permission required: one of {', '.join(permissions)}")
+
+
+def _is_admin_user(user: Any) -> bool:
+    return _normalize_text(_user_attr(user, "role")).lower() == "admin"
+
+
+def _build_upload_file(*, file_name: str, content_type: str, payload: bytes) -> UploadFile:
+    import io
+
+    return UploadFile(
+        filename=file_name,
+        file=io.BytesIO(bytes(payload or b"")),
+        headers={"content-type": content_type or "application/octet-stream"},
+    )
+
+
+def _set_expired_if_needed(row: AppAiPendingAction, *, now: datetime | None = None) -> bool:
+    current_now = now or _utc_now()
+    expires_at = row.expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if row.status == ACTION_STATUS_PENDING and expires_at is not None and expires_at <= current_now:
+        row.status = ACTION_STATUS_EXPIRED
+        row.updated_at = current_now
+        return True
+    return False
+
+
+def _transition_pending(session, row: AppAiPendingAction, **values: Any) -> AppAiPendingAction:
+    """Compare-and-set ``pending`` -> new state; the authoritative row is re-read afterwards.
+
+    A plain ORM assignment would write over a concurrent confirm that already claimed the
+    action (``executing``) and had its side effect executed (DAI-02).
+    """
+    session.execute(
+        update(AppAiPendingAction)
+        .where(AppAiPendingAction.id == row.id, AppAiPendingAction.status == ACTION_STATUS_PENDING)
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    session.expire_all()
+    return session.get(AppAiPendingAction, row.id) or row
+
+
+def _action_to_card(row: AppAiPendingAction) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "action_type": row.action_type,
+        "status": row.status,
+        "conversation_id": row.conversation_id,
+        "message_id": row.message_id,
+        "database_id": row.database_id,
+        "preview": _json_loads(row.preview_json, {}) or {},
+        "result": _json_loads(row.result_json, {}) or {},
+        "error_text": _normalize_text(row.error_text) or None,
+        "expires_at": _action_timestamp(row.expires_at),
+        "created_at": _action_timestamp(row.created_at),
+        "updated_at": _action_timestamp(row.updated_at),
+        "executed_by_user_id": row.executed_by_user_id,
+    }
+
+
+def _mark_abandoned_executing_actions(session, rows: list[AppAiPendingAction]) -> None:
+    """Non-mail actions stuck in ``executing`` (process died after the claim) get an explicit unknown outcome.
+
+    Nothing records what the domain service did, so the action is never re-run; the user is told to
+    verify the result themselves instead of seeing a card that stays "executing" forever (DAI-08).
+    """
+    now = _utc_now()
+    for row in rows:
+        if row.status != ACTION_STATUS_EXECUTING or row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}:
+            continue
+        touched = row.updated_at
+        if touched is None:
+            continue
+        if touched.tzinfo is None:
+            touched = touched.replace(tzinfo=timezone.utc)
+        if (now - touched).total_seconds() < 300:
+            continue
+        text = "Результат действия неизвестен. Проверьте результат вручную; повторное выполнение заблокировано."
+        session.execute(update(AppAiPendingAction).where(
+            AppAiPendingAction.id == row.id, AppAiPendingAction.status == ACTION_STATUS_EXECUTING,
+            AppAiPendingAction.updated_at == row.updated_at,
+        ).values(
+            status=ACTION_STATUS_FAILED,
+            result_json=_json_dumps({"success": False, "outcome": "unknown", "message": text}),
+            error_text=text,
+            updated_at=now,
+        ).execution_options(synchronize_session=False))
+        session.refresh(row)
+
+
+def _reconcile_mail_action_results(session, rows: list[AppAiPendingAction]) -> None:
+    """Recover only ledger-proven outcomes; never call Exchange or resend here."""
+    _mark_abandoned_executing_actions(session, rows)
+    candidates = [row for row in rows if row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}
+                  and (row.status == ACTION_STATUS_EXECUTING or (
+                      row.status == ACTION_STATUS_FAILED and (_json_loads(row.result_json, {}) or {}).get("send_outcome") == "unknown"))]
+    if not candidates:
+        return
+    keys = {f"ai-action:{row.id}": row for row in candidates}
+    ledger_rows = list(session.execute(select(AppMailSendIdempotency).where(
+        AppMailSendIdempotency.user_id.in_({int(row.requester_user_id) for row in candidates}),
+        AppMailSendIdempotency.idempotency_key.in_(keys),
+    )).scalars())
+    by_key: dict[str, list] = {}
+    for item in ledger_rows:
+        by_key.setdefault(item.idempotency_key, []).append(item)
+    now = _utc_now()
+    for key, row in keys.items():
+        matches = [item for item in by_key.get(key, []) if int(item.user_id) == int(row.requester_user_id)]
+        ledger = matches[0] if len(matches) == 1 else None
+        result = _json_loads(ledger.response_json, {}) if ledger is not None else {}
+        values = None
+        if ledger is not None and ledger.status == "sent" and result.get("ok") is True:
+            values = {"status": ACTION_STATUS_CONFIRMED, "result_json": _json_dumps({"success": True, **result}), "error_text": None}
+        else:
+            touched = row.updated_at
+            if touched is not None and touched.tzinfo is None:
+                touched = touched.replace(tzinfo=timezone.utc)
+            if row.status == ACTION_STATUS_EXECUTING and touched is not None and (now - touched).total_seconds() >= 300:
+                text = "Результат отправки неизвестен. Проверьте папку «Отправленные»; повторная отправка заблокирована."
+                values = {"status": ACTION_STATUS_FAILED, "result_json": _json_dumps({"success": False, "send_outcome": "unknown", "message": text}), "error_text": text}
+        if values is not None:
+            session.execute(update(AppAiPendingAction).where(
+                AppAiPendingAction.id == row.id, AppAiPendingAction.status == row.status,
+                AppAiPendingAction.updated_at == row.updated_at,
+            ).values(**values, updated_at=now).execution_options(synchronize_session=False))
+            session.refresh(row)
+
+
+def _build_transfer_preview(*, payload: dict[str, Any], database_id: str, items: list[dict[str, Any]], target_owner: dict[str, Any]) -> dict[str, Any]:
+    target_name = (
+        _normalize_text(target_owner.get("OWNER_DISPLAY_NAME"))
+        or _normalize_text(target_owner.get("owner_display_name"))
+        or _normalize_text(payload.get("new_employee"))
+    )
+    return {
+        "title": "Передача оборудования",
+        "summary": f"Передать {len(items)} поз. сотруднику {target_name}",
+        "database_id": database_id,
+        "effects": ["перемещение оборудования", "запись в историю", "генерация акта"],
+        "items": [
+            {
+                "inv_no": _normalize_text(item.get("INV_NO") or item.get("inv_no")),
+                "name": _normalize_text(item.get("ITEM_NAME") or item.get("MODEL_NAME") or item.get("model_name")),
+                "owner": _normalize_text(item.get("FIO") or item.get("employee_name") or item.get("OWNER_DISPLAY_NAME")),
+            }
+            for item in items
+        ],
+        "target": {
+            "owner_no": _to_int(payload.get("new_employee_no")),
+            "name": target_name,
+            "department": _normalize_text(target_owner.get("OWNER_DEPT") or target_owner.get("employee_dept") or payload.get("new_employee_dept")) or None,
+            "branch_no": payload.get("branch_no"),
+            "loc_no": payload.get("loc_no"),
+        },
+        "comment": _normalize_text(payload.get("comment")) or None,
+    }
+
+
+def _build_consumable_preview(*, action_type: str, payload: dict[str, Any], database_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    qty = _to_int(payload.get("qty")) or 0
+    current_qty = _to_int(item.get("QTY") or item.get("qty"))
+    title = "Списание расходника" if action_type == ACTION_CONSUMABLE_CONSUME else "Изменение остатка расходника"
+    if action_type == ACTION_CONSUMABLE_CONSUME:
+        summary = f"Списать {qty} шт. расходника"
+        next_qty = None if current_qty is None else current_qty - qty
+    else:
+        summary = f"Установить остаток {qty} шт."
+        next_qty = qty
+    return {
+        "title": title,
+        "summary": summary,
+        "database_id": database_id,
+        "item": {
+            "item_id": _to_int(item.get("ID") or item.get("id")),
+            "inv_no": _normalize_text(item.get("INV_NO") or item.get("inv_no")) or None,
+            "type": _normalize_text(item.get("TYPE_NAME") or item.get("type_name")) or None,
+            "model": _normalize_text(item.get("MODEL_NAME") or item.get("model_name")) or None,
+            "branch": _normalize_text(item.get("BRANCH_NAME") or item.get("branch_name")) or None,
+            "location": _normalize_text(item.get("LOCATION_NAME") or item.get("location_name")) or None,
+            "qty_current": current_qty,
+            "qty_next": next_qty,
+        },
+        "qty": qty,
+        "reason": _normalize_text(payload.get("reason")) or None,
+    }
+
+
+def _normalize_mail_attachment_refs(value: Any) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in list(value or []):
+        if not isinstance(item, dict):
+            continue
+        message_id = _normalize_text(item.get("message_id"))
+        attachment_id = _normalize_text(item.get("attachment_id") or item.get("id"))
+        if not message_id or not attachment_id:
+            continue
+        key = (message_id, attachment_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(
+            {
+                "message_id": message_id,
+                "attachment_id": attachment_id,
+                "file_name": _normalize_text(item.get("file_name")) or None,
+                "size": _to_int(item.get("size") or item.get("file_size")),
+            }
+        )
+        if len(refs) >= 10:
+            break
+    return refs
+
+
+def _normalize_mail_generated_file_specs(value: Any) -> list[dict[str, Any]]:
+    try:
+        return normalize_generated_file_specs(list(value or []))[:5]
+    except GeneratedFileError as exc:
+        raise ValueError(f"Generated mail attachment is invalid: {exc}") from exc
+
+
+def _mail_generated_file_previews(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in _normalize_mail_generated_file_specs(value):
+        rows.append(
+            {
+                "file_name": _normalize_text(item.get("file_name")) or None,
+                "format": _normalize_text(item.get("format")) or None,
+                "size_bytes": _to_int(item.get("size_bytes")),
+            }
+        )
+    return rows
+
+
+def _build_office_mail_preview_v2(*, action_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    to = [item for item in list(payload.get("to") or []) if _normalize_text(item)]
+    cc = [item for item in list(payload.get("cc") or []) if _normalize_text(item)]
+    bcc = [item for item in list(payload.get("bcc") or []) if _normalize_text(item)]
+    subject = _normalize_text(payload.get("subject"))
+    body = _normalize_text(payload.get("body"))
+    attachments = _normalize_mail_attachment_refs(payload.get("attachment_refs"))
+    generated_files = _mail_generated_file_previews(payload.get("generated_file_specs"))
+    attachment_count = len(attachments) + len(generated_files)
+    warnings: list[str] = []
+    if not subject:
+        warnings.append("Письмо без темы.")
+    if re.search(r"\b(влож|файл|прикреп|attachment|attach)\b", body, flags=re.IGNORECASE) and not attachments:
+        warnings.append("В тексте упоминается вложение, но файлы не выбраны.")
+    recipient_domains = {
+        item.rsplit("@", 1)[1].lower()
+        for item in [*to, *cc, *bcc]
+        if "@" in item and item.rsplit("@", 1)[1]
+    }
+    title = "Ответ на письмо" if action_type == ACTION_OFFICE_MAIL_REPLY else "Отправка письма"
+    return {
+        "title": title,
+        "summary": f"{subject or 'Без темы'} -> {', '.join(to[:3])}{' +' + str(len(to) - 3) if len(to) > 3 else ''}",
+        "effects": ["отправка письма из mailbox текущего пользователя", "подпись будет добавлена автоматически при отправке"],
+        "warnings": warnings,
+        "mail": {
+            "to": to,
+            "cc": cc,
+            "bcc": bcc,
+            "bcc_count": len(bcc),
+            "subject": subject,
+            "body": body,
+            "body_preview": body[:500],
+            "mailbox_id": _normalize_text(payload.get("mailbox_id")) or None,
+            "reply_to_message_id": _normalize_text(payload.get("reply_to_message_id")) or None,
+            "attachment_refs": attachments,
+            "generated_files": generated_files,
+            "attachment_count": attachment_count,
+            "chat_attachment_count": len(attachments),
+            "generated_file_count": len(generated_files),
+            "recipient_domains": sorted(recipient_domains),
+            "signature_auto": True,
+        },
+    }
+
+
+def _build_office_mail_preview(*, action_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    to = [item for item in list(payload.get("to") or []) if _normalize_text(item)]
+    cc = [item for item in list(payload.get("cc") or []) if _normalize_text(item)]
+    subject = _normalize_text(payload.get("subject"))
+    title = "Ответ на письмо" if action_type == ACTION_OFFICE_MAIL_REPLY else "Отправка письма"
+    return {
+        "title": title,
+        "summary": f"{subject or 'Без темы'} -> {', '.join(to[:3])}{' +' + str(len(to) - 3) if len(to) > 3 else ''}",
+        "effects": ["отправка письма из mailbox текущего пользователя"],
+        "mail": {
+            "to": to,
+            "cc": cc,
+            "bcc_count": len(list(payload.get("bcc") or [])),
+            "subject": subject,
+            "body_preview": _normalize_text(payload.get("body"))[:500],
+            "mailbox_id": _normalize_text(payload.get("mailbox_id")) or None,
+            "reply_to_message_id": _normalize_text(payload.get("reply_to_message_id")) or None,
+        },
+    }
+
+
+def _build_office_task_preview(*, action_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if action_type == ACTION_OFFICE_TASK_CREATE:
+        title = "Создание задачи"
+        summary = _normalize_text(payload.get("title"))
+        return {
+            "title": title,
+            "summary": summary,
+            "effects": ["создание Hub-задачи", "уведомление участников"],
+            "task": {
+                "title": summary,
+                "description_preview": _normalize_text(payload.get("description"))[:500],
+                "assignee_user_id": _to_int(payload.get("assignee_user_id")),
+                "assignee_name": _normalize_text(payload.get("assignee_name")) or None,
+                "controller_user_id": _to_int(payload.get("controller_user_id")),
+                "controller_name": _normalize_text(payload.get("controller_name")) or None,
+                "due_at": _normalize_text(payload.get("due_at")) or None,
+                "project_id": _normalize_text(payload.get("project_id")) or None,
+                "project_name": _normalize_text(payload.get("project_name")) or None,
+                "priority": _normalize_text(payload.get("priority"), "normal"),
+            },
+        }
+    if action_type == ACTION_OFFICE_TASK_COMMENT:
+        return {
+            "title": "Комментарий к задаче",
+            "summary": _normalize_text(payload.get("task_title")) or _normalize_text(payload.get("task_id")),
+            "effects": ["добавление комментария к Hub-задаче"],
+            "task": {
+                "task_id": _normalize_text(payload.get("task_id")),
+                "body_preview": _normalize_text(payload.get("body"))[:500],
+            },
+        }
+    operation = _normalize_text(payload.get("operation"))
+    operation_label = {
+        "start": "взять в работу",
+        "submit": "отправить на проверку",
+        "approve": "принять задачу",
+        "reject": "вернуть задачу",
+    }.get(operation, operation)
+    return {
+        "title": "Изменение статуса задачи",
+        "summary": f"{_normalize_text(payload.get('task_title')) or _normalize_text(payload.get('task_id'))}: {operation_label}",
+        "effects": ["изменение статуса Hub-задачи по текущим правилам workflow"],
+        "task": {
+            "task_id": _normalize_text(payload.get("task_id")),
+            "operation": operation,
+            "current_status": _normalize_text(payload.get("current_status")) or None,
+            "comment": _normalize_text(payload.get("comment")) or None,
+        },
+    }
+
+
+def _normalize_report_format(value: Any) -> str:
+    file_format = _normalize_text(value).lower().lstrip(".")
+    aliases = {
+        "excel": "xlsx",
+        "xls": "xlsx",
+        "word": "docx",
+        "document": "docx",
+    }
+    file_format = aliases.get(file_format, file_format)
+    if file_format not in REPORT_FORMAT_CHOICES:
+        raise ValueError(f"Unsupported report format: {file_format or 'empty'}")
+    return file_format
+
+
+def _normalize_report_sections(value: Any) -> list[dict[str, str]]:
+    sections: list[dict[str, str]] = []
+    for item in list(value or []):
+        payload = item if isinstance(item, dict) else {}
+        heading = _normalize_text(payload.get("heading") or payload.get("title")) or "Section"
+        body = _normalize_text(payload.get("body") or payload.get("content") or payload.get("text"))
+        if heading or body:
+            sections.append({"heading": heading, "body": body})
+    return sections[:20]
+
+
+def _normalize_report_tables(value: Any) -> list[dict[str, Any]]:
+    tables: list[dict[str, Any]] = []
+    for index, item in enumerate(list(value or []), start=1):
+        payload = item if isinstance(item, dict) else {}
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or not rows:
+            continue
+        columns = payload.get("columns") if isinstance(payload.get("columns"), list) else []
+        tables.append(
+            {
+                "title": _normalize_text(payload.get("title")) or f"Table {index}",
+                "columns": list(columns or []),
+                "rows": list(rows or []),
+            }
+        )
+    return tables[:20]
+
+
+def _report_table_row_count(tables: list[dict[str, Any]]) -> int:
+    count = 0
+    for table in tables:
+        rows = list(table.get("rows") or [])
+        if rows and all(isinstance(row, list) for row in rows):
+            count += max(0, len(rows) - 1)
+        else:
+            count += len(rows)
+    return count
+
+
+def _normalize_report_source_file_spec(value: Any) -> dict[str, Any] | None:
+    source = value if isinstance(value, dict) else None
+    if source is None:
+        return None
+    metadata = dict(source.get("metadata") or {}) if isinstance(source.get("metadata"), dict) else {}
+    metadata.pop("content_b64", None)
+    probe_source = {
+        "format": "txt",
+        "file_name": _normalize_text(source.get("file_name")) or "generated-file",
+        "title": _normalize_text(source.get("title")) or None,
+        "content": source.get("content"),
+        "rows": list(source.get("rows") or []) if isinstance(source.get("rows"), list) else [],
+        "columns": list(source.get("columns") or []) if isinstance(source.get("columns"), list) else [],
+        "sheets": list(source.get("sheets") or []) if isinstance(source.get("sheets"), list) else [],
+        "metadata": metadata,
+    }
+    normalized = normalize_generated_file_specs([probe_source])[0]
+    normalized.pop("format", None)
+    normalized.pop("size_bytes", None)
+    return normalized
+
+
+def _normalize_report_payload(payload: dict[str, Any], *, database_id: str | None = None) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    title = _normalize_text(source.get("title")) or "Report"
+    summary = _normalize_text(source.get("summary"))
+    file_name_base = _normalize_text(source.get("file_name_base")) or title or "report"
+    normalized_database_id = _normalize_text(source.get("database_id")) or _normalize_text(database_id) or None
+    return {
+        "title": title,
+        "summary": summary,
+        "sections": _normalize_report_sections(source.get("sections")),
+        "tables": _normalize_report_tables(source.get("tables")),
+        "file_name_base": file_name_base,
+        "source_tool_results": list(source.get("source_tool_results") or [])[:20],
+        "source_file_spec": _normalize_report_source_file_spec(source.get("source_file_spec")),
+        "database_id": normalized_database_id,
+    }
+
+
+def _normalize_report_tool_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    columns: list[dict[str, str]] = []
+    columns_set: set[str] = set()
+    for row in list(rows or []):
+        for key in row.keys():
+            normalized = _normalize_text(key)
+            if normalized and normalized not in columns_set:
+                columns_set.add(normalized)
+                columns.append({"key": normalized, "label": normalized})
+            if len(columns) >= 20:
+                break
+        if len(columns) >= 20:
+            break
+    return columns
+
+
+def _generic_report_tool_tables_from_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_title = ""
+    best_rows: list[dict[str, Any]] = []
+    for result in list(results or []):
+        if not isinstance(result, dict) or not bool(result.get("ok")):
+            continue
+        tool_id = _normalize_text(result.get("tool_id"))
+        if not tool_id or tool_id.startswith("ai.files."):
+            continue
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        candidates: list[list[dict[str, Any]]] = []
+        for key in ("items", "rows", "results", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                rows = [item for item in list(value or []) if isinstance(item, dict)]
+                candidates.append(rows)
+        for candidate in candidates:
+            if len(candidate) > len(best_rows):
+                best_rows = candidate
+                best_title = _normalize_text(result.get("tool_id")) or "Data"
+    if not best_rows:
+        return []
+    return [
+        {
+            "title": best_title or "Data",
+            "columns": _normalize_report_tool_rows(best_rows),
+            "rows": best_rows,
+        }
+    ]
+
+
+def _is_report_source_file_spec_empty_for_format(spec: dict[str, Any] | None, file_format: str) -> bool:
+    normalized = spec or {}
+    rows = list(normalized.get("rows") or [])
+    sheets = list(normalized.get("sheets") or [])
+    if file_format == "xlsx":
+        return not rows and not sheets and not _normalize_text(normalized.get("content"))
+    if file_format == "csv":
+        return not rows
+    return not rows and not _normalize_text(normalized.get("content"))
+
+
+def _repair_report_file_spec_with_tool_results(spec: dict[str, Any], source_tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(spec, dict) or not source_tool_results:
+        return spec
+    try:
+        from backend.ai_chat import service as ai_chat_service
+
+        repaired = ai_chat_service._repair_generated_file_specs_with_tool_data([spec], source_tool_results)
+        if repaired and isinstance(repaired[0], dict):
+            return repaired[0]
+    except Exception:
+        return spec
+    return spec
+
+
+def _build_report_format_preview(*, payload: dict[str, Any], database_id: str | None) -> dict[str, Any]:
+    tables = _normalize_report_tables(payload.get("tables"))
+    source_file_spec = payload.get("source_file_spec") if isinstance(payload.get("source_file_spec"), dict) else {}
+    source_rows = list(source_file_spec.get("rows") or [])
+    source_sheets = list(source_file_spec.get("sheets") or [])
+    source_row_count = len(source_rows) + sum(
+        len(list(item.get("rows") or [])) for item in source_sheets if isinstance(item, dict)
+    )
+    source_results = [item for item in list(payload.get("source_tool_results") or []) if isinstance(item, dict)]
+    source_tool_ids = sorted({_normalize_text(item.get("tool_id")) for item in source_results if _normalize_text(item.get("tool_id"))})
+    return {
+        "title": _normalize_text(payload.get("title")) or "Report",
+        "summary": _normalize_text(payload.get("summary")) or "Choose a report format.",
+        "database_id": _normalize_text(payload.get("database_id")) or _normalize_text(database_id) or None,
+        "formats": list(REPORT_FORMAT_CHOICES),
+        "report": {
+            "title": _normalize_text(payload.get("title")) or "Report",
+            "summary": _normalize_text(payload.get("summary")) or None,
+            "table_count": len(tables),
+            "row_count": _report_table_row_count(tables) or source_row_count,
+            "source": ", ".join(source_tool_ids[:4]) or ("User content" if source_file_spec else "ITinvent"),
+            "formats": list(REPORT_FORMAT_CHOICES),
+        },
+    }
+
+
+def build_choice_card(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    title: str,
+    summary: str,
+    choices: list[dict[str, Any]],
+    kind: str = "",
+) -> dict[str, Any]:
+    """Buttons the employee presses instead of typing an answer (for example which of several namesakes).
+
+    ``kind="suggestions"`` marks optional next-step hints: the web client shows them above the composer, not in the bubble.
+
+    Each choice is ``{"label": shown on the button, "reply": text sent to the assistant as the employee's message}``.
+    """
+    normalized: list[dict[str, str]] = []
+    for index, item in enumerate(list(choices or [])[:AI_CHOICE_MAX_OPTIONS]):
+        label = _normalize_text((item or {}).get("label"))[:160]
+        reply = _normalize_text((item or {}).get("reply")) or label
+        if label and reply:
+            normalized.append({"id": str(index + 1), "label": label, "reply": reply[:500]})
+    if len(normalized) < 2:
+        raise ValueError("A choice card needs at least two options")
+    return create_pending_action(
+        action_type=ACTION_AI_CHOICE,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload={"choices": normalized},
+        preview={
+            "title": _normalize_text(title) or "Выберите вариант",
+            "summary": _normalize_text(summary),
+            "choices": [{"id": item["id"], "label": item["label"]} for item in normalized],
+            **({"kind": kind} if kind else {}),
+        },
+    )
+
+
+AI_QUICK_REPLIES_MAX = 4
+
+
+def build_quick_replies_card(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    replies: Any,
+    title: str = "Что дальше?",
+) -> dict[str, Any] | None:
+    """Buttons with the model's suggested next requests; None when there is nothing to show.
+
+    A message carries one card, so a run that already produced another card (a draft, a format choice)
+    keeps it and the suggestions are dropped.
+    """
+    if not isinstance(replies, list):
+        return None
+    choices: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in replies:
+        if not isinstance(item, dict):
+            continue
+        label = _normalize_text(item.get("label"))[:60]
+        reply = _normalize_text(item.get("reply")) or label
+        key = reply.casefold()
+        if not label or not reply or key in seen:
+            continue
+        seen.add(key)
+        choices.append({"label": label, "reply": reply})
+        if len(choices) >= AI_QUICK_REPLIES_MAX:
+            break
+    normalized_run_id = _normalize_text(run_id)
+    if len(choices) < 2 or not normalized_run_id:
+        return None
+    with app_session() as session:
+        existing = session.execute(
+            select(AppAiPendingAction.id)
+            .where(AppAiPendingAction.run_id == normalized_run_id)
+            .where(AppAiPendingAction.message_id.is_(None))
+            .limit(1)
+        ).first()
+    if existing is not None:
+        return None
+    try:
+        return build_choice_card(
+            conversation_id=conversation_id,
+            run_id=normalized_run_id,
+            requester_user_id=requester_user_id,
+            title=title,
+            summary="",
+            choices=choices,
+            kind="suggestions",
+        )
+    except Exception:
+        logger.warning("AI quick replies card was not created: run_id=%s", normalized_run_id, exc_info=True)
+        return None
+
+
+def _execute_ai_choice(*, row: AppAiPendingAction, payload: dict[str, Any], current_user: Any, payload_overrides: dict[str, Any] | None) -> dict[str, Any]:
+    _require_permission(current_user, PERM_CHAT_AI_USE)
+    chosen_id = _normalize_text((payload_overrides or {}).get("choice"))
+    choice = next((item for item in list(payload.get("choices") or []) if _normalize_text(item.get("id")) == chosen_id), None)
+    if choice is None:
+        raise ValueError("Unknown choice")
+    from backend.chat.service import chat_service
+
+    message = chat_service.send_message(
+        current_user_id=int(_user_attr(current_user, "id", 0) or 0),
+        conversation_id=_normalize_text(row.conversation_id),
+        body=_normalize_text(choice.get("reply")),
+    )
+    return {
+        "success": True,
+        "choice": choice.get("label"),
+        "message_id": _normalize_text(message.get("id")) or None,
+        "conversation_id": _normalize_text(row.conversation_id),
+    }
+
+
+def build_report_format_choice(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    database_id: str | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_payload = _normalize_report_payload(payload, database_id=database_id)
+    return create_pending_action(
+        action_type=ACTION_REPORT_FORMAT_CHOICE,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=_normalize_text(database_id) or _normalize_text(normalized_payload.get("database_id")) or None,
+        payload=normalized_payload,
+        preview=_build_report_format_preview(payload=normalized_payload, database_id=database_id),
+    )
+
+
+def _normalize_doc_convert_format(value: object) -> str:
+    text = _normalize_text(value).lower().lstrip(".")
+    aliases = {
+        "word": "docx",
+        "document": "docx",
+        "doc": "docx",
+        "text": "txt",
+        "plaintext": "txt",
+        "markdown": "md",
+        "excel": "xlsx",
+        "xls": "xlsx",
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in DOC_CONVERT_FORMAT_CHOICES:
+        raise ValueError("Unsupported document convert format")
+    return normalized
+
+
+def _normalize_doc_convert_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    formats = [
+        item
+        for item in list(payload.get("formats") or DOC_CONVERT_FORMAT_CHOICES)
+        if _normalize_text(item).lower() in DOC_CONVERT_FORMAT_CHOICES
+    ]
+    if not formats:
+        formats = list(DOC_CONVERT_FORMAT_CHOICES)
+    structure_pages = [
+        item for item in list(payload.get("structure_pages") or []) if isinstance(item, dict)
+    ]
+    signatures = [
+        item for item in list(payload.get("signatures") or []) if isinstance(item, dict) and item.get("png_b64")
+    ]
+    return {
+        "markdown": str(payload.get("markdown") or ""),
+        "title": _normalize_text(payload.get("title")) or "Документ",
+        "source_names": [str(item) for item in list(payload.get("source_names") or []) if str(item).strip()],
+        "warnings": [str(item) for item in list(payload.get("warnings") or []) if str(item).strip()],
+        "table_count": int(payload.get("table_count") or 0),
+        "page_count": int(payload.get("page_count") or 0),
+        "used_vision": bool(payload.get("used_vision")),
+        "formats": formats,
+        "structure_pages": structure_pages,
+        "signatures": signatures,
+        "high_fidelity": bool(payload.get("high_fidelity", True)),
+        "verify_fidelity": float(payload.get("verify_fidelity") or 0.0),
+    }
+
+
+def _build_doc_convert_format_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_doc_convert_payload(payload)
+    summary_parts = [
+        f"Страниц: {normalized['page_count']}",
+        f"Таблиц: {normalized['table_count']}",
+    ]
+    if normalized["used_vision"]:
+        summary_parts.append("vision")
+    if normalized.get("structure_pages"):
+        summary_parts.append("high-fidelity")
+    fidelity = float(normalized.get("verify_fidelity") or 0.0)
+    if fidelity > 0:
+        summary_parts.append(f"точность: {fidelity:.0%}")
+    if normalized.get("signatures"):
+        summary_parts.append(f"подписей: {len(normalized['signatures'])}")
+    return {
+        "title": "Выберите формат",
+        "summary": "Документ распознан. Нажмите нужный формат.",
+        "formats": list(normalized["formats"]),
+        "format_labels": {key: DOC_CONVERT_FORMAT_LABELS.get(key, key) for key in normalized["formats"]},
+        "doc_convert": {
+            "title": normalized["title"],
+            "page_count": normalized["page_count"],
+            "table_count": normalized["table_count"],
+            "summary": " · ".join(summary_parts),
+            "warnings": list(normalized["warnings"]),
+        },
+    }
+
+
+def build_doc_convert_format_choice(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_payload = _normalize_doc_convert_payload(payload)
+    if not _normalize_text(normalized_payload.get("markdown")):
+        raise ValueError("Converted markdown is empty")
+    return create_pending_action(
+        action_type=ACTION_DOC_CONVERT_FORMAT_CHOICE,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload=normalized_payload,
+        preview=_build_doc_convert_format_preview(normalized_payload),
+    )
+
+
+def _execute_doc_convert_format_choice(
+    *,
+    row: AppAiPendingAction,
+    payload: dict[str, Any],
+    current_user: Any,
+    payload_overrides: dict[str, Any] | None,
+) -> dict[str, Any]:
+    requester_user_id = int(getattr(row, "requester_user_id", 0) or 0)
+    current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+    if requester_user_id and requester_user_id != current_user_id:
+        raise PermissionError("Only the requester can choose the document format")
+    file_format = _normalize_doc_convert_format((payload_overrides or {}).get("format"))
+    markdown = str(payload.get("markdown") or "")
+    if not markdown.strip():
+        raise ValueError("Cached document markdown is empty")
+    from backend.ai_chat.doc_convert_runtime import build_upload_from_export, export_converted_markdown
+
+    exported = export_converted_markdown(
+        markdown=markdown,
+        export_format=file_format,
+        source_name=_normalize_text(payload.get("title")) or "document",
+        title=_normalize_text(payload.get("title")) or "Документ",
+        structure_pages=list(payload.get("structure_pages") or []),
+        signatures=list(payload.get("signatures") or []),
+    )
+    uploads: list[UploadFile] = []
+    try:
+        uploads = [build_upload_from_export(exported)]
+        from backend.chat.service import chat_service
+
+        sender_user_id = _resolve_action_message_sender(row, fallback_user_id=current_user_id)
+        body_bits = [f"Файл: {exported.get('file_name')}"]
+        for warning in list(exported.get("warnings") or [])[:3]:
+            body_bits.append(str(warning))
+        message = chat_service.send_files(
+            current_user_id=sender_user_id,
+            conversation_id=_normalize_text(row.conversation_id),
+            body="\n".join(body_bits),
+            uploads=uploads,
+            reply_to_message_id=_normalize_text(row.message_id) or None,
+            defer_push_notifications=True,
+        )
+        message_id = _normalize_text(message.get("id"))
+        if message_id:
+            _publish_chat_message_created(conversation_id=_normalize_text(row.conversation_id), message_id=message_id)
+        return {
+            "success": True,
+            "keep_pending": True,
+            "format": file_format,
+            "message_id": message_id or None,
+            "generated_files": [
+                {
+                    "attachment_id": _normalize_text(item.get("id")) or None,
+                    "file_name": _normalize_text(item.get("file_name")) or None,
+                    "size_bytes": _to_int(item.get("file_size")),
+                }
+                for item in list(message.get("attachments") or [])
+                if isinstance(item, dict)
+            ],
+        }
+    finally:
+        for upload in uploads:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+
+
+
+def create_pending_action(
+    *,
+    action_type: str,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    database_id: str | None,
+    payload: dict[str, Any],
+    preview: dict[str, Any],
+    replace_action_id: str | None = None,
+) -> dict[str, Any]:
+    now = _utc_now()
+    with app_session() as session:
+        from backend.ai_chat.access import require_conversation_access
+        require_conversation_access(conversation_id, requester_user_id, db=session, lock=True)
+        new_action_id = str(uuid4())
+        if replace_action_id:
+            replaced = session.execute(
+                update(AppAiPendingAction).where(
+                    AppAiPendingAction.id == replace_action_id,
+                    AppAiPendingAction.conversation_id == conversation_id,
+                    AppAiPendingAction.requester_user_id == requester_user_id,
+                    AppAiPendingAction.action_type.in_([ACTION_OFFICE_MAIL_SEND, ACTION_CHAT_MESSAGE_SEND]),
+                    AppAiPendingAction.status == ACTION_STATUS_PENDING,
+                    AppAiPendingAction.expires_at > now,
+                ).values(
+                    status=ACTION_STATUS_CANCELLED,
+                    result_json=_json_dumps({"superseded_by": new_action_id}),
+                    updated_at=now,
+                )
+            )
+            if int(replaced.rowcount or 0) != 1:
+                raise ValueError("Черновик уже отправлен, заменён, истёк или недоступен. Обновите карточку.")
+        row = AppAiPendingAction(
+            id=new_action_id,
+            action_type=_normalize_text(action_type),
+            status=ACTION_STATUS_PENDING,
+            conversation_id=_normalize_text(conversation_id),
+            run_id=_normalize_text(run_id),
+            message_id=None,
+            requester_user_id=int(requester_user_id or 0),
+            database_id=_normalize_text(database_id) or None,
+            payload_json=_json_dumps(payload),
+            preview_json=_json_dumps(preview),
+            result_json="{}",
+            error_text=None,
+            expires_at=now + DRAFT_EXPIRES_IN,
+            executed_by_user_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(row)
+        session.flush()
+        return _action_to_card(row)
+
+
+def attach_run_actions_to_message(*, run_id: str, message_id: str) -> list[dict[str, Any]]:
+    normalized_run_id = _normalize_text(run_id)
+    normalized_message_id = _normalize_text(message_id)
+    if not normalized_run_id or not normalized_message_id:
+        return []
+    now = _utc_now()
+    with app_session() as session:
+        rows = list(
+            session.execute(
+                select(AppAiPendingAction)
+                .where(AppAiPendingAction.run_id == normalized_run_id)
+                .where(AppAiPendingAction.message_id.is_(None))
+                .order_by(AppAiPendingAction.created_at.asc())
+            ).scalars()
+        )
+        for row in rows:
+            row.message_id = normalized_message_id
+            row.updated_at = now
+        session.flush()
+        return [_action_to_card(row) for row in rows]
+
+
+def get_action_card_for_message(message_id: str) -> dict[str, Any] | None:
+    normalized_message_id = _normalize_text(message_id)
+    if not normalized_message_id:
+        return None
+    cards = get_action_cards_for_messages([normalized_message_id])
+    return cards.get(normalized_message_id)
+
+
+def redisplay_pending_action(*, action_id: str, conversation_id: str, requester_user_id: int,
+                            message_id: str) -> dict[str, Any]:
+    """Move the same pending card to the retry response, without extending its TTL."""
+    now = _utc_now()
+    with app_session() as session:
+        from backend.ai_chat.access import require_conversation_access
+        require_conversation_access(conversation_id, requester_user_id, db=session, lock=True)
+        changed = session.execute(update(AppAiPendingAction).where(
+            AppAiPendingAction.id == action_id,
+            AppAiPendingAction.conversation_id == conversation_id,
+            AppAiPendingAction.requester_user_id == int(requester_user_id),
+            AppAiPendingAction.status == ACTION_STATUS_PENDING,
+            AppAiPendingAction.expires_at > now,
+        ).values(message_id=message_id, updated_at=now))
+        if int(changed.rowcount or 0) != 1:
+            raise ValueError("Черновик уже отправлен, заменён, истёк или недоступен. Обновите карточку.")
+        return _action_to_card(session.get(AppAiPendingAction, action_id))
+
+
+def get_action_cards_for_messages(message_ids: list[str]) -> dict[str, dict[str, Any]]:
+    normalized_ids = []
+    seen: set[str] = set()
+    for raw_id in list(message_ids or []):
+        normalized_message_id = _normalize_text(raw_id)
+        if not normalized_message_id or normalized_message_id in seen:
+            continue
+        seen.add(normalized_message_id)
+        normalized_ids.append(normalized_message_id)
+    if not normalized_ids:
+        return {}
+
+    with app_session() as session:
+        rows = list(
+            session.execute(
+                select(AppAiPendingAction)
+                .where(AppAiPendingAction.message_id.in_(normalized_ids))
+                .order_by(
+                    AppAiPendingAction.message_id.asc(),
+                    AppAiPendingAction.created_at.desc(),
+                )
+            ).scalars()
+        )
+        cards_by_message_id: dict[str, dict[str, Any]] = {}
+        _reconcile_mail_action_results(session, rows)
+        for row in rows:
+            normalized_message_id = _normalize_text(row.message_id)
+            if not normalized_message_id or normalized_message_id in cards_by_message_id:
+                continue
+            _set_expired_if_needed(row)
+            cards_by_message_id[normalized_message_id] = _action_to_card(row)
+        session.flush()
+        return cards_by_message_id
+
+
+def build_transfer_draft(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    database_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    inv_nos = []
+    for raw in list(payload.get("inv_nos") or []):
+        inv_no = _normalize_text(raw)
+        if inv_no and inv_no not in inv_nos:
+            inv_nos.append(inv_no)
+    if not inv_nos:
+        raise ValueError("inv_nos is required")
+
+    items: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for inv_no in inv_nos:
+        item = queries.get_equipment_by_inv(inv_no, database_id)
+        if isinstance(item, dict):
+            items.append(item)
+        else:
+            missing.append(inv_no)
+    if missing:
+        raise ValueError(f"Equipment not found: {', '.join(missing)}")
+
+    target_employee_name = _normalize_text(payload.get("new_employee"))
+    target_employee_no = _to_int(payload.get("new_employee_no"))
+    if target_employee_no is None and target_employee_name:
+        target_employee_no = queries.get_owner_no_by_name(target_employee_name, strict=True, db_id=database_id)
+    if target_employee_no is None:
+        raise ValueError("Target employee is not resolved exactly. Ask the user to choose an existing employee.")
+    target_owner = queries.get_owner_by_no(int(target_employee_no), database_id)
+    if not target_owner:
+        raise ValueError("Target employee was not found")
+
+    normalized_payload = {
+        "inv_nos": inv_nos,
+        "new_employee": (
+            _normalize_text(target_owner.get("OWNER_DISPLAY_NAME"))
+            or _normalize_text(target_owner.get("owner_display_name"))
+            or target_employee_name
+        ),
+        "new_employee_no": int(target_employee_no),
+        "new_employee_dept": _normalize_text(payload.get("new_employee_dept")) or None,
+        "branch_no": payload.get("branch_no"),
+        "loc_no": payload.get("loc_no"),
+        "comment": _normalize_text(payload.get("comment")) or None,
+    }
+    preview = _build_transfer_preview(
+        payload=normalized_payload,
+        database_id=database_id,
+        items=items,
+        target_owner=target_owner,
+    )
+    return create_pending_action(
+        action_type=ACTION_TRANSFER,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=database_id,
+        payload=normalized_payload,
+        preview=preview,
+    )
+
+
+def _resolve_consumable_item(*, database_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    item_id = _to_int(payload.get("item_id"))
+    inv_no = _normalize_text(payload.get("inv_no"))
+    rows = list(queries.get_consumables_lookup(db_id=database_id, limit=1000) or [])
+    for row in rows:
+        row_item_id = _to_int(row.get("ID") or row.get("id"))
+        row_inv_no = _normalize_text(row.get("INV_NO") or row.get("inv_no"))
+        if item_id is not None and row_item_id == item_id:
+            return row
+        if inv_no and row_inv_no == inv_no:
+            return row
+    raise ValueError("Consumable item was not found")
+
+
+def build_consumable_draft(
+    *,
+    action_type: str,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    database_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    qty = _to_int(payload.get("qty"))
+    if qty is None or qty < 0 or (action_type == ACTION_CONSUMABLE_CONSUME and qty <= 0):
+        raise ValueError("Invalid qty")
+    item = _resolve_consumable_item(database_id=database_id, payload=payload)
+    current_qty = _to_int(item.get("QTY") or item.get("qty"))
+    if action_type == ACTION_CONSUMABLE_CONSUME and current_qty is not None and current_qty < qty:
+        raise ValueError("Insufficient consumable quantity")
+    item_id = _to_int(item.get("ID") or item.get("id"))
+    inv_no = _normalize_text(item.get("INV_NO") or item.get("inv_no"))
+    normalized_payload = {
+        "item_id": item_id,
+        "inv_no": inv_no or None,
+        "qty": qty,
+        "reason": _normalize_text(payload.get("reason")) or None,
+    }
+    return create_pending_action(
+        action_type=action_type,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=database_id,
+        payload=normalized_payload,
+        preview=_build_consumable_preview(
+            action_type=action_type,
+            payload=normalized_payload,
+            database_id=database_id,
+            item=item,
+        ),
+    )
+
+
+def build_office_mail_draft(
+    *,
+    action_type: str,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if action_type not in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}:
+        raise ValueError(f"Unsupported office mail action_type: {action_type}")
+    to = [_normalize_text(item) for item in list(payload.get("to") or []) if _normalize_text(item)]
+    if not to:
+        raise ValueError("At least one recipient is required")
+    subject = _normalize_text(payload.get("subject"))
+    body = _normalize_text(payload.get("body"))
+    if not subject:
+        raise ValueError("subject is required")
+    if not body:
+        raise ValueError("body is required")
+    normalized_payload = {
+        "mailbox_id": _normalize_text(payload.get("mailbox_id")) or None,
+        "to": to,
+        "cc": [_normalize_text(item) for item in list(payload.get("cc") or []) if _normalize_text(item)],
+        "bcc": [_normalize_text(item) for item in list(payload.get("bcc") or []) if _normalize_text(item)],
+        "subject": subject,
+        "body": body,
+        "is_html": bool(payload.get("is_html", True)),
+        "reply_to_message_id": _normalize_text(payload.get("reply_to_message_id")) or "",
+        "attachment_refs": _normalize_mail_attachment_refs(payload.get("attachment_refs")),
+        "generated_file_specs": _normalize_mail_generated_file_specs(payload.get("generated_file_specs")),
+    }
+    if action_type == ACTION_OFFICE_MAIL_REPLY and not normalized_payload["reply_to_message_id"]:
+        raise ValueError("reply_to_message_id is required")
+    return create_pending_action(
+        action_type=action_type,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload=normalized_payload,
+        preview=_build_office_mail_preview_v2(action_type=action_type, payload=normalized_payload),
+        replace_action_id=_normalize_text(payload.get("replace_action_id")) or None,
+    )
+
+
+def build_office_task_draft(
+    *,
+    action_type: str,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if action_type not in {ACTION_OFFICE_TASK_CREATE, ACTION_OFFICE_TASK_COMMENT, ACTION_OFFICE_TASK_STATUS}:
+        raise ValueError(f"Unsupported office task action_type: {action_type}")
+    normalized_payload = dict(payload or {})
+    return create_pending_action(
+        action_type=action_type,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload=normalized_payload,
+        preview=_build_office_task_preview(action_type=action_type, payload=normalized_payload),
+    )
+
+
+def _build_helpdesk_request_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    priority = _normalize_text(payload.get("priority"), "normal")
+    return {
+        "title": "Обращение в IT",
+        "summary": _normalize_text(payload.get("title")),
+        "effects": ["создание задачи в IT-проекте", "уведомление IT-отдела"],
+        "task": {
+            "title": _normalize_text(payload.get("title")),
+            "description_preview": _normalize_text(payload.get("description"))[:500],
+            "category": _normalize_text(payload.get("category_label")) or None,
+            "priority": priority,
+            "urgent": priority == "high",
+            "computers": [str(item) for item in list(payload.get("computers") or [])[:5]],
+        },
+    }
+
+
+def build_helpdesk_request_draft(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_payload = dict(payload or {})
+    return create_pending_action(
+        action_type=ACTION_HELPDESK_REQUEST_CREATE,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload=normalized_payload,
+        preview=_build_helpdesk_request_preview(normalized_payload),
+    )
+
+
+def _helpdesk_task_description(payload: dict[str, Any]) -> str:
+    lines = [_normalize_text(payload.get("description")), ""]
+    lines.append(f"Категория: {_normalize_text(payload.get('category_label')) or 'Другое'}")
+    requester = _normalize_text(payload.get("requester_name"))
+    login = _normalize_text(payload.get("requester_login"))
+    if requester or login:
+        lines.append(f"Сотрудник: {requester}{f' ({login})' if login else ''}".strip())
+    computers = [str(item) for item in list(payload.get("computers") or []) if _normalize_text(item)]
+    if computers:
+        lines.append("Компьютер: " + "; ".join(computers[:5]))
+    lines.append("")
+    lines.append("Создано через ИИ-ассистента Hub.")
+    return "\n".join(lines).strip()
+
+
+def _execute_helpdesk_request_create(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    # Self-service: any employee who may use the assistant can file a request to IT;
+    # the IT project and the dispatcher come from server settings, not from the model.
+    _require_permission(current_user, PERM_CHAT_AI_USE)
+    from backend.ai_chat.tools.self_service import helpdesk_settings
+
+    settings = helpdesk_settings()
+    if not settings.get("project_id") or not settings.get("assignee_user_id"):
+        raise ValueError("Приём обращений в IT через ассистента не настроен")
+    task = hub_service.create_task(
+        title=f"[IT] {_normalize_text(payload.get('title'))}"[:300],
+        description=_helpdesk_task_description(payload),
+        assignee_user_id=int(settings["assignee_user_id"]),
+        controller_user_id=int(settings.get("controller_user_id") or 0),
+        due_at=None,
+        project_id=settings["project_id"],
+        priority="high" if _normalize_text(payload.get("priority")) == "high" else "normal",
+        actor=_user_dict(current_user),
+    )
+    return {"success": True, "task": task, "task_id": _normalize_text(task.get("id")) or None}
+
+
+_WORKS_ACTION_TITLES = {
+    ACTION_WORKS_CARTRIDGE: "Замена картриджа",
+    ACTION_WORKS_BATTERY: "Замена батареи",
+    ACTION_WORKS_COMPONENT: "Замена комплектующей",
+    ACTION_WORKS_PC_CLEANING: "Чистка ПК",
+}
+
+
+def _equip_field(item: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        text = _normalize_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _resolve_works_equipment(*, database_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    inv_no = _normalize_text(payload.get("inv_no"))
+    serial = _normalize_text(payload.get("serial_number") or payload.get("serial_no"))
+    if inv_no:
+        item = queries.get_equipment_by_inv(inv_no, database_id)
+        if isinstance(item, dict):
+            return item
+        raise ValueError(f"Equipment not found by inventory number: {inv_no}")
+    if serial:
+        rows = list(queries.search_equipment_by_serial(serial, database_id) or [])
+        normalized_serial = serial.casefold()
+        for row in rows:
+            row_serial = _equip_field(row, "SERIAL_NO", "serial_no", "serial_number").casefold()
+            if row_serial == normalized_serial:
+                return row
+        if rows:
+            return rows[0]
+        raise ValueError(f"Equipment not found by serial number: {serial}")
+    raise ValueError("inv_no or serial_number is required")
+
+
+def _build_works_preview(*, action_type: str, payload: dict[str, Any], database_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    model = _equip_field(item, "MODEL_NAME", "model_name", "ITEM_NAME", "item_name")
+    inv_no = _equip_field(item, "INV_NO", "inv_no") or _normalize_text(payload.get("inv_no"))
+    serial = _equip_field(item, "SERIAL_NO", "serial_no", "serial_number") or _normalize_text(payload.get("serial_number"))
+    details: dict[str, Any] = {}
+    if action_type == ACTION_WORKS_CARTRIDGE:
+        details = {
+            "cartridge_color": _normalize_text(payload.get("cartridge_color")) or None,
+            "component_type": _normalize_text(payload.get("component_type")) or None,
+            "component_color": _normalize_text(payload.get("component_color")) or None,
+            "cartridge_model": _normalize_text(payload.get("cartridge_model")) or None,
+        }
+    elif action_type == ACTION_WORKS_COMPONENT:
+        details = {
+            "component_type": _normalize_text(payload.get("component_type")) or None,
+            "component_model": _normalize_text(payload.get("component_model")) or None,
+            "component_name": _normalize_text(payload.get("component_name")) or None,
+        }
+    title = _WORKS_ACTION_TITLES.get(action_type, "Операция обслуживания")
+    return {
+        "title": title,
+        "summary": f"{title}: {model or serial or inv_no}",
+        "database_id": database_id,
+        "effects": ["запись операции в журнал работ", "отметка в карточке оборудования"],
+        "equipment": {
+            "inv_no": inv_no or None,
+            "serial_no": serial or None,
+            "model": model or None,
+            "branch": _equip_field(item, "BRANCH_NAME", "branch_name", "branch") or None,
+            "location": _equip_field(item, "LOCATION_NAME", "location_name", "location") or None,
+            "employee": _equip_field(item, "OWNER_DISPLAY_NAME", "FIO", "employee_name", "owner_display_name") or None,
+        },
+        "details": details,
+        "comment": _normalize_text(payload.get("comment")) or None,
+    }
+
+
+def build_works_draft(
+    *,
+    action_type: str,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    database_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if action_type not in ACTION_WORKS_TYPES:
+        raise ValueError(f"Unsupported works action_type: {action_type}")
+    item = _resolve_works_equipment(database_id=database_id, payload=payload)
+    normalized_payload = {
+        "inv_no": _equip_field(item, "INV_NO", "inv_no") or _normalize_text(payload.get("inv_no")),
+        "serial_number": _equip_field(item, "SERIAL_NO", "serial_no", "serial_number") or _normalize_text(payload.get("serial_number")),
+        "model_name": _equip_field(item, "MODEL_NAME", "model_name", "ITEM_NAME", "item_name"),
+        "manufacturer": _equip_field(item, "MANUFACTURER", "manufacturer", "VENDOR_NAME", "vendor_name"),
+        "hw_serial_no": _equip_field(item, "HW_SERIAL_NO", "hw_serial_no"),
+        "equipment_id": _to_int(item.get("ID") or item.get("id") or item.get("EQUIPMENT_ID") or item.get("equipment_id")),
+        "current_description": _equip_field(item, "DESCRIPTION", "description", "DESCR", "descr"),
+        "branch": _equip_field(item, "BRANCH_NAME", "branch_name", "branch"),
+        "location": _equip_field(item, "LOCATION_NAME", "location_name", "location"),
+        "employee": _equip_field(item, "OWNER_DISPLAY_NAME", "FIO", "employee_name", "owner_display_name") or _normalize_text(payload.get("employee")),
+        "db_name": _normalize_text(database_id),
+        "comment": _normalize_text(payload.get("comment")) or None,
+    }
+    if action_type == ACTION_WORKS_CARTRIDGE:
+        normalized_payload.update(
+            {
+                "cartridge_color": _normalize_text(payload.get("cartridge_color")) or None,
+                "component_type": _normalize_text(payload.get("component_type")) or None,
+                "component_color": _normalize_text(payload.get("component_color")) or None,
+                "cartridge_model": _normalize_text(payload.get("cartridge_model")) or None,
+            }
+        )
+    elif action_type == ACTION_WORKS_COMPONENT:
+        normalized_payload.update(
+            {
+                "component_type": _normalize_text(payload.get("component_type")) or None,
+                "component_model": _normalize_text(payload.get("component_model")) or None,
+                "component_name": _normalize_text(payload.get("component_name")) or None,
+            }
+        )
+    return create_pending_action(
+        action_type=action_type,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=database_id,
+        payload=normalized_payload,
+        preview=_build_works_preview(
+            action_type=action_type,
+            payload=normalized_payload,
+            database_id=database_id,
+            item=item,
+        ),
+    )
+
+
+def _execute_works_action(*, action_type: str, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_DATABASE_WRITE)
+    from backend.json_db.works import WorksManager
+
+    manager = WorksManager()
+    serial = _normalize_text(payload.get("serial_number"))
+    inv_no = _normalize_text(payload.get("inv_no"))
+    common = {
+        "inv_no": inv_no or None,
+        "db_name": _normalize_text(payload.get("db_name")) or None,
+        "branch": _normalize_text(payload.get("branch")),
+        "location": _normalize_text(payload.get("location")),
+        "additional_data": {"comment": _normalize_text(payload.get("comment"))} if _normalize_text(payload.get("comment")) else None,
+        "equipment_id": _to_int(payload.get("equipment_id")),
+        "current_description": _normalize_text(payload.get("current_description")) or None,
+        "hw_serial_no": _normalize_text(payload.get("hw_serial_no")) or None,
+        "model_name": _normalize_text(payload.get("model_name")) or None,
+        "manufacturer": _normalize_text(payload.get("manufacturer")) or None,
+    }
+    if action_type == ACTION_WORKS_CARTRIDGE:
+        record = manager.add_cartridge_replacement(
+            printer_model=_normalize_text(payload.get("model_name")) or serial or inv_no,
+            cartridge_color=_normalize_text(payload.get("cartridge_color")),
+            serial_number=serial or None,
+            component_type=_normalize_text(payload.get("component_type")) or None,
+            component_color=_normalize_text(payload.get("component_color")) or None,
+            cartridge_model=_normalize_text(payload.get("cartridge_model")) or None,
+            detection_source="ai_chat",
+            employee=_normalize_text(payload.get("employee")) or None,
+            **common,
+        )
+    elif action_type == ACTION_WORKS_BATTERY:
+        if not serial:
+            raise ValueError("serial_number is required for battery replacement")
+        record = manager.add_battery_replacement(
+            serial_number=serial,
+            employee=_normalize_text(payload.get("employee")) or None,
+            **common,
+        )
+    elif action_type == ACTION_WORKS_COMPONENT:
+        if not serial:
+            raise ValueError("serial_number is required for component replacement")
+        record = manager.add_component_replacement(
+            serial_number=serial,
+            component_type=_normalize_text(payload.get("component_type")),
+            component_model=_normalize_text(payload.get("component_model")),
+            component_name=_normalize_text(payload.get("component_name")) or None,
+            employee=_normalize_text(payload.get("employee")) or None,
+            **common,
+        )
+    elif action_type == ACTION_WORKS_PC_CLEANING:
+        if not serial:
+            raise ValueError("serial_number is required for PC cleaning")
+        record = manager.add_pc_cleaning(
+            serial_number=serial,
+            employee=_normalize_text(payload.get("employee")),
+            **common,
+        )
+    else:
+        raise ValueError(f"Unsupported works action_type: {action_type}")
+    return {"success": True, "record": record}
+
+
+def build_chat_message_draft(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    text = _normalize_text(payload.get("text"))[:4000]
+    if not text:
+        raise ValueError("text is required")
+    peer_user_id = _to_int(payload.get("peer_user_id"))
+    target_conversation_id = _normalize_text(payload.get("conversation_id"))
+    peer_name = _normalize_text(payload.get("peer_name"))
+    conversation_title = _normalize_text(payload.get("conversation_title"))
+
+    from backend.services.user_service import user_service
+
+    if not peer_user_id and not target_conversation_id:
+        if peer_name:
+            result = user_service.search_users(query=peer_name, limit=10, status="active")
+            items = result.get("items") if isinstance(result, dict) else list(result or [])
+            candidates = [
+                user
+                for user in (items or [])
+                if isinstance(user, dict) and int(user.get("id") or 0) > 0 and int(user.get("id") or 0) != requester_user_id
+            ]
+            if len(candidates) == 1:
+                peer_user_id = int(candidates[0].get("id") or 0) or None
+            elif not candidates:
+                raise ValueError(f"User not found: {peer_name}")
+            else:
+                names = ", ".join(
+                    _normalize_text(user.get("display_name") or user.get("full_name") or user.get("username"))
+                    for user in candidates[:5]
+                )
+                raise ValueError(f"Несколько пользователей подходят под '{peer_name}': {names}. Уточните.")
+        elif conversation_title:
+            from backend.chat.service import chat_service
+
+            result = chat_service.list_conversations(
+                current_user_id=int(requester_user_id),
+                q=conversation_title,
+                limit=10,
+            )
+            items = (
+                result.get("items") or result.get("conversations") or []
+                if isinstance(result, dict)
+                else []
+            )
+            conversations = [item for item in items if isinstance(item, dict)]
+            if not conversations:
+                raise ValueError(f"Conversation not found: {conversation_title}")
+            exact = next(
+                (
+                    item
+                    for item in conversations
+                    if _normalize_text(item.get("title") or item.get("name")).casefold() == conversation_title.casefold()
+                ),
+                conversations[0],
+            )
+            target_conversation_id = _normalize_text(exact.get("id") or exact.get("conversation_id"))
+            if not target_conversation_id:
+                raise ValueError("Conversation is not resolved")
+        else:
+            raise ValueError("peer_user_id, peer_name, conversation_id or conversation_title is required")
+
+    target_label = ""
+    if peer_user_id:
+        user = user_service.get_by_id(int(peer_user_id)) or {}
+        target_label = (
+            _normalize_text(user.get("display_name") or user.get("full_name"))
+            or _normalize_text(user.get("username"))
+            or f"user #{peer_user_id}"
+        )
+    else:
+        target_label = conversation_title or target_conversation_id
+
+    normalized_payload = {
+        "text": text,
+        "peer_user_id": peer_user_id,
+        "conversation_id": target_conversation_id or None,
+        "target_label": target_label,
+    }
+    preview = {
+        "title": "Отправка сообщения",
+        "summary": f"{target_label}: {text[:200]}",
+        "effects": ["отправка сообщения в Hub-чат"],
+        "target": {
+            "label": target_label,
+            "peer_user_id": peer_user_id,
+            "conversation_id": target_conversation_id or None,
+        },
+        "text_preview": text[:500],
+    }
+    return create_pending_action(
+        action_type=ACTION_CHAT_MESSAGE_SEND,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload=normalized_payload,
+        preview=preview,
+        replace_action_id=_normalize_text(payload.get("replace_action_id")) or None,
+    )
+
+
+def _execute_chat_message_send(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_CHAT_WRITE)
+    from backend.chat.service import chat_service
+
+    current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+    text = _normalize_text(payload.get("text"))
+    if not text:
+        raise ValueError("text is required")
+    conversation_id = _normalize_text(payload.get("conversation_id"))
+    if not conversation_id:
+        peer_user_id = _to_int(payload.get("peer_user_id"))
+        if not peer_user_id:
+            raise ValueError("Message recipient is not resolved")
+        conversation = chat_service.create_direct_conversation(
+            current_user_id=current_user_id,
+            peer_user_id=int(peer_user_id),
+        )
+        conversation_id = _normalize_text(
+            conversation.get("id") or conversation.get("conversation_id")
+        )
+        if not conversation_id:
+            raise ValueError("Direct conversation was not resolved")
+    message = chat_service.send_message(
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        body=text,
+    )
+    return {
+        "success": True,
+        "message": {
+            "id": _normalize_text(message.get("id")) or None,
+            "conversation_id": conversation_id,
+        },
+        "conversation_id": conversation_id,
+    }
+
+
+def _execute_transfer(*, payload: dict[str, Any], database_id: str, current_user: Any) -> dict[str, Any]:
+    return execute_equipment_transfer(
+        payload=payload,
+        db_id=database_id,
+        current_user=current_user,
+        allow_create_owner=False,
+    )
+
+
+def _resolve_action_message_sender(row: AppAiPendingAction, *, fallback_user_id: int) -> int:
+    message_id = _normalize_text(row.message_id)
+    if not message_id:
+        return int(fallback_user_id or 0)
+    try:
+        from backend.chat.db import chat_session
+        from backend.chat.models import ChatMessage
+
+        with chat_session() as session:
+            message = session.get(ChatMessage, message_id)
+            sender_user_id = int(getattr(message, "sender_user_id", 0) or 0) if message is not None else 0
+            return sender_user_id or int(fallback_user_id or 0)
+    except Exception:
+        return int(fallback_user_id or 0)
+
+
+def _publish_chat_message_created(*, conversation_id: str, message_id: str) -> None:
+    try:
+        import asyncio
+
+        from backend.chat.realtime_side_effects import publish_message_created_after_send
+
+        asyncio.run(
+            publish_message_created_after_send(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            )
+        )
+    except Exception:
+        pass
+
+
+def _send_transfer_acts_to_chat(
+    *,
+    row: AppAiPendingAction,
+    result: dict[str, Any],
+    current_user: Any,
+) -> dict[str, Any]:
+    conversation_id = _normalize_text(row.conversation_id)
+    acts = [item for item in list(result.get("acts") or []) if isinstance(item, dict)]
+    if not conversation_id or not acts:
+        return {"sent_count": 0, "messages": [], "warning": None}
+
+    uploads: list[UploadFile] = []
+    missing: list[str] = []
+    try:
+        for act in acts:
+            act_id = _normalize_text(act.get("act_id"))
+            record = get_act_record(act_id) if act_id else None
+            file_path = Path(_normalize_text((record or {}).get("file_path")))
+            if not act_id or not file_path.exists() or not file_path.is_file():
+                missing.append(act_id or _normalize_text(act.get("file_name")) or "unknown")
+                continue
+            file_name = _normalize_text((record or {}).get("file_name")) or _normalize_text(act.get("file_name")) or file_path.name
+            content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+            uploads.append(
+                _build_upload_file(
+                    file_name=file_name,
+                    content_type=content_type,
+                    payload=file_path.read_bytes(),
+                )
+            )
+
+        if not uploads:
+            warning = "Файлы актов не найдены для отправки в чат."
+            if missing:
+                warning = f"{warning} act_id: {', '.join(missing)}"
+            return {"sent_count": 0, "messages": [], "warning": warning}
+
+        from backend.chat.service import CHAT_MAX_FILES_PER_MESSAGE, chat_service
+
+        sender_user_id = _resolve_action_message_sender(
+            row,
+            fallback_user_id=int(_user_attr(current_user, "id", 0) or 0),
+        )
+        messages: list[dict[str, Any]] = []
+        for start in range(0, len(uploads), int(CHAT_MAX_FILES_PER_MESSAGE)):
+            chunk = uploads[start : start + int(CHAT_MAX_FILES_PER_MESSAGE)]
+            body = "Акт перемещения техники" if len(chunk) == 1 else f"Акты перемещения техники: {len(chunk)} файла"
+            message = chat_service.send_files(
+                current_user_id=sender_user_id,
+                conversation_id=conversation_id,
+                body=body,
+                uploads=chunk,
+                reply_to_message_id=_normalize_text(row.message_id) or None,
+                defer_push_notifications=True,
+            )
+            message_id = _normalize_text(message.get("id"))
+            if message_id:
+                _publish_chat_message_created(conversation_id=conversation_id, message_id=message_id)
+            messages.append(
+                {
+                    "message_id": message_id or None,
+                    "attachment_count": len(message.get("attachments") or []),
+                }
+            )
+        warning = None
+        if missing:
+            warning = f"Часть актов не отправлена в чат: {', '.join(missing)}"
+        return {"sent_count": len(uploads), "messages": messages, "warning": warning}
+    finally:
+        for upload in uploads:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+
+
+def _report_file_name(file_name_base: str, file_format: str) -> str:
+    base = Path(_normalize_text(file_name_base).replace("\\", "/")).name
+    base = re.sub(r"[\x00-\x1f<>:\"/\\|?*]+", "_", base).strip(" ._")
+    if not base:
+        base = "report"
+    suffix = f".{file_format}"
+    if base.lower().endswith(tuple(f".{item}" for item in REPORT_FORMAT_CHOICES)):
+        base = base.rsplit(".", 1)[0]
+    return f"{base[:150]}{suffix}"
+
+
+def _report_rows_for_table(table: dict[str, Any]) -> list[Any]:
+    rows = list(table.get("rows") or [])
+    columns = list(table.get("columns") or [])
+    if rows and all(isinstance(row, dict) for row in rows) and columns:
+        normalized_columns: list[dict[str, str]] = []
+        for column in columns:
+            if isinstance(column, dict):
+                key = _normalize_text(column.get("key") or column.get("id") or column.get("name") or column.get("field"))
+                label = _normalize_text(column.get("label") or column.get("title") or column.get("header") or key)
+            else:
+                key = _normalize_text(column)
+                label = key
+            if key or label:
+                normalized_columns.append({"key": key or label, "label": label or key})
+        if normalized_columns:
+            return [[column["label"] for column in normalized_columns]] + [
+                [_normalize_text(row.get(column["key"])) for column in normalized_columns]
+                for row in rows
+                if isinstance(row, dict)
+            ]
+    return rows
+
+
+def _report_file_spec_from_payload(payload: dict[str, Any], file_format: str) -> dict[str, Any]:
+    normalized = _normalize_report_payload(payload, database_id=_normalize_text(payload.get("database_id")) or None)
+    title = _normalize_text(normalized.get("title")) or "Report"
+    source_tool_results = list(normalized.get("source_tool_results") or [])
+    source_file_spec = (
+        dict(normalized.get("source_file_spec") or {})
+        if isinstance(normalized.get("source_file_spec"), dict)
+        else {}
+    )
+    if source_file_spec and not _is_report_source_file_spec_empty_for_format(source_file_spec, file_format):
+        source_file_spec["format"] = file_format
+        source_file_spec["file_name"] = _report_file_name(
+            _normalize_text(source_file_spec.get("file_name"))
+            or _normalize_text(normalized.get("file_name_base"))
+            or title,
+            file_format,
+        )
+        source_file_spec["title"] = _normalize_text(source_file_spec.get("title")) or title
+        return _repair_report_file_spec_with_tool_results(source_file_spec, source_tool_results)
+
+    summary = _normalize_text(normalized.get("summary"))
+    sections = _normalize_report_sections(normalized.get("sections"))
+    tables = _normalize_report_tables(normalized.get("tables"))
+    if not tables:
+        tables = _generic_report_tool_tables_from_results(source_tool_results)
+    report_tables = [
+        {
+            "title": _normalize_text(table.get("title")) or f"Table {index}",
+            "columns": list(table.get("columns") or []),
+            "rows": _report_rows_for_table(table),
+        }
+        for index, table in enumerate(tables, start=1)
+    ]
+    metadata = {
+        "report": True,
+        "report_title": title,
+        "report_summary": summary,
+        "report_sections": sections,
+        "report_tables": report_tables,
+        "database_id": normalized.get("database_id"),
+        "source_tool_results": normalized.get("source_tool_results") or [],
+    }
+    spec: dict[str, Any] = {
+        "format": file_format,
+        "file_name": _report_file_name(_normalize_text(normalized.get("file_name_base")) or title, file_format),
+        "title": title,
+        "metadata": metadata,
+    }
+    if file_format == "xlsx":
+        sheets: list[dict[str, Any]] = []
+        summary_rows = [["Field", "Value"]]
+        if summary:
+            summary_rows.append(["Summary", summary])
+        if normalized.get("database_id"):
+            summary_rows.append(["Database", normalized.get("database_id")])
+        summary_rows.append(["Tables", str(len(report_tables))])
+        summary_rows.append(["Rows", str(_report_table_row_count(report_tables))])
+        sheets.append({"title": "Summary", "rows": summary_rows, "header_row_index": 1})
+        for table in report_tables:
+            sheets.append({"title": table["title"], "rows": table["rows"], "header_row_index": 1})
+        spec["sheets"] = sheets
+    elif file_format == "csv":
+        spec["rows"] = list((report_tables[0] or {}).get("rows") or []) if report_tables else [["Summary"], [summary or title]]
+    else:
+        content_lines = [title]
+        if summary:
+            content_lines.extend(["", summary])
+        for section in sections:
+            content_lines.extend(["", section.get("heading") or "Section", section.get("body") or ""])
+        spec["content"] = "\n".join(content_lines)
+    return _repair_report_file_spec_with_tool_results(spec, source_tool_results)
+
+
+def _send_report_failure_to_chat(*, row: AppAiPendingAction, current_user: Any, error_text: str) -> None:
+    conversation_id = _normalize_text(row.conversation_id)
+    if not conversation_id:
+        return
+    try:
+        from backend.chat.service import chat_service
+
+        sender_user_id = _resolve_action_message_sender(
+            row,
+            fallback_user_id=int(_user_attr(current_user, "id", 0) or 0),
+        )
+        message = chat_service.send_message(
+            current_user_id=sender_user_id,
+            conversation_id=conversation_id,
+            body=f"Не удалось создать отчёт: {_normalize_text(error_text) or 'unknown error'}",
+            body_format="markdown",
+            reply_to_message_id=_normalize_text(row.message_id) or None,
+            defer_push_notifications=True,
+        )
+        message_id = _normalize_text(message.get("id"))
+        if message_id:
+            _publish_chat_message_created(conversation_id=conversation_id, message_id=message_id)
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("Failed to send report format choice failure message")
+
+
+def _execute_report_format_choice(
+    *,
+    row: AppAiPendingAction,
+    payload: dict[str, Any],
+    current_user: Any,
+    payload_overrides: dict[str, Any] | None,
+) -> dict[str, Any]:
+    requester_user_id = int(getattr(row, "requester_user_id", 0) or 0)
+    current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+    if requester_user_id and requester_user_id != current_user_id:
+        raise PermissionError("Only the requester can choose the report format")
+    file_format = _normalize_report_format((payload_overrides or {}).get("format"))
+    spec = _report_file_spec_from_payload(payload, file_format)
+    uploads: list[UploadFile] = []
+    try:
+        uploads = build_generated_uploads([spec])
+        from backend.chat.service import chat_service
+
+        sender_user_id = _resolve_action_message_sender(row, fallback_user_id=current_user_id)
+        message = chat_service.send_files(
+            current_user_id=sender_user_id,
+            conversation_id=_normalize_text(row.conversation_id),
+            body=_normalize_text(payload.get("title")) or "Report",
+            uploads=uploads,
+            reply_to_message_id=_normalize_text(row.message_id) or None,
+            defer_push_notifications=True,
+        )
+        message_id = _normalize_text(message.get("id"))
+        if message_id:
+            _publish_chat_message_created(conversation_id=_normalize_text(row.conversation_id), message_id=message_id)
+        return {
+            "success": True,
+            "format": file_format,
+            "message_id": message_id or None,
+            "generated_files": [
+                {
+                    "attachment_id": _normalize_text(item.get("id")) or None,
+                    "file_name": _normalize_text(item.get("file_name")) or None,
+                    "size_bytes": _to_int(item.get("file_size")),
+                }
+                for item in list(message.get("attachments") or [])
+                if isinstance(item, dict)
+            ],
+        }
+    except Exception as exc:
+        _send_report_failure_to_chat(row=row, current_user=current_user, error_text=_normalize_text(exc))
+        raise
+    finally:
+        for upload in uploads:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+
+
+def _execute_consumable(*, action_type: str, payload: dict[str, Any], database_id: str, current_user: Any) -> dict[str, Any]:
+    changed_by = _normalize_text(_user_attr(current_user, "username")) or "IT-WEB"
+    if action_type == ACTION_CONSUMABLE_CONSUME:
+        result = queries.consume_consumable_stock(
+            db_id=database_id,
+            item_id=_to_int(payload.get("item_id")),
+            inv_no=_normalize_text(payload.get("inv_no")) or None,
+            qty=_to_int(payload.get("qty")) or 0,
+            changed_by=changed_by,
+        )
+    else:
+        result = queries.set_consumable_stock_qty(
+            db_id=database_id,
+            item_id=_to_int(payload.get("item_id")),
+            inv_no=_normalize_text(payload.get("inv_no")) or None,
+            qty=_to_int(payload.get("qty")) or 0,
+            changed_by=changed_by,
+        )
+    if result.get("success"):
+        invalidate_equipment_cache(database_id)
+    return result
+
+
+def _apply_office_mail_overrides(payload: dict[str, Any], overrides: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(overrides, dict) or not overrides:
+        return dict(payload or {})
+    next_payload = dict(payload or {})
+    for key in ("mailbox_id", "subject", "body", "reply_to_message_id"):
+        if key in overrides:
+            next_payload[key] = _normalize_text(overrides.get(key))
+    if "is_html" in overrides:
+        next_payload["is_html"] = bool(overrides.get("is_html", True))
+    for key in ("to", "cc", "bcc"):
+        if key in overrides:
+            next_payload[key] = [_normalize_text(item) for item in list(overrides.get(key) or []) if _normalize_text(item)]
+    if "attachment_refs" in overrides:
+        next_payload["attachment_refs"] = _normalize_mail_attachment_refs(overrides.get("attachment_refs"))
+    if "generated_file_specs" in overrides:
+        next_payload["generated_file_specs"] = _normalize_mail_generated_file_specs(overrides.get("generated_file_specs"))
+    if not next_payload.get("to"):
+        raise ValueError("At least one recipient is required")
+    if not _normalize_text(next_payload.get("body")):
+        raise ValueError("body is required")
+    return next_payload
+
+
+def _resolve_office_mail_attachments(*, row: AppAiPendingAction, payload: dict[str, Any], current_user: Any) -> list[tuple[str, bytes]]:
+    refs = _normalize_mail_attachment_refs(payload.get("attachment_refs"))
+    from backend.chat.db import chat_session
+    from backend.chat.models import ChatMessageAttachment
+    from backend.chat.service import chat_service
+
+    attachments: list[tuple[str, bytes]] = []
+    seen: set[tuple[str, str]] = set()
+    for ref in refs:
+        message_id = _normalize_text(ref.get("message_id"))
+        attachment_id = _normalize_text(ref.get("attachment_id"))
+        key = (message_id, attachment_id)
+        if not message_id or not attachment_id or key in seen:
+            continue
+        seen.add(key)
+        with chat_session() as session:
+            attachment = session.get(ChatMessageAttachment, attachment_id)
+            if attachment is None or attachment.message_id != message_id:
+                raise LookupError("Mail attachment was not found in chat")
+            if _normalize_text(attachment.conversation_id) != _normalize_text(row.conversation_id):
+                raise ValueError("Mail attachment belongs to another chat conversation")
+        file_payload = chat_service.get_attachment_for_download(
+            current_user_id=int(_user_attr(current_user, "id", 0) or 0),
+            message_id=message_id,
+            attachment_id=attachment_id,
+        )
+        file_path = Path(_normalize_text(file_payload.get("path")))
+        if not file_path.exists() or not file_path.is_file():
+            raise LookupError("Mail attachment file was not found")
+        attachments.append((_normalize_text(file_payload.get("file_name")) or file_path.name, file_path.read_bytes()))
+    generated_specs = _normalize_mail_generated_file_specs(payload.get("generated_file_specs"))
+    if generated_specs:
+        available_slots = max(0, 5 - len(attachments))
+        uploads = build_generated_uploads(generated_specs[:available_slots])
+        for upload in uploads:
+            try:
+                upload.file.seek(0)
+                attachments.append((_normalize_text(upload.filename) or "attachment.bin", upload.file.read()))
+            finally:
+                try:
+                    upload.file.close()
+                except Exception:
+                    pass
+    return attachments
+
+
+def _execute_office_mail(*, action_type: str, payload: dict[str, Any], current_user: Any, row: AppAiPendingAction | None = None) -> dict[str, Any]:
+    _require_permission(current_user, PERM_MAIL_ACCESS)
+    attachments = _resolve_office_mail_attachments(row=row, payload=payload, current_user=current_user) if row is not None else []
+    result = mail_service.send_message(
+        user_id=int(_user_attr(current_user, "id", 0) or 0),
+        mailbox_id=_normalize_text(payload.get("mailbox_id")) or None,
+        to=[_normalize_text(item) for item in list(payload.get("to") or []) if _normalize_text(item)],
+        cc=[_normalize_text(item) for item in list(payload.get("cc") or []) if _normalize_text(item)],
+        bcc=[_normalize_text(item) for item in list(payload.get("bcc") or []) if _normalize_text(item)],
+        subject=_normalize_text(payload.get("subject")),
+        body=_normalize_text(payload.get("body")),
+        is_html=bool(payload.get("is_html", True)),
+        attachments=attachments,
+        reply_to_message_id=_normalize_text(payload.get("reply_to_message_id")) if action_type == ACTION_OFFICE_MAIL_REPLY else "",
+        idempotency_key=f"ai-action:{row.id}" if row is not None else "",
+        require_idempotency=row is not None,
+    )
+    return {"success": result.get("ok") is True, "attachment_count": len(attachments), **result}
+
+
+def _execute_office_task_create(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_any_permission(current_user, (PERM_TASKS_CREATE, PERM_TASKS_WRITE))
+    task = hub_service.create_task(
+        title=_normalize_text(payload.get("title")),
+        description=_normalize_text(payload.get("description")),
+        assignee_user_id=int(_to_int(payload.get("assignee_user_id")) or 0),
+        controller_user_id=int(_to_int(payload.get("controller_user_id")) or 0),
+        due_at=_normalize_text(payload.get("due_at")) or None,
+        project_id=_normalize_text(payload.get("project_id")) or None,
+        object_id=_normalize_text(payload.get("object_id")) or None,
+        protocol_date=_normalize_text(payload.get("protocol_date")) or None,
+        priority=_normalize_text(payload.get("priority"), "normal"),
+        actor=_user_dict(current_user),
+    )
+    return {"success": True, "task": task, "task_id": _normalize_text(task.get("id")) or None}
+
+
+def _execute_office_task_comment(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_TASKS_READ)
+    task_id = _normalize_text(payload.get("task_id"))
+    body = _normalize_text(payload.get("body"))
+    user_payload = _user_dict(current_user)
+    from backend.chat.task_discussion import is_task_discussion_chat_enabled, send_task_discussion_message
+
+    if is_task_discussion_chat_enabled():
+        message = send_task_discussion_message(
+            task_id=task_id,
+            actor_user_id=int(user_payload.get("id") or 0),
+            body=body,
+        )
+        return {
+            "success": bool(message),
+            "message": message,
+            "task_id": task_id,
+            "conversation_id": _normalize_text(message.get("conversation_id")) or None,
+        }
+    comment = hub_service.add_task_comment(
+        task_id=task_id,
+        user=user_payload,
+        body=body,
+    )
+    return {"success": bool(comment), "comment": comment, "task_id": task_id}
+
+
+def _execute_office_task_status(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_TASKS_READ)
+    task_id = _normalize_text(payload.get("task_id"))
+    operation = _normalize_text(payload.get("operation")).lower()
+    user_payload = _user_dict(current_user)
+    if operation == "start":
+        task = hub_service.start_task(task_id=task_id, user=user_payload)
+    elif operation == "submit":
+        task = hub_service.submit_task(
+            task_id=task_id,
+            user=user_payload,
+            comment=_normalize_text(payload.get("comment")),
+            file_name=None,
+            file_bytes=None,
+            file_mime=None,
+        )
+    elif operation in {"approve", "reject"}:
+        task = hub_service.review_task(
+            task_id=task_id,
+            reviewer=user_payload,
+            decision=operation,
+            comment=_normalize_text(payload.get("comment")),
+            is_admin=_is_admin_user(current_user),
+        )
+    else:
+        raise ValueError("Unsupported task status operation")
+    return {"success": bool(task), "task": task, "task_id": task_id, "operation": operation}
+
+
+def _execute_ad_unlock(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_AD_USERS_MANAGE)
+    from backend.services.ad_users_service import unlock_ad_user_account
+    from backend.ai_chat.tools.ad import AdUnlockDraftArgs
+
+    args = AdUnlockDraftArgs.model_validate(payload)
+    return unlock_ad_user_account(login=args.login, object_guid=_normalize_text(payload.get("object_guid")))
+
+
+def _execute_network_wol(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_NETWORKS_WRITE)
+    from backend.ai_chat.tools.network import NetworkWolDraftArgs, _normalize_mac, _send_wol_packet
+
+    args = NetworkWolDraftArgs.model_validate(payload)
+    if not args.mac_address:
+        raise ValueError("В карточке WOL отсутствует MAC-адрес")
+    mac = _normalize_mac(args.mac_address)
+    _send_wol_packet(mac, args.broadcast_ip)
+    return {"success": True, "packet_sent": True, "mac_address": mac,
+            "broadcast_ip": args.broadcast_ip, "message": "WOL-пакет отправлен"}
+
+
+def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    normalized_action_id = _normalize_text(action_id)
+    current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+    with app_session() as session:
+        row = session.get(AppAiPendingAction, normalized_action_id)
+        if row is None:
+            raise LookupError("Action was not found")
+        if int(row.requester_user_id or 0) != current_user_id:
+            raise PermissionError("Only the action initiator can confirm it")
+        from backend.ai_chat.access import require_conversation_access
+        require_conversation_access(row.conversation_id, current_user_id, db=session, lock=True)
+        _reconcile_mail_action_results(session, [row])
+        if _set_expired_if_needed(row):
+            session.flush()
+            return _action_to_card(row)
+        if row.status != ACTION_STATUS_PENDING:
+            return _action_to_card(row)
+        claim_values = {
+            "status": ACTION_STATUS_EXECUTING,
+            "executed_by_user_id": current_user_id or None,
+            "updated_at": _utc_now(),
+        }
+        if row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}:
+            # Freeze the exact confirmed content before contacting Exchange. A
+            # restart must never reconcile edited mail against the old draft body.
+            confirmed_payload = _apply_office_mail_overrides(_json_loads(row.payload_json, {}) or {}, payload_overrides)
+            claim_values.update(
+                payload_json=_json_dumps(confirmed_payload),
+                preview_json=_json_dumps(_build_office_mail_preview_v2(action_type=row.action_type, payload=confirmed_payload)),
+            )
+        claimed = session.execute(
+            update(AppAiPendingAction)
+            .where(
+                AppAiPendingAction.id == normalized_action_id,
+                AppAiPendingAction.requester_user_id == current_user_id,
+                AppAiPendingAction.status == ACTION_STATUS_PENDING,
+            )
+            .values(**claim_values)
+            .execution_options(synchronize_session=False)
+        )
+        if int(claimed.rowcount or 0) != 1:
+            session.expire_all()
+            current = session.get(AppAiPendingAction, normalized_action_id)
+            return _action_to_card(current or row)
+        session.expire_all()
+        row = session.get(AppAiPendingAction, normalized_action_id)
+
+    payload = _json_loads(row.payload_json, {}) or {}
+    database_id = _normalize_text(row.database_id)
+    if (
+        row.action_type in {ACTION_TRANSFER, ACTION_CONSUMABLE_CONSUME, ACTION_CONSUMABLE_QTY}
+        or row.action_type in ACTION_WORKS_TYPES
+    ) and not database_id:
+        error = ValueError("Action database is not resolved")
+        result = {"success": False, "message": str(error)}
+    else:
+        try:
+            require_conversation_access(row.conversation_id, current_user_id)
+            if row.action_type == ACTION_TRANSFER:
+                _require_permission(current_user, PERM_DATABASE_WRITE)
+                result = _execute_transfer(payload=payload, database_id=database_id, current_user=current_user)
+                try:
+                    result["chat_act_delivery"] = _send_transfer_acts_to_chat(row=row, result=result, current_user=current_user)
+                except Exception as exc:
+                    result["chat_act_delivery"] = {
+                        "sent_count": 0,
+                        "messages": [],
+                        "warning": f"Акт создан, но не отправлен в чат: {_normalize_text(exc) or 'unknown error'}",
+                    }
+            elif row.action_type in {ACTION_CONSUMABLE_CONSUME, ACTION_CONSUMABLE_QTY}:
+                _require_permission(current_user, PERM_DATABASE_WRITE)
+                result = _execute_consumable(
+                    action_type=row.action_type,
+                    payload=payload,
+                    database_id=database_id,
+                    current_user=current_user,
+                )
+            elif row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}:
+                payload = _apply_office_mail_overrides(payload, payload_overrides)
+                row.payload_json = _json_dumps(payload)
+                row.preview_json = _json_dumps(_build_office_mail_preview_v2(action_type=row.action_type, payload=payload))
+                result = _execute_office_mail(action_type=row.action_type, payload=payload, current_user=current_user, row=row)
+            elif row.action_type == ACTION_AI_CHOICE:
+                result = _execute_ai_choice(row=row, payload=payload, current_user=current_user, payload_overrides=payload_overrides)
+            elif row.action_type == ACTION_REPORT_FORMAT_CHOICE:
+                result = _execute_report_format_choice(
+                    row=row, payload=payload, current_user=current_user, payload_overrides=payload_overrides
+                )
+            elif row.action_type == ACTION_DOC_CONVERT_FORMAT_CHOICE:
+                result = _execute_doc_convert_format_choice(
+                    row=row, payload=payload, current_user=current_user, payload_overrides=payload_overrides
+                )
+            elif row.action_type == ACTION_OFFICE_TASK_CREATE:
+                result = _execute_office_task_create(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_OFFICE_TASK_COMMENT:
+                result = _execute_office_task_comment(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_OFFICE_TASK_STATUS:
+                result = _execute_office_task_status(payload=payload, current_user=current_user)
+            elif row.action_type in ACTION_WORKS_TYPES:
+                result = _execute_works_action(
+                    action_type=row.action_type,
+                    payload=payload,
+                    current_user=current_user,
+                )
+            elif row.action_type == ACTION_CHAT_MESSAGE_SEND:
+                result = _execute_chat_message_send(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_HELPDESK_REQUEST_CREATE:
+                result = _execute_helpdesk_request_create(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_AD_UNLOCK:
+                result = _execute_ad_unlock(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_NETWORK_WOL:
+                result = _execute_network_wol(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_SANDBOX_PERMISSION:
+                _require_permission(current_user, PERM_CHAT_AI_USE)
+                permission_id = _normalize_text(payload.get("permission_id"))
+                if not permission_id:
+                    raise ValueError("Sandbox permission id is missing")
+                requested_scope = _normalize_text(
+                    (payload_overrides or {}).get("scope") or payload.get("scope") or "once"
+                )
+                from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+                permission_result = ai_sandbox_app_service.respond_permission(
+                    permission_id=permission_id,
+                    current_user_id=current_user_id,
+                    decision="allow",
+                    scope=requested_scope,
+                )
+                result = {
+                    "success": permission_result.get("status") == "approved",
+                    "permission": permission_result,
+                }
+            else:
+                raise ValueError(f"Unsupported action_type: {row.action_type}")
+        except PermissionError:
+            with app_session() as session:
+                session.execute(
+                    update(AppAiPendingAction)
+                    .where(
+                        AppAiPendingAction.id == normalized_action_id,
+                        AppAiPendingAction.status == ACTION_STATUS_EXECUTING,
+                    )
+                    .values(status=ACTION_STATUS_PENDING, executed_by_user_id=None, updated_at=_utc_now())
+                )
+            raise
+        except Exception as exc:
+            result = {"success": False, "message": _normalize_text(exc) or "Action failed"}
+            if row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}:
+                code = _normalize_text(getattr(exc, "code", ""))
+                if code in {"MAIL_SEND_TIMEOUT", "MAIL_SEND_UNKNOWN", "MAIL_SEND_IN_FLIGHT", "MAIL_SEND_FAILED"} or isinstance(exc, (TimeoutError, ConnectionError)):
+                    result.update(
+                        send_outcome="unknown", error_code=code or "MAIL_SEND_UNKNOWN",
+                        message="Не удалось подтвердить результат отправки. Письмо могло быть отправлено. Проверьте папку «Отправленные»; не отправляйте его повторно.",
+                    )
+
+    with app_session() as session:
+        current = session.get(AppAiPendingAction, normalized_action_id)
+        if current is None:
+            raise LookupError("Action was not found")
+        if current.status != ACTION_STATUS_EXECUTING:
+            return _action_to_card(current)
+        current.payload_json = row.payload_json
+        current.preview_json = row.preview_json
+        if bool(result.get("keep_pending")) and bool(result.get("success", True)):
+            current.status = ACTION_STATUS_PENDING
+            current.error_text = None
+        else:
+            current.status = ACTION_STATUS_CONFIRMED if bool(result.get("success", True)) else ACTION_STATUS_FAILED
+            current.error_text = (
+                None
+                if current.status == ACTION_STATUS_CONFIRMED
+                else _normalize_text(result.get("message")) or "Action failed"
+            )
+        current.result_json = _json_dumps(result)
+        current.executed_by_user_id = current_user_id or None
+        current.updated_at = _utc_now()
+        session.flush()
+        return _action_to_card(current)
+
+
+def cancel_action(*, action_id: str, current_user: Any) -> dict[str, Any]:
+    normalized_action_id = _normalize_text(action_id)
+    sandbox_permission_id = ""
+    with app_session() as session:
+        row = session.get(AppAiPendingAction, normalized_action_id)
+        if row is None:
+            raise LookupError("Action was not found")
+        current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+        if int(row.requester_user_id or 0) != current_user_id and not _is_admin_user(current_user):
+            raise PermissionError("Only the action initiator can cancel it")
+        current_now = _utc_now()
+        expires_at = row.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if row.status == ACTION_STATUS_PENDING and expires_at is not None and expires_at <= current_now:
+            row = _transition_pending(session, row, status=ACTION_STATUS_EXPIRED, updated_at=current_now)
+        if row.status == ACTION_STATUS_PENDING:
+            if row.action_type == ACTION_SANDBOX_PERMISSION:
+                _require_permission(current_user, PERM_CHAT_AI_USE)
+                payload = _json_loads(row.payload_json, {}) or {}
+                sandbox_permission_id = _normalize_text(payload.get("permission_id"))
+                if not sandbox_permission_id:
+                    raise ValueError("Sandbox permission id is missing")
+            else:
+                row = _transition_pending(
+                    session,
+                    row,
+                    status=ACTION_STATUS_CANCELLED,
+                    executed_by_user_id=int(_user_attr(current_user, "id", 0) or 0) or None,
+                    updated_at=_utc_now(),
+                )
+        session.flush()
+        if not sandbox_permission_id:
+            return _action_to_card(row)
+
+    # The permission row is the source of truth for both the in-message card
+    # and the right-panel control. Its locked transition finalizes the mirrored
+    # action card atomically in the same database transaction.
+    from backend.ai_sandbox.app_service import ai_sandbox_app_service
+
+    ai_sandbox_app_service.respond_permission(
+        permission_id=sandbox_permission_id,
+        current_user_id=current_user_id,
+        decision="reject",
+        scope="once",
+    )
+    with app_session() as session:
+        current = session.get(AppAiPendingAction, normalized_action_id)
+        if current is None:
+            raise LookupError("Action was not found")
+        return _action_to_card(current)

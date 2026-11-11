@@ -1,0 +1,1228 @@
+import useRequestGuard from '../lib/useRequestGuard';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { buildOfficeUiTokens, getOfficeCodeBlockSx } from '../theme/officeUiTokens';
+import {
+  Alert,
+  Autocomplete,
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Drawer,
+  FormControl,
+  FormControlLabel,
+  Grid,
+  IconButton,
+  InputAdornment,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Slider,
+  Stack,
+  Switch,
+  TextField,
+  Tooltip,
+  Typography,
+} from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
+import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
+import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
+import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
+import { useSearchParams } from 'react-router-dom';
+import MainLayout from '../components/layout/MainLayout';
+import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
+import PasswordAuditAccordion from '../components/passwords/PasswordAuditAccordion';
+import PasswordEntryDetail from '../components/passwords/PasswordEntryDetail';
+import PasswordEntryList from '../components/passwords/PasswordEntryList';
+import PasswordEntryMobileSheet from '../components/passwords/PasswordEntryMobileSheet';
+import PasswordFiltersPanel from '../components/passwords/PasswordFiltersPanel';
+import PasswordMobileToolbar from '../components/passwords/PasswordMobileToolbar';
+import PasswordUnlockBanner from '../components/passwords/PasswordUnlockBanner';
+import PasswordUnlockDialog from '../components/passwords/PasswordUnlockDialog';
+import VaultPrivacyCover from '../components/passwords/VaultPrivacyCover';
+import usePasswordVaultAccess from '../components/passwords/usePasswordVaultAccess';
+import PasswordUnlockStrip from '../components/passwords/PasswordUnlockStrip';
+import PasswordSectionTabs from '../components/passwords/PasswordSectionTabs';
+import PasswordAdExpiryView from '../components/passwords/PasswordAdExpiryView';
+import {
+  buildGroupCounts,
+  normalizeEntry,
+  normalizeText,
+} from '../components/passwords/passwordVaultUtils';
+import { passwordsAPI } from '../api/passwords';
+import { itObjectsAPI } from '../api/itObjects';
+import { hideScrollbarSx } from '../lib/hideScrollbarSx';
+import { useAuth } from '../contexts/AuthContext';
+import { useNotification } from '../contexts/NotificationContext';
+const DEFAULT_PASSWORD_LENGTH = 20;
+const ENTRIES_PAGE_SIZE = 100;
+const LOWER = 'abcdefghijkmnopqrstuvwxyz';
+const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const DIGITS = '23456789';
+const SYMBOLS = '!@#$%^&*()-_=+[]{};:,.?';
+const SIMILAR_CHARS = new Set('Il1O0o'.split(''));
+
+const emptyForm = {
+  id: '',
+  group: '',
+  tags: [],
+  login: '',
+  password: '',
+  description: '',
+  object_ref: '',
+  original_object_ref: '',
+};
+
+const emptyGeneratorOptions = {
+  length: DEFAULT_PASSWORD_LENGTH,
+  lower: true,
+  upper: true,
+  digits: true,
+  symbols: true,
+  excludeSimilar: true,
+};
+
+const passwordEntryLabelProps = { shrink: true };
+
+const passwordEntryFormFieldSx = {
+  '& .MuiInputLabel-outlined.MuiInputLabel-shrink': {
+    transform: 'translate(14px, -9px) scale(0.75)',
+  },
+  '& .MuiOutlinedInput-inputMultiline': {
+    paddingTop: '10px',
+  },
+  '& .MuiAutocomplete-inputRoot': {
+    alignItems: 'center',
+    minHeight: 40,
+    py: '4px !important',
+  },
+};
+
+export const normalizeTagList = (value) => {
+  const items = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,;\n]+/);
+  return items
+    .map((item) => normalizeText(item).replace(/^#+/, '').trim())
+    .filter(Boolean)
+    .filter((item, index, list) => list.findIndex((candidate) => candidate.toLowerCase() === item.toLowerCase()) === index)
+    .slice(0, 20);
+};
+
+export const splitVaultTagInput = (text) => {
+  const raw = String(text || '');
+  const endsWithSeparator = /[,;\n]\s*$/.test(raw);
+  const parts = raw.split(/[,;\n]+/);
+  const remainder = endsWithSeparator ? '' : String(parts.pop() || '');
+  return {
+    completed: normalizeTagList(parts),
+    remainder,
+  };
+};
+
+export const appendVaultTags = (existingTags, incomingTags) => (
+  normalizeTagList([...(Array.isArray(existingTags) ? existingTags : []), ...(Array.isArray(incomingTags) ? incomingTags : [])])
+);
+
+const buildCharacterSets = (options = {}) => {
+  const excludeSimilar = options.excludeSimilar !== false;
+  const clean = (value) => (
+    excludeSimilar
+      ? value.split('').filter((char) => !SIMILAR_CHARS.has(char)).join('')
+      : value
+  );
+  return [
+    options.lower !== false ? clean(LOWER) : '',
+    options.upper !== false ? clean(UPPER) : '',
+    options.digits !== false ? clean(DIGITS) : '',
+    options.symbols !== false ? clean(SYMBOLS) : '',
+  ].filter(Boolean);
+};
+
+export function generateVaultPassword(options = {}, cryptoSource = globalThis.crypto) {
+  if (!cryptoSource || typeof cryptoSource.getRandomValues !== 'function') {
+    throw new Error('Web Crypto API is unavailable');
+  }
+  const sets = buildCharacterSets({ ...emptyGeneratorOptions, ...options });
+  if (!sets.length) {
+    throw new Error('Select at least one character set');
+  }
+  const length = Math.max(sets.length, Math.min(128, Number(options.length || DEFAULT_PASSWORD_LENGTH) || DEFAULT_PASSWORD_LENGTH));
+  const charset = sets.join('');
+  const bytes = new Uint8Array(1);
+  const randomIndex = (size) => {
+    const max = 256 - (256 % size);
+    do {
+      cryptoSource.getRandomValues(bytes);
+    } while (bytes[0] >= max);
+    return bytes[0] % size;
+  };
+  const result = sets.map((set) => set[randomIndex(set.length)]);
+  while (result.length < length) {
+    result.push(charset[randomIndex(charset.length)]);
+  }
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomIndex(index + 1);
+    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+  }
+  return result.join('');
+}
+
+function Passwords() {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeSection = searchParams.get('section') === 'ad-expiry' ? 'ad-expiry' : 'vault';
+  const { user, hasPermission } = useAuth();
+  const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
+  // Журнал админа обновляется после каждого раскрытия пароля; loadAudit объявлен ниже.
+  const loadAuditRef = useRef(null);
+  const {
+    isUnlocked,
+    unlockedUntil,
+    unlockedRemainingMs,
+    isUnlockExpiringSoon,
+    nowTs,
+    revealBusyId,
+    revealedPasswords,
+    revealExpiresAt,
+    privacyCoverActive,
+    secretWatermark,
+    syncUnlockedUntil,
+    openUnlockDialog,
+    requestReveal,
+    hidePassword,
+    copyPassword,
+    handleCopyLogin,
+    unlockDialogProps,
+  } = usePasswordVaultAccess({ onActivity: () => loadAuditRef.current?.() });
+  const [entries, setEntries] = useState([]);
+  const [entriesTotal, setEntriesTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [groups, setGroups] = useState([]);
+  const [tags, setTags] = useState([]);
+  const [auditItems, setAuditItems] = useState([]);
+  const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [selectedGroup, setSelectedGroup] = useState('');
+  const [selectedTag, setSelectedTag] = useState('');
+  const [selectedObject, setSelectedObject] = useState(() => normalizeText(searchParams.get('object')));
+  const [objectOptions, setObjectOptions] = useState([]);
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [entryDialogOpen, setEntryDialogOpen] = useState(false);
+  const [formMode, setFormMode] = useState('create');
+  const [form, setForm] = useState(emptyForm);
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [groupSaving, setGroupSaving] = useState(false);
+  const [tagInputValue, setTagInputValue] = useState('');
+  const [generatorOptions, setGeneratorOptions] = useState(emptyGeneratorOptions);
+  const [generatedPassword, setGeneratedPassword] = useState('');
+  const [selectedEntryId, setSelectedEntryId] = useState('');
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
+  const [auditExpanded, setAuditExpanded] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const searchInputRef = useRef(null);
+
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
+  const canObjects = isAdmin || hasPermission('it_objects.read');
+  const globalWrite = isAdmin || hasPermission('passwords.write');
+  const passwordObjects = useMemo(
+    () => objectOptions.filter((item) => item?.my_access?.sections?.passwords),
+    [objectOptions],
+  );
+  const manageObjects = useMemo(
+    () => passwordObjects.filter((item) => item.my_access.sections.passwords === 'manage'),
+    [passwordObjects],
+  );
+  const manageObjectRefs = useMemo(() => new Set(manageObjects.map((item) => item.object_ref)), [manageObjects]);
+  const canWrite = globalWrite || manageObjects.length > 0;
+  const canWriteEntry = useCallback(
+    (entry) => Boolean(entry) && !entry.is_archived
+      && (entry.object_ref ? manageObjectRefs.has(entry.object_ref) : globalWrite),
+    [globalWrite, manageObjectRefs],
+  );
+  const handleSectionChange = useCallback((next) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'ad-expiry') {
+      params.set('section', 'ad-expiry');
+    } else {
+      params.delete('section');
+    }
+    setSearchParams(params, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const loadAudit = useCallback(async () => {
+    if (!isAdmin) return;
+    setAuditLoading(true);
+    try {
+      const payload = await passwordsAPI.getAudit({ limit: 100 });
+      setAuditItems(Array.isArray(payload?.items) ? payload.items : []);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось загрузить аудит паролей.', { dedupeMode: 'recent' });
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [isAdmin, notifyApiError]);
+  loadAuditRef.current = loadAudit;
+
+  useEffect(() => {
+    if (!canObjects) return undefined;
+    let cancelled = false;
+    itObjectsAPI.list({ mine: true })
+      .then((payload) => {
+        if (!cancelled) setObjectOptions(Array.isArray(payload?.items) ? payload.items : []);
+      })
+      .catch(() => {
+        if (!cancelled) setObjectOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canObjects]);
+
+  const handleSelectObject = useCallback((objectRef) => {
+    setSelectedObject(objectRef);
+    const params = new URLSearchParams(searchParams);
+    if (objectRef) {
+      params.set('object', objectRef);
+    } else {
+      params.delete('object');
+    }
+    setSearchParams(params, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const beginEntries = useRequestGuard(JSON.stringify([query, selectedGroup, selectedTag, selectedObject, includeArchived]));
+
+  const loadEntries = useCallback(async ({ offset = 0, append = false } = {}) => {
+    const isCurrent = beginEntries();
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
+    try {
+      const [payload, groupsPayload] = await Promise.all([
+        passwordsAPI.getEntries({
+          q: debouncedQuery,
+          group: selectedGroup,
+          tag: selectedTag,
+          object_ref: selectedObject,
+          include_archived: includeArchived,
+          limit: ENTRIES_PAGE_SIZE,
+          offset,
+        }),
+        append ? Promise.resolve(null) : passwordsAPI.getGroups(),
+      ]);
+      if (!isCurrent()) return;
+      const pageItems = (Array.isArray(payload?.items) ? payload.items : []).map(normalizeEntry);
+      setEntries((prev) => (append ? [...prev, ...pageItems] : pageItems));
+      setEntriesTotal(Number(payload?.total ?? (offset + pageItems.length)) || 0);
+      if (!append) {
+        const configuredGroups = (Array.isArray(groupsPayload?.items) ? groupsPayload.items : [])
+          .map((item) => normalizeText(item?.name))
+          .filter(Boolean);
+        const responseGroups = Array.isArray(payload?.groups) ? payload.groups.map(normalizeText).filter(Boolean) : [];
+        const nextGroups = configuredGroups.length ? configuredGroups : responseGroups;
+        setGroups(nextGroups);
+        setTags(Array.isArray(payload?.tags) ? payload.tags.map(normalizeText).filter(Boolean) : []);
+        if (selectedGroup && !nextGroups.includes(selectedGroup)) {
+          setSelectedGroup('');
+        }
+      }
+      syncUnlockedUntil(payload?.unlocked_until);
+    } catch (error) {
+      if (!isCurrent()) return;
+      notifyApiError(error, 'Не удалось загрузить список паролей.', { dedupeMode: 'recent' });
+    } finally {
+      if (isCurrent()) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  }, [beginEntries, debouncedQuery, includeArchived, notifyApiError, selectedGroup, selectedObject, selectedTag, syncUnlockedUntil]);
+
+  useEffect(() => {
+    loadEntries();
+  }, [loadEntries]);
+
+  const handleLoadMore = useCallback(() => {
+    if (loadingMore || loading) return;
+    void loadEntries({ offset: entries.length, append: true });
+  }, [entries.length, loadEntries, loading, loadingMore]);
+
+  const hasMoreEntries = entries.length < entriesTotal;
+
+  useEffect(() => {
+    if (auditExpanded) {
+      loadAudit();
+    }
+  }, [auditExpanded, loadAudit]);
+
+  useEffect(() => {
+    if (!entries.length) {
+      setSelectedEntryId('');
+      return;
+    }
+    if (!entries.some((entry) => entry.id === selectedEntryId)) {
+      setSelectedEntryId(entries[0].id);
+    }
+  }, [entries, selectedEntryId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+      const tagName = String(event.target?.tagName || '').toLowerCase();
+      if (tagName === 'input' || tagName === 'textarea' || event.target?.isContentEditable) return;
+      event.preventDefault();
+      searchInputRef.current?.focus();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const visibleEntries = useMemo(() => entries, [entries]);
+  const groupCounts = useMemo(() => buildGroupCounts(entries), [entries]);
+  const selectedEntry = useMemo(
+    () => visibleEntries.find((entry) => entry.id === selectedEntryId) || null,
+    [selectedEntryId, visibleEntries],
+  );
+  const selectedRevealBusy = Boolean(
+    selectedEntry && revealBusyId.startsWith(`${selectedEntry.id}:`),
+  );
+  const selectedRevealRemainingMs = useMemo(() => {
+    if (!selectedEntry) return 0;
+    const expiresAt = revealExpiresAt[selectedEntry.id] || 0;
+    return Math.max(0, expiresAt - nowTs);
+  }, [nowTs, revealExpiresAt, selectedEntry]);
+
+  const resetTagInput = useCallback(() => {
+    setTagInputValue('');
+  }, []);
+
+  const commitPendingTagInput = useCallback((draft, { includeRemainder = false } = {}) => {
+    const raw = String(draft ?? tagInputValue ?? '');
+    const { completed, remainder } = splitVaultTagInput(raw);
+    const additions = [...completed];
+    const tail = normalizeText(remainder).replace(/^#+/, '');
+    if (includeRemainder && tail) {
+      additions.push(tail);
+    }
+    if (!additions.length) {
+      setTagInputValue(remainder);
+      return null;
+    }
+    let nextTags = null;
+    setForm((prev) => {
+      nextTags = appendVaultTags(prev.tags, additions);
+      return { ...prev, tags: nextTags };
+    });
+    setTagInputValue(includeRemainder ? '' : remainder);
+    return nextTags;
+  }, [tagInputValue]);
+
+  const openCreateDialog = () => {
+    setFormMode('create');
+    const preferred = manageObjectRefs.has(selectedObject) ? selectedObject : '';
+    setForm({
+      ...emptyForm,
+      object_ref: preferred || (globalWrite ? '' : (manageObjects[0]?.object_ref || '')),
+    });
+    setGeneratedPassword('');
+    resetTagInput();
+    setEntryDialogOpen(true);
+  };
+
+  const openEditDialog = (entry) => {
+    setFormMode('edit');
+    setForm({
+      id: entry.id,
+      group: entry.group,
+      tags: [...entry.tags],
+      login: entry.login,
+      password: '',
+      description: entry.description,
+      object_ref: entry.object_ref || '',
+      original_object_ref: entry.object_ref || '',
+    });
+    setGeneratedPassword('');
+    resetTagInput();
+    setEntryDialogOpen(true);
+  };
+
+  const handleSaveEntry = async () => {
+    const flushedTags = commitPendingTagInput(tagInputValue, { includeRemainder: true });
+    const payload = {
+      group: form.group,
+      tags: normalizeTagList(flushedTags || form.tags),
+      login: form.login,
+      description: form.description,
+    };
+    if (formMode === 'create' || form.password) {
+      payload.password = form.password;
+    }
+    if (formMode === 'create') {
+      if (form.object_ref) payload.object_ref = form.object_ref;
+    } else if (form.object_ref !== form.original_object_ref) {
+      payload.object_ref = form.object_ref || null;
+    }
+    setSaving(true);
+    try {
+      if (formMode === 'edit') {
+        await passwordsAPI.updateEntry(form.id, payload);
+        notifySuccess('Запись обновлена.', { source: 'passwords', dedupeMode: 'none' });
+      } else {
+        await passwordsAPI.createEntry(payload);
+        notifySuccess('Запись создана.', { source: 'passwords', dedupeMode: 'none' });
+      }
+      setEntryDialogOpen(false);
+      await loadEntries();
+      await loadAudit();
+    } catch (error) {
+      notifyApiError(error, 'Не удалось сохранить запись.', { dedupeMode: 'none' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleArchive = async (entry) => {
+    if (!window.confirm(`Архивировать пароль для ${entry.login}?`)) return;
+    setSaving(true);
+    try {
+      await passwordsAPI.archiveEntry(entry.id);
+      notifySuccess('Запись перенесена в архив.', { source: 'passwords', dedupeMode: 'none' });
+      await loadEntries();
+      await loadAudit();
+    } catch (error) {
+      notifyApiError(error, 'Не удалось архивировать запись.', { dedupeMode: 'none' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openGroupDialog = () => {
+    setNewGroupName('');
+    setGroupDialogOpen(true);
+  };
+
+  const handleCreateGroup = async () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    setGroupSaving(true);
+    try {
+      await passwordsAPI.createGroup({ name, sort_order: groups.length });
+      notifySuccess('Группа создана.', { source: 'passwords', dedupeMode: 'none' });
+      setGroupDialogOpen(false);
+      setNewGroupName('');
+      await loadEntries();
+      if (entryDialogOpen) {
+        setForm((prev) => ({ ...prev, group: name }));
+      }
+    } catch (error) {
+      notifyApiError(error, 'Не удалось создать группу.', { dedupeMode: 'none' });
+    } finally {
+      setGroupSaving(false);
+    }
+  };
+
+  const handleSelectEntry = (entry) => {
+    setSelectedEntryId(entry.id);
+    if (isMobile) {
+      setMobileSheetOpen(true);
+    }
+  };
+
+  const handleOpenUnlock = openUnlockDialog;
+
+  const handleEditEntry = (entry) => {
+    setMobileSheetOpen(false);
+    openEditDialog(entry);
+  };
+
+  const handleArchiveEntry = async (entry) => {
+    setMobileSheetOpen(false);
+    await handleArchive(entry);
+    if (selectedEntryId === entry.id) {
+      setSelectedEntryId('');
+    }
+  };
+
+  const handleGenerate = () => {
+    try {
+      const password = generateVaultPassword(generatorOptions);
+      setGeneratedPassword(password);
+    } catch (error) {
+      notifyWarning(error?.message || 'Не удалось сгенерировать пароль.', { source: 'passwords', dedupeMode: 'none' });
+    }
+  };
+
+  const insertGeneratedPassword = () => {
+    if (!generatedPassword) return;
+    setForm((prev) => ({ ...prev, password: generatedPassword }));
+  };
+
+  const copyGeneratedPassword = async () => {
+    if (!generatedPassword) return;
+    try {
+      const copied = await copyPassword(generatedPassword);
+      if (copied) notifySuccess('Сгенерированный пароль скопирован.', { source: 'passwords', dedupeMode: 'none' });
+    } catch (error) {
+      notifyWarning('Не удалось скопировать сгенерированный пароль.', { source: 'passwords', dedupeMode: 'none' });
+    }
+  };
+
+  const formIsValid = normalizeText(form.group) && normalizeText(form.login) && (formMode === 'edit' || form.password);
+
+  return (
+    <MainLayout headerMode="integrated">
+      <PageShell
+        fullHeight={!isMobile}
+        sx={{
+          gap: { xs: 0.75, md: 2.5 },
+          pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : undefined,
+        }}
+        data-testid="passwords-page"
+      >
+        {isMobile ? (
+          <Paper
+            elevation={0}
+            sx={{
+              flexShrink: 0,
+              p: 1.25,
+              border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+              bgcolor: 'background.paper',
+            }}
+          >
+            <PasswordSectionTabs value={activeSection} onChange={handleSectionChange} />
+          </Paper>
+        ) : (
+          <PageTopBar
+            title="Пароли"
+            tabs={<PasswordSectionTabs value={activeSection} onChange={handleSectionChange} />}
+            sx={{ mb: 0, flexShrink: 0 }}
+            actions={activeSection === 'ad-expiry' ? null : (
+              <>
+                <Tooltip title="Обновить">
+                  <span>
+                    <IconButton onClick={loadEntries} disabled={loading} aria-label="Обновить пароли" size="small">
+                      <RefreshOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                {canWrite ? (
+                  <Button variant="contained" size="small" startIcon={<AddOutlinedIcon />} onClick={openCreateDialog}>
+                    Новая запись
+                  </Button>
+                ) : null}
+              </>
+            )}
+          >
+            {activeSection === 'ad-expiry' ? null : (
+              <>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Поиск по логину или описанию"
+                  placeholder="Нажмите / для фокуса. Теги — точным фильтром справа"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  inputRef={searchInputRef}
+                  sx={{ maxWidth: 520 }}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchOutlinedIcon fontSize="small" />
+                      </InputAdornment>
+                    ),
+                  }}
+                  inputProps={{
+                    'data-testid': 'password-search-input',
+                    autoComplete: 'off',
+                    spellCheck: false,
+                  }}
+                />
+                <FormControlLabel
+                  control={<Switch checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />}
+                  label="Архив"
+                  sx={{ flexShrink: 0, mr: 0 }}
+                />
+              </>
+            )}
+          </PageTopBar>
+        )}
+
+        {activeSection === 'ad-expiry' ? (
+          <PasswordAdExpiryView />
+        ) : (
+        <>
+        {isMobile ? (
+          <>
+            <PasswordMobileToolbar
+              canWrite={canWrite}
+              loading={loading}
+              query={query}
+              searchInputRef={searchInputRef}
+              onQueryChange={(event) => setQuery(event.target.value)}
+              onUnlockClick={handleOpenUnlock}
+              onOpenFilters={() => setFiltersDrawerOpen(true)}
+              onRefresh={loadEntries}
+              onCreate={openCreateDialog}
+            />
+            <PasswordUnlockStrip
+              isUnlocked={isUnlocked}
+              isUnlockExpiringSoon={isUnlockExpiringSoon}
+              unlockedRemainingMs={unlockedRemainingMs}
+              onUnlockClick={handleOpenUnlock}
+            />
+          </>
+        ) : (
+          <>
+            <PasswordUnlockBanner
+              isUnlocked={isUnlocked}
+              isUnlockExpiringSoon={isUnlockExpiringSoon}
+              unlockedRemainingMs={unlockedRemainingMs}
+              unlockedUntil={unlockedUntil}
+              onUnlockClick={handleOpenUnlock}
+              requiresSetup={!user?.is_2fa_enabled}
+              compact
+            />
+          </>
+        )}
+
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: { xs: 0.5, md: 2 },
+          }}
+        >
+          <Grid
+            container
+            spacing={{ xs: 0, md: 2 }}
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              height: isMobile ? 'auto' : '100%',
+            }}
+          >
+            {!isMobile ? (
+              <Grid
+                item
+                md={3}
+                sx={{
+                  display: { xs: 'none', md: 'flex' },
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  height: '100%',
+                }}
+              >
+                <Paper
+                  elevation={0}
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    border: `1px solid ${theme.palette.divider}`,
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
+                    WebkitOverflowScrolling: 'touch',
+                  }}
+                  data-testid="password-filters-scroll"
+                >
+                  <PasswordFiltersPanel
+                    groups={groups}
+                    tags={tags}
+                    groupCounts={groupCounts}
+                    selectedGroup={selectedGroup}
+                    selectedTag={selectedTag}
+                    objects={passwordObjects}
+                    selectedObject={selectedObject}
+                    onSelectObject={handleSelectObject}
+                    totalCount={entriesTotal}
+                    onSelectGroup={setSelectedGroup}
+                    onSelectTag={setSelectedTag}
+                    canManageGroups={isAdmin}
+                    onAddGroup={openGroupDialog}
+                  />
+                </Paper>
+              </Grid>
+            ) : null}
+
+            <Grid
+              item
+              xs={12}
+              md={4}
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                height: isMobile ? 'auto' : '100%',
+              }}
+            >
+              <Box
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  WebkitOverflowScrolling: 'touch',
+                  pr: 0.5,
+                  ...(isMobile ? hideScrollbarSx : {}),
+                }}
+                data-testid="password-entry-list-scroll"
+              >
+                <PasswordEntryList
+                  entries={visibleEntries}
+                  selectedEntryId={selectedEntryId}
+                  loading={loading}
+                  compact={isMobile}
+                  onSelect={handleSelectEntry}
+                />
+                {hasMoreEntries ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', py: 1 }}>
+                    <Button
+                      size="small"
+                      onClick={handleLoadMore}
+                      disabled={loadingMore}
+                      data-testid="password-entries-load-more"
+                    >
+                      {loadingMore ? 'Загрузка…' : `Показать ещё (${entriesTotal - entries.length})`}
+                    </Button>
+                  </Box>
+                ) : null}
+              </Box>
+            </Grid>
+
+            {!isMobile ? (
+              <Grid
+                item
+                md={5}
+                sx={{
+                  display: { xs: 'none', md: 'flex' },
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  height: '100%',
+                }}
+              >
+                <Box
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
+                    WebkitOverflowScrolling: 'touch',
+                  }}
+                  data-testid="password-entry-detail-scroll"
+                >
+                  <PasswordEntryDetail
+                    entry={selectedEntry}
+                    revealed={selectedEntry ? revealedPasswords[selectedEntry.id] : ''}
+                    revealBusy={selectedRevealBusy}
+                    watermark={secretWatermark}
+                    revealRemainingMs={selectedRevealRemainingMs}
+                    canWrite={canWriteEntry(selectedEntry)}
+                    onCopyPassword={(entry) => requestReveal(entry, 'copy')}
+                    onCopyLogin={handleCopyLogin}
+                    onShow={(entry) => requestReveal(entry, 'show')}
+                    onHide={(entry) => hidePassword(entry.id)}
+                    onEdit={handleEditEntry}
+                    onArchive={handleArchiveEntry}
+                  />
+                </Box>
+              </Grid>
+            ) : null}
+          </Grid>
+
+          {isAdmin && !isMobile ? (
+            <Box sx={{ flexShrink: 0 }}>
+              <PasswordAuditAccordion
+                expanded={auditExpanded}
+                onExpandedChange={setAuditExpanded}
+                loading={auditLoading}
+                items={auditItems.slice(0, 12)}
+              />
+            </Box>
+          ) : null}
+        </Box>
+        </>
+        )}
+
+        <VaultPrivacyCover active={privacyCoverActive} />
+      </PageShell>
+
+      <Dialog
+        open={entryDialogOpen}
+        onClose={() => {
+          resetTagInput();
+          setEntryDialogOpen(false);
+        }}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>{formMode === 'edit' ? 'Редактировать запись' : 'Новая запись'}</DialogTitle>
+        <DialogContent dividers>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={7}>
+              <Stack spacing={2} sx={{ pt: 0.5, ...passwordEntryFormFieldSx }}>
+                <Stack direction="row" spacing={1} alignItems="flex-start">
+                  <FormControl fullWidth required>
+                    <InputLabel id="password-group-label" shrink>Группа</InputLabel>
+                    <Select
+                      labelId="password-group-label"
+                      label="Группа"
+                      value={form.group}
+                      onChange={(event) => setForm((prev) => ({ ...prev, group: String(event.target.value || '') }))}
+                      data-testid="password-form-group-select"
+                    >
+                      {groups.map((group) => (
+                        <MenuItem key={group} value={group}>{group}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  {isAdmin ? (
+                    <Tooltip title="Добавить группу">
+                      <IconButton
+                        size="small"
+                        onClick={openGroupDialog}
+                        sx={{ mt: 0.5 }}
+                        data-testid="password-form-add-group-button"
+                      >
+                        <AddOutlinedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                </Stack>
+                {manageObjects.length ? (
+                  <FormControl fullWidth>
+                    <InputLabel id="password-object-label" shrink>Объект</InputLabel>
+                    <Select
+                      labelId="password-object-label"
+                      label="Объект"
+                      value={form.object_ref}
+                      displayEmpty
+                      onChange={(event) => setForm((prev) => ({ ...prev, object_ref: String(event.target.value || '') }))}
+                      data-testid="password-form-object-select"
+                    >
+                      <MenuItem value="" disabled={!globalWrite}>Общий пароль (без объекта)</MenuItem>
+                      {manageObjects.map((item) => (
+                        <MenuItem key={item.object_ref} value={item.object_ref}>{item.name || item.object_ref}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : null}
+                {!groups.length ? (
+                  <Alert severity="warning">
+                    {isAdmin
+                      ? 'Нет доступных групп. Добавьте группу, чтобы можно было создавать записи.'
+                      : 'Нет доступных групп. Попросите администратора добавить группы.'}
+                    <Box sx={{ mt: 1 }}>
+                      {isAdmin ? (
+                        <Button size="small" variant="outlined" onClick={openGroupDialog}>
+                          Добавить группу
+                        </Button>
+                      ) : null}
+                    </Box>
+                  </Alert>
+                ) : null}
+                <TextField
+                  label="Логин"
+                  value={form.login}
+                  onChange={(event) => setForm((prev) => ({ ...prev, login: event.target.value }))}
+                  required
+                  fullWidth
+                  InputLabelProps={passwordEntryLabelProps}
+                  inputProps={{
+                    'data-testid': 'password-form-login',
+                    autoComplete: 'off',
+                    spellCheck: false,
+                  }}
+                />
+                <Autocomplete
+                  multiple
+                  freeSolo
+                  options={tags}
+                  value={form.tags}
+                  inputValue={tagInputValue}
+                  filterSelectedOptions
+                  onChange={(_, nextValue) => {
+                    setForm((prev) => ({ ...prev, tags: normalizeTagList(nextValue) }));
+                    resetTagInput();
+                  }}
+                  onInputChange={(_, newInputValue, reason) => {
+                    if (reason === 'reset' || reason === 'clear') {
+                      resetTagInput();
+                      return;
+                    }
+                    const { completed, remainder } = splitVaultTagInput(newInputValue);
+                    if (completed.length) {
+                      setForm((prev) => ({
+                        ...prev,
+                        tags: appendVaultTags(prev.tags, completed),
+                      }));
+                    }
+                    setTagInputValue(remainder);
+                  }}
+                  isOptionEqualToValue={(option, value) => (
+                    String(option).toLowerCase() === String(value).toLowerCase()
+                  )}
+                  getOptionLabel={(option) => String(option)}
+                  noOptionsText={tags.length ? 'Нет подходящих тегов' : 'Сначала создайте записи с тегами'}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Теги"
+                      placeholder={tags.length ? 'Выберите из списка или введите новый' : 'Введите тег'}
+                      helperText="До 20 тегов. Можно выбрать существующий, ввести новый и нажать Enter, Tab или запятую."
+                      InputLabelProps={{
+                        ...params.InputLabelProps,
+                        ...passwordEntryLabelProps,
+                      }}
+                      inputProps={{
+                        ...params.inputProps,
+                        'data-testid': 'password-form-tags',
+                        onBlur: (event) => {
+                          params.inputProps?.onBlur?.(event);
+                          commitPendingTagInput(event.target.value, { includeRemainder: true });
+                        },
+                        onKeyDown: (event) => {
+                          params.inputProps?.onKeyDown?.(event);
+                          if (event.key === 'Enter' && tagInputValue.trim()) {
+                            event.preventDefault();
+                            commitPendingTagInput(tagInputValue, { includeRemainder: true });
+                          }
+                        },
+                      }}
+                    />
+                  )}
+                />
+                <TextField
+                  label={formMode === 'edit' ? 'Новый пароль' : 'Пароль'}
+                  type="password"
+                  value={form.password}
+                  onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
+                  required={formMode !== 'edit'}
+                  helperText={formMode === 'edit' ? 'Оставьте пустым, чтобы не менять пароль.' : ''}
+                  InputLabelProps={passwordEntryLabelProps}
+                  inputProps={{
+                    'data-testid': 'password-form-password',
+                    autoComplete: 'new-password',
+                    spellCheck: false,
+                  }}
+                  fullWidth
+                />
+                <TextField
+                  label="Описание"
+                  value={form.description}
+                  onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
+                  multiline
+                  minRows={4}
+                  fullWidth
+                  InputLabelProps={passwordEntryLabelProps}
+                />
+              </Stack>
+            </Grid>
+            <Grid item xs={12} md={5}>
+              <Paper elevation={0} sx={{ p: 2, border: `1px solid ${theme.palette.divider}` }}>
+                <Typography variant="subtitle1" fontWeight={800}>Генератор</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                  Генерация выполняется в браузере через Web Crypto.
+                </Typography>
+                <Typography variant="caption" color="text.secondary">Длина: {generatorOptions.length}</Typography>
+                <Slider
+                  min={12}
+                  max={64}
+                  value={generatorOptions.length}
+                  onChange={(_, value) => setGeneratorOptions((prev) => ({ ...prev, length: Number(value) }))}
+                />
+                <Grid container spacing={0.5}>
+                  {[
+                    ['lower', 'a-z'],
+                    ['upper', 'A-Z'],
+                    ['digits', '0-9'],
+                    ['symbols', '#$%'],
+                    ['excludeSimilar', 'без похожих'],
+                  ].map(([key, label]) => (
+                    <Grid item xs={6} key={key}>
+                      <FormControlLabel
+                        control={<Switch size="small" checked={Boolean(generatorOptions[key])} onChange={(event) => setGeneratorOptions((prev) => ({ ...prev, [key]: event.target.checked }))} />}
+                        label={label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+                <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+                  <Button variant="outlined" onClick={handleGenerate}>Сгенерировать</Button>
+                  <Button onClick={insertGeneratedPassword} disabled={!generatedPassword}>Вставить</Button>
+                  <IconButton onClick={copyGeneratedPassword} disabled={!generatedPassword} aria-label="Скопировать сгенерированный пароль">
+                    <ContentCopyOutlinedIcon />
+                  </IconButton>
+                </Stack>
+                <Box
+                  className="vault-secret"
+                  onCopy={generatedPassword ? (event) => event.preventDefault() : undefined}
+                  onContextMenu={generatedPassword ? (event) => event.preventDefault() : undefined}
+                  sx={getOfficeCodeBlockSx(ui, {
+                    mt: 1.5,
+                    minHeight: 42,
+                    color: generatedPassword ? 'text.primary' : 'text.secondary',
+                    fontWeight: generatedPassword ? 600 : 400,
+                  })}
+                  data-testid="generated-password"
+                >
+                  {generatedPassword || '—'}
+                </Box>
+              </Paper>
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              resetTagInput();
+              setEntryDialogOpen(false);
+            }}
+          >
+            Отмена
+          </Button>
+          <Button variant="contained" onClick={handleSaveEntry} disabled={!formIsValid || saving || !groups.length}>
+            {saving ? 'Сохранение...' : 'Сохранить'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={groupDialogOpen}
+        onClose={() => setGroupDialogOpen(false)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Новая группа</DialogTitle>
+        <DialogContent dividers>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Название группы"
+            value={newGroupName}
+            onChange={(event) => setNewGroupName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && newGroupName.trim()) {
+                event.preventDefault();
+                handleCreateGroup();
+              }
+            }}
+            inputProps={{ 'data-testid': 'password-group-form-name' }}
+            sx={{ mt: 0.5 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setGroupDialogOpen(false)}>Отмена</Button>
+          <Button
+            variant="contained"
+            onClick={handleCreateGroup}
+            disabled={groupSaving || !newGroupName.trim()}
+            data-testid="password-group-form-save"
+          >
+            {groupSaving ? 'Сохранение...' : 'Добавить'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <PasswordUnlockDialog isMobile={isMobile} {...unlockDialogProps} />
+      <Drawer
+        anchor="left"
+        open={filtersDrawerOpen}
+        onClose={() => setFiltersDrawerOpen(false)}
+        PaperProps={{ sx: { width: 300, maxWidth: '90vw' } }}
+        data-testid="password-filters-drawer"
+      >
+        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+          <Box sx={{ px: 2, py: 1.5, borderBottom: `1px solid ${theme.palette.divider}` }}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle1" fontWeight={800}>Фильтры</Typography>
+              <IconButton size="small" onClick={loadEntries} disabled={loading} aria-label="Обновить пароли">
+                <RefreshOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+            <FormControlLabel
+              control={(
+                <Switch
+                  size="small"
+                  checked={includeArchived}
+                  onChange={(event) => setIncludeArchived(event.target.checked)}
+                />
+              )}
+              label="Показывать архив"
+              sx={{ mt: 0.5, ml: 0 }}
+            />
+          </Box>
+          <Box sx={{ flex: 1, overflowY: 'auto', ...hideScrollbarSx }}>
+            <PasswordFiltersPanel
+              groups={groups}
+              tags={tags}
+              groupCounts={groupCounts}
+              selectedGroup={selectedGroup}
+              selectedTag={selectedTag}
+              objects={passwordObjects}
+              selectedObject={selectedObject}
+              onSelectObject={handleSelectObject}
+              totalCount={entriesTotal}
+              onSelectGroup={(group) => {
+                setSelectedGroup(group);
+              }}
+              onSelectTag={(tag) => {
+                setSelectedTag(tag);
+              }}
+              canManageGroups={isAdmin}
+              onAddGroup={openGroupDialog}
+            />
+          </Box>
+          {isAdmin && isMobile ? (
+            <Box sx={{ flexShrink: 0, p: 1.5, borderTop: `1px solid ${theme.palette.divider}` }}>
+              <PasswordAuditAccordion
+                expanded={auditExpanded}
+                onExpandedChange={setAuditExpanded}
+                loading={auditLoading}
+                items={auditItems.slice(0, 12)}
+              />
+            </Box>
+          ) : null}
+        </Box>
+      </Drawer>
+
+      <PasswordEntryMobileSheet
+        open={mobileSheetOpen && Boolean(selectedEntry)}
+        entry={selectedEntry}
+        revealed={selectedEntry ? revealedPasswords[selectedEntry.id] : ''}
+        revealBusy={selectedRevealBusy}
+        watermark={secretWatermark}
+        revealRemainingMs={selectedRevealRemainingMs}
+        canWrite={canWriteEntry(selectedEntry)}
+        onClose={() => setMobileSheetOpen(false)}
+        onCopyPassword={(entry) => requestReveal(entry, 'copy')}
+        onCopyLogin={handleCopyLogin}
+        onShow={(entry) => requestReveal(entry, 'show')}
+        onHide={(entry) => hidePassword(entry.id)}
+        onEdit={handleEditEntry}
+        onArchive={handleArchiveEntry}
+      />
+    </MainLayout>
+  );
+}
+
+export default Passwords;

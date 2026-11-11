@@ -1,0 +1,704 @@
+import React from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Computers from './Computers';
+import { equipmentAPI } from '../api/client';
+
+const nativeIntersectionObserver = globalThis.IntersectionObserver;
+let intersectionObservers = [];
+let mockPermissions = ['computers.read', 'computers.read_all', 'computers.manage'];
+
+async function intersectLatestLoadSentinel() {
+  await waitFor(() => {
+    expect(intersectionObservers.some((observer) => observer.element)).toBe(true);
+  });
+  const observer = intersectionObservers.filter((item) => item.element).at(-1);
+  await act(async () => {
+    observer.callback([{ isIntersecting: true, target: observer.element }]);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+vi.mock('../api/client', () => ({
+  equipmentAPI: {
+    getAgentComputers: vi.fn(),
+    searchAgentComputers: vi.fn(),
+    getAgentComputerChanges: vi.fn(),
+    getComputersSummary: vi.fn(),
+    getAgentComputer: vi.fn(),
+    hideComputer: vi.fn(),
+    unhideComputer: vi.fn(),
+    deleteComputer: vi.fn(),
+  },
+}));
+
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({
+    hasPermission: (permission) => mockPermissions.includes(permission),
+  }),
+}));
+
+vi.mock('../components/layout/MainLayout', () => ({
+  default: ({ children }) => <div data-testid="main-layout">{children}</div>,
+}));
+
+vi.mock('../components/layout/PageShell', () => ({
+  default: ({ children }) => <div data-testid="page-shell">{children}</div>,
+}));
+
+function renderComputers(initialEntry = '/computers') {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <Computers />
+    </MemoryRouter>,
+  );
+}
+
+const sampleComputer = {
+  hostname: 'PC-01',
+  mac_address: 'AA-BB-CC-DD-EE-01',
+  status: 'online',
+  age_seconds: 60,
+  current_user: 'CORP\\petrov_aa',
+  user_login: 'CORP\\petrov_aa',
+  user_full_name: 'Петров А.А.',
+  branch_name: 'Тюмень',
+  location_name: 'Кабинет 12',
+  database_name: 'Основная БД',
+  database_id: 'ITINVENT',
+  inventory_inv_no: '101795',
+  inventory_model_name: 'Dell OptiPlex 7090',
+  ip_primary: '10.10.1.11',
+  network_link: {
+    device_code: 'SW-01',
+    port_name: 'Gi1/0/12',
+    socket_code: 'T-12',
+    site_name: 'Тюмень / 1 этаж',
+  },
+  network: {
+    summary: { total: 3, enabled: 1, disabled: 2, connected: 1 },
+    devices: [
+      {
+        name: 'Ethernet 1',
+        description: 'Intel Gigabit Ethernet',
+        device_type: 'ethernet',
+        enabled: true,
+        connection_status: 'up',
+        mac_address: 'AA-BB-CC-DD-EE-01',
+        link_speed: '1 Gbps',
+        ipv4: ['10.10.1.11'],
+      },
+      {
+        name: 'Intel Wi-Fi 6 AX201',
+        device_type: 'wifi',
+        enabled: false,
+        connection_status: 'disabled',
+      },
+      {
+        name: 'Intel Wireless Bluetooth',
+        device_type: 'bluetooth',
+        enabled: false,
+        connection_status: 'disabled',
+      },
+    ],
+  },
+  health: {
+    cpu_load_percent: 12.3,
+    ram_used_percent: 55.5,
+    uptime_seconds: 3600,
+    last_reboot_at: 1710000000,
+  },
+  last_seen_at: 1710003000,
+  logical_disks: [
+    { mountpoint: 'C:\\', total_gb: 512, free_gb: 128, fstype: 'NTFS' },
+  ],
+  storage: [
+    {
+      display_name: 'Samsung SSD',
+      serial_number: 'SSD-001',
+      health_status: 'Warning',
+      wear_out_percentage: 10,
+      temperature: 41,
+      media_type: 'SSD',
+      bus_type: 'NVMe',
+      size_bytes: 512 * (1024 ** 3),
+    },
+  ],
+  monitors: [
+    {
+      manufacturer: 'Dell',
+      product_code: 'U2422H',
+      serial_number: 'MON-001',
+      serial_source: 'wmi',
+      inventory_inv_no: '201777',
+      inventory_model_name: 'Dell U2422H',
+    },
+  ],
+  outlook_status: 'critical',
+  outlook_active_path: 'D:\\Mail\\archive-user1.ost',
+  outlook_active_size_bytes: 52 * (1024 ** 3),
+  outlook_total_size_bytes: 60 * (1024 ** 3),
+  outlook_archives_count: 1,
+  outlook: {
+    status: 'critical',
+    confidence: 'high',
+    active_store: {
+      path: 'D:\\Mail\\archive-user1.ost',
+      type: 'ost',
+      size_bytes: 52 * (1024 ** 3),
+      last_modified_at: 1710002000,
+    },
+    active_stores: [
+      {
+        path: 'D:\\Mail\\archive-user1.ost',
+        type: 'ost',
+        size_bytes: 52 * (1024 ** 3),
+        last_modified_at: 1710002000,
+      },
+    ],
+    archives: [
+      {
+        path: 'D:\\Mail\\archive-user1.pst',
+        type: 'pst',
+        size_bytes: 8 * (1024 ** 3),
+        last_modified_at: 1710001500,
+      },
+    ],
+    total_outlook_size_bytes: 60 * (1024 ** 3),
+  },
+  user_profile_sizes: {
+    collected_at: 1710002600,
+    profiles_count: 1,
+    total_size_bytes: 12 * (1024 ** 3),
+    profiles: [
+      {
+        user_name: 'petrov_aa',
+        profile_path: 'C:\\Users\\petrov_aa',
+        total_size_bytes: 12 * (1024 ** 3),
+        files_count: 1200,
+        dirs_count: 80,
+        errors_count: 0,
+        partial: true,
+        partial_reasons: ['entry_limit'],
+        top_level_folders: [
+          { name: 'Documents', path: 'C:\\Users\\petrov_aa\\Documents', size_bytes: 8 * (1024 ** 3), files_count: 600, dirs_count: 20, partial: true, partial_reasons: ['entry_limit'] },
+          { name: 'Desktop', path: 'C:\\Users\\petrov_aa\\Desktop', size_bytes: 2 * (1024 ** 3), files_count: 200, dirs_count: 10 },
+          { name: 'AppData', path: 'C:\\Users\\petrov_aa\\AppData', size_bytes: 1 * (1024 ** 3), files_count: 300, dirs_count: 30 },
+          { name: 'Downloads', path: 'C:\\Users\\petrov_aa\\Downloads', size_bytes: 512 * (1024 ** 2), files_count: 60, dirs_count: 5 },
+          { name: 'Pictures', path: 'C:\\Users\\petrov_aa\\Pictures', size_bytes: 256 * (1024 ** 2), files_count: 30, dirs_count: 4 },
+          { name: 'Music', path: 'C:\\Users\\petrov_aa\\Music', size_bytes: 128 * (1024 ** 2), files_count: 10, dirs_count: 2 },
+        ],
+      },
+    ],
+    partial: true,
+    partial_reasons: ['entry_limit'],
+  },
+  has_hardware_changes: true,
+  changes_count_30d: 1,
+  last_change_at: 1710002500,
+  recent_changes: [
+    {
+      event_id: 'chg-1',
+      detected_at: 1710002500,
+      change_types: ['storage'],
+      diff: { storage: { before: ['SSD-old'], after: ['SSD-001'] } },
+    },
+  ],
+};
+
+describe('Computers page', () => {
+  beforeEach(() => {
+    mockPermissions = ['computers.read', 'computers.read_all', 'computers.manage'];
+    intersectionObservers = [];
+    globalThis.IntersectionObserver = class IntersectionObserverMock {
+      constructor(callback, options) {
+        this.callback = callback;
+        this.options = options;
+        this.element = null;
+        intersectionObservers.push(this);
+      }
+
+      observe(element) {
+        this.element = element;
+      }
+
+      disconnect() {}
+    };
+    equipmentAPI.getAgentComputers.mockReset();
+    equipmentAPI.searchAgentComputers.mockReset();
+    equipmentAPI.getAgentComputerChanges.mockReset();
+    equipmentAPI.getComputersSummary.mockReset();
+    equipmentAPI.getAgentComputer.mockReset();
+    equipmentAPI.hideComputer.mockReset();
+    equipmentAPI.unhideComputer.mockReset();
+    equipmentAPI.deleteComputer.mockReset();
+    equipmentAPI.getAgentComputers.mockResolvedValue([sampleComputer]);
+    equipmentAPI.searchAgentComputers.mockResolvedValue({
+      items: [sampleComputer],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+      next_offset: null,
+      summary: {
+        total: 1,
+        unassigned: 0,
+        statuses: { online: 1, stale: 0, offline: 0, unknown: 0 },
+        branches: { [sampleComputer.branch_name]: 1 },
+        outlook: { critical: 1 },
+      },
+    });
+    equipmentAPI.getComputersSummary.mockResolvedValue({
+      total: 1,
+      statuses: { online: 1, stale: 0, offline: 0, unknown: 0 },
+      branches: { [sampleComputer.branch_name]: 1 },
+      outlook: { critical: 1 },
+    });
+    equipmentAPI.getAgentComputer.mockResolvedValue(sampleComputer);
+    equipmentAPI.hideComputer.mockResolvedValue({ ok: true, is_hidden: true });
+    equipmentAPI.unhideComputer.mockResolvedValue({ ok: true, is_hidden: false });
+    equipmentAPI.deleteComputer.mockResolvedValue({ ok: true, deleted: true });
+    equipmentAPI.getAgentComputerChanges.mockResolvedValue({
+      totals: { changed_24h: 1, changed_7d: 1, changed_30d: 1 },
+      daily: [],
+    });
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    globalThis.IntersectionObserver = nativeIntersectionObserver;
+  });
+
+  it('renders computers data from the backend contract and opens details drawer', async () => {
+    renderComputers();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(1);
+      expect(equipmentAPI.getComputersSummary).not.toHaveBeenCalled();
+    });
+
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    expect(await screen.findByText(sampleComputer.user_full_name)).toBeInTheDocument();
+    expect(screen.getByText(/Инв\. №:/)).toBeInTheDocument();
+    const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+    fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
+
+    await waitFor(() => {
+      expect(equipmentAPI.getAgentComputer).toHaveBeenCalledWith(
+        sampleComputer.mac_address,
+        expect.objectContaining({ scope: 'all' }),
+      );
+    });
+
+    expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
+    expect(screen.getByText(/Загрузка CPU:/)).toBeInTheDocument();
+    expect(screen.getByText(`Модель ITinvent: ${sampleComputer.inventory_model_name}`)).toBeInTheDocument();
+    expect(screen.getByText(`Инвентарный №: ${sampleComputer.inventory_inv_no}`)).toBeInTheDocument();
+    const inventoryCardLink = screen.getByRole('link', { name: 'Открыть карточку в базе' });
+    expect(inventoryCardLink).toHaveAttribute('href', `/database?inv_no=${sampleComputer.inventory_inv_no}&db_id=${sampleComputer.database_id}`);
+    expect(screen.getByText(sampleComputer.outlook_active_path)).toBeInTheDocument();
+    expect(screen.getByText('petrov_aa')).toBeInTheDocument();
+    expect(screen.getByText('Расчет не полный')).toBeInTheDocument();
+    expect(screen.getByText('Частично')).toBeInTheDocument();
+    expect(screen.queryByText('partial')).not.toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes('Документы') && content.includes('8.0'))).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes('+ еще 2'))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Показать все папки \(6\)/i }));
+    expect(screen.getByText('AppData')).toBeInTheDocument();
+    expect(screen.getByText('Изображения')).toBeInTheDocument();
+    expect(screen.getByText('Music')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Скрыть системные/i }));
+    expect(screen.queryByText('AppData')).not.toBeInTheDocument();
+    expect(screen.getByText('Скрыто системных: 1')).toBeInTheDocument();
+    expect(screen.getByText('Music')).toBeInTheDocument();
+    expect(screen.getByText('Samsung SSD')).toBeInTheDocument();
+    expect(screen.getByText('Ethernet 1')).toBeInTheDocument();
+    expect(screen.getByText('Intel Wi-Fi 6 AX201')).toBeInTheDocument();
+    expect(screen.getByText('Intel Wireless Bluetooth')).toBeInTheDocument();
+    expect(screen.getByText('Сетевые устройства: 3')).toBeInTheDocument();
+    expect(screen.getAllByText('Отключён')).toHaveLength(2);
+  }, 15000);
+
+  it('opens the full card from an IT object link even when the list does not show it, and goes back to the object', async () => {
+    equipmentAPI.searchAgentComputers.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0, has_more: false, next_offset: null, summary: { total: 0, statuses: {}, branches: {}, outlook: {} } });
+    const back = encodeURIComponent('/it/objects/OBJ-ITINVENT%3A12?tab=computers');
+    render(
+      <MemoryRouter initialEntries={[`/computers?open=${encodeURIComponent(sampleComputer.mac_address)}&q=${sampleComputer.hostname}&back=${back}`]}>
+        <Routes>
+          <Route path="/computers" element={<Computers />} />
+          <Route path="/it/objects/:ref" element={<div>Карточка объекта</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(equipmentAPI.getAgentComputer).toHaveBeenCalledWith(sampleComputer.mac_address, expect.anything()));
+    expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
+    expect(screen.getByText(/Загрузка CPU:/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Назад' }));
+    expect(await screen.findByText('Карточка объекта')).toBeInTheDocument();
+  }, 15000);
+
+  it('ignores a back link that leads outside the IT objects', async () => {
+    renderComputers(`/computers?open=${encodeURIComponent(sampleComputer.mac_address)}&back=${encodeURIComponent('https://evil.example/')}`);
+
+    expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Назад' })).not.toBeInTheDocument();
+  }, 15000);
+
+  it('keeps unassigned agents visible and shows their count', async () => {
+    const unassignedComputer = {
+      ...sampleComputer,
+      hostname: 'PC-UNASSIGNED',
+      mac_address: 'AA-BB-CC-DD-EE-99',
+      branch_name: 'Без привязки',
+      location_name: '',
+      network_link: null,
+      database_id: '',
+      database_name: 'Без привязки',
+      assignment_source: 'unassigned',
+      is_unassigned: true,
+    };
+    equipmentAPI.searchAgentComputers.mockResolvedValue({
+      items: [unassignedComputer],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+      next_offset: null,
+    });
+    equipmentAPI.getComputersSummary.mockResolvedValue({
+      total: 1,
+      unassigned: 1,
+      statuses: { online: 1, stale: 0, offline: 0, unknown: 0 },
+      branches: { 'Без привязки': 1 },
+      outlook: { critical: 1 },
+    });
+    equipmentAPI.getAgentComputer.mockResolvedValue(unassignedComputer);
+
+    renderComputers();
+
+    expect((await screen.findAllByText('Без привязки')).length).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByText('Без местоположения'));
+    expect((await screen.findAllByText('PC-UNASSIGNED')).length).toBeGreaterThan(0);
+  }, 15000);
+
+  it('keeps full detail payload in drawer when list cards are trimmed', async () => {
+    const trimmedComputer = {
+      ...sampleComputer,
+      monitors: undefined,
+      storage: [{ display_name: 'Trimmed only', health_status: 'OK' }],
+      logical_disks: undefined,
+      user_profile_sizes: {
+        collected_at: sampleComputer.user_profile_sizes.collected_at,
+        profiles_count: 1,
+        total_size_bytes: sampleComputer.user_profile_sizes.total_size_bytes,
+        partial: true,
+      },
+      outlook: {
+        status: sampleComputer.outlook_status,
+        confidence: sampleComputer.outlook_confidence,
+        active_store: sampleComputer.outlook.active_store,
+        total_outlook_size_bytes: sampleComputer.outlook_total_size_bytes,
+      },
+      recent_changes: undefined,
+    };
+    equipmentAPI.searchAgentComputers.mockResolvedValue({
+      items: [trimmedComputer],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+      next_offset: null,
+    });
+    equipmentAPI.getAgentComputer.mockResolvedValue(sampleComputer);
+
+    renderComputers();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalled();
+    });
+
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+    fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
+
+    await waitFor(() => {
+      expect(equipmentAPI.getAgentComputer).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('petrov_aa')).toBeInTheDocument();
+      expect(screen.getByText('Samsung SSD')).toBeInTheDocument();
+      // Модель монитора теперь встречается дважды: в заголовке и в строке «Инв. №».
+      expect(screen.getAllByText(/U2422H/).length).toBeGreaterThan(0);
+      expect(screen.getByText(/Инв\. №: 201777/)).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText('Мониторы не обнаружены.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Размеры профилей еще не собраны.')).not.toBeInTheDocument();
+  }, 15000);
+
+  it('sends server-side filter options when search, changedOnly, and scope change', async () => {
+    renderComputers();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'all',
+          sortBy: 'hostname',
+          sortDir: 'asc',
+          limit: 50,
+          offset: 0,
+          includeSummary: true,
+          hideVm172: true,
+          hiddenOnly: false,
+          searchFields: expect.arrayContaining(['identity', 'profiles', 'outlook']),
+        })
+      );
+      expect(equipmentAPI.getComputersSummary).not.toHaveBeenCalled();
+    });
+
+    fireEvent.change(screen.getByLabelText('Поиск'), { target: { value: 'petrov' } });
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ q: 'petrov' })
+      );
+    }, { timeout: 2000 });
+
+    fireEvent.click(screen.getByLabelText('Изменения'));
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ changedOnly: true })
+      );
+    }, { timeout: 2000 });
+
+    fireEvent.click(screen.getByText('Скрыть 172/VM'));
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ hideVm172: false })
+      );
+    }, { timeout: 2000 });
+
+    fireEvent.click(screen.getByText('Архив'));
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ hiddenOnly: true })
+      );
+    }, { timeout: 2000 });
+
+    fireEvent.click(screen.getByLabelText('Показаны все базы'));
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ scope: 'selected' })
+      );
+    }, { timeout: 2000 });
+  }, 15000);
+
+  it('normalizes pasted search text and shows hide action in drawer', async () => {
+    renderComputers();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalled();
+    });
+
+    const searchInput = screen.getByLabelText('Поиск');
+    fireEvent.paste(searchInput, {
+      clipboardData: {
+        getData: () => 'PC-01\r\n',
+      },
+    });
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ q: 'PC-01' })
+      );
+    }, { timeout: 2000 });
+
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+    fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
+
+    expect(await screen.findByRole('button', { name: 'В архив' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'В архив' }));
+
+    await waitFor(() => {
+      expect(equipmentAPI.hideComputer).toHaveBeenCalledWith(sampleComputer.mac_address);
+    });
+  }, 15000);
+
+  it('deletes a host from the drawer after confirmation', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      renderComputers();
+
+      fireEvent.click(await screen.findByText(sampleComputer.location_name));
+      const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+      fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
+
+      expect(await screen.findByRole('button', { name: 'Удалить' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Удалить' }));
+
+      await waitFor(() => {
+        expect(confirmSpy).toHaveBeenCalled();
+        expect(equipmentAPI.deleteComputer).toHaveBeenCalledWith(sampleComputer.mac_address);
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  }, 15000);
+
+  it('does not show hide controls with read-only Computers permission', async () => {
+    mockPermissions = ['computers.read'];
+    renderComputers();
+
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+    fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
+
+    expect(screen.queryByRole('button', { name: 'В архив' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Из архива' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Удалить' })).not.toBeInTheDocument();
+  }, 15000);
+
+  it('loads the next page in the background when the list sentinel approaches the viewport', async () => {
+    const nextComputer = {
+      ...sampleComputer,
+      hostname: 'PC-02',
+      mac_address: 'AA-BB-CC-DD-EE-02',
+      location_name: 'Office 2',
+    };
+    equipmentAPI.searchAgentComputers
+      .mockResolvedValueOnce({
+        items: [sampleComputer],
+        total: 2,
+        limit: 50,
+        offset: 0,
+        has_more: true,
+        next_offset: 1,
+      })
+      .mockResolvedValueOnce({
+        items: [nextComputer],
+        total: 2,
+        limit: 50,
+        offset: 1,
+        has_more: false,
+        next_offset: null,
+      });
+    equipmentAPI.getComputersSummary.mockResolvedValue({
+      total: 2,
+      statuses: { online: 2, stale: 0, offline: 0, unknown: 0 },
+      branches: { [sampleComputer.branch_name]: 2 },
+      outlook: { critical: 2 },
+    });
+
+    renderComputers();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 0, includeSummary: true })
+      );
+    });
+
+    expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('computers-load-more-sentinel')).toHaveTextContent('автоматически');
+
+    await intersectLatestLoadSentinel();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 1, includeSummary: true })
+      );
+    }, { timeout: 3000 });
+  }, 15000);
+
+  it('allows pagination after refresh supersedes an unfinished append', async () => {
+    let resolveAppend;
+    const initial = { items: [sampleComputer], total: 2, limit: 50, offset: 0, has_more: true, next_offset: 1 };
+    equipmentAPI.searchAgentComputers
+      .mockResolvedValueOnce(initial)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveAppend = resolve; }))
+      .mockResolvedValue(initial);
+    renderComputers();
+    await screen.findByTestId('computers-load-more-sentinel');
+    await intersectLatestLoadSentinel();
+    await waitFor(() => expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }));
+    await waitFor(() => expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(3));
+    await act(async () => { resolveAppend({ ...initial, items: [], has_more: false }); });
+    await waitFor(() => expect(screen.getByTestId('computers-load-more-sentinel')).not.toHaveTextContent('Подгружаем'));
+    await intersectLatestLoadSentinel();
+    await waitFor(() => expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(4));
+    expect(equipmentAPI.searchAgentComputers.mock.calls[3][0].offset).toBe(1);
+  }, 15000);
+
+  it('refreshes the loaded range and does not query when a location is expanded', async () => {
+    const nextComputer = {
+      ...sampleComputer,
+      hostname: 'PC-02',
+      mac_address: 'AA-BB-CC-DD-EE-02',
+      location_name: sampleComputer.location_name,
+    };
+    equipmentAPI.searchAgentComputers
+      .mockResolvedValueOnce({
+        items: [sampleComputer],
+        total: 2,
+        limit: 50,
+        offset: 0,
+        has_more: true,
+        next_offset: 1,
+      })
+      .mockResolvedValueOnce({
+        items: [nextComputer],
+        total: 2,
+        limit: 50,
+        offset: 1,
+        has_more: false,
+        next_offset: null,
+      })
+      .mockResolvedValueOnce({
+        items: [sampleComputer, nextComputer],
+        total: 2,
+        limit: 2,
+        offset: 0,
+        has_more: false,
+        next_offset: null,
+      });
+
+    renderComputers();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 0, includeSummary: true })
+      );
+    });
+
+    await intersectLatestLoadSentinel();
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 1, includeSummary: true })
+      );
+    }, { timeout: 3000 });
+
+    const callsAfterBackgroundLoad = equipmentAPI.searchAgentComputers.mock.calls.length;
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(callsAfterBackgroundLoad);
+
+    fireEvent.click(screen.getByRole('button', { name: /Обновить данные/i }));
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ offset: 0, limit: 2, includeSummary: true })
+      );
+    });
+  }, 15000);
+});

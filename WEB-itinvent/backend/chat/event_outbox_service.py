@@ -1,0 +1,808 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from contextlib import contextmanager
+
+from backend.chat.db import chat_write_session
+from backend.chat.models import ChatEventOutbox, ChatMember, ChatMessage
+from backend.chat.realtime_side_effects import publish_event_job
+from backend.chat.utils import normalize_text as _normalize_text
+from backend.chat.write_path_limits import aux_write_db_slot
+from backend.chat.write_path_metrics import note_outbox_enqueue_failed, note_outbox_repaired
+
+
+logger = logging.getLogger("backend.chat.event_outbox")
+
+
+@contextmanager
+def _aux_write_session():
+    """Short write TX under aux DB slot (never holds conn during network publish)."""
+    from backend.chat.write_path_limits import WriteSlotTimeoutError
+
+    try:
+        with aux_write_db_slot(timeout_sec=5.0):
+            with chat_write_session() as session:
+                yield session
+    except WriteSlotTimeoutError:
+        # Outbox must not crash the request path; caller retries on next poll.
+        logger.warning("chat event outbox skipped: aux write DB slot timeout")
+        raise
+
+EVENT_OUTBOX_STATUS_QUEUED = "queued"
+EVENT_OUTBOX_STATUS_PROCESSING = "processing"
+EVENT_OUTBOX_STATUS_DELIVERED = "delivered"
+EVENT_OUTBOX_STATUS_FAILED = "failed"
+OUTCOME_SUPERSEDED = "superseded"  # Worker outcome only, never a persisted status.
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _coerce_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+
+def _clamp_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = _normalize_text(os.getenv(name), str(default))
+    try:
+        return max(minimum, min(maximum, int(raw)))
+    except Exception:
+        return max(minimum, min(maximum, int(default)))
+
+
+def _env_flag(name: str, default: str = "1") -> bool:
+    return _normalize_text(os.getenv(name), default).lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class ChatEventOutboxJob:
+    id: int
+    event_type: str
+    target_scope: str
+    target_user_id: int
+    conversation_id: str
+    message_id: str
+    payload: dict[str, Any]
+    dedupe_key: str
+    attempt_count: int
+    status: str
+    next_attempt_at: datetime
+    updated_at: datetime
+
+
+class ChatEventOutboxService:
+    def __init__(self) -> None:
+        self._task: asyncio.Task | None = None
+        self._stop_event: asyncio.Event | None = None
+        self._last_heartbeat_at: float = 0.0
+        self._last_avg_job_ms: float = 0.0
+        self._poll_lock: asyncio.Lock | None = None
+        # Wake-up for an idle dispatcher: an enqueue in this process must not wait for the
+        # (backed-off) poll interval. Set from any thread via call_soon_threadsafe.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._wake: asyncio.Event | None = None
+        self._last_maintenance_mono: float = float("-inf")
+
+    def _ensure_poll_lock(self) -> asyncio.Lock:
+        if self._poll_lock is None:
+            self._poll_lock = asyncio.Lock()
+        return self._poll_lock
+
+    @property
+    def enabled(self) -> bool:
+        return _env_flag("CHAT_EVENT_OUTBOX_ENABLED", "1")
+
+    @property
+    def poll_interval_ms(self) -> int:
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_POLL_INTERVAL_MS", 250, 50, 10_000)
+
+    @property
+    def idle_max_interval_ms(self) -> int:
+        # An empty poll costs three transactions on a remote PostgreSQL, so an idle dispatcher
+        # backs off up to this value; any claimed job or local enqueue resets it to the base interval.
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_IDLE_MAX_MS", 1000, self.poll_interval_ms, 10_000)
+
+    @property
+    def maintenance_interval_sec(self) -> int:
+        # recover_stale_jobs / repair_missing_delivery_state_outbox: timeouts there are 120 s / 300 s.
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_MAINTENANCE_SEC", 5, 1, 300)
+
+    @property
+    def batch_size(self) -> int:
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_BATCH_SIZE", 100, 1, 500)
+
+    @property
+    def max_attempts(self) -> int:
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_MAX_ATTEMPTS", 10, 1, 50)
+
+    @property
+    def processing_timeout_sec(self) -> int:
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_PROCESSING_TIMEOUT_SEC", 120, 10, 3600)
+
+    @property
+    def heartbeat_sec(self) -> int:
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_HEARTBEAT_SEC", 60, 10, 3600)
+
+    @property
+    def max_concurrency(self) -> int:
+        return _clamp_env_int("CHAT_OUTBOX_CONCURRENCY", 4, 1, 32)
+
+    @property
+    def dispatcher_active(self) -> bool:
+        return bool(self._task and not self._task.done())
+
+    async def start(self) -> None:
+        if self._task and not self._task.done():
+            return
+        self._stop_event = asyncio.Event()
+        self._loop = asyncio.get_running_loop()
+        self._wake = asyncio.Event()
+        self._task = asyncio.create_task(self._run_loop(), name="chat-event-outbox-dispatcher")
+
+    async def stop(self) -> None:
+        if self._stop_event is not None:
+            self._stop_event.set()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        self._task = None
+        self._stop_event = None
+        self._loop = None
+        self._wake = None
+
+    def _notify_wake(self) -> None:
+        """Wake an idle dispatcher of this process; safe from worker threads, no-op when not started."""
+        loop = self._loop
+        wake = self._wake
+        if loop is None or wake is None:
+            return
+        try:
+            loop.call_soon_threadsafe(wake.set)
+        except RuntimeError:
+            # The loop is already closed (shutdown): nothing to wake.
+            pass
+
+    async def _wait_for_wake_or_stop(self, timeout_sec: float) -> bool:
+        """Sleeps until the timeout, a local enqueue or stop. Returns True when stop was requested."""
+        stop_event = self._stop_event
+        wake = self._wake
+        assert stop_event is not None and wake is not None
+        waiters = [asyncio.ensure_future(stop_event.wait()), asyncio.ensure_future(wake.wait())]
+        try:
+            await asyncio.wait(waiters, timeout=max(0.05, timeout_sec), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.cancel()
+        return stop_event.is_set()
+
+    async def _run_loop(self) -> None:
+        base_interval_ms = self.poll_interval_ms
+        interval_ms = base_interval_ms
+        while True:
+            assert self._wake is not None
+            # Clear before the poll: an enqueue that lands during it makes the next wait return at once.
+            self._wake.clear()
+            result: dict[str, int] = {}
+            try:
+                result = await self.poll_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("chat.event_outbox.poll iteration failed")
+            busy = int(result.get("claimed", 0) or 0) > 0 or int(result.get("recovered", 0) or 0) > 0
+            if busy:
+                interval_ms = base_interval_ms
+            else:
+                interval_ms = min(self.idle_max_interval_ms, max(base_interval_ms, interval_ms * 2))
+            if await self._wait_for_wake_or_stop(interval_ms / 1000.0):
+                return
+
+    def _retry_delay_sec(self, attempt_count: int) -> int:
+        exponent = max(0, int(attempt_count) - 1)
+        return min(5 * 60, 2 * (2 ** exponent))
+
+    def _serialize_job(self, job: ChatEventOutbox) -> ChatEventOutboxJob:
+        payload: dict[str, Any]
+        try:
+            parsed = json.loads(str(job.payload_json or "{}"))
+            payload = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            payload = {}
+        return ChatEventOutboxJob(
+            id=int(job.id),
+            event_type=_normalize_text(job.event_type),
+            target_scope=_normalize_text(job.target_scope, "inbox"),
+            target_user_id=int(job.target_user_id or 0),
+            conversation_id=_normalize_text(job.conversation_id),
+            message_id=_normalize_text(job.message_id),
+            payload=payload,
+            dedupe_key=_normalize_text(job.dedupe_key),
+            attempt_count=int(job.attempt_count or 0),
+            status=_normalize_text(job.status, EVENT_OUTBOX_STATUS_QUEUED),
+            next_attempt_at=_coerce_utc(job.next_attempt_at) or _utc_now(),
+            updated_at=_coerce_utc(job.updated_at) or _utc_now(),
+        )
+
+    def enqueue_event(
+        self,
+        *,
+        event_type: str,
+        target_user_id: int,
+        target_scope: str = "inbox",
+        conversation_id: str | None = None,
+        message_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        dedupe_key: str | None = None,
+    ) -> bool:
+        return self.enqueue_events([
+            {
+                "event_type": event_type,
+                "target_user_id": int(target_user_id),
+                "target_scope": target_scope,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "payload": payload or {},
+                "dedupe_key": dedupe_key,
+            }
+        ]) > 0
+
+    def enqueue_delivery_state_job_idempotent(self, job: dict[str, Any]) -> bool:
+        """Short aux TX: INSERT outbox ON CONFLICT DO NOTHING (no prior SELECT)."""
+        if not isinstance(job, dict):
+            return False
+        try:
+            return self.enqueue_events([job]) > 0
+        except Exception:
+            note_outbox_enqueue_failed()
+            logger.exception("chat.event_outbox.delivery_state enqueue failed")
+            return False
+
+    def enqueue_events(self, jobs: list[dict[str, Any]]) -> int:
+        normalized_jobs = [
+            {
+                "event_type": _normalize_text(item.get("event_type")),
+                "target_scope": _normalize_text(item.get("target_scope"), "inbox"),
+                "target_user_id": int(item.get("target_user_id") or 0),
+                "conversation_id": _normalize_text(item.get("conversation_id")) or None,
+                "message_id": _normalize_text(item.get("message_id")) or None,
+                "payload": item.get("payload") if isinstance(item.get("payload"), dict) else {},
+                "dedupe_key": _normalize_text(item.get("dedupe_key")) or None,
+            }
+            for item in list(jobs or [])
+            if isinstance(item, dict)
+        ]
+        if not normalized_jobs:
+            return 0
+        inserted = 0
+        now = _utc_now()
+        with _aux_write_session() as session:
+            bind = session.get_bind()
+            dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+            insert_fn = pg_insert if dialect_name == "postgresql" else sqlite_insert
+            for item in normalized_jobs:
+                if not item["event_type"] or int(item["target_user_id"]) <= 0:
+                    continue
+                values = {
+                    "event_type": item["event_type"],
+                    "target_scope": item["target_scope"],
+                    "target_user_id": int(item["target_user_id"]),
+                    "conversation_id": item["conversation_id"],
+                    "message_id": item["message_id"],
+                    "payload_json": json.dumps(item["payload"], ensure_ascii=False),
+                    "dedupe_key": item["dedupe_key"],
+                    "status": EVENT_OUTBOX_STATUS_QUEUED,
+                    "attempt_count": 0,
+                    "next_attempt_at": now,
+                    "last_error": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                if item["dedupe_key"]:
+                    stmt = insert_fn(ChatEventOutbox).values(**values)
+                    if dialect_name == "postgresql":
+                        stmt = stmt.on_conflict_do_nothing(constraint="uq_chat_event_outbox_dedupe_key")
+                    else:
+                        stmt = stmt.on_conflict_do_nothing(index_elements=["dedupe_key"])
+                    result = session.execute(stmt)
+                    # rowcount is 1 on insert, 0 on conflict for both dialects when supported
+                    if int(getattr(result, "rowcount", 0) or 0) > 0:
+                        inserted += 1
+                else:
+                    session.add(ChatEventOutbox(**values))
+                    inserted += 1
+        if inserted:
+            self._notify_wake()
+        return inserted
+
+    def repair_missing_delivery_state_outbox(
+        self,
+        *,
+        lookback_sec: int = 300,
+        limit: int = 50,
+    ) -> int:
+        """Re-enqueue delivery_state jobs for recent messages missing outbox rows."""
+        from backend.chat.chat_delivery_state import build_delivery_state_outbox_job
+        from backend.chat.chat_mentions import resolve_mentioned_member_user_ids
+
+        cutoff = _utc_now() - timedelta(seconds=max(30, int(lookback_sec)))
+        repaired = 0
+        try:
+            with _aux_write_session() as session:
+                recent_messages = list(
+                    session.execute(
+                        select(ChatMessage)
+                        .where(ChatMessage.created_at >= cutoff)
+                        .where(ChatMessage.kind == "text")
+                        .order_by(ChatMessage.created_at.desc())
+                        .limit(max(1, min(200, int(limit))))
+                    ).scalars()
+                )
+                if not recent_messages:
+                    return 0
+                message_ids = [str(item.id) for item in recent_messages if item.id]
+                existing_keys = {
+                    str(key)
+                    for key in session.execute(
+                        select(ChatEventOutbox.dedupe_key).where(
+                            ChatEventOutbox.dedupe_key.in_([f"delivery_state:{mid}" for mid in message_ids])
+                        )
+                    ).scalars()
+                    if key
+                }
+                jobs: list[dict[str, Any]] = []
+                for message in recent_messages:
+                    dedupe_key = f"delivery_state:{message.id}"
+                    if dedupe_key in existing_keys:
+                        continue
+                    member_ids = list(
+                        session.execute(
+                            select(ChatMember.user_id).where(
+                                ChatMember.conversation_id == message.conversation_id,
+                                ChatMember.left_at.is_(None),
+                            )
+                        ).scalars()
+                    )
+                    jobs.append(
+                        build_delivery_state_outbox_job(
+                            conversation_id=str(message.conversation_id),
+                            message_id=str(message.id),
+                            sender_user_id=int(message.sender_user_id),
+                            member_user_ids=[int(uid) for uid in member_ids],
+                            conversation_seq=int(getattr(message, "conversation_seq", 0) or 0),
+                            seen_at=message.created_at or _utc_now(),
+                            mentioned_user_ids=resolve_mentioned_member_user_ids(
+                                member_user_ids=member_ids,
+                                sender_user_id=int(message.sender_user_id),
+                                body=getattr(message, "body", None),
+                                conversation_id=str(message.conversation_id),
+                            ),
+                        )
+                    )
+            if jobs:
+                repaired = int(self.enqueue_events(jobs) or 0)
+                if repaired:
+                    note_outbox_repaired(repaired)
+        except Exception:
+            logger.exception("chat.event_outbox.repair_missing_delivery_state failed")
+            return 0
+        return repaired
+
+    def recover_stale_jobs(self) -> int:
+        cutoff = _utc_now() - timedelta(seconds=self.processing_timeout_sec)
+        recovered = 0
+        with _aux_write_session() as session:
+            stale_jobs = list(
+                session.execute(
+                    select(ChatEventOutbox).where(
+                        ChatEventOutbox.status == EVENT_OUTBOX_STATUS_PROCESSING,
+                        ChatEventOutbox.updated_at <= cutoff,
+                    )
+                ).scalars()
+            )
+            now = _utc_now()
+            for job in stale_jobs:
+                exhausted = int(job.attempt_count or 0) >= self.max_attempts
+                applied = session.execute(
+                    update(ChatEventOutbox).where(
+                        ChatEventOutbox.id == job.id,
+                        ChatEventOutbox.status == EVENT_OUTBOX_STATUS_PROCESSING,
+                        ChatEventOutbox.attempt_count == int(job.attempt_count or 0),
+                        ChatEventOutbox.updated_at == job.updated_at,
+                    ).values(
+                        status=EVENT_OUTBOX_STATUS_FAILED if exhausted else EVENT_OUTBOX_STATUS_QUEUED,
+                        next_attempt_at=now, updated_at=now,
+                        last_error=("Stale processing job exhausted attempt limit"
+                                    if exhausted else "Recovered stale processing job"),
+                    ).execution_options(synchronize_session=False)
+                )
+                recovered += int(applied.rowcount or 0)
+        return recovered
+
+    def claim_jobs(self, limit: int | None = None) -> list[ChatEventOutboxJob]:
+        claim_limit = max(1, int(limit or self.batch_size))
+        now = _utc_now()
+        with _aux_write_session() as session:
+            query = (
+                select(ChatEventOutbox)
+                .where(
+                    ChatEventOutbox.status == EVENT_OUTBOX_STATUS_QUEUED,
+                    ChatEventOutbox.next_attempt_at <= now,
+                )
+                .order_by(ChatEventOutbox.next_attempt_at.asc(), ChatEventOutbox.id.asc())
+                .limit(claim_limit)
+            )
+            bind = session.get_bind()
+            dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+            if dialect_name == "postgresql":
+                query = query.with_for_update(skip_locked=True)
+            rows = list(session.execute(query).scalars())
+            claimed_jobs = []
+            for row in rows:
+                claimed = session.execute(
+                    update(ChatEventOutbox).where(
+                        ChatEventOutbox.id == row.id,
+                        ChatEventOutbox.status == EVENT_OUTBOX_STATUS_QUEUED,
+                        ChatEventOutbox.attempt_count == int(row.attempt_count or 0),
+                    ).values(
+                        status=EVENT_OUTBOX_STATUS_PROCESSING,
+                        attempt_count=ChatEventOutbox.attempt_count + 1,
+                        updated_at=now,
+                    ).returning(ChatEventOutbox).execution_options(
+                        synchronize_session=False, populate_existing=True,
+                    )
+                ).scalar_one_or_none()
+                if claimed is not None:
+                    claimed_jobs.append(self._serialize_job(claimed))
+            return claimed_jobs
+
+    def _update_job(
+        self,
+        *,
+        job_id: int,
+        attempt_count: int,
+        status: str,
+        next_attempt_at: datetime | None = None,
+        last_error: str | None = None,
+    ) -> bool:
+        now = _utc_now()
+        with _aux_write_session() as session:
+            return bool(session.execute(
+                update(ChatEventOutbox).where(
+                    ChatEventOutbox.id == int(job_id),
+                    ChatEventOutbox.status == EVENT_OUTBOX_STATUS_PROCESSING,
+                    ChatEventOutbox.attempt_count == int(attempt_count),
+                ).values(
+                    status=_normalize_text(status, EVENT_OUTBOX_STATUS_FAILED),
+                    updated_at=now, next_attempt_at=next_attempt_at or now,
+                    last_error=_normalize_text(last_error) or None,
+                )
+            ).rowcount)
+
+    def mark_delivered(self, *, job_id: int, attempt_count: int, last_error: str | None = None) -> bool:
+        return self._update_job(
+            job_id=int(job_id),
+            attempt_count=attempt_count,
+            status=EVENT_OUTBOX_STATUS_DELIVERED,
+            next_attempt_at=_utc_now(),
+            last_error=last_error,
+        )
+
+    def mark_retry(self, *, job_id: int, attempt_count: int, last_error: str) -> bool:
+        return self._update_job(
+            job_id=int(job_id), attempt_count=attempt_count,
+            status=EVENT_OUTBOX_STATUS_QUEUED,
+            next_attempt_at=_utc_now() + timedelta(seconds=self._retry_delay_sec(attempt_count)),
+            last_error=last_error,
+        )
+
+    def mark_failed(self, *, job_id: int, attempt_count: int, last_error: str) -> bool:
+        return self._update_job(
+            job_id=int(job_id),
+            attempt_count=attempt_count,
+            status=EVENT_OUTBOX_STATUS_FAILED,
+            next_attempt_at=_utc_now(),
+            last_error=last_error,
+        )
+
+    def claim_delivery_state_job_for_message(self, *, message_id: str) -> ChatEventOutboxJob | None:
+        """Claim a queued delivery-state job for immediate post-ACK processing."""
+        from backend.chat.chat_delivery_state import CHAT_MESSAGE_DELIVERY_STATE_EVENT
+
+        normalized_message_id = _normalize_text(message_id)
+        if not normalized_message_id:
+            return None
+        now = _utc_now()
+        with _aux_write_session() as session:
+            query = (
+                select(ChatEventOutbox)
+                .where(
+                    ChatEventOutbox.status == EVENT_OUTBOX_STATUS_QUEUED,
+                    ChatEventOutbox.event_type == CHAT_MESSAGE_DELIVERY_STATE_EVENT,
+                    ChatEventOutbox.message_id == normalized_message_id,
+                )
+                .order_by(ChatEventOutbox.id.asc())
+                .limit(1)
+            )
+            bind = session.get_bind()
+            dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+            if dialect_name == "postgresql":
+                query = query.with_for_update(skip_locked=True)
+            row = session.execute(query).scalar_one_or_none()
+            if row is None:
+                return None
+            claimed = session.execute(
+                update(ChatEventOutbox).where(
+                    ChatEventOutbox.id == row.id,
+                    ChatEventOutbox.status == EVENT_OUTBOX_STATUS_QUEUED,
+                    ChatEventOutbox.attempt_count == int(row.attempt_count or 0),
+                ).values(
+                    status=EVENT_OUTBOX_STATUS_PROCESSING,
+                    attempt_count=ChatEventOutbox.attempt_count + 1,
+                    updated_at=now,
+                ).returning(ChatEventOutbox).execution_options(
+                    synchronize_session=False, populate_existing=True,
+                )
+            ).scalar_one_or_none()
+            return self._serialize_job(claimed) if claimed is not None else None
+
+    def process_delivery_state_job_sync(self, job: ChatEventOutboxJob) -> None:
+        """Apply unread/sender-seen side effects idempotently (no WS publish)."""
+        from datetime import datetime as _dt
+
+        from backend.chat.chat_delivery_state import (
+            CHAT_MESSAGE_DELIVERY_STATE_EVENT,
+            apply_message_delivery_state_after_commit,
+        )
+
+        if _normalize_text(job.event_type) != CHAT_MESSAGE_DELIVERY_STATE_EVENT:
+            raise ValueError(f"unsupported delivery event_type={job.event_type}")
+        payload = dict(job.payload or {})
+        seen_raw = payload.get("seen_at")
+        if isinstance(seen_raw, str) and seen_raw:
+            try:
+                seen_at = _dt.fromisoformat(seen_raw.replace("Z", "+00:00"))
+            except Exception:
+                seen_at = _utc_now()
+        else:
+            seen_at = _utc_now()
+        with _aux_write_session() as session:
+            apply_message_delivery_state_after_commit(
+                session=session,
+                conversation_id=job.conversation_id,
+                message_id=job.message_id,
+                sender_user_id=int(payload.get("sender_user_id") or job.target_user_id or 0),
+                member_user_ids=list(payload.get("member_user_ids") or []),
+                conversation_seq=int(payload.get("conversation_seq") or 0),
+                seen_at=seen_at,
+                mentioned_user_ids=list(payload.get("mentioned_user_ids") or []),
+            )
+
+    async def process_job(self, job: ChatEventOutboxJob) -> str:
+        started_at = time.perf_counter()
+        outcome = EVENT_OUTBOX_STATUS_FAILED
+        note: str | None = None
+        try:
+            from backend.chat.chat_delivery_state import CHAT_MESSAGE_DELIVERY_STATE_EVENT
+
+            if _normalize_text(job.event_type) == CHAT_MESSAGE_DELIVERY_STATE_EVENT:
+                await asyncio.to_thread(self.process_delivery_state_job_sync, job)
+            elif _normalize_text(job.event_type) == "chat.message.metadata.refresh":
+                from dataclasses import asdict
+                from backend.chat.realtime_side_effects import build_message_metadata_event_jobs
+
+                metadata_jobs = await build_message_metadata_event_jobs(
+                    conversation_id=job.conversation_id, message_id=job.message_id,
+                )
+                await asyncio.to_thread(self.enqueue_events, [asdict(item) for item in metadata_jobs])
+            else:
+                await publish_event_job(
+                    {
+                        "event_type": job.event_type,
+                        "target_scope": job.target_scope,
+                        "target_user_id": int(job.target_user_id),
+                        "conversation_id": job.conversation_id,
+                        "payload": job.payload,
+                        "message_id": job.message_id,
+                    }
+                )
+            # mark_* uses sync SQLAlchemy — never run on the asyncio event loop.
+            applied = await asyncio.to_thread(self.mark_delivered, job_id=job.id, attempt_count=job.attempt_count)
+            outcome = EVENT_OUTBOX_STATUS_DELIVERED
+            if not applied:
+                outcome = OUTCOME_SUPERSEDED
+            return outcome
+        except Exception as exc:
+            note = _normalize_text(exc) or "event delivery failed"
+            if int(job.attempt_count) >= self.max_attempts:
+                applied = await asyncio.to_thread(self.mark_failed, job_id=job.id, attempt_count=job.attempt_count, last_error=note)
+                outcome = EVENT_OUTBOX_STATUS_FAILED
+            else:
+                applied = await asyncio.to_thread(self.mark_retry, job_id=job.id, attempt_count=job.attempt_count, last_error=note)
+                outcome = EVENT_OUTBOX_STATUS_QUEUED
+            if not applied:
+                outcome = OUTCOME_SUPERSEDED
+            return outcome
+        finally:
+            logger.info(
+                "chat.event_outbox.job id=%s event_type=%s scope=%s target_user_id=%s conversation_id=%s message_id=%s attempt_count=%s status=%s duration_ms=%.1f error=%s",
+                int(job.id),
+                job.event_type,
+                job.target_scope,
+                int(job.target_user_id),
+                job.conversation_id or "-",
+                job.message_id or "-",
+                int(job.attempt_count),
+                outcome,
+                (time.perf_counter() - started_at) * 1000.0,
+                note or "-",
+            )
+
+    async def poll_once(self) -> dict[str, int]:
+        try:
+            from backend.chat.latency_profile import event_outbox_poll_enabled
+
+            poll_enabled = bool(event_outbox_poll_enabled())
+        except Exception:
+            poll_enabled = True
+        if not self.enabled or not poll_enabled:
+            return {
+                "enabled": int(bool(self.enabled)),
+                "claimed": 0,
+                "delivered": 0,
+                "queued": 0,
+                "failed": 0,
+                "superseded": 0,
+                "recovered": 0,
+                "poll_disabled": int(not poll_enabled),
+            }
+        # Never overlap poll_once: claim/recover must stay single-flight on the loop.
+        lock = self._ensure_poll_lock()
+        if lock.locked():
+            return {
+                "enabled": 1,
+                "claimed": 0,
+                "delivered": 0,
+                "queued": 0,
+                "failed": 0,
+                "superseded": 0,
+                "recovered": 0,
+                "skipped_busy": 1,
+            }
+        async with lock:
+            recovered = 0
+            now_mono = time.monotonic()
+            # Housekeeping is two more transactions per poll; its own timeouts are 120 s / 300 s,
+            # so it runs every few seconds (the first poll always does) instead of on every cycle.
+            if (now_mono - self._last_maintenance_mono) >= float(self.maintenance_interval_sec):
+                self._last_maintenance_mono = now_mono
+                recovered_stale = await asyncio.to_thread(self.recover_stale_jobs)
+                repaired = await asyncio.to_thread(self.repair_missing_delivery_state_outbox)
+                recovered = int(recovered_stale or 0) + int(repaired or 0)
+            jobs = await asyncio.to_thread(self.claim_jobs)
+            batch_started_at = time.perf_counter()
+            delivered = 0
+            queued = 0
+            failed = 0
+            superseded = 0
+            semaphore = asyncio.Semaphore(self.max_concurrency)
+
+            async def _process_bounded(job: ChatEventOutboxJob) -> str:
+                async with semaphore:
+                    return await self.process_job(job)
+
+            outcomes = await asyncio.gather(
+                *[_process_bounded(job) for job in jobs],
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, Exception):
+                    logger.error(
+                        "chat.event_outbox.job task failed unexpectedly",
+                        exc_info=(type(outcome), outcome, outcome.__traceback__),
+                    )
+                    failed += 1
+                    continue
+                if outcome == EVENT_OUTBOX_STATUS_DELIVERED:
+                    delivered += 1
+                elif outcome == EVENT_OUTBOX_STATUS_QUEUED:
+                    queued += 1
+                elif outcome == OUTCOME_SUPERSEDED:
+                    superseded += 1
+                else:
+                    failed += 1
+            batch_duration_ms = (time.perf_counter() - batch_started_at) * 1000.0
+            if jobs:
+                self._last_avg_job_ms = batch_duration_ms / max(1, len(jobs))
+            now = time.time()
+            if (now - self._last_heartbeat_at) >= float(self.heartbeat_sec):
+                self._last_heartbeat_at = now
+                backlog = await asyncio.to_thread(self.get_backlog_snapshot)
+                logger.info(
+                    "chat.event_outbox.heartbeat enabled=%s claimed=%s delivered=%s queued=%s failed=%s recovered=%s superseded=%s backlog_queued=%s backlog_failed=%s avg_job_ms=%.1f batch_ms=%.1f concurrency=%s",
+                    int(self.enabled),
+                    len(jobs),
+                    delivered,
+                    queued,
+                    failed,
+                    recovered,
+                    superseded,
+                    int(backlog.get("queued") or 0),
+                    int(backlog.get("failed") or 0),
+                    batch_duration_ms / max(1, len(jobs)),
+                    batch_duration_ms,
+                    int(self.max_concurrency),
+                )
+            return {
+                "enabled": 1,
+                "claimed": len(jobs),
+                "delivered": delivered,
+                "queued": queued,
+                "failed": failed,
+                "superseded": superseded,
+                "recovered": recovered,
+            }
+
+    def get_backlog_snapshot(self) -> dict[str, int | float]:
+        now = _utc_now()
+        queued = 0
+        processing = 0
+        terminal_failed = 0
+        oldest_queued_age_sec = 0.0
+        with _aux_write_session() as session:
+            status_rows = session.execute(
+                select(ChatEventOutbox.status, func.count())
+                .group_by(ChatEventOutbox.status)
+            ).all()
+            oldest_row = session.execute(
+                select(
+                    func.min(ChatEventOutbox.created_at),
+                    func.min(ChatEventOutbox.next_attempt_at),
+                ).where(ChatEventOutbox.status == EVENT_OUTBOX_STATUS_QUEUED)
+            ).one()
+        for status, count in status_rows:
+            normalized_status = _normalize_text(status)
+            count_value = int(count or 0)
+            if normalized_status == EVENT_OUTBOX_STATUS_QUEUED:
+                queued = count_value
+            elif normalized_status == EVENT_OUTBOX_STATUS_PROCESSING:
+                processing = count_value
+            elif normalized_status == EVENT_OUTBOX_STATUS_FAILED:
+                terminal_failed = count_value
+        created_at, next_attempt_at = oldest_row
+        if queued > 0:
+            created = _coerce_utc(created_at) or now
+            next_attempt = _coerce_utc(next_attempt_at) or created
+            oldest_queued_age_sec = max(0.0, (now - min(created, next_attempt)).total_seconds())
+        return {
+            "queued": queued,
+            "processing": processing,
+            "failed": terminal_failed,
+            "oldest_queued_age_sec": round(oldest_queued_age_sec, 1),
+            "dispatcher_active": int(self.dispatcher_active),
+            "avg_job_ms": round(float(self._last_avg_job_ms or 0.0), 1),
+        }
+
+
+chat_event_outbox_service = ChatEventOutboxService()

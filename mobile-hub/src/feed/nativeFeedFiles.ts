@@ -1,0 +1,189 @@
+import * as DocumentPicker from 'expo-document-picker';
+import * as Crypto from 'expo-crypto';
+import { Directory, File, Paths } from 'expo-file-system';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+import * as IntentLauncher from 'expo-intent-launcher';
+import { Platform } from 'react-native';
+import {
+  buildFeedAttachmentUrl,
+  buildFeedCommentAttachmentUrl,
+  type FeedUploadFile,
+} from '../api/feedApi';
+import type { FeedAttachment } from './feedFormat';
+import { getSessionUserId } from '../auth/tokenStore';
+import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
+import { sanitizeNativeFileName, selectCacheEvictions } from '../files/filePolicy';
+import { nativeImageCacheKey } from '../files/nativeImageCache';
+import { resolveAttachmentUrl } from '../utils/attachmentUrl';
+
+export const FEED_FILE_MAX_BYTES = 20 * 1024 * 1024;
+const CACHE_DIRECTORY_NAME = 'hubit-feed-files';
+const ANDROID_VIEW_ACTION = 'android.intent.action.VIEW';
+const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
+
+function createFeedUploadId(): string {
+  return Crypto.randomUUID?.()
+    || `feed-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function assertNativeRuntime(): void {
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') {
+    throw new Error('Работа с файлами ленты доступна только в приложении');
+  }
+}
+
+function feedCacheDirectory(): Directory {
+  const directory = new Directory(Paths.document, CACHE_DIRECTORY_NAME);
+  directory.create({ intermediates: true, idempotent: true });
+  return directory;
+}
+
+async function feedCacheFile(fileName: string): Promise<File> {
+  const userId = Number(await getSessionUserId());
+  if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
+  return new File(feedCacheDirectory(), `${userId}-${fileName}`);
+}
+
+export function clearNativeFeedFileCache(): void {
+  for (const entry of feedCacheDirectory().list()) entry.delete();
+}
+
+export function getNativeFeedFileCacheSize(): number {
+  return feedCacheDirectory().list().reduce((total, entry) => (
+    entry instanceof File && entry.exists ? total + Math.max(0, Number(entry.size || 0)) : total
+  ), 0);
+}
+
+function cleanupFeedCache(preserveUri?: string): void {
+  const directory = feedCacheDirectory();
+  const files = directory.list().filter((entry): entry is File => entry instanceof File && entry.exists);
+  const evictions = new Set(selectCacheEvictions(files.map((entry) => ({
+    uri: entry.uri,
+    size: Math.max(0, Number(entry.size || 0)),
+    modifiedAt: Number(entry.lastModified || entry.creationTime || 0),
+  })), { preserveUri, maxAgeMs: Number.POSITIVE_INFINITY }));
+  files.forEach((entry) => {
+    if (evictions.has(entry.uri) && entry.exists) entry.delete();
+  });
+}
+
+export async function pickNativeFeedFiles(): Promise<FeedUploadFile[]> {
+  assertNativeRuntime();
+  const result = await DocumentPicker.getDocumentAsync({
+    copyToCacheDirectory: true,
+    multiple: true,
+    type: '*/*',
+  });
+  if (result.canceled || !result.assets?.length) return [];
+  return result.assets.map((asset) => {
+    const file = new File(asset.uri);
+    const name = sanitizeNativeFileName(asset.name || file.name || 'file.bin');
+    const size = Math.max(0, Number(asset.size || file.size || 0));
+    if (!file.exists || size <= 0) throw new Error(`Файл «${name}» пустой или недоступен`);
+    if (size > FEED_FILE_MAX_BYTES) throw new Error(`Файл «${name}» превышает 20 МБ`);
+    return {
+      uri: asset.uri,
+      name,
+      mimeType: String(asset.mimeType || file.type || 'application/octet-stream'),
+      size,
+      uploadId: createFeedUploadId(),
+    };
+  });
+}
+
+export async function pickNativeFeedImages(): Promise<FeedUploadFile[]> {
+  assertNativeRuntime();
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ['images'],
+    allowsMultipleSelection: true,
+    selectionLimit: 10,
+    orderedSelection: true,
+    quality: 0.9,
+  });
+  if (result.canceled || !result.assets?.length) return [];
+  return result.assets.map((asset) => {
+    const file = new File(asset.uri);
+    const name = sanitizeNativeFileName(asset.fileName || file.name || 'photo.jpg');
+    const size = Math.max(0, Number(asset.fileSize || file.size || 0));
+    if (!file.exists || size <= 0) throw new Error(`Файл «${name}» пустой или недоступен`);
+    if (size > FEED_FILE_MAX_BYTES) throw new Error(`Файл «${name}» превышает 20 МБ`);
+    return {
+      uri: asset.uri,
+      name,
+      mimeType: String(asset.mimeType || file.type || 'image/jpeg'),
+      size,
+      uploadId: createFeedUploadId(),
+    };
+  });
+}
+
+/** Resolve an image attachment to a local file URI: rendered-image disk cache first, then the shared download cache/network. */
+export async function resolveNativeFeedImageUri(
+  postId: string,
+  attachment: FeedAttachment,
+  commentId?: string,
+): Promise<string> {
+  assertNativeRuntime();
+  const attachmentId = String(attachment.id || '').trim();
+  if (!postId || !attachmentId) throw new Error('Не выбран файл публикации');
+  const sourceUrl = commentId
+    ? buildFeedCommentAttachmentUrl(postId, commentId, attachmentId)
+    : buildFeedAttachmentUrl(postId, attachmentId);
+  const userId = Number(await getSessionUserId());
+  const trusted = userId > 0 ? resolveAttachmentUrl(sourceUrl) : null;
+  if (trusted) {
+    const cached = await Image.getCachePathAsync(nativeImageCacheKey(userId, trusted)).catch(() => null);
+    if (cached) return cached.startsWith('file:') ? cached : `file://${cached}`;
+  }
+  const downloaded = await downloadNativeFeedAttachment(postId, attachment, commentId);
+  return downloaded.uri;
+}
+
+export async function downloadNativeFeedAttachment(
+  postId: string,
+  attachment: FeedAttachment,
+  commentId?: string,
+): Promise<File> {
+  assertNativeRuntime();
+  const attachmentId = String(attachment.id || '').trim();
+  if (!postId || !attachmentId) throw new Error('Не выбран файл публикации');
+  const sourceUrl = commentId
+    ? buildFeedCommentAttachmentUrl(postId, commentId, attachmentId)
+    : buildFeedAttachmentUrl(postId, attachmentId);
+  const safeName = sanitizeNativeFileName(attachment.file_name || 'file.bin');
+  const cacheKey = `${postId}-${commentId || 'post'}-${attachmentId}`
+    .replace(/[^A-Za-z0-9_-]/g, '_')
+    .slice(0, 160);
+  const destination = await feedCacheFile(`${cacheKey}-${safeName}`);
+  const expectedSize = Math.max(0, Number(attachment.file_size || 0));
+  if (destination.exists && (!expectedSize || destination.size === expectedSize)) {
+    cleanupFeedCache(destination.uri);
+    return destination;
+  }
+  if (destination.exists) destination.delete();
+  cleanupFeedCache();
+  try {
+    const downloaded = await downloadAuthenticatedFile(sourceUrl, destination, {
+      idempotent: true,
+    });
+    if (expectedSize && downloaded.size !== expectedSize) {
+      if (downloaded.exists) downloaded.delete();
+      throw new Error('Скачанный файл имеет неверный размер');
+    }
+    cleanupFeedCache(downloaded.uri);
+    return downloaded;
+  } catch (error) {
+    if (destination.exists) destination.delete();
+    throw error;
+  }
+}
+
+export async function openNativeFeedFile(file: File, mimeType?: string | null): Promise<void> {
+  if (Platform.OS !== 'android') throw new Error('Открытие файла поддерживается только на Android');
+  await IntentLauncher.startActivityAsync(ANDROID_VIEW_ACTION, {
+    data: file.contentUri,
+    type: String(mimeType || file.type || 'application/octet-stream'),
+    flags: FLAG_GRANT_READ_URI_PERMISSION,
+  });
+}

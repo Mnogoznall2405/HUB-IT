@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "configuration": "docflow",
+  "rules": [
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Ознакомление",
+      "dm_version": "2.1.37.5.CORP",
+      "xdto_task_type": "DMBusinessProcessTask",
+      "configuration_fingerprint": "f3c90efde494b512cd56a3ea",
+      "evidence": "live DMService inventory 2026-07-30: DMBusinessProcessAcquaintance uses DMBusinessProcessTask and completes with an empty result",
+      "actions": {
+        "acknowledge": {
+          "label": "Ознакомиться",
+          "result_value": "",
+          "comment_mode": "optional",
+          "tone": "primary"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Согласование",
+      "dm_version": "2.1.37.5.CORP",
+      "xdto_task_type": "DMBusinessProcessApprovalTaskApproval",
+      "configuration_fingerprint": "5100a47c76e3ea74efc0d33b",
+      "evidence": "pilot-only templates; must be confirmed on HUB-IT TEST tasks before broader rollout",
+      "actions": {
+        "approve": {
+          "label": "Согласовать",
+          "result_value": "Согласовано",
+          "result_field": "approvalResult",
+          "result_object_id": "Согласовано",
+          "comment_mode": "optional",
+          "tone": "success"
+        },
+        "approve_with_comments": {
+          "label": "Согласовать с замечаниями",
+          "result_value": "Согласовано с замечаниями: {comment}",
+          "result_field": "approvalResult",
+          "result_object_id": "СогласованоСЗамечаниями",
+          "comment_mode": "required",
+          "tone": "warning"
+        },
+        "reject": {
+          "label": "Отклонить",
+          "result_value": "Не согласовано: {comment}",
+          "result_field": "approvalResult",
+          "result_object_id": "НеСогласовано",
+          "comment_mode": "required",
+          "tone": "error"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Согласование",
+      "dm_version": "2.1.37.5.CORP",
+      "xdto_task_type": "DMBusinessProcessApprovalTaskCheckup",
+      "configuration_fingerprint": "5100a47c76e3ea74efc0d33b",
+      "evidence": "live DMService inventory 2026-08-15: approval checkup retains returned=false and completes without changing approvalResult",
+      "actions": {
+        "acknowledge": {
+          "label": "Ознакомиться",
+          "result_value": "",
+          "comment_mode": "optional",
+          "tone": "primary"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Утверждение",
+      "dm_version": "2.1.37.5.CORP",
+      "xdto_task_type": "DMBusinessProcessConfirmationTaskConfirmation",
+      "configuration_fingerprint": "07db6e891e5ab2a1c924d16d",
+      "evidence": "pilot-only templates; must be confirmed on HUB-IT TEST tasks before broader rollout",
+      "actions": {
+        "approve": {
+          "label": "Утвердить",
+          "result_value": "Утверждено",
+          "result_field": "confirmationResult",
+          "result_object_id": "Утверждено",
+          "comment_mode": "optional",
+          "tone": "success"
+        },
+        "reject": {
+          "label": "Не утвердить",
+          "result_value": "Не утверждено: {comment}",
+          "result_field": "confirmationResult",
+          "result_object_id": "НеУтверждено",
+          "comment_mode": "required",
+          "tone": "error"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Исполнение",
+      "dm_version": "2.1.37.5.CORP",
+      "xdto_task_type": "DMBusinessProcessTask",
+      "configuration_fingerprint": "580ba93a3f0ecdf399e081d1",
+      "evidence": "pilot-only template; must be confirmed on a HUB-IT TEST task before broader rollout",
+      "actions": {
+        "complete": {
+          "label": "Выполнить",
+          "result_value": "{comment}",
+          "comment_mode": "required",
+          "tone": "primary"
+        }
+      }
+    },
+    {
+      "configuration": "docflow",
+      "task_type": "ЗадачаИсполнителя",
+      "process_type": "Приглашение",
+      "dm_version": "2.1.37.5.CORP",
+      "xdto_task_type": "DMBusinessProcessInvitationTaskInvitation",
+      "configuration_fingerprint": "fe84cb0545a3392705db2c3d",
+      "evidence": "live DMService inventory 2026-08-15: DMInvitationResult exposes Принято and НеПринято; six completed invitation tasks confirm completion state",
+      "actions": {
+        "accept_invitation": {
+          "label": "Принять",
+          "result_value": "Принято",
+          "result_field": "invitationResult",
+          "result_object_id": "Принято",
+          "comment_mode": "optional",
+          "tone": "success"
+        },
+        "decline_invitation": {
+          "label": "Не принимать",
+          "result_value": "Не принято",
+          "result_field": "invitationResult",
+          "result_object_id": "НеПринято",
+          "comment_mode": "optional",
+          "tone": "error"
+        }
+      }
+    }
+  ]
+}

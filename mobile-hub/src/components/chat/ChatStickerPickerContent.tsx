@@ -1,0 +1,196 @@
+import { useCallback, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import type { ChatSticker, ChatStickerPack } from '../../api/types';
+import { buildStickerPickerRows, type StickerPickerRow } from '../../chat/chatPickerRows';
+import { collectRecentStickers } from '../../chat/chatStickers';
+import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { ChatStickerImage } from './ChatStickerImage';
+
+/** Stickers tab body of the unified emoji/stickers panel (ChatEmojiPickerSheet). */
+export function ChatStickerPickerContent({
+  packs,
+  recentIds = [],
+  loading,
+  importing,
+  onSend,
+  onImport,
+  onRemove,
+}: {
+  packs: ChatStickerPack[];
+  recentIds?: string[];
+  loading?: boolean;
+  importing?: boolean;
+  onSend: (sticker: ChatSticker) => void;
+  onImport?: (source: string) => void;
+  onRemove?: (pack: ChatStickerPack) => void;
+}) {
+  const { chatTokens, styles } = useChatStyles(createStyles);
+  const [source, setSource] = useState('');
+  const [preview, setPreview] = useState<ChatSticker | null>(null);
+  const recent = useMemo(() => collectRecentStickers(packs, recentIds), [packs, recentIds]);
+  const rows = useMemo(() => buildStickerPickerRows(packs, recent), [packs, recent]);
+
+  const renderRow = useCallback(({ item }: { item: StickerPickerRow }) => {
+    if (item.kind === 'header') {
+      return (
+        <View style={styles.packHeader}>
+          <Text style={styles.packTitle}>{item.title}</Text>
+          {item.pack && onRemove ? (
+            <Pressable
+              onPress={() => onRemove(item.pack!)}
+              style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel={`Удалить набор ${item.title}`}
+            >
+              <Text style={styles.removeText}>Удалить</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      );
+    }
+    return (
+      <View style={styles.grid}>
+        {item.stickers.map((sticker) => (
+          <Pressable
+            key={sticker.id}
+            onPress={() => onSend(sticker)}
+            onLongPress={() => setPreview(sticker)}
+            onPressOut={() => setPreview(null)}
+            delayLongPress={220}
+            style={({ pressed }) => [styles.sticker, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel={`Отправить стикер ${sticker.emoji || ''}`.trim()}
+            accessibilityHint="Удерживайте, чтобы посмотреть крупно"
+          >
+            <ChatStickerImage sticker={sticker} size={64} />
+          </Pressable>
+        ))}
+      </View>
+    );
+  }, [onRemove, onSend, styles]);
+
+  return (
+    <View style={styles.root}>
+      {onImport ? (
+        <View style={styles.importRow}>
+          <TextInput
+            value={source}
+            onChangeText={setSource}
+            placeholder="t.me/addstickers/имя или short name"
+            placeholderTextColor={chatTokens.textSecondary}
+            style={styles.importInput}
+            accessibilityLabel="Ссылка на набор стикеров"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Pressable
+            onPress={() => {
+              const next = source.trim();
+              if (!next || importing) return;
+              onImport(next);
+              setSource('');
+            }}
+            disabled={importing || !source.trim()}
+            style={({ pressed }) => [
+              styles.importButton,
+              (importing || !source.trim()) && styles.disabled,
+              pressed && styles.pressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Добавить набор"
+          >
+            <Text style={styles.importButtonText}>Добавить</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {loading || importing ? <ActivityIndicator color={chatTokens.composerActionBg} /> : null}
+      <FlatList
+        testID="chat-sticker-picker-list"
+        data={rows}
+        keyExtractor={(item) => item.id}
+        renderItem={renderRow}
+        keyboardShouldPersistTaps="handled"
+        initialNumToRender={6}
+        maxToRenderPerBatch={5}
+        updateCellsBatchingPeriod={32}
+        windowSize={5}
+        style={styles.list}
+        contentContainerStyle={styles.scroll}
+        ListEmptyComponent={!loading ? <Text style={styles.empty}>Добавленных наборов стикеров пока нет</Text> : null}
+      />
+      {preview ? (
+        <View style={styles.preview} pointerEvents="none">
+          <ChatStickerImage
+            sticker={preview}
+            size={220}
+            autoPlay
+            label={`Превью стикера ${preview.emoji || ''}`.trim()}
+          />
+          {preview.emoji ? <Text style={styles.previewEmoji}>{preview.emoji}</Text> : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
+  root: { flex: 1 },
+  list: { flex: 1 },
+  importRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  importInput: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    backgroundColor: chatTokens.sidebarSearchBg,
+    color: chatTokens.textPrimary,
+    fontSize: 15,
+  },
+  importButton: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: chatTokens.composerActionBg,
+  },
+  importButtonText: { color: '#fff', fontWeight: '700' },
+  scroll: { paddingBottom: 24 },
+  packHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  packTitle: { color: chatTokens.textSecondary, fontSize: 13, fontWeight: '600', marginBottom: 6 },
+  remove: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
+  removeText: { color: chatTokens.dangerText, fontSize: 13, fontWeight: '700' },
+  grid: { flexDirection: 'row' },
+  sticker: { width: '25%', minHeight: 70, alignItems: 'center', justifyContent: 'center', borderRadius: 14 },
+  empty: { padding: 22, color: chatTokens.textSecondary, textAlign: 'center' },
+  pressed: { backgroundColor: chatTokens.sidebarRowSoftActive },
+  disabled: { opacity: 0.45 },
+  preview: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.78)',
+  },
+  previewEmoji: {
+    marginTop: 14,
+    overflow: 'hidden',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    color: '#fff',
+    backgroundColor: 'rgba(0,0,0,0.36)',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+});

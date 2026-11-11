@@ -1,0 +1,29 @@
+[Unit]
+Description=HUB OpenCode cleanup and finalization worker
+Wants=network-online.target
+Requires=user@10001.service
+After=network-online.target user@10001.service
+Conflicts=hub-ai-worker.service
+RequiresMountsFor=/var/lib/hub-ai-sandbox/workspaces
+
+[Service]
+Type=simple
+User=hub-ai-sandbox
+Group=hub-ai-sandbox
+WorkingDirectory=/opt/hub-ai/current/WEB-itinvent
+Environment=XDG_RUNTIME_DIR=/run/user/10001
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/10001/bus
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/hub-ai/current/WEB-itinvent:/opt/hub-ai/current
+EnvironmentFile=/etc/hub-ai-sandbox/worker.env
+ExecStartPre=/usr/bin/mountpoint -q /var/lib/hub-ai-sandbox/workspaces
+ExecStart=/opt/hub-ai/venv/bin/python -m backend.ai_sandbox_worker_main --worker-id=tmn-srv-ai-01-cleanup --cleanup-only
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=180
+Delegate=yes
+KillMode=mixed
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

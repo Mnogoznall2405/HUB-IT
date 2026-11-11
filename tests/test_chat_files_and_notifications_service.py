@@ -1,0 +1,1898 @@
+from __future__ import annotations
+
+import importlib
+import io
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import func, select
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
+
+if str(WEB_ROOT) not in sys.path:
+    sys.path.insert(0, str(WEB_ROOT))
+
+chat_db_module = importlib.import_module("backend.chat.db")
+chat_models_module = importlib.import_module("backend.chat.models")
+chat_push_outbox_service_module = importlib.import_module("backend.chat.push_outbox_service")
+chat_service_module = importlib.import_module("backend.chat.service")
+chat_sticker_service_module = importlib.import_module("backend.chat.telegram_sticker_service")
+hub_service_module = importlib.import_module("backend.services.hub_service")
+chat_push_service_module = importlib.import_module("backend.chat.push_service")
+
+
+def _raw_user(user_id: int, username: str, full_name: str, role: str, *, active: bool = True) -> dict:
+    return {
+        "id": user_id,
+        "username": username,
+        "full_name": full_name,
+        "role": role,
+        "is_active": active,
+        "use_custom_permissions": False,
+        "custom_permissions": [],
+        "permissions": [],
+    }
+
+
+def _upload(name: str, payload: bytes, content_type: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        filename=name,
+        content_type=content_type,
+        file=io.BytesIO(payload),
+    )
+
+
+def _png_1x1() -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01"
+        b"\xe2!\xbc3"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+
+def _set_ordinary_hub_notifications(monkeypatch, *, enabled: bool) -> None:
+    for target in (
+        "backend.chat.hub_bell_events.hub_ordinary_write_enabled",
+        "backend.chat.latency_profile.hub_ordinary_write_enabled",
+        "backend.chat.hub_bell_events.hub_ordinary_notifications_enabled",
+        "backend.chat.latency_profile.hub_ordinary_notifications_enabled",
+        "backend.chat.hub_bell_events.hub_ordinary_read_visible",
+        "backend.chat.latency_profile.hub_ordinary_read_visible",
+    ):
+        monkeypatch.setattr(target, lambda: bool(enabled))
+
+
+@pytest.fixture
+def chat_env(temp_dir, monkeypatch):
+    # Keep service tests independent from production feature flags loaded via
+    # the root .env. Tests that verify the disabled mode override this below.
+    _set_ordinary_hub_notifications(monkeypatch, enabled=True)
+    raw_users = {
+        1: _raw_user(1, "author", "Task Author", "operator"),
+        2: _raw_user(2, "assignee", "Task Assignee", "operator"),
+        3: _raw_user(3, "controller", "Task Controller", "admin"),
+    }
+    users = list(raw_users.values())
+    users_by_id = dict(raw_users)
+    store = SimpleNamespace(
+        db_path=str(Path(temp_dir) / "hub.sqlite3"),
+        data_dir=str(Path(temp_dir) / "hub-data"),
+    )
+    Path(store.data_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("HUB_DATA_DIR", store.data_dir)
+    monkeypatch.setattr(hub_service_module, "get_local_store", lambda: store)
+    monkeypatch.setattr(hub_service_module, "is_app_database_configured", lambda: False)
+    monkeypatch.setattr(hub_service_module.user_service, "list_users", lambda: list(users))
+    monkeypatch.setattr(hub_service_module.user_service, "get_by_id", lambda user_id: users_by_id.get(int(user_id)))
+    monkeypatch.setattr(chat_service_module.user_service, "list_users", lambda: list(users))
+    monkeypatch.setattr(chat_service_module.user_service, "get_by_id", lambda user_id: users_by_id.get(int(user_id)))
+    monkeypatch.setattr(chat_service_module.user_service, "to_public_user", lambda raw: dict(raw))
+
+    hub_service = hub_service_module.HubService()
+    assert hub_service.data_dir == Path(store.data_dir)
+    monkeypatch.setattr(hub_service_module, "hub_service", hub_service)
+    monkeypatch.setattr(chat_service_module, "hub_service", hub_service)
+
+    chat_db_module._engine = None
+    chat_db_module._session_factory = None
+    chat_db_module._read_engine = None
+    chat_db_module._read_session_factory = None
+    monkeypatch.setattr(chat_db_module.config.chat, "enabled", True, raising=False)
+    monkeypatch.setattr(chat_db_module.config.chat, "database_url", f"sqlite:///{Path(temp_dir) / 'chat.sqlite3'}", raising=False)
+    monkeypatch.setattr(chat_db_module.config.chat, "pool_size", 5, raising=False)
+    monkeypatch.setattr(chat_db_module.config.chat, "max_overflow", 10, raising=False)
+
+    service = chat_service_module.ChatService()
+    direct = service.create_direct_conversation(current_user_id=1, peer_user_id=2)
+
+    yield {
+        "service": service,
+        "hub_service": hub_service,
+        "direct": direct,
+        "attachments_root": Path(store.data_dir) / "chat_message_attachments",
+    }
+
+    chat_db_module._engine = None
+    chat_db_module._session_factory = None
+    chat_db_module._read_engine = None
+    chat_db_module._read_session_factory = None
+
+
+def test_send_files_persists_attachment_and_creates_chat_notification(chat_env):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+    caption = "РџРѕРґРїРёСЃСЊ Рє С„Р°Р№Р»Сѓ"
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body=caption,
+        uploads=[_upload("report.pdf", b"%PDF-1.4 demo", "application/pdf")],
+    )
+
+    assert created["kind"] == "file"
+    assert created["body"] == caption
+    assert len(created["attachments"]) == 1
+    attachment = created["attachments"][0]
+    assert attachment["file_name"] == "report.pdf"
+
+    messages = service.get_messages(current_user_id=2, conversation_id=conversation["id"], limit=20)
+    assert messages["items"][0]["kind"] == "file"
+    assert messages["items"][0]["body"] == caption
+    assert messages["items"][0]["attachments"][0]["file_name"] == "report.pdf"
+
+    conversations = service.list_conversations(current_user_id=2)["items"]
+    assert conversations[0]["last_message_preview"] == caption
+
+    service.send_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        body="РћС‚РІРµС‚ РЅР° С„Р°Р№Р»",
+        reply_to_message_id=created["id"],
+    )
+    refreshed_messages = service.get_messages(current_user_id=1, conversation_id=conversation["id"], limit=20)
+    reply_message = next(
+        item for item in refreshed_messages["items"]
+        if item.get("reply_preview") and item.get("body") == "РћС‚РІРµС‚ РЅР° С„Р°Р№Р»"
+    )
+    assert reply_message["reply_preview"]["body"] == caption
+
+    download = service.get_attachment_for_download(
+        current_user_id=2,
+        message_id=messages["items"][0]["id"],
+        attachment_id=attachment["id"],
+    )
+    assert Path(download["path"]).exists()
+    assert Path(download["path"]).read_bytes() == b"%PDF-1.4 demo"
+
+    polled = hub_service.poll_notifications(user_id=2, limit=50)
+    chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]
+    assert any(
+        item.get("event_type") == "chat.file_shared"
+        and caption in str(item.get("body") or "")
+        for item in chat_items
+    )
+
+
+def test_send_voice_file_preserves_audio_metadata(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"webm voice payload"
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("voice_1.webm", payload, "audio/webm;codecs=opus")],
+        files_meta=[{
+            "media_kind": "audio",
+            "duration_seconds": 9,
+            "original_size": len(payload),
+            "transfer_encoding": "identity",
+        }],
+    )
+
+    attachment = created["attachments"][0]
+    assert attachment["kind"] == "audio"
+    assert attachment["media_kind"] == "audio"
+    assert attachment["duration_seconds"] == 9
+    assert attachment["mime_type"] == "audio/webm"
+    assert attachment["original_url"] == (
+        f"/api/v1/chat/messages/{created['id']}/attachments/{attachment['id']}/file?inline=1"
+    )
+    assert attachment["download_url"] == (
+        f"/api/v1/chat/messages/{created['id']}/attachments/{attachment['id']}/file"
+    )
+
+    messages = service.get_messages(current_user_id=2, conversation_id=conversation["id"], limit=20)
+    persisted_attachment = messages["items"][0]["attachments"][0]
+    assert persisted_attachment["kind"] == "audio"
+    assert persisted_attachment["media_kind"] == "audio"
+    assert persisted_attachment["duration_seconds"] == 9
+    assert persisted_attachment["mime_type"] == "audio/webm"
+
+    download = service.get_attachment_for_download(
+        current_user_id=2,
+        message_id=created["id"],
+        attachment_id=attachment["id"],
+    )
+    assert Path(download["path"]).read_bytes() == payload
+    assert download["mime_type"] == "audio/webm"
+
+    summary = service.get_conversation_assets_summary(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+    )
+    assert summary["audio_count"] == 1
+    assert summary["files_count"] == 0
+    assert summary["recent_audio"][0]["kind"] == "audio"
+
+
+def test_send_video_as_file_skips_legacy_upload_compression(chat_env, monkeypatch):
+    video_compress_module = importlib.import_module("backend.chat.video_compress")
+    compress_calls: list[tuple[Path, Path]] = []
+
+    def fake_compress(source_path: Path, output_path: Path):
+        compress_calls.append((source_path, output_path))
+        return None
+
+    monkeypatch.setattr(video_compress_module, "compress_video", fake_compress)
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"original legacy video payload"
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("clip.mp4", payload, "video/mp4")],
+        files_meta=[{
+            "media_kind": "file",
+            "original_size": len(payload),
+            "transfer_encoding": "identity",
+        }],
+    )
+
+    attachment = created["attachments"][0]
+    assert attachment["kind"] == "file"
+    assert attachment["media_kind"] == "file"
+    assert compress_calls == []
+    download = service.get_attachment_for_download(
+        current_user_id=1,
+        message_id=created["id"],
+        attachment_id=attachment["id"],
+    )
+    assert Path(download["path"]).read_bytes() == payload
+
+
+def test_sticker_download_preserves_media_kind_for_private_cache_policy(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"animated sticker payload"
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("sticker.webm", payload, "video/webm")],
+    )
+    attachment = created["attachments"][0]
+    with chat_db_module.chat_session() as session:
+        attachment_row = session.get(chat_models_module.ChatMessageAttachment, attachment["id"])
+        attachment_row.media_kind = "sticker"
+        session.commit()
+
+    download = service.get_attachment_for_download(
+        current_user_id=2,
+        message_id=created["id"],
+        attachment_id=attachment["id"],
+    )
+
+    assert download["media_kind"] == "sticker"
+
+
+def test_send_files_without_caption_keeps_file_name_preview(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("report.pdf", b"%PDF-1.4 demo", "application/pdf")],
+    )
+
+    assert created["body"] == ""
+
+    conversations = service.list_conversations(current_user_id=2)["items"]
+    assert conversations[0]["last_message_preview"].endswith("report.pdf")
+
+
+def _enqueue_and_apply_delivery_state(service, created: dict) -> None:
+    from backend.chat.event_outbox_service import chat_event_outbox_service
+
+    deferred = created.pop("_deferred_delivery_outbox", None)
+    if isinstance(deferred, dict) and deferred:
+        assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(deferred) is True
+    assert service.apply_delivery_state_for_message(message_id=created["id"]) is True
+
+
+def test_mark_read_clears_chat_notifications_and_updates_unread_summary(chat_env):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Проверь, пожалуйста, файл",
+    )
+    # Unread counters are applied via delivery-state outbox after ACK in production.
+    _enqueue_and_apply_delivery_state(service, created)
+
+    summary_before = service.get_unread_summary(current_user_id=2)
+    assert summary_before["messages_unread_total"] == 1
+    assert summary_before["conversations_unread"] == 1
+
+    polled_before = hub_service.poll_notifications(user_id=2, limit=50)
+    chat_items_before = [item for item in polled_before["items"] if item.get("entity_type") == "chat"]
+    assert any(int(item.get("unread") or 0) == 1 for item in chat_items_before)
+
+    read_payload = service.mark_read(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        message_id=created["id"],
+    )
+    assert read_payload.get("changed") is True
+    # Hub clear is scheduled after ACK in API; service path exposes an explicit helper.
+    if read_payload.get("clear_hub_notifications"):
+        service.clear_hub_notifications_after_mark_read(
+            conversation_id=conversation["id"],
+            user_id=2,
+        )
+
+    summary_after = service.get_unread_summary(current_user_id=2)
+    assert summary_after["messages_unread_total"] == 0
+    assert summary_after["conversations_unread"] == 0
+
+    polled_after = hub_service.poll_notifications(user_id=2, limit=50)
+    chat_items_after = [item for item in polled_after["items"] if item.get("entity_type") == "chat"]
+    assert chat_items_after
+    assert all(int(item.get("unread") or 0) == 0 for item in chat_items_after)
+
+    # Idempotent early-return: second mark_read must not require hub work.
+    again = service.mark_read(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        message_id=created["id"],
+    )
+    assert again.get("changed") is False
+    assert again.get("clear_hub_notifications") is False
+
+
+def test_send_files_validates_limits(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    with pytest.raises(ValueError):
+        service.send_files(
+            current_user_id=1,
+            conversation_id=conversation["id"],
+            uploads=[_upload(f"doc-{index}.txt", b"x", "text/plain") for index in range(6)],
+        )
+
+    with pytest.raises(ValueError):
+        service.send_files(
+            current_user_id=1,
+            conversation_id=conversation["id"],
+            uploads=[_upload("malware.exe", b"boom", "application/octet-stream")],
+        )
+
+
+def test_create_upload_session_validates_limits(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    with pytest.raises(ValueError):
+        service.create_upload_session(
+            current_user_id=1,
+            conversation_id=conversation["id"],
+            files=[
+                {"file_name": f"doc-{index}.txt", "mime_type": "text/plain", "size": 1}
+                for index in range(6)
+            ],
+        )
+
+    with pytest.raises(ValueError):
+        max_total_size = chat_service_module.CHAT_MAX_TOTAL_FILE_BYTES
+        service.create_upload_session(
+            current_user_id=1,
+            conversation_id=conversation["id"],
+            files=[
+                {"file_name": "a.pdf", "mime_type": "application/pdf", "size": max_total_size},
+                {"file_name": "b.pdf", "mime_type": "application/pdf", "size": 1},
+            ],
+        )
+
+
+def test_upload_session_complete_requires_all_chunks(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="caption",
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": 12}],
+    )
+
+    with pytest.raises(ValueError):
+        service.complete_upload_session(
+            current_user_id=1,
+            session_id=created["session_id"],
+        )
+
+
+def test_upload_session_complete_rejects_corrupt_received_chunk_range(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    session_id = created["session_id"]
+    file_id = created["files"][0]["file_id"]
+    part_path = service._upload_session_part_path(session_id, file_id)
+    part_path.write_bytes(payload)
+
+    manifest = service._load_upload_session_manifest(session_id)
+    manifest["files"][0]["received_bytes"] = len(payload)
+    manifest["files"][0]["received_chunks"] = [1]
+    service._write_upload_session_manifest(manifest)
+
+    with pytest.raises(ValueError):
+        service.complete_upload_session(
+            current_user_id=1,
+            session_id=session_id,
+        )
+
+
+def test_upload_session_chunk_rejects_unexpected_offset(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+
+    with pytest.raises(ValueError):
+        service.upload_session_chunk(
+            current_user_id=1,
+            session_id=created["session_id"],
+            file_id=created["files"][0]["file_id"],
+            chunk_index=0,
+            offset=3,
+            payload=payload,
+        )
+
+
+def test_upload_session_duplicate_chunk_rejects_wrong_offset(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=created["files"][0]["file_id"],
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+
+    with pytest.raises(ValueError):
+        service.upload_session_chunk(
+            current_user_id=1,
+            session_id=created["session_id"],
+            file_id=created["files"][0]["file_id"],
+            chunk_index=0,
+            offset=3,
+            payload=payload,
+        )
+
+
+def test_upload_session_duplicate_chunk_is_idempotent_and_complete_returns_same_message(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="caption",
+        reply_to_message_id=None,
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    session_id = created["session_id"]
+    file_id = created["files"][0]["file_id"]
+
+    first_chunk = service.upload_session_chunk(
+        current_user_id=1,
+        session_id=session_id,
+        file_id=file_id,
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+    second_chunk = service.upload_session_chunk(
+        current_user_id=1,
+        session_id=session_id,
+        file_id=file_id,
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+    part_path = service._upload_session_part_path(session_id, file_id)
+
+    assert first_chunk["already_present"] is False
+    assert second_chunk["already_present"] is True
+    assert part_path.exists()
+    assert part_path.stat().st_size == len(payload)
+
+    completed = service.complete_upload_session(
+        current_user_id=1,
+        session_id=session_id,
+    )
+    completed_again = service.complete_upload_session(
+        current_user_id=1,
+        session_id=session_id,
+    )
+
+    assert completed["id"] == completed_again["id"]
+    assert completed["kind"] == "file"
+    assert completed["body"] == "caption"
+    assert [item["file_name"] for item in completed["attachments"]] == ["report.pdf"]
+
+    download = service.get_attachment_for_download(
+        current_user_id=2,
+        message_id=completed["id"],
+        attachment_id=completed["attachments"][0]["id"],
+    )
+    assert Path(download["path"]).read_bytes() == payload
+
+
+def test_upload_session_voice_file_preserves_audio_metadata(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"webm voice payload"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{
+            "file_name": "voice_1.webm",
+            "mime_type": "application/octet-stream",
+            "media_kind": "audio",
+            "duration_seconds": 11,
+            "size": len(payload),
+        }],
+    )
+    session_file = created["files"][0]
+    assert session_file["mime_type"] == "audio/webm"
+    assert session_file["media_kind"] == "audio"
+    assert session_file["duration_seconds"] == 11
+
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=session_file["file_id"],
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+
+    completed = service.complete_upload_session(
+        current_user_id=1,
+        session_id=created["session_id"],
+    )
+
+    attachment = completed["attachments"][0]
+    assert attachment["kind"] == "audio"
+    assert attachment["media_kind"] == "audio"
+    assert attachment["duration_seconds"] == 11
+    assert attachment["mime_type"] == "audio/webm"
+    assert attachment["original_url"].endswith("?inline=1")
+
+    download = service.get_attachment_for_download(
+        current_user_id=2,
+        message_id=completed["id"],
+        attachment_id=attachment["id"],
+    )
+    assert Path(download["path"]).read_bytes() == payload
+    assert download["mime_type"] == "audio/webm"
+
+
+def test_upload_session_supports_mixed_photo_and_document(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    photo_payload = _png_1x1()
+    pdf_payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="mixed",
+        files=[
+            {"file_name": "photo.png", "mime_type": "image/png", "size": len(photo_payload)},
+            {"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(pdf_payload)},
+        ],
+    )
+
+    first_file_id = created["files"][0]["file_id"]
+    second_file_id = created["files"][1]["file_id"]
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=first_file_id,
+        chunk_index=0,
+        offset=0,
+        payload=photo_payload,
+    )
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=second_file_id,
+        chunk_index=0,
+        offset=0,
+        payload=pdf_payload,
+    )
+
+    completed = service.complete_upload_session(
+        current_user_id=1,
+        session_id=created["session_id"],
+    )
+
+    assert completed["kind"] == "file"
+    assert len(completed["attachments"]) == 2
+    image_attachment = next(item for item in completed["attachments"] if item["file_name"] == "photo.png")
+    assert image_attachment["width"] == 1
+    assert image_attachment["height"] == 1
+
+
+def test_cleanup_expired_upload_sessions_deletes_pending_session_dir(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": 12}],
+    )
+    session_id = created["session_id"]
+    manifest_path = service._upload_session_manifest_path(session_id)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["expires_at"] = "2000-01-01T00:00:00+00:00"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    cleanup_result = service.cleanup_expired_upload_sessions(force=True)
+
+    assert cleanup_result["deleted"] == 1
+    assert not service._upload_session_dir(session_id).exists()
+
+
+def test_upload_session_get_reports_received_progress(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=created["files"][0]["file_id"],
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+
+    status = service.get_upload_session(
+        current_user_id=1,
+        session_id=created["session_id"],
+    )
+
+    assert status["session_id"] == created["session_id"]
+    assert status["status"] == "pending"
+    assert status["files"][0]["received_bytes"] == len(payload)
+    assert status["files"][0]["received_chunks"] == [0]
+
+
+def test_upload_session_complete_propagates_client_message_id(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        client_message_id="mobile-upload-1",
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    manifest = service._load_upload_session_manifest(created["session_id"])
+    assert manifest["client_message_id"] == "mobile-upload-1"
+
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=created["files"][0]["file_id"],
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+    completed = service.complete_upload_session(
+        current_user_id=1,
+        session_id=created["session_id"],
+    )
+
+    assert completed["client_message_id"] == "mobile-upload-1"
+
+
+def test_upload_session_new_session_with_same_client_message_id_dedups(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    def upload_and_complete():
+        created = service.create_upload_session(
+            current_user_id=1,
+            conversation_id=conversation["id"],
+            client_message_id="mobile-upload-dedup",
+            files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+        )
+        service.upload_session_chunk(
+            current_user_id=1,
+            session_id=created["session_id"],
+            file_id=created["files"][0]["file_id"],
+            chunk_index=0,
+            offset=0,
+            payload=payload,
+        )
+        return created, service.complete_upload_session(
+            current_user_id=1,
+            session_id=created["session_id"],
+        )
+
+    _, first = upload_and_complete()
+    second_session, second = upload_and_complete()
+
+    assert second["id"] == first["id"]
+    history = service.get_messages(current_user_id=1, conversation_id=conversation["id"], limit=20)
+    assert len(history["items"]) == 1
+
+    orphan_name = f"{second_session['files'][0]['file_id']}_report.pdf"
+    assert not (chat_env["attachments_root"] / conversation["id"] / orphan_name).exists()
+
+
+def test_chat_push_subscription_receives_message_push_payload(chat_env, monkeypatch):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    sent_payloads = []
+
+    monkeypatch.setattr(chat_push_service_module.config.web_push, "public_key", "public-demo", raising=False)
+    monkeypatch.setattr(chat_push_service_module.config.web_push, "private_key", "private-demo", raising=False)
+    monkeypatch.setattr(chat_push_service_module.config.web_push, "subject", "mailto:test@example.com", raising=False)
+
+    def fake_webpush(**kwargs):
+        sent_payloads.append(kwargs)
+        return None
+
+    monkeypatch.setattr(chat_push_service_module, "webpush", fake_webpush)
+
+    config_payload = service.get_push_config()
+    assert config_payload["enabled"] is True
+    assert config_payload["vapid_public_key"] == "public-demo"
+
+    upserted = service.upsert_push_subscription(
+        current_user_id=2,
+        endpoint="https://push.example/subscription-1",
+        p256dh_key="p256dh-key",
+        auth_key="auth-key",
+        browser_family="chrome",
+        install_mode="standalone",
+    )
+    assert upserted["subscribed"] is True
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Р СњР С•Р Р†Р С•Р Вµ push-РЎРѓР С•Р С•Р В±РЎвЂ°Р ВµР Р…Р С‘Р Вµ",
+    )
+
+    assert len(sent_payloads) == 1
+    push_call = sent_payloads[0]
+    assert push_call["subscription_info"]["endpoint"] == "https://push.example/subscription-1"
+    assert push_call["vapid_private_key"] == "private-demo"
+    assert push_call["vapid_claims"] == {"sub": "mailto:test@example.com"}
+
+    payload = json.loads(push_call["data"])
+    assert payload["data"]["conversation_id"] == conversation["id"]
+    assert payload["data"]["message_id"] == created["id"]
+    assert payload["data"]["route"] == f"/chat?conversation={conversation['id']}&message={created['id']}"
+
+    removed = service.delete_push_subscription(
+        current_user_id=2,
+        endpoint="https://push.example/subscription-1",
+    )
+    assert removed["removed"] is True
+
+
+def test_send_message_defer_push_notifications_enqueues_outbox_jobs(chat_env, monkeypatch):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    sent_payloads = []
+
+    monkeypatch.setattr(chat_push_service_module.config.web_push, "public_key", "public-demo", raising=False)
+    monkeypatch.setattr(chat_push_service_module.config.web_push, "private_key", "private-demo", raising=False)
+    monkeypatch.setattr(chat_push_service_module.config.web_push, "subject", "mailto:test@example.com", raising=False)
+
+    def fake_webpush(**kwargs):
+        sent_payloads.append(kwargs)
+        return None
+
+    monkeypatch.setattr(chat_push_service_module, "webpush", fake_webpush)
+
+    service.upsert_push_subscription(
+        current_user_id=2,
+        endpoint="https://push.example/subscription-1",
+        p256dh_key="p256dh-key",
+        auth_key="auth-key",
+        browser_family="chrome",
+        install_mode="standalone",
+    )
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Отложенный push",
+        defer_push_notifications=True,
+    )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    assert deferred
+    service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
+
+    assert created["conversation_id"] == conversation["id"]
+    assert sent_payloads == []
+    with chat_db_module.chat_session() as session:
+        jobs = list(
+            session.execute(
+                select(chat_models_module.ChatPushOutbox).where(
+                    chat_models_module.ChatPushOutbox.message_id == created["id"],
+                )
+            ).scalars()
+        )
+    assert len(jobs) == 1
+    assert jobs[0].recipient_user_id == 2
+    assert jobs[0].conversation_id == conversation["id"]
+    assert jobs[0].status == "queued"
+
+
+def test_send_message_notifications_use_targeted_sender_lookup(chat_env, monkeypatch):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+    users_by_id = {
+        1: _raw_user(1, "author", "Task Author", "operator"),
+        2: _raw_user(2, "assignee", "Task Assignee", "operator"),
+    }
+
+    def _global_user_scan_not_expected():
+        raise AssertionError("global user scan is not expected for chat notifications")
+
+    def _global_session_scan_not_expected(*, active_only=False):
+        raise AssertionError("global session scan is not expected for chat notifications")
+
+    monkeypatch.setattr(chat_service_module.user_service, "list_users", _global_user_scan_not_expected)
+    monkeypatch.setattr(
+        chat_service_module.user_service,
+        "get_users_map_by_ids",
+        lambda user_ids: {
+            int(user_id): dict(users_by_id[int(user_id)])
+            for user_id in list(user_ids or [])
+            if int(user_id) in users_by_id
+        },
+    )
+    monkeypatch.setattr(chat_service_module.session_service, "list_sessions", _global_session_scan_not_expected)
+    monkeypatch.setattr(chat_service_module.session_service, "list_sessions_by_user_ids", lambda user_ids, active_only=False: [])
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Targeted sender lookup",
+        defer_push_notifications=True,
+    )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    assert deferred
+    service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
+
+    polled = hub_service.poll_notifications(user_id=2, limit=20)
+    chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]
+
+    assert created["conversation_id"] == conversation["id"]
+    assert any(
+        item.get("entity_id") == conversation["id"]
+        and item.get("title") == "Task Author"
+        and item.get("body") == "Targeted sender lookup"
+        for item in chat_items
+    )
+
+
+def test_send_message_mention_notifies_muted_group_member(chat_env, monkeypatch):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    users_by_id = {
+        1: _raw_user(1, "author", "Task Author", "operator"),
+        2: _raw_user(2, "assignee", "Task Assignee", "operator"),
+        3: _raw_user(3, "controller", "Task Controller", "admin"),
+    }
+
+    monkeypatch.setattr(
+        chat_service_module.user_service,
+        "get_users_map_by_ids",
+        lambda user_ids: {
+            int(user_id): dict(users_by_id[int(user_id)])
+            for user_id in list(user_ids or [])
+            if int(user_id) in users_by_id
+        },
+    )
+
+    conversation = service.create_group_conversation(
+        current_user_id=1,
+        title="Ops",
+        member_user_ids=[2, 3],
+    )
+    service.update_conversation_settings(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        is_muted=True,
+    )
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="@assignee проверь, пожалуйста",
+        defer_push_notifications=True,
+    )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    assert deferred
+    realtime_message = dict((created.get("_deferred_realtime_publish") or {}).get("message") or {})
+    assert realtime_message["mentioned_user_ids"] == [2]
+    service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
+
+    polled = hub_service.poll_notifications(user_id=2, limit=20)
+    mention_items = [
+        item for item in polled["items"]
+        if item.get("entity_type") == "chat" and item.get("entity_id") == conversation["id"]
+    ]
+
+    assert created["conversation_id"] == conversation["id"]
+    assert any(
+        item.get("event_type") == "chat.mention"
+        and "Ops" in item.get("title", "")
+        and "@assignee" in item.get("body", "")
+        for item in mention_items
+    )
+
+    with chat_db_module.chat_session() as session:
+        jobs = list(
+            session.execute(
+                select(chat_models_module.ChatPushOutbox).where(
+                    chat_models_module.ChatPushOutbox.message_id == created["id"],
+                    chat_models_module.ChatPushOutbox.recipient_user_id == 2,
+                )
+            ).scalars()
+        )
+
+    assert len(jobs) == 1
+    assert jobs[0].status == "queued"
+    assert "Ops" in jobs[0].title
+
+
+def test_send_message_ack_defers_targeted_message_presence_lookup(chat_env, monkeypatch):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    captured_user_id_sets: list[list[int]] = []
+    original_get_presence_map = service._get_presence_map
+
+    def _capture_presence_map(*, user_ids=None):
+        captured_user_id_sets.append(
+            sorted({
+                int(item)
+                for item in list(user_ids or [])
+                if int(item) > 0
+            })
+        )
+        return original_get_presence_map(user_ids=user_ids)
+
+    monkeypatch.setattr(service, "_get_presence_map", _capture_presence_map)
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Ack presence lookup",
+        defer_push_notifications=True,
+    )
+
+    assert created["conversation_id"] == conversation["id"]
+    assert captured_user_id_sets == []
+
+    service.get_messages_for_users(message_id=created["id"], user_ids=[1, 2])
+    assert captured_user_id_sets == [[1]]
+
+
+def test_get_messages_for_users_reuses_sender_and_recipient_views(chat_env, monkeypatch):
+    service = chat_env["service"]
+    conversation = service.create_group_conversation(
+        current_user_id=1,
+        title="Ops",
+        member_user_ids=[2, 3],
+    )
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Group payload fan-out",
+        defer_push_notifications=True,
+    )
+    serialize_calls: list[int] = []
+    captured_presence_user_ids: list[list[int]] = []
+    original_serialize_message = service._serialize_message
+    original_get_presence_map = service._get_presence_map
+
+    def _capture_serialize_message(*args, **kwargs):
+        serialize_calls.append(int(kwargs.get("current_user_id", 0) or 0))
+        return original_serialize_message(*args, **kwargs)
+
+    def _capture_presence_map(*, user_ids=None):
+        captured_presence_user_ids.append(
+            sorted({
+                int(item)
+                for item in list(user_ids or [])
+                if int(item) > 0
+            })
+        )
+        return original_get_presence_map(user_ids=user_ids)
+
+    monkeypatch.setattr(service, "_serialize_message", _capture_serialize_message)
+    monkeypatch.setattr(service, "_get_presence_map", _capture_presence_map)
+
+    messages_by_user = service.get_messages_for_users(
+        message_id=created["id"],
+        user_ids=[1, 2, 3],
+    )
+
+    assert sorted(messages_by_user.keys()) == [1, 2, 3]
+    assert messages_by_user[1]["is_own"] is True
+    assert messages_by_user[2]["is_own"] is False
+    assert messages_by_user[3]["is_own"] is False
+    assert serialize_calls == [1, 2]
+    assert captured_presence_user_ids == [[1]]
+
+
+def test_send_message_client_message_id_is_idempotent_for_same_sender(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Повторная доставка",
+        client_message_id="client-msg-1",
+        defer_push_notifications=True,
+    )
+    repeated = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Повторная доставка",
+        client_message_id="client-msg-1",
+        defer_push_notifications=True,
+    )
+
+    assert repeated["id"] == created["id"]
+    assert repeated["client_message_id"] == "client-msg-1"
+    _enqueue_and_apply_delivery_state(service, created)
+
+    with chat_db_module.chat_session() as session:
+        message_count = session.execute(
+            select(func.count()).select_from(chat_models_module.ChatMessage).where(
+                chat_models_module.ChatMessage.conversation_id == conversation["id"],
+            )
+        ).scalar_one()
+        delivery_outbox_count = session.execute(
+            select(func.count()).select_from(chat_models_module.ChatEventOutbox).where(
+                chat_models_module.ChatEventOutbox.message_id == created["id"],
+            )
+        ).scalar_one()
+
+    assert int(message_count) == 1
+    # Push notifications are deferred; durable delivery-state outbox is written once.
+    assert int(delivery_outbox_count) == 1
+
+
+def test_send_files_client_message_id_reconciles_without_duplicate_attachment(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("sandbox-result.txt", b"one durable result", "text/plain")],
+        client_message_id="sandbox-output-delivery-1",
+        defer_push_notifications=True,
+    )
+    repeated = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("sandbox-result.txt", b"one durable result", "text/plain")],
+        client_message_id="sandbox-output-delivery-1",
+        defer_push_notifications=True,
+    )
+
+    assert repeated["id"] == created["id"]
+    assert repeated["client_message_id"] == "sandbox-output-delivery-1"
+    assert [item["id"] for item in repeated["attachments"]] == [
+        item["id"] for item in created["attachments"]
+    ]
+    with chat_db_module.chat_session() as session:
+        message_count = session.scalar(
+            select(func.count()).select_from(chat_models_module.ChatMessage).where(
+                chat_models_module.ChatMessage.conversation_id == conversation["id"]
+            )
+        )
+        attachment_count = session.scalar(
+            select(func.count()).select_from(chat_models_module.ChatMessageAttachment).where(
+                chat_models_module.ChatMessageAttachment.conversation_id == conversation["id"]
+            )
+        )
+    assert int(message_count) == 1
+    assert int(attachment_count) == 1
+    stored_files = [path for path in chat_env["attachments_root"].rglob("*") if path.is_file()]
+    assert len(stored_files) == 1
+
+
+def test_send_message_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    first = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="First persisted message",
+        defer_push_notifications=True,
+    )
+    _enqueue_and_apply_delivery_state(service, first)
+    second = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Second persisted message",
+        defer_push_notifications=True,
+    )
+    _enqueue_and_apply_delivery_state(service, second)
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        sender_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+
+    assert [item.id for item in messages] == [first["id"], second["id"]]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert conversation_row.last_message_id == second["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert sender_state.last_read_message_id == second["id"]
+    assert int(sender_state.last_read_seq) == 2
+    assert int(sender_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 2
+
+
+def test_send_files_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    first = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="First file",
+        uploads=[_upload("first.pdf", b"%PDF-1.4 first", "application/pdf")],
+        defer_push_notifications=True,
+    )
+    second = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Second file",
+        uploads=[_upload("second.pdf", b"%PDF-1.4 second", "application/pdf")],
+        defer_push_notifications=True,
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        attachment_count = session.execute(
+            select(func.count()).select_from(chat_models_module.ChatMessageAttachment).where(
+                chat_models_module.ChatMessageAttachment.conversation_id == conversation["id"],
+            )
+        ).scalar_one()
+        sender_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+
+    assert [item.id for item in messages] == [first["id"], second["id"]]
+    assert [item.kind for item in messages] == ["file", "file"]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert int(attachment_count) == 2
+    assert conversation_row.last_message_id == second["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert sender_state.last_read_message_id == second["id"]
+    assert int(sender_state.last_read_seq) == 2
+    assert int(sender_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 2
+
+
+def test_forward_file_persistence_copies_attachment_and_advances_read_counters(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    original = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Forward me",
+        uploads=[_upload("forward.pdf", b"%PDF-1.4 forward", "application/pdf")],
+        defer_push_notifications=True,
+    )
+    forwarded = service.forward_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        source_message_id=original["id"],
+        defer_push_notifications=True,
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        attachment_count = session.execute(
+            select(func.count()).select_from(chat_models_module.ChatMessageAttachment).where(
+                chat_models_module.ChatMessageAttachment.conversation_id == conversation["id"],
+            )
+        ).scalar_one()
+        forwarding_user_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+
+    assert forwarded["kind"] == "file"
+    assert forwarded["forward_preview"]["id"] == original["id"]
+    assert [item["file_name"] for item in forwarded["attachments"]] == ["forward.pdf"]
+    assert [item.id for item in messages] == [original["id"], forwarded["id"]]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert messages[1].forward_from_message_id == original["id"]
+    assert int(attachment_count) == 2
+    assert conversation_row.last_message_id == forwarded["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert forwarding_user_state.last_read_message_id == forwarded["id"]
+    assert int(forwarding_user_state.last_read_seq) == 2
+    assert int(forwarding_user_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 1
+
+    download = service.get_attachment_for_download(
+        current_user_id=1,
+        message_id=forwarded["id"],
+        attachment_id=forwarded["attachments"][0]["id"],
+    )
+    assert Path(download["path"]).read_bytes() == b"%PDF-1.4 forward"
+
+
+def test_system_message_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    group = service.create_group_conversation(
+        current_user_id=1,
+        title="System persistence",
+        member_user_ids=[2],
+    )
+
+    service.add_group_members(
+        current_user_id=1,
+        conversation_id=group["id"],
+        member_user_ids=[3],
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, group["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == group["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        states = {
+            int(item.user_id): item
+            for item in session.execute(
+                select(chat_models_module.ChatConversationUserState).where(
+                    chat_models_module.ChatConversationUserState.conversation_id == group["id"],
+                )
+            ).scalars()
+        }
+
+    assert len(messages) == 1
+    system_message = messages[0]
+    assert system_message.kind == "system"
+    assert int(system_message.conversation_seq) == 1
+    assert "добавил" in system_message.body
+    assert conversation_row.last_message_id == system_message.id
+    assert int(conversation_row.last_message_seq) == 1
+    assert states[1].last_read_message_id == system_message.id
+    assert int(states[1].last_read_seq) == 1
+    assert int(states[1].unread_count) == 0
+    assert int(states[2].unread_count) == 1
+    # Joining starts at the previous tip; the new membership event is unread.
+    assert int(states[3].unread_count) == 1
+    assert int(states[3].last_read_seq) == 0
+
+    created = service.send_message(
+        current_user_id=2,
+        conversation_id=group["id"],
+        body="First message after joining",
+    )
+    _enqueue_and_apply_delivery_state(service, created)
+    assert service.get_unread_summary(current_user_id=3)["messages_unread_total"] == 2
+
+
+def test_group_avatar_file_path_requires_group_membership(chat_env):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+
+    group = service.create_group_conversation(
+        current_user_id=1,
+        title="Avatar Group",
+        member_user_ids=[2],
+    )
+    conversation_id = group["id"]
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in conversation_id)
+    avatars_dir = Path(hub_service.data_dir) / "group_avatars"
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    avatar_path = avatars_dir / f"{safe_id}.jpg"
+    avatar_path.write_bytes(b"fake-jpeg-content")
+    avatar_url = f"/api/v1/chat/group-avatars/{safe_id}.jpg?v=1"
+
+    service.update_group_avatar(
+        current_user_id=1,
+        conversation_id=conversation_id,
+        avatar_url=avatar_url,
+    )
+
+    resolved = service.get_group_avatar_file_path(
+        current_user_id=2,
+        filename=f"{safe_id}.jpg",
+    )
+    assert resolved == str(avatar_path)
+
+    with pytest.raises(PermissionError):
+        service.get_group_avatar_file_path(
+            current_user_id=3,
+            filename=f"{safe_id}.jpg",
+        )
+
+
+def _disable_ordinary_hub_notifications(monkeypatch) -> None:
+    _set_ordinary_hub_notifications(monkeypatch, enabled=False)
+
+
+def test_ordinary_message_creates_no_hub_rows_when_ordinary_disabled(chat_env, monkeypatch):
+    _disable_ordinary_hub_notifications(monkeypatch)
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Ordinary without hub",
+        defer_push_notifications=True,
+    )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    assert deferred
+    stats = service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
+    assert int(stats.get("hub_count") or 0) == 0
+    # Native Android recipients do not require a browser subscription at
+    # enqueue time; the worker resolves every available push transport later.
+    assert int(stats.get("push_count") or 0) == 1
+    assert int(stats.get("ordinary_hub_rows_skipped") or 0) >= 1
+
+    with chat_db_module.chat_session() as session:
+        push_jobs = list(
+            session.execute(
+                select(chat_models_module.ChatPushOutbox).where(
+                    chat_models_module.ChatPushOutbox.message_id == created["id"],
+                )
+            ).scalars()
+        )
+    assert len(push_jobs) == 1
+    assert push_jobs[0].recipient_user_id == 2
+    assert push_jobs[0].status == "queued"
+
+    polled = hub_service.poll_notifications(user_id=2, limit=50)
+    chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]
+    assert chat_items == []
+    # Chat unread remains owned by ChatConversationUserState / delivery outbox,
+    # not hub_notifications (exercised separately in mark_read / delivery tests).
+
+
+def test_mention_still_creates_hub_row_when_ordinary_disabled(chat_env, monkeypatch):
+    _disable_ordinary_hub_notifications(monkeypatch)
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    users_by_id = {
+        1: _raw_user(1, "author", "Task Author", "operator"),
+        2: _raw_user(2, "assignee", "Task Assignee", "operator"),
+        3: _raw_user(3, "controller", "Task Controller", "admin"),
+    }
+    monkeypatch.setattr(
+        chat_service_module.user_service,
+        "get_users_map_by_ids",
+        lambda user_ids: {
+            int(user_id): dict(users_by_id[int(user_id)])
+            for user_id in list(user_ids or [])
+            if int(user_id) in users_by_id
+        },
+    )
+
+    conversation = service.create_group_conversation(
+        current_user_id=1,
+        title="Ops",
+        member_user_ids=[2, 3],
+    )
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="@assignee important",
+        defer_push_notifications=True,
+    )
+    deferred = dict(created.get("_deferred_chat_notifications") or {})
+    stats = service._create_chat_notifications(
+        sender_user_id=int(deferred["sender_user_id"]),
+        conversation_id=str(deferred["conversation_id"]),
+        message_id=str(deferred["message_id"]),
+        event_type=str(deferred.get("event_type") or "chat.message_received"),
+        title=str(deferred.get("title") or "Новое сообщение в чате"),
+        body=str(deferred.get("body") or ""),
+        defer_push_notifications=True,
+        mentioned_user_ids=list(deferred.get("mentioned_user_ids") or []),
+    )
+    assert int(stats.get("important_hub_rows_created") or 0) >= 1
+    assert int(stats.get("ordinary_hub_rows_created") or 0) == 0
+
+    polled = hub_service.poll_notifications(user_id=2, limit=20)
+    assert any(
+        item.get("event_type") == "chat.mention" and item.get("entity_id") == conversation["id"]
+        for item in polled["items"]
+    )
+
+    read_payload = service.mark_read(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        message_id=created["id"],
+    )
+    assert read_payload.get("changed") is True
+    cleared = service.clear_hub_notifications_after_mark_read(
+        conversation_id=conversation["id"],
+        user_id=2,
+    )
+    assert cleared >= 1
+    polled_after = hub_service.poll_notifications(user_id=2, limit=20)
+    mention_unread = [
+        item for item in polled_after["items"]
+        if item.get("event_type") == "chat.mention"
+        and item.get("entity_id") == conversation["id"]
+        and int(item.get("unread") or 0) == 1
+    ]
+    assert mention_unread == []
+
+
+def test_deleted_file_is_hidden_from_download_assets_and_search(chat_env):
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    message = service.send_files(current_user_id=1, conversation_id=cid,
+        body="unique-deleted-caption", uploads=[_upload("private.txt", b"private", "text/plain")])
+    attachment_id = message["attachments"][0]["id"]
+    service.delete_message(current_user_id=1, conversation_id=cid, message_id=message["id"])
+    with pytest.raises(LookupError, match="Message not found"):
+        service.get_attachment_for_download(current_user_id=2, message_id=message["id"], attachment_id=attachment_id)
+    with pytest.raises(LookupError, match="Message not found"):
+        service.get_attachment_preview(current_user_id=2, message_id=message["id"], attachment_id=attachment_id)
+    with pytest.raises(LookupError, match="Message not found"):
+        service.download_attachment_preview_pdf(current_user_id=2, message_id=message["id"], attachment_id=attachment_id)
+    assert service.list_conversation_attachments(current_user_id=2, conversation_id=cid, kind="file")["items"] == []
+    summary = service.get_conversation_assets_summary(current_user_id=2, conversation_id=cid)
+    assert summary["files_count"] == 0
+    assert summary["recent_files"] == []
+    assert service.search_messages(current_user_id=2, conversation_id=cid, q="unique-deleted-caption")["items"] == []
+    history = service.get_messages(current_user_id=2, conversation_id=cid)["items"]
+    assert any(item["id"] == message["id"] and item["is_deleted"] for item in history)
+
+
+def test_upload_canonicalizes_document_mime(chat_env):
+    service = chat_env["service"]
+    created = service.send_files(current_user_id=1, conversation_id=chat_env["direct"]["id"],
+        uploads=[_upload("notes.txt", b"ordinary test text", "text/html")])
+    assert created["attachments"][0]["mime_type"] == "text/plain"
+    assert service._normalize_mime_type("audio/webm", file_name="voice.webm") == "audio/webm"
+    assert service._normalize_mime_type("image/png", file_name="blob") == "image/png"
+
+
+def test_ownership_rechecks_actor_after_conversation_lock(chat_env, monkeypatch):
+    service = chat_env["service"]
+    group = service.create_group_conversation(current_user_id=1, title="Ownership", member_user_ids=[2, 3])
+    original_lock = service._lock_conversation_for_write
+    def lock_after_other_transfer(*, session, conversation_id):
+        conversation = original_lock(session=session, conversation_id=conversation_id)
+        # Deterministically model the preceding transaction winning the lock.
+        actor = service._get_active_membership(session=session, conversation_id=conversation_id, user_id=1)
+        winner = service._get_active_membership(session=session, conversation_id=conversation_id, user_id=2)
+        actor.member_role = "moderator"
+        winner.member_role = "owner"
+        session.flush()
+        return conversation
+    monkeypatch.setattr(service, "_lock_conversation_for_write", lock_after_other_transfer)
+    with pytest.raises(PermissionError, match="Group owner access denied"):
+        service.transfer_group_ownership(current_user_id=1, conversation_id=group["id"], owner_user_id=3)
+
+
+def test_upload_completion_database_failure_preserves_chunks_for_retry(chat_env, monkeypatch):
+    service = chat_env["service"]
+    payload = b"retryable upload"
+    upload = service.create_upload_session(current_user_id=1, conversation_id=chat_env["direct"]["id"],
+        files=[{"file_name": "retry.txt", "mime_type": "text/plain", "size": len(payload)}])
+    sid = upload["session_id"]
+    fid = upload["files"][0]["file_id"]
+    service.upload_session_chunk(current_user_id=1, session_id=sid, file_id=fid,
+        chunk_index=0, offset=0, payload=payload)
+    part = service._upload_session_part_path(sid, fid)
+    persistence = service._file_message_persistence
+    persist = persistence.persist_file_message
+    def fail_persistence(**kwargs):
+        raise RuntimeError("temporary persistence failure")
+    monkeypatch.setattr(persistence, "persist_file_message", fail_persistence)
+    with pytest.raises(RuntimeError, match="temporary persistence failure"):
+        service.complete_upload_session(current_user_id=1, session_id=sid)
+    assert part.read_bytes() == payload
+    monkeypatch.setattr(persistence, "persist_file_message", persist)
+    message = service.complete_upload_session(current_user_id=1, session_id=sid)
+    assert not part.exists()
+    download = service.get_attachment_for_download(current_user_id=2, message_id=message["id"],
+        attachment_id=message["attachments"][0]["id"])
+    assert Path(download["path"]).read_bytes() == payload
+    assert service.complete_upload_session(current_user_id=1, session_id=sid)["id"] == message["id"]
+
+
+def test_forward_retry_reuses_committed_message_and_attachment(chat_env):
+    service = chat_env["service"]
+    conv = chat_env["direct"]["id"]
+    original = service.send_files(current_user_id=1, conversation_id=conv, body="source",
+        uploads=[_upload("retry.pdf", b"%PDF-1.4 retry", "application/pdf")], defer_push_notifications=True)
+    first = service.forward_message(current_user_id=2, conversation_id=conv,
+        source_message_id=original["id"], client_message_id="forward-retry-test", defer_push_notifications=True)
+    second = service.forward_message(current_user_id=2, conversation_id=conv,
+        source_message_id=original["id"], client_message_id="forward-retry-test", defer_push_notifications=True)
+    assert second["id"] == first["id"]
+    assert second["attachments"][0]["id"] == first["attachments"][0]["id"]
+    with chat_db_module.chat_session() as session:
+        assert session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
+            chat_models_module.ChatMessage.conversation_id == conv)).scalar_one() == 2
+
+
+def test_forward_rechecks_membership_after_lock(chat_env, monkeypatch):
+    service = chat_env["service"]
+    group = service.create_group_conversation(current_user_id=1, title="Forward lock", member_user_ids=[2, 3])
+    original = service.send_files(current_user_id=1, conversation_id=group["id"], body="source",
+        uploads=[_upload("source.pdf", b"%PDF-1.4 source", "application/pdf")], defer_push_notifications=True)
+    persistence = service._forward_message_persistence
+    original_lock = persistence._lock_conversation_for_write
+    def lock_after_removal(*, session, conversation_id):
+        conversation = original_lock(session=session, conversation_id=conversation_id)
+        actor = service._get_active_membership(session=session, conversation_id=conversation_id, user_id=2)
+        actor.left_at = chat_service_module._utc_now()
+        session.flush()
+        return conversation
+    monkeypatch.setattr(persistence, "_lock_conversation_for_write", lock_after_removal)
+    with pytest.raises(PermissionError):
+        service.forward_message(current_user_id=2, conversation_id=group["id"], source_message_id=original["id"], defer_push_notifications=True)
+
+
+@pytest.mark.parametrize("kind", ["text", "file"])
+def test_forward_rejects_deleted_source(chat_env, kind):
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    if kind == "file":
+        source = service.send_files(current_user_id=1, conversation_id=cid,
+            uploads=[_upload("private.txt", b"private", "text/plain")])
+    else:
+        source = service.send_message(current_user_id=1, conversation_id=cid, body="private")
+    service.delete_message(current_user_id=1, conversation_id=cid, message_id=source["id"])
+    before = set(service._attachments_root.rglob("*"))
+    with pytest.raises(LookupError, match="Source message not found"):
+        service.forward_message(current_user_id=2, conversation_id=cid, source_message_id=source["id"])
+    assert set(service._attachments_root.rglob("*")) == before
+    with chat_db_module.chat_session() as session:
+        assert session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
+            chat_models_module.ChatMessage.conversation_id == cid)).scalar_one() == 1
+
+
+@pytest.mark.parametrize("failure_at", [1, 2])
+def test_forward_cleans_partial_materialization(chat_env, monkeypatch, failure_at):
+    materializer = importlib.import_module("backend.chat.chat_forward_materializer")
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    source = service.send_files(current_user_id=1, conversation_id=cid,
+        uploads=[_upload("one.txt", b"one", "text/plain"), _upload("two.txt", b"two", "text/plain")])
+    before = set(service._attachments_root.rglob("*"))
+    original_copy = materializer.shutil.copy2
+    calls = []
+    def failing_copy(src, dst):
+        calls.append(dst)
+        if len(calls) == failure_at:
+            Path(dst).write_bytes(b"partial")
+            raise OSError("simulated disk failure")
+        return original_copy(src, dst)
+    monkeypatch.setattr(materializer.shutil, "copy2", failing_copy)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        service.forward_message(current_user_id=2, conversation_id=cid, source_message_id=source["id"])
+    assert set(service._attachments_root.rglob("*")) == before
+    with chat_db_module.chat_session() as session:
+        assert session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
+            chat_models_module.ChatMessage.conversation_id == cid)).scalar_one() == 1
+
+
+@pytest.mark.parametrize("operation", ["edit", "delete"])
+def test_message_write_rechecks_membership_after_lock(chat_env, monkeypatch, operation):
+    service = chat_env["service"]
+    cid = service.create_group_conversation(current_user_id=1, title="Write lock", member_user_ids=[2])["id"]
+    message = service.send_message(current_user_id=2, conversation_id=cid, body="original")
+    original_lock = service._lock_conversation_for_write
+    def lock_after_departure(*, session, conversation_id):
+        conversation = original_lock(session=session, conversation_id=conversation_id)
+        member = service._get_active_membership(session=session, conversation_id=conversation_id, user_id=2)
+        member.left_at = chat_service_module._utc_now()
+        session.flush()
+        return conversation
+    monkeypatch.setattr(service, "_lock_conversation_for_write", lock_after_departure)
+    with pytest.raises(PermissionError):
+        if operation == "edit":
+            service.edit_message(current_user_id=2, conversation_id=cid, message_id=message["id"], body="changed")
+        else:
+            service.delete_message(current_user_id=2, conversation_id=cid, message_id=message["id"])
+    with chat_db_module.chat_session() as session:
+        row = session.get(chat_models_module.ChatMessage, message["id"])
+        assert row.body == "original"
+        assert not row.is_deleted
+
+
+def test_voice_file_replay_returns_original_message(chat_env):
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    def send():
+        return service.send_files(current_user_id=1, conversation_id=cid,
+            uploads=[_upload("voice.webm", b"voice", "audio/webm")],
+            files_meta=[{"media_kind": "audio", "duration_seconds": 4}],
+            client_message_id="voice-retry", defer_push_notifications=True)
+    first = send()
+    second = send()
+    assert second["id"] == first["id"]
+    assert second["attachments"][0]["id"] == first["attachments"][0]["id"]
+    assert second["attachments"][0]["media_kind"] == "audio"
+
+
+@pytest.mark.parametrize("kind", ["text", "file"])
+def test_forward_preview_uses_shared_snapshot(chat_env, kind):
+    service = chat_env["service"]
+    source_id = chat_env["direct"]["id"]
+    target_id = service.create_group_conversation(current_user_id=1, title="Shared", member_user_ids=[3])["id"]
+    if kind == "text":
+        source = service.send_message(current_user_id=1, conversation_id=source_id, body="shared version")
+    else:
+        source = service.send_files(current_user_id=1, conversation_id=source_id,
+            uploads=[_upload("shared.txt", b"shared", "text/plain")])
+    forwarded = service.forward_message(current_user_id=1, conversation_id=target_id, source_message_id=source["id"])
+    if kind == "text":
+        service.edit_message(current_user_id=1, conversation_id=source_id, message_id=source["id"], body="private later edit")
+    else:
+        with chat_db_module.chat_session() as session:
+            attachment = session.get(chat_models_module.ChatMessageAttachment, source["attachments"][0]["id"])
+            attachment.file_name = "private-later-name.txt"
+    item = next(m for m in service.get_messages(current_user_id=3, conversation_id=target_id)["items"] if m["id"] == forwarded["id"])
+    assert item["forward_preview"]["body"] == ("shared version" if kind == "text" else "shared.txt")
+    assert item["forward_preview"]["id"] == source["id"]
+
+
+def test_reaction_rejects_deleted_message(chat_env):
+    service = chat_env["service"]
+    cid = chat_env["direct"]["id"]
+    message = service.send_message(current_user_id=1, conversation_id=cid, body="message")
+    service.delete_message(current_user_id=1, conversation_id=cid, message_id=message["id"])
+    with pytest.raises(LookupError):
+        service.toggle_reaction(current_user_id=2, conversation_id=cid, message_id=message["id"], emoji="x")
+    assert service.get_message_reactions(message_id=message["id"])["reactions"] == []
+
+
+def test_sticker_send_retry_reuses_message_and_drops_duplicate_file(chat_env, temp_dir):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    storage_root = Path(temp_dir) / "sticker-store"
+    pack_dir = storage_root / "pack-1"
+    pack_dir.mkdir(parents=True)
+    (pack_dir / "sticker.webp").write_bytes(b"sticker-bytes")
+    sticker_service = chat_sticker_service_module.TelegramStickerService(
+        storage_root=storage_root, token_getter=lambda: "")
+    with chat_db_module.chat_write_session() as session:
+        session.add(chat_models_module.ChatStickerPack(
+            id="pack-1", short_name="pack", title="Pack", sticker_type="regular"))
+        session.add(chat_models_module.ChatSticker(
+            id="sticker-1", pack_id="pack-1", telegram_file_id="file",
+            telegram_file_unique_id="unique", emoji="", format="static",
+            mime_type="image/webp", storage_name="sticker.webp",
+            file_size=len(b"sticker-bytes"), width=64, height=64, sort_order=0))
+        session.add(chat_models_module.ChatUserStickerPack(user_id=1, pack_id="pack-1"))
+
+    def send():
+        return sticker_service.send_sticker(
+            chat_service=service, current_user_id=1,
+            conversation_id=conversation["id"], sticker_id="sticker-1",
+            client_message_id="sticker-retry", defer_push_notifications=True)
+
+    first = send()
+    second = send()
+    assert second["id"] == first["id"]
+    assert second["attachments"][0]["id"] == first["attachments"][0]["id"]
+    assert second["attachments"][0]["media_kind"] == "sticker"
+    conversation_dir = chat_env["attachments_root"] / conversation["id"]
+    assert len(list(conversation_dir.iterdir())) == 1
+    with chat_db_module.chat_session() as session:
+        rows = session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
+            chat_models_module.ChatMessage.conversation_id == conversation["id"])).scalar_one()
+        assert rows == 1
+
+
+def test_failure_after_commit_keeps_attachment_bytes_and_retry_returns_same_message(chat_env, monkeypatch):
+    """DCHAT-05: the response read fails after the message committed; files must survive."""
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    persistence = service._file_message_persistence
+    real_builder = persistence._build_message_payload_for_members
+    calls = {"count": 0}
+
+    def failing_once(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("synthetic read-session failure")
+        return real_builder(*args, **kwargs)
+
+    monkeypatch.setattr(persistence, "_build_message_payload_for_members", failing_once)
+    with pytest.raises(Exception):
+        service.send_files(
+            current_user_id=1, conversation_id=conversation["id"], body="doc",
+            uploads=[_upload("kept.pdf", b"%PDF-1.4 kept", "application/pdf")],
+            client_message_id="client-msg-1",
+        )
+
+    stored = [path for path in chat_env["attachments_root"].rglob("*") if path.is_file()]
+    assert stored and all(path.read_bytes() == b"%PDF-1.4 kept" for path in stored)
+
+    retried = service.send_files(
+        current_user_id=1, conversation_id=conversation["id"], body="doc",
+        uploads=[_upload("kept.pdf", b"%PDF-1.4 kept", "application/pdf")],
+        client_message_id="client-msg-1",
+    )
+    messages = service.get_messages(current_user_id=2, conversation_id=conversation["id"], limit=20)["items"]
+    assert [item["id"] for item in messages] == [retried["id"]]
+    download = service.get_attachment_for_download(
+        current_user_id=2, message_id=retried["id"], attachment_id=retried["attachments"][0]["id"],
+    )
+    assert Path(download["path"]).read_bytes() == b"%PDF-1.4 kept"

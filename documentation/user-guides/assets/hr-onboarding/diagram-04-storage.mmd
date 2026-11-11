@@ -1,0 +1,13 @@
+flowchart TB
+    subgraph temp [Vremennyj_kontur_portal]
+        T1[Polnye_skany]
+        T2[OCR_chernoviki]
+        T3[Srok_do_resheniya]
+    end
+    subgraph perm [Postoyannyj_kontur]
+        P1[Lichnoe_delo]
+        P2[KEDO_podpisannye]
+        P3[Srok_50_let]
+    end
+    temp -->|prieme_na_rabotu| perm
+    temp -->|otkaz| D[Unichtozhenie_akt]

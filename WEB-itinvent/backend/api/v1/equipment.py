@@ -1,0 +1,4426 @@
+﻿"""
+Equipment API endpoints - search, retrieve and update equipment information.
+"""
+from typing import Optional, Any, List, Literal
+from datetime import date
+from urllib.parse import quote
+
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, HTTPException, Response, status, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
+from pydantic import BaseModel, Field
+import asyncio
+import os
+import re
+import threading
+
+from backend.api.deps import (
+    ensure_user_permission,
+    get_current_active_user,
+    get_current_admin_user,
+    get_request_scoped_database_id,
+    require_any_permission,
+    require_permission,
+)
+from backend.database import queries
+from backend.database import equipment_photos
+from backend.database.employee_history_reads import get_employee_history as read_employee_history
+from backend.database.connection import get_db
+from backend.database.equipment_db import get_equipment_data_version, invalidate_equipment_cache
+from backend.models.auth import User
+from backend.services import it_object_branch_scope
+from backend.services.authorization_service import (
+    PERM_DATABASE_DELETE,
+    PERM_DATABASE_DELETE_EQUIPMENT,
+    PERM_DATABASE_DELETE_EQUIPMENT_HISTORY,
+    PERM_DATABASE_ONE_C_MARK,
+    PERM_DATABASE_PHOTO_VERIFY,
+    PERM_DATABASE_READ,
+    PERM_DATABASE_WRITE,
+)
+from backend.models.equipment import (
+    EquipmentSearchResponse,
+    EquipmentPhotoRejectRequest,
+    EquipmentPhotoRotateRequest,
+    EmployeeSearchResponse,
+    EquipmentListResponse,
+    Branch,
+    Location,
+    EquipmentType,
+    EquipmentStatus,
+    EquipmentCreateRequest,
+    EquipmentCreateResponse,
+    ConsumableCreateRequest,
+    ConsumableCreateResponse,
+    ConsumableLookupItem,
+    ConsumableConsumeRequest,
+    ConsumableConsumeResponse,
+    ConsumableQtyUpdateRequest,
+    ConsumableQtyUpdateResponse,
+    ConsumableDeleteResponse,
+    TransferActOnlyRequest,
+    TransferExecuteRequest,
+    TransferLocationRequest,
+    TransferExecuteResponse,
+    TransferEmailRequest,
+    TransferEmailResult,
+    UploadedActDraftResponse,
+    UploadedActCommitRequest,
+    UploadedActCommitResponse,
+    UploadedActEmailSendRequest,
+    UploadedActEmailSendResponse,
+    TransferActReminderResponse,
+    TransferToDbRequest,
+    EquipmentActSearchResponse,
+    EquipmentGroupedListResponse,
+    EquipmentCurrentActsRequest,
+    EquipmentCurrentActsResponse,
+    EquipmentCurrentActItem,
+    EquipmentPhotoItem,
+    EquipmentPhotoListResponse,
+    EquipmentPhotoOcrRunRequest,
+    EquipmentPhotoOcrRunResponse,
+    EquipmentPhotoOcrSummary,
+    EquipmentPhotoReviewResponse,
+    EquipmentPhotoReviewSummary,
+    EquipmentQualityIssuesResponse,
+    EquipmentQualitySummary,
+    EquipmentPhotoUploadResponse,
+    EquipmentPhotoUploadSessionCreate,
+    EquipmentPhotoUploadSessionState,
+)
+from backend.services.transfer_service import (
+    TransferActGenerationError,
+    prepare_act_download,
+    get_act_records,
+    generate_transfer_acts,
+    generate_transfer_acts_without_move,
+    get_act_record,
+    recover_act_record_from_disk,
+    send_transfer_acts_email,
+    send_binary_file_email,
+)
+from backend.services.equipment_db_transfer_service import (
+    transfer_items_to_db, DbTransferConflict, DbTransferValidationError, DbTransferAccessError,
+    get_transfer_file, save_transfer_followup,
+)
+from backend.services.equipment_transfer_execution_service import (
+    EquipmentTransferExecutionError,
+    execute_equipment_transfer,
+    execute_equipment_location_transfer,
+)
+from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
+from backend.services import equipment_photo_check_service
+from backend.services import equipment_photo_upload_ledger
+from backend.services import equipment_photo_upload_service
+from backend.services import equipment_photo_notification_service
+from backend.services import equipment_photo_ocr_service
+from backend.services import equipment_one_c_mark_service
+from backend.services import equipment_photo_review_service
+from backend.services import equipment_quality_service
+from backend.services.equipment_recent_acts_service import equipment_recent_acts_service
+from backend.services import transfer_act_job_service
+from backend.services import consumable_work_service
+from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
+from backend.services.act_upload_service import (
+    DraftNotFoundError,
+    DraftValidationError,
+    DuplicateActError,
+    create_uploaded_act_draft,
+    get_uploaded_act_draft,
+    commit_uploaded_act_draft,
+)
+from backend.utils.upload_limits import read_upload_limited
+import urllib.parse
+import logging
+
+
+_DATABASE_ACCESS_PERMISSIONS = (
+    PERM_DATABASE_READ,
+    PERM_DATABASE_WRITE,
+    PERM_DATABASE_DELETE,
+    PERM_DATABASE_DELETE_EQUIPMENT,
+)
+
+router = APIRouter(
+    dependencies=[Depends(require_any_permission(_DATABASE_ACCESS_PERMISSIONS))]
+)
+logger = logging.getLogger(__name__)
+
+
+def _set_dict_cache_headers(response: Response) -> None:
+    """Short-lived private HTTP cache for rarely-changing directory payloads.
+
+    Vary on X-Database-ID is required: the database is selected by header, so
+    the same URL serves different data per database.
+    """
+    response.headers["Cache-Control"] = "private, max-age=300"
+    response.headers["Vary"] = "X-Database-ID"
+
+
+def _current_user_id(current_user: Any) -> int:
+    try:
+        return int(getattr(current_user, "id", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _touch_recent_card_safely(
+    *,
+    current_user: Any,
+    db_id: Optional[str],
+    inv_no: Any,
+    action_type: str,
+    snapshot: Any = None,
+) -> None:
+    user_id = _current_user_id(current_user)
+    if user_id <= 0:
+        return
+    try:
+        equipment_recent_cards_service.touch(
+            user_id=user_id,
+            db_id=db_id,
+            inv_no=inv_no,
+            action_type=action_type,
+            snapshot=snapshot,
+        )
+    except Exception:
+        logger.warning("Failed to record equipment recent card activity", exc_info=True)
+
+
+def _remove_recent_card_for_equipment_safely(*, db_id: Optional[str], inv_no: Any) -> None:
+    try:
+        equipment_recent_cards_service.remove_for_equipment(db_id=db_id, inv_no=inv_no)
+    except Exception:
+        logger.warning("Failed to remove deleted equipment from recent cards", exc_info=True)
+
+
+def _touch_recent_act_safely(
+    *,
+    current_user: Any,
+    db_id: Optional[str],
+    doc_no: Any,
+    doc_number: Any = "",
+    action_type: str = "view",
+    snapshot: Any = None,
+) -> None:
+    user_id = _current_user_id(current_user)
+    if user_id <= 0:
+        return
+    try:
+        equipment_recent_acts_service.touch(
+            user_id=user_id,
+            db_id=db_id,
+            doc_no=doc_no,
+            doc_number=doc_number,
+            action_type=action_type,
+            snapshot=snapshot,
+        )
+    except Exception:
+        logger.warning("Failed to record equipment recent act activity", exc_info=True)
+
+
+def _to_int(value: Any) -> Optional[int]:
+    """Safely convert value to int."""
+    if value in (None, "", "null"):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_inv_nos(raw_items: Any) -> list[str]:
+    inv_nos: list[str] = []
+    for raw in raw_items or []:
+        normalized = str(raw or "").strip()
+        if normalized and normalized not in inv_nos:
+            inv_nos.append(normalized)
+    return inv_nos
+
+
+def _item_inv_no(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("inv_no", "INV_NO"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _queued_transfer_response(job: dict[str, Any]) -> TransferExecuteResponse:
+    operation = str(job.get("operation") or "").strip()
+    status_text = str(job.get("status_text") or "Акты создаются, обновите статус через несколько секунд")
+    if operation == "location_transfer" and str(job.get("status") or "") == "queued":
+        status_text = "Смена местоположения поставлена в очередь"
+    return TransferExecuteResponse(
+        success_count=0,
+        failed_count=0,
+        transferred=[],
+        failed=[],
+        retry_inv_nos=[],
+        acts=[],
+        job_id=str(job.get("id") or ""),
+        operation_id=str(job.get("id") or "") or None,
+        job_status=str(job.get("status") or "queued"),
+        job_status_text=status_text,
+        job_operation=operation,
+        job_request_count=int(job.get("request_count") or 0),
+        job_created_at=job.get("created_at"),
+        job_started_at=job.get("started_at"),
+        job_completed_at=job.get("completed_at"),
+        one_c_sync_state="not_requested" if operation in {"transfer", "location_transfer"} else None,
+    )
+
+
+def _create_transfer_job_or_raise(**kwargs: Any) -> dict[str, Any]:
+    try:
+        return transfer_act_job_service.create_job(**kwargs)
+    except transfer_act_job_service.TransferOperationConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "transfer_operation_conflict", "message": str(exc)},
+        ) from exc
+
+
+def _can_read_transfer_job(*, job: dict[str, Any], current_user: Any, db_id: Optional[str]) -> bool:
+    if str(getattr(current_user, "role", "") or "").strip().lower() == "admin":
+        return True
+    try:
+        job_user_id = int(job.get("user_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    if _current_user_id(current_user) <= 0 or _current_user_id(current_user) != job_user_id:
+        return False
+    return (str(job.get("db_id") or "").strip() or None) == (str(db_id or "").strip() or None)
+
+
+def _result_with_act_records(result: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(result or {})
+    act_ids = [str(act.get("act_id") or "").strip() for act in list(payload.get("acts") or [])]
+    payload["_act_records"] = get_act_records([act_id for act_id in act_ids if act_id])
+    return payload
+
+
+def _start_transfer_job_lease_heartbeat(job_id: str):
+    """Keep a running transfer job recoverable after a real backend restart.
+
+    The durable job service only requeues a ``processing`` record after its
+    lease expires.  A tiny daemon heartbeat prevents a slow but live PDF/SQL
+    operation from being mistaken for a crashed worker by a duplicate request.
+    """
+    stop = threading.Event()
+    interval = transfer_act_job_service.execution_lease_heartbeat_seconds()
+    claim_token = transfer_act_job_service.execution_claim_token(job_id)
+
+    def _renew() -> None:
+        while not stop.wait(interval):
+            try:
+                if not transfer_act_job_service.touch_execution_lease(job_id, claim_token=claim_token):
+                    return
+            except Exception:
+                logger.warning("Failed to renew transfer job lease job_id=%s", job_id, exc_info=True)
+
+    worker = threading.Thread(
+        target=_renew,
+        name=f"transfer-job-lease-{str(job_id)[:24]}",
+        daemon=True,
+    )
+    worker.start()
+
+    def _stop() -> None:
+        stop.set()
+        worker.join(timeout=1)
+
+    return _stop
+
+
+def _run_transfer_job(
+    *,
+    job_id: str,
+    payload: TransferExecuteRequest,
+    db_id: Optional[str],
+    current_user: User,
+) -> None:
+    logger.info("Transfer act job started job_id=%s operation=transfer inv_count=%s", job_id, len(payload.inv_nos or []))
+    if not transfer_act_job_service.claim_for_execution(job_id, "Выполняется перемещение и создание актов"):
+        logger.info("Transfer act job already claimed or completed job_id=%s", job_id)
+        return
+    stop_lease_heartbeat = _start_transfer_job_lease_heartbeat(job_id)
+    try:
+        # The durable job id is the canonical idempotency key even when an
+        # older client omitted operation_id.  Keep it with every SQL item
+        # mutation so a recovered lease can identify a prior commit.
+        # Preserve the typed payload object for the shared execution service
+        # (and existing callers), but make the durable job id canonical for
+        # every per-item SQL mutation.
+        execution_payload: Any = payload
+        if isinstance(execution_payload, dict):
+            execution_payload["operation_id"] = job_id
+        else:
+            try:
+                setattr(execution_payload, "operation_id", job_id)
+            except (AttributeError, TypeError):
+                execution_payload = dict(vars(payload))
+                execution_payload["operation_id"] = job_id
+        current_job = transfer_act_job_service.get_job(job_id) or {}
+        recovered_result = dict(current_job.get("result") or {})
+
+        def _checkpoint(stage_result: dict[str, Any]) -> None:
+            if not transfer_act_job_service.checkpoint_processing_result(job_id, stage_result):
+                # Do not publish a task/reminder whose durable operation no
+                # longer owns the lease.  A retry will reuse the same
+                # operation-scoped act files rather than creating duplicates.
+                raise RuntimeError("Не удалось сохранить checkpoint операции переноса")
+
+        result = execute_equipment_transfer(
+            payload=execution_payload,
+            db_id=db_id,
+            current_user=current_user,
+            allow_create_owner=True,
+            checkpoint=_checkpoint,
+            recovered_result=recovered_result,
+        )
+        for item in result.get("transferred") or []:
+            _touch_recent_card_safely(
+                current_user=current_user,
+                db_id=db_id,
+                inv_no=_item_inv_no(item),
+                action_type="transfer",
+                snapshot=item,
+            )
+        if result.get("failed_count"):
+            if result.get("success_count"):
+                finalized = transfer_act_job_service.mark_done(
+                    job_id,
+                    _result_with_act_records(result),
+                    "Перемещение выполнено частично; акты не созданы",
+                )
+            else:
+                finalized = transfer_act_job_service.mark_failed(
+                    job_id,
+                    "Не удалось переместить оборудование; акты не созданы",
+                    _result_with_act_records(result),
+                )
+        else:
+            finalized = transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
+        if finalized is False:
+            # The service refused the transition: the lease was lost and the
+            # job now belongs to another worker (or is already terminal).
+            logger.warning("Transfer act job lost its lease, result not stored job_id=%s", job_id)
+            return
+        logger.info(
+            "Transfer act job done job_id=%s operation=transfer success=%s failed=%s acts=%s",
+            job_id,
+            result.get("success_count"),
+            result.get("failed_count"),
+            len(result.get("acts") or []),
+        )
+    except EquipmentTransferExecutionError as exc:
+        logger.warning("Transfer act job failed job_id=%s status=%s detail=%s", job_id, exc.status_code, exc.detail)
+        if transfer_act_job_service.mark_failed(
+            job_id,
+            exc.detail,
+            {
+                "success_count": 0,
+                "failed_count": 1,
+                "transferred": [],
+                "failed": [{"inv_no": "", "error": exc.detail}],
+                "retry_inv_nos": [],
+                "acts": [],
+            },
+        ) is False:
+            logger.warning("Transfer act job lost its lease, failure not stored job_id=%s", job_id)
+    except Exception as exc:
+        logger.exception("Transfer act job failed job_id=%s", job_id)
+        checkpointed = transfer_act_job_service.get_job(job_id) or {}
+        persisted_result = dict(checkpointed.get("result") or {})
+        if transfer_act_job_service.mark_failed(job_id, str(exc), persisted_result or None) is False:
+            logger.warning("Transfer act job lost its lease, failure not stored job_id=%s", job_id)
+    finally:
+        stop_lease_heartbeat()
+
+
+def _run_location_transfer_job(
+    *,
+    job_id: str,
+    payload: TransferLocationRequest,
+    db_id: Optional[str],
+    current_user: User,
+) -> None:
+    """Execute a durable location-only transfer under the common command contract."""
+    logger.info(
+        "Transfer job started job_id=%s operation=location_transfer inv_count=%s",
+        job_id,
+        len(payload.inv_nos or []),
+    )
+    if not transfer_act_job_service.claim_for_execution(job_id, "Выполняется смена местоположения"):
+        logger.info("Location transfer job already claimed or completed job_id=%s", job_id)
+        return
+
+    stop_lease_heartbeat = _start_transfer_job_lease_heartbeat(job_id)
+    try:
+        # The durable job id, rather than an optional client key, is written
+        # into each CI_HISTORY marker.  A recovered job can therefore replay
+        # a SQL commit made before the worker saved the final job result.
+        result = execute_equipment_location_transfer(
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+            operation_id=job_id,
+        )
+        for item in result.get("transferred") or []:
+            _touch_recent_card_safely(
+                current_user=current_user,
+                db_id=db_id,
+                inv_no=_item_inv_no(item),
+                action_type="location_transfer",
+                snapshot=item,
+            )
+
+        if result.get("failed_count"):
+            if result.get("success_count"):
+                transfer_act_job_service.mark_done(
+                    job_id,
+                    result,
+                    "Смена местоположения выполнена частично",
+                )
+            else:
+                transfer_act_job_service.mark_failed(
+                    job_id,
+                    "Не удалось изменить местоположение оборудования",
+                    result,
+                )
+        else:
+            transfer_act_job_service.mark_done(
+                job_id,
+                result,
+                "Местоположение оборудования изменено",
+            )
+        logger.info(
+            "Transfer job done job_id=%s operation=location_transfer success=%s failed=%s",
+            job_id,
+            result.get("success_count"),
+            result.get("failed_count"),
+        )
+    except EquipmentTransferExecutionError as exc:
+        logger.warning(
+            "Location transfer job failed job_id=%s status=%s detail=%s",
+            job_id,
+            exc.status_code,
+            exc.detail,
+        )
+        transfer_act_job_service.mark_failed(
+            job_id,
+            exc.detail,
+            {
+                "success_count": 0,
+                "failed_count": 1,
+                "transferred": [],
+                "failed": [{"inv_no": "", "error": exc.detail, "retryable": False}],
+                "retry_inv_nos": [],
+                "acts": [],
+                "one_c_sync_state": "not_requested",
+            },
+        )
+    except Exception as exc:
+        logger.exception("Location transfer job failed job_id=%s", job_id)
+        checkpointed = transfer_act_job_service.get_job(job_id) or {}
+        persisted_result = dict(checkpointed.get("result") or {})
+        transfer_act_job_service.mark_failed(job_id, str(exc), persisted_result or None)
+    finally:
+        stop_lease_heartbeat()
+
+
+def _run_act_only_job(
+    *,
+    job_id: str,
+    payload: TransferActOnlyRequest,
+    db_id: Optional[str],
+    current_user: Optional[User] = None,
+) -> None:
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    logger.info("Transfer act job started job_id=%s operation=act_only inv_count=%s", job_id, len(inv_nos))
+    if not transfer_act_job_service.claim_for_execution(job_id, "Создаются акты без перемещения"):
+        logger.info("Document-only job already claimed or completed job_id=%s", job_id)
+        return
+    stop_lease_heartbeat = _start_transfer_job_lease_heartbeat(job_id)
+    try:
+        recovered_job = transfer_act_job_service.get_job(job_id) or {}
+        recovered_result = dict(recovered_job.get("result") or {})
+        issuer_name = str(payload.issuer_employee or "").strip() or "Без владельца"
+        issuer_email: Optional[str] = None
+        issuer_owner_no = _to_int(payload.issuer_owner_no)
+        if issuer_owner_no is not None:
+            owner_row = queries.get_owner_by_no(issuer_owner_no, db_id)
+            if not owner_row:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid issuer_owner_no")
+            issuer_name = str(
+                owner_row.get("OWNER_DISPLAY_NAME")
+                or owner_row.get("owner_display_name")
+                or issuer_name
+            ).strip() or issuer_name
+            issuer_email = queries.get_owner_email_by_no(issuer_owner_no, db_id)
+
+        rows = queries.get_transfer_act_items_by_inv_nos(inv_nos, db_id)
+        rows_by_inv: dict[str, dict[str, Any]] = {}
+        for row in rows or []:
+            key = str(row.get("inv_no") or "").strip()
+            if key:
+                rows_by_inv[key] = row
+                try:
+                    rows_by_inv[str(int(round(float(key))))] = row
+                except (TypeError, ValueError):
+                    pass
+
+        resolved_items: list[dict[str, Any]] = []
+        failed: list[dict[str, str]] = []
+        for inv_no in inv_nos:
+            row = rows_by_inv.get(inv_no)
+            if row is None:
+                try:
+                    row = rows_by_inv.get(str(int(round(float(inv_no)))))
+                except (TypeError, ValueError):
+                    row = None
+            if row:
+                resolved_items.append(row)
+            else:
+                failed.append({"inv_no": inv_no, "error": f"Equipment with INV_NO {inv_no} not found"})
+
+        acts = [dict(act) for act in list(recovered_result.get("acts") or []) if isinstance(act, dict)]
+        if resolved_items:
+            if not acts:
+                acts = generate_transfer_acts_without_move(
+                    items=resolved_items,
+                    issuer_name=issuer_name,
+                    issuer_email=issuer_email,
+                    db_id=db_id,
+                    operation_id=job_id,
+                )
+
+        result = {
+            "success_count": len(resolved_items),
+            "failed_count": len(failed),
+            "transferred": [],
+            "failed": failed,
+            "retry_inv_nos": _normalize_inv_nos(item.get("inv_no") for item in failed),
+            "acts": acts,
+        }
+        if acts and not transfer_act_job_service.checkpoint_processing_result(
+            job_id,
+            _result_with_act_records({**result, "execution_stage": "acts_generated"}),
+        ):
+            raise RuntimeError("Не удалось сохранить checkpoint операции формирования актов")
+        for item in resolved_items:
+            _touch_recent_card_safely(
+                current_user=current_user,
+                db_id=db_id,
+                inv_no=_item_inv_no(item),
+                action_type="act",
+                snapshot=item,
+            )
+        transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
+        logger.info(
+            "Transfer act job done job_id=%s operation=act_only success=%s failed=%s acts=%s",
+            job_id,
+            result["success_count"],
+            result["failed_count"],
+            len(acts),
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail or "Не удалось создать акты")
+        logger.warning("Transfer act job failed job_id=%s status=%s detail=%s", job_id, exc.status_code, detail)
+        transfer_act_job_service.mark_failed(
+            job_id,
+            detail,
+            {
+                "success_count": 0,
+                "failed_count": 1,
+                "transferred": [],
+                "failed": [{"inv_no": "", "error": detail}],
+                "retry_inv_nos": [],
+                "acts": [],
+            },
+        )
+    except Exception as exc:
+        logger.exception("Transfer act job failed job_id=%s", job_id)
+        checkpointed = transfer_act_job_service.get_job(job_id) or {}
+        persisted_result = dict(checkpointed.get("result") or {})
+        transfer_act_job_service.mark_failed(job_id, str(exc), persisted_result or None)
+    finally:
+        stop_lease_heartbeat()
+
+
+def _ascii_safe_filename(file_name: str) -> str:
+    """
+    Build latin-1-safe fallback filename for HTTP headers.
+    Keep original UTF-8 name in filename* parameter.
+    """
+    name = str(file_name or "").strip() or "act_file.bin"
+    base, ext = os.path.splitext(name)
+    safe_base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._-") or "act_file"
+    safe_ext = re.sub(r"[^A-Za-z0-9.]+", "", ext)
+    if not safe_ext:
+        safe_ext = ".bin"
+    return f"{safe_base}{safe_ext}"
+
+
+def _infer_mime_from_bytes(file_bytes: bytes) -> Optional[str]:
+    """Best-effort MIME detection by magic bytes."""
+    if not file_bytes:
+        return None
+    head = file_bytes[:16]
+    if head.startswith(b"%PDF-"):
+        return "application/pdf"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xFF\xD8\xFF"):
+        return "image/jpeg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if head.startswith(b"PK\x03\x04"):
+        return "application/zip"
+    return None
+
+
+def _is_valid_mime_type(value: Optional[str]) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(text and "/" in text and " " not in text)
+
+
+def _normalize_local_file_path(raw_path: str) -> str:
+    """
+    Normalize file path from DB for local filesystem access.
+    Supports plain paths and file:// URI format from legacy desktop app.
+    """
+    text = str(raw_path or "").strip()
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    if lowered.startswith("file://"):
+        parsed = urllib.parse.urlparse(text)
+        path = urllib.parse.unquote(parsed.path or "")
+        netloc = str(parsed.netloc or "").strip()
+
+        # file://server/share/path -> UNC
+        if netloc and netloc.lower() != "localhost":
+            unc = f"\\\\{netloc}{path}"
+            return os.path.normpath(unc.replace("/", "\\"))
+
+        # file:///C:/path -> C:\path
+        if re.match(r"^/[A-Za-z]:", path):
+            path = path[1:]
+        return os.path.normpath(path.replace("/", os.sep))
+
+    # Also decode URL-escaped plain path fragments, if present.
+    return os.path.normpath(urllib.parse.unquote(text))
+
+
+_UNKNOWN_EMPLOYEE_TOKENS: set[str] = {
+    "без",
+    "безв",
+    "бн",
+    "нет",
+    "неизвестно",
+    "неуказан",
+    "неизвестен",
+    "нд",
+    "na",
+    "none",
+    "unknown",
+    "отсутствует",
+    "недоступен",
+}
+
+
+def _normalize_employee_name_token(name: str) -> str:
+    """Remove spaces, dots and punctuation for placeholder detection."""
+    text = re.sub(r"[\s.\-–—/]+", "", str(name or "").strip().lower())
+    return re.sub(r"[^a-zа-яё0-9]", "", text)
+
+
+def _is_unknown_employee_name(name: str) -> bool:
+    """Detect placeholder/unknown employee names like 'Без', 'Без В.', 'N/A'."""
+    token = _normalize_employee_name_token(name)
+    if not token:
+        return True
+    return token in _UNKNOWN_EMPLOYEE_TOKENS
+
+
+def _is_plausible_name_match(input_name: str, display_name: str) -> bool:
+    """
+    Validate that a non-strict name lookup actually matches the input.
+    Rejects short fragments that are only substrings of a longer surname,
+    e.g. 'Без' should not match 'Безлепкин Сергей Валериевич'.
+    """
+    input_lower = input_name.lower().strip()
+    display_lower = display_name.lower().strip()
+    if display_lower == input_lower:
+        return True
+    if display_lower.startswith(input_lower + " "):
+        return True
+
+    input_parts = input_lower.split()
+    display_parts = display_lower.split()
+    if not input_parts or not display_parts:
+        return False
+    if input_parts[0] != display_parts[0]:
+        return False
+    if len(input_parts) == 1:
+        return True
+
+    # Compare initials: "Зубков А.А." should match "Зубков Андрей Алексеевич".
+    display_idx = 1
+    for raw_part in input_parts[1:]:
+        initials = re.findall(r"[a-zа-яё]", re.sub(r"[.\s]+", "", raw_part))
+        if not initials:
+            continue
+        for initial in initials:
+            matched = False
+            while display_idx < len(display_parts):
+                if display_parts[display_idx].startswith(initial):
+                    matched = True
+                    display_idx += 1
+                    break
+                display_idx += 1
+            if not matched:
+                return False
+    return True
+
+
+def _resolve_owner_no_by_name(owner_name: str, db_id: Optional[str]) -> Optional[int]:
+    name = str(owner_name or "").strip()
+    if not name:
+        return None
+    if _is_unknown_employee_name(name):
+        return None
+    owner_no = queries.get_owner_no_by_name(name, strict=True, db_id=db_id)
+    if owner_no is not None:
+        return int(owner_no)
+    owner_no = queries.get_owner_no_by_name(name, strict=False, db_id=db_id)
+    if owner_no is None:
+        return None
+    owner_payload = queries.get_owner_by_no(owner_no, db_id) or {}
+    display_name = str(
+        owner_payload.get("OWNER_DISPLAY_NAME") or owner_payload.get("owner_display_name") or ""
+    ).strip()
+    if display_name and _is_plausible_name_match(name, display_name):
+        return int(owner_no)
+    return None
+
+
+class EquipmentUpdateRequest(BaseModel):
+    """Partial update payload for equipment card."""
+    serial_no: Optional[str] = Field(default=None)
+    hw_serial_no: Optional[str] = Field(default=None)
+    part_no: Optional[str] = Field(default=None)
+    ip_address: Optional[str] = Field(default=None)
+    mac_address: Optional[str] = Field(default=None)
+    network_name: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None)
+    status_no: Optional[int] = Field(default=None)
+    empl_no: Optional[int] = Field(default=None)
+    branch_no: Optional[Any] = Field(default=None)
+    loc_no: Optional[Any] = Field(default=None)
+    type_no: Optional[int] = Field(default=None)
+    model_no: Optional[int] = Field(default=None)
+
+
+class EquipmentByInvNosRequest(BaseModel):
+    """Batch load equipment cards by inventory numbers."""
+    inv_nos: List[str] = Field(..., min_length=1, max_length=500)
+
+
+class EquipmentRecentCardTouchRequest(BaseModel):
+    """Record a user activity event for an equipment card."""
+    inv_no: str = Field(..., min_length=1, max_length=64)
+    action_type: str = Field(default="view", max_length=64)
+    snapshot: Optional[dict[str, Any]] = None
+
+
+class EquipmentRecentCardResponse(BaseModel):
+    inv_no: str
+    db_id: str
+    last_action: str
+    last_action_label: str
+    last_activity_at: Optional[str] = None
+    activity_count: int = 0
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class EquipmentRecentCardsListResponse(BaseModel):
+    items: list[EquipmentRecentCardResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class EquipmentRecentActTouchRequest(BaseModel):
+    """Record a user activity event for an equipment act document."""
+    doc_no: int = Field(..., ge=1)
+    doc_number: str = Field(default="", max_length=128)
+    action_type: str = Field(default="view", max_length=64)
+    snapshot: Optional[dict[str, Any]] = None
+
+
+class EquipmentRecentActResponse(BaseModel):
+    doc_no: int
+    doc_number: str = ""
+    db_id: str
+    last_action: str
+    last_action_label: str
+    last_activity_at: Optional[str] = None
+    activity_count: int = 0
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class EquipmentRecentActsListResponse(BaseModel):
+    items: list[EquipmentRecentActResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+async def _branch_scope(user: User, db_id: Optional[str]) -> Optional[frozenset[int]]:
+    """Branches an IT owner may see in this database (``None`` — no restriction)."""
+    return await run_in_threadpool(it_object_branch_scope.branch_scope, user, db_id)
+
+
+def _scope_kwargs(scope: Optional[frozenset[int]]) -> dict[str, Any]:
+    return {} if scope is None else {"branch_nos": sorted(scope)}
+
+
+async def _ensure_inv_nos_in_scope(
+    inv_nos: List[str],
+    db_id: Optional[str],
+    scope: Optional[frozenset[int]],
+    *,
+    target_branch: Any = None,
+) -> None:
+    """Writes of an IT owner stay inside his branches: source items and the target branch."""
+    if scope is None:
+        return
+    forbidden = HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Оборудование вне филиалов, назначенных вам как IT-владельцу"
+    )
+    if target_branch not in (None, "") and _to_int(target_branch) not in scope:
+        raise forbidden
+    rows = await run_in_threadpool(queries.get_equipment_items_by_inv_nos, list(inv_nos), db_id)
+    if any(not it_object_branch_scope.row_allowed(row, scope) for row in rows or []):
+        raise forbidden
+
+
+async def _allowed_item_ids(item_ids: List[int], db_id: Optional[str], scope: Optional[frozenset[int]]) -> List[int]:
+    """ITEMS.ID values (of those asked) that sit in an IT owner's branches."""
+    ids = [int(value) for value in item_ids]
+    if scope is None or not ids:
+        return ids
+    if not scope:
+        return []
+    id_marks = ", ".join("?" for _ in ids)
+    branch_marks = ", ".join("?" for _ in scope)
+    rows = await run_in_threadpool(
+        get_db(db_id).execute_query,
+        f"SELECT ID FROM ITEMS WHERE ID IN ({id_marks}) AND BRANCH_NO IN ({branch_marks})",
+        tuple(ids) + tuple(sorted(scope)),
+    )
+    return [int(row.get("ID", row.get("id"))) for row in rows or []]
+
+
+async def _ensure_item_in_scope(item_id: int, db_id: Optional[str], scope: Optional[frozenset[int]]) -> None:
+    if scope is not None and not await _allowed_item_ids([item_id], db_id, scope):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipment not found")
+
+
+async def _ensure_photo_item_in_scope(
+    item_id: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+) -> None:
+    """Route dependency of the photo endpoints: an IT owner reaches photos of his branches only."""
+    await _ensure_item_in_scope(item_id, db_id, await _branch_scope(current_user, db_id))
+
+
+async def _ensure_doc_in_scope(doc_no: Any, db_id: Optional[str], scope: Optional[frozenset[int]]) -> None:
+    """Act file/inspect: the act must belong to an IT owner's branches (404 otherwise)."""
+    if scope is None:
+        return
+    from backend.database.equipment_act_history_reads import act_scope_sql
+
+    number = _to_int(doc_no)
+    denied = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл для выбранного акта не найден")
+    if number is None:
+        raise denied
+    scope_sql, scope_params = act_scope_sql(sorted(scope))
+    rows = await run_in_threadpool(
+        get_db(db_id).execute_query,
+        f"SELECT TOP 1 d.DOC_NO FROM DOCS d WHERE d.DOC_NO = ? AND {scope_sql}",
+        (number,) + scope_params,
+    )
+    if not rows:
+        raise denied
+
+
+async def _ensure_consumable_in_scope(
+    item_id: Optional[int], db_id: Optional[str], scope: Optional[frozenset[int]]
+) -> None:
+    """An IT owner changes only consumables of his branches; others look like missing ones."""
+    if scope is None:
+        return
+    if item_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id is required")
+    row = await run_in_threadpool(queries.get_consumable_by_id, item_id, db_id)
+    if not row or not it_object_branch_scope.row_allowed(row, scope):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Consumable not found")
+
+
+@router.get("/search/serial", response_model=EquipmentSearchResponse)
+async def search_by_serial(
+    q: str = Query(..., min_length=1, description="Serial number or inventory number to search"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Search equipment by serial number, hardware serial, or inventory number.
+
+    Args:
+        q: Search term - serial number or inventory number
+
+    Returns:
+        EquipmentSearchResponse with found flag and equipment list
+    """
+    if not q or len(q.strip()) == 0:
+        return EquipmentSearchResponse(found=False, equipment=[])
+
+    scope = await _branch_scope(current_user, db_id)
+    results = await run_in_threadpool(
+        lambda: queries.search_equipment_by_serial(q, db_id, **_scope_kwargs(scope))
+    )
+
+    # The query selects INV_NO/SERIAL_NO/HW_SERIAL_NO/PART_NO in upper case
+    # (other consumers rely on that); the response model wants lower case.
+    equipment = []
+    for row in results:
+        item = dict(row)
+        for upper, lower in (
+            ("INV_NO", "inv_no"),
+            ("SERIAL_NO", "serial_no"),
+            ("HW_SERIAL_NO", "hw_serial_no"),
+            ("PART_NO", "part_no"),
+        ):
+            if lower not in item and upper in item:
+                item[lower] = item[upper]
+        if item.get("inv_no") is not None and not isinstance(item["inv_no"], str):
+            value = item["inv_no"]
+            item["inv_no"] = str(int(value)) if isinstance(value, (int, float)) and float(value).is_integer() else str(value)
+        equipment.append(item)
+
+    return EquipmentSearchResponse(
+        found=len(equipment) > 0,
+        equipment=equipment,
+    )
+
+
+@router.get("/search/universal")
+async def search_universal(
+    q: str = Query("", description="Search term"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(50, ge=1, le=200, description="Results per page"),
+    type_no: Optional[int] = Query(None, description="Optional CI_TYPES.TYPE_NO filter"),
+    field: Optional[str] = Query(None, description="Optional single-field search scope"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Universal search across all equipment fields.
+
+    Args:
+        q: Search term
+        page: Page number
+        limit: Results per page
+        type_no: Optional equipment type filter (with an empty q lists the type)
+        field: Optional field scope (serial, model, inv_no, ...)
+
+    Returns:
+        Equipment list with pagination
+    """
+    if (not q or len(q.strip()) == 0) and type_no is None:
+        return {"equipment": [], "total": 0, "page": 1, "pages": 0}
+
+    scope = await _branch_scope(current_user, db_id)
+    result = await run_in_threadpool(
+        lambda: queries.search_equipment_universal(q, page, limit, db_id, type_no, field, **_scope_kwargs(scope))
+    )
+    if isinstance(result, dict):
+        result["data_version"] = await run_in_threadpool(get_equipment_data_version, db_id)
+    return result
+
+
+@router.get("/search/employee", response_model=EmployeeSearchResponse)
+async def search_by_employee(
+    q: str = Query(..., min_length=1, description="Employee name or department"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(50, ge=1, le=200, description="Results per page"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user)
+):
+    """
+    Search employees by name or department.
+
+    Args:
+        q: Search term - employee name or department
+        page: Page number (1-indexed)
+        limit: Number of results per page
+
+    Returns:
+        EmployeeSearchResponse with paginated results
+    """
+    if not q or len(q.strip()) == 0:
+        return EmployeeSearchResponse(employees=[], total=0, page=page, pages=0)
+
+    results = await run_in_threadpool(queries.search_employees, q, page, limit, db_id)
+
+    return EmployeeSearchResponse(**results)
+
+
+@router.get("/employee/{owner_no}/history")
+async def get_employee_history(
+    owner_no: int,
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    direction: Literal["all", "incoming", "outgoing"] = Query("all"),
+    q: str = Query("", max_length=200),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    if owner_no <= 0:
+        raise HTTPException(status_code=422, detail="owner_no must be positive")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="Дата начала должна быть не позже даты окончания")
+    if date_to == date.max:
+        raise HTTPException(status_code=422, detail="Дата окончания выходит за допустимый диапазон")
+    return await run_in_threadpool(
+        read_employee_history, owner_no, db_id,
+        date_from=date_from, date_to=date_to, direction=direction, q=q, page=page, limit=limit,
+    )
+
+
+@router.get("/employee/{owner_no}/items", response_model=EquipmentSearchResponse)
+async def get_employee_equipment(
+    owner_no: int,
+    all_databases: bool = Query(False, description="Search across all configured Hub databases"),
+    employee_name: str = Query("", max_length=200, description="FIO used to resolve owner in other DBs"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all equipment assigned to a specific employee.
+
+    Args:
+        owner_no: Employee ID (OWNER_NO)
+        all_databases: When true, also match the same person by FIO in other Hub DBs
+        employee_name: Display name for cross-DB FIO matching
+
+    Returns:
+        EquipmentSearchResponse with employee's equipment
+    """
+    db_errors: list[str] = []
+    if all_databases:
+        if str(current_user.role or "").strip().lower() != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cross-DB equipment lookup is available to administrators only",
+            )
+        cross_db_payload = await run_in_threadpool(
+            queries.get_equipment_by_owner_all_databases,
+            owner_no,
+            employee_name=employee_name,
+            current_db_id=db_id,
+            include_current_acts=True,
+        )
+        equipment = cross_db_payload.get("equipment") or []
+        db_errors = cross_db_payload.get("failed_dbs") or []
+    else:
+        equipment = await run_in_threadpool(
+            queries.get_equipment_by_owner_with_current_acts,
+            owner_no,
+            db_id,
+        )
+
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None and not all_databases:
+        equipment = it_object_branch_scope.filter_rows(equipment, scope)
+
+    return EquipmentSearchResponse(
+        found=len(equipment) > 0,
+        equipment=equipment,
+        db_errors=db_errors,
+    )
+
+
+@router.get("/database", response_model=EquipmentListResponse)
+async def get_all_equipment(
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(50, ge=1, le=200, description="Results per page"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all equipment from database with pagination.
+
+    Args:
+        page: Page number (1-indexed)
+        limit: Number of results per page
+
+    Returns:
+        EquipmentListResponse with paginated equipment list
+    """
+    scope = await _branch_scope(current_user, db_id)
+    result = await run_in_threadpool(queries.get_all_equipment, page, limit, db_id)
+    if scope is not None:
+        # An IT owner: pages stay global (the working list uses all-grouped/search), rows are cut to his branches.
+        result = {**result, "equipment": it_object_branch_scope.filter_rows(result.get("equipment"), scope)}
+
+    return EquipmentListResponse(**result)
+
+
+@router.post("/by-inv-nos")
+async def get_equipment_by_inv_nos(
+    payload: EquipmentByInvNosRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Batch load equipment cards by inventory numbers.
+    Used by frontend bulk operations to avoid N+1 requests.
+    """
+    normalized_inv_nos: List[str] = []
+    for raw_inv_no in payload.inv_nos or []:
+        inv_no = str(raw_inv_no or "").strip()
+        if inv_no and inv_no not in normalized_inv_nos:
+            normalized_inv_nos.append(inv_no)
+
+    if not normalized_inv_nos:
+        return {"equipment": [], "not_found": [], "requested": 0}
+
+    rows = await run_in_threadpool(
+        queries.get_equipment_items_by_inv_nos,
+        normalized_inv_nos,
+        db_id,
+    )
+    # Items outside an IT owner's branches are reported as not found, like missing ones.
+    rows = it_object_branch_scope.filter_rows(rows, await _branch_scope(current_user, db_id))
+
+    def _match_key(value: object) -> str:
+        token = queries._normalize_inv_no_token(value)
+        return token.casefold() if token else ""
+
+    row_by_token: dict[str, dict] = {}
+    for row in rows or []:
+        token = _match_key(row.get("inv_no") or row.get("INV_NO"))
+        if token:
+            row_by_token.setdefault(token, row)
+
+    equipment: list[dict] = []
+    not_found: list[str] = []
+    for inv_no in normalized_inv_nos:
+        row = row_by_token.get(_match_key(inv_no))
+        if row is None:
+            not_found.append(inv_no)
+        else:
+            equipment.append(row)
+
+    return {
+        "equipment": equipment,
+        "not_found": not_found,
+        "requested": len(normalized_inv_nos),
+        "data_version": await run_in_threadpool(get_equipment_data_version, db_id),
+    }
+
+
+@router.get("/photos/review", response_model=EquipmentPhotoReviewResponse)
+async def list_photo_review(
+    status_filter: Literal["rejected", "unchecked"] = Query("rejected", alias="status"),
+    since_days: int = Query(equipment_photo_review_service.DEFAULT_SINCE_DAYS, ge=1, le=365),
+    limit: int = Query(equipment_photo_review_service.DEFAULT_LIMIT, ge=1, le=equipment_photo_review_service.MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=100),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """Queue of rejected / not yet checked photos of the current database."""
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_photo_review_service.list_review(
+                db_id=db_id,
+                status=status_filter,
+                since_days=since_days,
+                limit=limit,
+                offset=offset,
+                query=q,
+                user_id=current_user.id,
+                aliases=_photo_user_aliases(current_user),
+                get_db_fn=queries.get_db,
+            )
+        )
+    except equipment_photo_review_service.PhotoReviewUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Очередь проверки фото временно недоступна",
+        )
+    return EquipmentPhotoReviewResponse(**payload)
+
+
+@router.get("/photos/review/summary", response_model=EquipmentPhotoReviewSummary)
+async def get_photo_review_summary(
+    since_days: int = Query(equipment_photo_review_service.DEFAULT_SINCE_DAYS, ge=1, le=365),
+    refresh: bool = Query(False, description="Bypass the 60 s summary cache (after own actions)"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """Counters for the review-queue badge."""
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_photo_review_service.review_summary(
+                db_id=db_id,
+                since_days=since_days,
+                user_id=current_user.id,
+                aliases=_photo_user_aliases(current_user),
+                refresh=refresh,
+                get_db_fn=queries.get_db,
+            )
+        )
+    except equipment_photo_review_service.PhotoReviewUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Очередь проверки фото временно недоступна",
+        )
+    return EquipmentPhotoReviewSummary(**payload)
+
+
+@router.get("/photos/ocr/summary", response_model=EquipmentPhotoOcrSummary)
+async def get_photo_ocr_summary(
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """Coverage of the serial-number recognition on photos (current database)."""
+    payload = await run_in_threadpool(
+        lambda: equipment_photo_ocr_service.summary(db_id=db_id, get_db_fn=queries.get_db)
+    )
+    return EquipmentPhotoOcrSummary(**payload)
+
+
+@router.post("/photos/ocr/run", response_model=EquipmentPhotoOcrRunResponse)
+async def run_photo_ocr(
+    payload: EquipmentPhotoOcrRunRequest,
+    background_tasks: BackgroundTasks,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Start recognising the next batch of photos in the background (administrator, paid)."""
+    try:
+        await run_in_threadpool(equipment_photo_ocr_service.ensure_ready)
+    except equipment_photo_ocr_service.PhotoOcrDisabledError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Распознавание фото выключено или не настроен провайдер",
+        )
+    except equipment_photo_ocr_service.PhotoOcrUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище распознавания фото недоступно (миграция не применена)",
+        )
+    if equipment_photo_ocr_service.run_state().get("running"):
+        return EquipmentPhotoOcrRunResponse(started=False, reason="already_running")
+    background_tasks.add_task(
+        equipment_photo_ocr_service.run_batch_safe,
+        db_id=db_id,
+        limit=payload.limit,
+        get_db_fn=queries.get_db,
+    )
+    return EquipmentPhotoOcrRunResponse(started=True)
+
+
+def _quality_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Панель качества данных временно недоступна",
+    )
+
+
+@router.get("/quality/summary", response_model=EquipmentQualitySummary)
+async def get_quality_summary(
+    refresh: bool = Query(False, description="Bypass the 5 min cache"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """Per-rule counters of the data-quality panel (current database, read-only)."""
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_quality_service.quality_summary(
+                db_id=db_id, refresh=refresh, get_db_fn=queries.get_db
+            )
+        )
+    except equipment_quality_service.QualityUnavailableError:
+        raise _quality_unavailable()
+    return EquipmentQualitySummary(**payload)
+
+
+@router.get("/quality/issues", response_model=EquipmentQualityIssuesResponse)
+async def list_quality_issues(
+    rule: str = Query(..., max_length=40),
+    limit: int = Query(equipment_quality_service.DEFAULT_LIMIT, ge=1, le=equipment_quality_service.MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=100),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """Items that break one data-quality rule."""
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_quality_service.list_issues(
+                db_id=db_id, rule=rule, limit=limit, offset=offset, query=q, get_db_fn=queries.get_db
+            )
+        )
+    except equipment_quality_service.UnknownRuleError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Неизвестное правило качества")
+    except equipment_quality_service.QualityUnavailableError:
+        raise _quality_unavailable()
+    return EquipmentQualityIssuesResponse(**payload)
+
+
+_QUALITY_CSV_COLUMNS = (
+    ("inv_no", "Инв. №"),
+    ("type_name", "Тип"),
+    ("model_name", "Модель"),
+    ("serial_no", "Серийный номер"),
+    ("employee_name", "Сотрудник"),
+    ("branch_name", "Филиал"),
+    ("location_name", "Расположение"),
+    ("note", "Примечание"),
+)
+
+
+def _csv_safe(value: Any) -> str:
+    """Spreadsheet formula injection guard for text coming from the inventory."""
+    text = str(value or "")
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+@router.get("/quality/issues/export")
+async def export_quality_issues(
+    rule: str = Query(..., max_length=40),
+    q: str = Query("", max_length=100),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """CSV (UTF-8 with BOM, ';' separated) of all rows of one rule, capped at EXPORT_LIMIT."""
+    import csv
+    import io
+
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_quality_service.list_issues(
+                db_id=db_id,
+                rule=rule,
+                limit=equipment_quality_service.EXPORT_LIMIT,
+                offset=0,
+                query=q,
+                get_db_fn=queries.get_db,
+            )
+        )
+    except equipment_quality_service.UnknownRuleError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Неизвестное правило качества")
+    except equipment_quality_service.QualityUnavailableError:
+        raise _quality_unavailable()
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";")
+    writer.writerow([title for _key, title in _QUALITY_CSV_COLUMNS])
+    for row in payload["items"]:
+        writer.writerow([_csv_safe(row.get(key)) for key, _title in _QUALITY_CSV_COLUMNS])
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="quality-{rule}.csv"'},
+    )
+
+
+class EquipmentOneCMarkRequest(BaseModel):
+    note: str = Field("", max_length=equipment_one_c_mark_service.NOTE_MAX_LENGTH)
+    # "ok" — reconciled by hand; "mismatch" — does not match 1C (a comment is required).
+    kind: str = Field(equipment_one_c_mark_service.KIND_OK, max_length=16)
+
+
+def _one_c_mark_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Хранилище ручных отметок 1С недоступно (миграция не применена)",
+    )
+
+
+@router.get("/one-c-marks", response_model=dict)
+async def list_one_c_marks(
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """Manual 1C marks of the current database: {inv_no: {kind, marked_by, marked_at, note}}."""
+    marks = await run_in_threadpool(equipment_one_c_mark_service.list_marks, db_id)
+    return {"marks": marks}
+
+
+@router.put("/{inv_no}/one-c-mark", response_model=dict)
+async def set_one_c_mark(
+    inv_no: str,
+    payload: EquipmentOneCMarkRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_ONE_C_MARK)),
+):
+    """Set the manual «reconciled with 1C» mark (idempotent)."""
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    if not equipment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipment not found")
+    try:
+        mark = await run_in_threadpool(
+            lambda: equipment_one_c_mark_service.set_mark(
+                db_id,
+                inv_no,
+                actor=current_user.username,
+                note=payload.note,
+                kind=payload.kind,
+                part_no=equipment.get("part_no") or equipment.get("PART_NO"),
+                model=equipment.get("model_name") or equipment.get("MODEL_NAME"),
+            )
+        )
+    except equipment_one_c_mark_service.OneCMarkUnavailableError:
+        raise _one_c_mark_unavailable()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    logger.info(
+        "equipment 1C mark set db=%s inv_no=%s kind=%s user=%s",
+        db_id, mark["inv_no"], mark["kind"], current_user.username,
+    )
+    return {"success": True, "mark": mark}
+
+
+@router.delete("/{inv_no}/one-c-mark", response_model=dict)
+async def clear_one_c_mark(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_ONE_C_MARK)),
+):
+    """Remove the manual mark; the automatic comparison status applies again."""
+    try:
+        removed = await run_in_threadpool(equipment_one_c_mark_service.clear_mark, db_id, inv_no)
+    except equipment_one_c_mark_service.OneCMarkUnavailableError:
+        raise _one_c_mark_unavailable()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if removed:
+        logger.info("equipment 1C mark cleared db=%s inv_no=%s user=%s", db_id, inv_no, current_user.username)
+    return {"success": True, "removed": removed}
+
+
+@router.post("/current-acts", response_model=EquipmentCurrentActsResponse)
+async def get_equipment_current_acts(
+    payload: EquipmentCurrentActsRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Lazy batch lookup of the current downloadable act for visible list rows.
+
+    Kept off the list-page hot path: the grouped list returns rows without
+    act enrich, and the UI calls this once per loaded batch.
+    """
+    item_ids = await _allowed_item_ids(list(payload.item_ids or []), db_id, await _branch_scope(current_user, db_id))
+    if not item_ids:
+        return EquipmentCurrentActsResponse(items=[])
+
+    from backend.database.equipment_current_act_reads import lookup_current_acts
+
+    def _lookup_all():
+        # One threadpool hop for three independent lookups: under a saturated pool every
+        # extra hop queued separately (p50 124 ms, spikes > 1 s). Each lookup keeps its own
+        # failure domain: a failed one returns None ("unknown"), never "missing".
+        # Photo flag rides on the same lazy batch; "Проверено" mark lives in PostgreSQL.
+        return (
+            lookup_current_acts(item_ids, db_id, get_db_fn=queries.get_db),
+            equipment_photos.lookup_equipment_photo_counts(item_ids, db_id, get_db_fn=queries.get_db),
+            equipment_photo_check_service.lookup_mark_counts(item_ids, db_id, get_db_fn=queries.get_db),
+        )
+
+    acts_by_item_id, photo_counts, mark_counts = await run_in_threadpool(_lookup_all)
+
+    items = []
+    for item_id in item_ids:
+        # Lookup failed — mark as unknown (None), never as "missing".
+        photo_count = None if photo_counts is None else photo_counts.get(item_id, 0)
+        marks = None if mark_counts is None else (mark_counts.get(item_id) or {})
+        photo_verified_count = None if marks is None else int(marks.get("verified", 0))
+        photo_rejected_count = None if marks is None else int(marks.get("rejected", 0))
+        if acts_by_item_id is None:
+            items.append(
+                EquipmentCurrentActItem(
+                    item_id=item_id,
+                    available=None,
+                    photo_count=photo_count,
+                    photo_verified_count=photo_verified_count,
+                    photo_rejected_count=photo_rejected_count,
+                )
+            )
+            continue
+        act = acts_by_item_id.get(item_id)
+        items.append(
+            EquipmentCurrentActItem(
+                item_id=item_id,
+                available=act is not None,
+                doc_no=act.get("doc_no") if act else None,
+                doc_number=act.get("doc_number") if act else None,
+                doc_date=act.get("doc_date") if act else None,
+                photo_count=photo_count,
+                photo_verified_count=photo_verified_count,
+                photo_rejected_count=photo_rejected_count,
+            )
+        )
+    return EquipmentCurrentActsResponse(items=items)
+
+
+@router.get("/recent-cards", response_model=EquipmentRecentCardsListResponse)
+async def get_recent_equipment_cards(
+    limit: int = Query(8, ge=1, le=50),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get the current user's recent equipment cards for the selected ITINVENT database."""
+    items = await run_in_threadpool(
+        equipment_recent_cards_service.list_recent,
+        user_id=current_user.id,
+        db_id=db_id,
+        limit=limit,
+    )
+    return EquipmentRecentCardsListResponse(items=items, total=len(items))
+
+
+@router.post("/recent-cards/touch", response_model=EquipmentRecentCardResponse)
+async def touch_recent_equipment_card(
+    payload: EquipmentRecentCardTouchRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Upsert a current-user recent equipment card event."""
+    try:
+        item = await run_in_threadpool(
+            equipment_recent_cards_service.touch,
+            user_id=current_user.id,
+            db_id=db_id,
+            inv_no=payload.inv_no,
+            action_type=payload.action_type,
+            snapshot=payload.snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return EquipmentRecentCardResponse(**item)
+
+
+@router.delete("/recent-cards/{inv_no}", response_model=dict)
+async def remove_recent_equipment_card(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Remove one recent equipment card from the current user's selected database scope."""
+    return await run_in_threadpool(
+        equipment_recent_cards_service.remove,
+        user_id=current_user.id,
+        db_id=db_id,
+        inv_no=inv_no,
+    )
+
+
+@router.delete("/recent-cards", response_model=dict)
+async def clear_recent_equipment_cards(
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Clear all current-user recent equipment cards for the selected database."""
+    return await run_in_threadpool(
+        equipment_recent_cards_service.clear,
+        user_id=current_user.id,
+        db_id=db_id,
+    )
+
+
+@router.get("/acts/recent", response_model=EquipmentRecentActsListResponse)
+async def get_recent_equipment_acts(
+    limit: int = Query(8, ge=1, le=50),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get the current user's recent act documents for the selected ITINVENT database."""
+    items = await run_in_threadpool(
+        equipment_recent_acts_service.list_recent,
+        user_id=current_user.id,
+        db_id=db_id,
+        limit=limit,
+    )
+    return EquipmentRecentActsListResponse(items=items, total=len(items))
+
+
+@router.post("/acts/recent/touch", response_model=EquipmentRecentActResponse)
+async def touch_recent_equipment_act(
+    payload: EquipmentRecentActTouchRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Upsert a current-user recent act document event."""
+    try:
+        item = await run_in_threadpool(
+            equipment_recent_acts_service.touch,
+            user_id=current_user.id,
+            db_id=db_id,
+            doc_no=payload.doc_no,
+            doc_number=payload.doc_number,
+            action_type=payload.action_type,
+            snapshot=payload.snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return EquipmentRecentActResponse(**item)
+
+
+@router.delete("/acts/recent/{doc_no}", response_model=dict)
+async def remove_recent_equipment_act(
+    doc_no: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Remove one recent act from the current user's selected database scope."""
+    return await run_in_threadpool(
+        equipment_recent_acts_service.remove,
+        user_id=current_user.id,
+        db_id=db_id,
+        doc_no=doc_no,
+    )
+
+
+@router.delete("/acts/recent", response_model=dict)
+async def clear_recent_equipment_acts(
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Clear all current-user recent acts for the selected database."""
+    return await run_in_threadpool(
+        equipment_recent_acts_service.clear,
+        user_id=current_user.id,
+        db_id=db_id,
+    )
+
+
+@router.get("/branches", response_model=list[Branch])
+async def get_branches(
+    response: Response,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all available branches.
+
+    Returns:
+        List of branches
+    """
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_branches_cached
+    branches = await run_in_threadpool(get_all_branches_cached, db_id)
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None:
+        # Per-user result: keep it out of shared caches.
+        response.headers["Cache-Control"] = "private, no-store"
+        return it_object_branch_scope.filter_branch_directory(branches, scope)
+    return branches
+
+
+@router.get("/locations", response_model=list[Location])
+async def get_all_locations(
+    response: Response,
+    branch_no: Optional[str] = Query(None, description="Optional branch number to prioritize used locations"),
+    only_branch: bool = Query(False, description="Return only rooms of branch_no (LOC_BRANCH or used by its items)"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user)
+):
+    """
+    Get the full location directory from LOCATIONS.
+
+    Returns:
+        List of all locations
+    """
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_locations_cached
+    if only_branch is True and branch_no:
+        return await run_in_threadpool(get_all_locations_cached, db_id, branch_no=branch_no, only_branch=True)
+    return await run_in_threadpool(get_all_locations_cached, db_id, branch_no=branch_no)
+
+
+@router.get("/locations/{branch_id}", response_model=list[Location])
+async def get_locations(
+    branch_id: str,
+    response: Response,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user)
+):
+    """
+    Deprecated compatibility endpoint.
+
+    Args:
+        branch_id: Ignored legacy branch ID
+
+    Returns:
+        List of all locations
+    """
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_locations_cached
+    return await run_in_threadpool(get_all_locations_cached, db_id, branch_no=branch_id)
+
+
+@router.get("/types")
+async def get_equipment_types(
+    response: Response,
+    ci_type: Optional[int] = Query(None, ge=1, le=20, description="Filter by CI_TYPE"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user)
+):
+    """
+    Get all equipment types.
+
+    Returns:
+        List of equipment types
+    """
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_equipment_types
+    types = await run_in_threadpool(get_all_equipment_types, db_id)
+    if ci_type is not None:
+        filtered = []
+        for entry in types or []:
+            current_ci_type = _to_int(entry.get("CI_TYPE") if isinstance(entry, dict) else None)
+            if current_ci_type is None:
+                current_ci_type = _to_int(entry.get("ci_type") if isinstance(entry, dict) else None)
+            if current_ci_type == ci_type:
+                filtered.append(entry)
+        return filtered
+    return types
+
+
+@router.get("/models")
+async def get_models_by_type(
+    response: Response,
+    type_no: int = Query(..., ge=1, description="Equipment TYPE_NO"),
+    ci_type: int = Query(1, ge=1, le=20, description="CI_TYPE category"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """
+    Get equipment models for a selected type.
+    """
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_models_by_type_cached
+    return {"models": await run_in_threadpool(get_models_by_type_cached, type_no, db_id, ci_type=ci_type)}
+
+
+@router.get("/types-raw")
+async def get_equipment_types_raw(
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user)
+):
+    """
+    Get all equipment types using direct SQL query.
+    Returns raw data from CI_TYPES table.
+
+    SQL Query:
+        SELECT CI_TYPE, TYPE_NO, TYPE_NAME
+        FROM CI_TYPES
+        ORDER BY TYPE_NAME
+    """
+    from backend.database.connection import get_db
+    db = get_db(db_id)
+
+    # Прямой SQL запрос для получения типов оборудования
+    query = """
+        SELECT
+            CI_TYPE,
+            TYPE_NO,
+            TYPE_NAME
+        FROM CI_TYPES
+        ORDER BY TYPE_NAME
+    """
+
+    try:
+        results = await run_in_threadpool(db.execute_query, query, ())
+        return {
+            "success": True,
+            "query": query.strip(),
+            "count": len(results),
+            "types": results
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error fetching types: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "types": []
+        }
+
+
+@router.get("/statuses", response_model=list[EquipmentStatus])
+async def get_statuses(
+    response: Response,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user)
+):
+    """
+    Get all equipment statuses.
+
+    Returns:
+        List of equipment statuses
+    """
+    _set_dict_cache_headers(response)
+    from backend.database.equipment_db import get_all_statuses_cached
+    return await run_in_threadpool(get_all_statuses_cached, db_id)
+
+
+@router.get("/owners/search")
+async def search_owners(
+    q: str = Query(..., min_length=1, description="Owner name or department"),
+    limit: int = Query(20, ge=1, le=100, description="Results per page"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """
+    Search owners for equipment reassignment/autocomplete.
+    """
+    term = (q or "").strip()
+    if not term:
+        return {"owners": []}
+    return {"owners": await run_in_threadpool(queries.search_owners, term, limit, db_id)}
+
+
+@router.get("/owners/departments")
+async def get_owner_departments(
+    limit: int = Query(500, ge=1, le=2000, description="Maximum number of departments"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """
+    Get distinct owner departments for dropdown controls.
+    """
+    return {"departments": await run_in_threadpool(queries.get_owner_departments, limit, db_id)}
+
+
+@router.get("/all-grouped", response_model=EquipmentGroupedListResponse)
+async def get_all_equipment_grouped(
+    page: int = Query(1, ge=1),
+    limit: int = Query(1000, ge=1, le=10000),
+    branch: Optional[str] = Query(None),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all equipment grouped by branch and location.
+
+    Args:
+        page: Page number
+        limit: Results per page
+        branch: Filter by branch name (optional)
+
+    Returns:
+        Equipment grouped by branch and location
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug("get_all_equipment_grouped branch=%s db_id=%s", branch, db_id)
+
+    from backend.database.equipment_db import get_equipment_grouped, get_equipment_by_branch, get_all_branches
+
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None:
+        # An IT owner: only his branches. Branch names are not unique, so rows are cut by branch number.
+        all_branches = await run_in_threadpool(get_all_branches, db_id)
+        names: list[str] = []
+        for item in it_object_branch_scope.filter_branch_directory(all_branches, scope):
+            name = str(item.get("name", item.get("BRANCH_NAME")) or "").strip()
+            if name and name not in names and (not branch or name == branch.strip()):
+                names.append(name)
+        grouped_scoped: dict[str, dict[str, list]] = {}
+        total_scoped = 0
+        pages_scoped = 0
+        data_version = 0
+        for name in names:
+            part = await run_in_threadpool(get_equipment_by_branch, name, page, limit, db_id)
+            rows = it_object_branch_scope.filter_rows(part.get("equipment"), scope)
+            total_scoped += len(rows) if int(part.get("pages") or 0) <= 1 else int(part.get("total") or 0)
+            pages_scoped = max(pages_scoped, int(part.get("pages") or 0))
+            data_version = part.get("data_version", data_version)
+            by_location = grouped_scoped.setdefault(name, {})
+            for row in rows:
+                by_location.setdefault(row.get("location") or "Не указано", []).append(row)
+        return {
+            "grouped": grouped_scoped,
+            "total": total_scoped,
+            "page": page,
+            "limit": limit,
+            "pages": pages_scoped,
+            "data_version": data_version,
+        }
+
+    try:
+        if branch:
+            logger.debug("Fetching equipment for branch=%s", branch)
+            result = await run_in_threadpool(get_equipment_by_branch, branch, page, limit, db_id)
+            grouped_by_location = {}
+            for item in result['equipment']:
+                location = item.get('location') or 'Не указано'
+                if location not in grouped_by_location:
+                    grouped_by_location[location] = []
+                grouped_by_location[location].append(item)
+
+            grouped = {
+                branch: grouped_by_location
+            }
+            logger.debug("Returning grouped data branch=%s locations=%s", branch, len(grouped_by_location))
+            return {
+                'grouped': grouped,
+                'total': result['total'],
+                'page': result['page'],
+                'limit': result['limit'],
+                'pages': result['pages'],
+                'data_version': result.get('data_version', 0),
+            }
+
+        logger.debug("Fetching all equipment grouped")
+        return await run_in_threadpool(get_equipment_grouped, page, limit, db_id)
+    except Exception as e:
+        logger.error(f"Error in get_all_equipment_grouped: {e}", exc_info=True)
+        raise
+
+
+@router.get("/consumables-grouped")
+async def get_all_consumables_grouped(
+    page: int = Query(1, ge=1),
+    limit: int = Query(1000, ge=1, le=10000),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get consumables (CI_TYPE = 4) grouped by branch and location.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug("get_all_consumables_grouped db_id=%s", db_id)
+
+    from backend.database.equipment_db import get_consumables_grouped
+
+    try:
+        payload = await run_in_threadpool(get_consumables_grouped, page, limit, db_id)
+        scope = await _branch_scope(current_user, db_id)
+        if scope is None or not isinstance(payload, dict):
+            return payload
+        # An IT owner: only consumables of his branches (rows carry branch_no).
+        grouped_scoped: dict[str, dict[str, list]] = {}
+        for branch_name, locations in (payload.get("grouped") or {}).items():
+            for location_name, items in (locations or {}).items():
+                kept = it_object_branch_scope.filter_rows(items, scope)
+                if kept:
+                    grouped_scoped.setdefault(branch_name, {})[location_name] = kept
+        return {**payload, "grouped": grouped_scoped}
+    except Exception as e:
+        logger.error(f"Error in get_all_consumables_grouped: {e}", exc_info=True)
+        raise
+
+
+@router.get("/consumables/lookup", response_model=List[ConsumableLookupItem])
+async def get_consumables_lookup(
+    type_no: Optional[int] = Query(None, ge=1),
+    model_name: Optional[str] = Query(None, min_length=1),
+    branch_no: Optional[str] = Query(None),
+    loc_no: Optional[str] = Query(None),
+    only_positive_qty: bool = Query(True),
+    limit: int = Query(300, ge=1, le=1000),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Lookup consumables with branch and location metadata."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    def _to_int_like(value: Any) -> Optional[int]:
+        if value in (None, "", "null"):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            try:
+                return int(float(str(value).strip()))
+            except (TypeError, ValueError):
+                return None
+
+    def _to_opt_str(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _normalize_lookup_row(row: Any) -> Optional[dict]:
+        if not isinstance(row, dict):
+            return None
+
+        raw_id = row.get("id", row.get("ID"))
+        normalized_id = _to_int_like(raw_id)
+        if normalized_id is None:
+            return None
+
+        raw_branch_no = row.get("branch_no", row.get("BRANCH_NO"))
+        raw_loc_no = row.get("loc_no", row.get("LOC_NO"))
+        branch_as_int = _to_int_like(raw_branch_no)
+        loc_as_int = _to_int_like(raw_loc_no)
+
+        qty_value = _to_int_like(row.get("qty", row.get("QTY")))
+        if qty_value is None:
+            qty_value = 0
+
+        return {
+            "id": normalized_id,
+            "inv_no": _to_opt_str(row.get("inv_no", row.get("INV_NO"))),
+            "type_no": _to_int_like(row.get("type_no", row.get("TYPE_NO"))),
+            "type_name": _to_opt_str(row.get("type_name", row.get("TYPE_NAME"))),
+            "model_no": _to_int_like(row.get("model_no", row.get("MODEL_NO"))),
+            "model_name": _to_opt_str(row.get("model_name", row.get("MODEL_NAME"))),
+            "qty": qty_value,
+            "branch_no": branch_as_int if branch_as_int is not None else _to_opt_str(raw_branch_no),
+            "branch_name": _to_opt_str(row.get("branch_name", row.get("BRANCH_NAME"))),
+            "loc_no": loc_as_int if loc_as_int is not None else _to_opt_str(raw_loc_no),
+            "location_name": _to_opt_str(
+                row.get("location_name", row.get("LOCATION_NAME", row.get("location", row.get("LOCATION"))))
+            ),
+            "part_no": _to_opt_str(row.get("part_no", row.get("PART_NO"))),
+            "description": _to_opt_str(row.get("description", row.get("DESCRIPTION"))),
+        }
+
+    def _normalize_rows(rows: Any) -> List[dict]:
+        normalized: List[dict] = []
+        for row in rows or []:
+            parsed = _normalize_lookup_row(row)
+            if parsed:
+                normalized.append(parsed)
+        return normalized
+
+    branch_value: Optional[Any] = branch_no
+    loc_value: Optional[Any] = loc_no
+
+    if branch_no not in (None, ""):
+        branch_int = _to_int(branch_no)
+        branch_value = branch_int if branch_int is not None else branch_no
+    if loc_no not in (None, ""):
+        loc_int = _to_int(loc_no)
+        loc_value = loc_int if loc_int is not None else loc_no
+
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None:
+        # An IT owner: only his branches; a requested branch outside them gives nothing.
+        requested = _to_int(branch_value) if branch_value not in (None, "") else None
+        if requested is not None and requested not in scope:
+            return []
+        scope_branches = [requested] if requested is not None else sorted(scope)
+    else:
+        scope_branches = [branch_value]
+
+    rows: List[dict] = []
+    try:
+        lookup_rows = []
+        for scoped_branch in scope_branches:
+            lookup_rows.extend(
+                await run_in_threadpool(
+                    queries.get_consumables_lookup,
+                    db_id=db_id,
+                    type_no=type_no,
+                    model_name=(model_name or "").strip() or None,
+                    branch_no=scoped_branch,
+                    loc_no=loc_value,
+                    only_positive_qty=only_positive_qty,
+                    limit=limit,
+                ) or []
+            )
+        rows = _normalize_rows(lookup_rows)[:limit]
+    except Exception as exc:
+        logger.warning("consumables_lookup primary query failed db_id=%s: %s", db_id, exc, exc_info=True)
+
+    if rows:
+        return rows
+
+    # Fallback: use grouped consumables source and flatten to lookup shape.
+    try:
+        from backend.database.equipment_db import get_consumables_grouped
+
+        grouped_payload = await run_in_threadpool(get_consumables_grouped, page=1, limit=1000, db_id=db_id)
+        grouped = grouped_payload.get("grouped") if isinstance(grouped_payload, dict) else {}
+        flat_rows: List[dict] = []
+        if isinstance(grouped, dict):
+            for locations in grouped.values():
+                if not isinstance(locations, dict):
+                    continue
+                for items in locations.values():
+                    if isinstance(items, list):
+                        flat_rows.extend(items)
+        return it_object_branch_scope.filter_rows(_normalize_rows(flat_rows), scope)
+    except Exception as exc:
+        logger.error("consumables_lookup fallback failed db_id=%s: %s", db_id, exc, exc_info=True)
+        return []
+
+
+@router.post("/consumables/create", response_model=ConsumableCreateResponse)
+async def create_consumable(
+    payload: ConsumableCreateRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Create new consumable item (CI_TYPE=4)."""
+    branch_no = payload.branch_no
+    loc_no = payload.loc_no
+    type_no = _to_int(payload.type_no)
+    status_no = _to_int(payload.status_no)
+    model_no = _to_int(payload.model_no)
+    model_name = str(payload.model_name or "").strip()
+    qty = _to_int(payload.qty)
+
+    if type_no is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type_no is required")
+    if qty is None or qty <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="qty must be greater than 0")
+    if model_no is None and not model_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_name is required when model_no is not provided")
+
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None and _to_int(branch_no) not in scope:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Филиал не назначен вам как IT-владельцу")
+
+    branch_row = await run_in_threadpool(queries.get_branch_by_no, branch_no, db_id)
+    if not branch_row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid branch_no")
+
+    location_row = await run_in_threadpool(queries.get_location_by_no, loc_no, db_id)
+    if not location_row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
+
+    type_row = await run_in_threadpool(queries.get_type_by_no, type_no, db_id, ci_type=4)
+    if not type_row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid type_no for consumables")
+
+    if status_no is not None:
+        status_row = await run_in_threadpool(queries.get_status_by_no, status_no, db_id)
+        if not status_row:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status_no")
+
+    if model_no is not None:
+        model_row = await run_in_threadpool(queries.get_model_by_no, model_no, db_id, ci_type=4)
+        if not model_row:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid model_no")
+        model_type_no = _to_int(model_row.get("TYPE_NO") or model_row.get("type_no"))
+        if model_type_no is not None and model_type_no != type_no:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_no does not belong to selected type_no")
+
+    changed_by = current_user.username if current_user else "IT-WEB"
+    result = await run_in_threadpool(
+        queries.create_consumable_item,
+        branch_no=branch_no,
+        loc_no=loc_no,
+        type_no=type_no,
+        qty=qty,
+        model_name=model_name or None,
+        model_no=model_no,
+        status_no=status_no,
+        part_no=(payload.part_no or "").strip() or None,
+        description=(payload.description or "").strip() or None,
+        changed_by=changed_by,
+        db_id=db_id,
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("message") or "Failed to create consumable")
+    await run_in_threadpool(invalidate_equipment_cache, db_id)
+    return ConsumableCreateResponse(**result)
+
+
+@router.post("/consumables/consume", response_model=ConsumableConsumeResponse)
+async def consume_consumable(
+    payload: ConsumableConsumeRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Decrease consumable stock by qty."""
+    item_id = _to_int(payload.item_id)
+    inv_no = str(payload.inv_no or "").strip()
+    qty = _to_int(payload.qty)
+    if qty is None or qty <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="qty must be greater than 0")
+    if item_id is None and not inv_no:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id or inv_no is required")
+    await _ensure_consumable_in_scope(item_id, db_id, await _branch_scope(current_user, db_id))
+
+    # Durable path: a supplied operation_id (and optionally a bundled works
+    # record) runs through the resumable job machinery — a failed works write
+    # no longer leaves stock silently consumed, and retries do not
+    # double-decrement.
+    work_payload = payload.work.model_dump() if payload.work else None
+    if payload.operation_id or work_payload:
+        try:
+            result = await run_in_threadpool(
+                consumable_work_service.execute_consume_with_work,
+                db_id=db_id,
+                user=current_user,
+                item_id=item_id,
+                inv_no=inv_no or None,
+                qty=qty,
+                reason=payload.reason,
+                operation_id=payload.operation_id,
+                work=work_payload,
+            )
+        except consumable_work_service.TransferOperationConflict:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="operation_id is already used by another operation",
+            )
+        except consumable_work_service.ConsumableOperationInProgress:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Операция уже выполняется — повторите запрос позже",
+            )
+        except consumable_work_service.ConsumableConsumeRejected as exc:
+            message = exc.message
+            if message == "Consumable not found":
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+            if message == "Insufficient consumable quantity":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
+        return ConsumableConsumeResponse(**result)
+
+    changed_by = current_user.username if current_user else "IT-WEB"
+    result = await run_in_threadpool(
+        queries.consume_consumable_stock,
+        db_id=db_id,
+        item_id=item_id,
+        inv_no=inv_no or None,
+        qty=qty,
+        changed_by=changed_by,
+    )
+    if result.get("success"):
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
+        return ConsumableConsumeResponse(**result)
+
+    message = str(result.get("message") or "Failed to consume consumable")
+    if message == "Consumable not found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    if message == "Insufficient consumable quantity":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+@router.patch("/consumables/qty", response_model=ConsumableQtyUpdateResponse)
+async def update_consumable_qty(
+    payload: ConsumableQtyUpdateRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Set exact consumable quantity."""
+    item_id = _to_int(payload.item_id)
+    inv_no = str(payload.inv_no or "").strip()
+    qty = _to_int(payload.qty)
+    if qty is None or qty < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="qty must be 0 or greater")
+    if item_id is None and not inv_no:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id or inv_no is required")
+    await _ensure_consumable_in_scope(item_id, db_id, await _branch_scope(current_user, db_id))
+
+    changed_by = current_user.username if current_user else "IT-WEB"
+    result = await run_in_threadpool(
+        queries.set_consumable_stock_qty,
+        db_id=db_id,
+        item_id=item_id,
+        inv_no=inv_no or None,
+        qty=qty,
+        changed_by=changed_by,
+    )
+    if result.get("success"):
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
+        return ConsumableQtyUpdateResponse(**result)
+
+    message = str(result.get("message") or "Failed to update consumable quantity")
+    if message == "Consumable not found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+@router.delete("/consumables/{item_id}", response_model=ConsumableDeleteResponse)
+async def delete_consumable(
+    item_id: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_DELETE)),
+):
+    """Hard-delete one consumable card from ITEMS (CI_TYPE=4)."""
+    await _ensure_consumable_in_scope(item_id, db_id, await _branch_scope(current_user, db_id))
+    result = await run_in_threadpool(queries.delete_consumable_by_id, item_id, db_id=db_id)
+    if result.get("success"):
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
+        return ConsumableDeleteResponse(**result)
+
+    code = str(result.get("code") or "").strip().lower()
+    message = result.get("message") or "Failed to delete consumable"
+    if code == "not_found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    if code == "has_dependencies":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+    if code == "invalid_item_id":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+@router.get("/consumables/{item_id}", response_model=ConsumableLookupItem)
+async def get_consumable_by_id(
+    item_id: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get one consumable card (CI_TYPE=4) by ITEMS.ID — used by QR deep links."""
+    row = await run_in_threadpool(queries.get_consumable_by_id, item_id, db_id)
+    if row and not it_object_branch_scope.row_allowed(row, await _branch_scope(current_user, db_id)):
+        row = None
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Consumable with ID {item_id} not found",
+        )
+    return row
+
+
+@router.get("/branches-list")
+async def get_branches_list(
+    response: Response,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get list of all branches.
+
+    Returns:
+        List of branches with BRANCH_NO and BRANCH_NAME
+    """
+    _set_dict_cache_headers(response)
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.debug("Fetching branches for db_id=%s", db_id)
+    from backend.database.equipment_db import get_all_branches
+    branches = await run_in_threadpool(get_all_branches, db_id)
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None:
+        response.headers["Cache-Control"] = "private, no-store"
+        branches = it_object_branch_scope.filter_branch_directory(branches, scope)
+    logger.debug("Found %s branches", len(branches))
+    return branches
+
+@router.post("/create", response_model=EquipmentCreateResponse)
+async def create_equipment(
+    payload: EquipmentCreateRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Create new equipment in ITEMS with automatic inventory number generation.
+    Creates missing employee/model when needed.
+    """
+    serial_no = str(payload.serial_no or "").strip()
+    employee_name = str(payload.employee_name or "").strip()
+    model_name = str(payload.model_name or "").strip()
+    branch_no = payload.branch_no
+    loc_no = payload.loc_no
+    type_no = _to_int(payload.type_no)
+    status_no = _to_int(payload.status_no)
+    model_no = _to_int(payload.model_no)
+    employee_no = _to_int(payload.employee_no)
+
+    if not serial_no:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="serial_no is required")
+    if len(employee_name) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="employee_name is required")
+    if type_no is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type_no is required")
+    if status_no is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="status_no is required")
+    if model_no is None and not model_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_name is required when model_no is not provided")
+
+    try:
+        mac_address = equipment_quality_service.normalize_mac_address(payload.mac_address)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Некорректный MAC-адрес: нужно 12 шестнадцатеричных символов")
+
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None and _to_int(branch_no) not in scope:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Филиал не назначен вам как IT-владельцу")
+
+    branch_row = await run_in_threadpool(queries.get_branch_by_no, branch_no, db_id)
+    if not branch_row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid branch_no")
+
+    location_row = await run_in_threadpool(queries.get_location_by_no, loc_no, db_id)
+    if not location_row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
+
+    type_row = await run_in_threadpool(queries.get_type_by_no, type_no, db_id)
+    if not type_row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid type_no")
+
+    status_row = await run_in_threadpool(queries.get_status_by_no, status_no, db_id)
+    if not status_row:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status_no")
+
+    if model_no is not None:
+        model_row = await run_in_threadpool(queries.get_model_by_no, model_no, db_id)
+        if not model_row:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid model_no")
+        model_type_no = _to_int(model_row.get("TYPE_NO") or model_row.get("type_no"))
+        if model_type_no is not None and model_type_no != type_no:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_no does not belong to selected type_no")
+
+    if employee_no is not None:
+        owner_row = await run_in_threadpool(queries.get_owner_by_no, employee_no, db_id)
+        if not owner_row:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid employee_no")
+
+    changed_by = current_user.username if current_user else "IT-WEB"
+    result = await run_in_threadpool(
+        queries.create_equipment_item,
+        serial_no=serial_no,
+        employee_name=employee_name,
+        branch_no=branch_no,
+        loc_no=loc_no,
+        type_no=type_no,
+        status_no=status_no,
+        model_name=model_name or None,
+        model_no=model_no,
+        employee_no=employee_no,
+        employee_dept=(payload.employee_dept or "").strip() or None,
+        hw_serial_no=(payload.hw_serial_no or "").strip() or None,
+        part_no=(payload.part_no or "").strip() or None,
+        description=(payload.description or "").strip() or None,
+        ip_address=(payload.ip_address or "").strip() or None,
+        mac_address=mac_address,
+        network_name=(payload.network_name or "").strip() or None,
+        changed_by=changed_by,
+        db_id=db_id,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("message") or "Failed to create equipment")
+
+    await run_in_threadpool(invalidate_equipment_cache, db_id)
+    return EquipmentCreateResponse(**result)
+
+
+@router.patch("/{inv_no}", response_model=dict)
+async def update_equipment_by_inv(
+    inv_no: str,
+    payload: EquipmentUpdateRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Partially update equipment card fields by inventory number.
+    """
+    if hasattr(payload, "model_dump"):
+        updates = payload.model_dump(exclude_unset=True)  # Pydantic v2
+    else:
+        updates = payload.dict(exclude_unset=True)  # Pydantic v1 fallback
+
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields provided for update",
+        )
+
+    if updates.get("mac_address"):
+        # One MAC is stored as AA:BB:CC:DD:EE:FF; a field already holding several MACs stays as typed.
+        try:
+            updates["mac_address"] = equipment_quality_service.normalize_mac_address(
+                updates["mac_address"], allow_multiple=True
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Некорректный MAC-адрес: нужно 12 шестнадцатеричных символов",
+            )
+
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    scope = await _branch_scope(current_user, db_id)
+    if equipment and not it_object_branch_scope.row_allowed(equipment, scope):
+        equipment = None
+    if not equipment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Equipment with inventory number {inv_no} not found",
+        )
+    if scope is not None and updates.get("branch_no") is not None and _to_int(updates["branch_no"]) not in scope:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Филиал не назначен вам как IT-владельцу")
+
+    # Validate status
+    if "status_no" in updates and updates["status_no"] is not None:
+        status_row = await run_in_threadpool(queries.get_status_by_no, int(updates["status_no"]), db_id)
+        if not status_row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid status_no",
+            )
+
+    # Validate type
+    if "type_no" in updates and updates["type_no"] is not None:
+        type_row = await run_in_threadpool(queries.get_type_by_no, int(updates["type_no"]), db_id)
+        if not type_row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid type_no",
+            )
+
+    # Validate owner
+    if "empl_no" in updates and updates["empl_no"] is not None:
+        owner_row = await run_in_threadpool(queries.get_owner_by_no, int(updates["empl_no"]), db_id)
+        if not owner_row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid empl_no",
+            )
+
+    # Validate branch
+    if "branch_no" in updates and updates["branch_no"] is not None:
+        branch_row = await run_in_threadpool(queries.get_branch_by_no, updates["branch_no"], db_id)
+        if not branch_row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid branch_no",
+            )
+
+    # Validate location
+    if "loc_no" in updates and updates["loc_no"] is not None:
+        location_row = await run_in_threadpool(queries.get_location_by_no, updates["loc_no"], db_id)
+        if not location_row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid loc_no",
+            )
+
+    # Validate model and type-model pair
+    if "model_no" in updates and updates["model_no"] is not None:
+        model_row = await run_in_threadpool(queries.get_model_by_no, int(updates["model_no"]), db_id)
+        if not model_row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid model_no",
+            )
+
+        target_type = _to_int(updates.get("type_no"))
+        if target_type is None:
+            target_type = _to_int(equipment.get("type_no"))
+
+        model_type_no = _to_int(model_row.get("TYPE_NO") or model_row.get("type_no"))
+        if target_type is not None and model_type_no is not None and target_type != model_type_no:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="model_no does not belong to selected type_no",
+            )
+
+    # If type changes and model is not explicitly set, clear model to avoid invalid pair
+    if "type_no" in updates and "model_no" not in updates:
+        current_model_no = _to_int(equipment.get("model_no"))
+        target_type = _to_int(updates.get("type_no"))
+        if current_model_no is not None and target_type is not None:
+            current_model_row = await run_in_threadpool(queries.get_model_by_no, current_model_no, db_id)
+            current_model_type_no = _to_int(
+                (current_model_row or {}).get("TYPE_NO") or (current_model_row or {}).get("type_no")
+            )
+            if current_model_type_no is not None and current_model_type_no != target_type:
+                updates["model_no"] = None
+
+    changed_by = current_user.username if current_user else "IT-WEB"
+    updated = await run_in_threadpool(
+        queries.update_equipment_fields,
+        inv_no,
+        updates,
+        changed_by=changed_by,
+        db_id=db_id,
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update equipment",
+        )
+
+    equipment_after = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    if not equipment_after:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Equipment updated but failed to read updated data",
+        )
+
+    await run_in_threadpool(
+        _touch_recent_card_safely,
+        current_user=current_user,
+        db_id=db_id,
+        inv_no=inv_no,
+        action_type="edit",
+        snapshot=equipment_after,
+    )
+    await run_in_threadpool(invalidate_equipment_cache, db_id)
+    # The bumped data_version tells the client its cached comparison/search
+    # state is stale — without it an edited PART_NO kept the old 1C badge.
+    equipment_after = dict(equipment_after)
+    equipment_after["data_version"] = await run_in_threadpool(get_equipment_data_version, db_id)
+    return equipment_after
+
+
+@router.delete("/{inv_no}", response_model=dict)
+async def delete_equipment_by_inv(
+    inv_no: str,
+    with_history: bool = Query(False, description="Also delete act links and CI_HISTORY rows"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_DELETE_EQUIPMENT)),
+):
+    """Hard-delete one equipment card from ITEMS (blocked when acts or history exist unless with_history)."""
+    if with_history:
+        ensure_user_permission(current_user, PERM_DATABASE_DELETE_EQUIPMENT_HISTORY)
+    await _ensure_inv_nos_in_scope([inv_no], db_id, await _branch_scope(current_user, db_id))
+    result = await run_in_threadpool(
+        queries.delete_equipment_by_inv, inv_no, db_id=db_id, force=with_history
+    )
+    if result.get("success"):
+        if with_history:
+            logger.warning(
+                "equipment_delete_with_history actor=%s db=%s inv_no=%s acts=%s history=%s",
+                getattr(current_user, "username", ""),
+                db_id,
+                result.get("inv_no") or inv_no,
+                result.get("docs_deleted"),
+                result.get("history_deleted"),
+            )
+        await run_in_threadpool(
+            _remove_recent_card_for_equipment_safely,
+            db_id=db_id,
+            inv_no=result.get("inv_no") or inv_no,
+        )
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
+        return result
+
+    code = str(result.get("code") or "").strip().lower()
+    message = result.get("message") or "Failed to delete equipment"
+    if code == "not_found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    if code == "has_dependencies":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+    if code == "invalid_inv_no":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+@router.post("/transfer", response_model=TransferExecuteResponse)
+async def transfer_equipment(
+    payload: TransferExecuteRequest,
+    background_tasks: BackgroundTasks,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Transfer one or multiple equipment items to another employee with CI_HISTORY logging.
+    Generates transfer acts grouped by old employee.
+    """
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    if not inv_nos:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+    await _ensure_inv_nos_in_scope(
+        inv_nos, db_id, await _branch_scope(current_user, db_id), target_branch=getattr(payload, "branch_no", None)
+    )
+
+    job = await run_in_threadpool(
+        _create_transfer_job_or_raise,
+        operation="transfer",
+        payload=payload.model_dump(mode="json"),
+        db_id=db_id,
+        user=current_user,
+        request_count=len(inv_nos),
+        operation_id=payload.operation_id,
+    )
+    if str(job.get("status") or "") == "queued":
+        background_tasks.add_task(
+            _run_transfer_job,
+            job_id=str(job.get("id") or ""),
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+        )
+    return _queued_transfer_response(job)
+
+
+@router.post("/transfer/location", response_model=TransferExecuteResponse)
+async def transfer_equipment_location(
+    payload: TransferLocationRequest,
+    background_tasks: BackgroundTasks,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Move one or multiple equipment items to another branch/location only.
+
+    This writes CI_HISTORY but does not change owner, generate acts, create reminders,
+    or send email.
+    """
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    if not inv_nos:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+    await _ensure_inv_nos_in_scope(
+        inv_nos, db_id, await _branch_scope(current_user, db_id), target_branch=getattr(payload, "branch_no", None)
+    )
+
+    branch_no = payload.branch_no
+    loc_no = payload.loc_no
+
+    if not await run_in_threadpool(queries.get_branch_by_no, branch_no, db_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid branch_no")
+
+    if not await run_in_threadpool(queries.get_location_by_no, loc_no, db_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
+
+    if not await run_in_threadpool(queries.is_location_in_branch, loc_no, branch_no, db_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="loc_no does not belong to branch_no",
+        )
+
+    job = await run_in_threadpool(
+        _create_transfer_job_or_raise,
+        operation="location_transfer",
+        payload=payload.model_dump(mode="json"),
+        db_id=db_id,
+        user=current_user,
+        request_count=len(inv_nos),
+        operation_id=payload.operation_id,
+    )
+    if str(job.get("status") or "") == "queued":
+        background_tasks.add_task(
+            _run_location_transfer_job,
+            job_id=str(job.get("id") or ""),
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+        )
+    return _queued_transfer_response(job)
+
+
+@router.post("/transfer/act-only", response_model=TransferExecuteResponse)
+async def create_transfer_act_without_move(
+    payload: TransferActOnlyRequest,
+    background_tasks: BackgroundTasks,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Generate handover acts for selected equipment without changing ITEMS or CI_HISTORY.
+
+    The current equipment owner is treated as the recipient. The issuer can be an
+    existing owner or a manual name such as "Без владельца".
+    """
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    if not inv_nos:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No inventory numbers provided",
+        )
+    await _ensure_inv_nos_in_scope(
+        inv_nos, db_id, await _branch_scope(current_user, db_id), target_branch=getattr(payload, "branch_no", None)
+    )
+
+    job = await run_in_threadpool(
+        _create_transfer_job_or_raise,
+        operation="act_only",
+        payload=payload.model_dump(mode="json"),
+        db_id=db_id,
+        user=current_user,
+        request_count=len(inv_nos),
+        operation_id=payload.operation_id,
+    )
+    if str(job.get("status") or "") == "queued":
+        background_tasks.add_task(
+            _run_act_only_job,
+            job_id=str(job.get("id") or ""),
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+        )
+    return _queued_transfer_response(job)
+
+
+@router.get("/transfer/act-jobs/{job_id}", response_model=TransferExecuteResponse)
+async def get_transfer_act_job(
+    job_id: str,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    job = await run_in_threadpool(transfer_act_job_service.get_job, job_id)
+    if job is None or not _can_read_transfer_job(job=job, current_user=current_user, db_id=db_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer act job not found")
+    payload = await run_in_threadpool(transfer_act_job_service.response_payload, job_id)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer act job not found")
+    return TransferExecuteResponse(**payload)
+
+
+@router.post("/transfer/email", response_model=TransferEmailResult)
+async def send_transfer_acts(
+    payload: TransferEmailRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Send generated transfer acts by email.
+    """
+    employee_email = None
+    if payload.mode == "employee":
+        owner_no = _to_int(payload.owner_no)
+        if owner_no is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="owner_no is required for employee mode",
+            )
+        employee_email = await run_in_threadpool(queries.get_owner_email_by_no, owner_no, db_id)
+        if not employee_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Selected employee has no email",
+            )
+
+    result = await send_transfer_acts_email(
+        act_ids=payload.act_ids,
+        mode=payload.mode,
+        manual_email=payload.manual_email,
+        employee_email=employee_email,
+    )
+    return TransferEmailResult(**result)
+
+
+@router.post("/transfer/to-db")
+async def transfer_equipment_to_db(
+    payload: TransferToDbRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Move equipment to another ITINVENT database: the item gets a fresh INV_NO
+    in the target DB, its history (CI_HISTORY, acts, moves, files, comments)
+    is copied over, a receipt act is created there and the row is removed from
+    the source DB.
+    """
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    if not inv_nos:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+    await _ensure_inv_nos_in_scope(
+        inv_nos, db_id, await _branch_scope(current_user, db_id), target_branch=getattr(payload, "branch_no", None)
+    )
+
+    target_db = str(payload.target_db or "").strip()
+    if target_db not in (queries.get_available_databases() or {}):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown target_db")
+    source_db = str(db_id or "").strip()
+    if not source_db:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source database is not resolved")
+    if target_db == source_db:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="target_db must differ from the current database")
+
+    if payload.target_owner_no is None and not str(payload.new_owner_name or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="target_owner_no or new_owner_name is required",
+        )
+    if payload.target_branch_no is not None and not await run_in_threadpool(
+        queries.get_branch_by_no, int(payload.target_branch_no), target_db
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid target_branch_no")
+    if payload.target_loc_no is not None and not await run_in_threadpool(
+        queries.get_location_by_no, int(payload.target_loc_no), target_db
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid target_loc_no")
+    if payload.target_branch_no is not None and payload.target_loc_no is not None and not await run_in_threadpool(
+        queries.is_location_in_branch, int(payload.target_loc_no), int(payload.target_branch_no), target_db
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="target_loc_no does not belong to target_branch_no",
+        )
+    if payload.target_owner_no is not None and not await run_in_threadpool(
+        queries.get_owner_by_no, int(payload.target_owner_no), target_db
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid target_owner_no")
+
+    changed_by = str(getattr(current_user, "username", "") or "IT-WEB")
+    try:
+        report = await run_in_threadpool(
+            transfer_items_to_db,
+            source_db_id=source_db,
+            target_db_id=target_db,
+            inv_nos=inv_nos,
+            target_owner_no=int(payload.target_owner_no) if payload.target_owner_no is not None else None,
+            target_owner_name=str(payload.new_owner_name or "").strip() or None,
+            target_owner_dept=str(payload.new_owner_dept or "").strip() or None,
+            target_branch_no=int(payload.target_branch_no) if payload.target_branch_no is not None else None,
+            target_loc_no=int(payload.target_loc_no) if payload.target_loc_no is not None else None,
+            changed_by=changed_by,
+            operation_id=payload.operation_id,
+            request_context={"user_id": current_user.id, "task_assignee_user_ids": payload.task_assignee_user_ids,
+                             "task_due_at": payload.task_due_at, "comment": payload.comment},
+        )
+    except DbTransferConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DbTransferValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TransferActGenerationError as exc:
+        raise HTTPException(status_code=503, detail="Новый PDF акта не создан; исходные данные сохранены") from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("transfer-to-db failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Перенос не завершён. Повторите запрос с тем же operation_id или обратитесь к администратору.",
+        ) from exc
+
+    act_items = [item["act_item"] for item in report.get("items", []) if item.get("act_item")]
+    if not report.get("replayed"):
+        for affected_db in (source_db, target_db):
+            try:
+                await run_in_threadpool(invalidate_equipment_cache, affected_db)
+            except Exception:
+                logger.exception("transfer-to-db cache invalidation failed")
+
+    # Acceptance task for the receiving side.
+    task_payload = report.get("task")
+    assignee_ids = [int(v) for v in (payload.task_assignee_user_ids or []) if str(v).strip().isdigit() or isinstance(v, int)]
+    if assignee_ids and act_items and not report.get("replayed"):
+        try:
+            from backend.services.hub_service import hub_service
+
+            items_desc = "; ".join(
+                f"{a.get('model_name') or 'предмет'} (инв. {a.get('inv_no')})" for a in act_items[:20]
+            )
+            actor = {
+                "id": int(current_user.id),
+                "username": str(getattr(current_user, "username", "") or ""),
+                "full_name": str(getattr(current_user, "full_name", "") or ""),
+                "role": str(getattr(current_user, "role", "") or ""),
+                "department": str(getattr(current_user, "department", "") or ""),
+                "permissions": list(getattr(current_user, "permissions", []) or []),
+                "custom_permissions": list(getattr(current_user, "permissions", []) or []),
+                "use_custom_permissions": True,
+            }
+            comment_text = str(payload.comment or "").strip()
+            description = (
+                f"Перенос техники из базы {source_db} в {target_db}. "
+                f"Позиции: {items_desc}. "
+                f"Акт оприходования № {report.get('act_doc_no') or '-'}."
+                + (f" Комментарий: {comment_text}" if comment_text else "")
+            )
+            project = await run_in_threadpool(hub_service.ensure_transfer_act_reminder_task_project)
+            task = await run_in_threadpool(
+                hub_service.create_task,
+                title=f"Принять технику в базе {target_db}",
+                description=description[:4000],
+                assignee_user_id=assignee_ids[0],
+                assignee_user_ids=assignee_ids,
+                controller_user_id=0,
+                due_at=str(payload.task_due_at or "").strip() or None,
+                project_id=str(project.get("id") or hub_service._DEFAULT_TASK_PROJECT_ID),
+                actor=actor,
+            )
+            task_payload = {"id": task.get("id"), "title": task.get("title")}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("transfer-to-db task creation failed: %s", exc)
+            report["task_error"] = "Задача приёмки не создана; перенос техники и файлов завершён"
+
+    report["task"] = task_payload
+    if assignee_ids and report.get("replayed") and not task_payload and not report.get("task_error"):
+        report["task_error"] = "Создание задачи приёмки не подтверждено. Проверьте задачи перед ручным созданием."
+    if not report.get("replayed") and assignee_ids:
+        try:
+            await run_in_threadpool(save_transfer_followup, report)
+        except Exception:
+            logger.exception("transfer-to-db followup journal failed")
+            report["task_error"] = "Результат создания задачи не сохранён. Проверьте задачи перед ручным созданием."
+    return report
+
+
+class DbTransferFileEmailRequest(BaseModel):
+    recipient_email: str = Field(..., max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+@router.get("/transfer/to-db/{target_db}/files/{file_no}")
+async def download_db_transfer_file(
+    target_db: str,
+    file_no: int,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+    current_db_id: Optional[str] = Depends(get_request_scoped_database_id),
+):
+    # The transfer explicitly names its destination; a fixed source assignment
+    # must not redirect this download into the wrong database.
+    try:
+        file = await run_in_threadpool(get_transfer_file, target_db, file_no, current_user, current_db_id)
+    except DbTransferAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DbTransferValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not file:
+        raise HTTPException(status_code=404, detail="PDF акта переноса не найден")
+    return Response(content=bytes(file["FILE_DATA"]), media_type="application/pdf",
+                    headers={"Content-Disposition": "attachment; filename=transfer_act.pdf; filename*=UTF-8''" + quote(str(file["FILE_NAME"]), safe="")})
+
+
+@router.post("/transfer/to-db/{target_db}/files/{file_no}/email")
+async def email_db_transfer_file(
+    target_db: str,
+    file_no: int,
+    payload: DbTransferFileEmailRequest,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+    current_db_id: Optional[str] = Depends(get_request_scoped_database_id),
+):
+    try:
+        file = await run_in_threadpool(get_transfer_file, target_db, file_no, current_user, current_db_id)
+    except DbTransferAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DbTransferValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not file:
+        raise HTTPException(status_code=404, detail="PDF акта переноса не найден")
+    sent = await send_binary_file_email(recipient_email=payload.recipient_email,
+        file_name=file["FILE_NAME"], file_bytes=bytes(file["FILE_DATA"]),
+        subject="Акт переноса техники", body="Во вложении акт переноса техники между базами ITINVENT.")
+    if not sent:
+        raise HTTPException(status_code=502, detail="Не удалось отправить PDF акта")
+    return {"sent": True}
+
+
+@router.get("/transfer/reminders/{reminder_id}", response_model=TransferActReminderResponse)
+async def get_transfer_act_reminder(
+    reminder_id: str,
+    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    payload = await run_in_threadpool(
+        transfer_act_reminder_service.get_reminder,
+        reminder_id=reminder_id,
+    )
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder not found")
+    return TransferActReminderResponse(**payload)
+
+
+@router.post("/acts/upload/parse", response_model=UploadedActDraftResponse)
+async def parse_uploaded_act(
+    file: UploadFile = File(..., description="Signed transfer act PDF"),
+    manual_mode: bool = Query(
+        False,
+        description="Создать черновик без внешнего API-распознавания (ручное заполнение).",
+    ),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Upload signed transfer act PDF and build parse draft.
+    """
+    file_name = str(file.filename or "").strip()
+    if not file_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Имя файла не определено",
+        )
+
+    lower_name = file_name.lower()
+    if not lower_name.endswith(".pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поддерживается только PDF",
+        )
+
+    max_size_mb = int(os.getenv("ACT_UPLOAD_MAX_SIZE_MB", "15"))
+    max_size_bytes = max_size_mb * 1024 * 1024
+    file_bytes = await read_upload_limited(
+        file,
+        max_size_bytes,
+        too_large=lambda: HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Размер файла превышает лимит {max_size_mb} МБ",
+        ),
+    )
+    if not file_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Файл пустой",
+        )
+
+    created_by = current_user.username if current_user else "IT-WEB"
+    payload = await run_in_threadpool(
+        create_uploaded_act_draft,
+        file_bytes=file_bytes,
+        file_name=file_name,
+        db_id=db_id,
+        created_by=created_by,
+        skip_llm=manual_mode,
+    )
+    return UploadedActDraftResponse(**payload)
+
+
+@router.get("/acts/upload/draft/{draft_id}", response_model=UploadedActDraftResponse)
+async def get_uploaded_act_parse_draft(
+    draft_id: str,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: Optional[User] = Depends(get_current_active_user),
+):
+    """
+    Get current parse draft payload.
+    """
+    try:
+        payload = await run_in_threadpool(
+            get_uploaded_act_draft,
+            draft_id=draft_id,
+            db_id=db_id,
+        )
+    except DraftNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DraftValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return UploadedActDraftResponse(**payload)
+
+
+@router.post("/acts/upload/commit", response_model=UploadedActCommitResponse)
+async def commit_uploaded_act(
+    payload: UploadedActCommitRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Commit uploaded act draft into DOCS + DOCS_LIST + FILES.
+    """
+    committed_by = current_user.username if current_user else "IT-WEB"
+    if hasattr(payload, "model_dump"):
+        payload_data = payload.model_dump()
+    else:
+        payload_data = payload.dict()
+    try:
+        result = await run_in_threadpool(
+            commit_uploaded_act_draft,
+            draft_id=payload.draft_id,
+            payload=payload_data,
+            db_id=db_id,
+            committed_by=committed_by,
+        )
+    except DraftNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DuplicateActError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except DraftValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    await run_in_threadpool(invalidate_equipment_cache, db_id)
+
+    reminder_result = await run_in_threadpool(
+        transfer_act_reminder_service.complete_for_uploaded_act,
+        reminder_id=payload.reminder_id,
+        source_task_id=payload.source_task_id,
+        db_id=db_id,
+        current_user=current_user,
+        from_employee=result.get("from_employee") or payload_data.get("from_employee") or "",
+        to_employee=result.get("to_employee") or payload_data.get("to_employee") or "",
+        linked_inv_nos=[str(x) for x in result.get("linked_inv_nos") or []],
+        doc_no=int(result["doc_no"]),
+        doc_number=str(result["doc_number"]),
+    )
+
+    response_payload = {
+        "success": True,
+        "doc_no": int(result["doc_no"]),
+        "doc_number": str(result["doc_number"]),
+        "file_no": int(result["file_no"]),
+        "linked_item_ids": [int(x) for x in result.get("linked_item_ids") or []],
+        "linked_inv_nos": [str(x) for x in result.get("linked_inv_nos") or []],
+        "message": "Акт успешно загружен и записан в базу",
+        "reminder_status": reminder_result.get("reminder_status"),
+        "reminder_task_id": reminder_result.get("reminder_task_id"),
+        "reminder_id": reminder_result.get("reminder_id"),
+        "reminder_pending_groups": int(reminder_result.get("reminder_pending_groups") or 0),
+        "reminder_warning": reminder_result.get("warning"),
+    }
+    for linked_inv_no in response_payload["linked_inv_nos"]:
+        snapshot = await run_in_threadpool(queries.get_equipment_by_inv, linked_inv_no, db_id)
+        await run_in_threadpool(
+            _touch_recent_card_safely,
+            current_user=current_user,
+            db_id=db_id,
+            inv_no=linked_inv_no,
+            action_type="act",
+            snapshot=snapshot or {"inv_no": linked_inv_no},
+        )
+    await run_in_threadpool(
+        _touch_recent_act_safely,
+        current_user=current_user,
+        db_id=db_id,
+        doc_no=response_payload["doc_no"],
+        doc_number=response_payload["doc_number"],
+        action_type="upload",
+        snapshot={
+            "doc_no": response_payload["doc_no"],
+            "doc_number": response_payload["doc_number"],
+            "has_file": True,
+            "item_count": len(response_payload["linked_inv_nos"]),
+            "items": [
+                {"inv_no": inv_no}
+                for inv_no in response_payload["linked_inv_nos"][:20]
+            ],
+        },
+    )
+    return UploadedActCommitResponse(**response_payload)
+
+
+@router.post("/acts/upload/email", response_model=UploadedActEmailSendResponse)
+async def send_uploaded_act_email(
+    payload: UploadedActEmailSendRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Send uploaded act PDF by email.
+
+    modes:
+      - auto: recipients resolved by from_employee/to_employee
+      - selected: recipients resolved by owner_nos list
+    """
+    doc_no = int(payload.doc_no)
+    act_file_payload = await run_in_threadpool(
+        queries.get_equipment_act_file,
+        doc_no=doc_no,
+        db_id=db_id,
+    )
+    if not act_file_payload:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Файл акта не найден",
+        )
+
+    file_name = str(act_file_payload.get("file_name") or f"act_{doc_no}.pdf").strip()
+    file_bytes = act_file_payload.get("file_bytes") or b""
+    if not file_bytes:
+        file_path = str(act_file_payload.get("file_path") or "").strip()
+        if file_path and os.path.exists(file_path):
+            def _read_act_file() -> bytes:
+                with open(file_path, "rb") as stream:
+                    return stream.read()
+
+            file_bytes = await run_in_threadpool(_read_act_file)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Не удалось получить бинарное содержимое акта для отправки",
+            )
+
+    subject = str(payload.subject or "").strip() or f"Акт №{doc_no}"
+    body = str(payload.body or "").strip() or (
+        f"Во вложении акт №{doc_no}.\n\nПисьмо сформировано автоматически системой IT Invent."
+    )
+
+    statuses: list[dict[str, Any]] = []
+    resolved_recipients: list[tuple[int, str]] = []
+
+    if payload.mode == "auto":
+        employee_names = []
+        for raw in [payload.from_employee, payload.to_employee]:
+            name = str(raw or "").strip()
+            if not name or _is_unknown_employee_name(name):
+                continue
+            if name.lower() not in [existing.lower() for existing in employee_names]:
+                employee_names.append(name)
+
+        if not employee_names:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Для авто-отправки укажите from_employee/to_employee",
+            )
+
+        for name in employee_names:
+            owner_no = await run_in_threadpool(_resolve_owner_no_by_name, name, db_id)
+            if owner_no is None:
+                statuses.append(
+                    {
+                        "owner_no": None,
+                        "employee_name": name,
+                        "email": None,
+                        "status": "not_found",
+                        "detail": "Сотрудник не найден в базе",
+                    }
+                )
+                continue
+            owner_payload = await run_in_threadpool(queries.get_owner_by_no, owner_no, db_id) or {}
+            owner_name = str(
+                owner_payload.get("OWNER_DISPLAY_NAME")
+                or owner_payload.get("owner_display_name")
+                or name
+            ).strip() or name
+            resolved_recipients.append((int(owner_no), owner_name))
+    else:
+        normalized_owner_nos: list[int] = []
+        for raw_owner_no in payload.owner_nos or []:
+            owner_no = _to_int(raw_owner_no)
+            if owner_no is None or owner_no <= 0:
+                continue
+            if owner_no not in normalized_owner_nos:
+                normalized_owner_nos.append(owner_no)
+
+        if not normalized_owner_nos:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Выберите хотя бы одного сотрудника",
+            )
+
+        for owner_no in normalized_owner_nos:
+            owner_payload = await run_in_threadpool(queries.get_owner_by_no, owner_no, db_id)
+            if not owner_payload:
+                statuses.append(
+                    {
+                        "owner_no": int(owner_no),
+                        "employee_name": f"OWNER_NO {owner_no}",
+                        "email": None,
+                        "status": "not_found",
+                        "detail": "Сотрудник не найден",
+                    }
+                )
+                continue
+            owner_name = str(
+                owner_payload.get("OWNER_DISPLAY_NAME")
+                or owner_payload.get("owner_display_name")
+                or f"OWNER_NO {owner_no}"
+            ).strip() or f"OWNER_NO {owner_no}"
+            resolved_recipients.append((int(owner_no), owner_name))
+
+    sent_owner_nos: set[int] = set()
+    deduped_recipients: list[tuple[int, str]] = []
+    for owner_no, owner_name in resolved_recipients:
+        if owner_no in sent_owner_nos:
+            continue
+        sent_owner_nos.add(owner_no)
+        deduped_recipients.append((owner_no, owner_name))
+
+    # Per-recipient sends are independent SMTP calls — run them in parallel
+    # with a bounded timeout instead of serial seconds-per-recipient waits.
+    send_timeout_sec = max(5, int(os.getenv("TRANSFER_EMAIL_TIMEOUT_SEC", "60") or "60"))
+    # Bounded parallelism: a long recipient list must not open hundreds of SMTP sessions at once.
+    send_slots = asyncio.Semaphore(max(1, int(os.getenv("TRANSFER_EMAIL_CONCURRENCY", "8") or "8")))
+
+    async def _send_act_to_recipient(owner_no: int, owner_name: str) -> dict:
+        owner_email = await run_in_threadpool(queries.get_owner_email_by_no, owner_no, db_id)
+        if not owner_email:
+            return {
+                "owner_no": int(owner_no),
+                "employee_name": owner_name,
+                "email": None,
+                "status": "missing_email",
+                "detail": "У сотрудника не указан email",
+            }
+
+        sent = await send_binary_file_email(
+            recipient_email=owner_email,
+            file_name=file_name,
+            file_bytes=bytes(file_bytes),
+            subject=subject,
+            body=body,
+        )
+        if sent:
+            return {
+                "owner_no": int(owner_no),
+                "employee_name": owner_name,
+                "email": owner_email,
+                "status": "sent",
+                "detail": "Отправлено",
+            }
+        return {
+            "owner_no": int(owner_no),
+            "employee_name": owner_name,
+            "email": owner_email,
+            "status": "error",
+            "detail": "Ошибка отправки SMTP",
+        }
+
+    async def _send_act_with_timeout(owner_no: int, owner_name: str) -> dict:
+        try:
+            async with send_slots:
+                return await asyncio.wait_for(
+                    _send_act_to_recipient(owner_no, owner_name),
+                    timeout=send_timeout_sec,
+                )
+        except Exception:
+            return {
+                "owner_no": int(owner_no),
+                "employee_name": owner_name,
+                "email": None,
+                "status": "error",
+                "detail": "Таймаут или ошибка отправки SMTP",
+            }
+
+    recipient_statuses = await asyncio.gather(
+        *(_send_act_with_timeout(owner_no, owner_name) for owner_no, owner_name in deduped_recipients)
+    )
+    statuses.extend(recipient_statuses)
+
+    success_count = sum(1 for row in statuses if row.get("status") == "sent")
+    failed_count = len(statuses) - success_count
+
+    return UploadedActEmailSendResponse(
+        doc_no=doc_no,
+        subject=subject,
+        success_count=success_count,
+        failed_count=failed_count,
+        recipients=statuses,
+    )
+
+
+@router.get("/acts/latest", response_model=EquipmentActSearchResponse)
+async def list_latest_equipment_acts(
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of newest documents to return"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """List newest act/transfer documents for the inventory Acts tab feed."""
+    scope = await _branch_scope(current_user, db_id)
+    payload = await run_in_threadpool(
+        lambda: queries.list_latest_equipment_acts(limit=limit, db_id=db_id, **_scope_kwargs(scope))
+    )
+    return EquipmentActSearchResponse(**payload)
+
+
+@router.get("/acts/search", response_model=EquipmentActSearchResponse)
+async def search_equipment_acts(
+    q: str = Query("", description="Search by act number or employee surname/name"),
+    limit: int = Query(50, ge=1, le=50, description="Maximum number of documents to return"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Search act/transfer documents linked to equipment items.
+    Empty/short query returns the latest-act feed.
+    """
+    scope = await _branch_scope(current_user, db_id)
+    payload = await run_in_threadpool(
+        lambda: queries.search_equipment_acts(q, limit=limit, db_id=db_id, **_scope_kwargs(scope))
+    )
+    return EquipmentActSearchResponse(**payload)
+
+
+@router.get("/acts/{doc_no}/file")
+async def download_equipment_act_file(
+    doc_no: str,
+    item_id: Optional[int] = Query(None, description="Optional ITEM_ID for precise file lookup"),
+    inv_no: Optional[str] = Query(None, description="Optional INV_NO for fallback item lookup"),
+    db_override: Optional[str] = Query(None, alias="db_id", description="Admin-only DB override"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Download/open physical file linked to act/document.
+    """
+    effective_db_id = db_id
+    if current_user.role == "admin" and db_override and db_override.strip():
+        effective_db_id = db_override.strip()
+    await _ensure_doc_in_scope(doc_no, effective_db_id, await _branch_scope(current_user, effective_db_id))
+
+    payload = await run_in_threadpool(
+        queries.get_equipment_act_file,
+        doc_no=doc_no,
+        item_id=item_id,
+        inv_no=inv_no,
+        db_id=effective_db_id,
+    )
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Файл для выбранного акта не найден",
+        )
+
+    file_path_raw = str(payload.get("file_path") or "").strip()
+    if file_path_raw:
+        candidate_paths: list[str] = []
+        for candidate in (file_path_raw, _normalize_local_file_path(file_path_raw)):
+            normalized = str(candidate or "").strip()
+            if normalized and normalized not in candidate_paths:
+                candidate_paths.append(normalized)
+
+        for candidate in candidate_paths:
+            if os.path.exists(candidate):
+                file_name = str(payload.get("file_name") or os.path.basename(candidate) or f"act_{doc_no}.bin")
+                return FileResponse(path=candidate, filename=file_name)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Файл не найден по пути: {file_path_raw}",
+        )
+
+    file_url = str(payload.get("file_url") or "").strip()
+    if file_url:
+        return RedirectResponse(url=file_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+    file_bytes = payload.get("file_bytes") or b""
+    file_name = str(payload.get("file_name") or f"act_{doc_no}.bin")
+    content_type = str(payload.get("content_type") or "application/octet-stream")
+    inferred_type = _infer_mime_from_bytes(file_bytes)
+    if inferred_type and (
+        (not _is_valid_mime_type(content_type))
+        or content_type.startswith("text/")
+        or content_type == "application/octet-stream"
+    ):
+        content_type = inferred_type
+    if inferred_type == "application/pdf" and "." not in os.path.basename(file_name):
+        file_name = f"{file_name}.pdf"
+
+    ascii_name = _ascii_safe_filename(file_name)
+    encoded_name = urllib.parse.quote(file_name, safe="")
+    headers = {
+        "Content-Disposition": f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}",
+        "X-Act-Source": str(payload.get("source_table") or ""),
+        "X-Act-Storage": str(payload.get("storage") or ""),
+    }
+    return StreamingResponse(iter([file_bytes]), media_type=content_type, headers=headers)
+
+
+@router.get("/acts/{doc_no}/inspect")
+async def inspect_equipment_act_file(
+    doc_no: str,
+    item_id: Optional[int] = Query(None, description="Optional ITEM_ID for precise file lookup"),
+    inv_no: Optional[str] = Query(None, description="Optional INV_NO for fallback item lookup"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Debug endpoint: inspect FILES/DOCS storage for act/document.
+    """
+    await _ensure_doc_in_scope(doc_no, db_id, await _branch_scope(current_user, db_id))
+    return await run_in_threadpool(
+        queries.inspect_equipment_act_storage,
+        doc_no=doc_no,
+        item_id=item_id,
+        inv_no=inv_no,
+        db_id=db_id,
+    )
+
+
+@router.get("/{inv_no}/acts")
+async def get_equipment_acts(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Get acts/documents linked to an equipment item by inventory number.
+    """
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    if equipment and not it_object_branch_scope.row_allowed(equipment, await _branch_scope(current_user, db_id)):
+        equipment = None
+    if not equipment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Equipment with inventory number {inv_no} not found",
+        )
+
+    acts_payload = await run_in_threadpool(queries.get_equipment_acts_by_inv, inv_no, db_id)
+    acts = acts_payload.get("acts") or []
+    return {
+        "inv_no": str(inv_no),
+        "item_id": acts_payload.get("item_id"),
+        "total": len(acts),
+        "current_act": acts[0] if acts else None,
+        "acts": acts,
+    }
+
+
+@router.get("/{inv_no}/history")
+async def get_equipment_history(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get transfer history linked to an equipment item by inventory number."""
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    if equipment and not it_object_branch_scope.row_allowed(equipment, await _branch_scope(current_user, db_id)):
+        equipment = None
+    if not equipment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Equipment with inventory number {inv_no} not found",
+        )
+
+    history_payload = await run_in_threadpool(queries.get_equipment_history_by_inv, inv_no, db_id)
+    history = history_payload.get("history") or []
+    return {
+        "inv_no": str(inv_no),
+        "item_id": history_payload.get("item_id"),
+        "total": len(history),
+        "history": history,
+    }
+
+
+@router.get("/transfer/act/{act_id}")
+async def download_transfer_act(
+    act_id: str,
+    _: Optional[User] = Depends(get_current_active_user),
+):
+    """
+    Download generated transfer act file by act_id.
+    """
+    record = get_act_record(act_id) or recover_act_record_from_disk(act_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Act not found",
+        )
+
+    file_path = str(record.get("file_path") or "")
+    if not file_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Act file path is empty",
+        )
+
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Act file not found on disk",
+        )
+
+    try:
+        prepared = await run_in_threadpool(prepare_act_download, record)
+    except TransferActGenerationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return FileResponse(
+        path=prepared["file_path"], filename=prepared["file_name"], media_type="application/pdf",
+    )
+
+
+@router.get("/{item_id}/photos", response_model=EquipmentPhotoListResponse, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def list_equipment_photos(
+    item_id: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    List photos attached to an equipment card (FILES FILE_TYPE=0).
+    """
+    try:
+        photos = await run_in_threadpool(
+            equipment_photos.list_equipment_photos, item_id, db_id
+        )
+    except equipment_photos.EquipmentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Equipment not found",
+        )
+    except equipment_photos.PhotoValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    states = await run_in_threadpool(
+        equipment_photo_check_service.list_states, db_id=db_id, item_id=item_id
+    )
+    aliases = _photo_user_aliases(current_user)
+    verify_permitted = _user_has_permission(current_user, PERM_DATABASE_PHOTO_VERIFY)
+    is_admin = getattr(current_user, "role", "") == "admin"
+    reject_supported = await run_in_threadpool(equipment_photo_check_service.reject_supported)
+    ocr = await run_in_threadpool(
+        lambda: equipment_photo_ocr_service.describe_item_photos(
+            db_id=db_id, item_id=item_id, photos=photos, get_db_fn=queries.get_db
+        )
+    )
+    result_photos = []
+    for photo in photos:
+        state = (states or {}).get(photo["file_no"])
+        photo_ocr = ocr["photos"].get(photo["file_no"]) or {}
+        verified = equipment_photo_check_service.is_verified(state, photo["created_at"])
+        rejected = equipment_photo_check_service.is_rejected(state, photo["created_at"])
+        own = equipment_photo_check_service.is_own_photo(
+            state=state,
+            created_at=photo["created_at"],
+            created_by=photo["created_by"],
+            user_id=current_user.id,
+            aliases=aliases,
+        )
+        result_photos.append(
+            EquipmentPhotoItem(
+                **photo,
+                verified=verified,
+                verified_by=(state or {}).get("verified_by_name", "") if verified else "",
+                verified_at=(state or {}).get("verified_at") if verified else None,
+                can_verify=verify_permitted and states is not None and not verified and not own,
+                can_unverify=bool(
+                    verify_permitted
+                    and (verified or rejected)
+                    and (
+                        is_admin
+                        or (state or {}).get("rejected_by_user_id" if rejected else "verified_by_user_id")
+                        == current_user.id
+                    )
+                ),
+                rejected=rejected,
+                rejected_by=(state or {}).get("rejected_by_name", "") if rejected else "",
+                rejected_at=(state or {}).get("rejected_at") if rejected else None,
+                reject_reason=(state or {}).get("reject_reason", "") if rejected else "",
+                can_reject=bool(
+                    verify_permitted and reject_supported and states is not None and not rejected and not own
+                ),
+                is_own=own,
+                ocr_verdict=photo_ocr.get("verdict", ""),
+                ocr_serials=photo_ocr.get("serials", []),
+            )
+        )
+    return EquipmentPhotoListResponse(
+        item_id=item_id,
+        photos=result_photos,
+        verification_available=states is not None,
+        verify_permitted=verify_permitted,
+        serial_confirmed_by_photo=ocr["confirmed"],
+        ocr_available=ocr["available"],
+    )
+
+
+@router.get("/{item_id}/photos/{file_no}/content", dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def get_equipment_photo_content(
+    item_id: int,
+    file_no: int,
+    thumb: bool = Query(False, description="Return FILE_SMALL_IMAGE_DATA preview"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """
+    Serve photo bytes for an equipment card (inline image).
+    """
+    payload = await run_in_threadpool(
+        equipment_photos.get_equipment_photo, file_no, db_id, item_id=item_id, thumb=thumb
+    )
+    if not payload or payload.get("data") is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Фото не найдено",
+        )
+
+    file_bytes = payload["data"]
+    content_type = _infer_mime_from_bytes(file_bytes) or "application/octet-stream"
+    file_name = str(payload.get("file_name") or f"photo_{file_no}.bin")
+    ascii_name = _ascii_safe_filename(file_name)
+    encoded_name = urllib.parse.quote(file_name, safe="")
+    headers = {
+        "Content-Disposition": f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}",
+        "Cache-Control": "private, max-age=60",
+    }
+    return StreamingResponse(iter([file_bytes]), media_type=content_type, headers=headers)
+
+
+def _user_has_permission(user: User, permission: str) -> bool:
+    """Non-raising twin of ensure_user_permission (admin role always passes)."""
+    try:
+        ensure_user_permission(user, permission)
+    except HTTPException:
+        return False
+    return True
+
+
+def _photo_user_aliases(user: User) -> list[str]:
+    """Names FILES.CREATE_USER may carry for this user (full name or login)."""
+    return [
+        value
+        for value in (getattr(user, "full_name", None), getattr(user, "username", None))
+        if str(value or "").strip()
+    ]
+
+
+@router.post("/{item_id}/photos/{file_no}/verify", response_model=EquipmentPhotoItem, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def verify_equipment_photo(
+    item_id: int,
+    file_no: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """
+    Mark a photo as verified. The user who uploaded the photo cannot verify it.
+    """
+    try:
+        state = await run_in_threadpool(
+            equipment_photo_check_service.verify_photo,
+            db_id=db_id,
+            item_id=item_id,
+            file_no=file_no,
+            user_id=current_user.id,
+            user_name=getattr(current_user, "full_name", None) or getattr(current_user, "username", "") or "",
+            aliases=_photo_user_aliases(current_user),
+            get_db_fn=queries.get_db,
+        )
+    except equipment_photo_check_service.OwnPhotoVerificationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Нельзя подтвердить фото, которое загрузили вы",
+        )
+    except equipment_photo_check_service.PhotoNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Фото не найдено")
+    except equipment_photo_check_service.PhotoCheckUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Отметка проверки ещё не включена",
+        )
+    return EquipmentPhotoItem(
+        file_no=file_no,
+        verified=True,
+        verified_by=state.get("verified_by_name") or "",
+        verified_at=state.get("verified_at"),
+        can_verify=False,
+    )
+
+
+@router.post("/{item_id}/photos/{file_no}/reject", response_model=EquipmentPhotoItem, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def reject_equipment_photo(
+    item_id: int,
+    file_no: int,
+    payload: EquipmentPhotoRejectRequest,
+    background_tasks: BackgroundTasks,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """
+    Reject a photo with a mandatory reason. The user who uploaded the photo cannot reject it.
+    The uploader is notified after the response (best effort).
+    """
+    try:
+        state = await run_in_threadpool(
+            equipment_photo_check_service.reject_photo,
+            db_id=db_id,
+            item_id=item_id,
+            file_no=file_no,
+            user_id=current_user.id,
+            user_name=getattr(current_user, "full_name", None) or getattr(current_user, "username", "") or "",
+            aliases=_photo_user_aliases(current_user),
+            reason=payload.reason,
+            get_db_fn=queries.get_db,
+        )
+    except equipment_photo_check_service.RejectReasonRequiredError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите причину, почему фото не принято",
+        )
+    except equipment_photo_check_service.OwnPhotoVerificationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Нельзя проверять фото, которое загрузили вы",
+        )
+    except equipment_photo_check_service.PhotoNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Фото не найдено")
+    except equipment_photo_check_service.PhotoCheckUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Отметка проверки ещё не включена",
+        )
+    background_tasks.add_task(
+        equipment_photo_notification_service.notify_photo_rejected,
+        db_id=db_id,
+        item_id=item_id,
+        file_no=file_no,
+        state=state,
+        created_by=state.get("file_created_by") or "",
+        rejector_user_id=current_user.id,
+    )
+    return EquipmentPhotoItem(
+        file_no=file_no,
+        rejected=True,
+        rejected_by=state.get("rejected_by_name") or "",
+        rejected_at=state.get("rejected_at"),
+        reject_reason=state.get("reject_reason") or "",
+        can_verify=True,
+        can_reject=False,
+        can_unverify=True,
+    )
+
+
+@router.patch("/{item_id}/photos/{file_no}/reject", response_model=EquipmentPhotoItem, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def update_equipment_photo_reject_reason(
+    item_id: int,
+    file_no: int,
+    payload: EquipmentPhotoRejectRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """
+    Edit the reason of an existing rejection (the one who rejected it or an administrator).
+    """
+    try:
+        state = await run_in_threadpool(
+            equipment_photo_check_service.update_reject_reason,
+            db_id=db_id,
+            item_id=item_id,
+            file_no=file_no,
+            user_id=current_user.id,
+            is_admin=getattr(current_user, "role", "") == "admin",
+            reason=payload.reason,
+            get_db_fn=queries.get_db,
+        )
+    except equipment_photo_check_service.RejectReasonRequiredError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите причину, почему фото не принято",
+        )
+    except equipment_photo_check_service.VerificationNotAllowedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Менять причину может отклонивший или администратор",
+        )
+    except equipment_photo_check_service.PhotoNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Отклонённое фото не найдено")
+    except equipment_photo_check_service.PhotoCheckUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Отметка проверки ещё не включена",
+        )
+    return EquipmentPhotoItem(
+        file_no=file_no,
+        rejected=True,
+        rejected_by=state.get("rejected_by_name") or "",
+        rejected_at=state.get("rejected_at"),
+        reject_reason=state.get("reject_reason") or "",
+        can_verify=True,
+        can_reject=False,
+        can_unverify=True,
+    )
+
+
+@router.delete("/{item_id}/photos/{file_no}/verify", response_model=dict, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def unverify_equipment_photo(
+    item_id: int,
+    file_no: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """
+    Withdraw a photo verification (the verifier or an administrator).
+    """
+    try:
+        changed = await run_in_threadpool(
+            equipment_photo_check_service.unverify_photo,
+            db_id=db_id,
+            item_id=item_id,
+            file_no=file_no,
+            user_id=current_user.id,
+            is_admin=getattr(current_user, "role", "") == "admin",
+        )
+    except equipment_photo_check_service.VerificationNotAllowedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Снять отметку может проверивший или администратор",
+        )
+    except equipment_photo_check_service.PhotoCheckUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Отметка проверки ещё не включена",
+        )
+    return {"ok": True, "changed": bool(changed)}
+
+
+@router.post("/{item_id}/photos/{file_no}/rotate", response_model=dict, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def rotate_equipment_photo(
+    item_id: int,
+    file_no: int,
+    payload: EquipmentPhotoRotateRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """
+    Rotate a photo in place (clockwise). Allowed to whoever may upload photos or check them.
+    """
+    if not (
+        _user_has_permission(current_user, PERM_DATABASE_WRITE)
+        or _user_has_permission(current_user, PERM_DATABASE_PHOTO_VERIFY)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Нет права поворачивать фото",
+        )
+    try:
+        result = await run_in_threadpool(
+            equipment_photos.rotate_equipment_photo,
+            item_id=item_id,
+            file_no=file_no,
+            degrees=payload.degrees,
+            db_id=db_id,
+        )
+    except equipment_photos.PhotoValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Фото не найдено")
+    return {"ok": True, **result}
+
+
+async def _after_photo_inserted(
+    result: dict,
+    db_id: Optional[str],
+    current_user: User,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Provenance record + deferred serial OCR shared by every photo upload path."""
+    # Provenance for the "uploader cannot verify" rule; never fails the upload.
+    try:
+        meta = await run_in_threadpool(
+            equipment_photos.get_equipment_photo_meta,
+            result["item_id"],
+            result["file_no"],
+            db_id,
+            get_db_fn=queries.get_db,
+        )
+        if meta is not None:
+            await run_in_threadpool(
+                equipment_photo_check_service.record_upload,
+                db_id=db_id,
+                item_id=result["item_id"],
+                file_no=result["file_no"],
+                file_created_at=meta["created_at"],
+                user_id=current_user.id,
+                user_name=getattr(current_user, "full_name", None)
+                or getattr(current_user, "username", "")
+                or "",
+            )
+    except Exception:
+        logger.warning("Failed to record equipment photo provenance", exc_info=True)
+    # Serial recognition runs after the response (no-op while the feature flag is off).
+    background_tasks.add_task(
+        equipment_photo_ocr_service.analyze_photo_safe,
+        db_id=db_id,
+        item_id=result["item_id"],
+        file_no=result["file_no"],
+        get_db_fn=queries.get_db,
+    )
+
+
+@router.post("/{item_id}/photos", response_model=EquipmentPhotoUploadResponse, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def upload_equipment_photo(
+    item_id: int,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    description: Optional[str] = Query(None, description="Optional photo description"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Upload a photo into FILES for an equipment card (FILE_TYPE=0).
+    """
+    file_bytes = await read_upload_limited(
+        file,
+        equipment_photos.MAX_PHOTO_BYTES,
+        too_large=lambda: HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="file exceeds the size limit"
+        ),
+    )
+    try:
+        result = await run_in_threadpool(
+            equipment_photos.insert_equipment_photo,
+            item_id=item_id,
+            file_name=file.filename or "",
+            file_bytes=file_bytes,
+            created_by=getattr(current_user, "full_name", None)
+            or getattr(current_user, "username", "")
+            or "",
+            description=description or "",
+            mime_type=file.content_type,
+            db_id=db_id,
+        )
+    except equipment_photos.EquipmentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Equipment not found",
+        )
+    except equipment_photos.PhotoValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    await _after_photo_inserted(result, db_id, current_user, background_tasks)
+    return EquipmentPhotoUploadResponse(
+        file_no=result["file_no"],
+        item_id=result["item_id"],
+        file_name=file.filename or "",
+    )
+
+
+def _raise_photo_upload_error(exc: Exception) -> None:
+    if isinstance(exc, equipment_photo_upload_service.UploadSessionError):
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    if isinstance(exc, equipment_photos.EquipmentNotFoundError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipment not found")
+    if isinstance(exc, equipment_photos.PhotoValidationError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    raise exc
+
+
+@router.post("/{item_id}/photo-uploads", response_model=EquipmentPhotoUploadSessionState, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def create_equipment_photo_upload(
+    item_id: int,
+    payload: EquipmentPhotoUploadSessionCreate,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Open a resumable photo upload; repeating the same client_id returns the same session."""
+    try:
+        ci_type = await run_in_threadpool(
+            equipment_photos.resolve_equipment_ci_type, item_id, db_id, get_db_fn=queries.get_db
+        )
+        if ci_type is None:
+            raise equipment_photos.EquipmentNotFoundError("equipment not found")
+        session_args = dict(
+            user_id=int(current_user.id),
+            db_id=db_id,
+            item_id=item_id,
+            client_id=payload.client_id,
+            file_name=payload.file_name,
+            size=payload.size,
+            mime_type=payload.mime_type,
+            description=payload.description,
+            sha256=payload.sha256,
+        )
+        state = await run_in_threadpool(equipment_photo_upload_service.create_session, **session_args)
+        if state["status"] == "complete":
+            # The photo of a finished upload may have been deleted since: sending the same
+            # file again must create a new photo instead of reporting the old one as done.
+            try:
+                meta = await run_in_threadpool(
+                    equipment_photos.get_equipment_photo_meta,
+                    item_id,
+                    state["file_no"],
+                    db_id,
+                    get_db_fn=queries.get_db,
+                )
+            except Exception:
+                meta = True  # cannot tell: keep the safe answer (no duplicate)
+            if meta is None:
+                await run_in_threadpool(
+                    equipment_photo_upload_service.discard_completed, state["upload_id"], int(current_user.id)
+                )
+                await run_in_threadpool(equipment_photo_upload_ledger.discard, state["upload_id"])
+                state = await run_in_threadpool(equipment_photo_upload_service.create_session, **session_args)
+        return state
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+
+
+@router.get("/photo-uploads/{upload_id}", response_model=EquipmentPhotoUploadSessionState)
+async def get_equipment_photo_upload(
+    upload_id: str,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Which chunks the server already has (used to resume after a dropped connection)."""
+    try:
+        return await run_in_threadpool(
+            equipment_photo_upload_service.get_state, upload_id, int(current_user.id)
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+
+
+@router.put("/photo-uploads/{upload_id}/chunks/{chunk_index}", response_model=EquipmentPhotoUploadSessionState)
+async def put_equipment_photo_upload_chunk(
+    upload_id: str,
+    chunk_index: int,
+    payload: bytes = Body(default=b"", media_type="application/octet-stream"),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Store one chunk; re-sending a chunk is safe."""
+    try:
+        return await run_in_threadpool(
+            equipment_photo_upload_service.put_chunk,
+            upload_id,
+            int(current_user.id),
+            int(chunk_index),
+            bytes(payload or b""),
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+
+
+def _recover_photo_insert(upload_id: str, session: dict, user_name: str, db_id: Optional[str]) -> Optional[int]:
+    """FILE_NO of a photo this upload already inserted before a crash, or None when it must be inserted.
+
+    A finished ledger entry whose photo still exists answers directly. An unfinished one is matched
+    against recent FILES rows of the same item and author; only an unambiguous match is adopted,
+    otherwise inserting again is safer than attaching somebody else's photo.
+    """
+    entry = equipment_photo_upload_ledger.get(upload_id)
+    if entry is None or entry["item_id"] != int(session["item_id"]):
+        return None
+    try:
+        if entry["state"] == equipment_photo_upload_ledger.STATE_DONE and entry["file_no"] is not None:
+            if equipment_photos.get_equipment_photo_meta(
+                session["item_id"], entry["file_no"], db_id, get_db_fn=queries.get_db
+            ):
+                return int(entry["file_no"])
+            return None
+        claimed = equipment_photo_upload_ledger.claimed_file_nos(int(session["item_id"]))
+        candidates = [
+            file_no
+            for file_no in equipment_photos.find_recent_photo_file_nos(
+                session["item_id"], user_name, entry["age_seconds"] + 30, db_id, get_db_fn=queries.get_db
+            )
+            if file_no not in claimed
+        ]
+    except Exception:
+        logger.warning("Photo upload recovery lookup failed upload_id=%s", upload_id, exc_info=True)
+        return None
+    if len(candidates) != 1:
+        if candidates:
+            logger.warning(
+                "Photo upload recovery is ambiguous upload_id=%s candidates=%s: inserting again", upload_id, len(candidates)
+            )
+        return None
+    equipment_photo_upload_ledger.finish(upload_id, file_no=candidates[0])
+    logger.info("Photo upload %s adopted existing FILE_NO=%s after an interrupted completion", upload_id, candidates[0])
+    return candidates[0]
+
+
+@router.post("/photo-uploads/{upload_id}/complete", response_model=EquipmentPhotoUploadResponse)
+async def complete_equipment_photo_upload(
+    upload_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Insert the photo once; completing an already completed upload returns the same FILE_NO."""
+    user_name = (
+        getattr(current_user, "full_name", None) or getattr(current_user, "username", "") or ""
+    )
+    try:
+        manifest = await run_in_threadpool(
+            equipment_photo_upload_service.get_manifest, upload_id, int(current_user.id)
+        )
+        # The database chosen when the session was opened wins over any later header.
+        db_id = manifest.get("db_id")
+
+        def _commit(session: dict, data: bytes) -> dict:
+            result = {
+                "item_id": session["item_id"],
+                "file_name": session.get("file_name") or "",
+            }
+            # FILES (SQL Server) and the upload checkpoint cannot share a transaction: the ledger
+            # remembers the insert so a retry after a crash does not add the same photo twice.
+            known_file_no = _recover_photo_insert(upload_id, session, user_name, db_id)
+            if known_file_no is not None:
+                return {**result, "file_no": known_file_no}
+            equipment_photo_upload_ledger.begin(
+                upload_id, item_id=int(session["item_id"]), created_by=user_name
+            )
+            try:
+                inserted = equipment_photos.insert_equipment_photo(
+                    item_id=session["item_id"],
+                    file_name=session.get("file_name") or "",
+                    file_bytes=data,
+                    created_by=user_name,
+                    description=session.get("description") or "",
+                    mime_type=session.get("mime_type"),
+                    db_id=db_id,
+                )
+            except (equipment_photos.EquipmentNotFoundError, equipment_photos.PhotoValidationError):
+                equipment_photo_upload_ledger.discard(upload_id)  # rejected before any row was written
+                raise
+            equipment_photo_upload_ledger.finish(upload_id, file_no=int(inserted["file_no"]))
+            return {**result, "file_no": inserted["file_no"], "item_id": inserted["item_id"]}
+
+        result, created = await run_in_threadpool(
+            equipment_photo_upload_service.complete,
+            upload_id,
+            int(current_user.id),
+            commit=_commit,
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+    if created:
+        await _after_photo_inserted(result, db_id, current_user, background_tasks)
+    return EquipmentPhotoUploadResponse(**result)
+
+
+@router.delete("/photo-uploads/{upload_id}", response_model=dict)
+async def abort_equipment_photo_upload(
+    upload_id: str,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Drop an unfinished upload and its chunks."""
+    try:
+        await run_in_threadpool(
+            equipment_photo_upload_service.abort, upload_id, int(current_user.id)
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+    return {"ok": True}
+
+
+@router.delete("/{item_id}/photos/{file_no}", response_model=dict, dependencies=[Depends(_ensure_photo_item_in_scope)])
+async def delete_equipment_photo(
+    item_id: int,
+    file_no: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Delete a photo from an equipment card.
+    """
+    removed = await run_in_threadpool(
+        equipment_photos.delete_equipment_photo,
+        item_id=item_id,
+        file_no=file_no,
+        db_id=db_id,
+    )
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Фото не найдено",
+        )
+    await run_in_threadpool(
+        equipment_photo_check_service.delete_photo_check,
+        db_id=db_id,
+        item_id=item_id,
+        file_no=file_no,
+    )
+    await run_in_threadpool(
+        equipment_photo_ocr_service.delete_photo_ocr,
+        db_id=db_id,
+        item_id=item_id,
+        file_no=file_no,
+    )
+    return {"ok": True}
+
+
+# IMPORTANT: This catch-all route must be LAST to avoid intercepting other routes
+@router.get("/{inv_no}", response_model=dict)
+async def get_equipment_by_inv(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get detailed equipment information by inventory number.
+
+    Args:
+        inv_no: Inventory number
+
+    Returns:
+        Equipment details dict
+
+    Raises:
+        HTTPException 404 if equipment not found
+    """
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+
+    # An IT owner opens only equipment of his branches; anything else looks like a missing item.
+    if equipment and not it_object_branch_scope.row_allowed(equipment, await _branch_scope(current_user, db_id)):
+        equipment = None
+
+    if not equipment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Equipment with inventory number {inv_no} not found"
+        )
+
+    return equipment

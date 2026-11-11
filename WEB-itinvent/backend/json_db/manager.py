@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Compatibility JSON manager backed by app-db or legacy SQLite storage.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+from backend.appdb.db import is_app_database_configured
+from backend.appdb.json_store import AppJsonDataStore
+from backend.config import config
+from local_store import get_local_store
+
+logger = logging.getLogger(__name__)
+
+
+_PRODUCTION_JSON_STORAGE_ERROR = (
+    "Production APP_ENV requires APP_DATABASE_URL for JSON runtime storage; "
+    "migrate legacy JSON datasets with scripts/migrate_json_store_sqlite_to_postgres.py. "
+    "The legacy SQLite JSON store is supported only in development/test."
+)
+
+
+class JsonStorageConfigurationError(RuntimeError):
+    """Raised when JSON runtime storage would use an unsafe backend."""
+
+
+def validate_json_runtime_storage(database_url: str | None = None) -> None:
+    """Validate that JSON runtime storage will not use legacy SQLite in production."""
+    explicit_database_url = str(database_url or "").strip()
+    if explicit_database_url or is_app_database_configured():
+        return
+    if config.app.is_production:
+        raise JsonStorageConfigurationError(_PRODUCTION_JSON_STORAGE_ERROR)
+
+
+class JSONDataManager:
+    def __init__(self, data_dir: str | Path | None = None, database_url: str | None = None):
+        if data_dir is None:
+            backend_dir = Path(__file__).parent.parent
+            data_dir = backend_dir.parent.parent / "data"
+        self.data_dir = Path(data_dir)
+        self._database_url = str(database_url or "").strip() or None
+        self._use_app_database = bool(self._database_url) or is_app_database_configured()
+        if not self._use_app_database and config.app.is_production:
+            validate_json_runtime_storage(self._database_url)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.store = None if self._use_app_database else get_local_store(data_dir=self.data_dir)
+        self._app_store = AppJsonDataStore(database_url=self._database_url) if self._use_app_database else None
+        if self._use_app_database:
+            logger.info("JSONDataManager initialized with app-db backend")
+        else:
+            logger.info("JSONDataManager initialized with SQLite store at %s", self.store.db_path)
+
+    def _get_file_path(self, filename: str) -> Path:
+        return self.data_dir / Path(filename).name
+
+    def _ensure_file_exists(self, file_path: Path, default_content: Any = None):
+        # In SQLite mode bootstrap happens by loading with default.
+        self.load_json(file_path.name, default_content=default_content)
+
+    def load_json(self, filename: str, default_content: Any = None):
+        normalized_name = Path(filename).name
+        if self._use_app_database and self._app_store is not None:
+            return self._app_store.load_json(normalized_name, default_content=default_content)
+        return self.store.load_json(normalized_name, default_content=default_content)
+
+    def get_document_version(self, filename: str) -> str | None:
+        """Cheap per-document version marker without loading the payload.
+
+        Raises NotImplementedError when the underlying store has no probe.
+        """
+        normalized_name = Path(filename).name
+        store = (
+            self._app_store
+            if self._use_app_database and self._app_store is not None
+            else self.store
+        )
+        getter = getattr(store, "get_document_version", None)
+        if not callable(getter):
+            raise NotImplementedError(
+                f"JSON store {type(store).__name__} does not support document version probing"
+            )
+        return getter(normalized_name)
+
+    def save_json(self, filename: str, data: Any) -> bool:
+        normalized_name = Path(filename).name
+        if self._use_app_database and self._app_store is not None:
+            return self._app_store.save_json(normalized_name, data)
+        return self.store.save_json(normalized_name, data)
+
+    def append_to_json(self, filename: str, record: Any) -> bool:
+        normalized_name = Path(filename).name
+        if self._use_app_database and self._app_store is not None:
+            return self._app_store.append_to_json(normalized_name, record)
+        return self.store.append_to_json(normalized_name, record)
+
+    def update_json_array(self, filename: str, predicate, updater) -> int:
+        normalized_name = Path(filename).name
+        if self._use_app_database and self._app_store is not None:
+            return self._app_store.update_json_array(normalized_name, predicate, updater)
+        return self.store.update_json_array(normalized_name, predicate, updater)
+
+    def get_json_files(self):
+        if self._use_app_database and self._app_store is not None:
+            return self._app_store.get_json_files()
+        return self.store.get_json_files()

@@ -1,0 +1,890 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+from typing import Dict, List, Mapping, Optional, Sequence
+
+import psutil
+
+
+DEFAULT_TASK_NAME = "HUB-IT Agent"
+TELEGRAM_PROBE_TASK_NAME = "HUB-IT Telegram Probe"
+MAX_PROBE_TASK_NAME = "HUB-IT MAX Probe"
+BROWSER_PROBE_TASK_NAME = "HUB-IT Browser Probe"
+LEGACY_TASK_NAMES = ("IT-Invent Agent",)
+DEFAULT_REPEAT_MINUTES = 60
+DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\HUB-IT\Agent")
+LEGACY_INSTALL_DIR = Path(r"C:\Program Files\IT-Invent\Agent")
+DEFAULT_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT"
+LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
+DEFAULT_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "Agent"
+DEFAULT_SCAN_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "ScanAgent"
+DEFAULT_TELEGRAM_PROBE_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "TelegramProbe"
+DEFAULT_MAX_PROBE_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "MaxProbe"
+DEFAULT_BROWSER_PROBE_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "BrowserProbe"
+DEFAULT_UPGRADE_BACKUP_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "AgentUpgrade"
+LEGACY_UPGRADE_BACKUP_ROOT = LEGACY_PROGRAM_DATA_ROOT / "AgentUpgrade"
+EXECUTABLE_NAME = "ITInventAgent.exe"
+SCAN_AGENT_EXECUTABLE_NAME = "ITInventScanAgent.exe"
+TELEGRAM_PROBE_EXECUTABLE_NAME = "ITInventTelegramProbe.exe"
+MAX_PROBE_EXECUTABLE_NAME = "ITInventMaxProbe.exe"
+BROWSER_PROBE_EXECUTABLE_NAME = "ITInventBrowserProbe.exe"
+MSI_HELPER_EXECUTABLE_NAME = "ITInventAgentMsiHelper.exe"
+ENV_FILE_NAME = ".env"
+INSTALL_SCRIPT_NAME = "install_agent_task.ps1"
+INSTALL_TELEGRAM_PROBE_SCRIPT_NAME = "install_telegram_probe_task.ps1"
+INSTALL_MAX_PROBE_SCRIPT_NAME = "install_max_probe_task.ps1"
+UNINSTALL_PROBE_SCRIPT_NAME = "uninstall_probe_task.ps1"
+INSTALL_BROWSER_PROBE_SCRIPT_NAME = "install_browser_probe_task.ps1"
+UNINSTALL_SCRIPT_NAME = "uninstall_agent_task.ps1"
+FULL_UNINSTALL_SCRIPT_NAME = "full_uninstall_agent.ps1"
+SCRIPTS_DIR_NAME = "scripts"
+INSTALLER_MACHINE_ENV_KEYS = (
+    "SCAN_AGENT_SCAN_ON_START",
+    "SCAN_AGENT_WATCHDOG_ENABLED",
+)
+AGENT_RUNTIME_PROCESS_NAMES = (
+    "ITInventAgent",
+    "ITInventScanAgent",
+    "ITInventPdfWorker",
+    "ITInventOutlookProbe",
+    "ITInventTelegramProbe",
+    "ITInventMaxProbe",
+    "ITInventBrowserProbe",
+)
+FORCED_SCAN_ENV_VALUES = {
+    "ITINV_AGENT_HEARTBEAT_SEC": "600",
+    "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
+    "SCAN_AGENT_POLL_INTERVAL_SEC": "60",
+    "SCAN_AGENT_POLL_JITTER_SEC": "30",
+    "SCAN_AGENT_OUTBOX_DRAIN_BATCH": "50",
+    "SCAN_AGENT_OUTBOX_DRAIN_INTERVAL_SEC": "10",
+    "SCAN_AGENT_SERVER_QUEUE_SLOW_THRESHOLD": "2000",
+    "SCAN_AGENT_SCAN_ON_START": "0",
+    "SCAN_AGENT_WATCHDOG_ENABLED": "0",
+}
+# Telegram and MAX probes are switched off for the whole fleet. An existing .env must not keep them on
+# (it normally wins over MSI defaults), so these win over it; only an explicit MSI property
+# (ITINV_*_PROBE_ENABLED=1 on the msiexec command line) can turn them on again.
+FORCED_OFF_PROBE_ENV_VALUES = {
+    "ITINV_TELEGRAM_PROBE_ENABLED": "0",
+    "ITINV_MAX_PROBE_ENABLED": "0",
+}
+MSI_DEFAULT_ENV_VALUES = {
+    "ITINV_AGENT_SERVER_URL": "https://hubit.zsgp.ru/api/v1/inventory",
+    "ITINV_AGENT_INTERVAL_SEC": "3600",
+    "ITINV_AGENT_HEARTBEAT_SEC": "600",
+    "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
+    "ITINV_SCAN_ENABLED": "1",
+    "ITINV_FS_EGRESS_ENABLED": "1",
+    "ITINV_TELEGRAM_PROBE_ENABLED": "0",
+    "ITINV_TELEGRAM_PROBE_SYNC_SEC": "900",
+    "ITINV_BROWSER_PROBE_ENABLED": "1",
+    "ITINV_BROWSER_PROBE_SYNC_SEC": "120",
+    "ITINV_MAX_PROBE_ENABLED": "0",
+    "ITINV_MAX_PROBE_SYNC_SEC": "900",
+    "SCAN_AGENT_SERVER_BASE": "https://hubit.zsgp.ru/api/v1/scan",
+    "SCAN_AGENT_POLL_INTERVAL_SEC": "60",
+    "SCAN_AGENT_POLL_JITTER_SEC": "30",
+    "SCAN_AGENT_OUTBOX_DRAIN_BATCH": "50",
+    "ITINV_OUTLOOK_SEARCH_ROOTS": "D:\\",
+}
+MSI_REQUIRED_SILENT_KEYS = (
+    "ITINV_AGENT_SERVER_URL",
+    "ITINV_AGENT_API_KEY",
+    "SCAN_AGENT_SERVER_BASE",
+    "SCAN_AGENT_API_KEY",
+)
+MSI_VALUE_SENTINEL = "__ITINV_MSI_VALUE_END__"
+MSI_ARG_TO_ENV_KEY = {
+    "itinv_agent_server_url": "ITINV_AGENT_SERVER_URL",
+    "itinv_agent_api_key": "ITINV_AGENT_API_KEY",
+    "itinv_agent_interval_sec": "ITINV_AGENT_INTERVAL_SEC",
+    "itinv_agent_heartbeat_sec": "ITINV_AGENT_HEARTBEAT_SEC",
+    "itinv_agent_heartbeat_jitter_sec": "ITINV_AGENT_HEARTBEAT_JITTER_SEC",
+    "itinv_scan_enabled": "ITINV_SCAN_ENABLED",
+    "itinv_fs_egress_enabled": "ITINV_FS_EGRESS_ENABLED",
+    "itinv_telegram_probe_enabled": "ITINV_TELEGRAM_PROBE_ENABLED",
+    "itinv_telegram_probe_sync_sec": "ITINV_TELEGRAM_PROBE_SYNC_SEC",
+    "itinv_browser_probe_enabled": "ITINV_BROWSER_PROBE_ENABLED",
+    "itinv_browser_probe_sync_sec": "ITINV_BROWSER_PROBE_SYNC_SEC",
+    "itinv_max_probe_enabled": "ITINV_MAX_PROBE_ENABLED",
+    "itinv_max_probe_sync_sec": "ITINV_MAX_PROBE_SYNC_SEC",
+    "scan_agent_server_base": "SCAN_AGENT_SERVER_BASE",
+    "scan_agent_api_key": "SCAN_AGENT_API_KEY",
+    "scan_agent_poll_interval_sec": "SCAN_AGENT_POLL_INTERVAL_SEC",
+    "itinv_outlook_search_roots": "ITINV_OUTLOOK_SEARCH_ROOTS",
+}
+POWERSHELL_CANDIDATES = (
+    Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+    Path("powershell.exe"),
+)
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def add_msi_args(parser) -> None:
+    parser.add_argument("--msi-install", action="store_true", help="Internal MSI post-install entrypoint")
+    parser.add_argument(
+        "--msi-uninstall-cleanup",
+        action="store_true",
+        help="Internal MSI uninstall cleanup entrypoint",
+    )
+    parser.add_argument(
+        "--msi-full-uninstall-cleanup",
+        action="store_true",
+        help="Internal cleanup MSI entrypoint for removing old agent versions",
+    )
+    parser.add_argument("--install-dir", default="", help="Agent install directory for MSI helper modes")
+    parser.add_argument("--env-file-path", default="", help="Explicit .env path for MSI helper modes")
+    parser.add_argument("--task-name", default=DEFAULT_TASK_NAME, help="Scheduled Task name for MSI helper modes")
+    parser.add_argument(
+        "--repeat-minutes",
+        type=int,
+        default=DEFAULT_REPEAT_MINUTES,
+        help="Scheduled Task repetition interval for MSI helper modes",
+    )
+    parser.add_argument("--itinv-agent-server-url", default="", help="MSI runtime config: ITINV_AGENT_SERVER_URL")
+    parser.add_argument("--itinv-agent-api-key", default="", help="MSI runtime config: ITINV_AGENT_API_KEY")
+    parser.add_argument("--itinv-agent-interval-sec", default="", help="MSI runtime config: ITINV_AGENT_INTERVAL_SEC")
+    parser.add_argument(
+        "--itinv-agent-heartbeat-sec",
+        default="",
+        help="MSI runtime config: ITINV_AGENT_HEARTBEAT_SEC",
+    )
+    parser.add_argument(
+        "--itinv-agent-heartbeat-jitter-sec",
+        default="",
+        help="MSI runtime config: ITINV_AGENT_HEARTBEAT_JITTER_SEC",
+    )
+    parser.add_argument("--itinv-scan-enabled", default="", help="MSI runtime config: ITINV_SCAN_ENABLED")
+    parser.add_argument(
+        "--scan-agent-server-base",
+        default="",
+        help="MSI runtime config: SCAN_AGENT_SERVER_BASE",
+    )
+    parser.add_argument("--scan-agent-api-key", default="", help="MSI runtime config: SCAN_AGENT_API_KEY")
+    parser.add_argument(
+        "--scan-agent-poll-interval-sec",
+        default="",
+        help="MSI runtime config: SCAN_AGENT_POLL_INTERVAL_SEC",
+    )
+    parser.add_argument(
+        "--itinv-outlook-search-roots",
+        default="",
+        help="MSI runtime config: ITINV_OUTLOOK_SEARCH_ROOTS",
+    )
+    parser.add_argument(
+        "--itinv-fs-egress-enabled",
+        default="",
+        help="MSI runtime config: ITINV_FS_EGRESS_ENABLED",
+    )
+    parser.add_argument(
+        "--itinv-telegram-probe-enabled",
+        default="",
+        help="MSI runtime config: ITINV_TELEGRAM_PROBE_ENABLED",
+    )
+    parser.add_argument(
+        "--itinv-telegram-probe-sync-sec",
+        default="",
+        help="MSI runtime config: ITINV_TELEGRAM_PROBE_SYNC_SEC",
+    )
+    parser.add_argument(
+        "--itinv-browser-probe-enabled",
+        default="",
+        help="MSI runtime config: ITINV_BROWSER_PROBE_ENABLED",
+    )
+    parser.add_argument(
+        "--itinv-browser-probe-sync-sec",
+        default="",
+        help="MSI runtime config: ITINV_BROWSER_PROBE_SYNC_SEC",
+    )
+    parser.add_argument(
+        "--itinv-max-probe-enabled",
+        default="",
+        help="MSI runtime config: ITINV_MAX_PROBE_ENABLED",
+    )
+    parser.add_argument(
+        "--itinv-max-probe-sync-sec",
+        default="",
+        help="MSI runtime config: ITINV_MAX_PROBE_SYNC_SEC",
+    )
+    parser.add_argument("--log-path", default="", help="Optional PowerShell cleanup log path")
+    parser.add_argument(
+        "--self-uninstall-product-code",
+        default="",
+        help="MSI ProductCode to uninstall after one-shot cleanup completes",
+    )
+
+
+def is_msi_mode(namespace) -> bool:
+    return bool(
+        getattr(namespace, "msi_install", False)
+        or getattr(namespace, "msi_uninstall_cleanup", False)
+        or getattr(namespace, "msi_full_uninstall_cleanup", False)
+    )
+
+
+def resolve_install_dir(raw_value: str = "") -> Path:
+    candidate = str(raw_value or "").strip()
+    if candidate:
+        return Path(candidate)
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return DEFAULT_INSTALL_DIR
+
+
+def resolve_env_file_path(install_dir: Path, raw_value: str = "") -> Path:
+    candidate = str(raw_value or "").strip()
+    if candidate:
+        return Path(candidate)
+    return DEFAULT_RUNTIME_ROOT / ENV_FILE_NAME
+
+
+def resolve_executable_path(install_dir: Path) -> Path:
+    installed_executable = install_dir / EXECUTABLE_NAME
+    if installed_executable.exists():
+        return installed_executable
+    if getattr(sys, "frozen", False):
+        current_executable = Path(sys.executable).resolve()
+        if current_executable.name.lower() == EXECUTABLE_NAME.lower():
+            return current_executable
+    return installed_executable
+
+
+def resolve_runtime_root(raw_env_path: str = "") -> Path:
+    candidate = str(raw_env_path or "").strip()
+    if candidate:
+        return Path(candidate).parent
+    return DEFAULT_RUNTIME_ROOT
+
+
+def _read_text_with_fallback(path: Path) -> str:
+    for enc in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            return path.read_text(encoding=enc)
+        except Exception:
+            continue
+    return ""
+
+
+def read_env_map(path: Path) -> Dict[str, str]:
+    if not path.exists() or not path.is_file():
+        return {}
+    text = _read_text_with_fallback(path)
+    if not text:
+        return {}
+    result: Dict[str, str] = {}
+    for line in text.splitlines():
+        row = line.strip()
+        if not row or row.startswith("#") or "=" not in row:
+            continue
+        key, value = row.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        result[key] = value.strip()
+    return result
+
+
+def _legacy_env_paths(install_dir: Path, env_file_path: Path) -> List[Path]:
+    candidates = [
+        install_dir / ENV_FILE_NAME,
+        LEGACY_INSTALL_DIR / ENV_FILE_NAME,
+        DEFAULT_PROGRAM_DATA_ROOT / ENV_FILE_NAME,
+        LEGACY_PROGRAM_DATA_ROOT / "Agent" / ENV_FILE_NAME,
+        LEGACY_PROGRAM_DATA_ROOT / ENV_FILE_NAME,
+    ]
+    normalized_current = str(env_file_path.resolve() if env_file_path.exists() else env_file_path).lower()
+    legacy_paths: List[Path] = []
+    seen = set()
+    for candidate in candidates:
+        normalized = str(candidate).lower()
+        if normalized == normalized_current or normalized in seen:
+            continue
+        seen.add(normalized)
+        legacy_paths.append(candidate)
+    return legacy_paths
+
+
+def read_runtime_env_map(env_file_path: Path, install_dir: Path) -> Dict[str, str]:
+    merged = read_env_map(env_file_path)
+    for legacy_path in _legacy_env_paths(install_dir, env_file_path):
+        for key, value in read_env_map(legacy_path).items():
+            merged.setdefault(key, value)
+    return merged
+
+
+def cleanup_legacy_env_files(install_dir: Path, env_file_path: Path, logger) -> None:
+    for legacy_path in _legacy_env_paths(install_dir, env_file_path):
+        if not legacy_path.exists():
+            continue
+        try:
+            legacy_path.unlink()
+            logger.info("Removed legacy runtime env file: %s", legacy_path)
+        except Exception as exc:
+            logger.warning("Failed to remove legacy runtime env file %s: %s", legacy_path, exc)
+
+
+def _restore_directory_contents(source: Path, target: Path) -> None:
+    if not source.exists() or not source.is_dir():
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        destination = target / item.name
+        if item.is_dir() and destination.exists() and destination.is_dir():
+            _restore_directory_contents(item, destination)
+            continue
+        if destination.exists():
+            if destination.is_dir():
+                shutil.rmtree(destination)
+            else:
+                destination.unlink()
+        shutil.move(str(item), str(destination))
+    source.rmdir()
+
+
+def _resolve_upgrade_backup_root() -> Optional[Path]:
+    for candidate in (DEFAULT_UPGRADE_BACKUP_ROOT, LEGACY_UPGRADE_BACKUP_ROOT):
+        path = Path(candidate)
+        if path.exists() and path.is_dir():
+            return path
+    return None
+
+
+def migrate_legacy_runtime_roots(
+    *,
+    runtime_root: Optional[Path] = None,
+    scan_runtime_root: Optional[Path] = None,
+) -> bool:
+    """Copy runtime from IT-Invent → HUB-IT when the new tree is still empty."""
+    inventory_target = Path(runtime_root or DEFAULT_RUNTIME_ROOT)
+    scan_target = Path(scan_runtime_root or DEFAULT_SCAN_RUNTIME_ROOT)
+    legacy_inventory = LEGACY_PROGRAM_DATA_ROOT / "Agent"
+    legacy_scan = LEGACY_PROGRAM_DATA_ROOT / "ScanAgent"
+    moved = False
+
+    if legacy_inventory.exists() and not (inventory_target / ENV_FILE_NAME).exists():
+        inventory_target.mkdir(parents=True, exist_ok=True)
+        for item in legacy_inventory.iterdir():
+            destination = inventory_target / item.name
+            if destination.exists():
+                continue
+            if item.is_dir():
+                shutil.copytree(item, destination)
+            else:
+                shutil.copy2(item, destination)
+            moved = True
+
+    if legacy_scan.exists() and not scan_target.exists():
+        shutil.copytree(legacy_scan, scan_target)
+        moved = True
+
+    return moved
+
+
+def _remove_path_tree(path: Path, logger) -> bool:
+    if not path.exists():
+        return False
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        logger.info("Removed legacy path: %s", path)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to remove legacy path %s: %s", path, exc)
+        return False
+
+
+def cleanup_orphaned_legacy_itinvent(*, current_install_dir: Path, logger) -> bool:
+    """Remove leftover IT-Invent trees after HUB-IT install.
+
+    Failed major upgrades often unregister the old MSI while leaving
+    Program Files\\IT-Invent and ProgramData\\IT-Invent behind. In that case
+    FindRelatedProducts / RemoveExistingProducts never run on the next install.
+    """
+    removed = False
+    try:
+        current = current_install_dir.resolve()
+    except Exception:
+        current = current_install_dir
+    try:
+        legacy_install = LEGACY_INSTALL_DIR.resolve()
+    except Exception:
+        legacy_install = LEGACY_INSTALL_DIR
+
+    if str(legacy_install).lower() != str(current).lower():
+        removed = _remove_path_tree(legacy_install, logger) or removed
+
+    for name in ("Agent", "ScanAgent", "AgentUpgrade", "Logs", "Spool"):
+        removed = _remove_path_tree(LEGACY_PROGRAM_DATA_ROOT / name, logger) or removed
+    removed = _remove_path_tree(LEGACY_PROGRAM_DATA_ROOT / ENV_FILE_NAME, logger) or removed
+    try:
+        if LEGACY_PROGRAM_DATA_ROOT.exists() and not any(LEGACY_PROGRAM_DATA_ROOT.iterdir()):
+            LEGACY_PROGRAM_DATA_ROOT.rmdir()
+            logger.info("Removed empty legacy ProgramData root: %s", LEGACY_PROGRAM_DATA_ROOT)
+            removed = True
+    except Exception as exc:
+        logger.warning("Failed to remove empty legacy ProgramData root: %s", exc)
+    return removed
+
+
+def restore_upgrade_runtime_backup(
+    *,
+    runtime_root: Optional[Path] = None,
+    scan_runtime_root: Optional[Path] = None,
+) -> bool:
+    backup_root = _resolve_upgrade_backup_root()
+    if backup_root is None:
+        return False
+    inventory_target = Path(runtime_root or DEFAULT_RUNTIME_ROOT)
+    scan_target = Path(scan_runtime_root or DEFAULT_SCAN_RUNTIME_ROOT)
+    _restore_directory_contents(backup_root / "Agent", inventory_target)
+    _restore_directory_contents(backup_root / "ScanAgent", scan_target)
+    if backup_root.exists() and not any(backup_root.iterdir()):
+        backup_root.rmdir()
+    return True
+
+
+def build_runtime_env_values(existing: Mapping[str, str], overrides: Mapping[str, str]) -> Dict[str, str]:
+    merged: Dict[str, str] = {}
+    ordered_keys: List[str] = []
+    for key in (
+        *MSI_ARG_TO_ENV_KEY.values(),
+        *MSI_DEFAULT_ENV_VALUES.keys(),
+        *FORCED_SCAN_ENV_VALUES.keys(),
+        *existing.keys(),
+    ):
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+    for key in ordered_keys:
+        raw_override = str(overrides.get(key, "") or "").strip()
+        if raw_override:
+            merged[key] = raw_override
+            continue
+        if key in FORCED_OFF_PROBE_ENV_VALUES:
+            merged[key] = FORCED_OFF_PROBE_ENV_VALUES[key]
+            continue
+        if key in existing and str(existing.get(key, "") or "").strip():
+            merged[key] = str(existing.get(key, "")).strip()
+            continue
+        default_value = str(MSI_DEFAULT_ENV_VALUES.get(key, "") or "").strip()
+        if default_value:
+            merged[key] = default_value
+    merged.update(FORCED_SCAN_ENV_VALUES)
+    return merged
+
+
+def upsert_env_file(path: Path, values: Mapping[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_text = _read_text_with_fallback(path) if path.exists() else ""
+    lines = existing_text.splitlines()
+    rendered: List[str] = []
+    pending = {key: str(value) for key, value in values.items()}
+
+    for line in lines:
+        row = line.strip()
+        if not row or row.startswith("#") or "=" not in row:
+            rendered.append(line)
+            continue
+        key, _ = row.split("=", 1)
+        key = key.strip()
+        if key in pending:
+            rendered.append(f"{key}={pending.pop(key)}")
+        else:
+            rendered.append(line)
+
+    for key, value in pending.items():
+        rendered.append(f"{key}={value}")
+
+    content = "\n".join(rendered).rstrip() + "\n"
+    path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def missing_required_keys(values: Mapping[str, str]) -> List[str]:
+    missing: List[str] = []
+    for key in MSI_REQUIRED_SILENT_KEYS:
+        if not str(values.get(key, "") or "").strip():
+            missing.append(key)
+    return missing
+
+
+def namespace_to_env_overrides(namespace) -> Dict[str, str]:
+    overrides: Dict[str, str] = {}
+    for attr_name, env_key in MSI_ARG_TO_ENV_KEY.items():
+        raw_value = getattr(namespace, attr_name, "")
+        if raw_value is None:
+            continue
+        normalized = str(raw_value).strip()
+        if normalized.endswith(MSI_VALUE_SENTINEL):
+            normalized = normalized[: -len(MSI_VALUE_SENTINEL)]
+        overrides[env_key] = normalized
+    return overrides
+
+
+def _resolve_powershell() -> str:
+    for candidate in POWERSHELL_CANDIDATES:
+        if candidate.name.lower() == "powershell.exe":
+            return str(candidate)
+        if candidate.exists():
+            return str(candidate)
+    return "powershell.exe"
+
+
+def resolve_script_path(script_name: str) -> Path:
+    candidates: List[Path] = []
+    current_file = Path(__file__).resolve()
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend(
+            [
+                exe_dir / SCRIPTS_DIR_NAME / script_name,
+                exe_dir / script_name,
+            ]
+        )
+    candidates.extend(
+        [
+            current_file.parent / "agent" / SCRIPTS_DIR_NAME / script_name,
+            current_file.parent / SCRIPTS_DIR_NAME / script_name,
+            Path.cwd() / "agent" / SCRIPTS_DIR_NAME / script_name,
+            Path.cwd() / SCRIPTS_DIR_NAME / script_name,
+        ]
+    )
+
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Installer helper script not found: {script_name}")
+
+
+def _run_command(args: Sequence[str], timeout_sec: int = 180) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        list(args),
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        creationflags=CREATE_NO_WINDOW,
+        check=False,
+    )
+
+
+def _run_powershell_script(script_path: Path, script_args: Sequence[str]) -> None:
+    command = [
+        _resolve_powershell(),
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script_path),
+        *script_args,
+    ]
+    result = _run_command(command)
+    if result.returncode != 0:
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        detail = "\n".join(part for part in (stdout, stderr) if part).strip()
+        raise RuntimeError(f"PowerShell script failed ({script_path.name}, code={result.returncode})\n{detail}".strip())
+
+
+def stop_scheduled_task(task_name: str = DEFAULT_TASK_NAME, logger=None) -> int:
+    normalized_task_name = str(task_name or DEFAULT_TASK_NAME).strip() or DEFAULT_TASK_NAME
+    try:
+        result = _run_command(["schtasks.exe", "/End", "/TN", normalized_task_name], timeout_sec=30)
+    except Exception as exc:
+        if logger is not None:
+            logger.warning("Failed to stop scheduled task %s before install: %s", normalized_task_name, exc)
+        return -1
+    if logger is not None:
+        if result.returncode == 0:
+            logger.info("Scheduled task %s stopped before install", normalized_task_name)
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            logger.info("Scheduled task %s was not running before install: %s", normalized_task_name, detail)
+    return int(result.returncode)
+
+
+def stop_agent_processes(process_name: str = "ITInventAgent", skip_pid: Optional[int] = None) -> List[int]:
+    stopped: List[int] = []
+    base_names = {str(process_name or "").strip().lower()}
+    base_names.update(name.lower() for name in AGENT_RUNTIME_PROCESS_NAMES)
+    base_names.discard("")
+    names = set(base_names)
+    names.update(f"{name}.exe" for name in base_names)
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            pid = int(proc.info.get("pid") or 0)
+            name = str(proc.info.get("name") or "").strip().lower()
+            if not name or name not in names:
+                continue
+            if skip_pid is not None and pid == skip_pid:
+                continue
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+            stopped.append(pid)
+        except Exception:
+            continue
+    return stopped
+
+
+def get_msi_helper_log_path() -> Path:
+    return Path(tempfile.gettempdir()) / "itinvent_agent_msi_helper.log"
+
+
+def _remove_probe_task(task_name: str, logger) -> None:
+    """Unregister a probe task whose probe is disabled, so an upgrade leaves nothing to start at logon."""
+    try:
+        _run_powershell_script(resolve_script_path(UNINSTALL_PROBE_SCRIPT_NAME), ["-TaskName", task_name])
+        logger.info("Probe disabled: scheduled task '%s' removed (if it existed)", task_name)
+    except Exception as exc:
+        logger.warning("Probe disabled but removing task '%s' failed: %s", task_name, exc)
+
+
+def run_msi_install(namespace, logger) -> int:
+    install_dir = resolve_install_dir(getattr(namespace, "install_dir", ""))
+    env_file_path = resolve_env_file_path(install_dir, getattr(namespace, "env_file_path", ""))
+    executable_path = resolve_executable_path(install_dir)
+    task_name = str(getattr(namespace, "task_name", DEFAULT_TASK_NAME) or DEFAULT_TASK_NAME)
+
+    stop_scheduled_task(task_name, logger)
+    for legacy_name in LEGACY_TASK_NAMES:
+        if legacy_name != task_name:
+            stop_scheduled_task(legacy_name, logger)
+    stopped_pids = stop_agent_processes(skip_pid=os.getpid())
+    if stopped_pids:
+        logger.info("Stopped old HUB-IT agent processes before install: %s", stopped_pids)
+
+    if restore_upgrade_runtime_backup(
+        runtime_root=env_file_path.parent,
+        scan_runtime_root=DEFAULT_SCAN_RUNTIME_ROOT,
+    ):
+        logger.info("Restored preserved agent runtime after MSI major upgrade")
+    elif migrate_legacy_runtime_roots(
+        runtime_root=env_file_path.parent,
+        scan_runtime_root=DEFAULT_SCAN_RUNTIME_ROOT,
+    ):
+        logger.info("Migrated legacy IT-Invent runtime into HUB-IT ProgramData")
+
+    overrides = namespace_to_env_overrides(namespace)
+    existing = read_runtime_env_map(env_file_path, install_dir)
+    merged = build_runtime_env_values(existing, overrides)
+    upsert_env_file(env_file_path, merged)
+    cleanup_legacy_env_files(install_dir, env_file_path, logger)
+    if cleanup_orphaned_legacy_itinvent(current_install_dir=install_dir, logger=logger):
+        logger.info("Cleaned orphaned IT-Invent install/runtime leftovers")
+
+    missing = missing_required_keys(merged)
+    if missing:
+        logger.warning(
+            "MSI install helper wrote .env but some recommended silent-install keys are empty: %s",
+            ", ".join(missing),
+        )
+
+    script_path = resolve_script_path(INSTALL_SCRIPT_NAME)
+    _run_powershell_script(
+        script_path,
+        [
+            "-TaskName",
+            task_name,
+            "-ExecutablePath",
+            str(executable_path),
+            "-RepeatMinutes",
+            str(max(1, int(getattr(namespace, "repeat_minutes", DEFAULT_REPEAT_MINUTES) or DEFAULT_REPEAT_MINUTES))),
+            "-EnvFilePath",
+            str(env_file_path),
+            "-StartAfterRegister",
+        ],
+    )
+
+    telegram_enabled = str(merged.get("ITINV_TELEGRAM_PROBE_ENABLED", "1") or "1").strip().lower()
+    if telegram_enabled not in {"0", "false", "no", "off"}:
+        telegram_exe = install_dir / TELEGRAM_PROBE_EXECUTABLE_NAME
+        if telegram_exe.exists():
+            try:
+                stop_scheduled_task(TELEGRAM_PROBE_TASK_NAME, logger)
+                tg_script = resolve_script_path(INSTALL_TELEGRAM_PROBE_SCRIPT_NAME)
+                DEFAULT_TELEGRAM_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+                _run_powershell_script(
+                    tg_script,
+                    [
+                        "-TaskName",
+                        TELEGRAM_PROBE_TASK_NAME,
+                        "-ExecutablePath",
+                        str(telegram_exe),
+                        "-EnvFilePath",
+                        str(env_file_path),
+                        "-StartAfterRegister",
+                    ],
+                )
+                logger.info("Telegram probe task registered (%s)", TELEGRAM_PROBE_TASK_NAME)
+            except Exception as exc:
+                logger.warning("Telegram probe task registration failed: %s", exc)
+        else:
+            logger.warning("Telegram probe executable missing: %s", telegram_exe)
+    else:
+        _remove_probe_task(TELEGRAM_PROBE_TASK_NAME, logger)
+
+    browser_enabled = str(merged.get("ITINV_BROWSER_PROBE_ENABLED", "1") or "1").strip().lower()
+    if browser_enabled not in {"0", "false", "no", "off"}:
+        browser_exe = install_dir / BROWSER_PROBE_EXECUTABLE_NAME
+        if browser_exe.exists():
+            try:
+                stop_scheduled_task(BROWSER_PROBE_TASK_NAME, logger)
+                br_script = resolve_script_path(INSTALL_BROWSER_PROBE_SCRIPT_NAME)
+                DEFAULT_BROWSER_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+                _run_powershell_script(
+                    br_script,
+                    [
+                        "-TaskName",
+                        BROWSER_PROBE_TASK_NAME,
+                        "-ExecutablePath",
+                        str(browser_exe),
+                        "-EnvFilePath",
+                        str(env_file_path),
+                        "-StartAfterRegister",
+                    ],
+                )
+                logger.info("Browser probe task registered (%s)", BROWSER_PROBE_TASK_NAME)
+            except Exception as exc:
+                logger.warning("Browser probe task registration failed: %s", exc)
+        else:
+            logger.warning("Browser probe executable missing: %s", browser_exe)
+
+    max_enabled = str(merged.get("ITINV_MAX_PROBE_ENABLED", "1") or "1").strip().lower()
+    if max_enabled not in {"0", "false", "no", "off"}:
+        max_exe = install_dir / MAX_PROBE_EXECUTABLE_NAME
+        if max_exe.exists():
+            try:
+                stop_scheduled_task(MAX_PROBE_TASK_NAME, logger)
+                max_script = resolve_script_path(INSTALL_MAX_PROBE_SCRIPT_NAME)
+                DEFAULT_MAX_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+                _run_powershell_script(
+                    max_script,
+                    [
+                        "-TaskName",
+                        MAX_PROBE_TASK_NAME,
+                        "-ExecutablePath",
+                        str(max_exe),
+                        "-EnvFilePath",
+                        str(env_file_path),
+                        "-StartAfterRegister",
+                    ],
+                )
+                logger.info("MAX probe task registered (%s)", MAX_PROBE_TASK_NAME)
+            except Exception as exc:
+                logger.warning("MAX probe task registration failed: %s", exc)
+        else:
+            logger.warning("MAX probe executable missing: %s", max_exe)
+    else:
+        _remove_probe_task(MAX_PROBE_TASK_NAME, logger)
+
+    logger.info("MSI install helper completed successfully. Runtime env written to %s", env_file_path)
+    return 0
+
+
+def run_msi_uninstall_cleanup(namespace, logger) -> int:
+    install_dir = resolve_install_dir(getattr(namespace, "install_dir", ""))
+    env_file_path = resolve_env_file_path(install_dir, getattr(namespace, "env_file_path", ""))
+    runtime_root = resolve_runtime_root(str(env_file_path))
+    stop_agent_processes()
+
+    script_path = resolve_script_path(UNINSTALL_SCRIPT_NAME)
+    _run_powershell_script(
+        script_path,
+        [
+            "-TaskName",
+            str(getattr(namespace, "task_name", DEFAULT_TASK_NAME) or DEFAULT_TASK_NAME),
+            "-InstallPath",
+            str(install_dir),
+            "-RuntimeRoot",
+            str(runtime_root),
+            "-ProgramDataRoot",
+            str(DEFAULT_PROGRAM_DATA_ROOT),
+            "-LegacyInstallPath",
+            str(LEGACY_INSTALL_DIR),
+            "-LegacyProgramDataRoot",
+            str(LEGACY_PROGRAM_DATA_ROOT),
+            "-SkipInstallPathRemoval",
+            "-ClearInstallerEnv",
+        ],
+    )
+    logger.info("MSI uninstall cleanup helper completed successfully for %s", install_dir)
+    return 0
+
+
+def run_msi_full_uninstall_cleanup(namespace, logger) -> int:
+    install_dir = resolve_install_dir(getattr(namespace, "install_dir", ""))
+    runtime_root = resolve_runtime_root(str(getattr(namespace, "env_file_path", "") or ""))
+    log_path = str(getattr(namespace, "log_path", "") or "").strip()
+
+    script_path = resolve_script_path(FULL_UNINSTALL_SCRIPT_NAME)
+    script_args = [
+        "-TaskName",
+        str(getattr(namespace, "task_name", DEFAULT_TASK_NAME) or DEFAULT_TASK_NAME),
+        "-InstallPath",
+        str(install_dir),
+        "-RuntimeRoot",
+        str(runtime_root),
+        "-ProgramDataRoot",
+        str(DEFAULT_PROGRAM_DATA_ROOT),
+        "-LegacyInstallPath",
+        str(LEGACY_INSTALL_DIR),
+        "-LegacyProgramDataRoot",
+        str(LEGACY_PROGRAM_DATA_ROOT),
+        "-ClearInstallerEnv",
+    ]
+    if log_path:
+        script_args.extend(["-LogPath", log_path])
+
+    _run_powershell_script(script_path, script_args)
+    schedule_self_uninstall(str(getattr(namespace, "self_uninstall_product_code", "") or "").strip(), logger)
+    logger.info("MSI full uninstall cleanup helper completed successfully for %s", install_dir)
+    return 0
+
+
+def schedule_self_uninstall(product_code: str, logger) -> bool:
+    normalized = str(product_code or "").strip()
+    if not normalized:
+        logger.info("Cleanup MSI self-uninstall skipped because ProductCode is empty")
+        return False
+    if not (normalized.startswith("{") and normalized.endswith("}") and len(normalized) == 38):
+        logger.warning("Cleanup MSI self-uninstall skipped because ProductCode is invalid: %s", normalized)
+        return False
+
+    command = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        "Start-Sleep -Seconds 15; "
+        f"$productCode='{normalized}'; "
+        "Start-Process -FilePath 'msiexec.exe' "
+        "-ArgumentList @('/x', $productCode, '/qn', '/norestart') "
+        "-WindowStyle Hidden -Wait"
+    )
+    subprocess.Popen(
+        [
+            _resolve_powershell(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            command,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=CREATE_NO_WINDOW,
+    )
+    logger.info("Scheduled one-shot cleanup MSI self-uninstall for %s", normalized)
+    return True

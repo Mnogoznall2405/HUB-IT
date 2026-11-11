@@ -1,0 +1,7 @@
+{
+  "version": "1.1.73",
+  "version_code": 75,
+  "changelog": [
+    "Исправлено: камера и выбор фото из галереи могли не открываться с ошибкой «unregistered ActivityResultLauncher» после пересоздания приложения системой Android"
+  ]
+}

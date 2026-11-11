@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title">
+  <title>HUB-IT desktop screenshot</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f1722"/>
+      <stop offset="100%" stop-color="#12263f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="58" y="48" width="1164" height="624" rx="28" fill="#f5f8fb"/>
+  <rect x="58" y="48" width="1164" height="72" rx="28" fill="#ffffff"/>
+  <rect x="90" y="74" width="186" height="20" rx="10" fill="#1f2937"/>
+  <rect x="310" y="74" width="104" height="20" rx="10" fill="#cbd5e1"/>
+  <rect x="432" y="74" width="104" height="20" rx="10" fill="#cbd5e1"/>
+  <rect x="554" y="74" width="104" height="20" rx="10" fill="#cbd5e1"/>
+  <rect x="90" y="154" width="272" height="472" rx="22" fill="#ffffff"/>
+  <rect x="396" y="154" width="350" height="472" rx="22" fill="#ffffff"/>
+  <rect x="780" y="154" width="402" height="472" rx="22" fill="#ffffff"/>
+  <rect x="114" y="184" width="108" height="18" rx="9" fill="#2563eb"/>
+  <rect x="114" y="226" width="224" height="14" rx="7" fill="#dbe7f5"/>
+  <rect x="114" y="258" width="206" height="14" rx="7" fill="#dbe7f5"/>
+  <rect x="114" y="290" width="196" height="14" rx="7" fill="#dbe7f5"/>
+  <rect x="420" y="184" width="140" height="18" rx="9" fill="#0f1722"/>
+  <rect x="420" y="226" width="292" height="16" rx="8" fill="#dbe7f5"/>
+  <rect x="420" y="256" width="272" height="16" rx="8" fill="#dbe7f5"/>
+  <rect x="420" y="286" width="248" height="16" rx="8" fill="#dbe7f5"/>
+  <rect x="804" y="184" width="152" height="18" rx="9" fill="#0f1722"/>
+  <rect x="804" y="226" width="338" height="14" rx="7" fill="#dbe7f5"/>
+  <rect x="804" y="258" width="312" height="14" rx="7" fill="#dbe7f5"/>
+  <rect x="804" y="290" width="284" height="14" rx="7" fill="#dbe7f5"/>
+  <text x="96" y="632" fill="#0f1722" font-size="34" font-family="Segoe UI, Arial, sans-serif" font-weight="700">HUB-IT</text>
+  <text x="96" y="662" fill="#64748b" font-size="22" font-family="Segoe UI, Arial, sans-serif">Портал как установленное приложение на рабочем столе</text>
+</svg>

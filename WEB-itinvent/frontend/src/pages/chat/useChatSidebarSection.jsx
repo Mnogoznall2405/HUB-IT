@@ -1,0 +1,198 @@
+import { useMemo } from 'react';
+
+import ChatSidebar from '../../components/chat/ChatSidebar';
+import buildChatPagePanesBags from './buildChatPagePanesBags';
+import useChatSupportUserId from './useChatSupportUserId';
+
+const SUPPORT_ENTRY_TITLE = 'Техподдержка HUB';
+
+export default function useChatSidebarSection(ctx) {
+  const { shell, sidebar } = buildChatPagePanesBags(ctx);
+  const { theme, ui, isMobile, isPhone, mobileMotionDisabled } = shell;
+  const {
+    health,
+    user,
+    unreadTotal,
+    sidebarQuery,
+    setSidebarQuery,
+    sidebarSearchActive,
+    searchingSidebar,
+    searchPeople,
+    searchChats,
+    searchResultEmpty,
+    openingPeerId,
+    handleOpenPeer,
+    activeConversationId,
+    workspace,
+    onWorkspaceChange,
+    openConversation,
+    prefetchThreadBootstrap,
+    conversationsLoading,
+    filteredConversations,
+    openGroupDialog,
+    compose,
+    sidebarScrollRef,
+    handleSidebarScroll,
+    conversationFilter,
+    handleActiveFolderChange,
+    customFolders,
+    conversationFilterCounts,
+    conversationIdsByFolder,
+    handleOpenFolderManager,
+    handleOpenArchiveFolder,
+    handleToggleConversationInFolder,
+    draftsByConversation,
+    updateConversationSettings,
+    requestDeleteConversation,
+    requestLeaveConversation,
+    conversationActionPendingId,
+    aiSidebarRows,
+    aiBots,
+    aiBotsLoading,
+    aiBotsError,
+    canUseAiChat,
+    handleOpenAiBot,
+    handleCreateAiBotConversation,
+    handleCreateAiConversation,
+    renameAiConversation,
+    openingAiBotId,
+    skipRowEnterAnimation,
+  } = sidebar;
+
+  const supportUserId = useChatSupportUserId(user?.id);
+  const supportOpening = supportUserId > 0 && String(openingPeerId || '') === String(supportUserId);
+  const supportEntry = useMemo(
+    () => (supportUserId > 0
+      ? {
+        title: SUPPORT_ENTRY_TITLE,
+        opening: supportOpening,
+        onOpen: () => {
+          // Личный диалог живёт в «Личных»: из другой папки он не попал бы в отфильтрованный список.
+          if (!['personal', 'all'].includes(String(conversationFilter || ''))) {
+            handleActiveFolderChange('personal');
+          }
+          return handleOpenPeer({ id: supportUserId });
+        },
+      }
+      : null),
+    [conversationFilter, handleActiveFolderChange, handleOpenPeer, supportOpening, supportUserId],
+  );
+
+  return useMemo(
+    () => (
+      <ChatSidebar
+        theme={theme}
+        ui={ui}
+        isMobile={isMobile}
+        compactMobile={isPhone}
+        disableMotion={mobileMotionDisabled}
+        health={health}
+        user={user}
+        unreadTotal={unreadTotal}
+        sidebarQuery={sidebarQuery}
+        onSidebarQueryChange={setSidebarQuery}
+        sidebarSearchActive={sidebarSearchActive}
+        searchingSidebar={searchingSidebar}
+        searchPeople={searchPeople}
+        searchChats={searchChats}
+        searchResultEmpty={searchResultEmpty}
+        openingPeerId={openingPeerId}
+        onOpenPeer={handleOpenPeer}
+        activeConversationId={activeConversationId}
+        workspace={workspace}
+        onWorkspaceChange={onWorkspaceChange}
+        onOpenConversation={openConversation}
+        onPrefetchConversation={prefetchThreadBootstrap}
+        conversationsLoading={conversationsLoading}
+        conversations={filteredConversations}
+        onOpenGroup={openGroupDialog}
+        compose={compose}
+        sidebarScrollRef={sidebarScrollRef}
+        onSidebarScroll={handleSidebarScroll}
+        activeFolderKey={conversationFilter}
+        onActiveFolderChange={handleActiveFolderChange}
+        customFolders={customFolders}
+        folderUnreadCounts={conversationFilterCounts}
+        conversationIdsByFolder={conversationIdsByFolder}
+        onOpenFolderManager={handleOpenFolderManager}
+        onOpenArchive={handleOpenArchiveFolder}
+        onToggleConversationInFolder={handleToggleConversationInFolder}
+        draftsByConversation={draftsByConversation}
+        onUpdateConversationSettings={updateConversationSettings}
+        onRequestDeleteConversation={requestDeleteConversation}
+        onRequestLeaveConversation={requestLeaveConversation}
+        conversationActionPendingId={conversationActionPendingId}
+        aiBots={aiSidebarRows}
+        aiAgents={aiBots}
+        aiBotsLoading={aiBotsLoading}
+        aiBotsError={aiBotsError}
+        showAiSection={canUseAiChat}
+        onOpenAiBot={handleOpenAiBot}
+        onCreateAiBotConversation={handleCreateAiBotConversation}
+        onCreateAiConversation={handleCreateAiConversation}
+        onRenameAiConversation={renameAiConversation}
+        openingAiBotId={openingAiBotId}
+        skipRowEnterAnimation={skipRowEnterAnimation}
+        // Д2: плавающая кнопка «новый чат» внизу колонки — существующие потоки
+        // (групповой диалог в «Чаты», выбор помощника в «ИИ»).
+        composeFab={{}}
+        supportEntry={supportEntry}
+      />
+    ),
+    [
+      supportEntry,
+      aiBotsError,
+      aiBotsLoading,
+      aiBots,
+      aiSidebarRows,
+      canUseAiChat,
+      conversationActionPendingId,
+      conversationFilter,
+      conversationFilterCounts,
+      conversationIdsByFolder,
+      conversationsLoading,
+      customFolders,
+      draftsByConversation,
+      filteredConversations,
+      handleActiveFolderChange,
+      handleOpenAiBot,
+      handleCreateAiBotConversation,
+      handleCreateAiConversation,
+      renameAiConversation,
+      handleOpenArchiveFolder,
+      handleOpenFolderManager,
+      handleOpenPeer,
+      handleToggleConversationInFolder,
+      health,
+      isMobile,
+      isPhone,
+      mobileMotionDisabled,
+      openingAiBotId,
+      openingPeerId,
+      openConversation,
+      skipRowEnterAnimation,
+      openGroupDialog,
+      compose,
+      prefetchThreadBootstrap,
+      requestDeleteConversation,
+      requestLeaveConversation,
+      searchChats,
+      searchPeople,
+      searchResultEmpty,
+      searchingSidebar,
+      sidebarQuery,
+      sidebarScrollRef,
+      handleSidebarScroll,
+      sidebarSearchActive,
+      setSidebarQuery,
+      theme,
+      ui,
+      unreadTotal,
+      updateConversationSettings,
+      user,
+      activeConversationId,
+      workspace,
+      onWorkspaceChange,
+    ],
+  );
+}

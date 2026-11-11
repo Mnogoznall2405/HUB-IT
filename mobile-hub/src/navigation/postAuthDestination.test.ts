@@ -1,0 +1,47 @@
+import { postAuthDestination } from './postAuthDestination';
+import {
+  clearPendingPortalPathForTests,
+  rememberSystemIntentDestination,
+} from './systemIntent';
+
+beforeEach(clearPendingPortalPathForTests);
+
+describe('postAuthDestination', () => {
+  it('opens the native dashboard after Android authentication', () => {
+    expect(postAuthDestination('android', '/(shell)/dashboard')).toEqual({
+      pathname: '/(shell)/dashboard',
+    });
+  });
+
+  it('opens the chats on launch when they are the user home route', () => {
+    expect(postAuthDestination('android', '/(shell)/chat')).toEqual({ pathname: '/(shell)/chat' });
+  });
+
+  it('keeps the Expo web fallback used by browser-only prototype tests', () => {
+    expect(postAuthDestination('web', '/(shell)/dashboard')).toBe('/(shell)/dashboard');
+  });
+});
+
+it('reduces a legacy Android portal link to its native destination after authentication', () => {
+  rememberSystemIntentDestination('/web?path=%2Ftasks%3Fview%3Dmine');
+  expect(postAuthDestination('android', '/dashboard')).toEqual({ pathname: '/(shell)/tasks' });
+  expect(postAuthDestination('android', '/dashboard')).toEqual({
+    pathname: '/(shell)/dashboard',
+  });
+});
+
+it('restores a native task detail after Android authentication', () => {
+  rememberSystemIntentDestination('/tasks/task-42');
+  expect(postAuthDestination('android', '/dashboard')).toEqual({
+    pathname: '/(shell)/tasks/[taskId]',
+    params: { taskId: 'task-42' },
+  });
+});
+
+it('restores an AI conversation with its workspace after Android cold start', () => {
+  rememberSystemIntentDestination('/chat/ai-42?workspace=ai');
+  expect(postAuthDestination('android', '/dashboard')).toEqual({
+    pathname: '/(shell)/chat/[conversationId]',
+    params: { conversationId: 'ai-42', workspace: 'ai' },
+  });
+});

@@ -1,0 +1,228 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable
+
+from backend.services.mail_reference_codec import is_item_scoped_folder
+
+
+def _normalize_text(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    try:
+        text = str(value).strip()
+    except Exception:
+        return default
+    return text or default
+
+
+class MailMessageActionError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class MailMessageMoveResult:
+    message_id: str
+    folder: str
+    source_folder: str
+    source_exchange_id: str
+    target_exchange_id: str
+
+
+@dataclass(frozen=True)
+class MailReadStateBulkResult:
+    changed: int
+    failed: int
+
+
+class MailMessageActions:
+    def __init__(
+        self,
+        *,
+        resolve_folder: Callable[[Any, str], tuple[Any, str]],
+        encode_message_id: Callable[[str, str, str | None], str],
+        fetch_item_by_id: Callable[[Any, str], Any] | None = None,
+        folder_key_from_item: Callable[[Any, Any], str] | None = None,
+    ) -> None:
+        self.resolve_folder = resolve_folder
+        self.encode_message_id = encode_message_id
+        self.fetch_item_by_id = fetch_item_by_id
+        self.folder_key_from_item = folder_key_from_item
+
+    def _message_item(
+        self,
+        *,
+        account: Any,
+        folder_key: str,
+        exchange_id: str,
+        only_fields: tuple[str, ...] | None = None,
+    ) -> tuple[Any, str, Any]:
+        if is_item_scoped_folder(folder_key):
+            if self.fetch_item_by_id is None:
+                raise MailMessageActionError(f"Message not found: {exchange_id}")
+            try:
+                if only_fields:
+                    try:
+                        item = self.fetch_item_by_id(account, exchange_id, only_fields=only_fields)
+                    except TypeError:
+                        item = self.fetch_item_by_id(account, exchange_id)
+                else:
+                    item = self.fetch_item_by_id(account, exchange_id)
+            except Exception as exc:
+                raise MailMessageActionError(f"Message not found: {exchange_id}") from exc
+            if item is None:
+                raise MailMessageActionError(f"Message not found: {exchange_id}")
+            resolved_folder_key = folder_key
+            if self.folder_key_from_item is not None:
+                try:
+                    resolved_folder_key = self.folder_key_from_item(account, item) or folder_key
+                except Exception:
+                    resolved_folder_key = folder_key
+            return getattr(item, "folder", None), resolved_folder_key, item
+        folder_obj, resolved_folder_key = self.resolve_folder(account, folder_key)
+        try:
+            if only_fields:
+                try:
+                    item = folder_obj.all().only(*only_fields).get(id=exchange_id)
+                except Exception:
+                    item = folder_obj.get(id=exchange_id)
+            else:
+                item = folder_obj.get(id=exchange_id)
+        except Exception as exc:
+            raise MailMessageActionError(f"Message not found: {exchange_id}") from exc
+        return folder_obj, resolved_folder_key, item
+
+    def set_read_state(self, *, account: Any, folder_key: str, exchange_id: str, is_read: bool) -> bool:
+        _folder_obj, _resolved_folder_key, item = self._message_item(
+            account=account,
+            folder_key=folder_key,
+            exchange_id=exchange_id,
+            only_fields=("is_read",),
+        )
+        try:
+            current_read = getattr(item, "is_read", None)
+            if current_read is not bool(is_read):
+                item.is_read = bool(is_read)
+                item.save(update_fields=["is_read"])
+            return True
+        except Exception as exc:
+            state = "read" if is_read else "unread"
+            raise MailMessageActionError(f"Failed to mark message as {state}: {exc}") from exc
+
+    def set_importance(
+        self,
+        *,
+        account: Any,
+        folder_key: str,
+        exchange_id: str,
+        importance: str,
+    ) -> bool:
+        normalized = _normalize_text(importance, "normal").lower()
+        if normalized not in {"high", "normal", "low"}:
+            raise MailMessageActionError(f"Unsupported importance value: {importance}")
+
+        _folder_obj, _resolved_folder_key, item = self._message_item(
+            account=account,
+            folder_key=folder_key,
+            exchange_id=exchange_id,
+            only_fields=("importance",),
+        )
+        try:
+            try:
+                from exchangelib import Importance
+            except Exception as exc:
+                raise MailMessageActionError("Exchange Importance API is unavailable.") from exc
+
+            mapping = {
+                "high": Importance.HIGH,
+                "normal": Importance.NORMAL,
+                "low": Importance.LOW,
+            }
+            target = mapping[normalized]
+            current = getattr(item, "importance", None)
+            if current != target:
+                item.importance = target
+                item.save(update_fields=["importance"])
+            return True
+        except MailMessageActionError:
+            raise
+        except Exception as exc:
+            raise MailMessageActionError(f"Failed to set message importance: {exc}") from exc
+
+    def set_items_read_state(self, *, items: Iterable[Any], is_read: bool) -> MailReadStateBulkResult:
+        changed = 0
+        failed = 0
+        for item in items:
+            try:
+                current_read = bool(getattr(item, "is_read", False))
+                if current_read == bool(is_read):
+                    continue
+                item.is_read = bool(is_read)
+                item.save(update_fields=["is_read"])
+                changed += 1
+            except Exception:
+                failed += 1
+        return MailReadStateBulkResult(changed=changed, failed=failed)
+
+    def mark_all_read(self, *, folder_targets: Iterable[tuple[Any, str]]) -> MailReadStateBulkResult:
+        changed = 0
+        failed = 0
+        for folder_obj, _folder_key in folder_targets:
+            try:
+                queryset = folder_obj.filter(is_read=False)
+            except Exception:
+                queryset = []
+            try:
+                queryset = queryset.only("is_read")
+            except Exception:
+                pass
+            try:
+                unread_items = list(queryset)
+            except Exception:
+                unread_items = []
+            result = self.set_items_read_state(items=unread_items, is_read=True)
+            changed += result.changed
+            failed += result.failed
+        return MailReadStateBulkResult(changed=changed, failed=failed)
+
+    def move_message(
+        self,
+        *,
+        account: Any,
+        folder_key: str,
+        exchange_id: str,
+        target_folder: str,
+        mailbox_id: str | None,
+    ) -> MailMessageMoveResult:
+        source_folder_obj, source_folder_key, item = self._message_item(
+            account=account,
+            folder_key=folder_key,
+            exchange_id=exchange_id,
+            only_fields=("subject",),
+        )
+        target_folder_obj, target_folder_key = self.resolve_folder(account, target_folder)
+        try:
+            moved_item = item.move(target_folder_obj)
+            new_exchange_id = _normalize_text(getattr(moved_item, "id", None) or getattr(item, "id", None))
+        except Exception as exc:
+            raise MailMessageActionError(f"Failed to move message: {exc}") from exc
+
+        return MailMessageMoveResult(
+            message_id=self.encode_message_id(target_folder_key, new_exchange_id, mailbox_id),
+            folder=target_folder_key,
+            source_folder=source_folder_key,
+            source_exchange_id=exchange_id,
+            target_exchange_id=new_exchange_id,
+        )
+
+    def delete_message(self, *, account: Any, folder_key: str, exchange_id: str) -> None:
+        _folder_obj, _resolved_folder_key, item = self._message_item(
+            account=account,
+            folder_key=folder_key,
+            exchange_id=exchange_id,
+            only_fields=("subject",),
+        )
+        try:
+            item.delete()
+        except Exception as exc:
+            raise MailMessageActionError(f"Failed to delete message: {exc}") from exc

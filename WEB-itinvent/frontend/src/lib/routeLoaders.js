@@ -1,0 +1,187 @@
+import {
+  clearRouteChunkRecoveryState,
+  isRouteChunkLoadError,
+  ROUTE_CHUNK_RELOAD_KEY,
+} from './routeChunkRecovery';
+
+const routePrefetchPromises = new Map();
+const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
+
+const ensureMyFilesGrantDeployReload = () => {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (window.sessionStorage.getItem(MY_FILES_GRANT_DEPLOY_KEY) === '1') {
+      return false;
+    }
+    window.sessionStorage.setItem(MY_FILES_GRANT_DEPLOY_KEY, '1');
+    window.location.reload();
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const loadRouteWithReloadFallback = (loader) => (
+  loader()
+    .then((module) => {
+      clearRouteChunkRecoveryState();
+      return module;
+    })
+    .catch((error) => {
+      if (typeof window !== 'undefined' && isRouteChunkLoadError(error)) {
+        try {
+          const alreadyRetried = window.sessionStorage.getItem(ROUTE_CHUNK_RELOAD_KEY) === '1';
+          if (!alreadyRetried) {
+            window.sessionStorage.setItem(ROUTE_CHUNK_RELOAD_KEY, '1');
+            window.location.reload();
+            return new Promise(() => {});
+          }
+        } catch {
+          window.location.reload();
+          return new Promise(() => {});
+        }
+      }
+      throw error;
+    })
+);
+
+const defineRouteLoader = (loader) => () => loadRouteWithReloadFallback(loader);
+
+export const loadLoginRoute = defineRouteLoader(() => import('../pages/Login'));
+export const loadAboutRoute = defineRouteLoader(() => import('../pages/About'));
+export const loadDashboardRoute = defineRouteLoader(() => import('../pages/Dashboard'));
+export const loadFeedRoute = defineRouteLoader(() => import('../pages/Feed'));
+export const loadTasksRoute = defineRouteLoader(() => import('../pages/Tasks'));
+export const loadTicketsRoute = defineRouteLoader(() => import('../pages/Tickets'));
+export const loadChatRoute = defineRouteLoader(() => import('../pages/chat/Chat'));
+export const loadDatabaseRoute = defineRouteLoader(() => import('../pages/Database'));
+export const loadNetworksRoute = defineRouteLoader(() => import('../pages/Networks'));
+export const loadSettingsRoute = defineRouteLoader(() => import('../pages/Settings'));
+export const loadProfileRoute = defineRouteLoader(() => import('../pages/Profile'));
+export const loadAdminRoute = defineRouteLoader(() => import('../pages/Admin'));
+export const loadStatisticsRoute = defineRouteLoader(() => import('../pages/Statistics'));
+export const loadComputersRoute = defineRouteLoader(() => import('../pages/Computers'));
+export const loadFileEgressRoute = defineRouteLoader(() => import('../pages/FileEgress'));
+export const loadScanCenterRoute = defineRouteLoader(() => import('../pages/ScanCenter'));
+export const loadMfuRoute = defineRouteLoader(() => import('../pages/Mfu'));
+export const loadMonitoringRoute = defineRouteLoader(() => import('../pages/Monitoring'));
+export const loadMailRoute = defineRouteLoader(() => import('../pages/Mail'));
+export const loadMobileMenuRoute = defineRouteLoader(() => import('../pages/MobileMenu'));
+export const loadVcsRoute = defineRouteLoader(() => import('../pages/Vcs'));
+export const loadKnowledgeBaseRoute = defineRouteLoader(() => import('../pages/KnowledgeBase'));
+export const loadAddressBookRoute = defineRouteLoader(() => import('../pages/AddressBook'));
+export const loadCompanyStructureRoute = defineRouteLoader(() => import('../pages/CompanyStructure'));
+export const loadWarehouse1CRoute = defineRouteLoader(() => import('../pages/Warehouse1C'));
+export const loadItPurchaseRequestsRoute = defineRouteLoader(() => import('../pages/ItPurchaseRequests'));
+export const loadItObjectsRoute = defineRouteLoader(() => import('../pages/ItObjects'));
+export const loadItObjectDetailRoute = defineRouteLoader(() => import('../pages/ItObjectDetail'));
+export const loadConstructionObjectsRoute = defineRouteLoader(() => import('../pages/ConstructionObjects'));
+export const loadConstructionObjectDetailRoute = defineRouteLoader(() => import('../pages/ConstructionObjectDetail'));
+export const loadConstructionDirectionDetailRoute = defineRouteLoader(() => import('../pages/ConstructionDirectionDetail'));
+export const loadDocflowRoute = defineRouteLoader(() => import('../pages/Docflow'));
+export const loadPasswordsRoute = defineRouteLoader(() => import('../pages/Passwords'));
+export const loadGroupsAccessRoute = defineRouteLoader(() => import('../pages/GroupsAccess'));
+export const loadMyFilesRoute = defineRouteLoader(() => {
+  if (ensureMyFilesGrantDeployReload()) {
+    return new Promise(() => {});
+  }
+  return import('../pages/MyFiles');
+});
+export const loadMyFilesEditorRoute = defineRouteLoader(() => import('../pages/MyFilesEditor'));
+export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/SharedFile'));
+export const loadSharedFolderRoute = defineRouteLoader(() => import('../pages/SharedFolder'));
+export const loadHelpRoute = defineRouteLoader(() => import('../pages/Help'));
+export const loadVoiceVideoRoute = defineRouteLoader(() => import('../pages/VoiceVideo'));
+
+const ROUTE_LOADERS = new Map([
+  ['/login', loadLoginRoute],
+  ['/about', loadAboutRoute],
+  ['/dashboard', loadDashboardRoute],
+  ['/feed', loadFeedRoute],
+  ['/dashboard/news', loadFeedRoute],
+  ['/tasks', loadTasksRoute],
+  ['/tickets', loadTicketsRoute],
+  ['/chat', loadChatRoute],
+  ['/database', loadDatabaseRoute],
+  ['/networks', loadNetworksRoute],
+  ['/settings', loadSettingsRoute],
+  ['/profile', loadProfileRoute],
+  ['/admin', loadAdminRoute],
+  ['/statistics', loadStatisticsRoute],
+  ['/computers', loadComputersRoute],
+  ['/scan-center', loadScanCenterRoute],
+  ['/dlp', loadFileEgressRoute],
+  ['/file-egress', loadFileEgressRoute],
+  ['/mfu', loadMfuRoute],
+  ['/monitoring', loadMonitoringRoute],
+  ['/mail', loadMailRoute],
+  ['/menu', loadMobileMenuRoute],
+  ['/ad-users', loadAdminRoute],
+  ['/vcs', loadVcsRoute],
+  ['/kb', loadKnowledgeBaseRoute],
+  ['/address-book', loadAddressBookRoute],
+  ['/warehouse-1c', loadWarehouse1CRoute],
+  ['/it/requests', loadItPurchaseRequestsRoute],
+  ['/it/objects', loadItObjectsRoute],
+  ['/it/objects/detail', loadItObjectDetailRoute],
+  ['/construction', loadConstructionObjectsRoute],
+  ['/construction/objects', loadConstructionObjectDetailRoute],
+  ['/construction/objects/directions', loadConstructionDirectionDetailRoute],
+  ['/docflow', loadDocflowRoute],
+  ['/passwords', loadPasswordsRoute],
+  ['/groups-access', loadGroupsAccessRoute],
+  ['/my-files', loadMyFilesRoute],
+  ['/shared-files', loadSharedFileRoute],
+  ['/shared-folders', loadSharedFolderRoute],
+  ['/help', loadHelpRoute],
+  ['/voice', loadVoiceVideoRoute],
+]);
+
+export const normalizeRouteLoaderPath = (path) => {
+  const normalized = String(path || '').trim();
+  if (!normalized) return '';
+  if (normalized === '/settings' || normalized.startsWith('/settings/')) {
+    return '/settings';
+  }
+  if (normalized === '/admin' || normalized.startsWith('/admin/')) {
+    return '/admin';
+  }
+  if (normalized === '/networks' || normalized.startsWith('/networks/')) {
+    return '/networks';
+  }
+  if (normalized === '/it/requests' || normalized.startsWith('/it/requests/')) {
+    return '/it/requests';
+  }
+  if (normalized.startsWith('/it/objects/')) {
+    return '/it/objects/detail';
+  }
+  if (normalized === '/construction/objects' || normalized.startsWith('/construction/objects/')) {
+    return '/construction/objects';
+  }
+  if (normalized === '/construction') {
+    return '/construction';
+  }
+  if (normalized === '/dashboard/news' || normalized.startsWith('/dashboard/news/')) {
+    return '/feed';
+  }
+  if (normalized === '/shared-files' || normalized.startsWith('/shared-files/')) {
+    return '/shared-files';
+  }
+  return normalized;
+};
+
+export const prefetchRouteByPath = (path) => {
+  const normalizedPath = normalizeRouteLoaderPath(path);
+  const loader = ROUTE_LOADERS.get(normalizedPath);
+  if (!loader) return Promise.resolve(null);
+
+  const existingPromise = routePrefetchPromises.get(normalizedPath);
+  if (existingPromise) return existingPromise;
+
+  const nextPromise = loader().catch((error) => {
+    routePrefetchPromises.delete(normalizedPath);
+    throw error;
+  });
+  routePrefetchPromises.set(normalizedPath, nextPromise);
+  return nextPromise;
+};

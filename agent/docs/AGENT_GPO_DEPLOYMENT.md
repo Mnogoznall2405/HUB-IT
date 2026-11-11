@@ -1,0 +1,225 @@
+# Развёртывание HUB-IT Agent через GPO / SCCM / Intune
+
+## 1. Подготовка MSI
+
+```powershell
+python agent/setup.py bdist_msi
+```
+
+Артефакт по умолчанию появляется в `dist\`.
+
+Опубликуй MSI по UNC-пути и дай `Domain Computers` права на чтение.
+
+## 2. Что MSI делает сам
+
+После установки MSI автоматически:
+
+- ставит агент в `C:\Program Files\HUB-IT\Agent`
+- пишет runtime `.env` в `C:\ProgramData\HUB-IT\Agent\.env`
+- мигрирует legacy `.env` из install directory, если он найден
+- создаёт Scheduled Task `HUB-IT Agent` (старое имя `IT-Invent Agent` снимается при обновлении)
+- запускает задачу сразу после установки
+- форсирует:
+  - `SCAN_AGENT_SCAN_ON_START=0`
+  - `SCAN_AGENT_WATCHDOG_ENABLED=0`
+
+### Обновление 1.3.0–1.3.7 → 1.3.8
+
+Запускай новый MSI поверх установленной версии, без предварительного удаления:
+
+```powershell
+msiexec /i "\\server\share\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_upgrade.log"
+```
+
+У MSI сохранён постоянный `UpgradeCode`. Перед удалением старого продукта обновление временно сохраняет и затем восстанавливает:
+
+- `C:\ProgramData\HUB-IT\Agent\.env` и другие runtime-файлы;
+- локальную очередь inventory-agent;
+- состояние, outbox и очередь ScanAgent.
+
+Явный `msiexec /x` остаётся полным удалением и эти данные не сохраняет.
+
+Дополнительный post-install шаг через `install_agent_task.ps1` больше не обязателен.
+
+## 3. Silent install для массового развёртывания
+
+Рекомендуемый полный пример:
+
+```powershell
+New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
+msiexec /i "\\server\share\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+  ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
+  ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
+  ITINV_AGENT_INTERVAL_SEC="3600" `
+  ITINV_AGENT_HEARTBEAT_SEC="600" `
+  ITINV_AGENT_HEARTBEAT_JITTER_SEC="120" `
+  ITINV_SCAN_ENABLED="1" `
+  SCAN_AGENT_SERVER_BASE="http://127.0.0.1:8011/api/v1/scan" `
+  SCAN_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
+  SCAN_AGENT_POLL_INTERVAL_SEC="600" `
+  SCAN_AGENT_POLL_JITTER_SEC="120" `
+  ITINV_OUTLOOK_SEARCH_ROOTS="D:\"
+```
+
+Обязательные значения: ключи встраиваются из корневого `.env`, публичные URL задаются client defaults; все значения при необходимости переопределяются через MSI properties:
+
+- `ITINV_AGENT_SERVER_URL`
+- `ITINV_AGENT_API_KEY`
+- `SCAN_AGENT_SERVER_BASE`
+- `SCAN_AGENT_API_KEY`
+
+## 4. Supported MSI properties
+
+| Property | Required | Default | Example | Purpose |
+| --- | --- | --- | --- | --- |
+| `ITINV_AGENT_SERVER_URL` | Да | `https://hubit.zsgp.ru/api/v1/inventory` | `https://hubit.zsgp.ru/api/v1/inventory` | Inventory endpoint |
+| `ITINV_AGENT_API_KEY` | Да | root `.env` at MSI build | `YOUR_SECURE_AGENT_KEY` | Inventory API key |
+| `ITINV_AGENT_INTERVAL_SEC` | Нет | `3600` | `3600` | Snapshot interval |
+| `ITINV_AGENT_HEARTBEAT_SEC` | Нет | `600` | `600` | Heartbeat interval |
+| `ITINV_AGENT_HEARTBEAT_JITTER_SEC` | Нет | `120` | `120` | Heartbeat jitter |
+| `ITINV_SCAN_ENABLED` | Нет | `1` | `1` | Enable scan sidecar |
+| `SCAN_AGENT_SERVER_BASE` | Да | `https://hubit.zsgp.ru/api/v1/scan` | `https://hubit.zsgp.ru/api/v1/scan` | Scan endpoint |
+| `SCAN_AGENT_API_KEY` | Да | root `.env` at MSI build | `YOUR_SECURE_AGENT_KEY` | Scan API key |
+| `SCAN_AGENT_POLL_INTERVAL_SEC` | Нет | `600` | `600` | Scan poll interval |
+| `SCAN_AGENT_POLL_JITTER_SEC` | Нет | `120` | `120` | Scan poll jitter |
+| `ITINV_OUTLOOK_SEARCH_ROOTS` | Нет | `D:\` | `D:\` | Extra PST/OST roots |
+| `INSTALLDIR` | Нет | `C:\Program Files\HUB-IT\Agent` | `D:\Apps\HUB-IT\Agent` | Custom install path |
+
+## 5. GPO / SCCM / Intune notes
+
+### GPO
+
+Используй:
+
+`Computer Configuration -> Policies -> Software Settings -> Software installation`
+
+Шаги:
+
+1. `New -> Package`
+2. Укажи UNC-путь к MSI
+3. Выбери `Assigned`
+
+Обычный GPO MSI assignment использует встроенные URL и ключи. Если их нужно переопределить для отдельной группы ПК, используй deployment script или другой orchestration-слой.
+
+### SCCM / MECM / Intune
+
+Для этих систем используй `msiexec /i ... /qn ...` с логированием; URL и ключи можно не передавать, если подходят встроенные значения.
+
+## 6. Логирование установки
+
+Рекомендуемый путь лога:
+
+```powershell
+C:\Temp\itinvent_agent_install.log
+```
+
+Проверка:
+
+```powershell
+Get-Content "C:\Temp\itinvent_agent_install.log" -Tail 200
+```
+
+Дополнительно helper пишет:
+
+```powershell
+Get-Content "C:\Windows\Temp\itinvent_agent_msi_helper.log" -Tail 200
+```
+
+## 7. Post-install validation checklist
+
+На клиенте проверь:
+
+```powershell
+Test-Path "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe"
+Test-Path "C:\Program Files\HUB-IT\Agent\ITInventAgentMsiHelper.exe"
+Get-Content "C:\ProgramData\HUB-IT\Agent\.env"
+Get-ScheduledTask -TaskName "HUB-IT Agent"
+Get-ScheduledTask -TaskName "HUB-IT Agent" | % Settings | Format-List ExecutionTimeLimit, MultipleInstances, StartWhenAvailable
+Get-ScheduledTask -TaskName "HUB-IT Agent" | % Triggers | Select Enabled, @{n='RepetitionInterval';e={$_.Repetition.Interval}}, @{n='RepetitionDuration';e={$_.Repetition.Duration}}
+Get-Content "C:\ProgramData\HUB-IT\Agent\Logs\itinvent_agent.log" -Tail 100
+```
+
+Ожидаемое:
+
+- задача создана под `NT AUTHORITY\SYSTEM`
+- `ExecutionTimeLimit : PT0S`
+- `MultipleInstances : IgnoreNew`
+- `StartWhenAvailable : True`
+- `RepetitionInterval : PT1H`
+- `RepetitionDuration : P3650D`
+- `.env` существует в `C:\ProgramData\HUB-IT\Agent`
+- в `.env` есть `SCAN_AGENT_SCAN_ON_START=0` и `SCAN_AGENT_WATCHDOG_ENABLED=0`
+
+## 8. Проверка on-demand scan
+
+После установки scan не должен стартовать сам.
+
+Проверяем:
+
+1. В `C:\ProgramData\HUB-IT\Agent\.env` зафиксированы `0/0`.
+2. В логах нет самопроизвольного scan сразу после install.
+3. Сканирование начинается только после серверной задачи `scan_now`.
+
+## 9. Repair и uninstall
+
+Repair:
+
+```powershell
+New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
+msiexec /fa "\\server\share\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
+```
+
+Тихое удаление:
+
+```powershell
+New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
+msiexec /x "\\server\share\HUB-IT Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
+```
+
+Uninstall должен:
+
+- убрать Scheduled Task
+- остановить `ITInventAgent.exe` и `ITInventOutlookProbe.exe`
+- удалить `C:\ProgramData\HUB-IT\Agent`
+- удалить install directory через MSI
+- очистить installer-created scan env vars
+
+Проверка:
+
+```powershell
+Get-Process ITInventAgent -ErrorAction SilentlyContinue
+Get-Process ITInventOutlookProbe -ErrorAction SilentlyContinue
+Get-ScheduledTask -TaskName "HUB-IT Agent" -ErrorAction SilentlyContinue
+Test-Path "C:\Program Files\HUB-IT\Agent"
+Test-Path "C:\ProgramData\HUB-IT\Agent"
+```
+
+## 10. Troubleshooting
+
+Если задача не создалась:
+
+- проверь MSI log
+- проверь наличие:
+
+```powershell
+Get-ChildItem "C:\Program Files\HUB-IT\Agent\scripts"
+```
+
+- при необходимости выполни fallback вручную:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Program Files\HUB-IT\Agent\scripts\install_agent_task.ps1" `
+  -ExecutablePath "C:\Program Files\HUB-IT\Agent\ITInventAgent.exe" `
+  -EnvFilePath "C:\ProgramData\HUB-IT\Agent\.env" `
+  -StartAfterRegister
+```
+
+Если после старой установки на машине были machine env values `1/1`, это не должно мешать:
+
+- MSI принудительно переписывает их в `0/0`
+- это сделано специально, чтобы scan не стартовал автоматически
+
+Если TLS падает на stale `ITINV_AGENT_CA_BUNDLE`:
+
+- проверь актуальность пути
+- при несуществующем пути агент должен перейти на стандартную TLS verification

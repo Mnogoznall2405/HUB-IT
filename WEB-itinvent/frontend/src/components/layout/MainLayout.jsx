@@ -1,0 +1,3249 @@
+/**
+ * Main Layout component - AppBar and Sidebar navigation.
+ */
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { DesktopHandoffSlot } from './DesktopProtocolHandoff';
+import { useNavigate, useLocation } from 'react-router-dom';
+import {
+  Alert,
+  AppBar,
+  Badge,
+  BottomNavigation,
+  BottomNavigationAction,
+  Box,
+  Toolbar,
+  Typography,
+  IconButton,
+  Drawer,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemButton,
+  ListItemText,
+  Divider,
+  Button,
+  FormControl,
+  Select,
+  MenuItem,
+  Chip,
+  Stack,
+  CircularProgress,
+  Collapse,
+  Tooltip,
+} from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import MenuIcon from '@mui/icons-material/Menu';
+import PushPinIcon from '@mui/icons-material/PushPin';
+import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
+import NotificationsIcon from '@mui/icons-material/Notifications';
+import NotificationsNoneIcon from '@mui/icons-material/NotificationsNone';
+import AssignmentIcon from '@mui/icons-material/Assignment';
+import MailOutlineIcon from '@mui/icons-material/MailOutline';
+import GroupIcon from '@mui/icons-material/Group';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import CloudOffRoundedIcon from '@mui/icons-material/CloudOffRounded';
+import WifiRoundedIcon from '@mui/icons-material/WifiRounded';
+import { useAuth } from '../../contexts/AuthContext';
+import { useNotification } from '../../contexts/NotificationContext';
+import { usePreferences } from '../../contexts/PreferencesContext';
+import apiClient, { chatAPI, mailAPI, settingsAPI } from '../../api/client';
+import { databaseAPI } from '../../api/database';
+import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
+import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
+import BrandedRouteLoader from './BrandedRouteLoader';
+import DesktopShellSync from './DesktopShellSync';
+import HubCommandPalette from '../search/HubCommandPalette';
+import MailSessionPrompt from '../mail/MailSessionPrompt';
+import {
+  TOAST_ACTION_EXECUTE_EVENT,
+  createNavigateToastAction,
+  normalizeToastAction,
+} from '../feedback/toastActions';
+import {
+  buildMailArrivalToastPayload,
+  resolveForegroundPushDecision,
+  resolveMailArrivalDelivery,
+} from '../../lib/layoutPushDecisions';
+import {
+  clearConnectionRestoredMarker,
+  consumeConnectionRestoredMarker,
+  formatOfflineLastSync,
+  groupItemsByRelativeDate,
+  normalizeDbId,
+  persistConnectionRestoredMarker,
+} from '../../lib/mainLayoutHelpers';
+import {
+  applyMailUnreadDeltaToCounts,
+  buildNextUnreadCounts,
+  parseHubUnreadCounts,
+  resolveChatUnreadDeltaToast,
+  resolveMailUnreadResult,
+  shouldNotifyMailArrival,
+} from '../../lib/unreadCounts';
+import {
+  selectHubBellItems,
+  selectMailBellItems,
+  shouldKeepMailNotificationAfterRead,
+} from '../../lib/bellInbox';
+import {
+  autoEnableWindowsNotificationsIfGranted,
+  clearNotificationPermissionBannerDismissed,
+  createHubSystemNotification,
+  createMailSystemNotification,
+  getMailNotificationDisplay,
+  getMailSystemNotificationId,
+  getHubNotificationActionLabel,
+  getHubNotificationNavigateTo,
+  getWindowsNotificationState,
+  hasShownMailSystemNotification,
+  isNotificationPermissionBannerDismissed,
+  markMailSystemNotificationShown,
+  requestBrowserNotificationPermission,
+  setNotificationPermissionBannerDismissed as persistNotificationPermissionBannerDismissed,
+  setWindowsNotificationsEnabled,
+  WINDOWS_NOTIFICATIONS_CHANGED_EVENT,
+} from '../../lib/windowsNotifications';
+import {
+  chatSocket,
+  CHAT_SOCKET_MESSAGE_CREATED_EVENT,
+  CHAT_SOCKET_STATUS_EVENT,
+  CHAT_SOCKET_UNREAD_SUMMARY_EVENT,
+  isChatConversationMuted,
+} from '../../lib/chatSocket';
+import {
+  hubRealtimeSocket,
+  HUB_REALTIME_CONNECTED_EVENT,
+  HUB_REALTIME_ENABLED,
+  HUB_REALTIME_MAIL_EVENT,
+  HUB_REALTIME_NOTIFICATION_EVENT,
+  HUB_REALTIME_RELAX_POLLING_ENABLED,
+  HUB_REALTIME_STABLE_EVENT,
+  HUB_REALTIME_STATUS_EVENT,
+} from '../../lib/hubRealtimeSocket';
+import {
+  claimChatMessageNotification,
+  createChatSystemNotification,
+  getChatNotificationState,
+  isNotificationSurfaceVisible,
+  isLegacyOrdinaryChatHubNotification,
+  resolveOrdinaryChatHubReadVisible,
+  refreshChatNotificationState,
+  setChatForegroundDiagnostic,
+  setChatSocketStatus,
+  shouldSkipChatPushForegroundNotification,
+  syncActiveChatConversationToServiceWorker,
+  syncChatPushSubscription,
+} from '../../lib/chatNotifications';
+import {
+  DESKTOP_CAPABILITIES_CHANGED_EVENT,
+  DESKTOP_OPEN_COMMAND_PALETTE_EVENT,
+  DESKTOP_SHARED_FILES_EVENT,
+  DESKTOP_WINDOW_STATE_CHANGED_EVENT,
+  isDesktopBridgeReady,
+  isDesktopCapabilityAvailable,
+  requestDesktopCheckForUpdates,
+  requestDesktopOpenCurrentInBrowser,
+  requestDesktopOpenDiagnostics,
+  requestDesktopOpenDownloads,
+} from '../../lib/desktopBridge';
+import { emitAgentDebugLog } from '../../lib/debugClientLog';
+import { hasAnyAppPushPermission } from '../../lib/appPushPermissions';
+import { syncAppBadge } from '../../lib/appBadge';
+import { buildDesktopQuickRoutes } from '../../lib/desktopQuickRoutes';
+import { buildHubCommands } from '../../lib/hubCommands';
+import {
+  isNotificationChannelEnabled,
+  normalizeNotificationPreferences,
+  NOTIFICATION_PREFERENCES_CHANGED_EVENT,
+} from '../../lib/notificationPreferences';
+import { getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
+import { prefetchRouteByPath } from '../../lib/routeLoaders';
+import { resolveChatMessageNotificationPlan } from '../../lib/chatSocketNotificationPlan';
+import { playChatMessageSound } from '../../lib/chatMessageSound';
+import { MainLayoutShellContext } from './MainLayoutShellContext';
+import { APP_BRAND_NAME, buildDocumentTitle } from '../../lib/appBranding';
+import {
+  isNativeShellBottomNav,
+  nativeShellBottomNavHeight,
+  postNativeShellBottomNavState,
+} from '../../lib/nativeShell';
+import { AccountAvatar, AccountIdentity } from '../account/AccountIdentity';
+import AccountMenu from '../account/AccountMenu';
+import { canAccessAdminArea } from '../account/accountNavigationConfig';
+import {
+  getMobileOfflineCacheMeta,
+  getMobileOfflineState,
+  MOBILE_NATIVE_NETWORK_STATE_EVENT,
+  MOBILE_OFFLINE_CACHE_META_EVENT,
+} from '../../lib/mobileOfflineCache';
+import {
+  getMailNavigationBadgeMeta,
+  getNavigationBadgeCount,
+  getVisibleNavigationItems,
+  isNavigationItemActive,
+  resolveMobileNavigationItems,
+} from './navigationConfig';
+
+const DRAWER_WIDTH_CSS_VAR = 'var(--app-density-drawer-width)';
+const DRAWER_RAIL_WIDTH = 68;
+const HUB_POLL_INTERVAL_MS = 20_000;
+const HUB_REALTIME_RECONCILE_INTERVAL_MS = 120_000;
+const PWA_BADGE_POLL_INTERVAL_MS = 60_000;
+const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
+const SIDEBAR_PINNED_KEY = 'sidebar_pinned';
+const SIDEBAR_IT_EXPANDED_KEY = 'sidebar_it_expanded';
+const SIDEBAR_TOOLS_EXPANDED_KEY = 'sidebar_tools_expanded';
+const MAIL_LOCAL_DEDUPE_WINDOW_MS = 30_000;
+// Was 90s — new mail badge / mail-needs-refresh waited almost a minute+.
+const MAIL_UNREAD_REFRESH_TTL_MS = 20_000;
+const PUSH_FOREGROUND_NOTIFICATION_EVENT = 'itinvent:push-foreground-notification';
+const CONNECTION_RESTORED_STATUS_MS = 4_200;
+
+function MainLayout({
+  children,
+  headerMode = 'default',
+  pageTitle,
+  contentMode = 'default',
+  mobileBottomNavMode = 'auto',
+  mobileBottomNavTransitionMs = 280,
+  showDatabaseSelector = false,
+  headerInlineContent = null,
+}) {
+  const theme = useTheme();
+  const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
+  const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)', { defaultMatches: false });
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    return saved === 'true';
+  });
+  const [sidebarPinned, setSidebarPinned] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_PINNED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [sidebarToolsExpanded, setSidebarToolsExpanded] = useState(() => (
+    localStorage.getItem(SIDEBAR_TOOLS_EXPANDED_KEY) !== 'false'
+  ));
+  const [sidebarItExpanded, setSidebarItExpanded] = useState(() => (
+    localStorage.getItem(SIDEBAR_IT_EXPANDED_KEY) !== 'false'
+  ));
+  const [accountMenuAnchorEl, setAccountMenuAnchorEl] = useState(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user, logout, hasPermission } = useAuth();
+  const { preferences } = usePreferences();
+  const {
+    notifyApiError,
+    notifyInfo,
+    notifyWarning,
+    hasSeenHubNotification,
+    markHubNotificationsSeen,
+  } = useNotification();
+  const [databases, setDatabases] = useState([]);
+  const [currentDb, setCurrentDb] = useState(null);
+  const [dbLoading, setDbLoading] = useState(true);
+  const [dbLocked, setDbLocked] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [desktopActionsAvailable, setDesktopActionsAvailable] = useState(
+    () => isDesktopCapabilityAvailable('desktop-actions'),
+  );
+  const [notifications, setNotifications] = useState([]);
+  const [mailNotifications, setMailNotifications] = useState([]);
+  const [unreadCounts, setUnreadCounts] = useState({
+    notifications_unread_total: 0,
+    announcements_unread: 0,
+    announcements_ack_pending: 0,
+    tasks_open_total: 0,
+    tasks_open: 0,
+    tasks_new: 0,
+    tasks_assignee_open: 0,
+    tasks_created_open: 0,
+    tasks_controller_open: 0,
+    tasks_review_required: 0,
+    tasks_overdue: 0,
+    tasks_with_unread_comments: 0,
+    chat_messages_unread_total: 0,
+    chat_conversations_unread: 0,
+    mail_unread: 0,
+    mail_state: 'unknown',
+    mail_as_of: null,
+  });
+  const [windowsNotificationState, setWindowsNotificationState] = useState(() => getWindowsNotificationState());
+  const [pwaState, setPwaState] = useState(() => getPwaInstallState());
+  const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? !navigator.onLine : false));
+  const [connectionRestored, setConnectionRestored] = useState(consumeConnectionRestoredMarker);
+  const [offlineCacheMeta, setOfflineCacheMeta] = useState(getMobileOfflineCacheMeta);
+  const offlineWasObservedRef = useRef(isOffline || getMobileOfflineState().readOnly);
+  const [notificationPermissionBannerDismissed, setNotificationPermissionBannerDismissed] = useState(
+    () => isNotificationPermissionBannerDismissed(),
+  );
+  const topBannerRef = useRef(null);
+  const appBarRef = useRef(null);
+  const [topBannerOffset, setTopBannerOffset] = useState(0);
+  const [appBarHeight, setAppBarHeight] = useState(0);
+  const notificationsOpenRef = useRef(false);
+  const pendingNavigationTimerRef = useRef(null);
+  const pendingNavigationTimeoutRef = useRef(null);
+  const unreadCountsRef = useRef(unreadCounts);
+  const databaseMetaLoadedRef = useRef(false);
+  const lastPollRef = useRef('');
+  const pollNotificationsRef = useRef(null);
+  const fetchUnreadCountsRef = useRef(null);
+  const fetchUnreadCountsInFlightRef = useRef(null);
+  const refreshBellInboxRef = useRef(null);
+  const mailUnreadMutationVersionRef = useRef(0);
+  const hubPollBackoffUntilRef = useRef(0);
+  const hubPollFailureCountRef = useRef(0);
+  const hubPollLastWarnAtRef = useRef(0);
+  const hubPollSuppressToastsRef = useRef(false);
+  const hubPollLastSuccessAtRef = useRef(0);
+  const hubRealtimeStableRef = useRef(false);
+  const hasSeenHubNotificationRef = useRef(hasSeenHubNotification);
+  const markHubNotificationsSeenRef = useRef(markHubNotificationsSeen);
+  const notifyInfoRef = useRef(notifyInfo);
+  const windowsNotificationStateRef = useRef(windowsNotificationState);
+  const recentMailNotificationIdsRef = useRef(new Map());
+  const chatUnreadSummaryRef = useRef({
+    messages_unread_total: 0,
+    conversations_unread: 0,
+  });
+  const mailUnreadFetchedAtRef = useRef(0);
+  const mailUnreadBaselineReadyRef = useRef(false);
+  const chatUnreadBaselineReadyRef = useRef(false);
+  const ordinaryChatHubReadVisibleRef = useRef(true);
+  const notificationPreferencesRef = useRef(normalizeNotificationPreferences());
+  const hasDashboardPermission = hasPermission('dashboard.read');
+  const hasTasksPermission = hasPermission('tasks.read');
+  const hasChatPermission = CHAT_FEATURE_ENABLED && hasPermission('chat.read');
+  const hasMailPermission = hasPermission('mail.access');
+  const hasHubNotificationPermission = hasDashboardPermission || hasTasksPermission || hasChatPermission;
+  const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
+  const showAdminArea = canAccessAdminArea({ user, hasPermission });
+  const activeChatConversationIdFromUrl = useMemo(
+    () => String(new URLSearchParams(location.search).get('conversation') || '').trim(),
+    [location.search],
+  );
+  const [activeChatConversationIdFromChat, setActiveChatConversationIdFromChat] = useState('');
+  // N3: hidden-tab title shows the sender of the latest chat message.
+  const [lastNotificationLabel, setLastNotificationLabel] = useState('');
+  useEffect(() => {
+    const handleActiveConversationChanged = (event) => {
+      setActiveChatConversationIdFromChat(String(event?.detail?.conversationId || '').trim());
+    };
+    window.addEventListener('chat-active-conversation-changed', handleActiveConversationChanged);
+    return () => {
+      window.removeEventListener('chat-active-conversation-changed', handleActiveConversationChanged);
+    };
+  }, []);
+  const activeChatConversationId = activeChatConversationIdFromChat || activeChatConversationIdFromUrl;
+
+  useEffect(() => {
+    const syncActiveChatToServiceWorker = () => {
+      syncActiveChatConversationToServiceWorker(
+        isNotificationSurfaceVisible() ? activeChatConversationId : '',
+      );
+    };
+    syncActiveChatToServiceWorker();
+    document.addEventListener('visibilitychange', syncActiveChatToServiceWorker);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, syncActiveChatToServiceWorker);
+    return () => {
+      document.removeEventListener('visibilitychange', syncActiveChatToServiceWorker);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, syncActiveChatToServiceWorker);
+      syncActiveChatConversationToServiceWorker('');
+    };
+  }, [activeChatConversationId]);
+
+  const isChatRoute = location.pathname.startsWith('/chat');
+  // Read inside long-lived callbacks (unread polling) without re-creating them on every navigation.
+  const locationPathnameRef = useRef(location.pathname);
+  locationPathnameRef.current = location.pathname;
+  const taskDiscussionRouteParams = new URLSearchParams(location.search || '');
+  const isTaskDiscussionRoute = location.pathname.startsWith('/tasks')
+    && taskDiscussionRouteParams.get('task_detail_view') === 'discussion';
+  const isMailRoute = location.pathname.startsWith('/mail');
+  const isDocflowRoute = location.pathname.startsWith('/docflow');
+  const isDlpRoute = location.pathname.startsWith('/dlp') || location.pathname.startsWith('/file-egress');
+  const isAddressBookRoute = location.pathname.startsWith('/address-book');
+  const isFixedHeightRoute = isChatRoute || isMailRoute || isDocflowRoute || isDlpRoute || isAddressBookRoute;
+  const isMobileChatRoute = isPhone && isChatRoute;
+  const isDesktopChatRoute = !isPhone && isChatRoute;
+  // Д2-5 (раздел 29, п. 5): на странице чата меню портала — узкая полоса иконок
+  // на любой ширине desktop, а шапка чата заменяет шапку портала (раньше
+  // на 600–900 px показывались полное меню 215 px и AppBar).
+  const integratedChatHeader = isDesktopChatRoute
+    && taskDiscussionRouteParams.get('task_layout') !== 'split';
+  const integratedPageHeader = !isPhone && headerMode === 'integrated';
+  // Полная навигация открывается поверх по кнопке ☰ в шапке списка чатов.
+  // Закреплённое меню: полная навигация всегда на экране, в том числе на страницах
+  // со встроенной шапкой (там без закрепления — узкая полоса и меню поверх по ☰).
+  const pinnedSidebar = !isPhone && sidebarPinned;
+  const chatPortalRail = (integratedChatHeader || integratedPageHeader) && !pinnedSidebar;
+  const effectiveSidebarCollapsed = pinnedSidebar ? false : (sidebarCollapsed || chatPortalRail);
+  const isEdgeToEdgeMobileContent = isPhone && contentMode === 'edge-to-edge-mobile';
+  const isEdgeToEdgeContent = contentMode === 'edge-to-edge' || isEdgeToEdgeMobileContent;
+  const notificationsOnlyHeader = headerMode === 'notifications-only';
+  const hiddenHeader = headerMode === 'hidden' || isPhone || integratedChatHeader || integratedPageHeader;
+  const minimalHeader = isPhone && headerMode === 'minimal';
+  const unreadHubNotificationCount = useMemo(
+    () => (
+      Array.isArray(notifications)
+        ? notifications.reduce(
+            (sum, item) => sum + (Number(item?.unread || 0) === 1 ? 1 : 0),
+            0,
+          )
+        : 0
+    ),
+    [notifications],
+  );
+  const unreadMailNotificationCount = useMemo(
+    () => (
+      Array.isArray(mailNotifications)
+        ? mailNotifications.reduce(
+            (sum, item) => sum + (!item?.is_read ? 1 : 0),
+            0,
+          )
+        : 0
+    ),
+    [mailNotifications],
+  );
+  const unreadBellInboxCount = unreadHubNotificationCount + unreadMailNotificationCount;
+  const visibleNavigationItems = useMemo(
+    () => getVisibleNavigationItems({ user, hasPermission }),
+    [hasPermission, user],
+  );
+  const hubCommands = useMemo(() => buildHubCommands({
+    visibleNavigationItems,
+    hasPermission,
+    includeDesktopActions: desktopActionsAvailable,
+  }), [desktopActionsAvailable, hasPermission, visibleNavigationItems]);
+  useEffect(() => {
+    const handleShortcut = (event) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && String(event.key).toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen((current) => !current);
+      }
+    };
+    const handleDesktopOpen = () => setCommandPaletteOpen(true);
+    const handleDesktopCapabilities = () => {
+      setDesktopActionsAvailable(isDesktopCapabilityAvailable('desktop-actions'));
+    };
+    const handleDesktopSharedFiles = () => {
+      navigate('/my-files');
+    };
+    window.addEventListener('keydown', handleShortcut);
+    window.addEventListener(DESKTOP_OPEN_COMMAND_PALETTE_EVENT, handleDesktopOpen);
+    window.addEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, handleDesktopCapabilities);
+    window.addEventListener(DESKTOP_SHARED_FILES_EVENT, handleDesktopSharedFiles);
+    return () => {
+      window.removeEventListener('keydown', handleShortcut);
+      window.removeEventListener(DESKTOP_OPEN_COMMAND_PALETTE_EVENT, handleDesktopOpen);
+      window.removeEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, handleDesktopCapabilities);
+      window.removeEventListener(DESKTOP_SHARED_FILES_EVENT, handleDesktopSharedFiles);
+    };
+  }, [navigate]);
+
+  const executeHubCommand = useCallback((command) => {
+    setCommandPaletteOpen(false);
+    if (typeof command?.route === 'string' && command.route.startsWith('/')) {
+      navigate(command.route);
+      return;
+    }
+
+    const accepted = command?.desktopAction === 'downloads'
+      ? requestDesktopOpenDownloads()
+      : command?.desktopAction === 'diagnostics'
+        ? requestDesktopOpenDiagnostics()
+        : command?.desktopAction === 'updates'
+          ? requestDesktopCheckForUpdates()
+          : command?.desktopAction === 'browser'
+            ? requestDesktopOpenCurrentInBrowser()
+            : false;
+    if (!accepted) {
+      notifyWarning('Команда HUB Desktop сейчас недоступна');
+    }
+  }, [navigate, notifyWarning]);
+  const mainNavigationItems = useMemo(
+    () => visibleNavigationItems.filter((item) => item.group === 'main'),
+    [visibleNavigationItems],
+  );
+  const toolNavigationItems = useMemo(
+    () => visibleNavigationItems.filter((item) => item.group === 'tools'),
+    [visibleNavigationItems],
+  );
+  const itNavigationItems = useMemo(
+    () => visibleNavigationItems.filter((item) => item.group === 'it'),
+    [visibleNavigationItems],
+  );
+  const visibleMobileNavigationItems = useMemo(
+    () => resolveMobileNavigationItems({
+      selectedPaths: preferences.mobile_bottom_nav_items,
+      user,
+      hasPermission,
+    }),
+    [hasPermission, preferences.mobile_bottom_nav_items, user],
+  );
+  const nativeShellBottomNav = isNativeShellBottomNav();
+  const showMobileBottomNavigation = Boolean(
+    isPhone
+    && !nativeShellBottomNav
+    && mobileBottomNavMode !== 'hidden'
+    && visibleMobileNavigationItems.length > 0
+  );
+  const hasMobileBottomNavigation = Boolean(
+    isPhone && visibleMobileNavigationItems.length > 0
+  );
+  const mobileBottomNavHidden = mobileBottomNavMode === 'hidden';
+  useEffect(() => {
+    postNativeShellBottomNavState(mobileBottomNavHidden);
+  }, [mobileBottomNavHidden]);
+  const mobileBottomNavTransition = useMemo(
+    () => theme.transitions.create(['padding-bottom', 'transform'], {
+      duration: mobileBottomNavTransitionMs,
+      easing: theme.transitions.easing.easeInOut,
+    }),
+    [mobileBottomNavTransitionMs, theme.transitions],
+  );
+  const showNotificationsButton = hasHubNotificationPermission || hasMailPermission;
+  const desktopQuickRoutes = useMemo(() => buildDesktopQuickRoutes({
+    visibleNavigationItems,
+    pinnedPaths: preferences.mobile_bottom_nav_items,
+    showNotifications: showNotificationsButton,
+    unreadCounts,
+    canCreateTasks: hasPermission('tasks.create') || hasPermission('tasks.write'),
+    canComposeMail: hasPermission('mail.access'),
+  }), [
+    hasPermission,
+    preferences.mobile_bottom_nav_items,
+    showNotificationsButton,
+    unreadCounts,
+    visibleNavigationItems,
+  ]);
+  const notificationsBadgeValue = Number(unreadCounts?.notifications_unread_total || 0);
+  const appBadgeValue = Number(unreadCounts?.notifications_unread_total || 0);
+  const showNotificationPermissionBanner = Boolean(
+    windowsNotificationState?.supported
+    && windowsNotificationState?.permission === 'default'
+    && !notificationPermissionBannerDismissed
+  );
+  const mobileOfflineReadOnly = getMobileOfflineState().readOnly;
+  const offlineLastSyncLabel = formatOfflineLastSync(offlineCacheMeta.lastSyncAt);
+  const showOfflineBanner = Boolean(isOffline || mobileOfflineReadOnly);
+  const connectionBannerState = connectionRestored
+    ? 'restored'
+    : showOfflineBanner
+      ? 'offline'
+      : null;
+  const lastConnectionBannerStateRef = useRef('offline');
+  if (connectionBannerState) lastConnectionBannerStateRef.current = connectionBannerState;
+  const renderedConnectionBannerState = connectionBannerState || lastConnectionBannerStateRef.current;
+  const isStandaloneShell = Boolean(pwaState?.installed);
+  const isWindowControlsOverlay = Boolean(
+    pwaState?.displayMode === 'window-controls-overlay' || pwaState?.windowControlsOverlayVisible,
+  );
+
+  useEffect(() => {
+    hasSeenHubNotificationRef.current = hasSeenHubNotification;
+  }, [hasSeenHubNotification]);
+
+  useEffect(() => {
+    markHubNotificationsSeenRef.current = markHubNotificationsSeen;
+  }, [markHubNotificationsSeen]);
+
+  useEffect(() => {
+    notifyInfoRef.current = notifyInfo;
+  }, [notifyInfo]);
+
+  useEffect(() => {
+    windowsNotificationStateRef.current = windowsNotificationState;
+  }, [windowsNotificationState]);
+
+  useEffect(() => {
+    if (windowsNotificationState?.permission !== 'default' && notificationPermissionBannerDismissed) {
+      clearNotificationPermissionBannerDismissed();
+      setNotificationPermissionBannerDismissed(false);
+    }
+  }, [notificationPermissionBannerDismissed, windowsNotificationState?.permission]);
+
+  const handleDismissNotificationPermissionBanner = useCallback(() => {
+    persistNotificationPermissionBannerDismissed(true);
+    setNotificationPermissionBannerDismissed(true);
+  }, []);
+
+  useEffect(() => {
+    notificationsOpenRef.current = notificationsOpen;
+  }, [notificationsOpen]);
+
+  useEffect(() => {
+    unreadCountsRef.current = unreadCounts;
+  }, [unreadCounts]);
+
+  useEffect(() => subscribePwaInstallState(setPwaState), []);
+
+  useEffect(() => () => {
+    if (pendingNavigationTimerRef.current) {
+      window.clearTimeout(pendingNavigationTimerRef.current);
+      pendingNavigationTimerRef.current = null;
+    }
+    if (pendingNavigationTimeoutRef.current) {
+      window.clearTimeout(pendingNavigationTimeoutRef.current);
+      pendingNavigationTimeoutRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!pendingNavigation) return;
+    const normalizedTargetPath = String(pendingNavigation?.path || '').trim();
+    if (!normalizedTargetPath) {
+      setPendingNavigation(null);
+      return;
+    }
+    if (normalizedTargetPath === '/networks') {
+      if (location.pathname === '/networks' || location.pathname.startsWith('/networks/')) {
+        setPendingNavigation(null);
+      }
+      return;
+    }
+    if (location.pathname === normalizedTargetPath) {
+      setPendingNavigation(null);
+    }
+  }, [location.pathname, pendingNavigation]);
+
+  useEffect(() => {
+    const syncCacheMeta = () => setOfflineCacheMeta(getMobileOfflineCacheMeta());
+    window.addEventListener(MOBILE_OFFLINE_CACHE_META_EVENT, syncCacheMeta);
+    return () => window.removeEventListener(MOBILE_OFFLINE_CACHE_META_EVENT, syncCacheMeta);
+  }, []);
+
+  useEffect(() => {
+    const syncOnlineState = (event) => {
+      const isNativeEvent = event?.type === MOBILE_NATIVE_NETWORK_STATE_EVENT;
+      if (isNativeEvent && (
+        window.__HUBIT_MOBILE_APP__ !== true
+        || event?.detail?.source !== 'android'
+        || typeof event?.detail?.online !== 'boolean'
+      )) return;
+      const offline = isNativeEvent ? !event.detail.online : !navigator.onLine;
+      setIsOffline(offline);
+      if (offline) {
+        offlineWasObservedRef.current = true;
+        clearConnectionRestoredMarker();
+        setConnectionRestored(false);
+        return;
+      }
+
+      const mobileReadOnly = getMobileOfflineState().readOnly;
+      if (!offlineWasObservedRef.current && !mobileReadOnly) return;
+      offlineWasObservedRef.current = false;
+      if (!mobileReadOnly) persistConnectionRestoredMarker();
+      setConnectionRestored(true);
+    };
+    window.addEventListener('online', syncOnlineState);
+    window.addEventListener('offline', syncOnlineState);
+    window.addEventListener(MOBILE_NATIVE_NETWORK_STATE_EVENT, syncOnlineState);
+    return () => {
+      window.removeEventListener('online', syncOnlineState);
+      window.removeEventListener('offline', syncOnlineState);
+      window.removeEventListener(MOBILE_NATIVE_NETWORK_STATE_EVENT, syncOnlineState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!connectionRestored) return undefined;
+    const timer = window.setTimeout(() => {
+      clearConnectionRestoredMarker();
+      setConnectionRestored(false);
+    }, CONNECTION_RESTORED_STATUS_MS);
+    return () => window.clearTimeout(timer);
+  }, [connectionRestored]);
+
+  useEffect(() => {
+    const updateBannerOffset = () => {
+      setTopBannerOffset(Math.ceil(topBannerRef.current?.getBoundingClientRect?.().height || 0));
+    };
+    updateBannerOffset();
+    if (typeof ResizeObserver !== 'function' || !topBannerRef.current) {
+      window.addEventListener('resize', updateBannerOffset);
+      return () => window.removeEventListener('resize', updateBannerOffset);
+    }
+    const observer = new ResizeObserver(updateBannerOffset);
+    observer.observe(topBannerRef.current);
+    window.addEventListener('resize', updateBannerOffset);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateBannerOffset);
+    };
+  }, [connectionBannerState, showNotificationPermissionBanner]);
+
+  useEffect(() => {
+    if (hiddenHeader) {
+      setAppBarHeight(0);
+      return undefined;
+    }
+
+    const updateAppBarHeight = () => {
+      const nextHeight = Math.ceil(appBarRef.current?.getBoundingClientRect?.().height || 0);
+      setAppBarHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
+    };
+    updateAppBarHeight();
+    if (typeof ResizeObserver !== 'function' || !appBarRef.current) {
+      window.addEventListener('resize', updateAppBarHeight);
+      return () => window.removeEventListener('resize', updateAppBarHeight);
+    }
+    const observer = new ResizeObserver(updateAppBarHeight);
+    observer.observe(appBarRef.current);
+    window.addEventListener('resize', updateAppBarHeight);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateAppBarHeight);
+    };
+  }, [
+    hiddenHeader,
+    isWindowControlsOverlay,
+    isStandaloneShell,
+    headerMode,
+    isPhone,
+    sidebarCollapsed,
+  ]);
+
+  useEffect(() => {
+    void syncAppBadge(appBadgeValue);
+  }, [appBadgeValue]);
+
+  useEffect(() => {
+    if (!isStandaloneShell) return undefined;
+    if (!hasHubNotificationPermission && !hasMailPermission) return undefined;
+
+    const syncBackgroundBadge = () => {
+      if (isNotificationSurfaceVisible()) return;
+      fetchUnreadCountsRef.current?.(null, {
+        reason: 'pwa-badge-background',
+        forceMailUnread: hasMailPermission,
+      });
+    };
+
+    syncBackgroundBadge();
+    const timer = window.setInterval(syncBackgroundBadge, PWA_BADGE_POLL_INTERVAL_MS);
+    const onVisibilityChange = () => {
+      if (!isNotificationSurfaceVisible()) {
+        syncBackgroundBadge();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisibilityChange);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisibilityChange);
+    };
+  }, [
+    hasHubNotificationPermission,
+    hasMailPermission,
+    isStandaloneShell,
+  ]);
+
+  const rememberRecentMailNotification = useCallback((messageId) => {
+    const normalizedId = String(messageId || '').trim();
+    if (!normalizedId) return false;
+    const now = Date.now();
+    const recent = recentMailNotificationIdsRef.current || new Map();
+    for (const [id, seenAt] of recent.entries()) {
+      if ((now - Number(seenAt || 0)) > MAIL_LOCAL_DEDUPE_WINDOW_MS) {
+        recent.delete(id);
+      }
+    }
+    if (recent.has(normalizedId)) {
+      recentMailNotificationIdsRef.current = recent;
+      return false;
+    }
+    recent.set(normalizedId, now);
+    if (recent.size > 100) {
+      const recentIds = [...recent.entries()]
+        .sort((left, right) => Number(right[1] || 0) - Number(left[1] || 0))
+        .slice(0, 100);
+      recentMailNotificationIdsRef.current = new Map(recentIds);
+      return true;
+    }
+    recentMailNotificationIdsRef.current = recent;
+    return true;
+  }, []);
+
+  const showForegroundPushToast = useCallback((detail = {}) => {
+    const decision = resolveForegroundPushDecision(detail, {
+      activeChatConversationId,
+      isChatRoute,
+      isMobileChatRoute,
+      isDesktopChatRoute,
+      isTaskDiscussionRoute,
+      isVisible: isNotificationSurfaceVisible(),
+      skipChatPush: shouldSkipChatPushForegroundNotification(),
+    });
+    if (decision.kind === 'suppress') {
+      if (decision.reason) setChatForegroundDiagnostic(decision.reason);
+      return;
+    }
+    if (decision.kind === 'claim-chat' && !claimChatMessageNotification(decision.messageId)) return;
+    notifyInfoRef.current?.(decision.body, decision.options);
+  }, [activeChatConversationId, isChatRoute, isMobileChatRoute, isDesktopChatRoute, isTaskDiscussionRoute]);
+
+  useEffect(() => {
+    const handleForegroundPushNotification = (event) => {
+      showForegroundPushToast(event?.detail || {});
+    };
+
+    window.addEventListener(PUSH_FOREGROUND_NOTIFICATION_EVENT, handleForegroundPushNotification);
+    return () => {
+      window.removeEventListener(PUSH_FOREGROUND_NOTIFICATION_EVENT, handleForegroundPushNotification);
+    };
+  }, [showForegroundPushToast]);
+
+  const showMailArrivalNotifications = useCallback(async ({ previousUnread = 0, nextUnread = 0 } = {}) => {
+    const unreadGrowth = Math.max(0, Number(nextUnread || 0) - Number(previousUnread || 0));
+    if (!hasMailPermission || unreadGrowth <= 0) return;
+    let feed = null;
+    try {
+      feed = await mailAPI.getNotificationFeed({ limit: Math.min(5, unreadGrowth) });
+    } catch {
+      return;
+    }
+    const items = Array.isArray(feed?.items) ? feed.items.slice(0, Math.min(5, unreadGrowth)) : [];
+    if (items.length === 0) return;
+    const currentWindowsNotificationState = windowsNotificationStateRef.current || getWindowsNotificationState();
+    const isVisible = isNotificationSurfaceVisible();
+    const currentPushNotificationState = getChatNotificationState();
+    const delivery = resolveMailArrivalDelivery({
+      isVisible,
+      pushSubscribed: currentPushNotificationState.pushSubscribed,
+      backgroundCapable: currentPushNotificationState.backgroundCapable,
+      windowsState: currentWindowsNotificationState,
+    });
+    if (!isNotificationChannelEnabled({ channel: 'mail' }, notificationPreferencesRef.current)) return;
+    items.slice().reverse().forEach((item) => {
+      const notificationId = getMailSystemNotificationId(item);
+      const { title, body } = getMailNotificationDisplay(item);
+      const payload = buildMailArrivalToastPayload(item, { notificationId, title, body });
+      if (!payload) return;
+      if (hasShownMailSystemNotification(notificationId)) return;
+      if (!rememberRecentMailNotification(notificationId)) return;
+      if (delivery === 'toast') {
+        markMailSystemNotificationShown(notificationId);
+        notifyInfoRef.current?.(payload.body, payload.toastOptions);
+        return;
+      }
+      if (delivery === 'system') {
+        createMailSystemNotification(
+          { ...item, folder: String(item?.folder || 'inbox') },
+          { onNavigate: (target) => navigate(target) },
+        );
+      }
+    });
+  }, [hasMailPermission, navigate, rememberRecentMailNotification]);
+
+  useEffect(() => {
+    chatUnreadSummaryRef.current = {
+      messages_unread_total: Number(unreadCounts?.chat_messages_unread_total || 0),
+      conversations_unread: Number(unreadCounts?.chat_conversations_unread || 0),
+    };
+  }, [unreadCounts?.chat_conversations_unread, unreadCounts?.chat_messages_unread_total]);
+
+  useEffect(() => {
+    const syncWindowsNotificationState = () => {
+      setWindowsNotificationState(getWindowsNotificationState());
+    };
+
+    syncWindowsNotificationState();
+    window.addEventListener(WINDOWS_NOTIFICATIONS_CHANGED_EVENT, syncWindowsNotificationState);
+    window.addEventListener('focus', syncWindowsNotificationState);
+    document.addEventListener('visibilitychange', syncWindowsNotificationState);
+    return () => {
+      window.removeEventListener(WINDOWS_NOTIFICATIONS_CHANGED_EVENT, syncWindowsNotificationState);
+      window.removeEventListener('focus', syncWindowsNotificationState);
+      document.removeEventListener('visibilitychange', syncWindowsNotificationState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!windowsNotificationState?.supported) return;
+    if (windowsNotificationState?.permission !== 'granted') return;
+    if (windowsNotificationState?.explicitlySet) return;
+    autoEnableWindowsNotificationsIfGranted();
+  }, [
+    windowsNotificationState?.explicitlySet,
+    windowsNotificationState?.permission,
+    windowsNotificationState?.supported,
+  ]);
+
+  useEffect(() => {
+    if (!hasChatPermission || !CHAT_WS_ENABLED) return undefined;
+    const handleUnreadSummary = (event) => {
+      const detail = event?.detail || {};
+      const messagesUnreadTotal = Math.max(0, Number(detail?.messages_unread_total || 0));
+      const conversationsUnread = Math.max(0, Number(detail?.conversations_unread || 0));
+      chatUnreadSummaryRef.current = {
+        messages_unread_total: messagesUnreadTotal,
+        conversations_unread: conversationsUnread,
+      };
+      setUnreadCounts((prev) => ({
+        ...prev,
+        chat_messages_unread_total: messagesUnreadTotal,
+        chat_conversations_unread: conversationsUnread,
+      }));
+    };
+
+    window.addEventListener(CHAT_SOCKET_UNREAD_SUMMARY_EVENT, handleUnreadSummary);
+    return () => {
+      window.removeEventListener(CHAT_SOCKET_UNREAD_SUMMARY_EVENT, handleUnreadSummary);
+    };
+  }, [hasChatPermission]);
+
+  useEffect(() => {
+    if (!hasChatPermission || !CHAT_WS_ENABLED) {
+      setChatSocketStatus('disabled');
+      return undefined;
+    }
+    setChatSocketStatus(chatSocket.getConnectionState());
+    const handleChatSocketStatus = (event) => {
+      const status = String(event?.detail?.status || '').trim() || 'disconnected';
+      setChatSocketStatus(status);
+    };
+    window.addEventListener(CHAT_SOCKET_STATUS_EVENT, handleChatSocketStatus);
+    return () => {
+      window.removeEventListener(CHAT_SOCKET_STATUS_EVENT, handleChatSocketStatus);
+    };
+  }, [hasChatPermission]);
+
+  useEffect(() => {
+    if (!hasChatPermission || !CHAT_WS_ENABLED) return undefined;
+    const handleChatMessageCreated = (event) => {
+      const envelope = event?.detail || {};
+      const message = envelope?.payload || {};
+      const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
+      const plan = resolveChatMessageNotificationPlan(envelope, {
+        userId: user?.id,
+        isConversationMuted: isChatConversationMuted(conversationId),
+        isChatRoute,
+        isTaskDiscussionRoute,
+        isMobileChatRoute,
+        activeChatConversationId,
+        isVisible: isNotificationSurfaceVisible(),
+        chatChannelEnabled: isNotificationChannelEnabled({
+          channel: 'chat',
+          conversation_kind: message?.conversation_kind,
+        }, notificationPreferencesRef.current),
+        chatMessageSoundEnabled: normalizeNotificationPreferences(notificationPreferencesRef.current).chat_sound,
+        isDesktopChatRoute,
+        chatNotificationState: getChatNotificationState(),
+        desktopActiveElsewhere: chatSocket.isDesktopActiveElsewhere(),
+        isDesktopRuntime: isDesktopBridgeReady(),
+      });
+      if (plan.kind === 'ignore') return;
+      if (plan.kind === 'suppress') {
+        setChatForegroundDiagnostic(plan.reason);
+        return;
+      }
+      if (!claimChatMessageNotification(plan.messageId)) return;
+      // N3: запоминаем отправителя для заголовка вкладки на скрытой странице.
+      setLastNotificationLabel(String(plan.senderName || '').trim() || 'Новое уведомление');
+      if (plan.shouldPlaySound) {
+        playChatMessageSound();
+      }
+      if (plan.suppress) {
+        setChatForegroundDiagnostic(plan.suppress);
+        return;
+      }
+      if (plan.toast) {
+        notifyInfoRef.current?.(plan.toast.body, plan.toast.options);
+      }
+      if (plan.reason) {
+        setChatForegroundDiagnostic(plan.reason);
+        return;
+      }
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'MainLayout.jsx:handleChatMessageCreated',
+        message: plan.shouldShowLocalSystemNotification ? 'local system notification requested' : 'local system notification skipped',
+        hypothesisId: 'H5',
+        data: {
+          messageId: plan.messageId,
+          conversationId: plan.conversationId,
+          activeChatConversationId: String(activeChatConversationId || '').trim(),
+          isActiveVisibleConversation: plan.isActiveVisibleConversation,
+          pathname: location.pathname,
+          visibility: document.visibilityState,
+          pushSubscribed: getChatNotificationState().pushSubscribed,
+          backgroundCapable: getChatNotificationState().backgroundCapable,
+          shouldShowLocalSystemNotification: plan.shouldShowLocalSystemNotification,
+        },
+      });
+      // #endregion
+      setChatForegroundDiagnostic('');
+      if (plan.system) {
+        createChatSystemNotification({
+          ...plan.system,
+          onNavigate: (target) => navigate(target || plan.system.navigateTo),
+        });
+      }
+    };
+
+    window.addEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleChatMessageCreated);
+    return () => {
+      window.removeEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleChatMessageCreated);
+    };
+  }, [
+    activeChatConversationId,
+    hasChatPermission,
+    isChatRoute,
+    isDesktopChatRoute,
+    isMobileChatRoute,
+    isTaskDiscussionRoute,
+    location.pathname,
+    navigate,
+    user?.id,
+  ]);
+useEffect(() => {
+  const handleToastActionExecute = (event) => {
+    const action = normalizeToastAction(event?.detail);
+    if (!action || action.kind !== 'navigate') return;
+    navigate(action.to);
+  };
+
+  window.addEventListener(TOAST_ACTION_EXECUTE_EVENT, handleToastActionExecute);
+  return () => {
+    window.removeEventListener(TOAST_ACTION_EXECUTE_EVENT, handleToastActionExecute);
+  };
+}, [navigate]);
+
+  const toggleSidebarPinned = useCallback(() => {
+    setSidebarPinned((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(SIDEBAR_PINNED_KEY, String(next));
+      } catch {
+        // Storage can be unavailable (private mode); the pin then lasts for the session only.
+      }
+      return next;
+    });
+    setDrawerOpen(false);
+  }, []);
+
+  const toggleSidebar = () => {
+    const newState = !sidebarCollapsed;
+    setSidebarCollapsed(newState);
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(newState));
+  };
+
+  // Fetch available databases
+  useEffect(() => {
+    const handleOpenSidebar = () => setDrawerOpen(true);
+    window.addEventListener('open-sidebar', handleOpenSidebar);
+    return () => window.removeEventListener('open-sidebar', handleOpenSidebar);
+  }, []);
+
+  useEffect(() => {
+    const fetchDatabases = async () => {
+      try {
+        const data = await databaseAPI.getAvailableDatabases();
+        setDatabases(Array.isArray(data) ? data : []);
+      } catch (error) {
+        console.error('Error fetching databases:', error);
+        setDbLoading(false);
+      }
+    };
+
+    const fetchCurrentDb = async () => {
+      try {
+        const data = await databaseAPI.getCurrentDatabase();
+        setCurrentDb({
+          id: normalizeDbId(data?.id || data?.database_id || ''),
+          name: data?.name || data?.database || data?.database_name || '',
+        });
+        setDbLocked(String(data?.locked || '') === 'true');
+      } catch (error) {
+        console.error('Error fetching current database:', error);
+      } finally {
+        setDbLoading(false);
+      }
+    };
+
+    const run = () => {
+      if (databaseMetaLoadedRef.current) {
+        setDbLoading(false);
+        return;
+      }
+      databaseMetaLoadedRef.current = true;
+      fetchDatabases();
+      fetchCurrentDb();
+    };
+
+    if (!isChatRoute) {
+      run();
+      return undefined;
+    }
+
+    if (!drawerOpen) {
+      setDbLoading(false);
+      return undefined;
+    }
+
+    run();
+    return undefined;
+  }, [drawerOpen, isChatRoute]);
+
+  useEffect(() => {
+    if (databases.length === 0) return;
+
+    const currentId = normalizeDbId(currentDb?.id);
+    const storedId = normalizeDbId(localStorage.getItem('selected_database'));
+    const preferredId = currentId || storedId;
+
+    const selectedDb =
+      databases.find((db) => normalizeDbId(db.id) === preferredId) ||
+      databases.find((db) => normalizeDbId(db.id) === currentId) ||
+      databases[0];
+
+    if (!selectedDb) return;
+
+    const selectedId = normalizeDbId(selectedDb.id);
+    if (selectedId !== currentId || !currentDb?.name) {
+      setCurrentDb({
+        id: selectedId,
+        name: selectedDb.name || currentDb?.name || '',
+      });
+    }
+
+    localStorage.setItem('selected_database', selectedId);
+  }, [databases, currentDb?.id, currentDb?.name]);
+
+  const fetchUnreadCounts = useCallback(async (
+    hubCountsOverride = null,
+    {
+      reason = 'auto',
+      forceMailUnread = false,
+    } = {},
+  ) => {
+    if (!hasDashboardPermission && !hasTasksPermission && !hasMailPermission && !hasChatPermission) return;
+    if (fetchUnreadCountsInFlightRef.current) return fetchUnreadCountsInFlightRef.current;
+
+    const run = (async () => {
+      try {
+        const previousCounts = unreadCountsRef.current || {};
+        const mailUnreadMutationVersionAtStart = mailUnreadMutationVersionRef.current;
+        const hub = {};
+        const mail = {
+          unread: 0,
+          state: String(previousCounts.mail_state || 'unknown'),
+          asOf: previousCounts.mail_as_of || null,
+        };
+        const chat = {
+          messagesUnreadTotal: Number(chatUnreadSummaryRef.current?.messages_unread_total || 0),
+          conversationsUnread: Number(chatUnreadSummaryRef.current?.conversations_unread || 0),
+        };
+        let mailUnreadResolved = !hasMailPermission;
+
+        const applyHubCounts = (data) => {
+          const parsed = parseHubUnreadCounts(data);
+          if (parsed.hubChatOrdinary) {
+            ordinaryChatHubReadVisibleRef.current = resolveOrdinaryChatHubReadVisible(
+              parsed.hubChatOrdinary,
+            );
+          }
+          Object.assign(hub, parsed);
+        };
+
+        const promises = [];
+        if (hasHubNotificationPermission) {
+          if (hubCountsOverride && typeof hubCountsOverride === 'object') {
+            applyHubCounts(hubCountsOverride);
+          } else {
+            promises.push(apiClient.get('/hub/notifications/unread-counts').then((res) => {
+              applyHubCounts(res?.data || {});
+            }));
+          }
+        }
+
+        if (hasMailPermission) {
+          const now = Date.now();
+          const shouldReuseMailUnread = Boolean(
+            !forceMailUnread
+            && mailUnreadFetchedAtRef.current > 0
+            && (now - Number(mailUnreadFetchedAtRef.current || 0)) < MAIL_UNREAD_REFRESH_TTL_MS
+          );
+
+          if (shouldReuseMailUnread) {
+            mail.unread = Number(previousCounts.mail_unread || 0);
+            mail.state = String(previousCounts.mail_state || 'unknown');
+            mail.asOf = previousCounts.mail_as_of || null;
+            mailUnreadResolved = true;
+          } else {
+            promises.push(mailAPI.getUnreadCount({
+              force: forceMailUnread,
+            }).then((data) => {
+              const resolved = resolveMailUnreadResult({
+                data,
+                previousCounts,
+                mutationRaced: mailUnreadMutationVersionRef.current !== mailUnreadMutationVersionAtStart,
+                currentCounts: unreadCountsRef.current,
+              });
+              mail.unread = resolved.mailUnread;
+              mail.state = resolved.mailState;
+              mail.asOf = resolved.mailAsOf;
+              mailUnreadResolved = true;
+              mailUnreadFetchedAtRef.current = Date.now();
+            }));
+          }
+        }
+
+        if (hasChatPermission && !CHAT_WS_ENABLED) {
+          promises.push(chatAPI.getUnreadSummary().then((data) => {
+            chat.messagesUnreadTotal = Number(data?.messages_unread_total || 0);
+            chat.conversationsUnread = Number(data?.conversations_unread || 0);
+          }));
+        }
+
+        await Promise.allSettled(promises);
+
+        const previousChatMessagesUnread = Number(previousCounts.chat_messages_unread_total || 0);
+        const nextCounts = buildNextUnreadCounts({
+          hub,
+          mail,
+          chat,
+          previousCounts,
+          chatWsEnabled: CHAT_WS_ENABLED,
+        });
+        unreadCountsRef.current = nextCounts;
+        const previousMailUnread = Number(previousCounts.mail_unread || 0);
+        const hadMailUnreadBaseline = mailUnreadBaselineReadyRef.current;
+        if (hasMailPermission && mailUnreadResolved && !hadMailUnreadBaseline) {
+          mailUnreadBaselineReadyRef.current = true;
+        }
+        if (shouldNotifyMailArrival({
+          resolved: mailUnreadResolved,
+          hadBaseline: hadMailUnreadBaseline,
+          nextUnread: mail.unread,
+          previousUnread: previousMailUnread,
+        })) {
+          window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
+          await showMailArrivalNotifications({
+            previousUnread: previousMailUnread,
+            nextUnread: mail.unread,
+          });
+        }
+        // Non-WS fallback: toast from chat unread summary delta (not hub ordinary rows).
+        if (hasChatPermission && !CHAT_WS_ENABLED) {
+          const hadChatUnreadBaseline = chatUnreadBaselineReadyRef.current;
+          const deltaToast = resolveChatUnreadDeltaToast({
+            chatMessagesUnreadTotal: chat.messagesUnreadTotal,
+            previousChatMessagesUnread,
+            hadBaseline: hadChatUnreadBaseline,
+            isVisible: isNotificationSurfaceVisible(),
+            isOnChatRoute: locationPathnameRef.current.startsWith('/chat'),
+          });
+          if (!hadChatUnreadBaseline) {
+            chatUnreadBaselineReadyRef.current = true;
+          } else if (deltaToast?.message) {
+            notifyInfoRef.current?.(deltaToast.message, deltaToast.options);
+          }
+        }
+        setUnreadCounts(nextCounts);
+      } catch (error) {
+        console.error('Hub unread counts error:', error);
+      }
+    })();
+
+    fetchUnreadCountsInFlightRef.current = run;
+    try {
+      return await run;
+    } finally {
+      if (fetchUnreadCountsInFlightRef.current === run) {
+        fetchUnreadCountsInFlightRef.current = null;
+      }
+    }
+  }, [
+    hasDashboardPermission,
+    hasTasksPermission,
+    hasChatPermission,
+    hasHubNotificationPermission,
+    hasMailPermission,
+    isMailRoute,
+    showMailArrivalNotifications,
+  ]);
+
+  const applyMailUnreadDelta = useCallback((detail = {}) => {
+    const applied = applyMailUnreadDeltaToCounts(unreadCountsRef.current, detail?.unreadDelta);
+    if (applied) {
+      mailUnreadMutationVersionRef.current += 1;
+      unreadCountsRef.current = applied.nextCounts;
+      mailUnreadFetchedAtRef.current = Date.now();
+      mailUnreadBaselineReadyRef.current = true;
+      setUnreadCounts(applied.nextCounts);
+    }
+
+    if (detail?.nextIsRead) {
+      const targetId = String(detail?.targetId || '').trim();
+      const mode = String(detail?.mode || 'messages').trim();
+      if (targetId) {
+        setMailNotifications((previous) => (Array.isArray(previous)
+          ? previous.filter((item) => shouldKeepMailNotificationAfterRead(item, { targetId, mode }))
+          : []));
+      }
+    }
+  }, []);
+
+  const refreshBellInbox = useCallback(async () => {
+    if (!hasHubNotificationPermission && !hasMailPermission) {
+      setNotifications([]);
+      setMailNotifications([]);
+      return;
+    }
+    try {
+      let nextHubItems = [];
+      let nextMailItems = [];
+      const requests = [];
+      if (hasHubNotificationPermission) {
+        requests.push(
+          apiClient.get('/hub/notifications/poll', {
+            params: {
+              limit: 60,
+              unread_only: true,
+            },
+          }).then((response) => {
+            const readVisible = resolveOrdinaryChatHubReadVisible(response?.data?.hub_chat_ordinary);
+            ordinaryChatHubReadVisibleRef.current = readVisible;
+            nextHubItems = selectHubBellItems(response, { ordinaryReadVisible: readVisible });
+          }),
+        );
+      }
+      if (hasMailPermission) {
+        requests.push(
+          mailAPI.getNotificationFeed({
+            limit: 20,
+          }).then((data) => {
+            nextMailItems = selectMailBellItems(data);
+          }),
+        );
+      }
+      await Promise.allSettled(requests);
+      setNotifications(nextHubItems);
+      setMailNotifications(nextMailItems);
+    } catch (error) {
+      console.error('Bell inbox refresh failed:', error);
+    }
+  }, [hasHubNotificationPermission, hasMailPermission]);
+
+  useEffect(() => {
+    if (!hasHubNotificationPermission && !hasMailPermission) return undefined;
+    let cancelled = false;
+    const applyPreferences = (value) => {
+      notificationPreferencesRef.current = normalizeNotificationPreferences(value);
+    };
+    const loadNotificationPreferences = async () => {
+      try {
+        const data = await settingsAPI.getNotificationPreferences();
+        if (!cancelled) {
+          applyPreferences(data?.channels);
+        }
+      } catch {
+        if (!cancelled) {
+          applyPreferences();
+        }
+      }
+    };
+    const handlePreferencesChanged = (event) => {
+      applyPreferences(event?.detail);
+    };
+    window.addEventListener(NOTIFICATION_PREFERENCES_CHANGED_EVENT, handlePreferencesChanged);
+    loadNotificationPreferences();
+    return () => {
+      cancelled = true;
+      window.removeEventListener(NOTIFICATION_PREFERENCES_CHANGED_EVENT, handlePreferencesChanged);
+    };
+  }, [hasHubNotificationPermission, hasMailPermission]);
+
+  useEffect(() => {
+    if (!hasMailPermission) return undefined;
+    const onVisibilityChange = () => {
+      if (!isNotificationSurfaceVisible()) return;
+      fetchUnreadCountsRef.current?.(null, { reason: 'visibility' });
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisibilityChange);
+    };
+  }, [hasMailPermission]);
+
+  useEffect(() => {
+    fetchUnreadCountsRef.current = fetchUnreadCounts;
+  }, [fetchUnreadCounts]);
+
+  useEffect(() => {
+    refreshBellInboxRef.current = refreshBellInbox;
+  }, [refreshBellInbox]);
+
+  useEffect(() => {
+    if (!hasDashboardPermission && !hasTasksPermission && !hasMailPermission && !hasChatPermission) return undefined;
+
+    const pollNotifications = async ({ forceFull = false, enableToasts = true, ignoreBackoff = false } = {}) => {
+      const currentWindowsNotificationState = windowsNotificationStateRef.current || getWindowsNotificationState();
+      const allowBackgroundPolling = Boolean(
+        currentWindowsNotificationState.enabled
+        && currentWindowsNotificationState.permission === 'granted',
+      );
+      if (!isNotificationSurfaceVisible() && !allowBackgroundPolling) {
+        if (hasMailPermission) {
+          await fetchUnreadCounts(null, { reason: 'hub-poll-mail-only' });
+        }
+        return;
+      }
+      if (!ignoreBackoff && Date.now() < Number(hubPollBackoffUntilRef.current || 0)) return;
+      try {
+        const sinceValue = forceFull ? '' : String(lastPollRef.current || '').trim();
+        const response = await apiClient.get('/hub/notifications/poll', {
+          params: {
+            since: sinceValue || undefined,
+            limit: 20,
+          },
+        });
+        hubPollFailureCountRef.current = 0;
+        hubPollBackoffUntilRef.current = 0;
+        hubPollLastSuccessAtRef.current = Date.now();
+        const payload = response?.data || {};
+        if (payload?.hub_chat_ordinary) {
+          ordinaryChatHubReadVisibleRef.current = resolveOrdinaryChatHubReadVisible(
+            payload.hub_chat_ordinary,
+          );
+        }
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+
+        if (items.length > 0) {
+          const itemIds = items
+            .map((item) => String(item?.id || '').trim())
+            .filter(Boolean);
+          const maxTs = items.reduce((acc, item) => {
+            const ts = String(item?.created_at || '').trim();
+            if (!ts) return acc;
+            return ts > acc ? ts : acc;
+          }, String(lastPollRef.current || ''));
+          lastPollRef.current = maxTs || lastPollRef.current;
+
+          const isVisible = isNotificationSurfaceVisible();
+          const shouldShowToasts = enableToasts && !forceFull && !hubPollSuppressToastsRef.current && isVisible;
+          const shouldShowSystemNotifications = Boolean(
+            enableToasts
+            && !forceFull
+            && !hubPollSuppressToastsRef.current
+            && currentWindowsNotificationState.enabled
+            && currentWindowsNotificationState.permission === 'granted'
+            && !isVisible
+          );
+          if (shouldShowToasts || shouldShowSystemNotifications) {
+            items
+              .slice()
+              .reverse()
+              .forEach((item) => {
+                const id = String(item?.id || '').trim();
+                if (!id || hasSeenHubNotificationRef.current?.(id)) return;
+                const entityType = String(item?.entity_type || '').trim().toLowerCase();
+                if (!isNotificationChannelEnabled(item, notificationPreferencesRef.current)) {
+                  return;
+                }
+                // WS clients get chat toasts from the socket.
+                if (entityType === 'chat' && hasChatPermission && CHAT_WS_ENABLED) {
+                  return;
+                }
+                // When READ_VISIBLE=false, suppress ordinary legacy hub toasts (badge already excludes them).
+                if (
+                  !ordinaryChatHubReadVisibleRef.current
+                  && isLegacyOrdinaryChatHubNotification(item)
+                ) {
+                  return;
+                }
+                const rawTitle = String(item?.title || '').trim();
+                const rawBody = String(item?.body || '').trim();
+                const toastMessage = rawBody || rawTitle || 'Новое уведомление';
+                const toastTitle = rawBody ? (rawTitle || 'Новое уведомление') : 'Уведомление';
+                // N3: a hub notification is the freshest one — the hidden-tab
+                // title falls back to the generic label again.
+                setLastNotificationLabel('Новое уведомление');
+                const navigateTo = getHubNotificationNavigateTo(item);
+                const actionLabel = getHubNotificationActionLabel(item);
+                if (shouldShowToasts) {
+                  notifyInfoRef.current?.(toastMessage, {
+                    title: toastTitle,
+                    source: 'hub',
+                    channel: 'system',
+                    action: createNavigateToastAction(navigateTo, actionLabel),
+                    dedupeMode: 'recent',
+                    dedupeKey: `hub:${id}`,
+                    durationMs: 5200,
+                  });
+                }
+                if (shouldShowSystemNotifications) {
+                  createHubSystemNotification(item, {
+                    onNavigate: (target) => navigate(target),
+                  });
+                  // R16: /sounds/notification.mp3 never existed in public/ —
+                  // reuse the chat message sound under the same toggle.
+                  if (normalizeNotificationPreferences(notificationPreferencesRef.current).chat_sound) {
+                    playChatMessageSound();
+                  }
+                }
+              });
+          }
+
+          markHubNotificationsSeenRef.current?.(itemIds);
+        }
+
+        if (hubPollSuppressToastsRef.current) {
+          hubPollSuppressToastsRef.current = false;
+        }
+
+        await fetchUnreadCounts(payload?.unread_counts || null, { reason: 'hub-poll' });
+      } catch (error) {
+        const status = Number(error?.response?.status || 0);
+        const isTransient = status === 0 || status === 502 || status === 503 || status === 504;
+        if (isTransient) {
+          const nextFailureCount = Math.min(6, Number(hubPollFailureCountRef.current || 0) + 1);
+          hubPollFailureCountRef.current = nextFailureCount;
+          hubPollSuppressToastsRef.current = true;
+          const backoffMs = Math.min(
+            300_000,
+            HUB_POLL_INTERVAL_MS * (2 ** Math.max(0, nextFailureCount - 1))
+          );
+          hubPollBackoffUntilRef.current = Date.now() + backoffMs;
+
+          const now = Date.now();
+          if (now - Number(hubPollLastWarnAtRef.current || 0) > 60_000) {
+            hubPollLastWarnAtRef.current = now;
+            const codeText = status > 0 ? String(status) : 'network';
+            console.warn(`Hub notifications poll temporary error (${codeText}), retry in ${Math.ceil(backoffMs / 1000)}s.`);
+          }
+          return;
+        }
+        console.error('Hub notifications poll error:', error);
+      }
+    };
+
+    let timer = null;
+    let onVisible = null;
+    let onHubRefresh = null;
+
+    if (hasHubNotificationPermission) {
+      pollNotificationsRef.current = pollNotifications;
+      lastPollRef.current = '';
+      hubPollBackoffUntilRef.current = 0;
+      hubPollFailureCountRef.current = 0;
+      hubPollLastWarnAtRef.current = 0;
+      hubPollSuppressToastsRef.current = false;
+      hubPollLastSuccessAtRef.current = 0;
+
+      pollNotifications({ forceFull: true, enableToasts: false });
+      timer = setInterval(() => {
+        const lastSuccessAt = Number(hubPollLastSuccessAtRef.current || 0);
+        if (
+          HUB_REALTIME_RELAX_POLLING_ENABLED
+          && hubRealtimeStableRef.current
+          && lastSuccessAt > 0
+          && Date.now() - lastSuccessAt < HUB_REALTIME_RECONCILE_INTERVAL_MS
+        ) {
+          return;
+        }
+        pollNotifications({ forceFull: false, enableToasts: true });
+      }, HUB_POLL_INTERVAL_MS);
+      onVisible = () => {
+        if (isNotificationSurfaceVisible()) {
+          pollNotifications({ forceFull: false, enableToasts: false });
+        }
+      };
+      onHubRefresh = () => {
+        pollNotifications({ forceFull: true, enableToasts: false, ignoreBackoff: true });
+        if (notificationsOpenRef.current) {
+          refreshBellInboxRef.current?.();
+        }
+      };
+      document.addEventListener('visibilitychange', onVisible);
+      window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisible);
+      window.addEventListener('hub-refresh-notifications', onHubRefresh);
+    } else if (hasMailPermission || (hasChatPermission && !CHAT_WS_ENABLED)) {
+      pollNotificationsRef.current = null;
+      fetchUnreadCounts(null, { reason: 'timer' });
+      timer = setInterval(() => {
+        fetchUnreadCounts(null, { reason: 'timer' });
+        if (notificationsOpenRef.current) {
+          refreshBellInboxRef.current?.();
+        }
+      }, HUB_POLL_INTERVAL_MS);
+    }
+
+    const onMailChange = (event) => {
+      const detail = event?.detail;
+      const phase = String(detail?.phase || '').trim();
+      if (detail && ['optimistic', 'confirmed', 'rollback'].includes(phase)) {
+        applyMailUnreadDelta(detail);
+        if (phase === 'rollback') {
+          fetchUnreadCounts(null, { reason: 'mail-read-rollback', forceMailUnread: true });
+          if (notificationsOpenRef.current) {
+            refreshBellInboxRef.current?.();
+          }
+        }
+        return;
+      }
+      fetchUnreadCounts(null, { reason: 'mail-change', forceMailUnread: true });
+      if (notificationsOpenRef.current) refreshBellInboxRef.current?.();
+    };
+    const onChatUnreadRefresh = () => {
+      fetchUnreadCounts(null, { reason: 'chat-unread' });
+      if (notificationsOpenRef.current) {
+        refreshBellInboxRef.current?.();
+      }
+    };
+    window.addEventListener('mail-read', onMailChange);
+    window.addEventListener('mail-list-refreshed', onMailChange);
+    window.addEventListener('chat-unread-needs-refresh', onChatUnreadRefresh);
+
+    return () => {
+      pollNotificationsRef.current = null;
+      if (timer) clearInterval(timer);
+      if (onVisible) {
+        document.removeEventListener('visibilitychange', onVisible);
+        window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, onVisible);
+      }
+      if (onHubRefresh) window.removeEventListener('hub-refresh-notifications', onHubRefresh);
+      window.removeEventListener('mail-read', onMailChange);
+      window.removeEventListener('mail-list-refreshed', onMailChange);
+      window.removeEventListener('chat-unread-needs-refresh', onChatUnreadRefresh);
+    };
+  }, [
+    applyMailUnreadDelta,
+    fetchUnreadCounts,
+    hasDashboardPermission,
+    hasTasksPermission,
+    hasChatPermission,
+    hasHubNotificationPermission,
+    hasMailPermission,
+    refreshBellInbox,
+    navigate,
+  ]);
+
+  useEffect(() => {
+    if ((!hasHubNotificationPermission && !hasMailPermission) || !HUB_REALTIME_ENABLED) return undefined;
+
+    let refreshTimer = null;
+    let mailRefreshTimer = null;
+    let pendingForceFull = false;
+    let pendingEnableToasts = false;
+    const scheduleRefresh = ({ forceFull, enableToasts }) => {
+      pendingForceFull = pendingForceFull || Boolean(forceFull);
+      pendingEnableToasts = pendingEnableToasts || Boolean(enableToasts);
+      if (refreshTimer) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        const runForceFull = pendingForceFull;
+        const runEnableToasts = pendingEnableToasts && !runForceFull;
+        pendingForceFull = false;
+        pendingEnableToasts = false;
+        pollNotificationsRef.current?.({
+          forceFull: runForceFull,
+          enableToasts: runEnableToasts,
+          ignoreBackoff: true,
+        });
+        if (notificationsOpenRef.current) {
+          refreshBellInboxRef.current?.();
+        }
+      }, 0);
+    };
+    const scheduleMailRefresh = (reason) => {
+      if (!hasMailPermission || mailRefreshTimer) return;
+      mailRefreshTimer = window.setTimeout(() => {
+        mailRefreshTimer = null;
+        fetchUnreadCountsRef.current?.(null, { reason, forceMailUnread: true });
+        window.dispatchEvent(new CustomEvent('mail-needs-refresh', {
+          detail: { reason },
+        }));
+        if (notificationsOpenRef.current) {
+          refreshBellInboxRef.current?.();
+        }
+      }, 0);
+    };
+    const handleConnected = () => {
+      if (hasHubNotificationPermission) {
+        scheduleRefresh({ forceFull: true, enableToasts: false });
+      }
+      scheduleMailRefresh('hub-realtime-connected');
+    };
+    const handleStable = () => {
+      if (HUB_REALTIME_RELAX_POLLING_ENABLED) {
+        hubRealtimeStableRef.current = true;
+      }
+    };
+    const handleStatus = (event) => {
+      const status = String(event?.detail?.status || '').trim().toLowerCase();
+      if (status === 'connected') return;
+      const wasStable = hubRealtimeStableRef.current;
+      hubRealtimeStableRef.current = false;
+      if (wasStable && hasHubNotificationPermission) {
+        scheduleRefresh({ forceFull: true, enableToasts: false });
+      }
+    };
+    const handleNotificationCreated = () => {
+      scheduleRefresh({ forceFull: false, enableToasts: true });
+    };
+    const handleMailChanged = () => {
+      scheduleMailRefresh('hub-realtime-mail');
+    };
+
+    window.addEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
+    window.addEventListener(HUB_REALTIME_STABLE_EVENT, handleStable);
+    window.addEventListener(HUB_REALTIME_STATUS_EVENT, handleStatus);
+    window.addEventListener(HUB_REALTIME_NOTIFICATION_EVENT, handleNotificationCreated);
+    window.addEventListener(HUB_REALTIME_MAIL_EVENT, handleMailChanged);
+    const release = hubRealtimeSocket.retain();
+    hubRealtimeStableRef.current = Boolean(
+      HUB_REALTIME_RELAX_POLLING_ENABLED
+      && hubRealtimeSocket.isStableConnection?.()
+    );
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      if (mailRefreshTimer) window.clearTimeout(mailRefreshTimer);
+      window.removeEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
+      window.removeEventListener(HUB_REALTIME_STABLE_EVENT, handleStable);
+      window.removeEventListener(HUB_REALTIME_STATUS_EVENT, handleStatus);
+      window.removeEventListener(HUB_REALTIME_NOTIFICATION_EVENT, handleNotificationCreated);
+      window.removeEventListener(HUB_REALTIME_MAIL_EVENT, handleMailChanged);
+      hubRealtimeStableRef.current = false;
+      release();
+    };
+  }, [hasHubNotificationPermission, hasMailPermission]);
+
+  const handleLogout = async () => {
+    setAccountMenuAnchorEl(null);
+    await logout();
+    navigate('/login');
+  };
+
+  const toggleToolsGroup = () => {
+    setSidebarToolsExpanded((current) => {
+      const next = !current;
+      localStorage.setItem(SIDEBAR_TOOLS_EXPANDED_KEY, String(next));
+      return next;
+    });
+  };
+
+  const toggleItGroup = () => {
+    setSidebarItExpanded((current) => {
+      const next = !current;
+      localStorage.setItem(SIDEBAR_IT_EXPANDED_KEY, String(next));
+      return next;
+    });
+  };
+
+  const openAccountRoute = (path) => {
+    setAccountMenuAnchorEl(null);
+    setDrawerOpen(false);
+    navigate(path);
+  };
+
+  const handleMarkNotificationRead = async (notificationId) => {
+    const id = String(notificationId || '').trim();
+    if (!id) return;
+    try {
+      await apiClient.post(`/hub/notifications/${encodeURIComponent(id)}/read`);
+      await Promise.all([
+        refreshBellInboxRef.current?.(),
+        fetchUnreadCountsRef.current?.(),
+      ]);
+    } catch (error) {
+      console.error('Mark notification read failed:', error);
+    }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    if (unreadBellInboxCount <= 0) return;
+    try {
+      const requests = [];
+      if (unreadHubNotificationCount > 0 && (hasDashboardPermission || hasTasksPermission || hasChatPermission)) {
+        requests.push(apiClient.post('/hub/notifications/read-all'));
+      }
+      if (unreadMailNotificationCount > 0 && hasMailPermission) {
+        requests.push(mailAPI.markAllRead({ folder: 'inbox', folder_scope: 'current' }));
+      }
+      await Promise.all(requests);
+      if (unreadMailNotificationCount > 0) {
+        window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
+      }
+      await Promise.all([
+        refreshBellInboxRef.current?.(),
+        fetchUnreadCountsRef.current?.(),
+      ]);
+    } catch (error) {
+      console.error('Mark all notifications read failed:', error);
+    }
+  };
+
+  const handleOpenNotification = async (item) => {
+    if (!item) return;
+    if (Number(item?.unread || 0) === 1) {
+      await handleMarkNotificationRead(item?.id);
+    }
+    setNotificationsOpen(false);
+    navigate(getHubNotificationNavigateTo(item));
+  };
+
+  const handleOpenMailNotification = async (item) => {
+    const messageId = String(item?.id || '').trim();
+    const mailboxId = String(item?.mailbox_id || '').trim();
+    if (!messageId) return;
+    try {
+      if (!item?.is_read) {
+        await mailAPI.markAsRead(messageId, mailboxId);
+        window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
+        await Promise.all([
+          refreshBellInboxRef.current?.(),
+          fetchUnreadCountsRef.current?.(),
+        ]);
+      }
+    } catch (error) {
+      console.error('Mark mail notification read failed:', error);
+    }
+    setNotificationsOpen(false);
+    const routeParts = [
+      `folder=${encodeURIComponent(String(item?.folder || 'inbox'))}`,
+      `message=${encodeURIComponent(messageId)}`,
+    ];
+    if (mailboxId) routeParts.push(`mailbox_id=${encodeURIComponent(mailboxId)}`);
+    navigate(`/mail?${routeParts.join('&')}`);
+  };
+
+  const handleNavigation = (item) => {
+    const externalUrl = String(item?.externalUrl || '').trim();
+    if (externalUrl) {
+      window.open(externalUrl, '_blank', 'noopener,noreferrer');
+      setDrawerOpen(false);
+      return;
+    }
+    const targetPath = String(item?.path || '').trim();
+    if (!targetPath) {
+      setDrawerOpen(false);
+      return;
+    }
+
+    const alreadyActive = targetPath === '/networks'
+      ? (location.pathname === '/networks' || location.pathname.startsWith('/networks/'))
+      : location.pathname === targetPath;
+    if (alreadyActive) {
+      setPendingNavigation(null);
+      setDrawerOpen(false);
+      return;
+    }
+
+    if (pendingNavigationTimerRef.current) {
+      window.clearTimeout(pendingNavigationTimerRef.current);
+      pendingNavigationTimerRef.current = null;
+    }
+    if (pendingNavigationTimeoutRef.current) {
+      window.clearTimeout(pendingNavigationTimeoutRef.current);
+      pendingNavigationTimeoutRef.current = null;
+    }
+
+    void prefetchRouteByPath(targetPath).catch(() => {});
+    setPendingNavigation({
+      path: targetPath,
+      label: String(item?.label || '').trim(),
+    });
+    setDrawerOpen(false);
+
+    pendingNavigationTimerRef.current = window.setTimeout(() => {
+      navigate(targetPath);
+      pendingNavigationTimerRef.current = null;
+    }, 56);
+    pendingNavigationTimeoutRef.current = window.setTimeout(() => {
+      setPendingNavigation(null);
+      pendingNavigationTimeoutRef.current = null;
+    }, 10_000);
+  };
+
+  const handleOpenNotifications = useCallback(() => {
+    setNotificationsOpen(true);
+    refreshBellInboxRef.current?.();
+    fetchUnreadCountsRef.current?.();
+  }, []);
+
+  useEffect(() => {
+    const openNotifications = () => handleOpenNotifications();
+    window.addEventListener('hub-open-notifications', openNotifications);
+    return () => window.removeEventListener('hub-open-notifications', openNotifications);
+  }, [handleOpenNotifications]);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    if (searchParams.get('desktop_action') !== 'notifications') return;
+
+    handleOpenNotifications();
+    searchParams.delete('desktop_action');
+    const nextSearch = searchParams.toString();
+    navigate({
+      pathname: location.pathname,
+      search: nextSearch ? `?${nextSearch}` : '',
+    }, { replace: true });
+  }, [handleOpenNotifications, location.pathname, location.search, navigate]);
+
+  const handleDatabaseChange = async (event) => {
+    if (dbLocked) return;
+    const newDbId = normalizeDbId(event.target.value);
+    const selectedDb = databases.find((db) => normalizeDbId(db.id) === newDbId);
+
+    if (selectedDb && newDbId !== normalizeDbId(currentDb?.id)) {
+      try {
+        await databaseAPI.switchDatabase(newDbId);
+        const selectedId = normalizeDbId(selectedDb.id);
+        setCurrentDb({ id: selectedId, name: selectedDb.name });
+        localStorage.setItem('selected_database', selectedId);
+        window.dispatchEvent(new CustomEvent('database-changed', { detail: { databaseId: selectedId } }));
+      } catch (error) {
+        console.error('Error switching database:', error);
+        notifyApiError(error, 'Ошибка при переключении базы данных.', {
+          source: 'database-switch',
+        });
+      }
+    }
+  };
+
+  const isItemActive = (path, candidatePath = location.pathname) => {
+    return isNavigationItemActive(path, candidatePath);
+  };
+
+  const activeNavigationPath = String(pendingNavigation?.path || '').trim() || location.pathname;
+  const shouldHideHeaderContext = false;
+  const getCurrentTitle = () => {
+    if (activeNavigationPath.startsWith('/dashboard/news')) return 'Лента';
+    const item = visibleNavigationItems.find((item) => isItemActive(item.path, activeNavigationPath));
+    if (item) return item.label;
+    if (activeNavigationPath.startsWith('/profile')) return 'Профиль';
+    if (activeNavigationPath.startsWith('/settings')) return 'Настройки';
+    if (activeNavigationPath.startsWith('/admin')) return 'Администрирование';
+    if (activeNavigationPath.startsWith('/menu')) return 'Меню';
+    return APP_BRAND_NAME;
+  };
+  const currentTitle = pageTitle || getCurrentTitle();
+  const activeMobileNavigationPath = useMemo(() => {
+    const item = visibleMobileNavigationItems.find((item) => isNavigationItemActive(item.path, activeNavigationPath));
+    if (item?.path) return item.path;
+    const isVisibleOverflowRoute = visibleNavigationItems.some((navigationItem) => (
+      isNavigationItemActive(navigationItem.path, activeNavigationPath)
+    ));
+    const isAccountRoute = ['/profile', '/settings', '/admin', '/menu'].some((path) => (
+      activeNavigationPath === path || activeNavigationPath.startsWith(`${path}/`)
+    ));
+    return (isVisibleOverflowRoute || isAccountRoute) ? '/menu' : false;
+  }, [activeNavigationPath, visibleMobileNavigationItems, visibleNavigationItems]);
+  const documentTitle = useMemo(() => buildDocumentTitle(currentTitle), [currentTitle]);
+
+  useEffect(() => {
+    const updateTitle = () => {
+      if (isNotificationSurfaceVisible()) {
+        document.title = documentTitle;
+        return;
+      }
+      if (notificationsBadgeValue > 0) {
+        // N3: for a chat message the tab shows the sender name instead of a
+        // generic "Новое уведомление" so it is clear a chat arrived.
+        const label = String(lastNotificationLabel || '').trim() || 'Новое уведомление';
+        document.title = `(${notificationsBadgeValue}) ${label} - ${documentTitle}`;
+        return;
+      }
+      document.title = documentTitle;
+    };
+
+    updateTitle();
+    document.addEventListener('visibilitychange', updateTitle);
+    window.addEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, updateTitle);
+    return () => {
+      document.removeEventListener('visibilitychange', updateTitle);
+      window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, updateTitle);
+      document.title = APP_BRAND_NAME;
+    };
+  }, [documentTitle, lastNotificationLabel, notificationsBadgeValue]);
+
+  const currentDbName = useMemo(() => {
+    const name = String(currentDb?.name || '').trim();
+    return name || 'База данных';
+  }, [currentDb?.name]);
+
+  const notificationSections = useMemo(
+    () => groupItemsByRelativeDate(notifications, 'created_at'),
+    [notifications],
+  );
+  const mailNotificationSections = useMemo(
+    () => groupItemsByRelativeDate(mailNotifications, 'received_at'),
+    [mailNotifications],
+  );
+
+  const handleEnableBrowserNotifications = useCallback(async () => {
+    try {
+      const permission = await requestBrowserNotificationPermission();
+      setWindowsNotificationState(getWindowsNotificationState());
+      if (permission === 'granted') {
+        setWindowsNotificationsEnabled(true);
+        if (user && hasAnyAppPushPermission(hasPermission)) {
+          await syncChatPushSubscription({ user }).catch(() => {
+            refreshChatNotificationState();
+          });
+        }
+        return;
+      }
+      if (permission === 'denied') {
+        setWindowsNotificationsEnabled(false);
+        return;
+      }
+      // Permission stayed default (prompt closed) — hide banner so it does not stick.
+      handleDismissNotificationPermissionBanner();
+    } catch {
+      handleDismissNotificationPermissionBanner();
+    }
+  }, [handleDismissNotificationPermissionBanner, hasPermission, user]);
+
+  const renderNavigationItem = (item, compact = false) => {
+    const selected = !item.externalUrl && isItemActive(item.path, activeNavigationPath);
+    const pending = !item.externalUrl && String(pendingNavigation?.path || '').trim() === String(item.path || '').trim();
+    const badgeCount = getNavigationBadgeCount(item.path, unreadCounts);
+    const mailBadge = item.path === '/mail'
+      ? getMailNavigationBadgeMeta(unreadCounts?.mail_state, badgeCount)
+      : null;
+    const showNavBadge = mailBadge ? mailBadge.showBadge : badgeCount > 0;
+    const button = (
+      <ListItemButton
+        data-testid={`main-layout-sidebar-${item.path.replace(/^\//, '')}`}
+        selected={selected}
+        onClick={() => handleNavigation(item)}
+        sx={{
+          minHeight: compact ? 46 : { xs: 44, sm: 'var(--app-density-sidebar-item-min-height)' },
+          px: compact ? 0 : { xs: 1.35, sm: 'var(--app-density-sidebar-item-px)' },
+          justifyContent: compact ? 'center' : 'flex-start',
+          borderRadius: compact ? '15px' : '12px',
+          color: selected ? theme.palette.text.primary : ui.iconPrimary,
+          border: '1px solid',
+          borderColor: selected ? ui.selectedBorder : 'transparent',
+          backgroundColor: selected ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.09) : 'transparent',
+          opacity: pending ? 0.96 : 1,
+          transition: theme.transitions.create(['background-color', 'color', 'border-color'], {
+            duration: theme.transitions.duration.shorter,
+          }),
+          '& .MuiListItemIcon-root': {
+            minWidth: compact ? 0 : { xs: 38, sm: 'var(--app-density-sidebar-icon-min-width)' },
+            justifyContent: 'center',
+            color: selected ? theme.palette.primary.main : ui.iconMuted,
+          },
+          '& .MuiListItemText-primary': {
+            fontWeight: selected ? 750 : 600,
+            color: selected ? theme.palette.text.primary : ui.iconPrimary,
+          },
+          '&:hover': {
+            backgroundColor: selected ? ui.selectedBg : ui.actionHover,
+            borderColor: selected ? ui.selectedBorder : ui.actionBorder,
+          },
+          '@media (prefers-reduced-motion: reduce)': {
+            transition: 'none',
+          },
+        }}
+      >
+        <ListItemIcon>
+          {showNavBadge ? (
+            <Badge
+              color={mailBadge?.color || 'error'}
+              badgeContent={mailBadge ? mailBadge.badgeContent : badgeCount}
+              title={mailBadge?.title}
+            >
+              {item.icon}
+            </Badge>
+          ) : item.icon}
+        </ListItemIcon>
+        {compact ? null : <ListItemText primary={item.label} />}
+      </ListItemButton>
+    );
+    return (
+      <ListItem key={item.path} disablePadding sx={{ py: compact ? 0.25 : 'var(--app-density-sidebar-item-py)' }}>
+        {compact ? (
+          <Tooltip title={item.label} placement="right">
+            {button}
+          </Tooltip>
+        ) : button}
+      </ListItem>
+    );
+  };
+
+  const renderDrawerContent = ({ compact = false, instanceKey = 'desktop' } = {}) => (
+    <Box
+      sx={{
+        height: '100%',
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        bgcolor: alpha(ui.navBg, theme.palette.mode === 'dark' ? 0.86 : 0.9),
+        backdropFilter: 'blur(20px) saturate(140%)',
+        WebkitBackdropFilter: 'blur(20px) saturate(140%)',
+      }}
+    >
+      {hiddenHeader ? (
+        <Box sx={{ height: 'max(env(safe-area-inset-top), 10px)', flexShrink: 0 }} />
+      ) : (
+        <Toolbar sx={{ minHeight: 'var(--app-shell-header-offset) !important', flexShrink: 0 }} />
+      )}
+
+      {instanceKey === 'mobile' ? null : (
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: compact ? 'center' : 'flex-end',
+            px: compact ? 0.75 : 'var(--app-density-sidebar-list-px)',
+            pt: 0.25,
+            flexShrink: 0,
+          }}
+        >
+          <Tooltip title={pinnedSidebar ? 'Открепить меню' : 'Закрепить меню'} placement="right">
+            <IconButton
+              size="small"
+              aria-label={pinnedSidebar ? 'Открепить меню' : 'Закрепить меню'}
+              aria-pressed={pinnedSidebar}
+              data-testid={`main-layout-sidebar-pin-${instanceKey}`}
+              onClick={toggleSidebarPinned}
+              sx={{ color: pinnedSidebar ? 'primary.main' : ui.iconPrimary }}
+            >
+              {pinnedSidebar ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
+
+      <Box
+        className="hub-sidebar-scroll"
+        sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: compact ? 0.75 : 'var(--app-density-sidebar-list-px)' }}
+      >
+        {compact ? null : (
+          <Typography variant="caption" sx={{ display: 'block', px: 1, pt: 0.65, pb: 0.3, color: ui.subtleText, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            Основное
+          </Typography>
+        )}
+        <List disablePadding>
+          {mainNavigationItems.map((item) => renderNavigationItem(item, compact))}
+        </List>
+
+        {itNavigationItems.length > 0 ? (
+          <>
+            {compact ? <Divider sx={{ my: 0.7, borderColor: ui.borderSoft }} /> : (
+              <ListItem disablePadding sx={{ mt: 0.5 }}>
+                <ListItemButton
+                  data-testid={`main-layout-sidebar-it-toggle-${instanceKey}`}
+                  aria-expanded={sidebarItExpanded}
+                  aria-controls={`main-layout-sidebar-it-list-${instanceKey}`}
+                  onClick={toggleItGroup}
+                  sx={{ minHeight: 44, px: 1, borderRadius: '10px', color: ui.mutedText }}
+                >
+                  <ListItemText primary="ИТ" primaryTypographyProps={{ fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }} />
+                  <ExpandMoreRoundedIcon
+                    sx={{
+                      fontSize: 19,
+                      transform: sidebarItExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: prefersReducedMotion ? 'none' : theme.transitions.create('transform', { duration: theme.transitions.duration.shorter }),
+                    }}
+                  />
+                </ListItemButton>
+              </ListItem>
+            )}
+            <Collapse
+              id={`main-layout-sidebar-it-list-${instanceKey}`}
+              in={compact || sidebarItExpanded}
+              timeout={prefersReducedMotion ? 0 : 'auto'}
+              unmountOnExit={false}
+            >
+              <List disablePadding>
+                {itNavigationItems.map((item) => renderNavigationItem(item, compact))}
+              </List>
+            </Collapse>
+          </>
+        ) : null}
+
+        {toolNavigationItems.length > 0 ? (
+          <>
+            {compact ? <Divider sx={{ my: 0.7, borderColor: ui.borderSoft }} /> : (
+              <ListItem disablePadding sx={{ mt: 0.5 }}>
+                <ListItemButton
+                  data-testid={`main-layout-sidebar-tools-toggle-${instanceKey}`}
+                  aria-expanded={sidebarToolsExpanded}
+                  aria-controls={`main-layout-sidebar-tools-list-${instanceKey}`}
+                  onClick={toggleToolsGroup}
+                  sx={{ minHeight: 34, px: 1, borderRadius: '10px', color: ui.mutedText }}
+                >
+                  <ListItemText primary="Инструменты" primaryTypographyProps={{ fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }} />
+                  <ExpandMoreRoundedIcon
+                    sx={{
+                      fontSize: 19,
+                      transform: sidebarToolsExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: theme.transitions.create('transform', { duration: theme.transitions.duration.shorter }),
+                    }}
+                  />
+                </ListItemButton>
+              </ListItem>
+            )}
+            <Collapse
+              id={`main-layout-sidebar-tools-list-${instanceKey}`}
+              in={compact || sidebarToolsExpanded}
+              timeout={prefersReducedMotion ? 0 : 'auto'}
+              unmountOnExit={false}
+            >
+              <List disablePadding>
+                {toolNavigationItems.map((item) => renderNavigationItem(item, compact))}
+              </List>
+            </Collapse>
+          </>
+        ) : null}
+      </Box>
+
+      <Box
+        data-testid={`main-layout-account-footer-${instanceKey}`}
+        sx={{
+          flexShrink: 0,
+          p: compact ? 0.75 : 1,
+          borderTop: '1px solid',
+          borderColor: ui.borderSoft,
+          ...(compact ? {
+            display: 'grid',
+            placeItems: 'center',
+          } : {}),
+        }}
+      >
+        {compact ? (
+          <Tooltip title="Профиль и настройки" placement="right">
+            <IconButton
+              data-testid={`main-layout-account-button-${instanceKey}`}
+              aria-label="Открыть меню профиля"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(accountMenuAnchorEl)}
+              onClick={(event) => setAccountMenuAnchorEl(event.currentTarget)}
+              sx={{
+                width: 52,
+                height: 52,
+                p: 0,
+                borderRadius: '16px',
+                justifySelf: 'center',
+              }}
+            >
+              <AccountAvatar user={user} size={38} />
+            </IconButton>
+          </Tooltip>
+        ) : (
+          <ListItemButton
+            data-testid={`main-layout-account-button-${instanceKey}`}
+            aria-label="Открыть меню профиля"
+            aria-haspopup="menu"
+            aria-expanded={Boolean(accountMenuAnchorEl)}
+            onClick={(event) => setAccountMenuAnchorEl(event.currentTarget)}
+            sx={{
+              minHeight: 58,
+              px: 1,
+              borderRadius: '15px',
+              border: '1px solid',
+              borderColor: alpha(theme.palette.divider, 0.55),
+              bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.42 : 0.55),
+            }}
+          >
+            <AccountIdentity user={user} />
+          </ListItemButton>
+        )}
+      </Box>
+    </Box>
+  );
+
+  const shellValue = useMemo(() => ({
+    headerMode: integratedChatHeader || integratedPageHeader ? 'hidden' : headerMode,
+    drawerOpen,
+    openDrawer: () => setDrawerOpen(true),
+    closeDrawer: () => setDrawerOpen(false),
+    toggleDrawer: () => setDrawerOpen((current) => !current),
+    sidebarPinned: pinnedSidebar,
+    toggleSidebarPinned,
+    openNotifications: handleOpenNotifications,
+    notificationsBadgeValue,
+    showNotificationsButton,
+    showDatabaseSelector,
+    databases,
+    currentDb,
+    currentDbName,
+    dbLoading,
+    dbLocked,
+    onDatabaseChange: handleDatabaseChange,
+  }), [
+    currentDb,
+    currentDbName,
+    databases,
+    dbLoading,
+    dbLocked,
+    drawerOpen,
+    handleDatabaseChange,
+    handleOpenNotifications,
+    headerMode,
+    integratedChatHeader,
+    integratedPageHeader,
+    notificationsBadgeValue,
+    pinnedSidebar,
+    showDatabaseSelector,
+    showNotificationsButton,
+    toggleSidebarPinned,
+  ]);
+  const shouldReserveMobileSafeArea = (
+    isPhone
+    && hiddenHeader
+    && !isMobileChatRoute
+    && !isEdgeToEdgeMobileContent
+  );
+  const shouldRenderTopSpacer = !hiddenHeader || topBannerOffset > 0 || shouldReserveMobileSafeArea;
+  const topSpacerHeight = shouldReserveMobileSafeArea
+    ? 'max(var(--app-shell-top-offset), 10px)'
+    : 'var(--app-shell-top-offset)';
+
+  return (
+    <MainLayoutShellContext.Provider value={shellValue}>
+      <DesktopShellSync
+        authenticated={Boolean(user)}
+        online={!isOffline && !mobileOfflineReadOnly}
+        unreadTotal={unreadCounts?.notifications_unread_total}
+        chatUnread={unreadCounts?.chat_messages_unread_total}
+        mailUnread={unreadCounts?.mail_unread}
+        tasksAttention={unreadCounts?.tasks_with_unread_comments}
+        quickRoutes={desktopQuickRoutes}
+      />
+      <HubCommandPalette
+        open={commandPaletteOpen}
+        commands={hubCommands}
+        onClose={() => setCommandPaletteOpen(false)}
+        onExecute={executeHubCommand}
+      />
+      {user ? <MailSessionPrompt /> : null}
+      <Box
+        data-testid="main-layout-shell"
+        data-app-bar-height={appBarHeight}
+        data-top-banner-offset={topBannerOffset}
+        style={{
+          '--app-shell-banner-offset': `${topBannerOffset}px`,
+          '--app-shell-safe-top-offset': 'env(safe-area-inset-top, 0px)',
+          '--app-shell-measured-header-offset': hiddenHeader
+            ? '0px'
+            : appBarHeight > 0
+              ? `${appBarHeight}px`
+              : 'var(--app-shell-header-offset)',
+          '--app-shell-top-offset': 'calc(var(--app-shell-safe-top-offset) + var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
+          '--app-shell-mobile-bottom-nav-height': hasMobileBottomNavigation && !mobileBottomNavHidden
+            ? `calc(${nativeShellBottomNav ? nativeShellBottomNavHeight() : 64}px + env(safe-area-inset-bottom, 0px))`
+            : '0px',
+        }}
+        sx={{
+          display: 'flex',
+          minHeight: isFixedHeightRoute ? 0 : '100dvh',
+          height: isFixedHeightRoute ? '100dvh' : undefined,
+          overflow: isFixedHeightRoute ? 'hidden' : 'visible',
+          bgcolor: ui.pageBg,
+          '--app-shell-header-offset': {
+            xs: isStandaloneShell ? '52px' : '56px',
+            sm: isWindowControlsOverlay
+              ? 'var(--app-density-header-overlay-height)'
+              : isStandaloneShell
+                ? 'var(--app-density-header-standalone-height)'
+                : 'var(--app-density-header-height)',
+          },
+        }}
+      >
+      <Stack
+        ref={topBannerRef}
+        data-testid="main-layout-top-banner"
+        spacing={0}
+        sx={{
+          position: 'fixed',
+          top: 'var(--app-shell-safe-top-offset)',
+          // Same offset as the AppBar: on sm+ the permanent Drawer sits above
+          // this layer and would otherwise cover the banner's start.
+          left: { xs: 0, sm: effectiveSidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
+          right: 0,
+          transition: (theme) => theme.transitions.create('left', {
+            duration: theme.transitions.duration.standard,
+          }),
+          zIndex: theme.zIndex.appBar + 1,
+          pointerEvents: 'none',
+          '& > *': {
+            pointerEvents: 'auto',
+          },
+        }}
+      >
+        {showNotificationPermissionBanner ? (
+          <Alert
+            severity="info"
+            variant="filled"
+            action={(
+              <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={handleDismissNotificationPermissionBanner}
+                >
+                  Не сейчас
+                </Button>
+                <Button
+                  color="inherit"
+                  size="small"
+                  variant="outlined"
+                  onClick={() => { void handleEnableBrowserNotifications(); }}
+                  sx={{ borderColor: 'currentColor' }}
+                >
+                  Включить
+                </Button>
+              </Stack>
+            )}
+            sx={{
+              borderRadius: 0,
+              alignItems: 'center',
+            }}
+          >
+            Разрешите уведомления браузера, чтобы получать новые задачи, сообщения и почту.
+          </Alert>
+        ) : null}
+
+        <Collapse
+          in={Boolean(connectionBannerState)}
+          timeout={prefersReducedMotion ? 0 : { enter: 180, exit: 140 }}
+          appear={false}
+          unmountOnExit
+          sx={{ pointerEvents: 'none' }}
+        >
+          <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, pb: 0.25 }}>
+            <Alert
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              severity={renderedConnectionBannerState === 'restored' ? 'success' : 'warning'}
+              variant="outlined"
+              icon={renderedConnectionBannerState === 'restored'
+                ? <WifiRoundedIcon fontSize="inherit" />
+                : <CloudOffRoundedIcon fontSize="inherit" />}
+              sx={{
+                width: 'fit-content',
+                maxWidth: 'min(720px, 100%)',
+                mx: 'auto',
+                py: 0.25,
+                px: 1.25,
+                color: theme.palette.text.primary,
+                bgcolor: alpha(
+                  renderedConnectionBannerState === 'restored'
+                    ? theme.palette.success.main
+                    : theme.palette.warning.main,
+                  theme.palette.mode === 'dark' ? 0.16 : 0.08,
+                ),
+                borderColor: alpha(
+                  renderedConnectionBannerState === 'restored'
+                    ? theme.palette.success.main
+                    : theme.palette.warning.main,
+                  theme.palette.mode === 'dark' ? 0.42 : 0.3,
+                ),
+                borderRadius: 2.5,
+                alignItems: 'center',
+                pointerEvents: 'none',
+                boxShadow: `0 5px 18px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.2 : 0.08)}`,
+                transition: prefersReducedMotion
+                  ? 'none'
+                  : theme.transitions.create(['background-color', 'border-color', 'box-shadow'], {
+                    duration: 160,
+                  }),
+                '& .MuiAlert-icon': {
+                  py: 0.25,
+                  mr: 0.75,
+                  fontSize: '1.1rem',
+                },
+                '& .MuiAlert-message': {
+                  py: 0.25,
+                  fontSize: '0.8125rem',
+                  lineHeight: 1.35,
+                  fontWeight: 600,
+                },
+              }}
+            >
+              {renderedConnectionBannerState === 'restored'
+                ? 'Подключение восстановлено · Обновляем данные.'
+                : mobileOfflineReadOnly
+                  ? [
+                    'Автономный режим',
+                    offlineLastSyncLabel ? `данные на ${offlineLastSyncLabel}` : 'доступны сохранённые данные',
+                    offlineCacheMeta.cacheMiss ? 'часть данных не загружена' : null,
+                    'изменения отключены',
+                  ].filter(Boolean).join(' · ')
+                  : 'Нет подключения · Показываем сохранённые данные, если они доступны.'}
+            </Alert>
+          </Box>
+        </Collapse>
+      </Stack>
+
+      {/* AppBar */}
+        {!hiddenHeader ? (
+          <AppBar
+            ref={appBarRef}
+            data-testid="main-layout-app-bar"
+            position="fixed"
+            sx={{
+              top: `calc(var(--app-shell-safe-top-offset) + ${topBannerOffset}px)`,
+              bgcolor: alpha(ui.shellBg, theme.palette.mode === 'dark' ? 0.94 : 0.9),
+              color: theme.palette.text.primary,
+              boxShadow: 'none',
+              borderBottom: '1px solid',
+              borderColor: ui.borderSoft,
+              backdropFilter: 'blur(18px)',
+              pt: isWindowControlsOverlay ? 'env(titlebar-area-height, 0px)' : 0,
+              width: { sm: effectiveSidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})` },
+              ml: { sm: effectiveSidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
+              transition: (theme) => theme.transitions.create(['width', 'margin'], {
+                duration: theme.transitions.duration.standard,
+              }),
+            }}
+          >
+            <Toolbar
+              sx={{
+                minHeight: 'var(--app-shell-header-offset) !important',
+                px: isMobileChatRoute ? 0.75 : (notificationsOnlyHeader ? 1.25 : undefined),
+              }}
+            >
+              {notificationsOnlyHeader ? (
+                <>
+                  {!isPhone && !pinnedSidebar ? (
+                    <IconButton
+                      edge="start"
+                      aria-label="Открыть главное меню"
+                      onClick={() => {
+                        toggleSidebar();
+                      }}
+                      sx={{
+                        mr: 1,
+                        ...getOfficeQuietActionSx(ui, theme, 'neutral', {
+                          borderColor: 'transparent',
+                          bgcolor: 'transparent',
+                        }),
+                      }}
+                    >
+                      <MenuIcon />
+                    </IconButton>
+                  ) : null}
+                  {headerInlineContent ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0, mr: 1 }}>
+                      {headerInlineContent}
+                    </Box>
+                  ) : null}
+                  <Box sx={{ flexGrow: 1 }} />
+                  {showNotificationsButton ? (
+                    <IconButton
+                      aria-label="Открыть уведомления"
+                      onClick={handleOpenNotifications}
+                      sx={{
+                        ...getOfficeQuietActionSx(ui, theme, 'neutral', {
+                          borderColor: 'transparent',
+                          bgcolor: 'transparent',
+                        }),
+                      }}
+                    >
+                      <Badge color="error" badgeContent={notificationsBadgeValue}>
+                        <NotificationsIcon />
+                      </Badge>
+                    </IconButton>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  {!isPhone && !pinnedSidebar ? (
+                    <IconButton
+                      edge="start"
+                      aria-label={sidebarCollapsed ? 'Развернуть боковое меню' : 'Свернуть боковое меню'}
+                      onClick={() => {
+                        toggleSidebar();
+                      }}
+                      sx={{
+                        mr: headerInlineContent ? 1 : 2,
+                        ...getOfficeQuietActionSx(ui, theme, 'neutral', {
+                          borderColor: 'transparent',
+                          bgcolor: 'transparent',
+                        }),
+                        '& .MuiSvgIcon-root': {
+                          transition: (theme) => theme.transitions.create('transform', {
+                            duration: theme.transitions.duration.standard,
+                          }),
+                          transform: sidebarCollapsed ? 'rotate(180deg)' : 'rotate(0deg)',
+                        },
+                      }}
+                    >
+                      <MenuIcon />
+                    </IconButton>
+                  ) : null}
+                  {isMobileChatRoute ? (
+                    <Box sx={{ flexGrow: 1 }} />
+                  ) : minimalHeader ? (
+                    shouldHideHeaderContext ? (
+                      <Box sx={{ flexGrow: 1 }} />
+                    ) : (
+                      <>
+                        <Box sx={{ flexGrow: 1 }} />
+                        {!showDatabaseSelector ? null : dbLoading ? (
+                          <CircularProgress size={20} sx={{ mr: 1.5 }} />
+                        ) : (
+                          <FormControl size="small" sx={{ mr: 1.5, minWidth: { xs: 132, sm: 160 } }}>
+                            <Select
+                              value={normalizeDbId(currentDb?.id)}
+                              onChange={handleDatabaseChange}
+                              disabled={dbLocked}
+                              displayEmpty
+                              renderValue={() => (
+                                <Chip
+                                  label={currentDbName}
+                                  size="small"
+                                  sx={{
+                                    maxWidth: 120,
+                                    height: 24,
+                                    borderRadius: 999,
+                                    border: 'none',
+                                    bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.10),
+                                    color: theme.palette.primary.main,
+                                    '& .MuiChip-label': {
+                                      px: 1,
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    },
+                                  }}
+                                />
+                              )}
+                              sx={{
+                                color: theme.palette.text.primary,
+                                bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.08 : 0.04),
+                                borderRadius: '12px',
+                                '& .MuiOutlinedInput-notchedOutline': {
+                                  borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.10),
+                                },
+                                '&:hover .MuiOutlinedInput-notchedOutline': {
+                                  borderColor: ui.selectedBorder,
+                                },
+                                '& .MuiSelect-icon': {
+                                  color: ui.iconPrimary,
+                                },
+                              }}
+                            >
+                              {databases.map((db) => (
+                                <MenuItem key={normalizeDbId(db.id)} value={normalizeDbId(db.id)}>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <span>{db.name}</span>
+                                    {normalizeDbId(db.id) === normalizeDbId(currentDb?.id) && (
+                                      <Chip label="Текущая" size="small" color="success" sx={{ ml: 1, height: 20, fontSize: '0.7rem', border: 'none' }} />
+                                    )}
+                                  </Box>
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        )}
+                      </>
+                    )
+                  ) : (
+                    <>
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ flexGrow: 1, minWidth: 0, mr: 1 }}>
+                        {!shouldHideHeaderContext && !isPhone && (
+                          <Typography
+                            variant="subtitle1"
+                            noWrap
+                            sx={{ fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.25, flexShrink: 0 }}
+                          >
+                            {currentTitle}
+                          </Typography>
+                        )}
+                        {headerInlineContent ? (
+                          <Box
+                            data-testid="main-layout-header-inline"
+                            sx={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}
+                          >
+                            {headerInlineContent}
+                          </Box>
+                        ) : null}
+                      </Stack>
+                      {showNotificationsButton && !minimalHeader ? (
+                        <IconButton
+                          aria-label="Открыть уведомления"
+                          onClick={handleOpenNotifications}
+                          sx={{
+                            mr: 1,
+                            ...getOfficeQuietActionSx(ui, theme, 'neutral', {
+                              borderColor: 'transparent',
+                              bgcolor: 'transparent',
+                            }),
+                          }}
+                        >
+                          <Badge color="error" badgeContent={notificationsBadgeValue}>
+                            <NotificationsIcon />
+                          </Badge>
+                        </IconButton>
+                      ) : null}
+                      {!minimalHeader && !shouldHideHeaderContext && showDatabaseSelector && (
+                        dbLoading ? (
+                          <Box sx={{ mr: 1.5, display: 'flex', alignItems: 'center', minWidth: { xs: 132, sm: 180 }, justifyContent: 'center' }}>
+                            <CircularProgress size={20} />
+                          </Box>
+                        ) : (
+                          <FormControl size="small" sx={{ mr: 1.5, minWidth: { xs: 132, sm: 180 } }}>
+                            <Select
+                              value={normalizeDbId(currentDb?.id)}
+                              onChange={handleDatabaseChange}
+                              disabled={dbLocked}
+                              displayEmpty
+                              renderValue={() => (
+                                <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                                  <Chip
+                                    label={currentDbName}
+                                    size="small"
+                                    sx={{
+                                      maxWidth: { xs: 92, sm: 132 },
+                                      height: 24,
+                                      borderRadius: 999,
+                                      border: 'none',
+                                      bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.10),
+                                      color: theme.palette.primary.main,
+                                      '& .MuiChip-label': {
+                                        px: 1,
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
+                                      },
+                                    }}
+                                  />
+                                  <Typography variant="caption" sx={{ color: ui.subtleText, display: { xs: 'none', sm: 'block' } }}>
+                                    База
+                                  </Typography>
+                                </Stack>
+                              )}
+                              sx={{
+                                color: theme.palette.text.primary,
+                                bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.08 : 0.04),
+                                borderRadius: '12px',
+                                '& .MuiOutlinedInput-notchedOutline': {
+                                  borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.10),
+                                },
+                                '&:hover .MuiOutlinedInput-notchedOutline': {
+                                  borderColor: ui.selectedBorder,
+                                },
+                                '& .MuiSelect-icon': {
+                                  color: ui.iconPrimary,
+                                },
+                              }}
+                            >
+                              {databases.map((db) => (
+                                <MenuItem key={normalizeDbId(db.id)} value={normalizeDbId(db.id)}>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <span>{db.name}</span>
+                                    {normalizeDbId(db.id) === normalizeDbId(currentDb?.id) && (
+                                      <Chip label="Текущая" size="small" color="success" sx={{ ml: 1, height: 20, fontSize: '0.7rem', border: 'none' }} />
+                                    )}
+                                  </Box>
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        )
+                      )}
+                      {dbLocked && !minimalHeader && !shouldHideHeaderContext && showDatabaseSelector && (
+                        <Chip
+                          label="БД закреплена"
+                          size="small"
+                          color="warning"
+                          sx={{ mr: 2, border: 'none' }}
+                        />
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+            </Toolbar>
+          </AppBar>
+        ) : null}
+
+      {/* Sidebar Drawer */}
+      <Box
+        component="nav"
+        sx={{
+          width: { sm: effectiveSidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
+          flexShrink: { sm: 0 },
+          overflow: 'hidden',
+          transition: (theme) => theme.transitions.create('width', {
+            duration: theme.transitions.duration.standard,
+          }),
+        }}
+      >
+        {isPhone ? (
+          <Drawer
+            variant="temporary"
+            open={drawerOpen}
+            onClose={() => setDrawerOpen(false)}
+            ModalProps={{ keepMounted: true }}
+            sx={{
+              display: { xs: 'block', sm: 'none' },
+              '& .MuiDrawer-paper': { '--dialog-safe-top': '0px', boxSizing: 'border-box', width: DRAWER_WIDTH_CSS_VAR, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
+            }}
+          >
+            {renderDrawerContent({ compact: false, instanceKey: 'mobile' })}
+          </Drawer>
+        ) : (
+          <Drawer
+            variant="permanent"
+            sx={{
+              display: { xs: 'none', sm: 'block' },
+              '& .MuiDrawer-paper': {
+                '--dialog-safe-top': '0px',
+                boxSizing: 'border-box',
+                width: effectiveSidebarCollapsed ? DRAWER_RAIL_WIDTH : DRAWER_WIDTH_CSS_VAR,
+                overflowX: 'hidden',
+                bgcolor: ui.navBg,
+                borderRightColor: ui.borderSoft,
+                transition: (theme) => theme.transitions.create('width', {
+                  duration: theme.transitions.duration.standard,
+                }),
+              },
+            }}
+            open
+          >
+            {renderDrawerContent({ compact: effectiveSidebarCollapsed, instanceKey: 'desktop' })}
+          </Drawer>
+        )}
+        {chatPortalRail ? (
+          // Полная навигация портала поверх узкой полосы иконок — как в Telegram Web A.
+          <Drawer
+            variant="temporary"
+            open={drawerOpen}
+            onClose={() => setDrawerOpen(false)}
+            sx={{
+              '& .MuiDrawer-paper': {
+                '--dialog-safe-top': '0px',
+                boxSizing: 'border-box',
+                width: DRAWER_WIDTH_CSS_VAR,
+                bgcolor: ui.navBg,
+                borderRightColor: ui.borderSoft,
+              },
+            }}
+          >
+            {renderDrawerContent({ compact: false, instanceKey: 'chat-overlay' })}
+          </Drawer>
+        ) : null}
+      </Box>
+
+      <AccountMenu
+        anchorEl={accountMenuAnchorEl}
+        onClose={() => setAccountMenuAnchorEl(null)}
+        onNavigate={openAccountRoute}
+        onLogout={() => { void handleLogout(); }}
+        showAdministration={showAdminArea}
+        reducedMotion={prefersReducedMotion}
+      />
+
+      {/* Main Content */}
+      <Box
+        component="main"
+        data-testid="main-layout-content"
+        data-content-mode={contentMode}
+        data-edge-to-edge-mobile={isEdgeToEdgeMobileContent ? 'true' : 'false'}
+        sx={{
+          flexGrow: 1,
+          minHeight: 0,
+          minWidth: 0,
+          position: 'relative',
+          display: isFixedHeightRoute ? 'flex' : 'block',
+          flexDirection: isFixedHeightRoute ? 'column' : undefined,
+          overflow: isFixedHeightRoute ? 'hidden' : 'visible',
+          px: {
+            // Д1: страница чата идёт вровень с краями области контента на всех ширинах.
+            xs: (isChatRoute || isEdgeToEdgeContent) ? 0 : 2,
+            sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
+          },
+          pb: {
+            xs: hasMobileBottomNavigation
+              ? (mobileBottomNavHidden ? 0 : 'var(--app-shell-mobile-bottom-nav-height)')
+              : ((isChatRoute || isEdgeToEdgeContent) ? 0 : 2),
+            sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
+          },
+          pt: {
+            xs: (isChatRoute || isEdgeToEdgeContent) ? 0 : 2,
+            sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
+          },
+          bgcolor: (isChatRoute || isEdgeToEdgeMobileContent) ? 'transparent' : ui.pageBg,
+          width: {
+            xs: '100%',
+            sm: effectiveSidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})`
+          },
+          transition: (theme) => theme.transitions.create(['width', 'margin', 'padding-bottom'], {
+            duration: hasMobileBottomNavigation ? mobileBottomNavTransitionMs : theme.transitions.duration.standard,
+            easing: theme.transitions.easing.easeInOut,
+          }),
+        }}
+      >
+        {shouldRenderTopSpacer ? (
+          <Box
+            aria-hidden="true"
+            data-testid="main-layout-top-spacer"
+            style={{ height: topSpacerHeight }}
+            sx={{ flexShrink: 0 }}
+          />
+        ) : null}
+        <DesktopHandoffSlot />
+        {children}
+        {pendingNavigation ? (
+          <BrandedRouteLoader
+            overlay
+            label={`Открываем ${pendingNavigation.label || 'раздел'}...`}
+            sublabel="Подготавливаем интерфейс HUB-IT"
+          />
+        ) : null}
+      </Box>
+
+      {hasMobileBottomNavigation && !nativeShellBottomNav ? (
+        <Box
+          data-testid="main-layout-mobile-bottom-nav"
+          data-mobile-bottom-nav-hidden={mobileBottomNavHidden ? 'true' : 'false'}
+          sx={{
+            position: 'fixed',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: theme.zIndex.appBar + 2,
+            bgcolor: alpha(ui.navBg, theme.palette.mode === 'dark' ? 0.82 : 0.86),
+            backdropFilter: 'blur(22px) saturate(150%)',
+            WebkitBackdropFilter: 'blur(22px) saturate(150%)',
+            pb: 'env(safe-area-inset-bottom, 0px)',
+            boxShadow: theme.palette.mode === 'dark'
+              ? '0 -12px 30px rgba(0,0,0,0.28)'
+              : '0 -10px 28px rgba(15,23,42,0.10)',
+            transform: mobileBottomNavHidden ? 'translateY(100%)' : 'translateY(0)',
+            transition: mobileBottomNavTransition,
+            pointerEvents: mobileBottomNavHidden ? 'none' : 'auto',
+            visibility: mobileBottomNavHidden ? 'hidden' : 'visible',
+            '@media (prefers-reduced-motion: reduce)': {
+              transition: 'none',
+            },
+          }}
+        >
+          <BottomNavigation
+            showLabels
+            value={activeMobileNavigationPath}
+            onChange={(_, value) => {
+              const item = visibleMobileNavigationItems.find((navItem) => navItem.path === value);
+              if (item) handleNavigation(item);
+            }}
+            sx={{
+              height: 64,
+              bgcolor: 'transparent',
+              '& .MuiBottomNavigationAction-root': {
+                minWidth: 0,
+                minHeight: 56,
+                px: 0.2,
+                color: ui.iconMuted,
+                transition: theme.transitions.create(['color', 'transform'], {
+                  duration: theme.transitions.duration.shorter,
+                }),
+              },
+              '& .MuiBottomNavigationAction-root.Mui-selected': {
+                color: theme.palette.primary.main,
+              },
+              '& .mobile-bottom-nav-icon-shell': {
+                width: 42,
+                height: 30,
+                borderRadius: '15px',
+                display: 'grid',
+                placeItems: 'center',
+                transition: theme.transitions.create(['background-color', 'box-shadow', 'transform'], {
+                  duration: theme.transitions.duration.shorter,
+                }),
+              },
+              '& .MuiBottomNavigationAction-root.Mui-selected .mobile-bottom-nav-icon-shell': {
+                bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.24 : 0.13),
+                boxShadow: `0 5px 14px ${alpha(theme.palette.primary.main, 0.16)}`,
+                transform: 'translateY(-1px)',
+              },
+              '& .MuiBottomNavigationAction-label': {
+                mt: 0.15,
+                maxWidth: '100%',
+                fontSize: '0.64rem',
+                fontWeight: 700,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              },
+              '& .MuiBottomNavigationAction-label.Mui-selected': {
+                fontSize: '0.66rem',
+                fontWeight: 800,
+              },
+              '& .MuiSvgIcon-root': {
+                fontSize: 24,
+              },
+              '@media (prefers-reduced-motion: reduce)': {
+                '& .MuiBottomNavigationAction-root, & .mobile-bottom-nav-icon-shell': {
+                  transition: 'none',
+                },
+              },
+            }}
+          >
+            {visibleMobileNavigationItems.map((item) => {
+              const badgeCount = getNavigationBadgeCount(item.path, unreadCounts);
+              const mailBadge = item.path === '/mail'
+                ? getMailNavigationBadgeMeta(unreadCounts?.mail_state, badgeCount)
+                : null;
+              const icon = (mailBadge ? mailBadge.showBadge : badgeCount > 0) ? (
+                <Badge
+                  color={mailBadge?.color || 'error'}
+                  badgeContent={mailBadge ? mailBadge.badgeContent : badgeCount}
+                  title={mailBadge?.title}
+                >
+                  {item.icon}
+                </Badge>
+              ) : item.icon;
+
+              return (
+                <BottomNavigationAction
+                  key={item.path}
+                  value={item.path}
+                  label={item.shortLabel || item.label}
+                  icon={<Box className="mobile-bottom-nav-icon-shell">{icon}</Box>}
+                  data-testid={`main-layout-mobile-bottom-nav-${item.path.replace(/^\//, '')}`}
+                  sx={{
+                    '&.Mui-selected .MuiBottomNavigationAction-label': {
+                      color: theme.palette.text.primary,
+                    },
+                  }}
+                />
+              );
+            })}
+          </BottomNavigation>
+        </Box>
+      ) : null}
+
+      <Drawer
+        anchor="right"
+        open={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+        PaperProps={{ sx: { bgcolor: ui.navBg, borderLeft: '1px solid', borderColor: ui.borderSoft, boxShadow: ui.dialogShadow } }}
+      >
+        <Box sx={{ width: { xs: 340, sm: 400 }, display: 'flex', flexDirection: 'column', height: '100%' }}>
+          {/* Header */}
+          <Box sx={{ px: 2.5, py: 2, borderBottom: '1px solid', borderColor: ui.borderSoft, bgcolor: ui.headerBandBg }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Typography variant="subtitle1" sx={{ fontWeight: 600, fontSize: '1.05rem' }}>Уведомления</Typography>
+                {Number(unreadCounts?.notifications_unread_total || 0) > 0 && (
+                  <Chip size="small" label={unreadCounts.notifications_unread_total}
+                    sx={{ height: 20, fontSize: '0.65rem', fontWeight: 600, bgcolor: ui.selectedBg, color: 'primary.main', border: 'none' }} />
+                )}
+              </Stack>
+              <Stack direction="row" spacing={0.75}>
+                {unreadBellInboxCount > 0 && (
+                  <Button size="small" onClick={handleMarkAllNotificationsRead}
+                    sx={{ textTransform: 'none', fontSize: '0.72rem', fontWeight: 600 }}>
+                    Прочитать все
+                  </Button>
+                )}
+              </Stack>
+            </Stack>
+          </Box>
+
+          {/* Content */}
+          <Box sx={{ flex: 1, overflow: 'auto', px: 2, py: 1.5 }}>
+            {notificationSections.length === 0 && mailNotificationSections.length === 0 ? (
+              <Box sx={{ ...getOfficeEmptyStateSx(ui, { textAlign: 'center', py: 6 }) }}>
+                <NotificationsNoneIcon sx={{ fontSize: 48, color: 'text.disabled', mb: 1 }} />
+                <Typography variant="body2" sx={{ color: 'text.secondary' }}>Нет непрочитанных уведомлений</Typography>
+              </Box>
+            ) : (
+              <>
+                {notificationSections.length > 0 ? (
+                  <Box sx={{ mb: 2.2 }}>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 0.4, mb: 1 }}>
+                      <NotificationsNoneIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                      <Typography
+                        variant="overline"
+                        sx={{ color: 'text.disabled', fontWeight: 600, fontSize: '0.6rem', letterSpacing: '0.1em' }}
+                      >
+                        Центр управления
+                      </Typography>
+                    </Stack>
+                    {notificationSections.map((section) => (
+                      <Box key={section.key} sx={{ mb: 2 }}>
+                        <Typography variant="overline" sx={{ color: 'text.disabled', fontWeight: 600, fontSize: '0.6rem', letterSpacing: '0.1em', display: 'block', mb: 0.8, px: 0.5 }}>
+                          {section.label}
+                        </Typography>
+                        <Stack spacing={0.5}>
+                          {section.items.map((item) => {
+                            const unread = Number(item?.unread || 0) === 1;
+                            const entityType = String(item?.entity_type || '').toLowerCase();
+                            const isTask = entityType === 'task';
+                            const accentColor = isTask ? '#f59e0b' : '#3b82f6';
+                            return (
+                              <Box key={item.id} sx={{
+                                ...getOfficePanelSx(ui, {
+                                  p: 1.2,
+                                  borderRadius: '12px',
+                                  cursor: 'pointer',
+                                  bgcolor: unread ? alpha(accentColor, theme.palette.mode === 'dark' ? 0.12 : 0.08) : ui.panelSolid,
+                                  borderColor: unread ? alpha(accentColor, theme.palette.mode === 'dark' ? 0.26 : 0.16) : ui.borderSoft,
+                                  transition: 'all 0.15s ease',
+                                  '&:hover': { bgcolor: unread ? alpha(accentColor, theme.palette.mode === 'dark' ? 0.16 : 0.10) : ui.actionHover, borderColor: unread ? alpha(accentColor, theme.palette.mode === 'dark' ? 0.34 : 0.22) : ui.borderStrong },
+                                }),
+                              }}
+                                onClick={() => handleOpenNotification(item)}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="flex-start">
+                                  <Box sx={{
+                                    width: 32, height: 32, borderRadius: '10px', flexShrink: 0, mt: 0.2,
+                                    bgcolor: alpha(accentColor, theme.palette.mode === 'dark' ? 0.18 : 0.10), display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  }}>
+                                    {isTask
+                                      ? <AssignmentIcon sx={{ fontSize: 16, color: accentColor }} />
+                                      : <NotificationsNoneIcon sx={{ fontSize: 16, color: accentColor }} />
+                                    }
+                                  </Box>
+                                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                      <Typography variant="body2" sx={{
+                                        fontWeight: unread ? 700 : 500, fontSize: '0.82rem', lineHeight: 1.3,
+                                        color: 'text.primary',
+                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                      }}>
+                                        {item?.title || 'Уведомление'}
+                                      </Typography>
+                                      {unread && (
+                                        <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: accentColor, flexShrink: 0, ml: 1 }} />
+                                      )}
+                                    </Stack>
+                                    {item?.body && (
+                                      <Typography variant="caption" sx={{
+                                        color: 'text.secondary', display: 'block', mt: 0.3, fontSize: '0.72rem', lineHeight: 1.3,
+                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                      }}>{item.body}</Typography>
+                                    )}
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 0.5 }}>
+                                      <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: '0.65rem' }}>
+                                        {item?.created_at ? new Date(item.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '-'}
+                                      </Typography>
+                                      {unread && (
+                                        <Button size="small" onClick={(e) => { e.stopPropagation(); handleMarkNotificationRead(item.id); }}
+                                          sx={{ textTransform: 'none', fontSize: '0.62rem', fontWeight: 600, minWidth: 0, py: 0, px: 0.5 }}>
+                                          Прочитано
+                                        </Button>
+                                      )}
+                                    </Stack>
+                                  </Box>
+                                </Stack>
+                              </Box>
+                            );
+                          })}
+                        </Stack>
+                      </Box>
+                    ))}
+                  </Box>
+                ) : null}
+
+                {mailNotificationSections.length > 0 ? (
+                  <Box sx={{ mb: 2.2 }}>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 0.4, mb: 1 }}>
+                      <MailOutlineIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                      <Typography
+                        variant="overline"
+                        sx={{ color: 'text.disabled', fontWeight: 600, fontSize: '0.6rem', letterSpacing: '0.1em' }}
+                      >
+                        Почта
+                      </Typography>
+                    </Stack>
+                    {mailNotificationSections.map((section) => (
+                      <Box key={`mail-${section.key}`} sx={{ mb: 2 }}>
+                        <Typography variant="overline" sx={{ color: 'text.disabled', fontWeight: 600, fontSize: '0.6rem', letterSpacing: '0.1em', display: 'block', mb: 0.8, px: 0.5 }}>
+                          {section.label}
+                        </Typography>
+                        <Stack spacing={0.5}>
+                          {section.items.map((item) => {
+                            const accentColor = '#2563eb';
+                            const senderLine = String(item?.sender || '').trim() || 'Письмо';
+                            const previewText = String(item?.body_preview || '').trim();
+                            return (
+                              <Box key={item.id} sx={{
+                                ...getOfficePanelSx(ui, {
+                                  p: 1.2,
+                                  borderRadius: '12px',
+                                  cursor: 'pointer',
+                                  bgcolor: alpha(accentColor, theme.palette.mode === 'dark' ? 0.12 : 0.08),
+                                  borderColor: alpha(accentColor, theme.palette.mode === 'dark' ? 0.26 : 0.16),
+                                  transition: 'all 0.15s ease',
+                                  '&:hover': { bgcolor: alpha(accentColor, theme.palette.mode === 'dark' ? 0.16 : 0.10), borderColor: alpha(accentColor, theme.palette.mode === 'dark' ? 0.34 : 0.22) },
+                                }),
+                              }}
+                                onClick={() => handleOpenMailNotification(item)}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="flex-start">
+                                  <Box sx={{
+                                    width: 32, height: 32, borderRadius: '10px', flexShrink: 0, mt: 0.2,
+                                    bgcolor: alpha(accentColor, theme.palette.mode === 'dark' ? 0.18 : 0.10), display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  }}>
+                                    <MailOutlineIcon sx={{ fontSize: 16, color: accentColor }} />
+                                  </Box>
+                                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                      <Typography variant="body2" sx={{
+                                        fontWeight: 600, fontSize: '0.82rem', lineHeight: 1.3,
+                                        color: 'text.primary',
+                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                      }}>
+                                        {item?.subject || '(без темы)'}
+                                      </Typography>
+                                      <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: accentColor, flexShrink: 0, ml: 1 }} />
+                                    </Stack>
+                                    <Typography variant="caption" sx={{
+                                      color: 'text.secondary', display: 'block', mt: 0.25, fontSize: '0.7rem', lineHeight: 1.3,
+                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                    }}>
+                                      {senderLine}
+                                    </Typography>
+                                    {previewText ? (
+                                      <Typography variant="caption" sx={{
+                                        color: 'text.secondary', display: 'block', mt: 0.2, fontSize: '0.72rem', lineHeight: 1.3,
+                                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                      }}>
+                                        {previewText}
+                                      </Typography>
+                                    ) : null}
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 0.5 }}>
+                                      <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: '0.65rem' }}>
+                                        {item?.received_at ? new Date(item.received_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '-'}
+                                      </Typography>
+                                      <Button size="small" onClick={(e) => { e.stopPropagation(); handleOpenMailNotification(item); }}
+                                        sx={{ textTransform: 'none', fontSize: '0.62rem', fontWeight: 600, minWidth: 0, py: 0, px: 0.5 }}>
+                                        Открыть
+                                      </Button>
+                                    </Stack>
+                                  </Box>
+                                </Stack>
+                              </Box>
+                            );
+                          })}
+                        </Stack>
+                      </Box>
+                    ))}
+                  </Box>
+                ) : null}
+              </>
+            )}
+          </Box>
+        </Box>
+      </Drawer>
+      </Box>
+    </MainLayoutShellContext.Provider>
+  );
+}
+
+export default MainLayout;

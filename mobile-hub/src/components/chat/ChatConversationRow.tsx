@@ -1,0 +1,172 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import React from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import type { ChatConversationSummary } from '../../api/types';
+import { conversationKindLabel, shouldShowConversationKindChip } from '../../chat/chatFolders';
+import { stripChatMarkdownPreview } from '../../chat/chatMarkdown';
+import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
+import { formatShortTime } from '../../utils/formatTime';
+import { PresenceAvatar } from './PresenceAvatar';
+
+// Backend field from chat_serialization (viewer-scoped); not yet in the shared
+// ChatConversationSummary type, so it is read locally here.
+type MentionAwareConversationSummary = ChatConversationSummary & { unread_mention_count?: number };
+
+export const ChatConversationRow = React.memo(function ChatConversationRow({
+  item,
+  active,
+  onPress,
+  onLongPress,
+  typingText,
+  draftText,
+}: {
+  item: ChatConversationSummary;
+  active?: boolean;
+  onPress: () => void;
+  onLongPress?: () => void;
+  /** F-TYPING-INBOX: replaces the preview while someone is typing. */
+  typingText?: string;
+  /** F-DRAFT-INBOX: "Черновик: …" preview when a local draft exists. */
+  draftText?: string;
+}) {
+  const chatTokens = useChatTokens();
+  const styles = React.useMemo(() => createStyles(chatTokens), [chatTokens]);
+  const title = item.title || `Диалог ${item.id}`;
+  const basePreview = stripChatMarkdownPreview(item.last_message_preview) || item.last_message_preview || 'Нет сообщений';
+  const preview = typingText || (draftText ? `Черновик: ${draftText}` : basePreview);
+  const unread = Number(item.unread_count || 0);
+  // The server counts unread mentions per viewer (unread_mention_count in the
+  // conversation summary). The "@" mark shows only while unread messages remain:
+  // a local read clears unread_count immediately, the mention count follows later.
+  const mentions = unread > 0
+    ? Math.max(0, Number((item as MentionAwareConversationSummary).unread_mention_count || 0))
+    : 0;
+  const time = formatShortTime(item.last_message_at);
+  const kindLabel = shouldShowConversationKindChip(item.kind) ? conversationKindLabel(item.kind) : '';
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={400}
+      style={[styles.row, active && { backgroundColor: chatTokens.sidebarRowActive }]}
+      accessibilityRole="button"
+      accessibilityHint={onLongPress ? 'Удерживайте, чтобы открыть действия диалога' : undefined}
+      accessibilityActions={onLongPress ? [{ name: 'longpress', label: 'Действия диалога' }] : undefined}
+      onAccessibilityAction={(event) => {
+        if (event.nativeEvent.actionName === 'longpress') onLongPress?.();
+      }}
+      accessibilityLabel={`${title}${kindLabel ? `. ${kindLabel}` : ''}. ${preview}${unread ? `. Непрочитанных: ${unread}` : ''}${mentions ? `. Упоминаний: ${mentions}` : ''}`}
+      accessibilityState={{ selected: Boolean(active) }}
+    >
+      <PresenceAvatar label={title} avatarUrl={item.avatar_url} size={52} />
+      <View style={styles.body}>
+        <View style={styles.top}>
+          <Text style={[styles.title, active && styles.titleActive]} numberOfLines={1}>
+            {title}
+          </Text>
+          {kindLabel ? (
+            <View style={[styles.kind, active && styles.kindActive]}>
+              <Text style={[styles.kindText, active && styles.kindTextActive]}>{kindLabel}</Text>
+            </View>
+          ) : null}
+          {time ? (
+            <Text style={[styles.time, active && styles.timeActive]}>{time}</Text>
+          ) : null}
+        </View>
+        <View style={styles.bottom}>
+          <Text
+            style={[
+              styles.preview,
+              active && styles.previewActive,
+              !active && typingText ? styles.previewTyping : undefined,
+              !active && !typingText && draftText ? styles.previewDraft : undefined,
+            ]}
+            numberOfLines={1}
+          >
+            {preview}
+          </Text>
+          {mentions > 0 ? (
+            <View style={styles.mentionBadge} testID="chat-row-mention">
+              <Text style={styles.mentionText}>@</Text>
+            </View>
+          ) : null}
+          {unread > 0 ? (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{unread > 99 ? '99+' : unread}</Text>
+            </View>
+          ) : null}
+        </View>
+      </View>
+      {onLongPress ? (
+        <Pressable
+          onPress={(event) => { event.stopPropagation(); onLongPress(); }}
+          accessibilityRole="button"
+          accessibilityLabel={`Действия диалога ${title}`}
+          style={styles.actions}
+        >
+          <MaterialCommunityIcons
+            name="dots-vertical"
+            size={22}
+            color={active ? '#fff' : chatTokens.textSecondary}
+          />
+        </Pressable>
+      ) : null}
+    </Pressable>
+  );
+});
+
+const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
+  row: {
+    minHeight: 72,
+    flexDirection: 'row',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: chatTokens.sidebarDivider,
+  },
+  body: { flex: 1, minWidth: 0 },
+  actions: { width: 44, height: 44, alignSelf: 'center', alignItems: 'center', justifyContent: 'center', marginLeft: -10, marginRight: -8 },
+  actionsIcon: { fontSize: 25, color: chatTokens.textSecondary },
+  top: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  title: { flexShrink: 1, flexGrow: 1, fontSize: 16, fontWeight: '600', color: chatTokens.textPrimary },
+  titleActive: { color: '#fff' },
+  kind: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: chatTokens.sidebarSearchBg,
+  },
+  kindActive: { backgroundColor: 'rgba(255,255,255,0.18)' },
+  kindText: { color: chatTokens.accentText, fontSize: 11, fontWeight: '700' },
+  kindTextActive: { color: '#fff' },
+  time: { fontSize: 12, color: chatTokens.textSecondary },
+  timeActive: { color: 'rgba(255,255,255,0.75)' },
+  bottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  preview: { flex: 1, fontSize: 14, color: chatTokens.textSecondary },
+  previewTyping: { color: chatTokens.accentText },
+  previewDraft: { color: chatTokens.dangerText },
+  previewActive: { color: 'rgba(255,255,255,0.82)' },
+  badge: {
+    minWidth: 22,
+    minHeight: 22,
+    paddingVertical: 2,
+    borderRadius: 20,
+    backgroundColor: chatTokens.composerActionBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  badgeText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  mentionBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: chatTokens.sidebarSearchBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  mentionText: { color: chatTokens.accentText, fontSize: 13, fontWeight: '800' },
+});

@@ -1,0 +1,511 @@
+from __future__ import annotations
+
+import dataclasses
+import threading
+import time
+from pathlib import Path
+import sys
+
+import pytest
+from fastapi.testclient import TestClient
+
+ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = ROOT / "WEB-itinvent"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(WEB_ROOT) not in sys.path:
+    sys.path.insert(0, str(WEB_ROOT))
+
+from backend import inventory_runtime
+from backend.appdb.inventory_store import AppInventoryStore
+from inventory_server import app as app_module
+from inventory_server.config import InventoryServerConfig
+from inventory_server.database import InventoryQueueStore
+from inventory_server.worker import InventoryWorker
+
+
+def test_inventory_server_requires_explicit_api_key_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("INVENTORY_SERVER_API_KEYS", "")
+    monkeypatch.setenv("ITINV_AGENT_API_KEYS", "")
+    monkeypatch.setenv("INVENTORY_SERVER_API_KEY", "")
+    monkeypatch.setenv("ITINV_AGENT_API_KEY", "")
+
+    with pytest.raises(RuntimeError, match="INVENTORY_SERVER_API_KEYS"):
+        InventoryServerConfig.from_env()
+
+
+def _sqlite_url(temp_dir: str) -> str:
+    return f"sqlite:///{(Path(temp_dir) / 'inventory_app.db').as_posix()}"
+
+
+def _payload(*, timestamp: int, monitor_serial: str = "MON-1") -> dict:
+    return {
+        "hostname": "PC-INV-01",
+        "system_serial": "SYS-INV-01",
+        "mac_address": "AA-BB-CC-DD-EE-10",
+        "current_user": "CORP\\tester",
+        "user_login": "CORP\\tester",
+        "user_full_name": "Tester T.T.",
+        "ip_primary": "10.10.10.10",
+        "ip_list": ["10.10.10.10"],
+        "cpu_model": "CPU1",
+        "ram_gb": 16,
+        "monitors": [{"serial_number": monitor_serial}],
+        "storage": [{"serial_number": "SSD-1"}],
+        "logical_disks": [{"mountpoint": "C:\\"}],
+        "report_type": "full_snapshot",
+        "timestamp": timestamp,
+    }
+
+
+def _worker_config(temp_dir: str) -> InventoryServerConfig:
+    data_dir = Path(temp_dir) / "inventory_server"
+    return InventoryServerConfig(
+        host="127.0.0.1",
+        port=8012,
+        api_keys=("test-key",),
+        data_dir=data_dir,
+        db_path=data_dir / "queue.db",
+        worker_interval_sec=1,
+        batch_size=10,
+        max_attempts=2,
+        backoff_cap_sec=1,
+    )
+
+
+def test_queue_enqueue_is_idempotent(temp_dir):
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    payload = _payload(timestamp=1_710_100_000)
+    dedupe_key = inventory_runtime.build_inventory_dedupe_key(payload)
+
+    first = store.enqueue(payload, dedupe_key)
+    second = store.enqueue(payload, dedupe_key)
+    stats = store.queue_stats()
+
+    assert first["duplicate"] is False
+    assert second["duplicate"] is True
+    assert stats["queue_depth"] == 1
+    assert stats["dead_letter_count"] == 0
+
+
+def test_worker_flushes_queue_into_app_db(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = _worker_config(temp_dir)
+
+    monkeypatch.setattr(inventory_runtime, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory_runtime, "get_app_database_url", lambda: database_url)
+    monkeypatch.setattr(
+        inventory_runtime,
+        "get_local_store",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local_store should not be used")),
+    )
+
+    payload_v1 = _payload(timestamp=1_710_100_000, monitor_serial="MON-1")
+    payload_v2 = _payload(timestamp=1_710_100_120, monitor_serial="MON-2")
+    store.enqueue(payload_v1, inventory_runtime.build_inventory_dedupe_key(payload_v1))
+    store.enqueue(payload_v2, inventory_runtime.build_inventory_dedupe_key(payload_v2))
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    for item in store.claim_next_batch(limit=10):
+        worker._handle_item(item)
+
+    app_store = AppInventoryStore(database_url=database_url)
+    host = app_store.get_host("AA-BB-CC-DD-EE-10")
+    changes = app_store.list_change_events()
+
+    assert host is not None
+    assert host["timestamp"] == 1_710_100_120
+    assert host["monitors"][0]["serial_number"] == "MON-2"
+    assert len(changes) == 1
+    assert changes[0]["change_types"] == ["monitors"]
+    assert store.queue_stats()["queue_depth"] == 0
+
+
+def test_worker_ignores_old_full_snapshot_after_current_report(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = _worker_config(temp_dir)
+
+    monkeypatch.setattr(inventory_runtime, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory_runtime, "get_app_database_url", lambda: database_url)
+
+    current = _payload(timestamp=1_710_100_200, monitor_serial="MON-CURRENT")
+    old_backlog = _payload(timestamp=1_710_100_000, monitor_serial="MON-OLD")
+    store.enqueue(current, inventory_runtime.build_inventory_dedupe_key(current))
+    store.enqueue(old_backlog, inventory_runtime.build_inventory_dedupe_key(old_backlog))
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    for item in store.claim_next_batch(limit=10):
+        worker._handle_item(item)
+
+    app_store = AppInventoryStore(database_url=database_url)
+    host = app_store.get_host("AA-BB-CC-DD-EE-10")
+
+    assert host is not None
+    assert host["timestamp"] == 1_710_100_200
+    assert host["last_seen_at"] == 1_710_100_200
+    assert host["report_type"] == "full_snapshot"
+    assert host["monitors"][0]["serial_number"] == "MON-CURRENT"
+    assert app_store.list_change_events() == []
+    assert store.queue_stats()["queue_depth"] == 0
+
+
+def test_worker_ignores_old_heartbeat_after_current_report(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = _worker_config(temp_dir)
+
+    monkeypatch.setattr(inventory_runtime, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory_runtime, "get_app_database_url", lambda: database_url)
+
+    current = _payload(timestamp=1_710_100_200, monitor_serial="MON-CURRENT")
+    old_heartbeat = _payload(timestamp=1_710_100_000, monitor_serial="MON-OLD")
+    old_heartbeat["report_type"] = "heartbeat"
+    store.enqueue(current, inventory_runtime.build_inventory_dedupe_key(current))
+    store.enqueue(old_heartbeat, inventory_runtime.build_inventory_dedupe_key(old_heartbeat))
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    for item in store.claim_next_batch(limit=10):
+        worker._handle_item(item)
+
+    host = AppInventoryStore(database_url=database_url).get_host("AA-BB-CC-DD-EE-10")
+
+    assert host is not None
+    assert host["timestamp"] == 1_710_100_200
+    assert host["last_seen_at"] == 1_710_100_200
+    assert host["report_type"] == "full_snapshot"
+    assert host["monitors"][0]["serial_number"] == "MON-CURRENT"
+    assert store.queue_stats()["queue_depth"] == 0
+
+
+def test_app_inventory_store_keeps_presence_and_snapshot_monotonic(temp_dir):
+    database_url = _sqlite_url(temp_dir)
+    app_store = AppInventoryStore(database_url=database_url)
+    current = _payload(timestamp=1_710_100_200, monitor_serial="MON-CURRENT")
+    old_backlog = _payload(timestamp=1_710_100_000, monitor_serial="MON-OLD")
+
+    app_store.upsert_host(current)
+    app_store.upsert_host(old_backlog)
+    app_store.touch_host_presence(
+        current["mac_address"],
+        last_seen_at=1_710_100_000,
+        report_type="heartbeat",
+    )
+
+    host = app_store.get_host(current["mac_address"])
+
+    assert host is not None
+    assert host["timestamp"] == 1_710_100_200
+    assert host["last_seen_at"] == 1_710_100_200
+    assert host["report_type"] == "full_snapshot"
+    assert host["monitors"][0]["serial_number"] == "MON-CURRENT"
+
+
+def test_worker_moves_repeated_failures_to_dead_letter(temp_dir, monkeypatch):
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = _worker_config(temp_dir)
+    payload = _payload(timestamp=1_710_100_000)
+    queued = store.enqueue(payload, inventory_runtime.build_inventory_dedupe_key(payload))
+    queue_id = queued["id"]
+
+    def _boom(_: dict) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(inventory_runtime, "process_inventory_payload", _boom)
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    first_item = store.claim_next_batch(limit=1)[0]
+    worker._handle_item(first_item)
+    stats_after_retry = store.queue_stats()
+
+    worker._handle_item({"id": queue_id, "payload": payload, "attempt_count": 1})
+    stats_after_dead = store.queue_stats()
+
+    assert stats_after_retry["queue_depth"] == 1
+    assert stats_after_retry["dead_letter_count"] == 0
+    assert stats_after_dead["queue_depth"] == 0
+    assert stats_after_dead["dead_letter_count"] == 1
+
+
+def test_report_without_mac_goes_straight_to_dead_letter(temp_dir):
+    # E2E through the real worker + real process_inventory_payload: a report that can never be stored
+    # must not be retried max_attempts times (it used to loop for hours with backoff).
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = dataclasses.replace(_worker_config(temp_dir), max_attempts=20)
+    payload = _payload(timestamp=1_710_100_000)
+    payload["mac_address"] = ""
+    store.enqueue(payload, "no-mac-key")
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    worker._handle_item(store.claim_next_batch(limit=1)[0])
+
+    stats = store.queue_stats()
+    assert stats["queue_depth"] == 0
+    assert stats["dead_letter_count"] == 1
+
+
+def test_worker_survives_claim_batch_exception(temp_dir):
+    class FlakyStore:
+        def __init__(self) -> None:
+            self.claim_calls = 0
+            self.error_seen = threading.Event()
+
+        def cleanup_retention(self, *, done_retention_days: int, dead_retention_days: int) -> dict:
+            return {"done_removed": 0, "dead_removed": 0}
+
+        def claim_next_batch(self, *, limit: int) -> list:
+            self.claim_calls += 1
+            if self.claim_calls == 1:
+                self.error_seen.set()
+                raise RuntimeError("claim failed")
+            return []
+
+    store = FlakyStore()
+    config = _worker_config(temp_dir)
+    stop_event = threading.Event()
+    worker = InventoryWorker(store=store, config=config, stop_event=stop_event)
+
+    worker.start()
+    assert store.error_seen.wait(timeout=2)
+    assert worker.is_alive()
+
+    stop_event.set()
+    worker.join(timeout=3)
+    assert not worker.is_alive()
+
+
+def test_inventory_queue_cleanup_removes_old_done_and_dead_rows(temp_dir):
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    now_ts = int(time.time())
+    done_payload = _payload(timestamp=1_710_100_001)
+    dead_payload = _payload(timestamp=1_710_100_002)
+    fresh_payload = _payload(timestamp=1_710_100_003)
+    done_id = store.enqueue(done_payload, inventory_runtime.build_inventory_dedupe_key(done_payload))["id"]
+    dead_id = store.enqueue(dead_payload, inventory_runtime.build_inventory_dedupe_key(dead_payload))["id"]
+    fresh_id = store.enqueue(fresh_payload, inventory_runtime.build_inventory_dedupe_key(fresh_payload))["id"]
+
+    store.mark_done(done_id, processed_at=now_ts - 8 * 24 * 60 * 60)
+    store.mark_dead(dead_id, error_text="boom", processed_at=now_ts - 31 * 24 * 60 * 60, attempt_count=2)
+    store.mark_done(fresh_id, processed_at=now_ts)
+
+    result = store.cleanup_retention(done_retention_days=7, dead_retention_days=30)
+
+    assert result == {"done_removed": 1, "dead_removed": 1}
+    with store._lock, store._connect() as conn:
+        rows = conn.execute("SELECT status FROM inventory_ingest_queue").fetchall()
+    assert [row["status"] for row in rows] == ["done"]
+
+
+def test_inventory_worker_defers_cleanup_after_start(temp_dir):
+    class CleanupStore:
+        def __init__(self) -> None:
+            self.cleanup_calls = 0
+
+        def cleanup_retention(self, *, done_retention_days: int, dead_retention_days: int) -> dict:
+            self.cleanup_calls += 1
+            return {"done_removed": 0, "dead_removed": 0}
+
+    store = CleanupStore()
+    config = _worker_config(temp_dir)
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+
+    worker._cleanup_if_due()
+    assert store.cleanup_calls == 0
+
+    worker._last_cleanup_at = int(time.time()) - int(config.cleanup_interval_sec) - 1
+    worker._cleanup_if_due()
+    assert store.cleanup_calls == 1
+
+
+def test_inventory_queue_vacuum_reports_size_result(temp_dir):
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    payload = _payload(timestamp=1_710_100_004)
+    queue_id = store.enqueue(payload, inventory_runtime.build_inventory_dedupe_key(payload))["id"]
+    store.mark_done(queue_id, processed_at=int(time.time()) - 8 * 24 * 60 * 60)
+    store.cleanup_retention(done_retention_days=7, dead_retention_days=30)
+
+    result = store.vacuum()
+
+    assert set(result) == {"before_bytes", "after_bytes", "saved_bytes"}
+    assert result["before_bytes"] >= result["after_bytes"]
+
+
+def test_user_profile_sizes_are_stored_without_hardware_change_noise(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+    monkeypatch.setattr(inventory_runtime, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory_runtime, "get_app_database_url", lambda: database_url)
+
+    first = _payload(timestamp=1_710_100_010)
+    first["user_profile_sizes"] = {
+        "cache_version": 2,
+        "collected_at": 1_710_100_010,
+        "limits": {
+            "profile_budget_sec": 45,
+            "total_budget_sec": 180,
+            "max_entries_per_profile": 500000,
+            "max_profiles": 50,
+        },
+        "profiles": [
+            {
+                "user_name": "tester",
+                "profile_path": r"C:\Users\tester",
+                "total_size_bytes": 100,
+                "top_level_folders": [
+                    {
+                        "name": "Documents",
+                        "path": r"C:\Users\tester\Documents",
+                        "size_bytes": 100,
+                        "partial": True,
+                        "partial_reasons": ["entry_limit"],
+                    }
+                ],
+                "files_count": 1,
+                "dirs_count": 1,
+                "errors_count": 0,
+                "duration_ms": 5,
+                "partial": True,
+                "partial_reasons": ["entry_limit"],
+            }
+        ],
+        "partial": True,
+        "partial_reasons": ["entry_limit"],
+    }
+    second = _payload(timestamp=1_710_100_020)
+    second["user_profile_sizes"] = {
+        **first["user_profile_sizes"],
+        "collected_at": 1_710_100_020,
+        "profiles": [{**first["user_profile_sizes"]["profiles"][0], "total_size_bytes": 200}],
+    }
+
+    inventory_runtime.process_inventory_payload(first)
+    inventory_runtime.process_inventory_payload(second)
+
+    app_store = AppInventoryStore(database_url=database_url)
+    host = app_store.get_host("AA-BB-CC-DD-EE-10")
+    changes = app_store.list_change_events()
+    assert host["user_profile_sizes"]["total_size_bytes"] == 200
+    assert host["user_profile_sizes_total_bytes"] == 200
+    assert host["user_profile_sizes"]["partial_reasons"] == ["entry_limit"]
+    assert host["user_profile_sizes"]["limits"]["max_entries_per_profile"] == 500000
+    assert changes == []
+
+
+def test_inventory_worker_flushes_300_items_without_backlog(temp_dir, monkeypatch):
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = _worker_config(temp_dir)
+    handled = []
+
+    monkeypatch.setattr(inventory_runtime, "process_inventory_payload", lambda payload: handled.append(payload))
+
+    for idx in range(300):
+        payload = _payload(timestamp=1_710_200_000 + idx)
+        payload["hostname"] = f"PC-LOAD-{idx:03d}"
+        payload["mac_address"] = f"AA-BB-CC-DD-EE-{idx % 100:02d}"
+        store.enqueue(payload, inventory_runtime.build_inventory_dedupe_key(payload))
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    while True:
+        batch = store.claim_next_batch(limit=50)
+        if not batch:
+            break
+        for item in batch:
+            worker._handle_item(item)
+
+    stats = store.queue_stats()
+    assert len(handled) == 300
+    assert stats["queue_depth"] == 0
+    assert stats["dead_letter_count"] == 0
+
+
+def test_inventory_app_enqueues_and_reports_health(temp_dir, monkeypatch):
+    class FakeWorker:
+        def __init__(self) -> None:
+            self._alive = False
+            self.last_successful_flush_at = 123
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def start(self) -> None:
+            self._alive = True
+
+        def join(self, timeout: float | None = None) -> None:
+            self._alive = False
+
+    fake_store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    fake_worker = FakeWorker()
+
+    monkeypatch.setattr(app_module, "store", fake_store)
+    monkeypatch.setattr(app_module, "worker", fake_worker)
+    monkeypatch.setattr(app_module, "stop_event", threading.Event())
+    monkeypatch.setattr(app_module, "_check_agent_key", lambda _: None)
+
+    with TestClient(app_module.app) as client:
+        post_response = client.post("/api/v1/inventory", json=_payload(timestamp=1_710_100_000))
+        health_response = client.get("/health")
+        ready_response = client.get("/health/ready")
+
+    assert post_response.status_code == 200
+    assert post_response.json()["queued"] is True
+    assert post_response.json()["duplicate"] is False
+    assert health_response.status_code == 200
+    assert health_response.json()["worker_alive"] is True
+    assert ready_response.status_code == 200
+    assert ready_response.json()["queue_depth"] == 1
+    assert ready_response.json()["worker_alive"] is True
+
+
+def test_inventory_post_starts_dead_worker_without_lifespan(temp_dir, monkeypatch):
+    class FakeWorker:
+        def __init__(self) -> None:
+            self._alive = False
+            self.start_count = 0
+            self.last_successful_flush_at = None
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def start(self) -> None:
+            self.start_count += 1
+            self._alive = True
+
+        def join(self, timeout: float | None = None) -> None:
+            self._alive = False
+
+    fake_store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    fake_worker = FakeWorker()
+
+    monkeypatch.setattr(app_module, "store", fake_store)
+    monkeypatch.setattr(app_module, "worker", fake_worker)
+    monkeypatch.setattr(app_module, "stop_event", threading.Event())
+    monkeypatch.setattr(app_module, "_check_agent_key", lambda _: None)
+
+    client = TestClient(app_module.app)
+    try:
+        response = client.post("/api/v1/inventory", json=_payload(timestamp=1_710_100_000))
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    assert response.json()["queued"] is True
+    assert fake_worker.start_count == 1
+    assert fake_worker.is_alive() is True
+
+
+def test_opening_a_second_store_does_not_requeue_rows_a_worker_is_processing(temp_dir):
+    # Cleanup/vacuum open their own store next to the live worker: a claimed row must stay claimed.
+    db_path = Path(temp_dir) / "queue.db"
+    worker_store = InventoryQueueStore(db_path=db_path)
+    worker_store.enqueue({"host": "a"}, "dedupe-a")
+    claimed = worker_store.claim_next_batch(limit=10)
+    assert len(claimed) == 1
+
+    InventoryQueueStore(db_path=db_path)  # maintenance open
+
+    assert worker_store.claim_next_batch(limit=10) == []
+
+    # After a real restart the owner recovers the interrupted row explicitly.
+    restarted = InventoryQueueStore(db_path=db_path, recover_interrupted=True)
+    assert [row["id"] for row in restarted.claim_next_batch(limit=10)] == [claimed[0]["id"]]

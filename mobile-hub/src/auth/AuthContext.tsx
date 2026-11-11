@@ -1,0 +1,858 @@
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
+import * as authApi from '../api/authApi';
+import {
+  isDefinitiveAuthRejection,
+  isNetworkRestrictedRejection,
+  isUserDeactivatedRejection,
+  warmApiConnection,
+} from '../api/client';
+import type { HubUser, LoginResponse, TwoFactorSetupResponse } from '../api/types';
+import * as tokenStore from './tokenStore';
+import { subscribeSessionExpired } from './sessionEvents';
+import { chatSocket } from '../chat/chatSocket';
+import { endMobileSession } from './logout';
+import {
+  getNativeConnectivitySnapshot,
+  subscribeNativeConnectivity,
+} from '../network/nativeConnectivity';
+import { createDeferredOfflineConnectivityController } from '../network/nativeConnectivityGrace';
+import { logChatDevice } from '../diagnostics/chatDeviceLog';
+import { setNativeOfflineReadOnly } from '../offline/nativeOfflinePolicy';
+import { bumpNativeChatThreadHistoryGeneration } from '../chat/nativeChatThreadHistory';
+import {
+  disableBiometricLogin,
+  enableBiometricLogin,
+  getAppLockSettings,
+  getBiometricLoginUserId,
+  isBiometricLoginEnabled,
+  unlockBiometricLogin,
+} from './biometricAuth';
+
+export type ServerCheck = { at: number; ok: boolean; ms: number };
+
+export type BiometricUnlockResult = {
+  user: HubUser;
+  offline: boolean;
+};
+
+type AuthContextValue = {
+  user: HubUser | null;
+  loading: boolean;
+  sessionRestoreState: 'idle' | 'checking' | 'unavailable' | 'expired' | 'deactivated';
+  retrySessionRestore: () => void;
+  loginChallengeId: string | null;
+  biometricEnabled: boolean;
+  biometricEnrollmentAvailable: boolean;
+  offlineMode: boolean;
+  /** Android reports no usable network at the physical layer. */
+  connectivityOffline: boolean;
+  /** Last HUB-IT reachability probe (/auth/me): when, whether it answered and how fast. */
+  serverCheck: ServerCheck | null;
+  /** Manual «Проверить связь»: probes HUB-IT now; resolves true when it answered. */
+  checkServerNow: () => Promise<boolean>;
+  /** HUB-IT answered JSON 403: the session is valid but this network is not allowed. */
+  sessionNetworkRestricted: boolean;
+  vpnActive: boolean;
+  offlineCacheKey: string | null;
+  /** App lock is armed for the cold start and still waits for the fingerprint. */
+  appLockPendingUnlock: boolean;
+  markAppLockUnlocked: () => void;
+  /** `setup` while native 2FA enrollment is in progress. */
+  login: (username: string, password: string) => Promise<LoginResponse>;
+  startTwoFactorSetup: () => Promise<TwoFactorSetupResponse>;
+  verifyTwoFactorSetup: (code: string) => Promise<string[]>;
+  verifyTwoFactor: (code: string, isBackup?: boolean) => Promise<void>;
+  enableBiometrics: () => Promise<void>;
+  skipBiometrics: () => Promise<void>;
+  unlockOfflineCache: () => Promise<string>;
+  unlockWithBiometrics: () => Promise<BiometricUnlockResult>;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  completeAboutOnboarding: () => Promise<void>;
+  hasPermission: (permission: string) => boolean;
+};
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+const SESSION_RESTORE_RETRY_DELAY_MS = 400;
+const SESSION_RESTORE_TIMEOUT_MS = 5_000;
+const SESSION_RESTORE_ATTEMPT_TIMEOUT_MS = 4_000;
+const SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS = 5_000;
+
+function isTransportFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return true;
+  return !('response' in error) || (error as { response?: unknown }).response == null;
+}
+
+// Short enum-like token for the device log: HTTP status or axios error code, never a message.
+function probeErrorToken(error: unknown): string {
+  const status = Number((error as { response?: { status?: unknown } })?.response?.status || 0);
+  if (status) return `http${status}`;
+  const code = String((error as { code?: unknown })?.code || 'none');
+  return code.replace(/[^a-zA-Z0-9_.:+-]/g, '').slice(0, 32) || 'none';
+}
+
+async function restoreUserWithRetry(
+  refreshUser: (timeoutMs: number) => Promise<void>,
+  totalTimeoutMs: number,
+): Promise<void> {
+  const deadlineAtMs = Date.now() + totalTimeoutMs;
+  const remainingTimeoutMs = () => Math.max(0, Math.trunc(deadlineAtMs - Date.now()));
+  // Flaky links most often fail by timeout, so every transport failure gets a
+  // retry inside one total budget — instead of dropping to the login screen
+  // after a single stalled attempt.
+  let delayMs = SESSION_RESTORE_RETRY_DELAY_MS;
+  let lastError: unknown;
+  while (remainingTimeoutMs() > 0) {
+    try {
+      await refreshUser(Math.min(SESSION_RESTORE_ATTEMPT_TIMEOUT_MS, remainingTimeoutMs()));
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isTransportFailure(error) || remainingTimeoutMs() <= delayMs) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs *= 2;
+    }
+  }
+  throw lastError;
+}
+
+async function persistLoginResult(result: LoginResponse, assertCurrent: () => void): Promise<void> {
+  assertCurrent();
+  if (result.client_device_id) {
+    await tokenStore.setClientDeviceId(result.client_device_id);
+    assertCurrent();
+  }
+  const access = String(result.access_token || '').trim();
+  const refresh = String(result.refresh_token || '').trim();
+  if (result.status === 'authenticated' && access && refresh) {
+    await tokenStore.setTokens(access, refresh);
+    assertCurrent();
+    if (result.user?.id) await tokenStore.setSessionUserId(result.user.id);
+    assertCurrent();
+  }
+}
+
+function cacheSessionUserInBackground(user: HubUser): void {
+  void tokenStore.setCachedSessionUser(user).catch(() => undefined);
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const authGenerationRef = useRef(0);
+  const logoutPromise = useRef<Promise<void> | null>(null);
+  const [user, setUser] = useState<HubUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sessionRestoreState, setSessionRestoreState] = useState<AuthContextValue['sessionRestoreState']>('idle');
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  const restorePending = useRef(true);
+  const [loginChallengeId, setLoginChallengeId] = useState<string | null>(null);
+  const [twoFactorSetupChallengeId, setTwoFactorSetupChallengeId] = useState<string | null>(null);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [biometricEnrollmentCode, setBiometricEnrollmentCode] = useState<string | null>(null);
+  const [sessionOfflineMode, setSessionOfflineMode] = useState(false);
+  const [connectivityOffline, setConnectivityOffline] = useState(false);
+  const [sessionNetworkRestricted, setSessionNetworkRestricted] = useState(false);
+  const [connectivityKnownOnline, setConnectivityKnownOnline] = useState(false);
+  const [vpnActive, setVpnActive] = useState(false);
+  const [offlineCacheKey, setOfflineCacheKey] = useState<string | null>(null);
+  const [appLockPendingUnlock, setAppLockPendingUnlock] = useState(false);
+  const lastApiSuccessAtRef = useRef(0);
+  const [serverCheck, setServerCheck] = useState<ServerCheck | null>(null);
+  const offlineMode = sessionOfflineMode || connectivityOffline;
+  const userId = user ? Number(user.id) : null;
+
+  const markAppLockUnlocked = useCallback(() => {
+    setAppLockPendingUnlock(false);
+  }, []);
+
+  const markApiOnline = useCallback(() => {
+    setSessionRestoreState('idle');
+    lastApiSuccessAtRef.current = Date.now();
+    setSessionOfflineMode(false);
+    setConnectivityOffline(false);
+    setSessionNetworkRestricted(false);
+    setConnectivityKnownOnline(true);
+  }, []);
+
+  useEffect(() => {
+    setNativeOfflineReadOnly(offlineMode);
+    return () => setNativeOfflineReadOnly(false);
+  }, [offlineMode]);
+
+  const refreshUser = useCallback(async () => {
+    const generation = authGenerationRef.current;
+    const me = await authApi.fetchMe();
+    if (generation !== authGenerationRef.current) return;
+    setUser(me);
+    markApiOnline();
+    cacheSessionUserInBackground(me);
+  }, [markApiOnline]);
+
+  const completeAboutOnboarding = useCallback(async () => {
+    const completed = await authApi.completeAboutOnboarding();
+    setUser(completed);
+    await tokenStore.setCachedSessionUser(completed).catch(() => undefined);
+  }, []);
+
+  // A deactivated account is wiped like a logout but without any server
+  // request: the backend already closed the session. The mark is stored first
+  // so a wipe started by headless background sync still finishes on the next
+  // cold start.
+  const wipeDeactivatedSession = useCallback(async () => {
+    authGenerationRef.current += 1;
+    restorePending.current = false;
+    chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
+    setUser(null);
+    setLoginChallengeId(null);
+    setTwoFactorSetupChallengeId(null);
+    setBiometricEnrollmentCode(null);
+    setBiometricEnabled(false);
+    setSessionOfflineMode(false);
+    setOfflineCacheKey(null);
+    setAppLockPendingUnlock(false);
+    setSessionNetworkRestricted(false);
+    setSessionRestoreState('deactivated');
+    setLoading(false);
+    await tokenStore.markSessionDeactivated().catch(() => undefined);
+    await endMobileSession({ contactServer: false }).catch(() => undefined);
+    bumpNativeChatThreadHistoryGeneration();
+  }, []);
+
+  useEffect(() => {
+    return subscribeSessionExpired(() => {
+      if (tokenStore.isSessionDeactivationMarked()) {
+        if (!logoutPromise.current) void wipeDeactivatedSession();
+        return;
+      }
+      authGenerationRef.current += 1;
+      restorePending.current = false;
+      // An in-flight request can hit a definitive 401 while a user-initiated
+      // logout is still finishing; that is not an expired session.
+      if (!logoutPromise.current) setSessionRestoreState('expired');
+      chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
+      setUser(null);
+      setLoginChallengeId(null);
+      setTwoFactorSetupChallengeId(null);
+      setBiometricEnrollmentCode(null);
+      setSessionOfflineMode(false);
+      setOfflineCacheKey(null);
+      setAppLockPendingUnlock(false);
+      setSessionNetworkRestricted(false);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    const controller = createDeferredOfflineConnectivityController({
+      getLastApiSuccessAt: () => lastApiSuccessAtRef.current,
+      setOffline: setConnectivityOffline,
+      setKnownOnline: setConnectivityKnownOnline,
+      setVpnActive,
+      recheck: getNativeConnectivitySnapshot,
+    });
+    // Every snapshot lands in the shareable device log: a stuck «Нет связи» is
+    // diagnosed from the order of native events, foreground resyncs and probes.
+    // Android шлёт событие на каждое колебание сигнала Wi-Fi: в журнал идут только
+    // реальные смены состояния, иначе он вытеснит всё остальное (кольцо на 400 записей).
+    let lastLoggedKey = '';
+    const applyLogged = (source: string) => (snapshot: Parameters<typeof controller.apply>[0]) => {
+      const key = `${snapshot.available}|${snapshot.online}|${snapshot.connected}|${snapshot.transport}`;
+      if (source !== 'event' || key !== lastLoggedKey) {
+        logChatDevice('net_snapshot', {
+          src: source,
+          avail: snapshot.available,
+          online: snapshot.online,
+          connected: snapshot.connected,
+          transport: snapshot.transport,
+        });
+      }
+      lastLoggedKey = key;
+      controller.apply(snapshot);
+    };
+    void getNativeConnectivitySnapshot().then(applyLogged('start')).catch(() => undefined);
+    const subscription = subscribeNativeConnectivity(applyLogged('event'));
+    // Native events are not delivered reliably while the screen is locked or the
+    // app is in the background: the «offline» flag could survive the return to
+    // the app and keep every write blocked. Re-read the real state on resume.
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      logChatDevice('app_state', { state: nextState });
+      if (nextState !== 'active') return;
+      warmApiConnection();
+      void getNativeConnectivitySnapshot().then(applyLogged('foreground')).catch(() => undefined);
+    });
+    return () => {
+      controller.dispose();
+      subscription.remove();
+      appStateSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const generation = authGenerationRef.current;
+    const isCurrent = () => active && !logoutPromise.current && generation === authGenerationRef.current;
+    const expireStartupSession = async () => {
+      await tokenStore.clearTokens({ clearOfflineData: false });
+      if (!isCurrent()) return;
+      setUser(null);
+      setSessionOfflineMode(false);
+      setAppLockPendingUnlock(false);
+      setSessionNetworkRestricted(false);
+      setSessionRestoreState('expired');
+    };
+    void (async () => {
+      try {
+        // Warm TCP+TLS while SecureStore reads run; the first authenticated
+        // request then skips the handshake.
+        warmApiConnection();
+        const [
+          biometrics,
+          hasAccessSession,
+          refreshToken,
+          sessionUserId,
+          cachedUser,
+          appLock,
+          initialConnectivity,
+          deactivationMarked,
+        ] = await Promise.all([
+          isBiometricLoginEnabled(),
+          tokenStore.hasSession(),
+          tokenStore.getRefreshToken(),
+          tokenStore.getSessionUserId(),
+          tokenStore.getCachedSessionUser(),
+          getAppLockSettings(),
+          getNativeConnectivitySnapshot(),
+          tokenStore.readSessionDeactivationMark(),
+        ]);
+        if (!isCurrent()) return;
+        if (deactivationMarked) {
+          // The deactivation rejection may have been caught by headless
+          // background sync: finish the local wipe now and keep the account
+          // on the login screen. The cached identity is never restored.
+          await wipeDeactivatedSession();
+          return;
+        }
+        setBiometricEnabled(biometrics);
+        const hasSession = Boolean(hasAccessSession || refreshToken);
+        const canReachNetwork = !initialConnectivity.available
+          || initialConnectivity.connected || initialConnectivity.online;
+        if (initialConnectivity.available) {
+          setConnectivityOffline(!canReachNetwork);
+          setConnectivityKnownOnline(canReachNetwork);
+          setVpnActive(initialConnectivity.transport === 'vpn');
+        }
+        const cachedIdentityValid = Boolean(
+          hasSession
+          && cachedUser
+          && sessionUserId !== null
+          && Number(cachedUser.id) === Number(sessionUserId),
+        );
+        if (cachedIdentityValid) {
+          // The saved identity opens the shell immediately — the network is
+          // never awaited. /auth/me keeps validating the session in the
+          // background through the recovery controller below.
+          setUser(cachedUser);
+          setSessionOfflineMode(true);
+          setSessionRestoreState('checking');
+          if (biometrics && appLock.enabled) setAppLockPendingUnlock(true);
+          return;
+        }
+        if (!canReachNetwork) {
+          setSessionOfflineMode(true);
+          if (hasSession) setSessionRestoreState('unavailable');
+          return;
+        }
+        if (!hasSession) { setSessionRestoreState('idle'); return; }
+        setSessionRestoreState('checking');
+        try {
+          await restoreUserWithRetry(async (timeoutMs) => {
+            if (!isCurrent()) return;
+            const me = await authApi.fetchMe({ timeoutMs });
+            if (!isCurrent()) return;
+            setUser(me);
+            markApiOnline();
+            cacheSessionUserInBackground(me);
+          }, SESSION_RESTORE_TIMEOUT_MS);
+        } catch (error) {
+          if (!isCurrent()) return;
+          if (isUserDeactivatedRejection(error)) {
+            await wipeDeactivatedSession();
+            return;
+          }
+          if (isDefinitiveAuthRejection(error)) {
+            await expireStartupSession();
+          } else {
+            // A JSON 403 («network not allowed for this account») preserves the
+            // stored session exactly like a transport failure — the user gets
+            // the shell back as soon as they return to an allowed network.
+            setSessionNetworkRestricted(isNetworkRestrictedRejection(error));
+            setSessionRestoreState('unavailable');
+            setUser(null);
+            setSessionOfflineMode(true);
+          }
+        }
+      } catch {
+        if (isCurrent()) {
+          setUser(null);
+          setSessionRestoreState('unavailable');
+        }
+      } finally {
+        if (isCurrent()) { restorePending.current = false; setLoading(false); }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [markApiOnline, restoreAttempt, wipeDeactivatedSession]);
+
+  const retrySessionRestore = useCallback(() => {
+    if (restorePending.current || user || loginChallengeId) return;
+    restorePending.current = true;
+    authGenerationRef.current += 1;
+    setSessionOfflineMode(false);
+    setSessionNetworkRestricted(false);
+    setSessionRestoreState('checking');
+    setLoading(true);
+    setRestoreAttempt((attempt) => attempt + 1);
+  }, [user, loginChallengeId]);
+
+  // Session recovery never gives up while the app is on screen: attempts run
+  // immediately, on every native connectivity event that can reach a network
+  // (including transport/VPN changes), on return to the foreground and on a
+  // growing timer capped at 60 s. The local session ends only on an unambiguous
+  // JSON 401/403 from HUB-IT or when the server reports a different user id.
+  useEffect(() => {
+    // connectivityOffline alone must also recover: a missed native «network is
+    // back» event would otherwise keep the app read-only until Wi-Fi is toggled.
+    if (!user || !(sessionOfflineMode || connectivityOffline) || logoutPromise.current) return undefined;
+    let disposed = false;
+    const generation = authGenerationRef.current;
+    const expectedUserId = userId;
+    const isCurrent = () => !disposed && !logoutPromise.current && generation === authGenerationRef.current;
+    const retryDelaysMs = [2_000, 5_000, 15_000, 30_000, 60_000];
+    let failedAttempts = 0;
+    let inFlight = false;
+    let immediateRequested = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let appActive = AppState.currentState === 'active';
+
+    function clearRetryTimer() {
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+
+    async function expireSessionLocally() {
+      await tokenStore.clearTokens({ clearOfflineData: false });
+      if (!isCurrent()) return;
+      setUser(null);
+      setSessionOfflineMode(false);
+      setAppLockPendingUnlock(false);
+      setSessionNetworkRestricted(false);
+      setSessionRestoreState('expired');
+    }
+
+    function scheduleRetry() {
+      if (!appActive || retryTimer || inFlight) return;
+      const delay = retryDelaysMs[Math.min(Math.max(failedAttempts - 1, 0), retryDelaysMs.length - 1)];
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void runAttempt();
+      }, delay);
+    }
+
+    async function runAttempt() {
+      if (inFlight) { immediateRequested = true; return; }
+      if (!isCurrent()) return;
+      inFlight = true;
+      immediateRequested = false;
+      const startedAt = Date.now();
+      try {
+        const me = await authApi.fetchMe({ timeoutMs: SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS });
+        if (!isCurrent()) return;
+        if (Number(me.id) !== expectedUserId) {
+          // A session must never silently switch to another identity.
+          await expireSessionLocally();
+          return;
+        }
+        logChatDevice('net_probe', { ok: true, ms: Date.now() - startedAt, tries: failedAttempts });
+        setServerCheck({ at: Date.now(), ok: true, ms: Date.now() - startedAt });
+        setUser(me);
+        markApiOnline();
+        cacheSessionUserInBackground(me);
+      } catch (error) {
+        if (!isCurrent()) return;
+        logChatDevice('net_probe', {
+          ok: false,
+          ms: Date.now() - startedAt,
+          tries: failedAttempts,
+          code: probeErrorToken(error),
+        });
+        setServerCheck({ at: Date.now(), ok: false, ms: Date.now() - startedAt });
+        if (isUserDeactivatedRejection(error)) {
+          await wipeDeactivatedSession();
+          return;
+        }
+        if (isDefinitiveAuthRejection(error)) {
+          await expireSessionLocally();
+          return;
+        }
+        // JSON 403 keeps the session: the account is fine, this network is
+        // not allowed for it — report the restriction and keep retrying.
+        setSessionNetworkRestricted(isNetworkRestrictedRejection(error));
+        failedAttempts += 1;
+      } finally {
+        inFlight = false;
+        if (isCurrent()) {
+          if (immediateRequested) void runAttempt();
+          else scheduleRetry();
+        }
+      }
+    }
+
+    if (sessionOfflineMode) setSessionRestoreState('checking');
+    void runAttempt();
+    const connectivitySubscription = subscribeNativeConnectivity((snapshot) => {
+      if (snapshot.connected || snapshot.online) void runAttempt();
+    });
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      const wasActive = appActive;
+      appActive = nextState === 'active';
+      if (nextState === 'background') {
+        clearRetryTimer();
+        return;
+      }
+      if (nextState === 'active' && !wasActive) void runAttempt();
+    });
+    return () => {
+      disposed = true;
+      clearRetryTimer();
+      connectivitySubscription.remove();
+      appStateSubscription.remove();
+    };
+  }, [connectivityOffline, markApiOnline, sessionOfflineMode, userId, wipeDeactivatedSession]);
+
+  const beginAuthentication = useCallback(() => {
+    if (logoutPromise.current) throw new Error('Выход ещё выполняется. Дождитесь завершения и повторите вход.');
+    const generation = ++authGenerationRef.current;
+    setSessionOfflineMode(false);
+    return () => {
+      if (generation !== authGenerationRef.current || logoutPromise.current) {
+        throw new Error('Попытка входа отменена. Повторите вход.');
+      }
+    };
+  }, []);
+
+  const login = useCallback(async (username: string, password: string) => {
+    const assertCurrent = beginAuthentication();
+    restorePending.current = false;
+    setLoading(false);
+    setSessionRestoreState('idle');
+    const enrolledBiometricUserIdPromise = getBiometricLoginUserId().catch(() => null);
+    const result = await authApi.login(username, password);
+    assertCurrent();
+    setBiometricEnrollmentCode(null);
+    await persistLoginResult(result, assertCurrent);
+    if (result.status === '2fa_setup_required') {
+      const challengeId = String(result.login_challenge_id || '').trim();
+      if (!challengeId) throw new Error('Сервер не выдал запрос настройки 2FA');
+      setTwoFactorSetupChallengeId(challengeId);
+      setLoginChallengeId('setup');
+      return result;
+    }
+    if (result.status === '2fa_required') {
+      setTwoFactorSetupChallengeId(null);
+      setLoginChallengeId(result.login_challenge_id || null);
+      return result;
+    }
+    setLoginChallengeId(null);
+    setTwoFactorSetupChallengeId(null);
+    const enrolledBiometricUserId = await enrolledBiometricUserIdPromise;
+    assertCurrent();
+    const signedInUserId = Number(result.user?.id || 0);
+    const preserveBiometrics = Boolean(
+      enrolledBiometricUserId
+      && signedInUserId > 0
+      && enrolledBiometricUserId === signedInUserId,
+    );
+    if (!preserveBiometrics) await disableBiometricLogin();
+    assertCurrent();
+    setBiometricEnabled(preserveBiometrics);
+    markApiOnline();
+    setOfflineCacheKey(null);
+    if (result.user) {
+      setUser(result.user);
+      cacheSessionUserInBackground(result.user);
+    }
+    else await refreshUser();
+    assertCurrent();
+    return result;
+  }, [beginAuthentication, markApiOnline, refreshUser]);
+
+  const startTwoFactorSetup = useCallback(async () => {
+    if (!twoFactorSetupChallengeId) throw new Error('Запрос настройки 2FA истёк. Войдите снова');
+    if (logoutPromise.current) throw new Error('Выход ещё выполняется. Дождитесь завершения и повторите вход.');
+    const generation = authGenerationRef.current;
+    const result = await authApi.startTwoFactorSetup(twoFactorSetupChallengeId);
+    if (generation !== authGenerationRef.current || logoutPromise.current) {
+      throw new Error('Запрос настройки 2FA истёк. Войдите снова');
+    }
+    return result;
+  }, [twoFactorSetupChallengeId]);
+
+  const verifyTwoFactorSetup = useCallback(async (code: string) => {
+    const assertCurrent = beginAuthentication();
+    if (!twoFactorSetupChallengeId) throw new Error('Запрос настройки 2FA истёк. Войдите снова');
+    const result = await authApi.verifyTwoFactorSetup(twoFactorSetupChallengeId, code);
+    await persistLoginResult(result, assertCurrent);
+    setBiometricEnrollmentCode(String(result.biometric_enrollment_code || '').trim() || null);
+    setLoginChallengeId(null);
+    setTwoFactorSetupChallengeId(null);
+    markApiOnline();
+    setOfflineCacheKey(null);
+    if (result.user) {
+      setUser(result.user);
+      cacheSessionUserInBackground(result.user);
+    } else await refreshUser();
+    assertCurrent();
+    return Array.isArray(result.backup_codes) ? result.backup_codes : [];
+  }, [beginAuthentication, markApiOnline, refreshUser, twoFactorSetupChallengeId]);
+
+  const verifyTwoFactor = useCallback(async (code: string, isBackup = false) => {
+    const assertCurrent = beginAuthentication();
+    if (!loginChallengeId) throw new Error('Missing login challenge');
+    const result = await authApi.verifyTwoFactorLogin(loginChallengeId, isBackup
+      ? { backup_code: code }
+      : { totp_code: code });
+    await persistLoginResult(result, assertCurrent);
+    setBiometricEnrollmentCode(String(result.biometric_enrollment_code || '').trim() || null);
+    setLoginChallengeId(null);
+    setTwoFactorSetupChallengeId(null);
+    markApiOnline();
+    if (result.user) {
+      setUser(result.user);
+      cacheSessionUserInBackground(result.user);
+    }
+    else await refreshUser();
+    assertCurrent();
+  }, [beginAuthentication, loginChallengeId, markApiOnline, refreshUser]);
+
+  const currentSessionGuard = useCallback(() => {
+    const generation = authGenerationRef.current;
+    const assertCurrent = () => {
+      if (generation !== authGenerationRef.current || logoutPromise.current) {
+        throw new Error('Сессия изменилась. Повторите действие после входа.');
+      }
+    };
+    assertCurrent();
+    return assertCurrent;
+  }, []);
+
+  const enableBiometrics = useCallback(async () => {
+    const assertCurrent = currentSessionGuard();
+    if (!user) throw new Error('Сначала завершите вход');
+    if (!biometricEnrollmentCode) {
+      throw new Error('Для включения отпечатка заново войдите в APK и подтвердите двухфакторный код');
+    }
+    const renewalToken = await authApi.enrollMobileBiometricSession(biometricEnrollmentCode);
+    assertCurrent();
+    const credential = await enableBiometricLogin(user, renewalToken);
+    assertCurrent();
+    setBiometricEnrollmentCode(null);
+    setBiometricEnabled(true);
+    setSessionOfflineMode(false);
+    setOfflineCacheKey(credential.offlineCacheKey);
+  }, [biometricEnrollmentCode, currentSessionGuard, user]);
+
+  const skipBiometrics = useCallback(async () => {
+    const assertCurrent = currentSessionGuard();
+    await authApi.revokeMobileBiometricSession().catch(() => undefined);
+    assertCurrent();
+    await disableBiometricLogin();
+    assertCurrent();
+    setBiometricEnrollmentCode(null);
+    setBiometricEnabled(false);
+    setSessionOfflineMode(false);
+    setOfflineCacheKey(null);
+  }, [currentSessionGuard]);
+
+  const unlockOfflineCache = useCallback(async (): Promise<string> => {
+    const assertCurrent = currentSessionGuard();
+    if (!user) throw new Error('Сначала войдите в HUB-IT');
+    const credential = await unlockBiometricLogin();
+    assertCurrent();
+    if (Number(credential.user.id) !== Number(user.id)) {
+      await disableBiometricLogin();
+    assertCurrent();
+      setBiometricEnabled(false);
+      setOfflineCacheKey(null);
+      throw new Error('Офлайн-данные принадлежат другому пользователю. Войдите заново.');
+    }
+    setOfflineCacheKey(credential.offlineCacheKey);
+    return credential.offlineCacheKey;
+  }, [currentSessionGuard, user]);
+
+  const unlockWithBiometrics = useCallback(async (): Promise<BiometricUnlockResult> => {
+    const assertCurrent = beginAuthentication();
+    const generation = authGenerationRef.current;
+    // Reachable from the startup loader now: this flow supersedes any in-flight
+    // session restore, so release its pending flag and spinner state the same
+    // way login() does — otherwise a failed unlock strands the manual retry.
+    restorePending.current = false;
+    setSessionRestoreState('idle');
+    setLoading(true);
+    try {
+      const credential = await unlockBiometricLogin();
+      assertCurrent();
+      setOfflineCacheKey(credential.offlineCacheKey);
+      try {
+        let currentUser: HubUser;
+        if (credential.version === 2) {
+          const renewed = await authApi.renewMobileBiometricSession(credential.renewalToken);
+          await persistLoginResult(renewed, assertCurrent);
+          currentUser = renewed.user || await authApi.fetchMe();
+        } else {
+          currentUser = await authApi.fetchMe();
+        }
+        assertCurrent();
+        setUser(currentUser);
+        cacheSessionUserInBackground(currentUser);
+        markApiOnline();
+        return { user: currentUser, offline: false };
+      } catch (error: unknown) {
+        assertCurrent();
+        if (isUserDeactivatedRejection(error)) {
+          await wipeDeactivatedSession();
+          throw new Error('Учётная запись отключена. Обратитесь к администратору.');
+        }
+        if (isDefinitiveAuthRejection(error)) {
+          await skipBiometrics();
+          throw new Error('Сессия завершена. Войдите по логину и паролю.');
+        }
+        setUser(credential.user);
+        cacheSessionUserInBackground(credential.user);
+        setSessionOfflineMode(true);
+        return { user: credential.user, offline: true };
+      }
+    } finally {
+      if (generation === authGenerationRef.current) setLoading(false);
+    }
+  }, [beginAuthentication, markApiOnline, skipBiometrics, wipeDeactivatedSession]);
+
+  const logout = useCallback(async () => {
+    if (logoutPromise.current) return logoutPromise.current;
+    authGenerationRef.current += 1;
+    const pending = (async () => {
+    await endMobileSession();
+    bumpNativeChatThreadHistoryGeneration();
+    setUser(null);
+    setLoginChallengeId(null);
+    setTwoFactorSetupChallengeId(null);
+    setBiometricEnrollmentCode(null);
+    setBiometricEnabled(false);
+    setSessionOfflineMode(false);
+    setOfflineCacheKey(null);
+    setAppLockPendingUnlock(false);
+    setSessionNetworkRestricted(false);
+    })();
+    logoutPromise.current = pending;
+    try { await pending; }
+    finally { if (logoutPromise.current === pending) logoutPromise.current = null; }
+  }, []);
+
+  const hasPermission = useCallback(
+    (permission: string) => Boolean(user?.permissions?.includes(permission)),
+    [user],
+  );
+
+  // Ручная проверка связи («Проверить связь» в сканере): тот же /auth/me, что и у
+  // фонового восстановления. Успех снимает режим офлайна, не дожидаясь событий Android.
+  const checkServerNow = useCallback(async (): Promise<boolean> => {
+    const startedAt = Date.now();
+    const generation = authGenerationRef.current;
+    try {
+      const me = await authApi.fetchMe({ timeoutMs: SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS });
+      const ms = Date.now() - startedAt;
+      logChatDevice('net_probe', { ok: true, ms, src: 'manual' });
+      if (generation !== authGenerationRef.current) return false;
+      setServerCheck({ at: Date.now(), ok: true, ms });
+      if (userId !== null && Number(me.id) === userId) markApiOnline();
+      return true;
+    } catch (error) {
+      const ms = Date.now() - startedAt;
+      logChatDevice('net_probe', { ok: false, ms, src: 'manual', code: probeErrorToken(error) });
+      if (generation === authGenerationRef.current) setServerCheck({ at: Date.now(), ok: false, ms });
+      return false;
+    }
+  }, [markApiOnline, userId]);
+
+  const value = useMemo(
+    () => ({
+      user,
+      loading,
+      sessionRestoreState,
+      retrySessionRestore,
+      loginChallengeId,
+      biometricEnabled,
+      biometricEnrollmentAvailable: Boolean(biometricEnrollmentCode),
+      offlineMode,
+      connectivityOffline,
+      serverCheck,
+      checkServerNow,
+      sessionNetworkRestricted,
+      vpnActive,
+      offlineCacheKey,
+      appLockPendingUnlock,
+      markAppLockUnlocked,
+      login,
+      startTwoFactorSetup,
+      verifyTwoFactorSetup,
+      verifyTwoFactor,
+      enableBiometrics,
+      skipBiometrics,
+      unlockOfflineCache,
+      unlockWithBiometrics,
+      logout,
+      refreshUser,
+      completeAboutOnboarding,
+      hasPermission,
+    }),
+    [
+      user,
+      loading,
+      sessionRestoreState,
+      retrySessionRestore,
+      loginChallengeId,
+      biometricEnabled,
+      biometricEnrollmentCode,
+      offlineMode,
+      connectivityOffline,
+      serverCheck,
+      checkServerNow,
+      sessionNetworkRestricted,
+      vpnActive,
+      offlineCacheKey,
+      appLockPendingUnlock,
+      markAppLockUnlocked,
+      login,
+      startTwoFactorSetup,
+      verifyTwoFactorSetup,
+      verifyTwoFactor,
+      enableBiometrics,
+      skipBiometrics,
+      unlockOfflineCache,
+      unlockWithBiometrics,
+      logout,
+      refreshUser,
+      completeAboutOnboarding,
+      hasPermission,
+    ],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
+}

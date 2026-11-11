@@ -1,0 +1,2271 @@
+import { keyframes } from '@emotion/react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  IconButton,
+  Menu,
+  MenuItem,
+  Stack,
+  Tooltip,
+  Typography,
+} from '@mui/material';
+import { alpha } from '@mui/material/styles';
+import AddReactionRoundedIcon from '@mui/icons-material/AddReactionRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
+import DoneRoundedIcon from '@mui/icons-material/DoneRounded';
+import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
+import LinkRoundedIcon from '@mui/icons-material/LinkRounded';
+import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
+import RadioButtonUncheckedRoundedIcon from '@mui/icons-material/RadioButtonUncheckedRounded';
+import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
+import ThumbDownOutlinedIcon from '@mui/icons-material/ThumbDownOutlined';
+import ThumbUpOutlinedIcon from '@mui/icons-material/ThumbUpOutlined';
+import { useReducedMotion } from 'framer-motion';
+
+import { AiConversationAvatar, AttachmentCard, PresenceAvatar, TaskShareCard } from './ChatCommon';
+import ChatLinkPreview, { extractFirstUrl } from './ChatLinkPreview';
+import { ChatContactCard, ChatLocationCard, ChatPollCard } from './ChatStructuredCards';
+import { renderChatPlainTextBody } from './chatPlainText';
+import { ChatEmojiImage, renderChatEmojiText } from './ChatEmoji';
+import { TELEGRAM_MESSAGE_MENU_REACTIONS } from './chatReactions';
+import { resolveChatStructuredContent } from './chatStructuredContent';
+import {
+  buildChatMessageBodySurfaceSx,
+  CHAT_DEFAULT_FONT_SIZES,
+  CHAT_FONT_FAMILY,
+  getChatBubbleBodyFontSize,
+  getChatBubbleBodyLineHeight,
+  resolveChatBubbleLinkColors,
+} from './chatUiTokens';
+import MarkdownRenderer from '../hub/MarkdownRenderer';
+import {
+  detectChatBodyFormat,
+  formatFullDate,
+  formatMessageMetaLabel,
+  getChatInlineMetaReserveWidth,
+  getEmojiOnlyCount,
+  getReplyPreviewText,
+  resolveChatPreviewSenderName,
+  hasChatMarkdownTable,
+  isAudioAttachment,
+  isImageAttachment,
+  isStickerAttachment,
+  isVideoAttachment,
+} from './chatHelpers';
+import {
+  isMobileMessageLongPress,
+  shouldAnimateChatBubble,
+  shouldCancelLongPressMove,
+  shouldSuppressNativeMessageGesture,
+} from './chatBubbleGesturePolicy';
+import useChatBubbleGestures from './useChatBubbleGestures';
+import { getAlbumTiles } from './chatAlbumLayout';
+
+export {
+  isMobileMessageLongPress,
+  shouldAnimateChatBubble,
+  shouldCancelLongPressMove,
+  shouldSuppressNativeMessageGesture,
+} from './chatBubbleGesturePolicy';
+
+const joinClasses = (...values) => values.filter(Boolean).join(' ');
+const SWIPE_TRIGGER = 38;
+const LIGHT_GROUP_SENDER_COLORS = ['#d45246', '#c97a00', '#2f8b44', '#387adf', '#8b4ccf', '#0f9d8a', '#c95d9c', '#468fba'];
+const DARK_GROUP_SENDER_COLORS = ['#ff7b73', '#f6c15c', '#7de26f', '#6bb6ff', '#c59bff', '#64e1cf', '#ff99dc', '#7bd7ff'];
+
+const messageAppear = keyframes`
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+`;
+
+function normalizeSenderColorKey(sender) {
+  if (!sender) return '';
+  if (typeof sender === 'string') return String(sender).trim();
+  return String(sender?.id || sender?.user_id || '').trim()
+    || String(sender?.full_name || sender?.username || sender?.name || '').trim();
+}
+
+function hashSenderColorIndex(value, paletteSize) {
+  const normalized = String(value || '').trim();
+  if (!normalized || paletteSize <= 0) return 0;
+  let hash = 0;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = ((hash * 31) + normalized.charCodeAt(index)) >>> 0;
+  }
+  return hash % paletteSize;
+}
+
+function resolveGroupSenderColor(sender, theme, ui) {
+  const palette = theme.palette.mode === 'dark' ? DARK_GROUP_SENDER_COLORS : LIGHT_GROUP_SENDER_COLORS;
+  const senderKey = normalizeSenderColorKey(sender);
+  if (!senderKey) return ui.accentText;
+  return palette[hashSenderColorIndex(senderKey, palette.length)] || ui.accentText;
+}
+
+function getBubbleRadius(isOwn, groupedWithPrevious, groupedWithNext, compactMobile = false) {
+  // Д3 эталон: внешний радиус 15px на десктопе, 6px у «прижатых» сообщений серии.
+  const outerRadius = compactMobile ? 18 : 15;
+  const groupedRadius = 6;
+  const tailRadius = compactMobile ? 6 : 4;
+  if (isOwn) {
+    const topRight = groupedWithPrevious ? groupedRadius : outerRadius - 2;
+    const bottomRight = groupedWithNext ? groupedRadius : tailRadius;
+    return `${outerRadius}px ${topRight}px ${bottomRight}px ${outerRadius}px`;
+  }
+  const topLeft = groupedWithPrevious ? groupedRadius : tailRadius;
+  const bottomLeft = groupedWithNext ? groupedRadius : outerRadius;
+  return `${outerRadius}px ${outerRadius}px ${bottomLeft}px ${topLeft}px`;
+}
+
+// Д2-10: хвостик одинаков для пузыря и для карточки «без пузыря» —
+// показывается только у последнего сообщения серии.
+const getBubbleTailSx = (isOwn, bubbleBg, ui) => ({
+  content: '""',
+  position: 'absolute',
+  bottom: 0,
+  width: 12,
+  height: 16,
+  backgroundColor: bubbleBg,
+  boxShadow: ui.bubbleTailShadow || 'none',
+  ...(isOwn ? {
+    right: -5,
+    clipPath: 'polygon(0 0, 100% 100%, 0 100%)',
+  } : {
+    left: -5,
+    clipPath: 'polygon(100% 0, 100% 100%, 0 100%)',
+  }),
+});
+
+function isShortInlineMessage(body = '', { compactMobile = false } = {}) {
+  const normalized = String(body || '').trim();
+  if (!normalized) return false;
+  if (normalized.includes('\n')) return false;
+  const inlineLimit = compactMobile ? 34 : 24;
+  return normalized.length <= inlineLimit;
+}
+
+function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = false, onScrollToMessage }) {
+  if (!replyPreview) return null;
+  const density = ui.density || {};
+  const previewSenderColor = isOwn
+    ? (ui.bubbleOwnPreviewText || alpha('#fff', 0.92))
+    : resolveGroupSenderColor(replyPreview?.sender_id || replyPreview?.sender_name, theme, ui);
+  const replyMessageId = String(replyPreview?.message_id || replyPreview?.id || '').trim();
+  const handleClick = (event) => {
+    if (!replyMessageId || typeof onScrollToMessage !== 'function') return;
+    event.stopPropagation();
+    onScrollToMessage(replyMessageId);
+  };
+  return (
+    <div
+      role={replyMessageId ? 'button' : undefined}
+      tabIndex={replyMessageId ? 0 : undefined}
+      onClick={handleClick}
+      onKeyDown={(event) => {
+        if (!replyMessageId || typeof onScrollToMessage !== 'function') return;
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        handleClick(event);
+      }}
+      className={joinClasses(
+        'mb-2 border-l-[3px] px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2',
+        compactMobile ? 'rounded-[14px]' : 'rounded-[12px]',
+      )}
+      style={{
+        borderLeftColor: isOwn ? (ui.bubbleOwnPreviewBorder || alpha('#fff', 0.72)) : theme.palette.primary.main,
+        backgroundColor: isOwn ? (ui.bubbleOwnPreviewBg || alpha('#fff', 0.08)) : alpha(theme.palette.primary.main, 0.08),
+        cursor: replyMessageId ? 'pointer' : 'default',
+        outlineColor: isOwn ? ui.bubbleOwnText : theme.palette.primary.main,
+      }}
+    >
+      <p
+        className="truncate text-[13px] font-semibold"
+        style={{
+          color: previewSenderColor,
+          fontFamily: CHAT_FONT_FAMILY,
+          fontSize: density.bubblePreviewTitleFontSize || CHAT_DEFAULT_FONT_SIZES.previewTitle,
+          letterSpacing: '-0.01em',
+        }}
+      >
+        {resolveChatPreviewSenderName(replyPreview)}
+      </p>
+      <p
+        className="truncate text-[12px]"
+        style={{
+          color: isOwn ? (ui.bubbleOwnPreviewSubtleText || alpha('#fff', 0.72)) : ui.textSecondary,
+          fontFamily: CHAT_FONT_FAMILY,
+          fontSize: density.bubblePreviewBodyFontSize || CHAT_DEFAULT_FONT_SIZES.previewBody,
+        }}
+      >
+        {renderChatEmojiText(getReplyPreviewText(replyPreview))}
+      </p>
+    </div>
+  );
+}
+
+function ForwardPreviewBlock({ forwardPreview, theme, ui, isOwn, compactMobile = false }) {
+  if (!forwardPreview) return null;
+  const density = ui.density || {};
+  const senderName = resolveChatPreviewSenderName(forwardPreview);
+  const previewSenderColor = isOwn
+    ? (ui.bubbleOwnPreviewText || alpha('#fff', 0.92))
+    : resolveGroupSenderColor(forwardPreview?.sender_id || forwardPreview?.sender_name, theme, ui);
+  return (
+    <div
+      data-testid="chat-forward-preview"
+      className={joinClasses(
+        'mb-2 border-l-[3px] px-3 py-2',
+        compactMobile ? 'rounded-[14px]' : 'rounded-[12px]',
+      )}
+      style={{
+        borderLeftColor: isOwn ? (ui.bubbleOwnPreviewBorder || alpha('#fff', 0.72)) : theme.palette.primary.main,
+        backgroundColor: isOwn ? (ui.bubbleOwnPreviewBg || alpha('#fff', 0.08)) : alpha(theme.palette.primary.main, 0.08),
+      }}
+    >
+      <p
+        className="truncate text-[13px] font-semibold"
+        style={{
+          color: previewSenderColor,
+          fontFamily: CHAT_FONT_FAMILY,
+          fontSize: density.bubblePreviewTitleFontSize || CHAT_DEFAULT_FONT_SIZES.previewTitle,
+          letterSpacing: '-0.01em',
+        }}
+      >
+        {senderName ? `Переслано от ${senderName}` : 'Переслано'}
+      </p>
+    </div>
+  );
+}
+
+const AI_SOURCES_VISIBLE_LIMIT = 6;
+
+function collectAiResponseSources(message) {
+  const raw = [
+    ...(Array.isArray(message?.sources) ? message.sources : []),
+    ...(Array.isArray(message?.metadata?.sources) ? message.metadata.sources : []),
+    ...(Array.isArray(message?.ai_sources) ? message.ai_sources : []),
+  ];
+  const seen = new Set();
+  return raw
+    .map((source) => {
+      if (typeof source === 'string') {
+        const label = source.trim();
+        return label ? { label, url: '', subtitle: '' } : null;
+      }
+      if (!source || typeof source !== 'object') return null;
+      const label = String(source?.title || source?.label || source?.name || '').trim();
+      const url = String(source?.url || source?.open_url || source?.href || source?.link || '').trim();
+      const subtitle = String(source?.subtitle || source?.database_id || source?.kind || '').trim();
+      if (!label && !url) return null;
+      return { label: label || url, url, subtitle };
+    })
+    .filter(Boolean)
+    .filter((item) => {
+      const key = `${item.label}|${item.url}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+// AI10: источники ответа — кликабельные чипы со сворачиванием «Ещё N».
+// Кликабельны только при наличии ссылки в payload: внутренняя → navigate,
+// внешняя → новая вкладка. Без ссылки чип остаётся информационным.
+function AiSourcesRow({ sources, navigate, ui, theme }) {
+  const [expanded, setExpanded] = useState(false);
+  const items = Array.isArray(sources) ? sources : [];
+  if (!items.length) return null;
+  const visible = expanded ? items : items.slice(0, AI_SOURCES_VISIBLE_LIMIT);
+  const hiddenCount = items.length - visible.length;
+  const openSource = (item) => {
+    const url = String(item?.url || '').trim();
+    if (!url) return;
+    if (url.startsWith('/')) {
+      navigate?.(url);
+      return;
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+  const chipSx = {
+    height: 26,
+    borderRadius: 999,
+    fontSize: 12,
+    fontFamily: CHAT_FONT_FAMILY,
+    borderColor: ui.borderSoft,
+    color: ui.textSecondary,
+    bgcolor: alpha(ui.surfaceStrong || theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.3 : 0.72),
+    '& .MuiChip-label': { px: 0.9 },
+    '& .MuiChip-icon': { fontSize: 14, ml: 0.8, color: ui.textSecondary },
+  };
+  return (
+    <Stack
+      data-testid="chat-ai-sources"
+      direction="row"
+      useFlexGap
+      flexWrap="wrap"
+      spacing={0.6}
+      sx={{ mt: 0.75 }}
+    >
+      {visible.map((item, index) => (
+        <Chip
+          key={`${item.label}-${item.url}-${index}`}
+          component={item.url ? 'button' : 'span'}
+          onClick={item.url ? () => openSource(item) : undefined}
+          icon={<LinkRoundedIcon />}
+          label={item.subtitle && item.subtitle !== item.label ? `${item.label} · ${item.subtitle}` : item.label}
+          size="small"
+          variant="outlined"
+          sx={{
+            ...chipSx,
+            cursor: item.url ? 'pointer' : 'default',
+            ...(item.url ? {
+              '&:hover': {
+                color: ui.accentText,
+                borderColor: alpha(ui.accentText || theme.palette.primary.main, 0.45),
+                '& .MuiChip-icon': { color: ui.accentText },
+              },
+            } : {}),
+          }}
+        />
+      ))}
+      {hiddenCount > 0 ? (
+        <Chip
+          component="button"
+          data-testid="chat-ai-sources-more"
+          onClick={() => setExpanded(true)}
+          label={`Ещё ${hiddenCount}`}
+          size="small"
+          variant="outlined"
+          sx={{ ...chipSx, cursor: 'pointer', color: ui.accentText }}
+        />
+      ) : null}
+    </Stack>
+  );
+}
+
+// AI9/AI12: под ответом ассистента — «Копировать», «Повторить ответ» и оценка.
+// Оценка пока локальная (визуальная): payload сообщения не хранит feedback.
+function AiResponseControls({ body, onRetry, ui, theme, compactMobile }) {
+  const [copied, setCopied] = useState(false);
+  const [vote, setVote] = useState('');
+  const [retryBusy, setRetryBusy] = useState(false);
+  const copiedTimerRef = useRef(0);
+  useEffect(() => () => {
+    if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+  }, []);
+  const handleCopy = async () => {
+    const text = String(body || '').trim();
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      setCopied(true);
+      if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* clipboard недоступен — просто не показываем состояние */
+    }
+  };
+  const controlButtonSx = {
+    width: compactMobile ? 38 : 30,
+    height: compactMobile ? 38 : 30,
+    borderRadius: '50%',
+    color: ui.textSecondary,
+    '&:hover': { bgcolor: alpha(ui.textSecondary || '#64748b', 0.12) },
+    '&.is-active': { color: ui.accentText },
+  };
+  return (
+    <Stack
+      data-testid="chat-ai-response-actions"
+      direction="row"
+      spacing={0.4}
+      alignItems="center"
+      sx={{
+        mt: 0.7,
+        color: ui.textSecondary,
+        // Спокойные действия, как у Claude: приглушены, пока не наведёшь на ответ.
+        opacity: compactMobile ? 1 : 0.62,
+        transition: 'opacity 160ms ease',
+        '&:hover, &:focus-within': { opacity: 1 },
+      }}
+    >
+      <Tooltip title={copied ? 'Скопировано' : 'Копировать'}>
+        <span>
+          <IconButton
+            size="small"
+            aria-label={copied ? 'Ответ скопирован' : 'Копировать ответ'}
+            onClick={handleCopy}
+            sx={controlButtonSx}
+          >
+            {copied
+              ? <CheckCircleRoundedIcon sx={{ fontSize: 16, color: ui.successText || theme.palette.success.main }} />
+              : <ContentCopyRoundedIcon sx={{ fontSize: 15 }} />}
+          </IconButton>
+        </span>
+      </Tooltip>
+      {typeof onRetry === 'function' ? (
+        <Button
+          size="small"
+          disabled={retryBusy}
+          onClick={() => {
+            if (retryBusy) return;
+            setRetryBusy(true);
+            Promise.resolve(onRetry()).finally(() => setRetryBusy(false));
+          }}
+          data-testid="chat-ai-retry-answer"
+          sx={{
+            minHeight: compactMobile ? 38 : 30,
+            px: 1,
+            textTransform: 'none',
+            fontSize: 12,
+            fontWeight: 700,
+            color: ui.textSecondary,
+            borderRadius: 999,
+            '&:hover': { bgcolor: alpha(ui.textSecondary || '#64748b', 0.12) },
+          }}
+        >
+          Повторить ответ
+        </Button>
+      ) : null}
+      <Tooltip title="Ответ полезен">
+        <span>
+          <IconButton
+            size="small"
+            aria-label="Ответ полезен"
+            aria-pressed={vote === 'up'}
+            className={vote === 'up' ? 'is-active' : undefined}
+            onClick={() => setVote((current) => (current === 'up' ? '' : 'up'))}
+            sx={controlButtonSx}
+          >
+            <ThumbUpOutlinedIcon sx={{ fontSize: 15 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+      <Tooltip title="Ответ неполезен">
+        <span>
+          <IconButton
+            size="small"
+            aria-label="Ответ неполезен"
+            aria-pressed={vote === 'down'}
+            className={vote === 'down' ? 'is-active' : undefined}
+            onClick={() => setVote((current) => (current === 'down' ? '' : 'down'))}
+            sx={controlButtonSx}
+          >
+            <ThumbDownOutlinedIcon sx={{ fontSize: 15 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+    </Stack>
+  );
+}
+
+function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirmAction, onCancelAction, onEditAction }) {
+  const [busy, setBusy] = useState('');
+  const [menuAnchorEl, setMenuAnchorEl] = useState(null);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (actionCard?.status !== 'pending' || !actionCard?.expires_at) return undefined;
+    setNow(Date.now());
+    const expiresIn = Date.parse(actionCard.expires_at) - Date.now();
+    const update = () => setNow(Date.now());
+    const timer = Number.isFinite(expiresIn) && expiresIn > 0
+      ? window.setTimeout(update, Math.min(expiresIn + 10, 2 ** 31 - 1)) : null;
+    window.addEventListener('focus', update);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener('focus', update);
+    };
+  }, [actionCard?.id, actionCard?.status, actionCard?.expires_at]);
+  const card = actionCard && typeof actionCard === 'object' ? actionCard : null;
+  if (!card) return null;
+  const preview = card.preview && typeof card.preview === 'object' ? card.preview : {};
+  const actionType = String(card.action_type || '').trim();
+  const rawStatus = String(card.status || 'pending').trim().toLowerCase();
+  const status = rawStatus === 'pending' && Date.parse(card.expires_at || '') <= now ? 'expired' : rawStatus;
+  const isPending = status === 'pending';
+  const title = String(preview.title || 'Действие ITinvent').trim();
+  const summary = String(preview.summary || '').trim();
+  const databaseId = String(card.database_id || preview.database_id || '').trim();
+  const items = Array.isArray(preview.items) ? preview.items : [];
+  const item = preview.item && typeof preview.item === 'object' ? preview.item : null;
+  const equipment = preview.equipment && typeof preview.equipment === 'object' ? preview.equipment : null;
+  const target = preview.target && typeof preview.target === 'object' ? preview.target : null;
+  const mail = preview.mail && typeof preview.mail === 'object' ? preview.mail : null;
+  const warnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
+  const effects = Array.isArray(preview.effects) ? preview.effects.filter(Boolean) : [];
+  const isOfficeMail = actionType.startsWith('office.mail.');
+  const mailOutcomeUnknown = isOfficeMail && card.result?.send_outcome === 'unknown';
+  const isChatMessage = actionType === 'chat.message.send';
+  const isSandboxPermission = actionType === 'ai.sandbox.permission';
+  const isTaskAction = actionType.includes('task') || Boolean(preview.task);
+  const confirmLabel = isSandboxPermission
+    ? 'Разрешить один раз'
+    : isOfficeMail || isChatMessage
+    ? 'Подтвердить и отправить'
+    : isTaskAction
+      ? 'Создать'
+      : 'Подтвердить';
+  let resultUrl = String(card.result_url || preview.open_url || preview.url || '').trim();
+  if ((status === 'confirmed' || mailOutcomeUnknown) && isOfficeMail) {
+    const result = card.result && typeof card.result === 'object' ? card.result : {};
+    const query = new URLSearchParams({ folder: 'sent' });
+    const messageId = String(result.message_id || '').trim();
+    const mailboxId = String(result.mailbox_id || mail?.mailbox_id || '').trim();
+    if (messageId) query.set('message', messageId);
+    if (mailboxId) query.set('mailbox_id', mailboxId);
+    resultUrl = `/mail?${query.toString()}`;
+  }
+  const openResult = () => {
+    if (resultUrl) {
+      window.open(resultUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (typeof onEditAction === 'function') onEditAction(card, message);
+  };
+  const isReportFormatChoice = actionType === 'ai.report.format_choice';
+  const isDocConvertFormatChoice = actionType === 'ai.doc.convert.format_choice';
+  const isAiChoice = actionType === 'ai.choice.reply';
+  const choices = isAiChoice && Array.isArray(preview.choices)
+    ? preview.choices.filter((choice) => choice && choice.id && choice.label)
+    : [];
+  const report = preview.report && typeof preview.report === 'object' ? preview.report : null;
+  const docConvert = preview.doc_convert && typeof preview.doc_convert === 'object' ? preview.doc_convert : null;
+  const supportedDocumentFormats = ['xlsx', 'csv', 'docx', 'pdf', 'txt', 'md', 'json'];
+  const formatLabels = {
+    xlsx: 'Excel (XLSX)',
+    csv: 'CSV',
+    docx: 'Word (DOCX)',
+    pdf: 'PDF',
+    txt: 'Текст (TXT)',
+    md: 'Markdown',
+    json: 'JSON',
+    ...(preview.format_labels && typeof preview.format_labels === 'object' ? preview.format_labels : {}),
+  };
+  const reportFormats = (Array.isArray(preview.formats) ? preview.formats : supportedDocumentFormats)
+    .map((format) => String(format || '').trim().toLowerCase())
+    .filter((format) => supportedDocumentFormats.includes(format));
+  const docConvertFormats = (Array.isArray(preview.formats) ? preview.formats : supportedDocumentFormats)
+    .map((format) => String(format || '').trim().toLowerCase())
+    .filter((format) => supportedDocumentFormats.includes(format));
+  const statusLabel = mailOutcomeUnknown ? 'Результат отправки неизвестен' : {
+    pending: 'Ожидает подтверждения',
+    executing: 'Выполняется',
+    confirmed: isOfficeMail ? 'Письмо отправлено' : 'Выполнено',
+    cancelled: 'Отменено',
+    expired: 'Истекло',
+    failed: 'Ошибка',
+  }[status] || status;
+  const runAction = async (kind) => {
+    const handler = kind === 'confirm' ? onConfirmAction : onCancelAction;
+    if (typeof handler !== 'function' || !card.id) return;
+    setBusy(kind);
+    try {
+      await handler(card, message);
+    } finally {
+      setBusy('');
+    }
+  };
+  const runSandboxSessionConfirm = async () => {
+    if (typeof onConfirmAction !== 'function' || !card.id) return;
+    setBusy('confirm-session');
+    try {
+      await onConfirmAction(card, message, { scope: 'session' });
+    } finally {
+      setBusy('');
+    }
+  };
+  const runChoice = async (choice) => {
+    if (typeof onConfirmAction !== 'function' || !card.id || !choice?.id) return;
+    const busyKey = `choice:${choice.id}`;
+    setBusy(busyKey);
+    try {
+      await onConfirmAction(card, message, { choice: choice.id });
+    } finally {
+      setBusy('');
+    }
+  };
+  const runReportFormat = async (format) => {
+    if (typeof onConfirmAction !== 'function' || !card.id || !format) return;
+    const busyKey = `format:${format}`;
+    setBusy(busyKey);
+    try {
+      await onConfirmAction(card, message, { format });
+    } finally {
+      setBusy('');
+    }
+  };
+  // Подсказки «Что дальше?» показывает лента над композером, а не пузырь.
+  if (isAiChoice && preview.kind === 'suggestions') return null;
+  return (
+    <Box
+      data-testid="chat-ai-action-card"
+      sx={{
+        mt: 0.85,
+        mb: 1.75,
+        p: compactMobile ? 1 : 1.15,
+        borderRadius: 1.5,
+        border: '1px solid',
+        borderColor: status === 'failed' ? alpha(theme.palette.error.main, 0.35) : ui.borderSoft,
+        bgcolor: alpha(ui.surfaceStrong || theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.24 : 0.7),
+      }}
+    >
+      <Stack spacing={0.7}>
+        <Stack direction="row" spacing={0.8} alignItems="flex-start" justifyContent="space-between">
+          <Box sx={{ minWidth: 0 }}>
+            <Typography sx={{ fontSize: 14, lineHeight: 1.2, fontWeight: 800, color: 'inherit' }}>
+              {title}
+            </Typography>
+            {summary ? (
+              <Typography sx={{ mt: 0.25, fontSize: 13, lineHeight: 1.25, color: ui.textSecondary }}>
+                {summary}
+              </Typography>
+            ) : null}
+          </Box>
+          <Box
+            component="span"
+            sx={{
+              display: isAiChoice ? 'none' : undefined,
+              flexShrink: 0,
+              px: 0.75,
+              py: 0.25,
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 800,
+              color: isPending ? ui.accentText : ui.textSecondary,
+              bgcolor: isPending ? alpha(ui.accentText || theme.palette.primary.main, 0.12) : alpha(ui.textSecondary || '#64748b', 0.12),
+            }}
+          >
+            {statusLabel}
+          </Box>
+        </Stack>
+        {isOfficeMail ? (
+          <Typography role="status" sx={{ fontSize: 13, fontWeight: 700, color: ui.textSecondary }}>
+            {isPending ? 'Черновик готов. Письмо не отправлено — проверьте его и подтвердите отправку.'
+              : status === 'executing' ? 'Отправляю письмо. Повторное подтверждение не требуется.'
+                : status === 'expired' ? 'Срок подтверждения истёк. Для отправки нужен новый черновик.'
+                  : mailOutcomeUnknown ? 'Проверьте папку «Отправленные». Не отправляйте письмо повторно.'
+                    : status === 'cancelled' ? 'Отправка отменена.' : ''}
+          </Typography>
+        ) : null}
+        {databaseId ? (
+          <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>
+            База: {databaseId}
+          </Typography>
+        ) : null}
+        {report ? (
+          <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>
+            {`Tables: ${Number(report.table_count || 0)} · Rows: ${Number(report.row_count || 0)}${report.source ? ` · Source: ${report.source}` : ''}`}
+          </Typography>
+        ) : null}
+        {docConvert ? (
+          <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>
+            {docConvert.summary || `Страниц: ${Number(docConvert.page_count || 0)} · Таблиц: ${Number(docConvert.table_count || 0)}`}
+          </Typography>
+        ) : null}
+        {equipment ? (
+          <Typography sx={{ fontSize: 12.5, lineHeight: 1.25, color: 'inherit' }}>
+            {['Оборудование', equipment.inv_no, equipment.model || equipment.name, equipment.branch, equipment.location, equipment.employee]
+              .filter(Boolean)
+              .join(' · ')}
+          </Typography>
+        ) : null}
+        {items.length > 0 ? (
+          <Stack spacing={0.35}>
+            {items.slice(0, 4).map((row, index) => (
+              <Typography key={`${row?.inv_no || index}`} sx={{ fontSize: 12.5, lineHeight: 1.25, color: 'inherit' }}>
+                {`${row?.inv_no || 'без инв. №'}${row?.name ? ` · ${row.name}` : ''}${row?.model && row.model !== row.name ? ` · ${row.model}` : ''}${row?.owner ? ` · ${row.owner}` : ''}`}
+              </Typography>
+            ))}
+            {items.length > 4 ? (
+              <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>{`Еще ${items.length - 4} поз.`}</Typography>
+            ) : null}
+          </Stack>
+        ) : item ? (
+          <Typography sx={{ fontSize: 12.5, lineHeight: 1.25, color: 'inherit' }}>
+            {[item.inv_no, item.model, item.branch, item.location].filter(Boolean).join(' · ')}
+            {item.qty_current !== undefined && item.qty_current !== null ? ` · остаток: ${item.qty_current}` : ''}
+            {item.qty_next !== undefined && item.qty_next !== null ? ` → ${item.qty_next}` : ''}
+          </Typography>
+        ) : null}
+        {target?.name ? (
+          <Typography sx={{ fontSize: 12.5, color: 'inherit' }}>
+            Получатель: {target.name}{target.department ? ` · ${target.department}` : ''}
+          </Typography>
+        ) : null}
+        {mail ? (
+          <Stack spacing={0.35}>
+            <Typography sx={{ fontSize: 12.5, color: 'inherit' }}>
+              Кому: {(Array.isArray(mail.to) ? mail.to : []).join(', ') || 'не указано'}
+            </Typography>
+            {Array.isArray(mail.cc) && mail.cc.length > 0 ? (
+              <Typography sx={{ fontSize: 12.5, color: ui.textSecondary }}>
+                Копия: {mail.cc.join(', ')}
+              </Typography>
+            ) : null}
+            {Number(mail.bcc_count || 0) > 0 ? (
+              <Typography sx={{ fontSize: 12.5, color: ui.textSecondary }}>
+                Скрытая копия: {Number(mail.bcc_count || 0)}
+              </Typography>
+            ) : null}
+            <Typography sx={{ fontSize: 12.5, color: 'inherit' }}>
+              Тема: {mail.subject || 'без темы'}
+            </Typography>
+            {mail.body || mail.body_preview ? (
+              <Typography aria-label="Текст письма" sx={{ fontSize: 12.5, lineHeight: 1.4, color: ui.textSecondary, whiteSpace: 'pre-wrap', maxHeight: 240, overflowY: 'auto', overflowWrap: 'anywhere' }}>
+                {mail.body || mail.body_preview}
+              </Typography>
+            ) : null}
+            {Number(mail.attachment_count || 0) > 0 ? (
+              <Typography sx={{ fontSize: 12.5, color: ui.textSecondary }}>
+                Вложения: {Number(mail.attachment_count || 0)}
+              </Typography>
+            ) : null}
+          </Stack>
+        ) : null}
+        {effects.length > 0 ? (
+          <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>
+            {effects.join(' · ')}
+          </Typography>
+        ) : null}
+        {warnings.length > 0 ? (
+          <Stack spacing={0.25}>
+            {warnings.map((warning, index) => (
+              <Typography key={`${warning}-${index}`} sx={{ fontSize: 12.3, color: theme.palette.warning.main }}>
+                {warning}
+              </Typography>
+            ))}
+          </Stack>
+        ) : null}
+        {card.error_text ? (
+          <Typography sx={{ fontSize: 12.5, color: theme.palette.error.main }}>
+            {card.error_text}
+          </Typography>
+        ) : null}
+            {isPending ? (
+          <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
+            {isAiChoice ? (
+              choices.map((choice) => (
+                <Button
+                  key={choice.id}
+                  size="small"
+                  variant="outlined"
+                  data-testid="chat-ai-choice-button"
+                  onClick={() => runChoice(choice)}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 700, justifyContent: 'flex-start', textAlign: 'left' }}
+                >
+                  {busy === `choice:${choice.id}` ? '...' : choice.label}
+                </Button>
+              ))
+            ) : isReportFormatChoice || isDocConvertFormatChoice ? (
+              (isDocConvertFormatChoice ? docConvertFormats : reportFormats).map((format) => (
+                <Button
+                  key={format}
+                  size="small"
+                  variant="contained"
+                  onClick={() => runReportFormat(format)}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, minWidth: 68 }}
+                >
+                  {busy === `format:${format}` ? '...' : (formatLabels[format] || format)}
+                </Button>
+              ))
+            ) : isSandboxPermission ? (
+              <>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={() => runAction('confirm')}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                >
+                  {busy === 'confirm' ? 'Выполняю...' : 'Разрешить один раз'}
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={runSandboxSessionConfirm}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                >
+                  {busy === 'confirm-session' ? 'Выполняю...' : 'До конца сессии'}
+                </Button>
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() => runAction('cancel')}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, color: ui.textSecondary }}
+                >
+                  {busy === 'cancel' ? 'Отмена...' : 'Отклонить'}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={() => runAction('confirm')}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                >
+                  {busy === 'confirm' ? 'Выполняю...' : confirmLabel}
+                </Button>
+                {isOfficeMail && typeof onEditAction === 'function' ? (
+                  <Button size="small" variant="outlined" disabled={Boolean(busy)}
+                    onClick={() => onEditAction(card, message)}
+                    sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}>
+                    Изменить
+                  </Button>
+                ) : null}
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() => runAction('cancel')}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, color: ui.textSecondary }}
+                >
+                  {busy === 'cancel' ? 'Отмена...' : 'Отменить'}
+                </Button>
+                {!isOfficeMail ? <>
+                <IconButton
+                  size="small"
+                  aria-label="Действия карточки"
+                  data-testid="chat-ai-action-menu-button"
+                  onClick={(event) => setMenuAnchorEl(event.currentTarget)}
+                  disabled={Boolean(busy)}
+                  sx={{
+                    width: 30,
+                    height: 30,
+                    alignSelf: 'center',
+                    borderRadius: '50%',
+                    color: ui.textSecondary,
+                    '&:hover': { bgcolor: alpha(ui.textSecondary || '#64748b', 0.12) },
+                  }}
+                >
+                  <MoreHorizRoundedIcon sx={{ fontSize: 17 }} />
+                </IconButton>
+                <Menu
+                  anchorEl={menuAnchorEl}
+                  open={Boolean(menuAnchorEl)}
+                  onClose={() => setMenuAnchorEl(null)}
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                  transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                >
+                  <MenuItem
+                    onClick={() => {
+                      setMenuAnchorEl(null);
+                      onEditAction?.(card, message);
+                    }}
+                  >
+                    Изменить
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      setMenuAnchorEl(null);
+                      openResult();
+                    }}
+                  >
+                    Открыть
+                  </MenuItem>
+                </Menu>
+                </> : null}
+              </>
+            )}
+            {!isSandboxPermission && (isReportFormatChoice || isDocConvertFormatChoice) ? (
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => runAction('cancel')}
+              disabled={Boolean(busy)}
+              sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, color: ui.textSecondary }}
+            >
+              {busy === 'cancel' ? 'Отмена...' : 'Отменить'}
+            </Button>
+            ) : null}
+          </Stack>
+        ) : (status === 'confirmed' || mailOutcomeUnknown) && !isSandboxPermission && !isAiChoice ? (
+          <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={openResult}
+              sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+            >
+              {mailOutcomeUnknown ? 'Проверить в почте' : isOfficeMail ? 'Открыть в почте' : isTaskAction ? 'Открыть задачу' : 'Открыть'}
+            </Button>
+          </Stack>
+        ) : null}
+      </Stack>
+    </Box>
+  );
+}
+
+const ChatMarkdownBody = memo(function ChatMarkdownBody({
+  value,
+  bubbleText,
+  linkColor,
+  hasMarkdownTable = false,
+  compactMobile = false,
+  ui,
+}) {
+  const messageBodyFontSize = getChatBubbleBodyFontSize(ui, compactMobile);
+  const messageBodyLineHeight = getChatBubbleBodyLineHeight(ui, compactMobile);
+  return (
+    <Box
+      className="chat-selectable"
+      data-testid="chat-markdown-body"
+      data-chat-message-body="true"
+      style={{ fontSize: messageBodyFontSize }}
+      sx={{
+        display: 'block',
+        pr: 0.25,
+        pb: hasMarkdownTable ? 2.1 : 1.8,
+        color: bubbleText,
+        ...buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight),
+        userSelect: 'text',
+        fontFamily: CHAT_FONT_FAMILY,
+        '& .MuiBox-root': {
+          color: bubbleText,
+          fontFamily: CHAT_FONT_FAMILY,
+        },
+      }}
+    >
+      <MarkdownRenderer value={value} variant="chat" linkColor={linkColor} />
+    </Box>
+  );
+});
+
+function ChatBubbleMeta({
+  layout = 'bottom',
+  message,
+  ui,
+  receiptColor: receiptColorProp,
+  deliveryStatus,
+  isSending,
+  isOwnDirect,
+  isOwnGroup,
+  readByCount,
+  compactMobile,
+  onOpenReads,
+  onReplyMessage,
+  onRetryFailedMessage,
+  onDiscardFailedMessage,
+  showUploadProgress = false,
+  bottomOffset,
+  inFlow = false,
+  dense = false,
+}) {
+  const isInlineLayout = layout === 'inline';
+  const isMediaLayout = layout === 'media';
+  // R51: у одиночного крупного эмодзи нет пузыря — время стоит под ним в маленькой полупрозрачной
+  // плашке (как у медиа), а не поверх картинки. Цвета плашки не зависят от стороны и темы.
+  const isEmojiLayout = layout === 'emoji';
+  // Плашка времени на вложении тоже всегда тёмная: текст на ней белый в любой теме (в светлой серый был нечитаем).
+  const receiptColor = isEmojiLayout || isMediaLayout
+    ? (deliveryStatus === 'read' && !isSending ? '#8fd3ff' : 'rgba(255, 255, 255, 0.92)')
+    : receiptColorProp;
+  const density = ui.density || {};
+  const uploadProgress = Number(message?.uploadProgress || 0);
+  const isSendFailed = String(message?.optimisticStatus || '') === 'failed';
+  const [failedMenuAnchor, setFailedMenuAnchor] = useState(null);
+  const failedMenuOpen = Boolean(failedMenuAnchor);
+  const closeFailedMenu = () => setFailedMenuAnchor(null);
+  const isGroupRead = readByCount > 0;
+  const shouldShowUploadProgress = showUploadProgress
+    && isSending
+    && Number.isFinite(uploadProgress)
+    && uploadProgress > 0
+    && uploadProgress < 100;
+
+  return (
+    <Stack
+      data-testid={isInlineLayout ? 'chat-bubble-meta-inline' : isMediaLayout ? 'chat-bubble-meta-media' : isEmojiLayout ? 'chat-bubble-meta-emoji' : 'chat-bubble-meta-bottom'}
+      data-chat-meta-layout={layout}
+      direction="row"
+      spacing={0.3}
+      justifyContent="flex-end"
+      alignItems={isInlineLayout ? 'flex-end' : 'center'}
+      sx={{
+        position: inFlow ? 'relative' : 'absolute',
+        right: inFlow ? 'auto' : (isMediaLayout ? 10 : (isInlineLayout ? 10 : 12)),
+        bottom: inFlow ? 'auto' : (
+          isInlineLayout
+            // Низ строки времени = низ строки текста (отступ пузыря): иначе короткое сообщение «сползает» под текст.
+            ? Math.max(2, Math.round((density.bubblePy ?? 0.82) * 8))
+            : (bottomOffset ?? (isMediaLayout ? 10 : 5))
+        ),
+        mt: inFlow ? (dense ? 0 : '2px') : 0,
+        mb: inFlow ? (dense && !isEmojiLayout ? 0 : isEmojiLayout ? '2px' : '4px') : 0,
+        pr: inFlow ? (dense || isEmojiLayout ? 0 : '10px') : 0,
+        px: isMediaLayout || isEmojiLayout ? 0.8 : 0,
+        py: isMediaLayout ? 0.45 : isEmojiLayout ? 0.35 : 0,
+        ...(isEmojiLayout ? { width: 'fit-content', ml: 'auto' } : null),
+        borderRadius: isMediaLayout || isEmojiLayout ? 999 : 0,
+        bgcolor: isMediaLayout ? 'rgba(2, 6, 23, 0.62)' : isEmojiLayout ? 'rgba(2, 6, 23, 0.5)' : 'transparent',
+        backdropFilter: isMediaLayout || isEmojiLayout ? 'blur(12px)' : 'none',
+        boxShadow: isMediaLayout ? '0 6px 18px rgba(2, 6, 23, 0.24)' : 'none',
+        pointerEvents: isInlineLayout ? 'none' : 'auto',
+      }}
+    >
+      <Typography
+        variant="caption"
+        title={message?.edited_at
+          ? `${formatFullDate(message?.created_at)} · изменено ${formatFullDate(message?.edited_at)}`
+          : formatFullDate(message?.created_at)}
+        sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta, lineHeight: 1, fontFamily: CHAT_FONT_FAMILY, whiteSpace: 'nowrap' }}
+      >
+        {formatMessageMetaLabel(message)}
+      </Typography>
+
+      {shouldShowUploadProgress ? (
+        <Typography variant="caption" sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta, lineHeight: 1, fontWeight: 700, fontFamily: CHAT_FONT_FAMILY }}>
+          {`${uploadProgress}%`}
+        </Typography>
+      ) : null}
+
+      {isSendFailed ? (
+        <>
+          <IconButton
+            size="small"
+            data-testid="chat-message-failed-action"
+            aria-label="Сообщение не отправлено"
+            aria-haspopup="menu"
+            aria-expanded={failedMenuOpen ? 'true' : undefined}
+            onClick={(event) => {
+              event.stopPropagation();
+              setFailedMenuAnchor(event.currentTarget);
+            }}
+            sx={{
+              width: 18,
+              height: 18,
+              p: 0,
+              minWidth: 0,
+              color: '#f87171',
+              pointerEvents: 'auto',
+            }}
+          >
+            <ErrorOutlineRoundedIcon sx={{ fontSize: 15 }} />
+          </IconButton>
+          <Menu
+            anchorEl={failedMenuAnchor}
+            open={failedMenuOpen}
+            onClose={closeFailedMenu}
+            anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+            transformOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+          >
+            <MenuItem
+              data-testid="chat-message-failed-retry"
+              onClick={() => {
+                closeFailedMenu();
+                onRetryFailedMessage?.(String(message?.id || '').trim());
+              }}
+            >
+              Повторить отправку
+            </MenuItem>
+            <MenuItem
+              data-testid="chat-message-failed-discard"
+              onClick={() => {
+                closeFailedMenu();
+                onDiscardFailedMessage?.(String(message?.id || '').trim());
+              }}
+            >
+              Удалить
+            </MenuItem>
+          </Menu>
+        </>
+      ) : isOwnDirect ? (
+        isSending
+          ? <CircularProgress size={13} thickness={5} sx={{ color: receiptColor }} />
+          : deliveryStatus === 'read'
+            ? <DoneAllRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
+            : <DoneRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
+      ) : isOwnGroup ? (
+        isSending
+          ? <CircularProgress size={13} thickness={5} sx={{ color: receiptColor }} />
+          : isGroupRead
+            ? (
+              <IconButton
+                size="small"
+                data-testid="chat-message-group-read"
+                aria-label="Прочитано"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenReads?.(message);
+                }}
+                sx={{
+                  width: 18,
+                  height: 18,
+                  p: 0,
+                  minWidth: 0,
+                  color: receiptColor,
+                  pointerEvents: 'auto',
+                }}
+              >
+                <DoneAllRoundedIcon sx={{ fontSize: 15 }} />
+              </IconButton>
+            )
+            : <DoneRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
+      ) : null}
+    </Stack>
+  );
+}
+
+const QUICK_REACTIONS = TELEGRAM_MESSAGE_MENU_REACTIONS;
+
+function ReactionPill({ r, reacted, onToggleReaction, ui, theme, compact, isOwn }) {
+  const accentColor = ui.accentText || theme.palette.primary.main;
+  const isDark = theme.palette.mode === 'dark';
+  const count = Number(r?.count || 0);
+  const showCount = !compact || count > 1;
+  const idleBg = isOwn
+    ? alpha('#0f2538', isDark ? 0.7 : 0.28)
+    : alpha('#020617', isDark ? 0.46 : 0.1);
+  // R48: reaction images are 18-20 px on desktop; the compact phone strip stays smaller.
+  const compactEmojiSize = 16;
+  const regularEmojiSize = 19;
+  return (
+    <Box
+      component="button"
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onToggleReaction?.(r.emoji); }}
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: compact ? '1px' : '4px',
+        px: compact ? '1px' : '8px',
+        py: compact ? 0 : '3px',
+        minWidth: compact ? 14 : 'auto',
+        minHeight: compact ? 16 : 25,
+        borderRadius: 999,
+        border: compact
+          ? 'none'
+          : reacted ? `1px solid ${alpha(accentColor, 0.56)}` : `1px solid ${alpha(isDark ? '#fff' : '#000', 0.1)}`,
+        bgcolor: compact
+          ? 'transparent'
+          : reacted ? alpha(accentColor, isDark ? 0.24 : 0.12) : idleBg,
+        cursor: 'pointer',
+        fontSize: compact ? `${compactEmojiSize}px` : `${regularEmojiSize}px`,
+        fontFamily: 'inherit',
+        lineHeight: 1,
+        boxShadow: compact
+          ? 'none'
+          : reacted ? `0 3px 10px ${alpha(accentColor, 0.16)}` : '0 2px 7px rgba(2, 6, 23, 0.14)',
+        transition: 'background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 80ms ease',
+        '&:hover': {
+          bgcolor: compact
+            ? 'transparent'
+            : reacted ? alpha(accentColor, isDark ? 0.28 : 0.16) : alpha(isDark ? '#fff' : '#000', isDark ? 0.16 : 0.09),
+        },
+        '&:active': { transform: 'scale(0.95)' },
+      }}
+    >
+      <span
+        data-testid="chat-reaction-emoji"
+        style={{
+          display: 'inline-block',
+          lineHeight: 1,
+          fontSize: compact ? `${compactEmojiSize}px` : `${regularEmojiSize}px`,
+          transform: reacted ? 'translateY(-0.5px)' : 'none',
+        }}
+      >
+        <ChatEmojiImage
+          emoji={r.emoji}
+          size={compact ? compactEmojiSize : regularEmojiSize}
+          style={{ margin: 0, verticalAlign: 'top' }}
+        />
+      </span>
+      {showCount ? (
+        <Typography component="span" sx={{ fontSize: compact ? '11px' : '12px', fontWeight: 700, color: reacted ? accentColor : (isDark ? alpha('#fff', 0.78) : alpha('#000', 0.55)), lineHeight: 1, minWidth: '7px', textAlign: 'center' }}>
+          {r.count}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
+function ReactionsBar({ reactions, currentUserId, onToggleReaction, ui, theme, compactMobile, isOwn }) {
+  const items = Array.isArray(reactions) ? reactions : [];
+  if (items.length === 0) return null;
+  return (
+    <Stack
+      data-testid="chat-reactions-bar"
+      direction="row"
+      flexWrap="wrap"
+      sx={{
+        alignItems: 'center',
+        pt: compactMobile ? '2px' : 0,
+        pb: compactMobile ? '2px' : 0,
+        px: compactMobile ? '5px' : 0,
+        gap: compactMobile ? '1px' : '3px',
+        justifyContent: 'flex-start',
+        minWidth: 0,
+        width: 'fit-content',
+        mr: 'auto',
+        borderRadius: compactMobile ? 999 : 0,
+        bgcolor: compactMobile
+          ? (isOwn ? alpha('#0b1724', theme.palette.mode === 'dark' ? 0.46 : 0.2) : alpha('#020617', theme.palette.mode === 'dark' ? 0.42 : 0.09))
+          : 'transparent',
+        backgroundImage: compactMobile
+          ? `linear-gradient(180deg, ${alpha('#fff', theme.palette.mode === 'dark' ? 0.08 : 0.3)}, ${alpha('#fff', 0)})`
+          : 'none',
+        border: compactMobile ? `1px solid ${alpha(theme.palette.mode === 'dark' ? '#fff' : '#000', theme.palette.mode === 'dark' ? 0.1 : 0.06)}` : 'none',
+        boxShadow: compactMobile
+          ? '0 2px 7px rgba(2, 6, 23, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.08)'
+          : 'none',
+        backdropFilter: compactMobile ? 'blur(6px)' : 'none',
+      }}
+    >
+      {items.map((r) => {
+        const reacted = Array.isArray(r.user_ids) && r.user_ids.includes(currentUserId);
+        return (
+          <Tooltip key={r.emoji} title={`${r.emoji} ${r.count}`} placement="top">
+            <span>
+              <ReactionPill r={r} reacted={reacted} onToggleReaction={onToggleReaction} ui={ui} theme={theme} compact={compactMobile} isOwn={isOwn} />
+            </span>
+          </Tooltip>
+        );
+      })}
+    </Stack>
+  );
+}
+
+export function ChatBubble({
+  conversationKind,
+  message,
+  navigate,
+  theme,
+  ui,
+  onOpenReads,
+  onOpenAttachmentPreview,
+  onReplyMessage,
+  onOpenMessageMenu,
+  onConfirmAction,
+  onCancelAction,
+  onEditAction,
+  onToggleReaction,
+  onToggleReactionRaw,
+  onPollVote,
+  onScrollToMessage,
+  onRetryFailedMessage,
+  onDiscardFailedMessage,
+  onRetryAiAnswer,
+  currentUserId,
+  highlighted = false,
+  selectionMode = false,
+  selected = false,
+  onToggleMessageSelection,
+  onStartMessageSelection,
+  groupedWithPrevious = false,
+  groupedWithNext = false,
+  compactMobile = false,
+  mobileInteractionsEnabled = false,
+  readTargetRef,
+}) {
+  const task = message?.kind === 'task_share' ? message?.task_preview : null;
+  // F-GEO / F-CONTACT / F-POLL: structured kinds carry a JSON body — render cards, not raw JSON.
+  const structuredContent = resolveChatStructuredContent(message);
+  const locationPayload = structuredContent.location;
+  const contactPayload = structuredContent.contact;
+  const pollPayload = structuredContent.poll;
+  const isStructuredKind = !message?.is_deleted
+    && (locationPayload !== null || contactPayload !== null || pollPayload !== null
+      || ['location', 'contact', 'poll'].includes(String(message?.kind || '').trim()));
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const attachmentCaption = attachments.length > 0 ? String(message?.body || '').trim() : '';
+  const body = String(message?.body || '').trim();
+  const bodyFormat = String(message?.body_format || '').trim();
+  const hasExplicitBodyFormat = bodyFormat === 'plain' || bodyFormat === 'markdown';
+  // AI9: ответы ассистента — плоский контент без пузыря во всю ширину колонки.
+  const isAiConversation = conversationKind === 'ai';
+  const isAiResponse = isAiConversation && !message?.is_own && !message?.is_deleted;
+  const isAiUserRequest = isAiConversation && Boolean(message?.is_own) && !message?.is_deleted;
+  const isMarkdownBody = bodyFormat === 'markdown'
+    || (!hasExplicitBodyFormat && message?.kind === 'text' && attachments.length === 0 && detectChatBodyFormat(body) === 'markdown')
+    || (isAiResponse && body && detectChatBodyFormat(body) === 'markdown');
+  const hasMarkdownTable = isMarkdownBody && hasChatMarkdownTable(body);
+  const emojiOnlyCount = !task && !isStructuredKind && attachments.length === 0 ? getEmojiOnlyCount(message?.body) : 0;
+  // В AI-беседе подпись «ИИ-помощник» над каждым ответом не нужна — ответ идёт
+  // плоским блоком, а аватар ассистента показывается у первого сообщения серии.
+  const showSender = !message?.is_own && conversationKind !== 'direct' && conversationKind !== 'ai' && !groupedWithPrevious;
+  const isOwnDirect = Boolean(message?.is_own) && conversationKind === 'direct';
+  const isOwnGroup = Boolean(message?.is_own) && conversationKind !== 'direct';
+  const readByCount = Number(message?.read_by_count || 0);
+  const deliveryStatus = String(message?.delivery_status || '').trim();
+  const isSending = deliveryStatus === 'sending' || message?.optimisticStatus === 'sending';
+  const isSendFailed = String(message?.optimisticStatus || '') === 'failed';
+  const hasReplyPreview = Boolean(message?.reply_preview);
+  const hasForwardPreview = Boolean(message?.forward_preview);
+  const ownMetaColor = (isAiUserRequest && ui.bubbleAiUserMetaText)
+    ? ui.bubbleAiUserMetaText
+    : (ui.bubbleOwnMetaText || '#ffffff');
+  const density = ui.density || {};
+  const senderAccentColor = showSender ? resolveGroupSenderColor(message?.sender, theme, ui) : ui.accentText;
+  const messageBodyFontSize = getChatBubbleBodyFontSize(ui, compactMobile);
+  const messageBodyLineHeight = getChatBubbleBodyLineHeight(ui, compactMobile);
+  const bubbleBodyBottomPadding = density.bubbleBodyBottomPadding ?? 1.8;
+  const bubbleReactionBodyBottomPadding = density.bubbleReactionBodyBottomPadding ?? 0.35;
+  const inlineMeta = !task
+    && !isStructuredKind
+    && attachments.length === 0
+    && emojiOnlyCount === 0
+    && !isMarkdownBody
+    && !hasReplyPreview
+    && !hasForwardPreview
+    && isShortInlineMessage(body, { compactMobile });
+  const receiptColor = message?.is_own
+    ? (deliveryStatus === 'read' && !isSending
+      ? (ui.statusReadText || alpha(ownMetaColor, 0.96))
+      : alpha(ownMetaColor, isSending ? 0.72 : 0.86))
+    : alpha(ui.textSecondary, 0.9);
+  const bubbleBg = isAiResponse
+    ? 'transparent'
+    : isAiUserRequest
+      ? (ui.bubbleAiUserBg || ui.bubbleOwnBg)
+      : message?.is_own
+        ? ui.bubbleOwnBg
+        : ui.bubbleOtherBg;
+  const bubbleText = isAiResponse
+    ? (ui.bubbleOtherText || theme.palette.text.primary)
+    : isAiUserRequest
+      ? (ui.bubbleAiUserText || ui.bubbleOwnText)
+      : message?.is_own
+        ? ui.bubbleOwnText
+        : ui.bubbleOtherText;
+  const linkColors = resolveChatBubbleLinkColors(ui, Boolean(message?.is_own));
+  const linkColor = linkColors.text || ui.accentText || theme.palette.primary.main;
+  const prefersReducedMotion = useReducedMotion();
+  const canToggleSelection = typeof onToggleMessageSelection === 'function';
+  const resolvedMessageId = String(message?.id || '').trim();
+  const hasAudioAttachments = attachments.length > 0
+    && attachments.some((attachment) => isAudioAttachment(attachment));
+  const mediaOnlyAttachments = attachments.length > 0
+    && !hasAudioAttachments
+    && attachments.every((attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment));
+  const pureMediaBubble = mediaOnlyAttachments && !attachmentCaption;
+  const hasStructuredPayload = locationPayload !== null || contactPayload !== null || pollPayload !== null;
+  // Д2-10: единый признак «без пузыря» — пузырь нужен только сообщениям с текстом.
+  // Опрос/геопозиция/контакт/задача и вложения без подписи рендерятся одной
+  // карточкой цвета стороны; медиа без подписи — самим медиа с мета-оверлеем.
+  const bubblelessMessage = !isAiResponse
+    && !message?.is_deleted
+    && !attachmentCaption
+    && (hasStructuredPayload || Boolean(task) || attachments.length > 0);
+  const cardBubbleless = bubblelessMessage && !pureMediaBubble;
+  const {
+    swipeDx,
+    longPressGestureRef,
+    mobileMessageInteractionsEnabled,
+    toggleSelection,
+    clearLongPress,
+    handleClickCapture,
+    handleContextMenu,
+    handleBubbleClick,
+    startPointerLongPress,
+    handlePointerLongPressMove,
+    handlePointerCancel,
+    startLongPress,
+    handleLongPressMove,
+    handleTouchCancel,
+    handleSwipeMove,
+    handleSwipeEnd,
+  } = useChatBubbleGestures({
+    mobileInteractionsEnabled,
+    compactMobile,
+    selectionMode,
+    canToggleSelection,
+    message,
+    attachments,
+    pureMediaBubble,
+    onToggleMessageSelection,
+    onStartMessageSelection,
+    onOpenMessageMenu,
+    onReplyMessage,
+  });
+  const handleToggleReaction = useCallback((emoji) => {
+    if (onToggleReaction) return onToggleReaction(emoji);
+    if (onToggleReactionRaw) return onToggleReactionRaw(resolvedMessageId, emoji);
+  }, [onToggleReaction, onToggleReactionRaw, resolvedMessageId]);
+  const effectiveToggleReaction = onToggleReaction || (onToggleReactionRaw && resolvedMessageId) ? handleToggleReaction : undefined;
+  const handlePollVote = typeof onPollVote === 'function' && resolvedMessageId
+    ? (optionIndex) => onPollVote(resolvedMessageId, optionIndex)
+    : undefined;
+  const showQuickActions = !selectionMode && !compactMobile && emojiOnlyCount === 0 && (typeof onOpenMessageMenu === 'function' || typeof effectiveToggleReaction === 'function');
+  const shouldAnimateBubble = shouldAnimateChatBubble({
+    prefersReducedMotion,
+    animateAppear: Boolean(message?.animateAppear),
+  });
+  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
+  // The thread scroller clips anything above its top edge: for the first visible message the
+  // picker opens below the button instead of above it.
+  const [reactionPickerBelow, setReactionPickerBelow] = useState(false);
+  const reactionPickerRef = useRef(null);
+  useEffect(() => {
+    if (!reactionPickerOpen) return undefined;
+    const handleOutside = (e) => {
+      if (reactionPickerRef.current && !reactionPickerRef.current.contains(e.target)) {
+        setReactionPickerOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handleOutside, true);
+    return () => window.removeEventListener('mousedown', handleOutside, true);
+  }, [reactionPickerOpen]);
+
+  const imageOnlyGallery = attachments.length > 1
+    && attachments.every((attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment));
+  const showMediaMetaOverlay = mediaOnlyAttachments && !attachmentCaption;
+  const hasReactions = Array.isArray(message?.reactions) && message.reactions.length > 0;
+  const reactionFooter = hasReactions && !showMediaMetaOverlay;
+  const textMetaInFlow = !compactMobile
+    && !inlineMeta
+    && !task
+    && !isStructuredKind
+    && attachments.length === 0
+    && emojiOnlyCount === 0
+    && Boolean(body)
+    && !showMediaMetaOverlay;
+  const mediaPreviewMaxWidth = compactMobile ? 216 : 300;
+  const mediaPreviewMaxHeight = compactMobile ? 176 : 300;
+  const mediaPreviewMinWidth = compactMobile ? 148 : 200;
+  const galleryPreviewMaxWidth = compactMobile ? 232 : 300;
+  const albumLayout = imageOnlyGallery ? getAlbumTiles(attachments.length) : { tiles: [], hiddenCount: 0 };
+  const displayedGalleryAttachments = imageOnlyGallery ? attachments.slice(0, albumLayout.tiles.length) : [];
+  const galleryHiddenCount = albumLayout.hiddenCount;
+  const mediaFrameSx = imageOnlyGallery
+    ? { width: galleryPreviewMaxWidth, maxWidth: '100%' }
+    : mediaOnlyAttachments
+      ? { width: 'fit-content', maxWidth: '100%' }
+      : { width: '100%', maxWidth: '100%' };
+  const isLongAiReply = conversationKind === 'ai'
+    && !message?.is_own
+    && (hasMarkdownTable || Boolean(message?.action_card) || String(body || '').length > 220);
+  // AI9: плоский ответ ассистента занимает всю ширину колонки ленты.
+  // Д2-2: ширина пузыря — от ширины ленты, а не вьюпорта.
+  const bubbleMaxWidth = isAiResponse
+    ? '100%'
+    : hasMarkdownTable || isLongAiReply
+      ? { xs: 'calc(100vw - 22px)', md: 'min(92%, 760px)' }
+      : { xs: emojiOnlyCount ? '100%' : '85%', md: emojiOnlyCount ? '100%' : '65%' };
+  const bubbleWidth = isAiResponse
+    ? 'auto'
+    : hasMarkdownTable ? { xs: 'calc(100vw - 22px)', md: 'auto' } : 'auto';
+  // Д3: у последнего сообщения серии в группах — аватар отправителя слева,
+  // у промежуточных — визуальный отступ той же ширины. AI9: у ответа
+  // ассистента — аватар HUB у первой строки блока.
+  const showSideAvatarSlot = (conversationKind === 'group' && !message?.is_own) || isAiResponse;
+  const sideAvatarSize = isAiResponse ? (compactMobile ? 28 : 30) : (compactMobile ? 28 : 34);
+  const sideAvatarIndentPx = sideAvatarSize + (compactMobile ? 7 : 9);
+
+  const renderMessageMeta = (layout = 'bottom', metaProps = {}) => (
+    <ChatBubbleMeta
+      layout={layout}
+      message={message}
+      ui={ui}
+      receiptColor={receiptColor}
+      deliveryStatus={deliveryStatus}
+      isSending={isSending}
+      isOwnDirect={isOwnDirect}
+      isOwnGroup={isOwnGroup}
+      readByCount={readByCount}
+      compactMobile={compactMobile}
+      onOpenReads={onOpenReads}
+      onReplyMessage={onReplyMessage}
+      onRetryFailedMessage={onRetryFailedMessage}
+      onDiscardFailedMessage={onDiscardFailedMessage}
+      showUploadProgress
+      {...metaProps}
+    />
+  );
+
+  const forwardPreviewNode = (
+    <ForwardPreviewBlock
+      forwardPreview={message?.forward_preview}
+      theme={theme}
+      ui={ui}
+      isOwn={Boolean(message?.is_own)}
+      compactMobile={compactMobile}
+    />
+  );
+  const replyPreviewNode = (
+    <ReplyPreviewBlock replyPreview={message?.reply_preview} theme={theme} ui={ui} isOwn={Boolean(message?.is_own)} compactMobile={compactMobile} onScrollToMessage={onScrollToMessage} />
+  );
+  const reactionsNode = (
+    <ReactionsBar
+      reactions={message?.reactions}
+      currentUserId={currentUserId}
+      onToggleReaction={effectiveToggleReaction}
+      ui={ui}
+      theme={theme}
+      compactMobile={compactMobile}
+      isOwn={message?.is_own}
+    />
+  );
+  // Д2-10: карточка «без пузыря» повторяет фон стороны, скругление и хвостик
+  // последнего пузыря серии; время/галочки — внутри карточки справа снизу,
+  // реакции — под карточкой. Голосовому нужен свой внутренний отступ.
+  const cardBubblelessSx = {
+    position: 'relative',
+    width: 'fit-content',
+    maxWidth: '100%',
+    // У голосового поверхность имеет фиксированную ширину — карточку прижимаем к краю стороны.
+    ml: message?.is_own ? 'auto' : 0,
+    px: hasAudioAttachments ? 1.15 : 0.55,
+    py: hasAudioAttachments ? 0.95 : 0.55,
+    borderRadius: getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
+    bgcolor: bubbleBg,
+    color: bubbleText,
+    boxShadow: compactMobile
+      ? (theme.palette.mode === 'dark' ? '0 1px 0 rgba(255,255,255,0.02), 0 8px 18px rgba(3, 8, 15, 0.12)' : '0 8px 20px rgba(70, 92, 114, 0.12)')
+      : ui.shadowSoft,
+    outline: highlighted ? `2px solid ${alpha(theme.palette.primary.main, 0.42)}` : 'none',
+    outlineOffset: highlighted ? 2 : 0,
+    '&::after': !groupedWithNext ? getBubbleTailSx(Boolean(message?.is_own), bubbleBg, ui) : undefined,
+  };
+  const messageContentNode = task ? (
+          <TaskShareCard task={task} navigate={navigate} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
+        ) : isStructuredKind ? (
+          <Stack spacing={0.9}>
+            {String(message?.kind || '').trim() === 'location' ? (
+              <ChatLocationCard location={locationPayload} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
+            ) : null}
+            {String(message?.kind || '').trim() === 'contact' ? (
+              <ChatContactCard contact={contactPayload} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
+            ) : null}
+            {String(message?.kind || '').trim() === 'poll' ? (
+              <ChatPollCard
+                poll={pollPayload}
+                ui={ui}
+                theme={theme}
+                isOwn={Boolean(message?.is_own)}
+                onVote={handlePollVote}
+              />
+            ) : null}
+          </Stack>
+        ) : attachments.length > 0 ? (
+          <Stack spacing={0.9}>
+            {isAiResponse && attachmentCaption ? (
+              // AI9: у ответа с файлами сначала идёт текст ответа, затем вложения.
+              isMarkdownBody ? (
+                <ChatMarkdownBody
+                  value={message?.body}
+                  bubbleText={bubbleText}
+                  linkColor={linkColor}
+                  hasMarkdownTable={hasMarkdownTable}
+                  compactMobile={compactMobile}
+                  ui={ui}
+                />
+              ) : (
+                <Box
+                  component="p"
+                  className="chat-selectable"
+                  data-chat-message-body="true"
+                  style={{ fontSize: messageBodyFontSize }}
+                  sx={{
+                    m: 0,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    ...buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight),
+                    color: bubbleText,
+                    userSelect: 'text',
+                    fontFamily: CHAT_FONT_FAMILY,
+                    letterSpacing: '-0.01em',
+                  }}
+                >
+                  {renderChatPlainTextBody(message?.body, {
+                    mentionColor: ui.accentText || theme.palette.primary.main,
+                    linkColor,
+                  })}
+                </Box>
+              )
+            ) : null}
+            <Box
+              sx={{
+                position: 'relative',
+                ...mediaFrameSx,
+              }}
+            >
+              {imageOnlyGallery ? (
+                <Box
+                  data-testid="chat-attachment-gallery"
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+                    gap: '2px',
+                  }}
+                >
+                  {displayedGalleryAttachments.map((attachment, index) => (
+                    <Box
+                      key={attachment.id}
+                      sx={{
+                        position: 'relative',
+                        minWidth: 0,
+                        gridColumn: `span ${albumLayout.tiles[index]?.span || 3}`,
+                      }}
+                    >
+                      <AttachmentCard
+                        messageId={message.id}
+                        attachment={{
+                          ...attachment,
+                          mediaMaxWidth: '100%',
+                          forcedAspectRatio: albumLayout.tiles[index]?.aspectRatio || '1 / 1',
+                        }}
+                        theme={theme}
+                        ui={ui}
+                        onOpenPreview={onOpenAttachmentPreview}
+                        isOwn={Boolean(message?.is_own)}
+                        isSending={isSending}
+                        canSaveToMyFiles={conversationKind === 'ai' && !message?.is_own}
+                      />
+                      {galleryHiddenCount > 0 && index === (displayedGalleryAttachments.length - 1) ? (
+                        <Box
+                          aria-hidden="true"
+                          sx={{
+                            position: 'absolute',
+                            inset: 0,
+                            borderRadius: 3,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            bgcolor: 'rgba(2, 6, 23, 0.54)',
+                            backdropFilter: 'blur(3px)',
+                            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.06)',
+                            color: '#fff',
+                            fontSize: compactMobile ? '1.15rem' : '1.25rem',
+                            fontWeight: 800,
+                            letterSpacing: '-0.02em',
+                          }}
+                        >
+                          {`+${galleryHiddenCount}`}
+                        </Box>
+                      ) : null}
+                    </Box>
+                  ))}
+                </Box>
+              ) : (
+                <Stack spacing={0.75}>
+                  {attachments.map((attachment) => (
+                    <AttachmentCard
+                      key={attachment.id}
+                      messageId={message.id}
+                      attachment={
+                        isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment)
+                          ? {
+                            ...attachment,
+                            mediaMaxWidth: mediaPreviewMaxWidth,
+                            mediaMaxHeight: mediaPreviewMaxHeight,
+                            mediaMinWidth: mediaPreviewMinWidth,
+                          }
+                          : attachment
+                      }
+                      theme={theme}
+                      ui={ui}
+                      onOpenPreview={onOpenAttachmentPreview}
+                      isOwn={Boolean(message?.is_own)}
+                      isSending={isSending}
+                      canSaveToMyFiles={conversationKind === 'ai' && !message?.is_own}
+                    />
+                  ))}
+                </Stack>
+              )}
+              {showMediaMetaOverlay ? (
+                <Box
+                  data-testid="chat-media-meta"
+                  sx={{
+                    // R40: time and receipts on a photo are always visible (as in Telegram),
+                    // on desktop too - not only while the bubble is hovered.
+                    position: 'absolute',
+                    right: 2,
+                    bottom: 2,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {renderMessageMeta('media')}
+                </Box>
+              ) : null}
+            </Box>
+            {attachmentCaption && !isAiResponse ? (
+              <Box
+                component="p"
+                className="chat-selectable"
+                data-chat-message-body="true"
+                style={{ fontSize: messageBodyFontSize }}
+                sx={{
+                  m: 0,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  ...buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight),
+                  color: bubbleText,
+                  userSelect: 'text',
+                  fontFamily: CHAT_FONT_FAMILY,
+                  letterSpacing: '-0.01em',
+                }}
+              >
+                {attachmentCaption}
+              </Box>
+            ) : null}
+          </Stack>
+        ) : isMarkdownBody ? (
+          <ChatMarkdownBody
+            value={message?.body}
+            bubbleText={bubbleText}
+            linkColor={linkColor}
+            hasMarkdownTable={hasMarkdownTable}
+            compactMobile={compactMobile}
+            ui={ui}
+          />
+        ) : (
+          <Box
+            component="p"
+            className="chat-selectable"
+            data-chat-message-body="true"
+            data-chat-emoji-only={emojiOnlyCount ? 'true' : undefined}
+            style={{ fontSize: emojiOnlyCount ? undefined : messageBodyFontSize }}
+            sx={{
+              m: 0,
+              display: 'block',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              pr: inlineMeta ? 0 : 0.25,
+              pb: inlineMeta || emojiOnlyCount ? 0 : textMetaInFlow ? 0.25 : (reactionFooter ? bubbleReactionBodyBottomPadding : bubbleBodyBottomPadding),
+              ...(emojiOnlyCount
+                ? { lineHeight: 1.08, fontSize: emojiOnlyCount === 1 ? '3.2rem' : '2.6rem' }
+                : buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight)),
+              color: bubbleText,
+              userSelect: 'text',
+              fontFamily: CHAT_FONT_FAMILY,
+              letterSpacing: emojiOnlyCount ? undefined : '-0.01em',
+              '&::after': inlineMeta ? {
+                content: '""',
+                display: 'inline-block',
+                width: getChatInlineMetaReserveWidth({
+                  message,
+                  compactMobile,
+                  isOwnDirect: isOwnDirect || isOwnGroup || isSendFailed,
+                  isSending,
+                }),
+                height: '0.9em',
+              } : undefined,
+            }}
+          >
+            {renderChatPlainTextBody(message?.body, {
+              mentionColor: ui.accentText || theme.palette.primary.main,
+              linkColor,
+            })}
+          </Box>
+        );
+
+  return (
+    <Box
+      ref={readTargetRef}
+      data-chat-message-id={message?.id}
+      data-chat-selected={selected ? 'true' : undefined}
+      onClickCapture={handleClickCapture}
+      onDoubleClick={(event) => {
+        if (selectionMode) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        // Д3: ответ по двойному клику — только по выделяемому тексту/подписи,
+        // не по пузырю целиком и не по медиа-карточкам.
+        if (!body && !attachmentCaption) return;
+        const target = event.target;
+        const onSelectableText = target instanceof Element
+          && Boolean(target.closest?.('[data-chat-message-body], .chat-selectable'));
+        if (!onSelectableText) return;
+        onReplyMessage?.(message);
+      }}
+      className={joinClasses('relative flex flex-col', message?.is_own ? 'items-end' : 'items-start')}
+      sx={{
+        width: '100%',
+        pt: showSender ? (density.bubbleSenderRowPt ?? 0.35) : groupedWithPrevious ? '2px' : (density.bubbleRowPt ?? 1.1),
+        // Д2-2: зазор внутри серии — 2px суммарно (pt следующего сообщения).
+        pb: groupedWithNext ? 0 : 0.42,
+        pl: 0,
+        pr: 0,
+        mx: 0,
+        borderRadius: 0,
+        bgcolor: selected && !compactMobile ? alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.12) : 'transparent',
+        cursor: selectionMode ? 'pointer' : 'default',
+        animation: shouldAnimateBubble ? `${messageAppear} 150ms ease-out` : 'none',
+        overflowAnchor: 'none',
+        transition: 'background-color 120ms ease',
+        ...(mobileMessageInteractionsEnabled ? {
+          WebkitTouchCallout: 'none',
+          WebkitUserSelect: 'none',
+          userSelect: 'none',
+          touchAction: 'pan-y',
+          '& .chat-selectable, & .chat-selectable *': {
+            WebkitUserSelect: 'none',
+            userSelect: 'none',
+          },
+        } : {}),
+      }}
+    >
+      {selectionMode ? (
+        <Box
+          component="button"
+          type="button"
+          data-testid={`chat-message-select-${message?.id}`}
+          aria-label={selected ? 'Снять выделение' : 'Выделить сообщение'}
+          aria-pressed={selected}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleSelection();
+          }}
+          sx={{
+            position: 'absolute',
+            left: { xs: 6, md: 10 },
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: compactMobile ? 44 : 26,
+            height: compactMobile ? 44 : 26,
+            p: 0,
+            border: 'none',
+            borderRadius: 999,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: selected ? (ui.accentText || theme.palette.primary.main) : alpha(ui.textSecondary || theme.palette.text.secondary, 0.82),
+            bgcolor: compactMobile
+              ? 'transparent'
+              : selected ? alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.1) : alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.32 : 0.78),
+            boxShadow: compactMobile
+              ? 'none'
+              : selected ? `0 0 0 2px ${alpha(ui.accentText || theme.palette.primary.main, 0.16)}` : ui.shadowSoft,
+            cursor: 'pointer',
+            outline: 'none',
+            '&:focus, &:focus-visible': {
+              outline: 'none',
+            },
+          }}
+        >
+          {selected ? <CheckCircleRoundedIcon sx={{ fontSize: compactMobile ? 21 : 20 }} /> : <RadioButtonUncheckedRoundedIcon sx={{ fontSize: compactMobile ? 21 : 20 }} />}
+        </Box>
+      ) : null}
+
+      {compactMobile && swipeDx > 8 ? (
+        <Box sx={{
+          position: 'absolute',
+          right: -36,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          width: 28,
+          height: 28,
+          borderRadius: '50%',
+          bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.15),
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          opacity: Math.min(swipeDx / SWIPE_TRIGGER, 1),
+          transition: 'opacity 80ms ease',
+          pointerEvents: 'none',
+        }}>
+          <ReplyRoundedIcon sx={{ fontSize: 16, color: ui.accentText || theme.palette.primary.main }} />
+        </Box>
+      ) : null}
+
+      {showSender ? (
+        <Typography
+          variant="caption"
+          className="px-3 pb-1 text-[14px] font-medium leading-[1.15]"
+          sx={{
+            color: senderAccentColor,
+            fontFamily: CHAT_FONT_FAMILY,
+            fontSize: density.bubbleSenderFontSize || CHAT_DEFAULT_FONT_SIZES.sender,
+            ml: selectionMode && !message?.is_own
+              ? { xs: 5, md: 4.2 }
+              : (showSideAvatarSlot ? `${sideAvatarIndentPx}px` : 0),
+          }}
+        >
+          {message?.sender?.full_name || message?.sender?.username || 'Пользователь'}
+        </Typography>
+      ) : null}
+
+      <Box
+        sx={{
+          display: 'flex',
+          width: '100%',
+          minWidth: 0,
+          alignItems: isAiResponse ? 'flex-start' : 'flex-end',
+          justifyContent: message?.is_own ? 'flex-end' : 'flex-start',
+        }}
+      >
+        {showSideAvatarSlot ? (
+          <Box
+            data-testid={isAiResponse ? 'chat-ai-avatar-slot' : 'chat-group-avatar-slot'}
+            sx={{
+              width: sideAvatarSize,
+              height: sideAvatarSize,
+              flexShrink: 0,
+              mr: compactMobile ? '7px' : '9px',
+              mt: isAiResponse ? '2px' : 0,
+            }}
+          >
+            {isAiResponse
+              ? (!groupedWithPrevious ? <AiConversationAvatar size={sideAvatarSize} /> : null)
+              : (!groupedWithNext ? <PresenceAvatar item={message?.sender} size={sideAvatarSize} /> : null)}
+          </Box>
+        ) : null}
+      <Box
+          data-chat-bubble-surface="true"
+        data-chat-table-layout={hasMarkdownTable ? 'wide' : undefined}
+        onContextMenu={handleContextMenu}
+        onClick={compactMobile && !selectionMode && !pureMediaBubble && attachments.length === 0 && typeof onOpenMessageMenu === 'function' ? handleBubbleClick : undefined}
+        onPointerDown={startPointerLongPress}
+        onPointerMove={handlePointerLongPressMove}
+        onPointerUp={clearLongPress}
+        onPointerCancel={handlePointerCancel}
+        onTouchStart={startLongPress}
+        onTouchEnd={(e) => { clearLongPress(e); handleSwipeEnd(); }}
+        onTouchCancel={(e) => { handleTouchCancel(e); handleSwipeEnd(); }}
+        onTouchMove={(e) => { handleLongPressMove(e); handleSwipeMove(e); }}
+        className={joinClasses('relative transition duration-100', compactMobile ? 'active:opacity-90' : '', reactionPickerOpen ? 'reaction-picker-open' : '')}
+        sx={{
+          width: hasAudioAttachments && !isAiResponse ? { xs: '72vw', md: '340px' } : bubbleWidth,
+          maxWidth: bubbleMaxWidth,
+          flexGrow: isAiResponse && (hasMarkdownTable || isLongAiReply) ? 1 : undefined,
+          minWidth: isAiResponse ? 0 : undefined,
+          ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
+          transform: swipeDx > 0 ? `translateX(-${swipeDx}px)` : undefined,
+          px: isAiResponse ? 1.8 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
+          py: isAiResponse ? 1.25 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
+          // Ответ ассистента — карточка цвета «чужого» пузыря: без фона текст и таблицы сливались с обоями ленты.
+          borderRadius: isAiResponse ? '8px 20px 20px 20px' : emojiOnlyCount || cardBubbleless ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
+          bgcolor: isAiResponse ? ui.bubbleOtherBg : emojiOnlyCount || bubblelessMessage ? 'transparent' : bubbleBg,
+          color: bubbleText,
+          boxShadow: isAiResponse
+            ? ui.shadowSoft
+            : emojiOnlyCount || pureMediaBubble || cardBubbleless
+            ? 'none'
+            : (
+              compactMobile
+                ? (theme.palette.mode === 'dark' ? '0 1px 0 rgba(255,255,255,0.02), 0 8px 18px rgba(3, 8, 15, 0.12)' : '0 8px 20px rgba(70, 92, 114, 0.12)')
+                : ui.shadowSoft
+            ),
+          outline: highlighted ? `2px solid ${alpha(theme.palette.primary.main, 0.42)}` : 'none',
+          outlineOffset: highlighted ? 2 : 0,
+          border: 'none',
+          userSelect: 'none',
+          '&:focus, &:focus-visible': {
+            outline: highlighted ? `2px solid ${alpha(theme.palette.primary.main, 0.42)}` : 'none',
+          },
+          transition: swipeDx > 0 ? 'none' : 'background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease, outline-color 120ms ease',
+          '&:hover [data-testid="chat-ai-response-actions"]': { opacity: 1 },
+          '&:hover .chat-bubble-actions, &.reaction-picker-open .chat-bubble-actions': {
+            opacity: 1,
+            transform: 'translateY(0)',
+            pointerEvents: 'auto',
+          },
+          '&::after': (!emojiOnlyCount && !bubblelessMessage && !isAiResponse && !groupedWithNext)
+            ? getBubbleTailSx(Boolean(message?.is_own), bubbleBg, ui)
+            : undefined,
+        }}
+      >
+        {showQuickActions ? (
+          <Stack
+            className="chat-bubble-actions"
+            direction="row"
+            spacing={0.35}
+            sx={{
+              position: 'absolute',
+              top: -17,
+              zIndex: 3,
+              opacity: 0,
+              pointerEvents: 'none',
+              transform: 'translateY(3px)',
+              transition: 'opacity 120ms ease, transform 120ms ease',
+              ...(message?.is_own ? { right: 4 } : { left: 4 }),
+            }}
+          >
+            {typeof effectiveToggleReaction === 'function' ? (
+              <Box ref={reactionPickerRef} sx={{ position: 'relative' }}>
+                <Tooltip title={reactionPickerOpen ? '' : 'Реакция'}>
+                  <button
+                    type="button"
+                    aria-label="Реакция"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (!reactionPickerOpen) {
+                        const scroller = event.currentTarget.closest('[data-testid="chat-thread-scroll"]');
+                        const roomAbove = event.currentTarget.getBoundingClientRect().top
+                          - (scroller ? scroller.getBoundingClientRect().top : 0);
+                        setReactionPickerBelow(roomAbove < 56);
+                      }
+                      setReactionPickerOpen((v) => !v);
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full transition duration-100 active:scale-[0.96]"
+                    style={{
+                      color: ui.textPrimary,
+                      backgroundColor: alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.92 : 0.96),
+                      boxShadow: ui.shadowSoft,
+                      border: `1px solid ${ui.borderSoft}`,
+                    }}
+                  >
+                    <AddReactionRoundedIcon sx={{ fontSize: 15 }} />
+                  </button>
+                </Tooltip>
+                {reactionPickerOpen ? (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: reactionPickerBelow ? 32 : -44,
+                      ...(message?.is_own ? { right: 0 } : { left: 0 }),
+                      zIndex: 10,
+                      display: 'flex',
+                      // The wrapper is only as wide as the 28px button: without this the pill is
+                      // shrink-wrapped into it and every emoji button is squeezed to a few pixels.
+                      width: 'max-content',
+                      '& > button': { flexShrink: 0 },
+                      gap: '4px',
+                      bgcolor: alpha(ui.surfaceStrong || '#fff', theme.palette.mode === 'dark' ? 0.96 : 0.98),
+                      borderRadius: 999,
+                      px: 1,
+                      py: 0.5,
+                      boxShadow: ui.shadowSoft,
+                      border: `1px solid ${ui.borderSoft}`,
+                    }}
+                  >
+                    {QUICK_REACTIONS.map((emoji) => (
+                      <Box
+                        key={emoji}
+                        component="button"
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); effectiveToggleReaction(emoji); setReactionPickerOpen(false); }}
+                        aria-label={`Реакция ${emoji}`}
+                        sx={{ display: 'inline-flex', fontSize: '20px', lineHeight: 1, cursor: 'pointer', border: 'none', bgcolor: 'transparent', px: '2px', borderRadius: 1, '&:hover': { transform: 'scale(1.25)' }, transition: 'transform 100ms ease' }}
+                      >
+                        <ChatEmojiImage emoji={emoji} size={22} style={{ margin: 0, verticalAlign: 'top' }} />
+                      </Box>
+                    ))}
+                  </Box>
+                ) : null}
+              </Box>
+            ) : null}
+            {!compactMobile ? (
+            <Tooltip title="Ответить">
+              <button
+                type="button"
+                aria-label="Ответить"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onReplyMessage?.(message);
+                }}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full transition duration-100 active:scale-[0.96]"
+                style={{
+                  color: ui.textPrimary,
+                  backgroundColor: alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.92 : 0.96),
+                  boxShadow: ui.shadowSoft,
+                  border: `1px solid ${ui.borderSoft}`,
+                }}
+              >
+                <ReplyRoundedIcon sx={{ fontSize: 15 }} />
+              </button>
+            </Tooltip>
+            ) : null}
+            <Tooltip title="Действия">
+              <button
+                type="button"
+                aria-label="Действия"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenMessageMenu?.(message, event.currentTarget);
+                }}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full transition duration-100 active:scale-[0.96]"
+                style={{
+                  color: ui.textPrimary,
+                  backgroundColor: alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.92 : 0.96),
+                  boxShadow: ui.shadowSoft,
+                  border: `1px solid ${ui.borderSoft}`,
+                }}
+              >
+                <MoreHorizRoundedIcon sx={{ fontSize: 16 }} />
+              </button>
+            </Tooltip>
+          </Stack>
+        ) : null}
+        {cardBubbleless ? (
+          // Д2-10: структурные/файловые карточки без подписи — одна карточка
+          // цвета стороны: атрибуция и цитата сверху внутри, мета внутри
+          // справа снизу, реакции — под карточкой.
+          <>
+            <Box
+              data-chat-card-surface="true"
+              sx={cardBubblelessSx}
+            >
+              {forwardPreviewNode}
+              {replyPreviewNode}
+              {messageContentNode}
+              {renderMessageMeta('bottom', { inFlow: true, dense: true })}
+            </Box>
+            <Box sx={{ display: 'flex', justifyContent: message?.is_own ? 'flex-end' : 'flex-start' }}>
+              {reactionsNode}
+            </Box>
+          </>
+        ) : (
+          <>
+        {forwardPreviewNode}
+        {replyPreviewNode}
+
+        {messageContentNode}
+
+        {!task && !isStructuredKind && attachments.length === 0 && emojiOnlyCount === 0 && body && extractFirstUrl(body) ? (
+          <ChatLinkPreview
+            url={extractFirstUrl(body)}
+            theme={theme}
+            ui={ui}
+            isOwn={Boolean(message?.is_own)}
+          />
+        ) : null}
+
+        <AiActionCard
+          actionCard={message?.action_card}
+          message={message}
+          theme={theme}
+          ui={ui}
+          compactMobile={compactMobile}
+          onConfirmAction={onConfirmAction}
+          onCancelAction={onCancelAction}
+          onEditAction={onEditAction}
+        />
+
+        {isAiResponse ? (
+          <AiSourcesRow
+            sources={collectAiResponseSources(message)}
+            navigate={navigate}
+            ui={ui}
+            theme={theme}
+          />
+        ) : null}
+
+        {isAiResponse && body ? (
+          <AiResponseControls
+            body={body}
+            onRetry={onRetryAiAnswer}
+            ui={ui}
+            theme={theme}
+            compactMobile={compactMobile}
+          />
+        ) : null}
+
+        {(() => {
+          const reactionBar = (
+            <ReactionsBar
+              reactions={message?.reactions}
+              currentUserId={currentUserId}
+              onToggleReaction={effectiveToggleReaction}
+              ui={ui}
+              theme={theme}
+              compactMobile={compactMobile}
+              isOwn={message?.is_own}
+            />
+          );
+
+          const bubbleMeta = !showMediaMetaOverlay ? (
+            <ChatBubbleMeta
+              layout={emojiOnlyCount ? 'emoji' : reactionFooter ? 'bottom' : inlineMeta ? 'inline' : 'bottom'}
+              message={message}
+              ui={ui}
+              receiptColor={receiptColor}
+              deliveryStatus={deliveryStatus}
+              isSending={isSending}
+              isOwnDirect={isOwnDirect}
+              isOwnGroup={isOwnGroup}
+              readByCount={readByCount}
+              compactMobile={compactMobile}
+              onOpenReads={onOpenReads}
+              onReplyMessage={onReplyMessage}
+              onRetryFailedMessage={onRetryFailedMessage}
+              onDiscardFailedMessage={onDiscardFailedMessage}
+              bottomOffset={inlineMeta ? undefined : 7}
+              inFlow={Boolean(emojiOnlyCount) || reactionFooter || textMetaInFlow || (attachments.length > 0 && !showMediaMetaOverlay)}
+              dense={reactionFooter || textMetaInFlow}
+            />
+          ) : null;
+
+          if (reactionFooter) {
+            return (
+              <Stack
+                data-testid="chat-bubble-reaction-footer"
+                direction="row"
+                alignItems="flex-end"
+                sx={{
+                  mt: compactMobile ? '2px' : '3px',
+                  minHeight: compactMobile ? 18 : 22,
+                  gap: 0.75,
+                }}
+              >
+                {reactionBar}
+                {bubbleMeta}
+              </Stack>
+            );
+          }
+
+          return (
+            <>
+              {reactionBar}
+              {bubbleMeta}
+            </>
+          );
+        })()}
+          </>
+        )}
+      </Box>
+      </Box>
+    </Box>
+  );
+}
+
+const isPlainTokenObject = (value) => (
+  value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype
+);
+
+// Токены интерфейса и тема пересоздаются (новый объект с теми же значениями), когда
+// страница обновляет настройки пользователя или тему провайдера. Сравниваем их по
+// значениям, иначе каждый пузырь ленты перерисовывается впустую (Д2-3).
+const areChatBubbleTokensEqual = (left, right) => {
+  if (Object.is(left, right)) return true;
+  if (!isPlainTokenObject(left) || !isPlainTokenObject(right)) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => {
+    if (Object.is(left[key], right[key])) return true;
+    if (!isPlainTokenObject(left[key]) || !isPlainTokenObject(right[key])) return false;
+    const nestedKeys = Object.keys(left[key]);
+    return nestedKeys.length === Object.keys(right[key]).length
+      && nestedKeys.every((nestedKey) => Object.is(left[key][nestedKey], right[key][nestedKey]));
+  });
+};
+
+const areChatBubbleThemesEqual = (left, right) => (
+  Object.is(left, right)
+  || Boolean(left && right
+    && Object.is(left.palette, right.palette)
+    && Object.is(left.typography, right.typography)
+    && Object.is(left.breakpoints, right.breakpoints))
+);
+
+export const areChatBubblePropsEqual = (previous, next) => {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  for (const key of keys) {
+    if (Object.is(previous[key], next[key])) continue;
+    if (key === 'theme' && areChatBubbleThemesEqual(previous.theme, next.theme)) continue;
+    if (key === 'ui' && areChatBubbleTokensEqual(previous.ui, next.ui)) continue;
+    return false;
+  }
+  return true;
+};
+
+export const MemoChatBubble = memo(ChatBubble, areChatBubblePropsEqual);

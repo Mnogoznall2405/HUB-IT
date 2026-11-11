@@ -1,0 +1,276 @@
+const readFirst = (data, keys, fallback = '') => {
+  for (const key of keys) {
+    const value = data?.[key];
+    if (value !== undefined && value !== null) return value;
+  }
+  return fallback;
+};
+
+const EQUIPMENT_PATH = '/database';
+const EQUIPMENT_QUERY_KEYS = ['inv_no', 'invNo', 'equipment'];
+const CONSUMABLE_QUERY_KEYS = ['consumable', 'consumable_id', 'consumableId'];
+
+const firstQueryValue = (searchParams, keys) => {
+  for (const key of keys) {
+    const value = String(searchParams.get(key) || '').trim();
+    if (value) return value;
+  }
+  return '';
+};
+
+const parseEquipmentLink = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  let parsed;
+  try {
+    parsed = new URL(text, 'https://hubit.invalid');
+  } catch {
+    return null;
+  }
+
+  const isWebLink = ['http:', 'https:'].includes(parsed.protocol)
+    && parsed.pathname.replace(/\/+$/, '') === EQUIPMENT_PATH;
+  const isAppLink = parsed.protocol === 'hubit:'
+    && parsed.hostname === 'database';
+  if (!isWebLink && !isAppLink) return null;
+
+  const invNo = firstQueryValue(parsed.searchParams, EQUIPMENT_QUERY_KEYS);
+  if (!invNo || invNo.length > 200) return null;
+
+  const databaseId = String(parsed.searchParams.get('db_id') || '').trim();
+  if (databaseId.length > 100) return null;
+
+  const requestedTab = String(parsed.searchParams.get('tab') || '').trim();
+  const tab = ['general', 'acts', 'history', 'warehouse1c', 'photos'].includes(requestedTab)
+    ? requestedTab
+    : 'general';
+
+  return {
+    invNo,
+    databaseId,
+    tab,
+  };
+};
+
+export const buildEquipmentQrLink = (item, {
+  databaseId = '',
+  origin = typeof window !== 'undefined' ? window.location.origin : '',
+} = {}) => {
+  const invNo = String(readFirst(item, ['INV_NO', 'inv_no'], '') || '').trim();
+  if (!invNo) return '';
+
+  const resolvedDatabaseId = String(
+    databaseId || readFirst(item, ['DB_ID', 'db_id', 'database_id'], '') || ''
+  ).trim();
+
+  try {
+    const url = new URL(EQUIPMENT_PATH, origin);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    url.searchParams.set('inv_no', invNo);
+    if (resolvedDatabaseId) url.searchParams.set('db_id', resolvedDatabaseId);
+    return url.toString();
+  } catch {
+    return '';
+  }
+};
+
+export const buildConsumableQrLink = (item, {
+  databaseId = '',
+  origin = typeof window !== 'undefined' ? window.location.origin : '',
+} = {}) => {
+  const itemId = String(
+    readFirst(item, ['ID', 'id', 'ITEM_ID', 'item_id'], '') || ''
+  ).trim();
+  if (!itemId || !/^\d+$/.test(itemId)) return '';
+
+  const resolvedDatabaseId = String(
+    databaseId || readFirst(item, ['DB_ID', 'db_id', 'database_id'], '') || ''
+  ).trim();
+
+  try {
+    const url = new URL(EQUIPMENT_PATH, origin);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    url.searchParams.set('consumable', itemId);
+    if (resolvedDatabaseId) url.searchParams.set('db_id', resolvedDatabaseId);
+    return url.toString();
+  } catch {
+    return '';
+  }
+};
+
+// Kind-aware payload: equipment QR keeps the inv_no flow, consumable QR carries
+// ITEMS.ID because legacy consumable INV_NO values are not guaranteed unique.
+export const parseDatabaseQrPayload = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  let parsed;
+  try {
+    parsed = new URL(text, 'https://hubit.invalid');
+  } catch {
+    parsed = null;
+  }
+
+  if (parsed) {
+    const isWebLink = ['http:', 'https:'].includes(parsed.protocol)
+      && parsed.pathname.replace(/\/+$/, '') === EQUIPMENT_PATH;
+    const isAppLink = parsed.protocol === 'hubit:'
+      && parsed.hostname === 'database';
+
+    if (isWebLink || isAppLink) {
+      const databaseId = String(parsed.searchParams.get('db_id') || '').trim();
+      if (databaseId.length > 100) return null;
+
+      const consumableId = firstQueryValue(parsed.searchParams, CONSUMABLE_QUERY_KEYS);
+      if (consumableId) {
+        if (consumableId.length > 20 || !/^\d+$/.test(consumableId)) return null;
+        return { kind: 'consumable', itemId: consumableId, invNo: '', databaseId, tab: 'general' };
+      }
+
+      const invNo = firstQueryValue(parsed.searchParams, EQUIPMENT_QUERY_KEYS);
+      if (!invNo || invNo.length > 200) return null;
+
+      const requestedTab = String(parsed.searchParams.get('tab') || '').trim();
+      const tab = ['general', 'acts', 'history', 'warehouse1c', 'photos'].includes(requestedTab)
+        ? requestedTab
+        : 'general';
+      return { kind: 'equipment', itemId: '', invNo, databaseId, tab };
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
+  }
+
+  const invNoMatch = text.match(/^INV_NO:\s*(.+)$/m);
+  if (invNoMatch) {
+    const invNo = invNoMatch[1].trim();
+    if (!invNo || invNo === '-') return null;
+    return { kind: 'equipment', itemId: '', invNo, databaseId: '', tab: 'general' };
+  }
+
+  if (text.includes('\n')) return null;
+  return { kind: 'equipment', itemId: '', invNo: text, databaseId: '', tab: 'general' };
+};
+
+export const parseEquipmentQrLink = (value) => parseEquipmentLink(value);
+
+export const buildEquipmentQrText = (item) => {
+  const invNo = String(readFirst(item, ['INV_NO', 'inv_no'], '') || '').trim();
+  const serialNo = String(readFirst(item, ['SERIAL_NO', 'serial_no'], '') || '').trim();
+  const modelName = String(readFirst(item, ['MODEL_NAME', 'model_name'], '') || '').trim();
+  const partNo = String(readFirst(item, ['PART_NO', 'part_no'], '') || '').trim();
+
+  return [
+    `INV_NO: ${invNo || '-'}`,
+    `SERIAL_NO: ${serialNo || '-'}`,
+    `MODEL: ${modelName || '-'}`,
+    `PART_NO: ${partNo || '-'}`,
+  ].join('\n');
+};
+
+export const parseInvNoFromQrText = (qrText) => {
+  const text = String(qrText || '').trim();
+  if (!text) return null;
+
+  const link = parseEquipmentLink(text);
+  if (link) return link.invNo;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
+
+  const invNoMatch = text.match(/^INV_NO:\s*(.+)$/m);
+  if (invNoMatch) {
+    const invNo = invNoMatch[1].trim();
+    return invNo && invNo !== '-' ? invNo : null;
+  }
+
+  if (text.includes('\n')) return null;
+  return text;
+};
+
+export const buildEquipmentQrDataUrl = async (payload) => {
+  const text = String(payload || '').trim();
+  if (!text) return '';
+
+  const { default: QRCode } = await import('qrcode');
+  return QRCode.toDataURL(text, {
+    width: 360,
+    margin: 2,
+    errorCorrectionLevel: 'M',
+    color: {
+      dark: '#000000',
+      light: '#ffffff',
+    },
+  });
+};
+
+export const getQrScannerErrorMessage = (err) => {
+  const name = String(err?.name || '').trim();
+  const rawMessage = String(err?.message || err || '').trim();
+
+  if (
+    name === 'NotAllowedError'
+    || name === 'PermissionDeniedError'
+    || name === 'CameraPermissionDenied'
+    || name === 'CameraPermissionPluginMissing'
+    || /NotAllowedError|Permission denied|CameraPermissionDenied|CameraPermissionPluginMissing/i.test(rawMessage)
+  ) {
+    return 'Доступ к камере запрещён. Откройте настройки сайта (иконка настроек рядом с заголовком приложения) и разрешите камеру, затем нажмите «Разрешить доступ к камере».';
+  }
+  if (name === 'CameraPromptTimeout') {
+    return 'Камера не ответила на запрос разрешения. Проверьте, что доступ к камере не запрещён в настройках сайта, и нажмите «Разрешить доступ к камере».';
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+    return 'Камера не найдена.';
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError') {
+    return 'Камера уже используется другим приложением или вкладкой.';
+  }
+  if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') {
+    return 'Камера не поддерживает запрошенный режим. Попробуйте другую камеру.';
+  }
+  if (rawMessage) {
+    return `Не удалось запустить камеру: ${rawMessage}`;
+  }
+  return 'Не удалось запустить камеру.';
+};
+
+export const isIgnorableQrFrameError = (errorMessage = '') => {
+  const message = String(errorMessage || '');
+  return (
+    message.includes('No MultiFormat Readers')
+    || message.includes('NotFoundException')
+    || message.includes('QR code parse error')
+    || message.includes('undefined')
+  );
+};
+
+export const getQrboxDimensions = (viewfinderWidth, viewfinderHeight) => {
+  const minEdge = Math.min(Number(viewfinderWidth) || 0, Number(viewfinderHeight) || 0);
+  const fallbackSize = 220;
+  const size = minEdge > 0
+    ? Math.max(140, Math.min(260, Math.floor(minEdge * 0.72)))
+    : fallbackSize;
+  return { width: size, height: size };
+};
+
+export const stopQrScannerInstance = async (scanner) => {
+  if (!scanner) return;
+
+  try {
+    if (typeof scanner.stop === 'function') {
+      await scanner.stop();
+    }
+  } catch (err) {
+    const message = String(err?.message || err || '');
+    if (!/not running|not started|already stopped|Cannot stop/i.test(message)) {
+      console.warn('Ошибка при остановке сканера:', err);
+    }
+  }
+
+  try {
+    if (typeof scanner.clear === 'function') {
+      scanner.clear();
+    }
+  } catch (err) {
+    console.warn('Ошибка при очистке сканера:', err);
+  }
+};

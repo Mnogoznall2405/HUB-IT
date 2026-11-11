@@ -1,0 +1,1491 @@
+"""
+Web users service backed by JSON storage.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import os
+import secrets
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+import logging
+import time
+from threading import Lock
+
+import ldap3
+
+from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
+
+from backend.appdb.db import (
+    apply_postgres_local_timeouts,
+    app_session,
+    initialize_app_schema,
+    is_app_database_configured,
+    run_with_transient_lock_retry,
+)
+from backend.appdb.models import (
+    AppDepartment,
+    AppDepartmentMembership,
+    AppTaskDelegateUserLink,
+    AppUser,
+)
+from local_store import get_local_store
+from backend.config import config
+from backend.services.authorization_service import authorization_service
+from backend.services.my_files_service import USER_QUOTA_MAX_BYTES
+from backend.services.secret_crypto_service import SecretCryptoError, encrypt_secret
+from backend.services.session_auth_context_service import normalize_exchange_login
+
+_UNSET = object()
+SYSTEM_BOT_USERNAME_PREFIX = "__ai_bot__"
+
+
+class UserBootstrapConfigurationError(RuntimeError):
+    """Raised when production user storage is empty and needs explicit bootstrap."""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def build_default_ldap_mailbox_email(username: str | None) -> str:
+    normalized = str(username or "").strip().lower()
+    if not normalized:
+        return ""
+    if "\\" in normalized:
+        normalized = normalized.split("\\")[-1].strip()
+    if "/" in normalized and "@" not in normalized:
+        normalized = normalized.split("/")[-1].strip()
+    if "@" in normalized:
+        return normalized
+    mailbox_local_part = normalized.replace("_", ".")
+    support_email = str(os.getenv("EMAIL_ADDRESS", "") or "").strip().lower()
+    domain = support_email.split("@", 1)[1] if "@" in support_email else "zsgp.ru"
+    return f"{mailbox_local_part}@{domain}"
+
+
+class UserService:
+    """CRUD/authentication operations for web users."""
+
+    FILE_NAME = "web_users.json"
+    TASK_DELEGATES_FILE_NAME = "web_task_delegate_links.json"
+    PBKDF2_ITERATIONS = 120_000
+
+    def __init__(self, file_path: Optional[Path] = None, database_url: Optional[str] = None):
+        if file_path is None:
+            project_root = Path(__file__).resolve().parents[3]
+            file_path = project_root / "data" / self.FILE_NAME
+        self.file_path = file_path
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = str(database_url or "").strip() or None
+        self._use_app_database = bool(self._database_url) or is_app_database_configured()
+        self.store = None if self._use_app_database else get_local_store(data_dir=self.file_path.parent)
+        if self._use_app_database:
+            initialize_app_schema(self._database_url)
+        self._users_cache: tuple[float, list[dict]] | None = None
+        self._users_cache_lock = Lock()
+        self._users_cache_ttl_sec = 60.0
+        # Authentication resolves the same user on every protected request.
+        # Keep direct lookups cached; all in-process user mutations invalidate it.
+        self._identity_cache_lock = Lock()
+        self._identity_cache_ttl_sec = 300.0
+        self._identity_cache_by_id: dict[int, tuple[float, dict]] = {}
+        self._identity_cache_by_username: dict[str, tuple[float, dict]] = {}
+        self._delegate_links_cache: tuple[float, list[dict]] | None = None
+        self._delegate_links_cache_lock = Lock()
+        self._delegate_links_cache_ttl_sec = 60.0
+        self._ensure_defaults()
+
+    @staticmethod
+    def _normalize_username(username: str) -> str:
+        return str(username or "").strip().lower()
+
+    @staticmethod
+    def is_system_hidden_username(username: object) -> bool:
+        normalized = str(username or "").strip().lower()
+        return bool(normalized) and normalized.startswith(SYSTEM_BOT_USERNAME_PREFIX)
+
+    @classmethod
+    def is_system_hidden_user(cls, user: dict | None) -> bool:
+        if not isinstance(user, dict):
+            return False
+        return cls.is_system_hidden_username(user.get("username"))
+
+    def _invalidate_users_cache(self) -> None:
+        with self._users_cache_lock:
+            self._users_cache = None
+        with self._identity_cache_lock:
+            self._identity_cache_by_id.clear()
+            self._identity_cache_by_username.clear()
+
+    def _cache_identity(self, user: dict | None) -> None:
+        if not user:
+            return
+        user_id = int(user.get("id", 0) or 0)
+        username = self._normalize_username(user.get("username"))
+        if user_id <= 0 or not username:
+            return
+        cached = dict(user)
+        cached_at = time.monotonic()
+        with self._identity_cache_lock:
+            self._identity_cache_by_id[user_id] = (cached_at, cached)
+            self._identity_cache_by_username[username] = (cached_at, cached)
+
+    def _get_cached_identity_by_id(self, user_id: int) -> Optional[dict]:
+        now_mono = time.monotonic()
+        with self._identity_cache_lock:
+            cached = self._identity_cache_by_id.get(int(user_id))
+            if cached is None:
+                return None
+            cached_at, user = cached
+            if (now_mono - cached_at) >= self._identity_cache_ttl_sec:
+                self._identity_cache_by_id.pop(int(user_id), None)
+                self._identity_cache_by_username.pop(self._normalize_username(user.get("username")), None)
+                return None
+            return dict(user)
+
+    def _get_cached_identity_by_username(self, username: str) -> Optional[dict]:
+        normalized = self._normalize_username(username)
+        now_mono = time.monotonic()
+        with self._identity_cache_lock:
+            cached = self._identity_cache_by_username.get(normalized)
+            if cached is None:
+                return None
+            cached_at, user = cached
+            if (now_mono - cached_at) >= self._identity_cache_ttl_sec:
+                self._identity_cache_by_username.pop(normalized, None)
+                self._identity_cache_by_id.pop(int(user.get("id", 0) or 0), None)
+                return None
+            return dict(user)
+
+    def _load_users(self) -> list[dict]:
+        # Keep the lock through a cold reload. Auth dependencies call this path
+        # in bursts (several requests per browser), so releasing it before the
+        # query lets every waiting request repeat the same full-table load.
+        with self._users_cache_lock:
+            now_mono = time.monotonic()
+            cached = self._users_cache
+            if cached is not None and (now_mono - cached[0]) < self._users_cache_ttl_sec:
+                return list(cached[1])
+
+            if self._use_app_database:
+                def _load_from_app_db() -> list[dict]:
+                    with app_session(self._database_url) as session:
+                        if session.get_bind().dialect.name == "postgresql":
+                            session.execute(text("SET LOCAL statement_timeout = '5000ms'"))
+                        rows = session.scalars(select(AppUser).order_by(AppUser.id.asc())).all()
+                        return [self._row_to_user_dict(row) for row in rows]
+
+                users = run_with_transient_lock_retry(_load_from_app_db)
+            else:
+                data = self.store.load_json(self.FILE_NAME, default_content=[])
+                users = data if isinstance(data, list) else []
+
+            self._users_cache = (time.monotonic(), list(users))
+            for user in users:
+                self._cache_identity(user)
+            return list(users)
+
+    def _save_users(
+        self,
+        users: list[dict],
+        *,
+        only_ids: set[int] | None = None,
+        create_ids: set[int] | None = None,
+        deleted_ids: set[int] | None = None,
+    ) -> None:
+        """Persist user changes.
+
+        In the app database the list is a (possibly stale, cached for up to a minute) snapshot, so rows are
+        never inferred as deleted from its absence: only ``deleted_ids`` are removed. With ``only_ids`` just
+        those users are written, so a stale snapshot cannot revert other users' concurrent changes. A missing row
+        is inserted only if it is in ``create_ids`` (or when no ``only_ids`` restriction is given, e.g. bootstrap);
+        an update never resurrects a user deleted in the meantime.
+        """
+        if self._use_app_database:
+            wanted = None if only_ids is None else {int(item) for item in only_ids}
+            creatable = None if create_ids is None else {int(item) for item in create_ids}
+            removed = {int(item) for item in (deleted_ids or ())}
+            try:
+                with app_session(self._database_url) as session:
+                    query = select(AppUser)
+                    if wanted is not None:
+                        query = query.where(AppUser.id.in_(wanted | removed))
+                    existing_by_id = {int(row.id): row for row in session.scalars(query).all()}
+                    for payload in users:
+                        user_id = int(payload.get("id", 0))
+                        if user_id <= 0 or user_id in removed:
+                            continue
+                        if wanted is not None and user_id not in wanted:
+                            continue
+                        row = existing_by_id.get(user_id)
+                        if creatable is not None and user_id in creatable and row is not None:
+                            # The id was taken after this snapshot was read: never overwrite another user.
+                            raise IntegrityError("insert user", {"id": user_id}, ValueError("user id already exists"))
+                        if row is None:
+                            if wanted is not None and (creatable is None or user_id not in creatable):
+                                continue
+                            row = AppUser(id=user_id)
+                            session.add(row)
+                        self._apply_user_payload(row, payload)
+                    for user_id in removed:
+                        row = existing_by_id.get(user_id)
+                        if row is not None:
+                            session.delete(row)
+            except IntegrityError as exc:
+                self._invalidate_users_cache()
+                raise ValueError("Пользователь с таким идентификатором или логином уже существует; повторите операцию") from exc
+            self._invalidate_users_cache()
+            return
+        self.store.save_json(self.FILE_NAME, users)
+        self._invalidate_users_cache()
+
+    @staticmethod
+    def _validate_my_files_quota_bytes(value: object) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        try:
+            quota = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("my_files_quota_bytes must be an integer") from None
+        if quota <= 0 or quota > USER_QUOTA_MAX_BYTES:
+            raise ValueError("my_files_quota_bytes must be between 1 and 400 GiB")
+        return quota
+
+    @staticmethod
+    def _normalize_delegate_role_type(value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized not in {"assistant", "deputy"}:
+            return "assistant"
+        return normalized
+
+    def _load_task_delegate_links(self) -> list[dict]:
+        now_mono = time.monotonic()
+        with self._delegate_links_cache_lock:
+            cached = self._delegate_links_cache
+            if cached is not None and (now_mono - cached[0]) < self._delegate_links_cache_ttl_sec:
+                return list(cached[1])
+
+        if self._use_app_database:
+            def _load_links_from_app_db() -> list[dict]:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                    rows = session.scalars(
+                        select(AppTaskDelegateUserLink).order_by(
+                            AppTaskDelegateUserLink.owner_user_id.asc(),
+                            AppTaskDelegateUserLink.delegate_user_id.asc(),
+                        )
+                    ).all()
+                    return [
+                        {
+                            "id": int(row.id),
+                            "owner_user_id": int(row.owner_user_id),
+                            "delegate_user_id": int(row.delegate_user_id),
+                            "role_type": self._normalize_delegate_role_type(row.role_type),
+                            "is_active": bool(row.is_active),
+                            "created_at": row.created_at.isoformat() if row.created_at else None,
+                            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                        }
+                        for row in rows
+                    ]
+
+            links = run_with_transient_lock_retry(_load_links_from_app_db)
+        else:
+            data = self.store.load_json(self.TASK_DELEGATES_FILE_NAME, default_content=[])
+            links = data if isinstance(data, list) else []
+
+        with self._delegate_links_cache_lock:
+            self._delegate_links_cache = (time.monotonic(), list(links))
+        return list(links)
+
+    def _invalidate_delegate_links_cache(self) -> None:
+        with self._delegate_links_cache_lock:
+            self._delegate_links_cache = None
+
+    def _save_task_delegate_links(self, links: list[dict]) -> None:
+        self._invalidate_delegate_links_cache()
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                existing_rows = session.scalars(select(AppTaskDelegateUserLink)).all()
+                for row in existing_rows:
+                    session.delete(row)
+                for payload in links:
+                    owner_user_id = int(payload.get("owner_user_id", 0))
+                    delegate_user_id = int(payload.get("delegate_user_id", 0))
+                    if owner_user_id <= 0 or delegate_user_id <= 0:
+                        continue
+                    row = AppTaskDelegateUserLink(
+                        owner_user_id=owner_user_id,
+                        delegate_user_id=delegate_user_id,
+                    )
+                    row.role_type = self._normalize_delegate_role_type(payload.get("role_type"))
+                    row.is_active = bool(payload.get("is_active", True))
+                    created_at = str(payload.get("created_at") or "").strip()
+                    updated_at = str(payload.get("updated_at") or "").strip()
+                    row.created_at = datetime.fromisoformat(created_at) if created_at else datetime.now(timezone.utc)
+                    row.updated_at = datetime.fromisoformat(updated_at) if updated_at else datetime.now(timezone.utc)
+                    session.add(row)
+            return
+        self.store.save_json(self.TASK_DELEGATES_FILE_NAME, links)
+
+    def _replace_task_delegate_links_for_owner_in_app_db(self, owner_user_id: int, links: list[dict]) -> None:
+        owner_id = int(owner_user_id or 0)
+        if owner_id <= 0:
+            return
+        now = datetime.now(timezone.utc)
+        with app_session(self._database_url) as session:
+            existing_rows = session.scalars(
+                select(AppTaskDelegateUserLink).where(AppTaskDelegateUserLink.owner_user_id == owner_id)
+            ).all()
+            existing_by_delegate_id = {int(row.delegate_user_id): row for row in existing_rows}
+            incoming_delegate_ids: set[int] = set()
+            for payload in links:
+                delegate_user_id = int(payload.get("delegate_user_id", 0))
+                if delegate_user_id <= 0:
+                    continue
+                incoming_delegate_ids.add(delegate_user_id)
+                row = existing_by_delegate_id.get(delegate_user_id)
+                if row is None:
+                    row = AppTaskDelegateUserLink(
+                        owner_user_id=owner_id,
+                        delegate_user_id=delegate_user_id,
+                    )
+                    created_at = str(payload.get("created_at") or "").strip()
+                    row.created_at = datetime.fromisoformat(created_at) if created_at else now
+                    session.add(row)
+                row.role_type = self._normalize_delegate_role_type(payload.get("role_type"))
+                row.is_active = bool(payload.get("is_active", True))
+                updated_at = str(payload.get("updated_at") or "").strip()
+                row.updated_at = datetime.fromisoformat(updated_at) if updated_at else now
+            for delegate_user_id, row in existing_by_delegate_id.items():
+                if delegate_user_id not in incoming_delegate_ids:
+                    session.delete(row)
+        self._invalidate_delegate_links_cache()
+
+    def _delete_task_delegate_links_for_user_in_app_db(self, user_id: int) -> None:
+        normalized_user_id = int(user_id or 0)
+        if normalized_user_id <= 0:
+            return
+        with app_session(self._database_url) as session:
+            session.execute(
+                delete(AppTaskDelegateUserLink).where(
+                    (AppTaskDelegateUserLink.owner_user_id == normalized_user_id)
+                    | (AppTaskDelegateUserLink.delegate_user_id == normalized_user_id)
+                )
+            )
+        self._invalidate_delegate_links_cache()
+
+    @staticmethod
+    def _row_to_user_dict(row: AppUser) -> dict:
+        try:
+            custom_permissions = json.loads(str(row.custom_permissions_json or "[]"))
+        except Exception:
+            custom_permissions = []
+        if not isinstance(custom_permissions, list):
+            custom_permissions = []
+        return {
+            "id": int(row.id),
+            "username": str(row.username),
+            "email": row.email,
+            "full_name": row.full_name,
+            "department": row.department,
+            "job_title": row.job_title,
+            "is_active": bool(row.is_active),
+            "role": str(row.role or "viewer"),
+            "use_custom_permissions": bool(row.use_custom_permissions),
+            "custom_permissions": authorization_service.normalize_permissions(custom_permissions),
+            "auth_source": str(row.auth_source or "local"),
+            "telegram_id": row.telegram_id,
+            "assigned_database": row.assigned_database,
+            "mailbox_email": row.mailbox_email,
+            "mailbox_login": row.mailbox_login,
+            "mailbox_password_enc": str(row.mailbox_password_enc or ""),
+            "mail_signature_html": row.mail_signature_html,
+            "mail_updated_at": row.mail_updated_at.isoformat() if row.mail_updated_at else None,
+            "totp_secret_enc": str(row.totp_secret_enc or ""),
+            "is_2fa_enabled": bool(row.is_2fa_enabled),
+            "twofa_enabled_at": row.twofa_enabled_at.isoformat() if row.twofa_enabled_at else None,
+            "password_hash": str(row.password_hash or ""),
+            "password_salt": str(row.password_salt or ""),
+            "avatar_url": row.avatar_url or None,
+            "my_files_quota_bytes": row.my_files_quota_bytes,
+            "about_onboarding_completed_at": (
+                row.about_onboarding_completed_at.isoformat()
+                if row.about_onboarding_completed_at
+                else None
+            ),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    @staticmethod
+    def _apply_user_payload(row: AppUser, payload: dict) -> None:
+        custom_permissions = authorization_service.normalize_permissions(payload.get("custom_permissions"))
+        row.username = str(payload.get("username") or "")
+        row.email = payload.get("email")
+        row.full_name = payload.get("full_name")
+        row.department = (str(payload.get("department") or "").strip() or None)
+        row.job_title = (str(payload.get("job_title") or "").strip() or None)
+        row.is_active = bool(payload.get("is_active", True))
+        row.role = str(payload.get("role") or "viewer")
+        row.use_custom_permissions = bool(payload.get("use_custom_permissions", False))
+        row.custom_permissions_json = json.dumps(custom_permissions, ensure_ascii=False)
+        row.auth_source = str(payload.get("auth_source") or "local")
+        row.telegram_id = int(payload.get("telegram_id")) if payload.get("telegram_id") not in (None, "") else None
+        row.assigned_database = (str(payload.get("assigned_database") or "").strip() or None)
+        row.mailbox_email = (str(payload.get("mailbox_email") or "").strip() or None)
+        row.mailbox_login = (str(payload.get("mailbox_login") or "").strip() or None)
+        row.mailbox_password_enc = str(payload.get("mailbox_password_enc") or "")
+        row.mail_signature_html = (str(payload.get("mail_signature_html") or "").strip() or None)
+        row.totp_secret_enc = str(payload.get("totp_secret_enc") or "")
+        row.is_2fa_enabled = bool(payload.get("is_2fa_enabled", False))
+        twofa_enabled_at = str(payload.get("twofa_enabled_at") or "").strip()
+        row.twofa_enabled_at = datetime.fromisoformat(twofa_enabled_at) if twofa_enabled_at else None
+        row.password_hash = str(payload.get("password_hash") or "")
+        row.password_salt = str(payload.get("password_salt") or "")
+        about_onboarding_completed_at = str(payload.get("about_onboarding_completed_at") or "").strip()
+        row.about_onboarding_completed_at = (
+            datetime.fromisoformat(about_onboarding_completed_at)
+            if about_onboarding_completed_at
+            else None
+        )
+        my_files_quota = payload.get("my_files_quota_bytes")
+        row.my_files_quota_bytes = int(my_files_quota) if my_files_quota is not None and my_files_quota != "" else None
+        mail_updated_at = str(payload.get("mail_updated_at") or "").strip()
+        row.mail_updated_at = datetime.fromisoformat(mail_updated_at) if mail_updated_at else None
+        created_at = str(payload.get("created_at") or "").strip()
+        updated_at = str(payload.get("updated_at") or "").strip()
+        row.created_at = datetime.fromisoformat(created_at) if created_at else datetime.now(timezone.utc)
+        row.updated_at = datetime.fromisoformat(updated_at) if updated_at else datetime.now(timezone.utc)
+
+    @classmethod
+    def _hash_password(cls, password: str, salt_b64: Optional[str] = None) -> tuple[str, str]:
+        salt = base64.b64decode(salt_b64) if salt_b64 else secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, cls.PBKDF2_ITERATIONS)
+        return base64.b64encode(digest).decode("ascii"), base64.b64encode(salt).decode("ascii")
+
+    @classmethod
+    def _verify_password(cls, password: str, password_hash_b64: str, salt_b64: str) -> bool:
+        digest_b64, _ = cls._hash_password(password, salt_b64=salt_b64)
+        return hmac.compare_digest(digest_b64, password_hash_b64)
+
+    @staticmethod
+    def _sanitize_user(user: dict) -> dict:
+        custom_permissions = authorization_service.normalize_permissions(user.get("custom_permissions"))
+        use_custom_permissions = bool(user.get("use_custom_permissions", False))
+        mailbox_email = (str(user.get("mailbox_email") or "").strip() or None)
+        mailbox_login = (str(user.get("mailbox_login") or "").strip() or None)
+        mail_signature_html = (str(user.get("mail_signature_html") or "").strip() or None)
+        mailbox_password_enc = str(user.get("mailbox_password_enc") or "").strip()
+        auth_source = str(user.get("auth_source") or "local")
+        effective_mailbox_email = mailbox_email or (str(user.get("email") or "").strip() or None)
+        if auth_source == "ldap" and not effective_mailbox_email:
+            effective_mailbox_email = build_default_ldap_mailbox_email(user.get("username")) or None
+        if auth_source == "ldap":
+            mail_is_configured = bool(effective_mailbox_email)
+        else:
+            effective_mailbox_login = mailbox_login or effective_mailbox_email
+            mail_is_configured = bool(effective_mailbox_email and effective_mailbox_login and mailbox_password_enc)
+        return {
+            "id": int(user["id"]),
+            "username": str(user["username"]),
+            "email": user.get("email"),
+            "full_name": user.get("full_name"),
+            "department": (str(user.get("department") or "").strip() or None),
+            "job_title": (str(user.get("job_title") or "").strip() or None),
+            "is_active": bool(user.get("is_active", True)),
+            "role": str(user.get("role") or "viewer"),
+            "use_custom_permissions": use_custom_permissions,
+            "custom_permissions": custom_permissions,
+            "auth_source": auth_source,
+            "telegram_id": user.get("telegram_id"),
+            "assigned_database": (str(user.get("assigned_database") or "").strip() or None),
+            "mailbox_email": effective_mailbox_email,
+            "mailbox_login": mailbox_login,
+            "mail_signature_html": mail_signature_html,
+            "mail_is_configured": mail_is_configured,
+            "is_2fa_enabled": bool(user.get("is_2fa_enabled", False)),
+            "trusted_devices_count": int(user.get("trusted_devices_count", 0) or 0),
+            "discoverable_trusted_devices_count": int(user.get("discoverable_trusted_devices_count", 0) or 0),
+            "twofa_enforced": bool(config.security.twofa_enforced),
+            "avatar_url": (str(user.get("avatar_url") or "").strip() or None),
+            "my_files_quota_bytes": user.get("my_files_quota_bytes"),
+            "about_onboarding_completed_at": (
+                str(user.get("about_onboarding_completed_at") or "").strip() or None
+            ),
+        }
+
+    def to_public_user(self, user: dict) -> dict:
+        """Return safe user representation without password fields."""
+        return self._sanitize_user(user)
+
+    def list_task_delegates_bulk(self, owner_user_ids: list[int] | set[int] | tuple[int, ...]) -> list[dict]:
+        owner_ids: list[int] = []
+        seen_owner_ids: set[int] = set()
+        for raw_owner_id in list(owner_user_ids or []):
+            try:
+                owner_id = int(raw_owner_id or 0)
+            except (TypeError, ValueError):
+                continue
+            if owner_id <= 0 or owner_id in seen_owner_ids:
+                continue
+            seen_owner_ids.add(owner_id)
+            owner_ids.append(owner_id)
+        if not owner_ids:
+            return []
+
+        users_by_id = {int(item.get("id", 0)): item for item in self._load_users()}
+        rows_by_owner_id: dict[int, list[dict]] = {owner_id: [] for owner_id in owner_ids}
+        for item in self._load_task_delegate_links():
+            owner_id = int(item.get("owner_user_id", 0))
+            if owner_id not in rows_by_owner_id:
+                continue
+            delegate_user = users_by_id.get(int(item.get("delegate_user_id", 0)))
+            if not delegate_user:
+                continue
+            rows_by_owner_id[owner_id].append(
+                {
+                    "owner_user_id": owner_id,
+                    "delegate_user_id": int(delegate_user.get("id", 0)),
+                    "role_type": self._normalize_delegate_role_type(item.get("role_type")),
+                    "is_active": bool(item.get("is_active", True)),
+                    "delegate_username": str(delegate_user.get("username") or ""),
+                    "delegate_full_name": delegate_user.get("full_name"),
+                    "delegate_department": delegate_user.get("department"),
+                    "delegate_job_title": delegate_user.get("job_title"),
+                    "delegate_is_active": bool(delegate_user.get("is_active", True)),
+                }
+            )
+
+        for rows in rows_by_owner_id.values():
+            rows.sort(
+                key=lambda row: (
+                    not bool(row.get("is_active", True)),
+                    str(row.get("delegate_full_name") or row.get("delegate_username") or "").lower(),
+                )
+            )
+        return [
+            {
+                "owner_user_id": owner_id,
+                "task_delegate_links": rows_by_owner_id.get(owner_id, []),
+            }
+            for owner_id in owner_ids
+        ]
+
+    def list_task_delegates(self, owner_user_id: int) -> list[dict]:
+        owner_id = int(owner_user_id or 0)
+        if owner_id <= 0:
+            return []
+        grouped = self.list_task_delegates_bulk([owner_id])
+        if not grouped:
+            return []
+        return list(grouped[0].get("task_delegate_links") or [])
+
+    def replace_task_delegates(self, owner_user_id: int, items: list[dict] | None) -> list[dict]:
+        owner_id = int(owner_user_id or 0)
+        owner_user = self.get_by_id(owner_id)
+        if owner_id <= 0 or not owner_user:
+            raise ValueError("Owner user not found")
+
+        users_by_id = {int(item.get("id", 0)): item for item in self._load_users()}
+        now_iso = _utc_now_iso()
+        normalized_items: list[dict] = []
+        seen_delegate_ids: set[int] = set()
+        for raw in items if isinstance(items, list) else []:
+            delegate_user_id = int(raw.get("delegate_user_id") or 0)
+            if delegate_user_id <= 0 or delegate_user_id == owner_id or delegate_user_id in seen_delegate_ids:
+                continue
+            delegate_user = users_by_id.get(delegate_user_id)
+            if not delegate_user or not bool(delegate_user.get("is_active", True)):
+                continue
+            seen_delegate_ids.add(delegate_user_id)
+            normalized_items.append(
+                {
+                    "owner_user_id": owner_id,
+                    "delegate_user_id": delegate_user_id,
+                    "role_type": self._normalize_delegate_role_type(raw.get("role_type")),
+                    "is_active": bool(raw.get("is_active", True)),
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                }
+            )
+
+        if self._use_app_database:
+            self._replace_task_delegate_links_for_owner_in_app_db(owner_id, normalized_items)
+            return self.list_task_delegates(owner_id)
+
+        existing = self._load_task_delegate_links()
+        filtered = [item for item in existing if int(item.get("owner_user_id", 0)) != owner_id]
+        filtered.extend(normalized_items)
+        self._save_task_delegate_links(filtered)
+        return self.list_task_delegates(owner_id)
+
+    def get_delegate_user_ids(self, owner_user_id: int, *, active_only: bool = True) -> list[int]:
+        owner_id = int(owner_user_id or 0)
+        if owner_id <= 0:
+            return []
+        out: list[int] = []
+        users_by_id = {int(item.get("id", 0)): item for item in self._load_users()}
+        for item in self._load_task_delegate_links():
+            if int(item.get("owner_user_id", 0)) != owner_id:
+                continue
+            if active_only and not bool(item.get("is_active", True)):
+                continue
+            delegate_user_id = int(item.get("delegate_user_id", 0))
+            delegate_user = users_by_id.get(delegate_user_id)
+            if active_only and (not delegate_user or not bool(delegate_user.get("is_active", True))):
+                continue
+            if delegate_user_id > 0 and delegate_user_id not in out:
+                out.append(delegate_user_id)
+        return out
+
+    def get_delegate_owner_ids(self, delegate_user_id: int, *, active_only: bool = True) -> list[int]:
+        normalized_delegate_id = int(delegate_user_id or 0)
+        if normalized_delegate_id <= 0:
+            return []
+        users_by_id = {int(item.get("id", 0)): item for item in self._load_users()}
+        out: list[int] = []
+        for item in self._load_task_delegate_links():
+            if int(item.get("delegate_user_id", 0)) != normalized_delegate_id:
+                continue
+            if active_only and not bool(item.get("is_active", True)):
+                continue
+            owner_user_id = int(item.get("owner_user_id", 0))
+            owner_user = users_by_id.get(owner_user_id)
+            if active_only and (not owner_user or not bool(owner_user.get("is_active", True))):
+                continue
+            if owner_user_id > 0 and owner_user_id not in out:
+                out.append(owner_user_id)
+        return out
+
+    def _ensure_defaults(self) -> None:
+        try:
+            users = self._load_users()
+        except Exception as exc:
+            if config.app.is_production:
+                raise UserBootstrapConfigurationError(
+                    "Web user store cannot be loaded in production; verify APP_DATABASE_URL or bootstrap storage"
+                ) from exc
+            logging.getLogger(__name__).warning("Skipping user defaults bootstrap: %s", exc)
+            return
+        if users:
+            if not self._use_app_database:
+                completed_at = _utc_now_iso()
+                changed = False
+                for user in users:
+                    if "about_onboarding_completed_at" in user:
+                        continue
+                    user["about_onboarding_completed_at"] = completed_at
+                    changed = True
+                if changed:
+                    self._save_users(users)
+            return
+
+        if config.app.is_production:
+            raise UserBootstrapConfigurationError(
+                "Web user store is empty in production; create an administrator before starting the backend"
+            )
+
+        now = _utc_now_iso()
+        defaults = [
+            {
+                "id": 1,
+                "username": "admin",
+                "email": "admin@itinvent.ru",
+                "full_name": "Administrator",
+                "department": None,
+                "job_title": None,
+                "is_active": True,
+                "role": "admin",
+                "use_custom_permissions": False,
+                "custom_permissions": [],
+                "telegram_id": None,
+                "assigned_database": None,
+                "mailbox_email": None,
+                "mailbox_login": None,
+                "mailbox_password_enc": "",
+                "mail_signature_html": None,
+                "mail_updated_at": None,
+                "about_onboarding_completed_at": now,
+                "created_at": now,
+                "updated_at": now,
+            },
+            {
+                "id": 2,
+                "username": "user",
+                "email": "user@itinvent.ru",
+                "full_name": "Regular User",
+                "department": None,
+                "job_title": None,
+                "is_active": True,
+                "role": "operator",
+                "use_custom_permissions": False,
+                "custom_permissions": [],
+                "auth_source": "local",
+                "telegram_id": None,
+                "assigned_database": None,
+                "mailbox_email": None,
+                "mailbox_login": None,
+                "mailbox_password_enc": "",
+                "mail_signature_html": None,
+                "mail_updated_at": None,
+                "about_onboarding_completed_at": now,
+                "created_at": now,
+                "updated_at": now,
+            },
+        ]
+        # Для дефолтных админа и юзера прописываем local явно
+        defaults[0]["auth_source"] = "local"
+        for item, password in ((defaults[0], "admin"), (defaults[1], "user123")):
+            password_hash, salt = self._hash_password(password)
+            item["password_hash"] = password_hash
+            item["password_salt"] = salt
+        self._save_users(defaults)
+
+    def get_by_username(self, username: str) -> Optional[dict]:
+        normalized = self._normalize_username(username)
+        if not normalized:
+            return None
+        cached = self._get_cached_identity_by_username(normalized)
+        if cached is not None:
+            return cached
+        if self._use_app_database:
+            def _load_user_from_app_db() -> Optional[dict]:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=3000)
+                    row = session.scalars(
+                        select(AppUser).where(func.lower(AppUser.username) == normalized).limit(1)
+                    ).first()
+                    return self._row_to_user_dict(row) if row is not None else None
+
+            user = run_with_transient_lock_retry(_load_user_from_app_db)
+            self._cache_identity(user)
+            return dict(user) if user is not None else None
+        for user in self._load_users():
+            if self._normalize_username(user.get("username")) == normalized:
+                self._cache_identity(user)
+                return dict(user)
+        return None
+
+    def get_by_id(self, user_id: int) -> Optional[dict]:
+        normalized_user_id = int(user_id or 0)
+        if normalized_user_id <= 0:
+            return None
+        cached = self._get_cached_identity_by_id(normalized_user_id)
+        if cached is not None:
+            return cached
+        if self._use_app_database:
+            def _load_user_from_app_db() -> Optional[dict]:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=3000)
+                    row = session.get(AppUser, normalized_user_id)
+                    return self._row_to_user_dict(row) if row is not None else None
+
+            user = run_with_transient_lock_retry(_load_user_from_app_db)
+            self._cache_identity(user)
+            return dict(user) if user is not None else None
+        for user in self._load_users():
+            if int(user.get("id", 0)) == normalized_user_id:
+                self._cache_identity(user)
+                return dict(user)
+        return None
+
+    def authenticate(self, username: str, password: str) -> Optional[dict]:
+        user = self.get_by_username(username)
+        if not user:
+            return None
+        if not bool(user.get("is_active", True)):
+            return None
+            
+        auth_source = user.get("auth_source", "local")
+        
+        if auth_source == "ldap":
+            if not config.app.ldap_server:
+                logging.getLogger(__name__).error("LDAP authentication failed: LDAP_SERVER not configured")
+                return None
+            try:
+                domain = config.app.ldap_domain or "zsgp.corp"
+                user_principal = f"{username}@{domain}"
+                server = ldap3.Server(config.app.ldap_server, get_info=ldap3.ALL)
+                # Попытка bind (авторизации) с логином-паролем пользователя
+                conn = ldap3.Connection(server, user=user_principal, password=password, auto_bind=True)
+                conn.unbind()
+                return self._sanitize_user(user)
+            except ldap3.core.exceptions.LDAPInvalidCredentialsResult:
+                return None
+            except Exception as e:
+                logging.getLogger(__name__).error(f"LDAP authentication error for {username}: {str(e)}")
+                return None
+                
+        # Если auth_source == local (или отсутствует)
+        if not self._verify_password(
+            password=password,
+            password_hash_b64=str(user.get("password_hash") or ""),
+            salt_b64=str(user.get("password_salt") or ""),
+        ):
+            return None
+            
+        return self._sanitize_user(user)
+
+    def list_users(self) -> list[dict]:
+        users = self._load_users()
+        return [
+            self._sanitize_user(user)
+            for user in users
+            if not self.is_system_hidden_user(user)
+        ]
+
+    @staticmethod
+    def _escape_like(value: object) -> str:
+        return str(value or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def search_users(
+        self,
+        *,
+        query: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        status: str = "all",
+        role: str = "all",
+        exclude_user_id: int | None = None,
+        user_ids: list[int] | set[int] | tuple[int, ...] | None = None,
+    ) -> dict:
+        """Return a stable bounded user page without loading every app-db row."""
+        normalized_query = str(query or "").strip().lower()
+        normalized_limit = max(1, min(200, int(limit or 50)))
+        normalized_offset = max(0, int(offset or 0))
+        normalized_status = str(status or "all").strip().lower()
+        if normalized_status not in {"all", "active", "inactive"}:
+            normalized_status = "all"
+        normalized_role = str(role or "all").strip().lower()
+        if normalized_role not in {"all", "admin", "operator", "viewer"}:
+            normalized_role = "all"
+        normalized_exclude_user_id = int(exclude_user_id or 0)
+        filter_by_user_ids = user_ids is not None
+        normalized_user_ids: set[int] = set()
+        for raw_user_id in list(user_ids or []):
+            try:
+                user_id = int(raw_user_id or 0)
+            except (TypeError, ValueError):
+                continue
+            if user_id > 0:
+                normalized_user_ids.add(user_id)
+
+        def _matches(user: dict) -> bool:
+            if self.is_system_hidden_user(user):
+                return False
+            user_id = int(user.get("id", 0) or 0)
+            if normalized_exclude_user_id > 0 and user_id == normalized_exclude_user_id:
+                return False
+            if filter_by_user_ids and user_id not in normalized_user_ids:
+                return False
+            is_active = bool(user.get("is_active", True))
+            if normalized_status == "active" and not is_active:
+                return False
+            if normalized_status == "inactive" and is_active:
+                return False
+            if normalized_role != "all" and str(user.get("role") or "viewer").strip().lower() != normalized_role:
+                return False
+            if normalized_query:
+                haystack = " ".join(str(user.get(field) or "") for field in (
+                    "username",
+                    "full_name",
+                    "department",
+                    "job_title",
+                    "email",
+                    "mailbox_email",
+                )).lower()
+                if normalized_query not in haystack:
+                    return False
+            return True
+
+        if self._use_app_database:
+            def _search_in_app_db() -> dict:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                    conditions = [
+                        func.lower(AppUser.username).not_like(
+                            f"{self._escape_like(SYSTEM_BOT_USERNAME_PREFIX)}%",
+                            escape="\\",
+                        ),
+                    ]
+                    if normalized_exclude_user_id > 0:
+                        conditions.append(AppUser.id != normalized_exclude_user_id)
+                    if filter_by_user_ids:
+                        conditions.append(AppUser.id.in_(normalized_user_ids))
+                    if normalized_status == "active":
+                        conditions.append(AppUser.is_active.is_(True))
+                    elif normalized_status == "inactive":
+                        conditions.append(AppUser.is_active.is_(False))
+                    if normalized_role != "all":
+                        conditions.append(func.lower(AppUser.role) == normalized_role)
+                    if normalized_query:
+                        pattern = f"%{self._escape_like(normalized_query)}%"
+                        conditions.append(or_(*[
+                            func.lower(func.coalesce(column, "")).like(pattern, escape="\\")
+                            for column in (
+                                AppUser.username,
+                                AppUser.full_name,
+                                AppUser.department,
+                                AppUser.job_title,
+                                AppUser.email,
+                                AppUser.mailbox_email,
+                            )
+                        ]))
+
+                    total = int(session.scalar(
+                        select(func.count()).select_from(AppUser).where(*conditions)
+                    ) or 0)
+                    rows = session.scalars(
+                        select(AppUser)
+                        .where(*conditions)
+                        .order_by(
+                            func.lower(func.coalesce(AppUser.full_name, AppUser.username)).asc(),
+                            AppUser.id.asc(),
+                        )
+                        .offset(normalized_offset)
+                        .limit(normalized_limit)
+                    ).all()
+                    return {
+                        "items": [self._sanitize_user(self._row_to_user_dict(row)) for row in rows],
+                        "total": total,
+                    }
+
+            result = run_with_transient_lock_retry(_search_in_app_db)
+            items = list(result.get("items") or [])
+            total = int(result.get("total") or 0)
+        else:
+            matched = [user for user in self._load_users() if _matches(user)]
+            matched.sort(key=lambda user: (
+                str(user.get("full_name") or user.get("username") or "").lower(),
+                int(user.get("id", 0) or 0),
+            ))
+            total = len(matched)
+            items = [
+                self._sanitize_user(user)
+                for user in matched[normalized_offset:normalized_offset + normalized_limit]
+            ]
+
+        return {
+            "items": items,
+            "total": total,
+            "limit": normalized_limit,
+            "offset": normalized_offset,
+            "has_more": normalized_offset + len(items) < total,
+        }
+
+    def sync_ldap_users_bulk(self, payloads: list[dict]) -> list[dict] | None:
+        """Upsert LDAP users and their AD membership in one app-db transaction.
+
+        Returns ``None`` for the legacy JSON store so callers can retain the
+        existing compatibility path.
+        """
+        if not self._use_app_database:
+            return None
+
+        from backend.services.department_service import (
+            DEPARTMENT_MEMBER_ROLE,
+            department_id_from_name,
+            normalize_department_name,
+        )
+
+        now = datetime.now(timezone.utc)
+        results: list[dict] = []
+        with app_session(self._database_url) as session:
+            apply_postgres_local_timeouts(session, lock_timeout_ms=3000, statement_timeout_ms=10000)
+            existing_rows = session.scalars(select(AppUser)).all()
+            existing_by_username = {
+                self._normalize_username(row.username): row for row in existing_rows
+            }
+            next_id = max((int(row.id) for row in existing_rows), default=0) + 1
+            ad_memberships = session.scalars(
+                select(AppDepartmentMembership).where(
+                    AppDepartmentMembership.source == "ad",
+                    AppDepartmentMembership.role == DEPARTMENT_MEMBER_ROLE,
+                )
+            ).all()
+            memberships_by_user: dict[int, list[AppDepartmentMembership]] = {}
+            for membership in ad_memberships:
+                memberships_by_user.setdefault(int(membership.user_id), []).append(membership)
+            departments_by_id = {
+                str(department.id): department
+                for department in session.scalars(select(AppDepartment)).all()
+            }
+
+            for index, payload in enumerate(payloads, start=1):
+                username = self._normalize_username(payload.get("username"))
+                row = existing_by_username.get(username)
+                if row is not None and str(row.auth_source or "").strip().lower() != "ldap":
+                    results.append({"login": username, "action": "local_conflict", "user": self._sanitize_user(self._row_to_user_dict(row))})
+                    continue
+
+                created = row is None
+                if row is None:
+                    row = AppUser(
+                        id=next_id,
+                        username=username,
+                        role="viewer",
+                        auth_source="ldap",
+                        is_active=True,
+                        use_custom_permissions=False,
+                        custom_permissions_json="[]",
+                        mailbox_password_enc="",
+                        password_hash="",
+                        password_salt="",
+                        totp_secret_enc="",
+                        is_2fa_enabled=False,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    next_id += 1
+                    session.add(row)
+                    existing_by_username[username] = row
+
+                desired = {
+                    "email": str(payload.get("email") or "").strip() or None,
+                    "full_name": str(payload.get("full_name") or "").strip() or username,
+                    "department": normalize_department_name(payload.get("department")) or None,
+                    "job_title": str(payload.get("job_title") or "").strip() or None,
+                    "mailbox_email": str(payload.get("mailbox_email") or "").strip() or None,
+                    "mailbox_login": str(payload.get("mailbox_login") or "").strip() or None,
+                }
+                changed = created
+                for field, value in desired.items():
+                    if getattr(row, field) != value:
+                        setattr(row, field, value)
+                        changed = True
+                if str(row.auth_source or "") != "ldap":
+                    row.auth_source = "ldap"
+                    changed = True
+                if not bool(row.is_active):
+                    row.is_active = True
+                    changed = True
+                if changed:
+                    row.updated_at = now
+                    row.mail_updated_at = now
+
+                department_id = department_id_from_name(desired["department"])
+                current_memberships = memberships_by_user.setdefault(int(row.id), [])
+                membership_changed = False
+                for membership in current_memberships:
+                    should_be_active = bool(department_id and membership.department_id == department_id)
+                    if bool(membership.is_active) != should_be_active:
+                        membership.is_active = should_be_active
+                        membership.updated_at = now
+                        membership_changed = True
+                if department_id:
+                    department = departments_by_id.get(department_id)
+                    if department is None:
+                        department = AppDepartment(
+                            id=department_id,
+                            name=desired["department"],
+                            source="ad",
+                            is_active=True,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        session.add(department)
+                        departments_by_id[department_id] = department
+                    elif department.name != desired["department"] or not department.is_active:
+                        department.name = desired["department"]
+                        department.source = "ad"
+                        department.is_active = True
+                        department.updated_at = now
+                    current = next(
+                        (membership for membership in current_memberships if membership.department_id == department_id),
+                        None,
+                    )
+                    if current is None:
+                        current = AppDepartmentMembership(
+                            department_id=department_id,
+                            user_id=int(row.id),
+                            role=DEPARTMENT_MEMBER_ROLE,
+                            source="ad",
+                            is_active=True,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        session.add(current)
+                        current_memberships.append(current)
+                        membership_changed = True
+
+                action = "created" if created else ("updated" if changed or membership_changed else "unchanged")
+                session.flush()
+                results.append({
+                    "login": username,
+                    "action": action,
+                    "user": self._sanitize_user(self._row_to_user_dict(row)),
+                })
+                if index % 200 == 0:
+                    session.flush()
+
+        self._invalidate_users_cache()
+        return results
+
+    def deactivate_ldap_users_bulk(self, user_ids: list[int]) -> dict[int, dict] | None:
+        """Deactivate many LDAP users with one app-db transaction."""
+        if not self._use_app_database:
+            return None
+        normalized_ids = {int(user_id) for user_id in user_ids or [] if int(user_id or 0) > 0}
+        if not normalized_ids:
+            return {}
+        now = datetime.now(timezone.utc)
+        updated: dict[int, dict] = {}
+        with app_session(self._database_url) as session:
+            rows = session.scalars(select(AppUser).where(AppUser.id.in_(normalized_ids))).all()
+            for row in rows:
+                if str(row.auth_source or "").strip().lower() != "ldap" or not bool(row.is_active):
+                    continue
+                row.is_active = False
+                row.updated_at = now
+                session.flush()
+                updated[int(row.id)] = self._sanitize_user(self._row_to_user_dict(row))
+        self._invalidate_users_cache()
+        return updated
+
+    def get_users_map_by_ids(self, user_ids: list[int] | set[int] | tuple[int, ...]) -> dict[int, dict]:
+        normalized_user_ids = {
+            int(item)
+            for item in list(user_ids or [])
+            if int(item) > 0
+        }
+        if not normalized_user_ids:
+            return {}
+        cached_users: dict[int, dict] = {}
+        missing_user_ids: set[int] = set()
+        for user_id in normalized_user_ids:
+            cached = self._get_cached_identity_by_id(user_id)
+            if cached is None:
+                missing_user_ids.add(user_id)
+            else:
+                cached_users[user_id] = cached
+        if self._use_app_database:
+            def _load_map_users_from_app_db() -> list[dict]:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                    rows = session.scalars(
+                        select(AppUser).where(AppUser.id.in_(missing_user_ids)).order_by(AppUser.id.asc())
+                    ).all()
+                    return [self._row_to_user_dict(row) for row in rows]
+
+            loaded_users = run_with_transient_lock_retry(_load_map_users_from_app_db) if missing_user_ids else []
+            for user in loaded_users:
+                self._cache_identity(user)
+            users = [*cached_users.values(), *loaded_users]
+        else:
+            users = self._load_users()
+        result: dict[int, dict] = {}
+        for user in users:
+            user_id = int(user.get("id", 0) or 0)
+            if user_id <= 0 or user_id not in normalized_user_ids:
+                continue
+            result[user_id] = self._sanitize_user(user)
+        return result
+
+    def create_user(
+        self,
+        username: str,
+        password: Optional[str] = None,
+        role: str = "viewer",
+        auth_source: str = "local",
+        email: Optional[str] = None,
+        full_name: Optional[str] = None,
+        department: Optional[str] = None,
+        job_title: Optional[str] = None,
+        telegram_id: Optional[int] = None,
+        assigned_database: Optional[str] = None,
+        is_active: bool = True,
+        use_custom_permissions: bool = False,
+        custom_permissions: Optional[list[str]] = None,
+        mailbox_email: Optional[str] = None,
+        mailbox_login: Optional[str] = None,
+        mailbox_password: Optional[str] = None,
+        mail_signature_html: Optional[str] = None,
+        my_files_quota_bytes: Optional[int] = None,
+    ) -> dict:
+        normalized = self._normalize_username(username)
+        if not normalized:
+            raise ValueError("Username is required")
+        if self.get_by_username(normalized):
+            raise ValueError("User already exists")
+
+        users = self._load_users()
+        next_id = max([int(u.get("id", 0)) for u in users], default=0) + 1
+        if password:
+            password_hash, salt = self._hash_password(password)
+        else:
+            password_hash, salt = "", ""
+
+        mailbox_password_enc = ""
+        if str(mailbox_password or "").strip():
+            try:
+                mailbox_password_enc = encrypt_secret(str(mailbox_password or "").strip())
+            except SecretCryptoError as exc:
+                raise ValueError(str(exc)) from exc
+
+        now = _utc_now_iso()
+        created = {
+            "id": next_id,
+            "username": normalized,
+            "email": email,
+            "full_name": full_name,
+            "department": (str(department or "").strip() or None),
+            "job_title": (str(job_title or "").strip() or None),
+            "is_active": bool(is_active),
+            "role": role if role in {"admin", "operator", "viewer"} else "viewer",
+            "use_custom_permissions": bool(use_custom_permissions),
+            "custom_permissions": authorization_service.normalize_permissions(custom_permissions),
+            "auth_source": auth_source if auth_source in {"local", "ldap"} else "local",
+            "telegram_id": int(telegram_id) if telegram_id not in (None, "") else None,
+            "assigned_database": (str(assigned_database or "").strip() or None),
+            "mailbox_email": (str(mailbox_email or "").strip() or None),
+            "mailbox_login": (str(mailbox_login or "").strip() or None),
+            "mailbox_password_enc": mailbox_password_enc,
+            "mail_signature_html": (str(mail_signature_html or "").strip() or None),
+            "mail_updated_at": now if (mailbox_email or mailbox_login or mailbox_password_enc or mail_signature_html) else None,
+            "my_files_quota_bytes": self._validate_my_files_quota_bytes(my_files_quota_bytes),
+            "password_hash": password_hash,
+            "password_salt": salt,
+            "about_onboarding_completed_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        
+        users.append(created)
+        self._save_users(users, only_ids={next_id}, create_ids={next_id})
+        if created.get("telegram_id"):
+            from .user_db_selection_service import user_db_selection_service
+            user_db_selection_service.set_assigned_database(created.get("telegram_id"), created.get("assigned_database"))
+        return self._sanitize_user(created)
+
+    def complete_about_onboarding(self, user_id: int) -> Optional[dict]:
+        normalized_user_id = int(user_id or 0)
+        if normalized_user_id <= 0:
+            return None
+
+        if self._use_app_database:
+            def _complete_in_app_db() -> Optional[dict]:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=3000)
+                    row = session.get(AppUser, normalized_user_id)
+                    if row is None:
+                        return None
+                    if row.about_onboarding_completed_at is None:
+                        now = datetime.now(timezone.utc)
+                        row.about_onboarding_completed_at = now
+                        row.updated_at = now
+                        session.flush()
+                    return self._row_to_user_dict(row)
+
+            completed = run_with_transient_lock_retry(_complete_in_app_db)
+            self._invalidate_users_cache()
+            return self._sanitize_user(completed) if completed else None
+
+        users = self._load_users()
+        completed_user: Optional[dict] = None
+        changed = False
+        for user in users:
+            if int(user.get("id", 0) or 0) != normalized_user_id:
+                continue
+            if not str(user.get("about_onboarding_completed_at") or "").strip():
+                now = _utc_now_iso()
+                user["about_onboarding_completed_at"] = now
+                user["updated_at"] = now
+                changed = True
+            completed_user = user
+            break
+        if completed_user is None:
+            return None
+        if changed:
+            self._save_users(users, only_ids={normalized_user_id})
+        return self._sanitize_user(completed_user)
+
+    def update_user(
+        self,
+        user_id: int,
+        *,
+        email: Optional[str] | object = _UNSET,
+        full_name: Optional[str] | object = _UNSET,
+        department: Optional[str] | object = _UNSET,
+        job_title: Optional[str] | object = _UNSET,
+        role: Optional[str] | object = _UNSET,
+        auth_source: Optional[str] | object = _UNSET,
+        telegram_id: Optional[int] | object = _UNSET,
+        assigned_database: Optional[str] | object = _UNSET,
+        is_active: Optional[bool] | object = _UNSET,
+        password: Optional[str] | object = _UNSET,
+        use_custom_permissions: Optional[bool] | object = _UNSET,
+        custom_permissions: Optional[list[str]] | object = _UNSET,
+        mailbox_email: Optional[str] | object = _UNSET,
+        mailbox_login: Optional[str] | object = _UNSET,
+        mailbox_password: Optional[str] | object = _UNSET,
+        mail_signature_html: Optional[str] | object = _UNSET,
+        totp_secret_enc: Optional[str] | object = _UNSET,
+        is_2fa_enabled: Optional[bool] | object = _UNSET,
+        twofa_enabled_at: Optional[str] | object = _UNSET,
+        my_files_quota_bytes: Optional[int] | object = _UNSET,
+    ) -> Optional[dict]:
+        users = self._load_users()
+        updated_user: Optional[dict] = None
+        previous_telegram_id: Optional[int] = None
+        for user in users:
+            if int(user.get("id", 0)) != int(user_id):
+                continue
+            previous_telegram_id = user.get("telegram_id")
+            if email is not _UNSET:
+                user["email"] = email
+            if full_name is not _UNSET:
+                user["full_name"] = full_name
+            if department is not _UNSET:
+                user["department"] = (str(department or "").strip() or None)
+            if job_title is not _UNSET:
+                user["job_title"] = (str(job_title or "").strip() or None)
+            if role is not _UNSET and role in {"admin", "operator", "viewer"}:
+                user["role"] = role
+            if auth_source is not _UNSET and auth_source in {"local", "ldap"}:
+                user["auth_source"] = auth_source
+            if telegram_id is not _UNSET:
+                user["telegram_id"] = int(telegram_id) if telegram_id not in (None, "") else None
+            if assigned_database is not _UNSET:
+                user["assigned_database"] = (str(assigned_database or "").strip() or None)
+            if is_active is not _UNSET:
+                user["is_active"] = bool(is_active)
+            if use_custom_permissions is not _UNSET:
+                user["use_custom_permissions"] = bool(use_custom_permissions)
+            if custom_permissions is not _UNSET:
+                user["custom_permissions"] = authorization_service.normalize_permissions(custom_permissions)
+            mail_fields_changed = False
+            if mailbox_email is not _UNSET:
+                user["mailbox_email"] = (str(mailbox_email or "").strip() or None)
+                mail_fields_changed = True
+            if mailbox_login is not _UNSET:
+                user["mailbox_login"] = (str(mailbox_login or "").strip() or None)
+                mail_fields_changed = True
+            if mail_signature_html is not _UNSET:
+                user["mail_signature_html"] = (str(mail_signature_html or "").strip() or None)
+                mail_fields_changed = True
+            if mailbox_password is not _UNSET:
+                clear_password = not str(mailbox_password or "").strip()
+                if clear_password:
+                    user["mailbox_password_enc"] = ""
+                else:
+                    try:
+                        user["mailbox_password_enc"] = encrypt_secret(str(mailbox_password or "").strip())
+                    except SecretCryptoError as exc:
+                        raise ValueError(str(exc)) from exc
+                mail_fields_changed = True
+            if mail_fields_changed:
+                user["mail_updated_at"] = _utc_now_iso()
+            if password is not _UNSET and password:
+                password_hash, salt = self._hash_password(password)
+                user["password_hash"] = password_hash
+                user["password_salt"] = salt
+            elif auth_source == "ldap":
+                user["password_hash"] = ""
+                user["password_salt"] = ""
+            if totp_secret_enc is not _UNSET:
+                user["totp_secret_enc"] = str(totp_secret_enc or "")
+            if is_2fa_enabled is not _UNSET:
+                user["is_2fa_enabled"] = bool(is_2fa_enabled)
+            if twofa_enabled_at is not _UNSET:
+                user["twofa_enabled_at"] = (str(twofa_enabled_at or "").strip() or None)
+            if my_files_quota_bytes is not _UNSET:
+                user["my_files_quota_bytes"] = self._validate_my_files_quota_bytes(my_files_quota_bytes)
+            user["updated_at"] = _utc_now_iso()
+            updated_user = user
+            break
+        if not updated_user:
+            return None
+        self._save_users(users, only_ids={int(user_id)})
+        from .user_db_selection_service import user_db_selection_service
+        if previous_telegram_id not in (None, 0):
+            if int(previous_telegram_id) != int(updated_user.get("telegram_id") or 0):
+                user_db_selection_service.set_assigned_database(previous_telegram_id, None)
+        if updated_user.get("telegram_id") is not None:
+            user_db_selection_service.set_assigned_database(
+                updated_user.get("telegram_id"),
+                updated_user.get("assigned_database"),
+            )
+        return self._sanitize_user(updated_user)
+
+    def update_avatar_url(self, user_id: int, avatar_url: Optional[str]) -> Optional[dict]:
+        normalized_user_id = int(user_id or 0)
+        if normalized_user_id <= 0:
+            return None
+        if self._use_app_database:
+            def _update_in_db() -> Optional[dict]:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=3000)
+                    row = session.get(AppUser, normalized_user_id)
+                    if row is None:
+                        return None
+                    row.avatar_url = (str(avatar_url or "").strip() or None)
+                    session.flush()
+                    return self._row_to_user_dict(row)
+            updated_user = run_with_transient_lock_retry(_update_in_db)
+            self._invalidate_users_cache()
+            return updated_user
+        users = self._load_users()
+        updated_user: Optional[dict] = None
+        for user in users:
+            if int(user.get("id", 0)) == normalized_user_id:
+                user["avatar_url"] = (str(avatar_url or "").strip() or None)
+                updated_user = user
+                break
+        if not updated_user:
+            return None
+        self._save_users(users)
+        return self._sanitize_user(updated_user)
+
+    def change_password(self, user_id: int, old_password: str, new_password: str) -> bool:
+        users = self._load_users()
+        changed = False
+        for user in users:
+            if int(user.get("id", 0)) != int(user_id):
+                continue
+            if not self._verify_password(
+                password=old_password,
+                password_hash_b64=str(user.get("password_hash") or ""),
+                salt_b64=str(user.get("password_salt") or ""),
+            ):
+                return False
+            password_hash, salt = self._hash_password(new_password)
+            user["password_hash"] = password_hash
+            user["password_salt"] = salt
+            user["updated_at"] = _utc_now_iso()
+            changed = True
+            break
+        if changed:
+            self._save_users(users, only_ids={int(user_id)})
+        return changed
+
+    def delete_user(self, user_id: int) -> bool:
+        if user_id == 1:
+            return False
+            
+        users = self._load_users()
+        initial_count = len(users)
+        users = [u for u in users if int(u.get("id", 0)) != user_id]
+        
+        if len(users) < initial_count:
+            self._save_users(users, only_ids=set(), deleted_ids={int(user_id)})
+            if self._use_app_database:
+                self._delete_task_delegate_links_for_user_in_app_db(user_id)
+                return True
+            links = [
+                item
+                for item in self._load_task_delegate_links()
+                if int(item.get("owner_user_id", 0)) != int(user_id)
+                and int(item.get("delegate_user_id", 0)) != int(user_id)
+            ]
+            self._save_task_delegate_links(links)
+            return True
+        return False
+
+
+user_service = UserService()

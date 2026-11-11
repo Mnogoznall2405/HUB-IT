@@ -1,0 +1,15 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <PropertyGroup>
+    <AgentMsiVersion>1.4.18</AgentMsiVersion>
+    <OutputName>HUB-IT-Agent-CSharp-$(AgentMsiVersion)-win64</OutputName>
+    <OutputType>Package</OutputType>
+    <DefineConstants>AgentMsiVersion=$(AgentMsiVersion)</DefineConstants>
+    <InstallerPlatform>x64</InstallerPlatform>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+</Project>

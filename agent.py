@@ -1,0 +1,4300 @@
+﻿import argparse
+import ctypes
+import getpass
+import hashlib
+import json
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+from pathlib import Path
+import platform
+import random
+import re
+import socket
+import stat as stat_module
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from urllib.parse import urlparse, urlunparse
+
+import psutil
+import requests
+
+from agent_version import AGENT_VERSION
+import agent_installer
+
+try:
+    import wmi  # type: ignore
+except Exception:
+    wmi = None
+
+try:
+    import winreg  # type: ignore
+except Exception:
+    winreg = None
+
+
+DEFAULT_SERVER_URL = "https://hubit.zsgp.ru/api/v1/inventory"
+DEFAULT_FULL_SNAPSHOT_INTERVAL = 3600
+DEFAULT_HEARTBEAT_INTERVAL = 600
+DEFAULT_HEARTBEAT_JITTER = 120
+DEFAULT_OUTLOOK_REFRESH_SEC = 300
+DEFAULT_RUN_CMD_TIMEOUT_SEC = 20
+DEFAULT_INVENTORY_QUEUE_BATCH = 5
+DEFAULT_INVENTORY_QUEUE_MAX_ITEMS = 1000
+DEFAULT_INVENTORY_QUEUE_MAX_AGE_DAYS = 14
+DEFAULT_INVENTORY_QUEUE_MAX_TOTAL_MB = 256
+DEFAULT_REBOOT_REMINDER_DAYS = 7
+DEFAULT_REBOOT_REMINDER_INTERVAL_HOURS = 24
+DEFAULT_REBOOT_REMINDER_TIMEOUT_SEC = 120
+DEFAULT_REBOOT_REMINDER_WORK_START_HOUR = 9
+DEFAULT_REBOOT_REMINDER_WORK_END_HOUR = 18
+DEFAULT_OUTLOOK_SCAN_STATE_MAX_AGE_SEC = 30 * 24 * 60 * 60
+USER_PROFILE_SIZES_CACHE_TTL_SEC = 24 * 60 * 60
+USER_PROFILE_SIZES_CACHE_SCHEMA_VERSION = 2
+USER_PROFILE_SIZE_PROFILE_BUDGET_SEC = 45
+USER_PROFILE_SIZE_TOTAL_BUDGET_SEC = 180
+USER_PROFILE_SIZE_MAX_ENTRIES_PER_PROFILE = 500_000
+USER_PROFILE_SIZE_MAX_PROFILES = 50
+OUTLOOK_WARNING_THRESHOLD_BYTES = 45 * (1024 ** 3)
+OUTLOOK_CRITICAL_THRESHOLD_BYTES = 49 * (1024 ** 3)
+TIMEOUT = 10
+STATUS_WRITE_INTERVAL_SEC = 30
+DEFAULT_OUTLOOK_SEARCH_ROOTS = ("D:\\",)
+OUTLOOK_EXTRA_ROOT_SKIP_DIR_NAMES = {
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "$recycle.bin",
+    "system volume information",
+    "recovery",
+    "perflogs",
+}
+OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
+
+TEMP_DIR = Path(os.environ.get("TEMP", r"C:\Windows\Temp"))
+LOG_FILE_NAME = "itinvent_agent.log"
+AGENT_LOG_KEEP_TOTAL_FILES = 3
+INVENTORY_QUEUE_DIR_NAME = "inventory"
+INVENTORY_QUEUE_PENDING_DIR_NAME = "pending"
+INVENTORY_QUEUE_DEAD_DIR_NAME = "dead_letter"
+REBOOT_REMINDER_STATE_FILE_NAME = "reboot_reminder_state.json"
+AGENT_STATUS_FILE_NAME = "agent_status.json"
+OUTLOOK_SCAN_STATE_FILE_NAME = "outlook_scan_state.json"
+USER_PROFILE_SIZES_CACHE_FILE_NAME = "user_profile_sizes_cache.json"
+SOFTWARE_INVENTORY_STATE_FILE_NAME = "software_inventory_state.json"
+ENV_FILE_NAME = ".env"
+LOW_DISK_FREE_GB = 5.0
+DEFAULT_SOFTWARE_INVENTORY_INTERVAL_HOURS = 168
+SOFTWARE_INVENTORY_FILTER_VERSION = 1
+AGENT_TASK_NAME = "HUB-IT Agent"
+PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT"
+LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
+PROGRAM_DATA_AGENT_ROOT = PROGRAM_DATA_ROOT / "Agent"
+PROGRAM_DATA_DIR = PROGRAM_DATA_AGENT_ROOT / "Logs"
+PROGRAM_DATA_SPOOL_DIR = PROGRAM_DATA_AGENT_ROOT / "Spool"
+PROGRAM_DATA_SCAN_AGENT_ROOT = PROGRAM_DATA_ROOT / "ScanAgent"
+REBOOT_REMINDER_MESSAGE = (
+    "Компьютер работает более 7 дней без перезагрузки. "
+    "Рекомендуется перезагрузить его для стабильной работы и установки обновлений."
+)
+
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+SERVICE_USERS = {
+    "system",
+    "nt authority\\system",
+    "local service",
+    "nt authority\\local service",
+    "network service",
+    "nt authority\\network service",
+}
+
+USER_PROFILE_SIZE_IGNORED_PROFILE_DIRS = {
+    "all users",
+    "default",
+    "default user",
+    "defaultappspool",
+    "public",
+}
+
+USER_PROFILE_SIZE_SKIP_DIR_NAMES = {
+    "$recycle.bin",
+    ".cache",
+    ".git",
+    ".svn",
+    "cache",
+    "caches",
+    "crashdumps",
+    "logs",
+    "node_modules",
+    "temp",
+    "tmp",
+}
+USER_PROFILE_SIZE_PARTIAL_REASONS = {"timeout", "entry_limit", "total_timeout"}
+
+ACTIVE_SESSION_MARKERS = {"active", "активно"}
+WINDOWS_SID_RE = re.compile(r"^S-\d-\d+(?:-\d+)+$")
+OUTLOOK_EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+OUTLOOK_ARCHIVE_NAME_RE = re.compile(r"^(archive|архив)(?:$|[ _.\-].*)", re.IGNORECASE)
+
+VIRTUAL_BUS_MARKERS = (
+    "virtual",
+    "file backed",
+    "storage spaces",
+    "spaces",
+    "ram",
+)
+
+VIRTUAL_MODEL_MARKERS = (
+    "virtual",
+    "vmware",
+    "vbox",
+    "virtualbox",
+    "hyper-v",
+    "qemu",
+    "msft virtual",
+)
+
+LOGICAL_MOUNT_SKIP_MARKERS = (
+    "\\windows\\containers\\",
+    "\\programdata\\docker\\",
+    "\\docker\\windowsfilter\\",
+    "\\containerstorage\\",
+)
+
+GENERIC_DISK_NAME_VALUES = {
+    "disk",
+    "disk drive",
+    "fixed hard disk media",
+    "physical disk",
+    "physicaldisk",
+    "scsi disk device",
+    "unknown",
+}
+
+GENERIC_DISK_NAME_SUFFIXES = (
+    "scsi disk device",
+    "ata device",
+)
+
+BUS_TYPE_LABELS = {
+    "nvme": "NVMe",
+    "sata": "SATA",
+    "sas": "SAS",
+    "scsi": "SCSI",
+    "raid": "RAID",
+    "usb": "USB",
+    "sd": "SD",
+}
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    server_url: str
+    api_key: str
+    full_snapshot_interval: int
+    heartbeat_interval: int
+    heartbeat_jitter_sec: int
+    outlook_refresh_sec: int = DEFAULT_OUTLOOK_REFRESH_SEC
+    run_cmd_timeout_sec: int = DEFAULT_RUN_CMD_TIMEOUT_SEC
+    inventory_queue_batch: int = DEFAULT_INVENTORY_QUEUE_BATCH
+    inventory_queue_max_items: int = DEFAULT_INVENTORY_QUEUE_MAX_ITEMS
+    inventory_queue_max_age_days: int = DEFAULT_INVENTORY_QUEUE_MAX_AGE_DAYS
+    inventory_queue_max_total_mb: int = DEFAULT_INVENTORY_QUEUE_MAX_TOTAL_MB
+    reboot_reminder_enabled: bool = True
+    reboot_reminder_days: int = DEFAULT_REBOOT_REMINDER_DAYS
+    reboot_reminder_interval_hours: int = DEFAULT_REBOOT_REMINDER_INTERVAL_HOURS
+    reboot_reminder_timeout_sec: int = DEFAULT_REBOOT_REMINDER_TIMEOUT_SEC
+    reboot_reminder_work_start_hour: int = DEFAULT_REBOOT_REMINDER_WORK_START_HOUR
+    reboot_reminder_work_end_hour: int = DEFAULT_REBOOT_REMINDER_WORK_END_HOUR
+    reboot_reminder_weekdays_only: bool = True
+    ca_bundle: Optional[str] = None
+    timeout: int = TIMEOUT
+
+
+INVENTORY_QUEUE_PENDING_PATH: Optional[Path] = None
+INVENTORY_QUEUE_DEAD_PATH: Optional[Path] = None
+REBOOT_REMINDER_STATE_PATH: Optional[Path] = None
+AGENT_STATUS_PATH: Optional[Path] = None
+OUTLOOK_SCAN_STATE_PATH: Optional[Path] = None
+USER_PROFILE_SIZES_CACHE_PATH: Optional[Path] = None
+LOADED_ENV_FILES: List[str] = []
+RUN_CMD_TIMEOUT_SEC = DEFAULT_RUN_CMD_TIMEOUT_SEC
+OUTLOOK_SCAN_CACHE_TTL_SEC = DEFAULT_OUTLOOK_REFRESH_SEC
+OUTLOOK_RUNTIME_CACHE: Dict[str, Any] = {"user": "", "collected_at": 0, "payload": None}
+
+
+def _is_truthy(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text not in {"0", "false", "no", "off"}
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "on"}
+
+
+def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
+    temp_path.write_text(content, encoding=encoding)
+    os.replace(str(temp_path), str(path))
+
+
+def _strip_env_value(raw: str) -> str:
+    value = str(raw or "").strip()
+    if len(value) >= 2 and ((value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'"))):
+        return value[1:-1]
+    return value
+
+
+def _read_text_with_fallback(path: Path) -> str:
+    for enc in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            return path.read_text(encoding=enc)
+        except Exception:
+            continue
+    return ""
+
+
+def _prune_agent_log_files(log_path: Path, keep_total_files: int = AGENT_LOG_KEEP_TOTAL_FILES) -> Tuple[int, List[str]]:
+    keep_rotated = max(0, int(keep_total_files) - 1)
+    if not log_path.parent.exists():
+        return 0, []
+
+    rotated: List[Tuple[int, Path]] = []
+    prefix = f"{log_path.name}."
+    for path in log_path.parent.iterdir():
+        if not path.is_file() or not path.name.startswith(prefix):
+            continue
+        suffix = path.name[len(prefix):]
+        if not suffix.isdigit():
+            continue
+        rotated.append((int(suffix), path))
+
+    rotated.sort(key=lambda item: item[0])
+    removed = 0
+    errors: List[str] = []
+    for _, path in rotated[keep_rotated:]:
+        try:
+            path.unlink()
+            removed += 1
+        except Exception as exc:
+            errors.append(f"{path.name}: {exc}")
+    return removed, errors
+
+
+def _load_env_file(path: Path) -> int:
+    if not path.exists() or not path.is_file():
+        return 0
+    text = _read_text_with_fallback(path)
+    if not text:
+        return 0
+
+    loaded = 0
+    for line in text.splitlines():
+        row = line.strip()
+        if not row or row.startswith("#"):
+            continue
+        if row.lower().startswith("export "):
+            row = row[7:].strip()
+        if "=" not in row:
+            continue
+        key, value = row.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        if key in os.environ:
+            continue
+        os.environ[key] = _strip_env_value(value)
+        loaded += 1
+    return loaded
+
+
+def _candidate_env_paths() -> List[Path]:
+    candidates: List[Path] = []
+    explicit_path = str(os.getenv("ITINV_AGENT_ENV_FILE", "")).strip()
+    if explicit_path:
+        candidates.append(Path(explicit_path))
+
+    candidates.append(PROGRAM_DATA_AGENT_ROOT / ENV_FILE_NAME)
+    candidates.append(LEGACY_PROGRAM_DATA_ROOT / "Agent" / ENV_FILE_NAME)
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / ENV_FILE_NAME)
+    else:
+        current_file = Path(__file__).resolve()
+        candidates.append(current_file.parent / ENV_FILE_NAME)
+        for parent in list(current_file.parents)[:4]:
+            candidates.append(parent / ENV_FILE_NAME)
+    candidates.append(Path.cwd() / ENV_FILE_NAME)
+    candidates.append(PROGRAM_DATA_ROOT / ENV_FILE_NAME)
+    candidates.append(LEGACY_PROGRAM_DATA_ROOT / ENV_FILE_NAME)
+    return candidates
+
+
+def bootstrap_env_from_files() -> List[str]:
+    loaded: List[str] = []
+    seen = set()
+    for raw_path in _candidate_env_paths():
+        try:
+            resolved = raw_path.expanduser().resolve()
+        except Exception:
+            resolved = raw_path
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        count = _load_env_file(resolved)
+        if count > 0:
+            loaded.append(f"{resolved} ({count})")
+    return loaded
+
+
+def _run_fs_egress_sidecar() -> None:
+    if not _is_truthy(os.getenv("ITINV_FS_EGRESS_ENABLED", "1"), default=True):
+        logging.info("fs_egress sidecar is disabled by ITINV_FS_EGRESS_ENABLED")
+        return
+    try:
+        from fs_egress import run_fs_egress_forever
+
+        logging.info("Starting fs_egress sidecar")
+        run_fs_egress_forever()
+    except Exception as exc:
+        logging.exception("fs_egress sidecar crashed: %s", exc)
+
+
+def lower_process_priority() -> bool:
+    """Run below normal priority so inventory collection never competes with the user's work.
+
+    PowerShell/WMI helper processes spawned afterwards inherit BELOW_NORMAL from this process.
+    Set ITINV_AGENT_LOW_PRIORITY=0 to opt out.
+    """
+    if os.name != "nt" or not _is_truthy(os.getenv("ITINV_AGENT_LOW_PRIORITY", "1"), default=True):
+        return False
+    try:
+        psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        return True
+    except Exception as exc:
+        logging.debug("Lowering process priority failed: %s", exc)
+        return False
+
+
+def _telegram_probe_process_running() -> bool:
+    names = {"itinventtelegramprobe", "itinventtelegramprobe.exe"}
+    for proc in psutil.process_iter(["name"]):
+        try:
+            name = str(proc.info.get("name") or "").strip().lower()
+            if name in names:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+_SIDECAR_THREADS: Dict[str, threading.Thread] = {}
+
+
+def collect_sidecar_health() -> Dict[str, Any]:
+    """What the server cannot see otherwise: are the optional modules alive and is their spool draining."""
+    health: Dict[str, Any] = {}
+    fs_enabled = _is_truthy(os.getenv("ITINV_FS_EGRESS_ENABLED", "1"), default=True)
+    fs_thread = _SIDECAR_THREADS.get("fs_egress")
+    fs_info: Dict[str, Any] = {"enabled": fs_enabled, "alive": bool(fs_thread is not None and fs_thread.is_alive())}
+    if fs_enabled:
+        try:
+            from fs_egress.spool import read_spool_stats, spool_root_from_env
+
+            fs_info.update(read_spool_stats(spool_root_from_env()))
+        except Exception as exc:
+            fs_info["stats_error"] = sanitize_text(exc)[:120]
+    health["fs_egress"] = fs_info
+    scan_thread = _SIDECAR_THREADS.get("scan")
+    health["scan"] = {"alive": bool(scan_thread is not None and scan_thread.is_alive())}
+    probe_enabled = _is_truthy(os.getenv("ITINV_TELEGRAM_PROBE_ENABLED", "1"), default=True)
+    health["telegram_probe"] = {
+        "enabled": probe_enabled,
+        "running": _telegram_probe_process_running() if probe_enabled else False,
+    }
+    return health
+
+
+def _ensure_telegram_probe_task(now_ts: int, *, last_check_ts: int) -> int:
+    """Best-effort: if probe enabled and not running, kick scheduled task."""
+    if not _is_truthy(os.getenv("ITINV_TELEGRAM_PROBE_ENABLED", "1"), default=True):
+        return last_check_ts
+    # Don't thrash Task Scheduler.
+    if last_check_ts and (now_ts - last_check_ts) < 120:
+        return last_check_ts
+    if _telegram_probe_process_running():
+        return now_ts
+    task_name = str(
+        os.getenv("ITINV_TELEGRAM_PROBE_TASK_NAME", "") or agent_installer.TELEGRAM_PROBE_TASK_NAME
+    ).strip() or agent_installer.TELEGRAM_PROBE_TASK_NAME
+    try:
+        result = subprocess.run(
+            ["schtasks.exe", "/Run", "/TN", task_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=CREATE_NO_WINDOW,
+            check=False,
+        )
+        if result.returncode == 0:
+            logging.info("Started Telegram probe task '%s' (was not running)", task_name)
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            logging.debug(
+                "Telegram probe task '%s' start skipped/failed: %s",
+                task_name,
+                detail,
+            )
+    except Exception as exc:
+        logging.debug("Telegram probe task watchdog error: %s", exc)
+    return now_ts
+
+
+def _run_browser_history_sidecar() -> None:
+    if not _is_truthy(os.getenv("ITINV_BROWSER_HISTORY_ENABLED", "0"), default=False):
+        return
+    try:
+        from browser_probe.history_agent import run_browser_history_forever
+
+        logging.info("Starting browser history sidecar")
+        run_browser_history_forever()
+    except Exception as exc:
+        logging.exception("Browser history sidecar crashed: %s", exc)
+
+
+def _run_scan_sidecar(run_once: bool = False) -> None:
+    if not _is_truthy(os.getenv("ITINV_SCAN_ENABLED", "1"), default=True):
+        logging.info("Scan sidecar is disabled by ITINV_SCAN_ENABLED")
+        return
+    try:
+        from scan_agent import agent as scan_agent_module  # type: ignore
+    except Exception as exc:
+        logging.warning("Scan sidecar import failed: %s", exc)
+        return
+
+    try:
+        # Sidecar inherits inventory process env; still bootstrap scan-specific keys
+        # and attach dedicated ScanAgent log file (otherwise only itinvent_agent.log exists).
+        try:
+            loaded = scan_agent_module.bootstrap_env_from_files()
+            if loaded:
+                logging.info("Scan sidecar loaded .env sources: %s", "; ".join(loaded))
+        except Exception as exc:
+            logging.debug("Scan sidecar env bootstrap skipped: %s", exc)
+        try:
+            scan_agent_module.setup_logging()
+            logging.info("Scan sidecar log file: %s", scan_agent_module.LOG_PATH)
+        except Exception as exc:
+            logging.warning("Scan sidecar logging setup failed: %s", exc)
+
+        scan_config = scan_agent_module._read_env()
+        if not str(scan_config.get("api_key") or "").strip():
+            logging.error("Scan sidecar is disabled: SCAN_AGENT_API_KEY is not configured")
+            return
+        scan_agent = scan_agent_module.ScanAgent(scan_config)
+        if run_once:
+            stats = scan_agent.run_scan_once()
+            logging.info("Scan sidecar one-shot done: %s", stats)
+            return
+        scan_agent.run_forever()
+    except Exception as exc:
+        logging.exception("Scan sidecar crashed: %s", exc)
+
+
+def setup_logging() -> Path:
+    """Configure file logging in ProgramData with fallback to TEMP."""
+    global INVENTORY_QUEUE_PENDING_PATH, INVENTORY_QUEUE_DEAD_PATH, REBOOT_REMINDER_STATE_PATH, AGENT_STATUS_PATH, OUTLOOK_SCAN_STATE_PATH, USER_PROFILE_SIZES_CACHE_PATH
+    log_dir = PROGRAM_DATA_DIR
+    spool_dir = PROGRAM_DATA_SPOOL_DIR
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        spool_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        log_dir = TEMP_DIR
+        spool_dir = TEMP_DIR
+        log_dir.mkdir(parents=True, exist_ok=True)
+        spool_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = log_dir / LOG_FILE_NAME
+    removed_logs, prune_errors = _prune_agent_log_files(log_path)
+    handlers: List[logging.Handler] = [
+        RotatingFileHandler(
+            log_path,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=AGENT_LOG_KEEP_TOTAL_FILES - 1,
+            encoding="utf-8",
+        )
+    ]
+
+    if sys.stdout and hasattr(sys.stdout, "isatty"):
+        handlers.append(logging.StreamHandler(sys.stdout))
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers,
+    )
+    if removed_logs:
+        logging.info(
+            "Agent log cleanup completed: removed=%s keep_total_files=%s log_dir=%s",
+            removed_logs,
+            AGENT_LOG_KEEP_TOTAL_FILES,
+            log_dir,
+        )
+    for error in prune_errors:
+        logging.warning("Agent log cleanup delete failed: %s", error)
+    queue_root = spool_dir / INVENTORY_QUEUE_DIR_NAME
+    INVENTORY_QUEUE_PENDING_PATH = queue_root / INVENTORY_QUEUE_PENDING_DIR_NAME
+    INVENTORY_QUEUE_DEAD_PATH = queue_root / INVENTORY_QUEUE_DEAD_DIR_NAME
+    INVENTORY_QUEUE_PENDING_PATH.mkdir(parents=True, exist_ok=True)
+    INVENTORY_QUEUE_DEAD_PATH.mkdir(parents=True, exist_ok=True)
+    REBOOT_REMINDER_STATE_PATH = log_dir / REBOOT_REMINDER_STATE_FILE_NAME
+    AGENT_STATUS_PATH = log_dir / AGENT_STATUS_FILE_NAME
+    OUTLOOK_SCAN_STATE_PATH = log_dir / OUTLOOK_SCAN_STATE_FILE_NAME
+    USER_PROFILE_SIZES_CACHE_PATH = log_dir / USER_PROFILE_SIZES_CACHE_FILE_NAME
+    return log_path
+
+
+def get_inventory_queue_pending_dir() -> Path:
+    if INVENTORY_QUEUE_PENDING_PATH is not None:
+        return INVENTORY_QUEUE_PENDING_PATH
+    return TEMP_DIR / INVENTORY_QUEUE_DIR_NAME / INVENTORY_QUEUE_PENDING_DIR_NAME
+
+
+def get_inventory_queue_dead_dir() -> Path:
+    if INVENTORY_QUEUE_DEAD_PATH is not None:
+        return INVENTORY_QUEUE_DEAD_PATH
+    return TEMP_DIR / INVENTORY_QUEUE_DIR_NAME / INVENTORY_QUEUE_DEAD_DIR_NAME
+
+
+def get_reboot_reminder_state_path() -> Path:
+    if REBOOT_REMINDER_STATE_PATH is not None:
+        return REBOOT_REMINDER_STATE_PATH
+    return TEMP_DIR / REBOOT_REMINDER_STATE_FILE_NAME
+
+
+def get_agent_status_path() -> Path:
+    if AGENT_STATUS_PATH is not None:
+        return AGENT_STATUS_PATH
+    return TEMP_DIR / AGENT_STATUS_FILE_NAME
+
+
+def get_outlook_scan_state_path() -> Path:
+    if OUTLOOK_SCAN_STATE_PATH is not None:
+        return OUTLOOK_SCAN_STATE_PATH
+    return TEMP_DIR / OUTLOOK_SCAN_STATE_FILE_NAME
+
+
+def get_user_profile_sizes_cache_path() -> Path:
+    if USER_PROFILE_SIZES_CACHE_PATH is not None:
+        return USER_PROFILE_SIZES_CACHE_PATH
+    return TEMP_DIR / USER_PROFILE_SIZES_CACHE_FILE_NAME
+
+
+def _empty_outlook_payload() -> Dict[str, Any]:
+    return {
+        "collected_at": int(time.time()),
+        "source": "none",
+        "confidence": "low",
+        "status": "unknown",
+        "threshold_warning_bytes": OUTLOOK_WARNING_THRESHOLD_BYTES,
+        "threshold_critical_bytes": OUTLOOK_CRITICAL_THRESHOLD_BYTES,
+        "active_store": None,
+        "active_stores": [],
+        "active_candidate": None,
+        "archives": [],
+        "largest_file_path": "",
+        "largest_file_size_bytes": 0,
+        "total_outlook_size_bytes": 0,
+    }
+
+
+def _normalize_outlook_store(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    path = sanitize_text(value.get("path"))
+    if not path:
+        return None
+    store_type = sanitize_text(value.get("type")).lower()
+    if not store_type:
+        suffix = Path(path).suffix.lower()
+        if suffix == ".ost":
+            store_type = "ost"
+        elif suffix == ".pst":
+            store_type = "pst"
+        else:
+            store_type = suffix.lstrip(".")
+    return {
+        "path": path,
+        "type": store_type,
+        "size_bytes": max(0, _to_int(value.get("size_bytes"), 0)),
+        "last_modified_at": max(0, _to_int(value.get("last_modified_at"), 0)),
+    }
+
+
+def _normalize_outlook_payload(raw: Any) -> Dict[str, Any]:
+    base = _empty_outlook_payload()
+    if not isinstance(raw, dict):
+        return base
+
+    warning_threshold = max(1, _to_int(raw.get("threshold_warning_bytes"), OUTLOOK_WARNING_THRESHOLD_BYTES))
+    critical_threshold = max(warning_threshold, _to_int(raw.get("threshold_critical_bytes"), OUTLOOK_CRITICAL_THRESHOLD_BYTES))
+    source = sanitize_text(raw.get("source")).lower()
+    if source not in {"system_scan", "none"}:
+        source = "none"
+    confidence = sanitize_text(raw.get("confidence")).lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "low"
+
+    active_store = _normalize_outlook_store(raw.get("active_store"))
+    active_stores: List[Dict[str, Any]] = []
+    active_stores_raw = raw.get("active_stores")
+    if isinstance(active_stores_raw, list):
+        for row in active_stores_raw:
+            normalized = _normalize_outlook_store(row)
+            if normalized:
+                active_stores.append(normalized)
+    if active_store:
+        active_stores.insert(0, active_store)
+    if active_stores:
+        deduped_active_stores: List[Dict[str, Any]] = []
+        seen_active_paths = set()
+        for row in active_stores:
+            row_path = sanitize_text(row.get("path")).lower()
+            if not row_path or row_path in seen_active_paths:
+                continue
+            seen_active_paths.add(row_path)
+            deduped_active_stores.append(row)
+        active_stores = deduped_active_stores
+    active_store = active_stores[0] if active_stores else None
+    active_candidate = _normalize_outlook_store(raw.get("active_candidate"))
+
+    archives: List[Dict[str, Any]] = []
+    archives_raw = raw.get("archives")
+    if isinstance(archives_raw, list):
+        for row in archives_raw:
+            normalized = _normalize_outlook_store(row)
+            if normalized:
+                archives.append(normalized)
+
+    largest_path = sanitize_text(raw.get("largest_file_path"))
+    largest_size = max(0, _to_int(raw.get("largest_file_size_bytes"), 0))
+    total_size = max(0, _to_int(raw.get("total_outlook_size_bytes"), 0))
+    collected_at = max(0, _to_int(raw.get("collected_at"), int(time.time())))
+
+    active_size = 0
+    if active_stores:
+        active_size = max(max(0, _to_int(row.get("size_bytes"), 0)) for row in active_stores)
+    if active_size > 0 and confidence in {"high", "medium"}:
+        if active_size >= critical_threshold:
+            status = "critical"
+        elif active_size >= warning_threshold:
+            status = "warning"
+        else:
+            status = "ok"
+    else:
+        status = "unknown"
+
+    return {
+        "collected_at": collected_at,
+        "source": source,
+        "confidence": confidence,
+        "status": status,
+        "threshold_warning_bytes": warning_threshold,
+        "threshold_critical_bytes": critical_threshold,
+        "active_store": active_store,
+        "active_stores": active_stores,
+        "active_candidate": active_candidate,
+        "archives": archives,
+        "largest_file_path": largest_path,
+        "largest_file_size_bytes": largest_size,
+        "total_outlook_size_bytes": total_size,
+    }
+
+
+def _build_outlook_store_row(path: Path, seen_paths: set, profile_name: str = "") -> Optional[Dict[str, Any]]:
+    try:
+        if not path.is_file():
+            return None
+        full_path = str(path.resolve())
+        dedupe_key = full_path.lower()
+        if dedupe_key in seen_paths:
+            return None
+        stat = path.stat()
+    except Exception:
+        return None
+    seen_paths.add(dedupe_key)
+    suffix = path.suffix.lower()
+    return {
+        "path": full_path,
+        "type": "ost" if suffix == ".ost" else "pst" if suffix == ".pst" else suffix.lstrip("."),
+        "size_bytes": max(0, int(stat.st_size)),
+        "last_modified_at": max(0, int(stat.st_mtime)),
+        "profile_name": sanitize_text(profile_name),
+    }
+
+
+def _scan_outlook_profile_paths(
+    users_root: Optional[Path] = None,
+    seen_paths: Optional[set] = None,
+) -> List[Dict[str, Any]]:
+    root = users_root or Path(r"C:\Users")
+    patterns = (
+        Path(r"AppData\Local\Microsoft\Outlook\*.ost"),
+        Path(r"AppData\Roaming\Microsoft\Outlook\*.pst"),
+        Path(r"Documents\Outlook Files\*.pst"),
+        Path(r"Documents\Файлы Outlook\*.pst"),
+        Path(r"Документы\Outlook Files\*.pst"),
+        Path(r"Документы\Файлы Outlook\*.pst"),
+    )
+    stores: List[Dict[str, Any]] = []
+    dedupe_paths = seen_paths if seen_paths is not None else set()
+
+    if not root.exists():
+        return stores
+
+    for user_dir in root.iterdir():
+        if not user_dir.is_dir():
+            continue
+        profile_name = sanitize_text(user_dir.name)
+        if not profile_name:
+            continue
+        for pattern in patterns:
+            for path in user_dir.glob(str(pattern)):
+                store = _build_outlook_store_row(path, dedupe_paths, profile_name=profile_name)
+                if store:
+                    stores.append(store)
+    return stores
+
+
+def _get_outlook_search_roots() -> List[Path]:
+    raw_value = os.getenv("ITINV_OUTLOOK_SEARCH_ROOTS")
+    if raw_value is None:
+        candidates = list(DEFAULT_OUTLOOK_SEARCH_ROOTS)
+    else:
+        stripped = str(raw_value).strip()
+        if not stripped:
+            return []
+        candidates = [item.strip() for item in stripped.split(";") if item.strip()]
+
+    roots: List[Path] = []
+    seen = set()
+    for candidate in candidates:
+        expanded = os.path.expandvars(str(candidate).strip())
+        if not expanded:
+            continue
+        try:
+            path = Path(expanded).expanduser()
+        except Exception:
+            continue
+        if not path.is_absolute():
+            logging.warning("Ignoring non-absolute ITINV_OUTLOOK_SEARCH_ROOTS path: %s", candidate)
+            continue
+        dedupe_key = sanitize_text(str(path)).lower()
+        if not dedupe_key or dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        roots.append(path)
+    return roots
+
+
+def _scan_outlook_extra_roots(
+    roots: Optional[Sequence[Path]] = None,
+    seen_paths: Optional[set] = None,
+) -> Tuple[List[Dict[str, Any]], int]:
+    effective_roots = list(roots) if roots is not None else _get_outlook_search_roots()
+    stores: List[Dict[str, Any]] = []
+    errors = 0
+    dedupe_paths = seen_paths if seen_paths is not None else set()
+
+    for raw_root in effective_roots:
+        try:
+            root = raw_root.expanduser()
+        except Exception:
+            errors += 1
+            continue
+        if not root.exists() or not root.is_dir():
+            continue
+
+        stack: List[Path] = [root]
+        while stack:
+            current = stack.pop()
+            if current != root and sanitize_text(current.name).lower() in OUTLOOK_EXTRA_ROOT_SKIP_DIR_NAMES:
+                continue
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        try:
+                            entry_name = sanitize_text(entry.name)
+                            if not entry_name:
+                                continue
+                            entry_name_lower = entry_name.lower()
+                            if entry.is_dir(follow_symlinks=False):
+                                if entry_name_lower in OUTLOOK_EXTRA_ROOT_SKIP_DIR_NAMES:
+                                    continue
+                                stack.append(Path(entry.path))
+                                continue
+                            if not entry.is_file(follow_symlinks=False):
+                                continue
+                            if Path(entry_name).suffix.lower() not in OUTLOOK_STORE_SUFFIXES:
+                                continue
+                            store = _build_outlook_store_row(Path(entry.path), dedupe_paths)
+                            if store:
+                                stores.append(store)
+                        except (OSError, PermissionError):
+                            errors += 1
+                        except Exception:
+                            errors += 1
+            except (OSError, PermissionError):
+                errors += 1
+            except Exception:
+                errors += 1
+
+    return stores, errors
+
+
+def _collect_outlook_via_fallback_scan() -> List[Dict[str, Any]]:
+    seen_paths: set = set()
+    profile_stores = _scan_outlook_profile_paths(seen_paths=seen_paths)
+    extra_roots = _get_outlook_search_roots()
+    if extra_roots:
+        logging.info("Outlook extra search roots: %s", "; ".join(str(path) for path in extra_roots))
+    else:
+        logging.info("Outlook extra search roots are disabled")
+    extra_stores, extra_errors = _scan_outlook_extra_roots(roots=extra_roots, seen_paths=seen_paths)
+    stores = profile_stores + extra_stores
+    logging.info(
+        "Outlook fallback scan summary: profile_paths=%s extra_roots=%s errors=%s total=%s",
+        len(profile_stores),
+        len(extra_stores),
+        extra_errors,
+        len(stores),
+    )
+    return stores
+
+
+def _load_outlook_scan_state() -> Dict[str, Any]:
+    path = get_outlook_scan_state_path()
+    empty_state: Dict[str, Any] = {"updated_at": 0, "files": {}}
+    try:
+        if not path.exists():
+            return empty_state
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return empty_state
+        rows = raw.get("files")
+        if not isinstance(rows, dict):
+            return empty_state
+        files: Dict[str, Dict[str, int]] = {}
+        for key, value in rows.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            path_key = key.strip().lower()
+            if not path_key:
+                continue
+            files[path_key] = {
+                "size_bytes": max(0, _to_int(value.get("size_bytes"), 0)),
+                "last_seen_at": max(0, _to_int(value.get("last_seen_at"), 0)),
+            }
+        return {"updated_at": max(0, _to_int(raw.get("updated_at"), 0)), "files": files}
+    except Exception:
+        return empty_state
+
+
+def _save_outlook_scan_state(state: Dict[str, Any]) -> None:
+    path = get_outlook_scan_state_path()
+    try:
+        _atomic_write_text(path, json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logging.warning("Failed to save Outlook scan state (%s): %s", path, exc)
+
+
+def _select_outlook_stores_for_user(stores: List[Dict[str, Any]], user_login: str) -> List[Dict[str, Any]]:
+    if not stores:
+        return []
+    login = extract_login_name(user_login).lower()
+    if not login:
+        return list(stores)
+    marker = f"\\users\\{login}\\"
+    selected = [row for row in stores if marker in sanitize_text(row.get("path")).lower()]
+    if selected:
+        return selected
+    selected = [row for row in stores if sanitize_text(row.get("profile_name")).lower() == login]
+    if selected:
+        return selected
+    return list(stores)
+
+
+def _normalize_outlook_profile_email(value: Any) -> str:
+    email = sanitize_text(value).lower()
+    if not email:
+        return ""
+    while email.endswith(".pst") or email.endswith(".ost"):
+        email = email[:-4].rstrip(".")
+    if not OUTLOOK_EMAIL_RE.fullmatch(email):
+        return ""
+    return email
+
+
+def _extract_outlook_emails_from_text(value: Any) -> List[str]:
+    text = sanitize_text(value)
+    if not text:
+        return []
+    emails: List[str] = []
+    for match in OUTLOOK_EMAIL_RE.findall(text):
+        normalized = _normalize_outlook_profile_email(match)
+        if normalized:
+            emails.append(normalized)
+    return _dedupe_preserve_order(emails)
+
+
+def _decode_registry_value_texts(value: Any) -> List[str]:
+    texts: List[str] = []
+    if isinstance(value, str):
+        texts.append(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, str):
+                texts.append(item)
+    elif isinstance(value, (bytes, bytearray)):
+        data = bytes(value)
+        for encoding in ("utf-16-le", "utf-16-be", "utf-8", "cp1251", "cp866", "ascii"):
+            try:
+                decoded = data.decode(encoding, errors="ignore")
+            except Exception:
+                continue
+            cleaned = sanitize_text(decoded.replace("\x00", " "))
+            if cleaned:
+                texts.append(cleaned)
+    elif value is not None:
+        texts.append(str(value))
+    return _dedupe_preserve_order([sanitize_text(item.replace("\x00", " ")) for item in texts if sanitize_text(item)])
+
+
+def _enumerate_hku_user_sids() -> List[str]:
+    if winreg is None:
+        return []
+    sids: List[str] = []
+    index = 0
+    while True:
+        try:
+            sid = sanitize_text(winreg.EnumKey(winreg.HKEY_USERS, index))
+        except OSError:
+            break
+        index += 1
+        if not sid or sid.endswith("_Classes"):
+            continue
+        if WINDOWS_SID_RE.fullmatch(sid):
+            sids.append(sid)
+    return sids
+
+
+def _resolve_user_sid_candidates(user_login: str) -> List[str]:
+    if winreg is None:
+        return []
+    login = extract_login_name(user_login).lower()
+    if not login:
+        return []
+
+    matched: List[str] = []
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList",
+        ) as profile_list_key:
+            index = 0
+            while True:
+                try:
+                    sid = sanitize_text(winreg.EnumKey(profile_list_key, index))
+                except OSError:
+                    break
+                index += 1
+                if not sid or sid.endswith("_Classes") or not WINDOWS_SID_RE.fullmatch(sid):
+                    continue
+                try:
+                    with winreg.OpenKey(profile_list_key, sid) as sid_key:
+                        profile_path_raw, _ = winreg.QueryValueEx(sid_key, "ProfileImagePath")
+                except Exception:
+                    continue
+                profile_path = os.path.expandvars(sanitize_text(profile_path_raw))
+                profile_name = sanitize_text(Path(profile_path).name).lower()
+                if profile_name == login:
+                    matched.append(sid)
+    except Exception:
+        pass
+
+    loaded_sids = set(_enumerate_hku_user_sids())
+    matched_loaded = [sid for sid in matched if sid in loaded_sids]
+    if matched_loaded:
+        return _dedupe_preserve_order(matched_loaded)
+    if matched:
+        return _dedupe_preserve_order(matched)
+    if len(loaded_sids) == 1:
+        return sorted(loaded_sids)
+    return []
+
+
+def _collect_emails_from_registry_tree(root: Any, base_path: str) -> List[str]:
+    if winreg is None:
+        return []
+    emails: List[str] = []
+    stack: List[str] = [base_path]
+    while stack:
+        path = stack.pop()
+        try:
+            with winreg.OpenKey(root, path) as key:
+                value_index = 0
+                while True:
+                    try:
+                        _, raw_value, _ = winreg.EnumValue(key, value_index)
+                    except OSError:
+                        break
+                    value_index += 1
+                    for text_value in _decode_registry_value_texts(raw_value):
+                        emails.extend(_extract_outlook_emails_from_text(text_value))
+
+                subkey_index = 0
+                while True:
+                    try:
+                        subkey_name = sanitize_text(winreg.EnumKey(key, subkey_index))
+                    except OSError:
+                        break
+                    subkey_index += 1
+                    if subkey_name:
+                        stack.append(f"{path}\\{subkey_name}")
+        except Exception:
+            continue
+    return _dedupe_preserve_order(emails)
+
+
+def _collect_outlook_profile_emails(user_login: str) -> List[str]:
+    if winreg is None:
+        return []
+    sid_candidates = _resolve_user_sid_candidates(user_login)
+    if not sid_candidates:
+        return []
+
+    profile_paths = (
+        r"Software\Microsoft\Office\16.0\Outlook\Profiles",
+        r"Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles",
+    )
+    for sid in sid_candidates:
+        sid_emails: List[str] = []
+        for rel_path in profile_paths:
+            sid_emails.extend(_collect_emails_from_registry_tree(winreg.HKEY_USERS, f"{sid}\\{rel_path}"))
+        sid_emails = _dedupe_preserve_order(sid_emails)
+        if sid_emails:
+            logging.debug("Outlook profile emails loaded: user=%s sid=%s count=%s", user_login, sid, len(sid_emails))
+            return sid_emails
+    return []
+
+
+def _outlook_store_stem(path: Any) -> str:
+    raw_path = sanitize_text(path)
+    if not raw_path:
+        return ""
+    try:
+        return sanitize_text(Path(raw_path).stem).lower()
+    except Exception:
+        return sanitize_text(raw_path).lower()
+
+
+def _is_forced_archive_store(path: Any) -> bool:
+    stem = _outlook_store_stem(path)
+    if not stem:
+        return False
+    return bool(OUTLOOK_ARCHIVE_NAME_RE.fullmatch(stem))
+
+
+def _build_outlook_match_tokens(user_login: str, profile_emails: List[str]) -> Dict[str, set]:
+    email_full: set = set()
+    email_local: set = set()
+    login_variants: set = set()
+
+    login = extract_login_name(user_login).lower()
+    if login:
+        login_variants.add(login)
+        login_variants.add(login.replace("_", "."))
+        login_variants.add(login.replace(".", "_"))
+
+    for raw_email in profile_emails:
+        email = _normalize_outlook_profile_email(raw_email)
+        if not email:
+            continue
+        email_full.add(email)
+        local_part = email.split("@", 1)[0]
+        if local_part:
+            email_local.add(local_part)
+            email_local.add(local_part.replace("_", "."))
+            email_local.add(local_part.replace(".", "_"))
+
+    return {
+        "email_full": {item for item in email_full if item},
+        "email_local": {item for item in email_local if item},
+        "login": {item for item in login_variants if item},
+    }
+
+
+def _outlook_store_match_priority(path: Any, match_tokens: Dict[str, set]) -> int:
+    stem = _outlook_store_stem(path)
+    if not stem:
+        return 0
+    if stem in match_tokens.get("email_full", set()):
+        return 3
+    if stem in match_tokens.get("email_local", set()):
+        return 2
+    if stem in match_tokens.get("login", set()):
+        return 1
+    return 0
+
+
+def _outlook_store_name_class(path: Any, user_login: str, profile_emails: Optional[List[str]] = None) -> str:
+    if _is_forced_archive_store(path):
+        return "archive"
+    match_tokens = _build_outlook_match_tokens(user_login, profile_emails or [])
+    if _outlook_store_match_priority(path, match_tokens) > 0:
+        return "primary"
+    return "neutral"
+
+
+def _outlook_store_name_score(
+    path: Any,
+    user_login: str,
+    profile_emails: Optional[List[str]] = None,
+    match_tokens: Optional[Dict[str, set]] = None,
+) -> int:
+    if _is_forced_archive_store(path):
+        return 0
+    tokens = match_tokens if match_tokens is not None else _build_outlook_match_tokens(user_login, profile_emails or [])
+    priority = _outlook_store_match_priority(path, tokens)
+    if priority >= 3:
+        return 4
+    if priority == 2:
+        return 3
+    if priority == 1:
+        return 2
+    return 1
+
+
+def _choose_outlook_active_stores(
+    stores: List[Dict[str, Any]],
+    state_files: Dict[str, Dict[str, int]],
+    user_login: str,
+    profile_emails: Optional[List[str]] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], str]:
+    if not stores:
+        return [], None, "low"
+    profile_emails = profile_emails or []
+    match_tokens = _build_outlook_match_tokens(user_login, profile_emails)
+    non_archive_rows = [row for row in stores if not _is_forced_archive_store(row.get("path"))]
+    if not non_archive_rows:
+        return [], None, "low"
+
+    profile_match_rows: List[Tuple[int, int, int, Dict[str, Any]]] = []
+    for row in non_archive_rows:
+        path = sanitize_text(row.get("path"))
+        if not path:
+            continue
+        match_priority = _outlook_store_match_priority(path, match_tokens)
+        if match_priority < 2:
+            continue
+        key = path.lower()
+        previous = state_files.get(key) if isinstance(state_files.get(key), dict) else None
+        previous_size = _to_int(previous.get("size_bytes"), -1) if previous else -1
+        current_size = max(0, _to_int(row.get("size_bytes"), 0))
+        delta = abs(current_size - previous_size) if previous_size >= 0 else 0
+        mtime = max(0, _to_int(row.get("last_modified_at"), 0))
+        profile_match_rows.append((match_priority, delta, mtime, row))
+
+    if profile_match_rows:
+        profile_match_rows.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        active_stores = [row for _, __, ___, row in profile_match_rows[:10]]
+        return active_stores, None, "medium"
+
+    changed_rows: List[Tuple[int, int, int, Dict[str, Any]]] = []
+    for row in non_archive_rows:
+        path = sanitize_text(row.get("path"))
+        if not path:
+            continue
+        key = path.lower()
+        previous = state_files.get(key) if isinstance(state_files.get(key), dict) else None
+        previous_size = _to_int(previous.get("size_bytes"), -1) if previous else -1
+        current_size = max(0, _to_int(row.get("size_bytes"), 0))
+        if previous_size < 0:
+            continue
+        delta = abs(current_size - previous_size)
+        if delta <= 0:
+            continue
+        mtime = max(0, _to_int(row.get("last_modified_at"), 0))
+        name_score = _outlook_store_name_score(
+            path,
+            user_login,
+            profile_emails=profile_emails,
+            match_tokens=match_tokens,
+        )
+        changed_rows.append((name_score, delta, mtime, row))
+
+    if changed_rows:
+        changed_rows.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        active_stores = [row for _, __, ___, row in changed_rows[:10]]
+        return active_stores, None, "medium"
+
+    active_candidate = sorted(
+        non_archive_rows,
+        key=lambda item: (
+            _outlook_store_name_score(
+                item.get("path"),
+                user_login,
+                profile_emails=profile_emails,
+                match_tokens=match_tokens,
+            ),
+            _to_int(item.get("last_modified_at"), 0),
+            _to_int(item.get("size_bytes"), 0),
+        ),
+        reverse=True,
+    )[0]
+    return [], active_candidate, "low"
+
+
+def _build_outlook_payload_from_scan(
+    user_login: str,
+    user_stores: List[Dict[str, Any]],
+    previous_state: Dict[str, Any],
+    profile_emails: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    if not user_stores:
+        return _normalize_outlook_payload(_empty_outlook_payload())
+
+    state_files = previous_state.get("files") if isinstance(previous_state, dict) else {}
+    if not isinstance(state_files, dict):
+        state_files = {}
+
+    profile_emails = profile_emails or []
+    active_stores, active_candidate, confidence = _choose_outlook_active_stores(
+        user_stores,
+        state_files,
+        user_login,
+        profile_emails=profile_emails,
+    )
+    active_store = active_stores[0] if active_stores else None
+    active_paths = {sanitize_text(row.get("path")).lower() for row in active_stores if sanitize_text(row.get("path"))}
+
+    archives: List[Dict[str, Any]] = []
+    for row in user_stores:
+        row_path = sanitize_text(row.get("path"))
+        if row_path and row_path.lower() in active_paths:
+            continue
+        archives.append(row)
+
+    largest_file_path = ""
+    largest_file_size_bytes = 0
+    total_size_bytes = 0
+    for row in user_stores:
+        row_size = max(0, _to_int(row.get("size_bytes"), 0))
+        total_size_bytes += row_size
+        if row_size > largest_file_size_bytes:
+            largest_file_size_bytes = row_size
+            largest_file_path = sanitize_text(row.get("path"))
+
+    payload = {
+        "collected_at": int(time.time()),
+        "source": "system_scan",
+        "confidence": confidence,
+        "threshold_warning_bytes": OUTLOOK_WARNING_THRESHOLD_BYTES,
+        "threshold_critical_bytes": OUTLOOK_CRITICAL_THRESHOLD_BYTES,
+        "active_store": active_store,
+        "active_stores": active_stores,
+        "active_candidate": active_candidate,
+        "archives": archives,
+        "largest_file_path": largest_file_path,
+        "largest_file_size_bytes": largest_file_size_bytes,
+        "total_outlook_size_bytes": total_size_bytes,
+        "collector": "scan_profile_email_first",
+        "user": user_login,
+    }
+    return _normalize_outlook_payload(payload)
+
+
+def collect_outlook_info(user_login: str, force_refresh: bool = False) -> Dict[str, Any]:
+    normalized_user = extract_login_name(user_login).lower()
+    now_ts = int(time.time())
+    cached_payload = OUTLOOK_RUNTIME_CACHE.get("payload")
+    cached_user = sanitize_text(OUTLOOK_RUNTIME_CACHE.get("user")).lower()
+    cached_ts = _to_int(OUTLOOK_RUNTIME_CACHE.get("collected_at"), 0)
+    if (
+        not force_refresh
+        and isinstance(cached_payload, dict)
+        and cached_user == normalized_user
+        and (now_ts - cached_ts) <= OUTLOOK_SCAN_CACHE_TTL_SEC
+    ):
+        return dict(cached_payload)
+
+    all_stores = _collect_outlook_via_fallback_scan()
+    user_stores = _select_outlook_stores_for_user(all_stores, user_login)
+    profile_emails = _collect_outlook_profile_emails(user_login)
+    previous_state = _load_outlook_scan_state()
+    payload = _build_outlook_payload_from_scan(
+        user_login,
+        user_stores,
+        previous_state,
+        profile_emails=profile_emails,
+    )
+
+    files_state: Dict[str, Dict[str, int]] = {}
+    old_files = previous_state.get("files") if isinstance(previous_state, dict) else {}
+    if isinstance(old_files, dict):
+        for key, row in old_files.items():
+            if not isinstance(key, str) or not isinstance(row, dict):
+                continue
+            seen_at = max(0, _to_int(row.get("last_seen_at"), 0))
+            if seen_at and (now_ts - seen_at) > DEFAULT_OUTLOOK_SCAN_STATE_MAX_AGE_SEC:
+                continue
+            files_state[key.lower()] = {
+                "size_bytes": max(0, _to_int(row.get("size_bytes"), 0)),
+                "last_seen_at": seen_at,
+            }
+
+    for row in all_stores:
+        path = sanitize_text(row.get("path"))
+        if not path:
+            continue
+        files_state[path.lower()] = {
+            "size_bytes": max(0, _to_int(row.get("size_bytes"), 0)),
+            "last_seen_at": now_ts,
+        }
+
+    _save_outlook_scan_state({"updated_at": now_ts, "files": files_state})
+
+    OUTLOOK_RUNTIME_CACHE["user"] = normalized_user
+    OUTLOOK_RUNTIME_CACHE["collected_at"] = now_ts
+    OUTLOOK_RUNTIME_CACHE["payload"] = dict(payload)
+    return payload
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="IT-Invent inventory agent")
+    parser.add_argument("--once", action="store_true", help="Collect and send one report, then exit")
+    parser.add_argument("--check", action="store_true", help="Validate config and endpoint reachability, then exit")
+    agent_installer.add_msi_args(parser)
+    return parser.parse_args(argv)
+
+
+def load_config() -> AgentConfig:
+    server_url = str(os.getenv("ITINV_AGENT_SERVER_URL", DEFAULT_SERVER_URL)).strip() or DEFAULT_SERVER_URL
+    api_key = str(os.getenv("ITINV_AGENT_API_KEY", "")).strip()
+    if not api_key:
+        logging.error("ITINV_AGENT_API_KEY is empty; inventory uploads are disabled until an explicit key is configured")
+
+    interval_raw = str(os.getenv("ITINV_AGENT_INTERVAL_SEC", DEFAULT_FULL_SNAPSHOT_INTERVAL)).strip()
+    heartbeat_raw = str(os.getenv("ITINV_AGENT_HEARTBEAT_SEC", DEFAULT_HEARTBEAT_INTERVAL)).strip()
+    jitter_raw = str(os.getenv("ITINV_AGENT_HEARTBEAT_JITTER_SEC", DEFAULT_HEARTBEAT_JITTER)).strip()
+    outlook_refresh_raw = str(os.getenv("ITINV_OUTLOOK_REFRESH_SEC", DEFAULT_OUTLOOK_REFRESH_SEC)).strip()
+    run_cmd_timeout_raw = str(os.getenv("ITINV_RUN_CMD_TIMEOUT_SEC", DEFAULT_RUN_CMD_TIMEOUT_SEC)).strip()
+    queue_batch_raw = str(os.getenv("ITINV_INVENTORY_QUEUE_BATCH", DEFAULT_INVENTORY_QUEUE_BATCH)).strip()
+    queue_max_items_raw = str(os.getenv("ITINV_INVENTORY_QUEUE_MAX_ITEMS", DEFAULT_INVENTORY_QUEUE_MAX_ITEMS)).strip()
+    queue_max_age_raw = str(os.getenv("ITINV_INVENTORY_QUEUE_MAX_AGE_DAYS", DEFAULT_INVENTORY_QUEUE_MAX_AGE_DAYS)).strip()
+    queue_max_total_mb_raw = str(
+        os.getenv("ITINV_INVENTORY_QUEUE_MAX_TOTAL_MB", DEFAULT_INVENTORY_QUEUE_MAX_TOTAL_MB)
+    ).strip()
+    reminder_enabled_raw = os.getenv("ITINV_REBOOT_REMINDER_ENABLED", "1")
+    reminder_days_raw = str(os.getenv("ITINV_REBOOT_REMINDER_DAYS", DEFAULT_REBOOT_REMINDER_DAYS)).strip()
+    reminder_interval_raw = str(
+        os.getenv("ITINV_REBOOT_REMINDER_INTERVAL_HOURS", DEFAULT_REBOOT_REMINDER_INTERVAL_HOURS)
+    ).strip()
+    reminder_timeout_raw = str(
+        os.getenv("ITINV_REBOOT_REMINDER_TIMEOUT_SEC", DEFAULT_REBOOT_REMINDER_TIMEOUT_SEC)
+    ).strip()
+    reminder_work_start_raw = str(
+        os.getenv("ITINV_REBOOT_REMINDER_WORK_START_HOUR", DEFAULT_REBOOT_REMINDER_WORK_START_HOUR)
+    ).strip()
+    reminder_work_end_raw = str(
+        os.getenv("ITINV_REBOOT_REMINDER_WORK_END_HOUR", DEFAULT_REBOOT_REMINDER_WORK_END_HOUR)
+    ).strip()
+    reminder_weekdays_only_raw = os.getenv("ITINV_REBOOT_REMINDER_WEEKDAYS_ONLY", "1")
+    ca_bundle = str(os.getenv("ITINV_AGENT_CA_BUNDLE", "")).strip() or None
+    if ca_bundle:
+        ca_bundle_path = Path(ca_bundle).expanduser()
+        if not ca_bundle_path.exists():
+            logging.warning(
+                "Configured ITINV_AGENT_CA_BUNDLE path does not exist: %s. Falling back to default TLS verification.",
+                ca_bundle,
+            )
+            ca_bundle = None
+        else:
+            ca_bundle = str(ca_bundle_path)
+    try:
+        full_snapshot_interval = int(interval_raw)
+    except ValueError:
+        full_snapshot_interval = DEFAULT_FULL_SNAPSHOT_INTERVAL
+    try:
+        heartbeat_interval = int(heartbeat_raw)
+    except ValueError:
+        heartbeat_interval = DEFAULT_HEARTBEAT_INTERVAL
+    try:
+        heartbeat_jitter = int(jitter_raw)
+    except ValueError:
+        heartbeat_jitter = DEFAULT_HEARTBEAT_JITTER
+    outlook_refresh_sec = _to_int(outlook_refresh_raw, DEFAULT_OUTLOOK_REFRESH_SEC)
+    run_cmd_timeout_sec = _to_int(run_cmd_timeout_raw, DEFAULT_RUN_CMD_TIMEOUT_SEC)
+    queue_batch = _to_int(queue_batch_raw, DEFAULT_INVENTORY_QUEUE_BATCH)
+    queue_max_items = _to_int(queue_max_items_raw, DEFAULT_INVENTORY_QUEUE_MAX_ITEMS)
+    queue_max_age_days = _to_int(queue_max_age_raw, DEFAULT_INVENTORY_QUEUE_MAX_AGE_DAYS)
+    queue_max_total_mb = _to_int(queue_max_total_mb_raw, DEFAULT_INVENTORY_QUEUE_MAX_TOTAL_MB)
+    reminder_enabled = _is_truthy(reminder_enabled_raw, default=True)
+    reminder_days = _to_int(reminder_days_raw, DEFAULT_REBOOT_REMINDER_DAYS)
+    reminder_interval_hours = _to_int(reminder_interval_raw, DEFAULT_REBOOT_REMINDER_INTERVAL_HOURS)
+    reminder_timeout_sec = _to_int(reminder_timeout_raw, DEFAULT_REBOOT_REMINDER_TIMEOUT_SEC)
+    reminder_work_start_hour = _to_int(reminder_work_start_raw, DEFAULT_REBOOT_REMINDER_WORK_START_HOUR)
+    reminder_work_end_hour = _to_int(reminder_work_end_raw, DEFAULT_REBOOT_REMINDER_WORK_END_HOUR)
+    reminder_weekdays_only = _is_truthy(reminder_weekdays_only_raw, default=True)
+
+    full_snapshot_interval = max(300, full_snapshot_interval)
+    heartbeat_interval = max(60, min(heartbeat_interval, full_snapshot_interval))
+    heartbeat_jitter = max(0, min(heartbeat_jitter, 300))
+    outlook_refresh_sec = max(60, min(outlook_refresh_sec, 3600))
+    run_cmd_timeout_sec = max(5, min(run_cmd_timeout_sec, 300))
+    queue_batch = max(1, min(queue_batch, 200))
+    queue_max_items = max(50, min(queue_max_items, 10000))
+    queue_max_age_days = max(1, min(queue_max_age_days, 90))
+    queue_max_total_mb = max(32, min(queue_max_total_mb, 2048))
+    reminder_days = max(1, min(reminder_days, 365))
+    reminder_interval_hours = max(1, min(reminder_interval_hours, 24 * 30))
+    reminder_timeout_sec = max(30, min(reminder_timeout_sec, 600))
+    reminder_work_start_hour = max(0, min(reminder_work_start_hour, 23))
+    reminder_work_end_hour = max(1, min(reminder_work_end_hour, 24))
+    if reminder_work_start_hour >= reminder_work_end_hour:
+        logging.warning(
+            "Invalid reboot reminder work window %s-%s. Fallback to default %s-%s",
+            reminder_work_start_hour,
+            reminder_work_end_hour,
+            DEFAULT_REBOOT_REMINDER_WORK_START_HOUR,
+            DEFAULT_REBOOT_REMINDER_WORK_END_HOUR,
+        )
+        reminder_work_start_hour = DEFAULT_REBOOT_REMINDER_WORK_START_HOUR
+        reminder_work_end_hour = DEFAULT_REBOOT_REMINDER_WORK_END_HOUR
+    return AgentConfig(
+        server_url=server_url,
+        api_key=api_key,
+        full_snapshot_interval=full_snapshot_interval,
+        heartbeat_interval=heartbeat_interval,
+        heartbeat_jitter_sec=heartbeat_jitter,
+        outlook_refresh_sec=outlook_refresh_sec,
+        run_cmd_timeout_sec=run_cmd_timeout_sec,
+        inventory_queue_batch=queue_batch,
+        inventory_queue_max_items=queue_max_items,
+        inventory_queue_max_age_days=queue_max_age_days,
+        inventory_queue_max_total_mb=queue_max_total_mb,
+        reboot_reminder_enabled=reminder_enabled,
+        reboot_reminder_days=reminder_days,
+        reboot_reminder_interval_hours=reminder_interval_hours,
+        reboot_reminder_timeout_sec=reminder_timeout_sec,
+        reboot_reminder_work_start_hour=reminder_work_start_hour,
+        reboot_reminder_work_end_hour=reminder_work_end_hour,
+        reboot_reminder_weekdays_only=reminder_weekdays_only,
+        ca_bundle=ca_bundle,
+    )
+
+
+def is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def run_cmd(args: List[str], timeout_sec: Optional[int] = None) -> subprocess.CompletedProcess:
+    effective_timeout = max(1, int(timeout_sec or RUN_CMD_TIMEOUT_SEC))
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=False,
+            timeout=effective_timeout,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        stdout = _decode_console_output(result.stdout)
+        stderr = _decode_console_output(result.stderr)
+        return subprocess.CompletedProcess(args=args, returncode=result.returncode, stdout=stdout, stderr=stderr)
+    except subprocess.TimeoutExpired as exc:
+        stdout = _decode_console_output(getattr(exc, "stdout", b""))
+        stderr_raw = _decode_console_output(getattr(exc, "stderr", b""))
+        stderr = (stderr_raw + f"\nCommand timed out after {effective_timeout}s").strip()
+        logging.warning("Command timeout after %ss: %s", effective_timeout, " ".join(args))
+        return subprocess.CompletedProcess(args=args, returncode=124, stdout=stdout, stderr=stderr)
+
+
+def _decode_console_output(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    data = bytes(raw)
+    if not data:
+        return ""
+
+    if b"\x00" in data:
+        for enc in ("utf-16", "utf-16-le", "utf-16-be"):
+            try:
+                return data.decode(enc)
+            except Exception:
+                continue
+    for enc in ("utf-8-sig", "utf-8", "cp866", "cp1251"):
+        try:
+            return data.decode(enc)
+        except Exception:
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
+def sanitize_text(value: Any) -> str:
+    return str(value or "").replace("\x00", "").strip()
+
+
+def _compact_spaces(value: Any) -> str:
+    return re.sub(r"\s+", " ", sanitize_text(value))
+
+
+def _to_int_or_none(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not value.is_integer():
+            return int(value)
+        return int(value)
+    text = sanitize_text(value).replace(",", ".")
+    if not text:
+        return None
+    try:
+        return int(text)
+    except Exception:
+        try:
+            return int(float(text))
+        except Exception:
+            return None
+
+
+def _normalize_disk_serial(value: Any) -> str:
+    return re.sub(r"[^0-9A-Za-z]", "", sanitize_text(value)).upper()
+
+
+def _normalize_disk_model(value: Any) -> str:
+    return re.sub(r"\s+", " ", sanitize_text(value)).lower()
+
+
+def _is_generic_disk_name(value: Any) -> bool:
+    text = _normalize_disk_model(value)
+    if not text:
+        return True
+    if text in GENERIC_DISK_NAME_VALUES:
+        return True
+    return any(text.endswith(suffix) for suffix in GENERIC_DISK_NAME_SUFFIXES)
+
+
+def _format_size_label(size_bytes: Optional[int]) -> str:
+    size_value = _to_int_or_none(size_bytes)
+    if not size_value or size_value <= 0:
+        return ""
+    gib = size_value / float(1024 ** 3)
+    if gib >= 1024:
+        tib = gib / 1024.0
+        return f"{tib:.1f} TB"
+    return f"{round(gib)} GB"
+
+
+def _normalize_bus_label(value: Any) -> str:
+    raw = _normalize_disk_model(value)
+    if not raw:
+        return ""
+    return BUS_TYPE_LABELS.get(raw, sanitize_text(value).upper())
+
+
+def _is_size_close(left: Optional[int], right: Optional[int]) -> bool:
+    l_val = _to_int_or_none(left)
+    r_val = _to_int_or_none(right)
+    if not l_val or not r_val:
+        return False
+    diff = abs(l_val - r_val)
+    tolerance = max(10 * 1024 * 1024, int(max(l_val, r_val) * 0.01))
+    return diff <= tolerance
+
+
+def _match_diskdrive_row(
+    *,
+    serial_number: str,
+    model: str,
+    size_bytes: Optional[int],
+    rows: List[Dict[str, Any]],
+    used_indices: set,
+) -> Dict[str, Any]:
+    serial_key = _normalize_disk_serial(serial_number)
+    if serial_key:
+        for idx, row in enumerate(rows):
+            if idx in used_indices:
+                continue
+            row_serial = _normalize_disk_serial(row.get("serial_number"))
+            if row_serial and row_serial == serial_key:
+                used_indices.add(idx)
+                return row
+
+    model_key = _normalize_disk_model(model)
+    if model_key:
+        for idx, row in enumerate(rows):
+            if idx in used_indices:
+                continue
+            row_model = _normalize_disk_model(row.get("model"))
+            if not row_model:
+                continue
+            if model_key in row_model or row_model in model_key:
+                if _is_size_close(size_bytes, row.get("size_bytes")) or not size_bytes or not row.get("size_bytes"):
+                    used_indices.add(idx)
+                    return row
+
+    if size_bytes:
+        for idx, row in enumerate(rows):
+            if idx in used_indices:
+                continue
+            if _is_size_close(size_bytes, row.get("size_bytes")):
+                used_indices.add(idx)
+                return row
+
+    return {}
+
+
+def _choose_disk_base_name(
+    raw_friendly_name: str,
+    raw_caption: str,
+    raw_model: str,
+) -> str:
+    candidates = [
+        _compact_spaces(raw_friendly_name),
+        _compact_spaces(raw_caption),
+        _compact_spaces(raw_model),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if _is_generic_disk_name(candidate):
+            continue
+        return candidate
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return "Unknown Disk"
+
+
+def _build_disk_display_name(
+    *,
+    raw_friendly_name: str,
+    raw_caption: str,
+    raw_model: str,
+    bus_type: str,
+    size_bytes: Optional[int],
+) -> str:
+    base = _choose_disk_base_name(raw_friendly_name, raw_caption, raw_model)
+    parts: List[str] = []
+    bus_label = _normalize_bus_label(bus_type)
+    if bus_label and bus_label != "UNKNOWN":
+        parts.append(bus_label)
+    size_label = _format_size_label(size_bytes)
+    if size_label:
+        parts.append(size_label)
+    if parts:
+        return f"{base} ({', '.join(parts)})"
+    return base
+
+
+def get_diskdrive_metadata() -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if wmi is None:
+        return rows
+    try:
+        c = wmi.WMI()
+        for item in c.Win32_DiskDrive():
+            rows.append(
+                {
+                    "caption": _compact_spaces(getattr(item, "Caption", "")),
+                    "model": _compact_spaces(getattr(item, "Model", "")),
+                    "serial_number": _compact_spaces(getattr(item, "SerialNumber", "")),
+                    "pnp_device_id": sanitize_text(getattr(item, "PNPDeviceID", "")),
+                    "size_bytes": _to_int_or_none(getattr(item, "Size", None)),
+                    "index": _to_int_or_none(getattr(item, "Index", None)),
+                }
+            )
+    except Exception as exc:
+        logging.debug("Win32_DiskDrive metadata collection failed: %s", exc)
+    return rows
+
+
+def decode_wmi_char_array(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        chars = []
+        for item in value:
+            try:
+                num = int(item)
+            except Exception:
+                continue
+            if num == 0:
+                continue
+            chars.append(chr(num))
+        return "".join(chars).strip()
+    except Exception:
+        return ""
+
+
+def is_service_account(value: str) -> bool:
+    normalized = sanitize_text(value).lower()
+    return not normalized or normalized in SERVICE_USERS
+
+
+def normalize_user_name(value: str) -> str:
+    normalized = sanitize_text(value).strip().strip('"')
+    return normalized
+
+
+def extract_login_name(value: str) -> str:
+    normalized = normalize_user_name(value)
+    if "\\" in normalized:
+        return normalize_user_name(normalized.split("\\", 1)[1])
+    if "@" in normalized:
+        return normalize_user_name(normalized.split("@", 1)[0])
+    return normalized
+
+
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    result: List[str] = []
+    seen = set()
+    for item in items:
+        value = sanitize_text(item)
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _is_af_inet(family: Any) -> bool:
+    try:
+        return int(family) == int(socket.AF_INET)
+    except Exception:
+        text = str(family)
+        return ".AF_INET" in text and ".AF_INET6" not in text
+
+
+def _is_af_inet6(family: Any) -> bool:
+    try:
+        return int(family) == int(socket.AF_INET6)
+    except Exception:
+        return ".AF_INET6" in str(family)
+
+
+def get_process_user_name() -> str:
+    username = sanitize_text(os.environ.get("USERNAME")) or sanitize_text(getpass.getuser())
+    domain = sanitize_text(os.environ.get("USERDOMAIN"))
+    if domain and "\\" not in username:
+        return f"{domain}\\{username}"
+    return username
+
+
+def get_user_from_win32_computersystem() -> str:
+    if wmi is None:
+        return ""
+    try:
+        c = wmi.WMI()
+        systems = c.Win32_ComputerSystem()
+        if not systems:
+            return ""
+        username = normalize_user_name(getattr(systems[0], "UserName", ""))
+        return "" if is_service_account(username) else username
+    except Exception as exc:
+        logging.debug("Win32_ComputerSystem.UserName not available: %s", exc)
+        return ""
+
+
+def parse_query_user_output(output: str) -> str:
+    lines = [line.rstrip() for line in (output or "").splitlines() if line.strip()]
+    if len(lines) <= 1:
+        return ""
+
+    first_candidate = ""
+    for line in lines[1:]:
+        line_clean = line.lstrip(">").strip()
+        parts = line_clean.split()
+        if not parts:
+            continue
+        username = normalize_user_name(parts[0])
+        if not username or is_service_account(username):
+            continue
+        if not first_candidate:
+            first_candidate = username
+
+        line_lower = line_clean.lower()
+        if any(marker in line_lower for marker in ACTIVE_SESSION_MARKERS):
+            return username
+    return first_candidate
+
+
+def get_user_from_query_user() -> str:
+    for cmd in (["query", "user"], ["quser"]):
+        try:
+            result = run_cmd(cmd)
+            if result.returncode != 0:
+                continue
+            parsed = parse_query_user_output(result.stdout)
+            if parsed and not is_service_account(parsed):
+                return parsed
+        except Exception as exc:
+            logging.debug("query user call failed (%s): %s", " ".join(cmd), exc)
+    return ""
+
+
+def get_last_logged_on_user() -> str:
+    if winreg is None:
+        return ""
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI",
+        )
+        value, _ = winreg.QueryValueEx(key, "LastLoggedOnUser")
+        username = normalize_user_name(value)
+        return "" if is_service_account(username) else username
+    except Exception as exc:
+        logging.debug("LastLoggedOnUser not available: %s", exc)
+        return ""
+
+
+def get_active_console_user() -> str:
+    candidates = [
+        get_user_from_win32_computersystem(),
+        get_user_from_query_user(),
+        get_last_logged_on_user(),
+    ]
+    for item in candidates:
+        if item and not is_service_account(item):
+            return item
+    return normalize_user_name(get_process_user_name())
+
+
+def _load_reboot_reminder_state() -> Dict[str, Any]:
+    path = get_reboot_reminder_state_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception as exc:
+        logging.warning("Reboot reminder state read failed (%s): %s", path, exc)
+    return {}
+
+
+def _save_reboot_reminder_state(state: Dict[str, Any]) -> None:
+    path = get_reboot_reminder_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(path, json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logging.warning("Reboot reminder state write failed (%s): %s", path, exc)
+
+
+def _send_reboot_reminder_message(user_login: str, timeout_sec: int, message: str) -> bool:
+    candidates = _dedupe_preserve_order(
+        [normalize_user_name(user_login), extract_login_name(user_login)]
+    )
+    for candidate in candidates:
+        if is_service_account(candidate):
+            continue
+        try:
+            result = run_cmd(["msg", candidate, f"/TIME:{timeout_sec}", message])
+        except Exception as exc:
+            logging.warning("msg.exe execution failed for user=%s: %s", candidate, exc)
+            continue
+        if result.returncode == 0:
+            return True
+        stderr = sanitize_text(result.stderr)
+        logging.warning(
+            "msg.exe returned non-zero code=%s user=%s stderr=%s",
+            result.returncode,
+            candidate,
+            stderr[:200],
+        )
+    return False
+
+
+def _is_worktime_allowed(config: AgentConfig, now_dt: datetime) -> bool:
+    if config.reboot_reminder_weekdays_only and now_dt.weekday() >= 5:
+        logging.info("Reboot reminder skipped: weekend blocked by weekdays policy")
+        return False
+
+    hour = int(now_dt.hour)
+    if not (config.reboot_reminder_work_start_hour <= hour < config.reboot_reminder_work_end_hour):
+        logging.info(
+            "Reboot reminder skipped: outside work window (now=%02d:00, allowed=%02d:00-%02d:00)",
+            hour,
+            config.reboot_reminder_work_start_hour,
+            config.reboot_reminder_work_end_hour,
+        )
+        return False
+    return True
+
+
+def maybe_notify_reboot_required(health_info: Dict[str, Any], config: AgentConfig) -> None:
+    if not config.reboot_reminder_enabled:
+        return
+
+    uptime_seconds = _to_int(health_info.get("uptime_seconds"), default=-1)
+    if uptime_seconds < 0:
+        return
+
+    threshold_seconds = config.reboot_reminder_days * 24 * 60 * 60
+    if uptime_seconds < threshold_seconds:
+        return
+
+    now_ts = int(time.time())
+    boot_time = _to_int(
+        health_info.get("boot_time") or health_info.get("last_reboot_at"),
+        default=max(0, now_ts - uptime_seconds),
+    )
+    if boot_time <= 0:
+        return
+
+    state = _load_reboot_reminder_state()
+    last_notified_at = _to_int(state.get("last_notified_at"), default=0)
+    last_notified_boot = _to_int(state.get("last_notified_boot_time"), default=0)
+    interval_seconds = config.reboot_reminder_interval_hours * 60 * 60
+    if (
+        last_notified_boot == boot_time
+        and last_notified_at > 0
+        and (now_ts - last_notified_at) < interval_seconds
+    ):
+        return
+
+    now_dt = datetime.fromtimestamp(now_ts)
+    if not _is_worktime_allowed(config, now_dt):
+        return
+
+    active_user = normalize_user_name(get_active_console_user())
+    if is_service_account(active_user):
+        logging.info("Reboot reminder skipped: active user session was not detected")
+        return
+
+    if not _send_reboot_reminder_message(active_user, config.reboot_reminder_timeout_sec, REBOOT_REMINDER_MESSAGE):
+        logging.warning("Failed to deliver reboot reminder to user=%s", active_user)
+        return
+
+    _save_reboot_reminder_state(
+        {
+            "last_notified_at": now_ts,
+            "last_notified_boot_time": boot_time,
+            "last_notified_user": active_user,
+        }
+    )
+    logging.info(
+        "Reboot reminder sent to user=%s (uptime_hours=%.1f)",
+        active_user,
+        uptime_seconds / 3600.0,
+    )
+
+
+def resolve_user_full_name(user_login: str) -> str:
+    login = extract_login_name(user_login)
+    if not login:
+        return ""
+
+    escaped_login = login.replace("'", "''")
+    command = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        f"$login='{escaped_login}'; "
+        "if (Get-Command Get-ADUser -ErrorAction SilentlyContinue) { "
+        "  $ad = Get-ADUser -Identity $login -Properties DisplayName; "
+        "  if ($ad -and $ad.DisplayName) { $ad.DisplayName | ConvertTo-Json -Compress; exit } "
+        "} "
+        "$wmiUser = Get-CimInstance Win32_UserAccount -Filter \"Name='$login' AND LocalAccount=FALSE\" | "
+        "  Select-Object -First 1 -ExpandProperty FullName; "
+        "if ($wmiUser) { $wmiUser | ConvertTo-Json -Compress; exit } "
+        "$line = net user $login /domain 2>$null | "
+        "  Select-String -Pattern '^(Full Name|Полное имя)\\s{2,}(.+)$' | Select-Object -First 1; "
+        "if ($line) { $line.Matches[0].Groups[2].Value | ConvertTo-Json -Compress }"
+    )
+    value = _powershell_json(command)
+    if isinstance(value, str):
+        return sanitize_text(value)
+    return ""
+
+
+def get_mac_address() -> str:
+    try:
+        for interface, addrs in psutil.net_if_addrs().items():
+            interface_l = interface.lower()
+            if "loopback" in interface_l or "virtual" in interface_l:
+                continue
+            for addr in addrs:
+                if addr.family == psutil.AF_LINK:
+                    value = sanitize_text(addr.address)
+                    if value:
+                        return value
+    except Exception as exc:
+        logging.error("MAC address detection failed: %s", exc)
+    return ""
+
+
+def validate_monitor_serial(value: str) -> str:
+    serial = sanitize_text(value).replace("\n", "").replace("\r", "")
+    serial = re.sub(r"[^0-9A-Za-z._-]", "", serial)
+    if not serial:
+        return ""
+    if serial in {"0", "00000000", "FFFFFFFF", "ffffffffff"}:
+        return ""
+    return serial
+
+
+def parse_edid_serial(edid: bytes) -> str:
+    if not edid or len(edid) < 128:
+        return ""
+
+    for offset in range(54, 126, 18):
+        block = edid[offset:offset + 18]
+        if len(block) < 18:
+            continue
+        if block[0:3] == b"\x00\x00\x00" and block[3] == 0xFF:
+            raw = block[5:18]
+            text = raw.decode("ascii", errors="ignore").replace("\n", "").strip()
+            serial = validate_monitor_serial(text)
+            if serial:
+                return serial
+
+    numeric = int.from_bytes(edid[12:16], byteorder="little", signed=False)
+    if numeric > 0:
+        serial = validate_monitor_serial(f"{numeric}")
+        if serial:
+            return serial
+    return ""
+
+
+def get_registry_edid_for_instance(instance_name: str) -> bytes:
+    if winreg is None:
+        return b""
+
+    cleaned = sanitize_text(instance_name).replace("/", "\\")
+    if not cleaned:
+        return b""
+
+    parts = cleaned.split("\\")
+    candidates: List[str] = []
+    if len(parts) >= 3:
+        pnp_id = parts[2]
+        candidates.append(f"{parts[0]}\\{parts[1]}\\{pnp_id}")
+        if "_" in pnp_id:
+            candidates.append(f"{parts[0]}\\{parts[1]}\\{pnp_id.split('_')[0]}")
+
+    for candidate in candidates:
+        reg_path = rf"SYSTEM\CurrentControlSet\Enum\{candidate}\Device Parameters"
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path)
+            data, _ = winreg.QueryValueEx(key, "EDID")
+            if isinstance(data, bytes) and data:
+                return data
+        except Exception:
+            continue
+    return b""
+
+
+def get_monitor_serial(monitor_obj: Any) -> Tuple[str, str]:
+    instance_name = sanitize_text(getattr(monitor_obj, "InstanceName", ""))
+    edid = get_registry_edid_for_instance(instance_name)
+    if edid:
+        serial = parse_edid_serial(edid)
+        if serial:
+            return serial, "edid"
+
+    serial_wmi = validate_monitor_serial(decode_wmi_char_array(getattr(monitor_obj, "SerialNumberID", [])))
+    if serial_wmi:
+        return serial_wmi, "wmi_fallback"
+    return "", "unknown"
+
+
+def get_monitors() -> List[Dict[str, Any]]:
+    monitors: List[Dict[str, Any]] = []
+    if wmi is None:
+        return monitors
+    try:
+        w = wmi.WMI(namespace=r"root\wmi")
+        for monitor in w.WmiMonitorID():
+            try:
+                manufacturer = decode_wmi_char_array(getattr(monitor, "ManufacturerName", []))
+                product_code = decode_wmi_char_array(getattr(monitor, "ProductCodeID", []))
+                serial_number, serial_source = get_monitor_serial(monitor)
+                monitors.append(
+                    {
+                        "manufacturer": manufacturer,
+                        "product_code": product_code,
+                        "serial_number": serial_number,
+                        "serial_source": serial_source,
+                    }
+                )
+            except Exception as exc:
+                logging.warning("Monitor parsing failed: %s", exc)
+    except Exception as exc:
+        logging.error("WmiMonitorID query failed: %s", exc)
+    return monitors
+
+
+def get_physical_disk_skip_reasons(disk: Dict[str, Any]) -> List[str]:
+    model = sanitize_text(disk.get("model")).lower()
+    serial = sanitize_text(disk.get("serial_number")).lower()
+    bus_type = sanitize_text(disk.get("bus_type")).lower()
+    reasons = []
+
+    if not model and not serial:
+        reasons.append("empty")
+    if any(marker in bus_type for marker in VIRTUAL_BUS_MARKERS):
+        reasons.append("virtual_bus")
+    if any(marker in model for marker in VIRTUAL_MODEL_MARKERS):
+        reasons.append("virtual_model")
+    return reasons
+
+
+def get_storage_info() -> List[Dict[str, Any]]:
+    disks: List[Dict[str, Any]] = []
+    skipped: Dict[str, int] = {}
+    try:
+        diskdrive_rows = get_diskdrive_metadata()
+        used_diskdrive_indices: set = set()
+        ps_cmd = (
+            "Get-PhysicalDisk | Select-Object * -ExcludeProperty Cim* | "
+            "ConvertTo-Json -Depth 1 -Compress"
+        )
+        result = run_cmd(["powershell", "-NoProfile", "-Command", ps_cmd])
+        if result.returncode != 0 or not result.stdout.strip():
+            return disks
+
+        data = json.loads(result.stdout)
+        if not isinstance(data, list):
+            data = [data]
+
+        for disk in data:
+            raw_model = _compact_spaces(disk.get("Model"))
+            raw_friendly_name = _compact_spaces(disk.get("FriendlyName"))
+            serial = _compact_spaces(disk.get("SerialNumber"))
+            bus_type = sanitize_text(disk.get("BusType")) or "Unknown"
+            size_bytes = _to_int_or_none(disk.get("Size"))
+
+            matched_diskdrive = _match_diskdrive_row(
+                serial_number=serial,
+                model=raw_model,
+                size_bytes=size_bytes,
+                rows=diskdrive_rows,
+                used_indices=used_diskdrive_indices,
+            )
+
+            raw_caption = _compact_spaces(matched_diskdrive.get("caption"))
+            raw_pnp_device_id = sanitize_text(matched_diskdrive.get("pnp_device_id"))
+            if not raw_model:
+                raw_model = _compact_spaces(matched_diskdrive.get("model"))
+            if not serial:
+                serial = _compact_spaces(matched_diskdrive.get("serial_number"))
+            if size_bytes is None:
+                size_bytes = _to_int_or_none(matched_diskdrive.get("size_bytes"))
+
+            display_name = _build_disk_display_name(
+                raw_friendly_name=raw_friendly_name,
+                raw_caption=raw_caption,
+                raw_model=raw_model,
+                bus_type=bus_type,
+                size_bytes=size_bytes,
+            )
+
+            health_status = "Unknown"
+            wear_out = None
+            temperature = None
+
+            try:
+                if serial:
+                    serial_ps = serial.replace("'", "''")
+                    rel_cmd = (
+                        "Get-StorageReliabilityCounter -PhysicalDisk "
+                        f"(Get-PhysicalDisk -SerialNumber '{serial_ps}') | "
+                        "Select-Object * -ExcludeProperty Cim* | ConvertTo-Json -Depth 1 -Compress"
+                    )
+                    rel_result = run_cmd(["powershell", "-NoProfile", "-Command", rel_cmd])
+                    if rel_result.returncode == 0 and rel_result.stdout.strip():
+                        rel_data = json.loads(rel_result.stdout)
+                        wear_out = rel_data.get("Wear")
+                        temperature = rel_data.get("Temperature")
+                        if isinstance(rel_data, dict):
+                            disk.update(rel_data)
+
+                    health_cmd = f"(Get-PhysicalDisk -SerialNumber '{serial_ps}').HealthStatus"
+                    health_result = run_cmd(["powershell", "-NoProfile", "-Command", health_cmd])
+                    if health_result.returncode == 0:
+                        health_status = sanitize_text(health_result.stdout) or "Unknown"
+            except Exception as exc:
+                logging.warning("Storage reliability counters unavailable for %s: %s", serial, exc)
+
+            disk_item = {
+                "model": raw_model,
+                "serial_number": serial,
+                "media_type": disk.get("MediaType"),
+                "bus_type": bus_type,
+                "size_bytes": size_bytes,
+                "display_name": display_name,
+                "raw_model": raw_model,
+                "raw_friendly_name": raw_friendly_name,
+                "raw_caption": raw_caption,
+                "raw_pnp_device_id": raw_pnp_device_id,
+                "health_status": health_status,
+                "wear_out_percentage": wear_out,
+                "temperature": temperature,
+                "extended_info": disk,
+            }
+            reasons = get_physical_disk_skip_reasons(disk_item)
+            if reasons:
+                for reason in reasons:
+                    skipped[reason] = skipped.get(reason, 0) + 1
+                continue
+            disks.append(disk_item)
+    except Exception as exc:
+        logging.error("Storage collection failed: %s", exc)
+
+    if skipped:
+        logging.info(
+            "Filtered physical disks: %s",
+            ", ".join(f"{key}={value}" for key, value in sorted(skipped.items())),
+        )
+    return disks
+
+
+def is_container_mountpoint(value: str) -> bool:
+    mount = sanitize_text(value).replace("/", "\\").lower()
+    return any(marker in mount for marker in LOGICAL_MOUNT_SKIP_MARKERS)
+
+
+def mountpoint_rank(mountpoint: str) -> int:
+    mount = sanitize_text(mountpoint)
+    return 0 if re.match(r"^[A-Za-z]:\\$", mount) else 1
+
+
+def _reg_key_exists(root: Any, path: str) -> bool:
+    if winreg is None:
+        return False
+    try:
+        with winreg.OpenKey(root, path):
+            return True
+    except Exception:
+        return False
+
+
+def get_pending_reboot_info() -> Dict[str, Any]:
+    reasons: List[str] = []
+    if winreg is not None:
+        checks = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending", "cbs_reboot_pending"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired", "windows_update_reboot_required"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager", "pending_file_rename"),
+        ]
+        for root, path, reason in checks:
+            if reason == "pending_file_rename":
+                try:
+                    with winreg.OpenKey(root, path) as key:
+                        winreg.QueryValueEx(key, "PendingFileRenameOperations")
+                    reasons.append(reason)
+                except Exception:
+                    pass
+            elif _reg_key_exists(root, path):
+                reasons.append(reason)
+    return {
+        "pending_reboot": bool(reasons),
+        "pending_reboot_reasons": reasons,
+    }
+
+
+def build_ops_health(logical_disks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    system_drive = str(os.environ.get("SystemDrive") or "C:").strip().upper() or "C:"
+    system_root = system_drive if system_drive.endswith("\\") else f"{system_drive}\\"
+    free_gb: Optional[float] = None
+    used_percent: Optional[float] = None
+    low_volumes: List[str] = []
+
+    for disk in logical_disks or []:
+        if not isinstance(disk, dict):
+            continue
+        mount = str(disk.get("mountpoint") or "").strip().upper()
+        try:
+            disk_free = float(disk.get("free_gb"))
+        except Exception:
+            disk_free = None
+        if disk_free is not None and disk_free < LOW_DISK_FREE_GB:
+            low_volumes.append(mount or str(disk.get("device") or "?"))
+        if mount.rstrip("\\") == system_drive.rstrip("\\") or mount == system_root:
+            free_gb = disk_free
+            try:
+                used_percent = float(disk.get("percent"))
+            except Exception:
+                used_percent = None
+
+    if free_gb is None:
+        try:
+            usage = psutil.disk_usage(system_root)
+            free_gb = round(usage.free / (1024.0**3), 2)
+            used_percent = float(usage.percent)
+            if free_gb < LOW_DISK_FREE_GB and system_drive not in low_volumes:
+                low_volumes.append(system_drive)
+        except Exception as exc:
+            logging.debug("ops_health disk probe failed: %s", exc)
+
+    reboot = get_pending_reboot_info()
+    reminder_state = _load_reboot_reminder_state()
+    last_reminder = reminder_state.get("last_sent_at") or reminder_state.get("last_reminder_at")
+    try:
+        last_reminder_at = int(last_reminder) if last_reminder is not None else None
+    except Exception:
+        last_reminder_at = None
+
+    return {
+        "system_drive_free_gb": free_gb,
+        "system_drive_percent": used_percent,
+        "low_disk": bool(free_gb is not None and free_gb < LOW_DISK_FREE_GB) or bool(low_volumes),
+        "low_disk_volumes": low_volumes,
+        "pending_reboot": bool(reboot.get("pending_reboot")),
+        "pending_reboot_reasons": list(reboot.get("pending_reboot_reasons") or []),
+        "last_reboot_reminder_at": last_reminder_at,
+        "agent_task_name": AGENT_TASK_NAME,
+        "program_data_root": str(PROGRAM_DATA_AGENT_ROOT),
+        "legacy_itinvent_present": LEGACY_PROGRAM_DATA_ROOT.exists(),
+    }
+
+
+def _software_inventory_state_path() -> Path:
+    return PROGRAM_DATA_AGENT_ROOT / SOFTWARE_INVENTORY_STATE_FILE_NAME
+
+
+def _software_inventory_interval_hours() -> int:
+    raw = str(os.getenv("ITINV_SOFTWARE_INVENTORY_INTERVAL_HOURS", str(DEFAULT_SOFTWARE_INVENTORY_INTERVAL_HOURS))).strip()
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return DEFAULT_SOFTWARE_INVENTORY_INTERVAL_HOURS
+
+
+def _software_inventory_due(now_ts: int) -> bool:
+    interval_hours = _software_inventory_interval_hours()
+    if interval_hours <= 0:
+        return False
+    state_path = _software_inventory_state_path()
+    if not state_path.exists():
+        return True
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        if data.get("filter_version") != SOFTWARE_INVENTORY_FILTER_VERSION:
+            return True
+        last_at = int(data.get("collected_at") or 0)
+    except Exception:
+        return True
+    return (now_ts - last_at) >= interval_hours * 3600
+
+
+_SYSTEM_SOFTWARE_RELEASE_TYPES = frozenset({
+    "driver", "feature pack", "hotfix", "security update", "service pack", "update", "update rollup",
+    "безопасность", "драйвер", "исправление", "обновление", "обновление для системы безопасности",
+})
+_SYSTEM_SOFTWARE_NAME = re.compile(
+    r"^(?:"
+    r"(?:microsoft )?visual c\+\+ .*redistributable\b"
+    r"|(?:microsoft )?\.net (?:runtime|host)\b"
+    r"|(?:microsoft )?asp\.net core .*\b(?:runtime|shared framework)\b"
+    r"|(?:microsoft )?(?:edge webview2|windows desktop|windows app) runtime\b"
+    r"|microsoft (?:odbc driver \d+|ole db driver) for sql server\b"
+    r"|(?:microsoft )?update health tools\b"
+    r"|(?:security update|update|hotfix|gdr|обновление|исправление)\b.*\bkb\d{5,}\b"
+    r")|\b(?:drivers?|драйвер)(?:\s+v?\d[\w.-]*)?(?:\s+\((?:x64|x86|arm64|64-bit|32-bit)\))?$",
+    re.IGNORECASE,
+)
+
+
+def _read_uninstall_roots(roots: List[Tuple[Any, str]], scope: str, seen: Set[str]) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    for root, base in roots:
+        try:
+            with winreg.OpenKey(root, base) as parent:
+                count = winreg.QueryInfoKey(parent)[0]
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                with winreg.OpenKey(root, base) as parent:
+                    sub_name = winreg.EnumKey(parent, index)
+                with winreg.OpenKey(root, f"{base}\\{sub_name}") as key:
+                    def _read(name: str) -> str:
+                        try:
+                            value, _ = winreg.QueryValueEx(key, name)
+                            return sanitize_text(value)
+                        except Exception:
+                            return ""
+
+                    display_name = _read("DisplayName")
+                    if (
+                        not display_name
+                        or _is_truthy(_read("SystemComponent"), default=False)
+                        or _read("ParentKeyName")
+                        or _read("ReleaseType").casefold() in _SYSTEM_SOFTWARE_RELEASE_TYPES
+                        or _SYSTEM_SOFTWARE_NAME.search(display_name)
+                    ):
+                        continue
+                    version = _read("DisplayVersion")
+                    publisher = _read("Publisher")
+                    dedupe_key = f"{display_name}|{version}|{publisher}".lower()
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    items.append(
+                        {
+                            "display_name": display_name,
+                            "display_version": version,
+                            "publisher": publisher,
+                            "install_date": _read("InstallDate"),
+                            "scope": scope,
+                        }
+                    )
+            except Exception:
+                continue
+    return items
+
+
+_STORE_APPS_SCRIPT = (
+    "Get-AppxPackage -AllUsers | Where-Object { -not $_.IsFramework -and -not $_.IsResourcePackage "
+    "-and -not $_.NonRemovable -and $_.SignatureKind -eq 'Store' } | "
+    "Select-Object -Property Name,Version,Publisher -Unique | ConvertTo-Json -Compress"
+)
+_SYSTEM_STORE_PACKAGES = frozenset({
+    "microsoft.desktopappinstaller",
+    "microsoft.gamingservices",
+    "microsoft.gethelp",
+    "microsoft.getstarted",
+    "microsoft.sechealthui",
+    "microsoft.storepurchaseapp",
+    "microsoft.widgetsplatformruntime",
+    "microsoft.windowsfeedbackhub",
+    "microsoft.windowsstore",
+    "microsoft.xbox.tcui",
+    "microsoft.xboxgameoverlay",
+    "microsoft.xboxgamingoverlay",
+    "microsoft.xboxidentityprovider",
+    "microsoft.xboxspeechtotextoverlay",
+    "microsoftwindows.client.webexperience",
+})
+_SYSTEM_STORE_PREFIXES = ("microsoft.net.native.", "microsoft.ui.xaml.", "microsoft.vclibs.", "microsoft.windowsappruntime.")
+
+
+def _publisher_common_name(value: Any) -> str:
+    match = re.search(r"CN=([^,]+)", sanitize_text(value))
+    return sanitize_text(match.group(1)) if match else sanitize_text(value)
+
+
+def _iter_store_apps(seen: Set[str]) -> List[Dict[str, str]]:
+    """Microsoft Store (MSIX) apps: they have no Uninstall registry entry, so the classic list misses them."""
+    if not _is_truthy(os.getenv("ITINV_SOFTWARE_STORE_APPS_ENABLED", "1"), default=True):
+        return []
+    items: List[Dict[str, str]] = []
+    for row in _as_list(_powershell_json(_STORE_APPS_SCRIPT, timeout_sec=90)):
+        if not isinstance(row, dict):
+            continue
+        name = sanitize_text(row.get("Name"))
+        normalized_name = name.casefold()
+        if not name or normalized_name in _SYSTEM_STORE_PACKAGES or normalized_name.startswith(_SYSTEM_STORE_PREFIXES):
+            continue
+        version = sanitize_text(row.get("Version"))
+        publisher = _publisher_common_name(row.get("Publisher"))
+        dedupe_key = f"{name}|{version}|{publisher}".lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        items.append(
+            {"display_name": name, "display_version": version, "publisher": publisher, "install_date": "", "scope": "store"}
+        )
+    return items
+
+
+def _iter_uninstall_software_items() -> List[Dict[str, str]]:
+    """Installed programs: machine-wide, per-user (loaded user hives) and Microsoft Store apps."""
+    if winreg is None:
+        return []
+    seen: Set[str] = set()
+    uninstall = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    items = _read_uninstall_roots(
+        [
+            (winreg.HKEY_LOCAL_MACHINE, uninstall),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        ],
+        "machine",
+        seen,
+    )
+    items.extend(
+        _read_uninstall_roots(
+            [(winreg.HKEY_USERS, f"{sid}\\{uninstall}") for sid in _enumerate_hku_user_sids()], "user", seen
+        )
+    )
+    items.extend(_iter_store_apps(seen))
+    items.sort(key=lambda row: row.get("display_name", "").lower())
+    return items
+
+
+def collect_software_inventory(*, limit: int = 2500) -> Dict[str, Any]:
+    items = _iter_uninstall_software_items()[: max(1, int(limit))]
+    digest = hashlib.sha256(
+        json.dumps(items, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")
+    ).hexdigest()
+    collected_at = int(time.time())
+    payload = {
+        "items": items,
+        "count": len(items),
+        "snapshot_hash": digest,
+        "collected_at": collected_at,
+    }
+    try:
+        _atomic_write_text(
+            _software_inventory_state_path(),
+            json.dumps(
+                {
+                    "collected_at": collected_at,
+                    "snapshot_hash": digest,
+                    "count": len(items),
+                    "filter_version": SOFTWARE_INVENTORY_FILTER_VERSION,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logging.warning("Software inventory state write failed: %s", exc)
+    return payload
+
+
+def get_logical_disks() -> List[Dict[str, Any]]:
+    selected_by_device: Dict[str, Dict[str, Any]] = {}
+    skipped: Dict[str, int] = {}
+    try:
+        for part in psutil.disk_partitions(all=False):
+            if "cdrom" in part.opts or not part.fstype:
+                skipped["cdrom_or_no_fstype"] = skipped.get("cdrom_or_no_fstype", 0) + 1
+                continue
+            if is_container_mountpoint(part.mountpoint):
+                skipped["container_path"] = skipped.get("container_path", 0) + 1
+                continue
+            try:
+                usage = psutil.disk_usage(part.mountpoint)
+            except PermissionError:
+                skipped["permission"] = skipped.get("permission", 0) + 1
+                continue
+            except Exception:
+                skipped["usage_error"] = skipped.get("usage_error", 0) + 1
+                continue
+
+            total_gb = round(usage.total / (1024 ** 3), 2)
+            if total_gb <= 0:
+                skipped["empty"] = skipped.get("empty", 0) + 1
+                continue
+
+            disk = {
+                "device": part.device,
+                "mountpoint": part.mountpoint,
+                "fstype": part.fstype,
+                "total_gb": total_gb,
+                "used_gb": round(usage.used / (1024 ** 3), 2),
+                "free_gb": round(usage.free / (1024 ** 3), 2),
+                "percent": usage.percent,
+            }
+            key = sanitize_text(part.device).lower() or sanitize_text(part.mountpoint).lower()
+            if key not in selected_by_device:
+                selected_by_device[key] = disk
+                continue
+
+            current = selected_by_device[key]
+            if mountpoint_rank(disk["mountpoint"]) < mountpoint_rank(current["mountpoint"]):
+                selected_by_device[key] = disk
+            else:
+                skipped["duplicate"] = skipped.get("duplicate", 0) + 1
+    except Exception as exc:
+        logging.error("Logical disk collection failed: %s", exc)
+
+    if skipped:
+        logging.info(
+            "Filtered logical disks: %s",
+            ", ".join(f"{key}={value}" for key, value in sorted(skipped.items())),
+        )
+    return sorted(selected_by_device.values(), key=lambda item: sanitize_text(item.get("mountpoint")))
+
+
+def _empty_user_profile_sizes_payload(collected_at: int = 0) -> Dict[str, Any]:
+    return {
+        "cache_version": USER_PROFILE_SIZES_CACHE_SCHEMA_VERSION,
+        "collected_at": max(0, _to_int(collected_at, 0)),
+        "profiles_count": 0,
+        "total_size_bytes": 0,
+        "profiles": [],
+        "partial": False,
+        "partial_reasons": [],
+        "limits": _get_user_profile_size_limits(),
+    }
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = str(os.getenv(name, default)).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
+    return max(minimum, value)
+
+
+def _get_user_profile_size_limits() -> Dict[str, int]:
+    return {
+        "profile_budget_sec": _env_int(
+            "ITINV_USER_PROFILE_SIZE_PROFILE_BUDGET_SEC",
+            USER_PROFILE_SIZE_PROFILE_BUDGET_SEC,
+        ),
+        "total_budget_sec": _env_int(
+            "ITINV_USER_PROFILE_SIZE_TOTAL_BUDGET_SEC",
+            USER_PROFILE_SIZE_TOTAL_BUDGET_SEC,
+        ),
+        "max_entries_per_profile": _env_int(
+            "ITINV_USER_PROFILE_SIZE_MAX_ENTRIES_PER_PROFILE",
+            USER_PROFILE_SIZE_MAX_ENTRIES_PER_PROFILE,
+        ),
+        "max_profiles": max(1, int(USER_PROFILE_SIZE_MAX_PROFILES)),
+    }
+
+
+def _profile_size_cache_matches(payload: Dict[str, Any], limits: Dict[str, int]) -> bool:
+    return (
+        _to_int(payload.get("cache_version"), 0) == USER_PROFILE_SIZES_CACHE_SCHEMA_VERSION
+        and isinstance(payload.get("limits"), dict)
+        and {
+            "profile_budget_sec": _to_int(payload["limits"].get("profile_budget_sec"), 0),
+            "total_budget_sec": _to_int(payload["limits"].get("total_budget_sec"), 0),
+            "max_entries_per_profile": _to_int(payload["limits"].get("max_entries_per_profile"), 0),
+            "max_profiles": _to_int(payload["limits"].get("max_profiles"), 0),
+        }
+        == limits
+    )
+
+
+def _add_profile_partial_reason(reasons: List[str], reason: str) -> None:
+    value = sanitize_text(reason).lower()
+    if value in USER_PROFILE_SIZE_PARTIAL_REASONS and value not in reasons:
+        reasons.append(value)
+
+
+def _normalize_profile_partial_reasons(raw: Any) -> List[str]:
+    values = raw if isinstance(raw, list) else [raw]
+    reasons: List[str] = []
+    for value in values:
+        _add_profile_partial_reason(reasons, str(value or ""))
+    return reasons
+
+
+def _load_user_profile_sizes_cache() -> Dict[str, Any]:
+    path = get_user_profile_sizes_cache_path()
+    if not path.exists():
+        return _empty_user_profile_sizes_payload()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return _empty_user_profile_sizes_payload()
+    if not isinstance(payload, dict):
+        return _empty_user_profile_sizes_payload()
+    return payload
+
+
+def _save_user_profile_sizes_cache(payload: Dict[str, Any]) -> None:
+    try:
+        _atomic_write_text(get_user_profile_sizes_cache_path(), json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logging.warning("User profile sizes cache write failed: %s", exc)
+
+
+def _is_reparse_point(stat_result: Any) -> bool:
+    attr = int(getattr(stat_result, "st_file_attributes", 0) or 0)
+    marker = int(getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+    return bool(marker and attr & marker)
+
+
+def _should_skip_user_profile_dir(path: Path, stat_result: Any) -> bool:
+    if path.is_symlink() or _is_reparse_point(stat_result):
+        return True
+    return path.name.strip().lower() in USER_PROFILE_SIZE_SKIP_DIR_NAMES
+
+
+def _iter_user_profile_dirs(users_root: Optional[Path] = None, *, max_profiles: Optional[int] = None) -> List[Path]:
+    root = users_root or Path(r"C:\Users")
+    if not root.exists() or not root.is_dir():
+        return []
+    limit = max(1, int(max_profiles or USER_PROFILE_SIZE_MAX_PROFILES))
+    profiles: List[Path] = []
+    try:
+        for entry in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+            try:
+                stat_result = entry.lstat()
+            except Exception:
+                continue
+            if not stat_module.S_ISDIR(stat_result.st_mode):
+                continue
+            if entry.name.strip().lower() in USER_PROFILE_SIZE_IGNORED_PROFILE_DIRS:
+                continue
+            if entry.is_symlink() or _is_reparse_point(stat_result):
+                continue
+            profiles.append(entry)
+            if len(profiles) >= limit:
+                break
+    except Exception as exc:
+        logging.warning("User profile root scan failed (%s): %s", root, exc)
+    return profiles
+
+
+def _collect_tree_size(path: Path, *, deadline: float, max_entries: int) -> Dict[str, Any]:
+    result = {
+        "size_bytes": 0,
+        "files_count": 0,
+        "dirs_count": 0,
+        "errors_count": 0,
+        "entries_count": 0,
+        "partial": False,
+        "partial_reason": "",
+        "partial_reasons": [],
+    }
+    stack: List[Path] = [path]
+    while stack:
+        if time.monotonic() >= deadline:
+            result["partial"] = True
+            result["partial_reason"] = "timeout"
+            _add_profile_partial_reason(result["partial_reasons"], "timeout")
+            break
+        if result["entries_count"] >= max_entries:
+            result["partial"] = True
+            result["partial_reason"] = "entry_limit"
+            _add_profile_partial_reason(result["partial_reasons"], "entry_limit")
+            break
+        current = stack.pop()
+        try:
+            stat_result = current.lstat()
+        except Exception:
+            result["errors_count"] += 1
+            continue
+        if current.is_symlink() or _is_reparse_point(stat_result):
+            continue
+        mode = stat_result.st_mode
+        if stat_module.S_ISREG(mode):
+            result["size_bytes"] += max(0, int(stat_result.st_size))
+            result["files_count"] += 1
+            result["entries_count"] += 1
+            continue
+        if not stat_module.S_ISDIR(mode):
+            continue
+
+        result["dirs_count"] += 1
+        result["entries_count"] += 1
+        try:
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    if time.monotonic() >= deadline:
+                        result["partial"] = True
+                        result["partial_reason"] = "timeout"
+                        _add_profile_partial_reason(result["partial_reasons"], "timeout")
+                        break
+                    if result["entries_count"] >= max_entries:
+                        result["partial"] = True
+                        result["partial_reason"] = "entry_limit"
+                        _add_profile_partial_reason(result["partial_reasons"], "entry_limit")
+                        break
+                    try:
+                        child_stat = entry.stat(follow_symlinks=False)
+                    except Exception:
+                        result["errors_count"] += 1
+                        continue
+                    child_path = Path(entry.path)
+                    if stat_module.S_ISDIR(child_stat.st_mode):
+                        if _should_skip_user_profile_dir(child_path, child_stat):
+                            continue
+                        stack.append(child_path)
+                    elif stat_module.S_ISREG(child_stat.st_mode):
+                        result["size_bytes"] += max(0, int(child_stat.st_size))
+                        result["files_count"] += 1
+                        result["entries_count"] += 1
+        except Exception:
+            result["errors_count"] += 1
+    return result
+
+
+def _collect_user_profile_size(profile_path: Path, *, total_deadline: float, limits: Dict[str, int]) -> Dict[str, Any]:
+    started = time.monotonic()
+    profile_deadline = min(total_deadline, started + int(limits["profile_budget_sec"]))
+    entries_seen = 0
+    total_size = 0
+    files_count = 0
+    dirs_count = 0
+    errors_count = 0
+    partial = False
+    partial_reasons: List[str] = []
+    top_level_folders: List[Dict[str, Any]] = []
+
+    try:
+        children = sorted(profile_path.iterdir(), key=lambda item: item.name.lower())
+    except Exception:
+        children = []
+        errors_count += 1
+
+    for child in children:
+        if time.monotonic() >= profile_deadline:
+            partial = True
+            _add_profile_partial_reason(partial_reasons, "timeout")
+            break
+        if entries_seen >= int(limits["max_entries_per_profile"]):
+            partial = True
+            _add_profile_partial_reason(partial_reasons, "entry_limit")
+            break
+        try:
+            stat_result = child.lstat()
+        except Exception:
+            errors_count += 1
+            continue
+        if child.is_symlink() or _is_reparse_point(stat_result):
+            continue
+
+        if stat_module.S_ISREG(stat_result.st_mode):
+            total_size += max(0, int(stat_result.st_size))
+            files_count += 1
+            entries_seen += 1
+            continue
+
+        if not stat_module.S_ISDIR(stat_result.st_mode):
+            continue
+        if _should_skip_user_profile_dir(child, stat_result):
+            continue
+
+        remaining_entries = max(1, int(limits["max_entries_per_profile"]) - entries_seen)
+        folder_stats = _collect_tree_size(child, deadline=profile_deadline, max_entries=remaining_entries)
+        entries_seen += int(folder_stats.get("entries_count") or 0)
+        total_size += int(folder_stats.get("size_bytes") or 0)
+        files_count += int(folder_stats.get("files_count") or 0)
+        dirs_count += int(folder_stats.get("dirs_count") or 0)
+        errors_count += int(folder_stats.get("errors_count") or 0)
+        partial = partial or bool(folder_stats.get("partial"))
+        for reason in _normalize_profile_partial_reasons(folder_stats.get("partial_reasons")):
+            _add_profile_partial_reason(partial_reasons, reason)
+        top_level_folders.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "size_bytes": int(folder_stats.get("size_bytes") or 0),
+                "files_count": int(folder_stats.get("files_count") or 0),
+                "dirs_count": int(folder_stats.get("dirs_count") or 0),
+                "errors_count": int(folder_stats.get("errors_count") or 0),
+                "partial": bool(folder_stats.get("partial")),
+                "partial_reason": sanitize_text(folder_stats.get("partial_reason")),
+                "partial_reasons": _normalize_profile_partial_reasons(folder_stats.get("partial_reasons")),
+            }
+        )
+
+    top_level_folders.sort(key=lambda item: int(item.get("size_bytes") or 0), reverse=True)
+    return {
+        "user_name": profile_path.name,
+        "profile_path": str(profile_path),
+        "total_size_bytes": total_size,
+        "top_level_folders": top_level_folders,
+        "files_count": files_count,
+        "dirs_count": dirs_count,
+        "errors_count": errors_count,
+        "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
+        "partial": bool(partial),
+        "partial_reason": partial_reasons[0] if partial_reasons else "",
+        "partial_reasons": partial_reasons,
+    }
+
+
+def collect_user_profile_sizes(
+    *,
+    users_root: Optional[Path] = None,
+    allow_scan: bool = True,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    now_ts = int(time.time())
+    limits = _get_user_profile_size_limits()
+    cached = _load_user_profile_sizes_cache()
+    cached_at = _to_int(cached.get("collected_at"), 0) if isinstance(cached, dict) else 0
+    if (
+        cached_at > 0
+        and not force_refresh
+        and now_ts - cached_at < USER_PROFILE_SIZES_CACHE_TTL_SEC
+        and _profile_size_cache_matches(cached, limits)
+    ):
+        return cached
+    if not allow_scan:
+        return cached if cached_at > 0 else _empty_user_profile_sizes_payload()
+
+    started = time.monotonic()
+    total_deadline = started + int(limits["total_budget_sec"])
+    profiles: List[Dict[str, Any]] = []
+    partial = False
+    partial_reasons: List[str] = []
+    for profile_path in _iter_user_profile_dirs(users_root=users_root, max_profiles=limits["max_profiles"]):
+        if time.monotonic() >= total_deadline:
+            partial = True
+            _add_profile_partial_reason(partial_reasons, "total_timeout")
+            break
+        item = _collect_user_profile_size(profile_path, total_deadline=total_deadline, limits=limits)
+        profiles.append(item)
+        partial = partial or bool(item.get("partial"))
+        for reason in _normalize_profile_partial_reasons(item.get("partial_reasons")):
+            _add_profile_partial_reason(partial_reasons, reason)
+        if time.monotonic() >= total_deadline and bool(item.get("partial")):
+            _add_profile_partial_reason(partial_reasons, "total_timeout")
+
+    total_size = sum(int(item.get("total_size_bytes") or 0) for item in profiles)
+    payload = {
+        "cache_version": USER_PROFILE_SIZES_CACHE_SCHEMA_VERSION,
+        "collected_at": now_ts,
+        "profiles_count": len(profiles),
+        "total_size_bytes": total_size,
+        "profiles": profiles,
+        "partial": bool(partial),
+        "partial_reasons": partial_reasons,
+        "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
+        "limits": limits,
+    }
+    _save_user_profile_sizes_cache(payload)
+    logging.info(
+        "User profile sizes collected: profiles=%s total_bytes=%s partial=%s",
+        payload["profiles_count"],
+        payload["total_size_bytes"],
+        payload["partial"],
+    )
+    return payload
+
+
+def get_system_serial() -> str:
+    if wmi is None:
+        return "Unknown"
+    try:
+        c = wmi.WMI()
+        bios_items = c.Win32_BIOS()
+        if not bios_items:
+            return "Unknown"
+        serial = sanitize_text(getattr(bios_items[0], "SerialNumber", ""))
+        return serial or "Unknown"
+    except Exception as exc:
+        logging.error("System serial detection failed: %s", exc)
+        return "Unknown"
+
+
+def get_cpu_model() -> str:
+    if wmi is None:
+        return "Unknown"
+    try:
+        c = wmi.WMI()
+        cpus = c.Win32_Processor()
+        if not cpus:
+            return "Unknown"
+        return sanitize_text(getattr(cpus[0], "Name", "")) or "Unknown"
+    except Exception as exc:
+        logging.error("CPU detection failed: %s", exc)
+        return "Unknown"
+
+
+def _parse_wmi_datetime(value: str) -> str:
+    raw = sanitize_text(value)
+    if len(raw) < 14:
+        return raw
+    try:
+        return datetime.strptime(raw[:14], "%Y%m%d%H%M%S").isoformat()
+    except Exception:
+        return raw
+
+
+def get_os_info() -> Dict[str, Any]:
+    info: Dict[str, Any] = {
+        "platform": platform.system(),
+        "release": platform.release(),
+        "version": platform.version(),
+        "caption": "",
+        "build_number": "",
+        "install_date": "",
+    }
+    if wmi is None:
+        return info
+    try:
+        c = wmi.WMI()
+        rows = c.Win32_OperatingSystem()
+        if not rows:
+            return info
+        os_item = rows[0]
+        info["caption"] = sanitize_text(getattr(os_item, "Caption", ""))
+        info["version"] = sanitize_text(getattr(os_item, "Version", "")) or info["version"]
+        info["build_number"] = sanitize_text(getattr(os_item, "BuildNumber", ""))
+        info["install_date"] = _parse_wmi_datetime(sanitize_text(getattr(os_item, "InstallDate", "")))
+    except Exception as exc:
+        logging.warning("OS info collection failed: %s", exc)
+    return info
+
+
+def _powershell_json(command: str, timeout_sec: Optional[int] = None) -> Any:
+    result = run_cmd(["powershell", "-NoProfile", "-Command", command], timeout_sec=timeout_sec)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        return json.loads(result.stdout)
+    except Exception:
+        return None
+
+
+def _network_device_type(item: Dict[str, Any]) -> str:
+    combined = " ".join(
+        sanitize_text(item.get(key)).lower()
+        for key in ("name", "description", "media_type", "physical_media_type")
+    )
+    if "bluetooth" in combined or "блютуз" in combined:
+        return "bluetooth"
+    if any(token in combined for token in ("wi-fi", "wifi", "wireless", "802.11", "wlan", "беспровод")):
+        return "wifi"
+    if any(token in combined for token in ("vpn", "tunnel", "tap-windows", "wintun")):
+        return "vpn"
+    if bool(item.get("virtual")):
+        return "virtual"
+    if any(token in combined for token in ("ethernet", "802.3", "gigabit", "fast ethernet")):
+        return "ethernet"
+    return "other"
+
+
+def _network_device_enabled(*, admin_status: Any, status: Any, problem_code: Any = None) -> Optional[bool]:
+    problem_value = sanitize_text(problem_code)
+    if problem_value == "22":
+        return False
+    admin_value = sanitize_text(admin_status).lower()
+    status_value = sanitize_text(status).lower()
+    if admin_value in {"1", "up", "enabled"}:
+        return True
+    if admin_value in {"2", "down", "disabled"}:
+        return False
+    if status_value in {"disabled", "not present", "not_present"}:
+        return False
+    if problem_value == "0" or status_value in {"ok", "up", "disconnected"}:
+        return True
+    return None
+
+
+def _network_connection_status(status: Any, enabled: Optional[bool]) -> str:
+    if enabled is False:
+        return "disabled"
+    value = sanitize_text(status).lower().replace(" ", "_")
+    if value in {"up", "connected", "ok"}:
+        return "up"
+    if value in {"disconnected", "media_disconnected"}:
+        return "disconnected"
+    if value in {"not_present", "absent"}:
+        return "not_present"
+    if value in {"error", "degraded", "unknown"}:
+        return value
+    return "unknown"
+
+
+def _collect_windows_network_devices() -> List[Dict[str, Any]]:
+    command = (
+        "$net=@();$bluetooth=@();"
+        "try{$net=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop | "
+        "Where-Object {-not $_.Hidden} | ForEach-Object {[ordered]@{"
+        "name=$_.Name;description=$_.InterfaceDescription;status=[string]$_.Status;"
+        "admin_status=[int]$_.AdminStatus;media_type=[string]$_.MediaType;"
+        "physical_media_type=[string]$_.PhysicalMediaType;mac_address=$_.MacAddress;"
+        "link_speed=[string]$_.LinkSpeed;interface_index=[int]$_.ifIndex;"
+        "hardware_interface=[bool]$_.HardwareInterface;virtual=[bool]$_.Virtual}})}catch{};"
+        "try{$bluetooth=@(Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='Bluetooth'\" -ErrorAction Stop | "
+        "Where-Object {$_.PNPDeviceID -notlike 'BTHENUM\\*' "
+        "-and $_.Name -notmatch 'Enumerator|Перечислитель'} | ForEach-Object {[ordered]@{"
+        "name=$_.Name;status=[string]$_.Status;present=[bool]$_.Present;"
+        "pnp_device_id=$_.PNPDeviceID;problem_code=[int]$_.ConfigManagerErrorCode}})}catch{};"
+        "[ordered]@{network_adapters=$net;bluetooth_devices=$bluetooth}|"
+        "ConvertTo-Json -Depth 4 -Compress"
+    )
+    payload = _powershell_json(command)
+    if not isinstance(payload, dict):
+        return []
+
+    raw_network = payload.get("network_adapters")
+    raw_bluetooth = payload.get("bluetooth_devices")
+    network_rows = raw_network if isinstance(raw_network, list) else ([raw_network] if isinstance(raw_network, dict) else [])
+    bluetooth_rows = raw_bluetooth if isinstance(raw_bluetooth, list) else ([raw_bluetooth] if isinstance(raw_bluetooth, dict) else [])
+    devices: List[Dict[str, Any]] = []
+
+    for raw in network_rows:
+        if not isinstance(raw, dict):
+            continue
+        name = sanitize_text(raw.get("name"))
+        description = sanitize_text(raw.get("description"))
+        if not name and not description:
+            continue
+        enabled = _network_device_enabled(
+            admin_status=raw.get("admin_status"),
+            status=raw.get("status"),
+        )
+        devices.append(
+            {
+                "name": name or description,
+                "description": description,
+                "device_type": _network_device_type(raw),
+                "enabled": enabled,
+                "connection_status": _network_connection_status(raw.get("status"), enabled),
+                "admin_status": sanitize_text(raw.get("admin_status")),
+                "mac_address": sanitize_text(raw.get("mac_address")),
+                "link_speed": sanitize_text(raw.get("link_speed")),
+                "interface_index": int(raw.get("interface_index") or 0),
+                "physical": bool(raw.get("hardware_interface")),
+                "virtual": bool(raw.get("virtual")),
+                "ipv4": [],
+                "ipv6": [],
+            }
+        )
+
+    for raw in bluetooth_rows:
+        if not isinstance(raw, dict):
+            continue
+        name = sanitize_text(raw.get("name"))
+        if not name:
+            continue
+        enabled = _network_device_enabled(
+            admin_status="",
+            status=raw.get("status"),
+            problem_code=raw.get("problem_code"),
+        )
+        devices.append(
+            {
+                "name": name,
+                "description": "",
+                "device_type": "bluetooth",
+                "enabled": enabled,
+                "connection_status": _network_connection_status(raw.get("status"), enabled),
+                "admin_status": "",
+                "mac_address": "",
+                "link_speed": "",
+                "interface_index": 0,
+                "physical": True,
+                "virtual": False,
+                "pnp_device_id": sanitize_text(raw.get("pnp_device_id")),
+                "problem_code": int(raw.get("problem_code") or 0),
+                "ipv4": [],
+                "ipv6": [],
+            }
+        )
+    return devices
+
+
+def get_network_info() -> Dict[str, Any]:
+    adapters: List[Dict[str, Any]] = []
+    primary_adapter_name = ""
+    active_ipv4: List[str] = []
+    active_ipv6: List[str] = []
+    try:
+        stats = psutil.net_if_stats()
+        addrs_map = psutil.net_if_addrs()
+        for adapter_name, addrs in addrs_map.items():
+            state = stats.get(adapter_name)
+            if not state or not state.isup:
+                continue
+            if "loopback" in adapter_name.lower():
+                continue
+
+            ipv4 = []
+            ipv6 = []
+            for addr in addrs:
+                value = sanitize_text(getattr(addr, "address", ""))
+                if not value:
+                    continue
+                family_value = getattr(addr, "family", "")
+                if _is_af_inet6(family_value):
+                    ipv6.append(value)
+                    active_ipv6.append(value)
+                elif _is_af_inet(family_value):
+                    ipv4.append(value)
+                    active_ipv4.append(value)
+
+            if not ipv4 and not ipv6:
+                continue
+
+            adapters.append(
+                {
+                    "name": adapter_name,
+                    "ipv4": ipv4,
+                    "ipv6": ipv6,
+                    "speed_mbps": getattr(state, "speed", 0),
+                }
+            )
+            if not primary_adapter_name:
+                primary_adapter_name = adapter_name
+    except Exception as exc:
+        logging.warning("Network adapter enumeration failed: %s", exc)
+
+    devices = _collect_windows_network_devices()
+    active_by_name = {str(item.get("name") or "").casefold(): item for item in adapters}
+    for device in devices:
+        active = active_by_name.get(str(device.get("name") or "").casefold())
+        if active:
+            device["ipv4"] = list(active.get("ipv4") or [])
+            device["ipv6"] = list(active.get("ipv6") or [])
+
+    type_counts: Dict[str, int] = {}
+    for device in devices:
+        device_type = str(device.get("device_type") or "other")
+        type_counts[device_type] = int(type_counts.get(device_type) or 0) + 1
+    summary = {
+        "total": len(devices),
+        "enabled": sum(1 for item in devices if item.get("enabled") is True),
+        "disabled": sum(1 for item in devices if item.get("enabled") is False),
+        "connected": sum(1 for item in devices if item.get("connection_status") == "up"),
+        "by_type": type_counts,
+    }
+
+    default_gateway = ""
+    dns_servers: List[str] = []
+    gateway_data = _powershell_json(
+        "Get-NetRoute -DestinationPrefix '0.0.0.0/0' | "
+        "Sort-Object RouteMetric | Select-Object -First 1 -ExpandProperty NextHop | ConvertTo-Json -Compress"
+    )
+    if isinstance(gateway_data, str):
+        default_gateway = sanitize_text(gateway_data)
+
+    dns_data = _powershell_json(
+        "Get-DnsClientServerAddress -AddressFamily IPv4 | "
+        "Where-Object {$_.ServerAddresses -and $_.InterfaceAlias} | "
+        "Select-Object -First 1 -ExpandProperty ServerAddresses | ConvertTo-Json -Compress"
+    )
+    if isinstance(dns_data, list):
+        dns_servers = [sanitize_text(item) for item in dns_data if sanitize_text(item)]
+    elif isinstance(dns_data, str):
+        value = sanitize_text(dns_data)
+        if value:
+            dns_servers = [value]
+
+    return {
+        "primary_adapter_name": primary_adapter_name,
+        "adapters": adapters,
+        "devices": devices,
+        "summary": summary,
+        "active_ipv4": _dedupe_preserve_order(active_ipv4),
+        "active_ipv6": _dedupe_preserve_order(active_ipv6),
+        "default_gateway": default_gateway,
+        "dns_servers": _dedupe_preserve_order(dns_servers),
+    }
+
+
+def get_active_ipv4_addresses() -> List[str]:
+    values: List[str] = []
+    try:
+        stats = psutil.net_if_stats()
+        addrs_map = psutil.net_if_addrs()
+        for adapter_name, addrs in addrs_map.items():
+            state = stats.get(adapter_name)
+            if not state or not state.isup:
+                continue
+            if "loopback" in adapter_name.lower():
+                continue
+            for addr in addrs:
+                family_value = getattr(addr, "family", "")
+                if not _is_af_inet(family_value):
+                    continue
+                value = sanitize_text(getattr(addr, "address", ""))
+                if value:
+                    values.append(value)
+    except Exception as exc:
+        logging.warning("Active IPv4 quick scan failed: %s", exc)
+    return _dedupe_preserve_order(values)
+
+
+def get_health_info() -> Dict[str, Any]:
+    now_ts = int(time.time())
+    boot_time = int(psutil.boot_time())
+    vm = psutil.virtual_memory()
+    cpu_load = round(float(psutil.cpu_percent(interval=0.2)), 1)
+    ram_used = round(float(vm.percent), 1)
+    return {
+        "uptime_seconds": max(0, now_ts - boot_time),
+        "cpu_load_percent": cpu_load,
+        "ram_used_percent": ram_used,
+        "boot_time": boot_time,
+        "last_reboot_at": boot_time,
+        "last_reboot_iso": datetime.fromtimestamp(boot_time).isoformat(),
+    }
+
+
+def get_security_info() -> Dict[str, Any]:
+    antivirus_items: List[Dict[str, Any]] = []
+    if wmi is not None:
+        try:
+            sc = wmi.WMI(namespace=r"root\SecurityCenter2")
+            for item in sc.AntiVirusProduct():
+                antivirus_items.append(
+                    {
+                        "display_name": sanitize_text(getattr(item, "displayName", "")),
+                        "product_state": sanitize_text(getattr(item, "productState", "")),
+                    }
+                )
+        except Exception as exc:
+            logging.warning("Antivirus data collection failed: %s", exc)
+
+    bitlocker = {"system_drive_protection": "unknown", "system_drive_status": ""}
+    bitlocker_data = _powershell_json(
+        "Get-BitLockerVolume -MountPoint 'C:' | "
+        "Select-Object ProtectionStatus,VolumeStatus | ConvertTo-Json -Compress"
+    )
+    if isinstance(bitlocker_data, dict):
+        bitlocker["system_drive_protection"] = sanitize_text(bitlocker_data.get("ProtectionStatus")) or "unknown"
+        bitlocker["system_drive_status"] = sanitize_text(bitlocker_data.get("VolumeStatus"))
+
+    security: Dict[str, Any] = {"antivirus": antivirus_items, "bitlocker": bitlocker}
+    security.update(_collect_security_posture())
+    return security
+
+
+_SECURITY_POSTURE_SCRIPT = (
+    "$r=[ordered]@{};"
+    "try{$r.firewall=@(Get-NetFirewallProfile|ForEach-Object{[ordered]@{name=[string]$_.Name;enabled=[bool]$_.Enabled}})}catch{};"
+    "try{$m=Get-MpComputerStatus;$r.defender=[ordered]@{realtime=[bool]$m.RealTimeProtectionEnabled;"
+    "signature_updated=$m.AntivirusSignatureLastUpdated.ToString('o');signature_version=[string]$m.AntivirusSignatureVersion}}catch{};"
+    "try{$r.rdp_enabled=((Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server').fDenyTSConnections -eq 0)}catch{};"
+    "try{$r.local_admins=@(Get-LocalGroupMember -SID S-1-5-32-544|ForEach-Object{[string]$_.Name})}catch{};"
+    "try{$r.secure_boot=[bool](Confirm-SecureBootUEFI)}catch{};"
+    "try{$t=Get-Tpm;$r.tpm=[ordered]@{present=[bool]$t.TpmPresent;ready=[bool]$t.TpmReady}}catch{};"
+    "try{$r.bitlocker_volumes=@(Get-BitLockerVolume|ForEach-Object{[ordered]@{mount=[string]$_.MountPoint;"
+    "protection=[string]$_.ProtectionStatus;status=[string]$_.VolumeStatus}})}catch{};"
+    "$r|ConvertTo-Json -Compress -Depth 4"
+)
+
+
+def _as_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    return [value]
+
+
+def _collect_security_posture() -> Dict[str, Any]:
+    """Firewall, Defender signatures, RDP, local admins, Secure Boot, TPM, BitLocker of all volumes.
+
+    One PowerShell call; every part is optional, a failing cmdlet only drops its own key.
+    """
+    if not _is_truthy(os.getenv("ITINV_SECURITY_POSTURE_ENABLED", "1"), default=True):
+        return {}
+    data = _powershell_json(_SECURITY_POSTURE_SCRIPT, timeout_sec=90)
+    if not isinstance(data, dict):
+        return {}
+    posture: Dict[str, Any] = {}
+    if "firewall" in data:
+        posture["firewall"] = [
+            {"name": sanitize_text(item.get("name")), "enabled": bool(item.get("enabled"))}
+            for item in _as_list(data.get("firewall"))
+            if isinstance(item, dict)
+        ]
+    if isinstance(data.get("defender"), dict):
+        defender = data["defender"]
+        posture["defender"] = {
+            "realtime": bool(defender.get("realtime")),
+            "signature_updated": sanitize_text(defender.get("signature_updated")),
+            "signature_version": sanitize_text(defender.get("signature_version")),
+        }
+    for key in ("rdp_enabled", "secure_boot"):
+        if isinstance(data.get(key), bool):
+            posture[key] = data[key]
+    if "local_admins" in data:
+        posture["local_admins"] = sorted(
+            {sanitize_text(item) for item in _as_list(data.get("local_admins")) if sanitize_text(item)}
+        )
+    if isinstance(data.get("tpm"), dict):
+        posture["tpm"] = {"present": bool(data["tpm"].get("present")), "ready": bool(data["tpm"].get("ready"))}
+    if "bitlocker_volumes" in data:
+        posture["bitlocker_volumes"] = [
+            {
+                "mount": sanitize_text(item.get("mount")),
+                "protection": sanitize_text(item.get("protection")),
+                "status": sanitize_text(item.get("status")),
+            }
+            for item in _as_list(data.get("bitlocker_volumes"))
+            if isinstance(item, dict)
+        ]
+    return posture
+
+
+USBSTOR_ENUM_PATH = r"SYSTEM\CurrentControlSet\Enum\USBSTOR"
+USB_TIMESTAMP_PROPERTIES = r"Properties\{83da6326-97a6-4088-9453-a1923f573b29}"
+_WINDOWS_GENERATED_SERIAL_RE = re.compile(r"^\d&")
+_USB_PRESENT_SCRIPT = (
+    "$d=@(Get-CimInstance Win32_DiskDrive -Filter \"InterfaceType='USB'\"|ForEach-Object{"
+    "[ordered]@{pnp=[string]$_.PNPDeviceID;model=[string]$_.Model;size=[int64]$_.Size}});"
+    "$p=@(Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='WPD' OR PNPClass='Image'\"|ForEach-Object{"
+    "[ordered]@{pnp=[string]$_.PNPDeviceID;name=[string]$_.Name;cls=[string]$_.PNPClass;mfr=[string]$_.Manufacturer}});"
+    "[ordered]@{disks=$d;portable=$p}|ConvertTo-Json -Compress -Depth 4"
+)
+
+
+def filetime_to_epoch(raw: Any) -> int:
+    """Registry FILETIME (100 ns since 1601-01-01 UTC) -> unix seconds; 0 when empty or invalid."""
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) < 8:
+        return 0
+    value = int.from_bytes(bytes(raw[:8]), "little")
+    if value <= 0:
+        return 0
+    seconds = value // 10_000_000 - 11_644_473_600
+    return seconds if seconds > 0 else 0
+
+
+def parse_usbstor_ids(class_key: str, instance_key: str) -> Dict[str, Any]:
+    """Split USBSTOR\\Disk&Ven_X&Prod_Y&Rev_Z\\<serial>&0 into vendor/product/revision/serial.
+
+    Windows invents an id such as ``6&1f4a2b3c&0`` for devices without a serial number: such an id
+    is only stable on one computer, so ``has_unique_serial`` is False and it must not be searched fleet-wide.
+    """
+    vendor = product = revision = device_type = ""
+    for part in sanitize_text(class_key).split("&"):
+        lowered = part.lower()
+        if lowered.startswith("ven_"):
+            vendor = part[4:].replace("_", " ").strip()
+        elif lowered.startswith("prod_"):
+            product = part[5:].replace("_", " ").strip()
+        elif lowered.startswith("rev_"):
+            revision = part[4:].strip()
+        elif not device_type:
+            device_type = part.strip()
+    instance = sanitize_text(instance_key)
+    serial = instance.rsplit("&", 1)[0] if "&" in instance else instance
+    return {
+        "device_type": device_type,
+        "vendor": vendor,
+        "product": product,
+        "revision": revision,
+        "serial": serial,
+        "has_unique_serial": bool(serial) and not _WINDOWS_GENERATED_SERIAL_RE.match(instance),
+    }
+
+
+def _read_registry_filetime(root: Any, key_path: str) -> int:
+    try:
+        with winreg.OpenKey(root, key_path) as key:
+            raw, _kind = winreg.QueryValueEx(key, "")
+        return filetime_to_epoch(raw)
+    except Exception:
+        return 0
+
+
+def _iter_usbstor_history() -> List[Dict[str, Any]]:
+    """Every USB mass-storage device Windows has ever seen on this computer (registry USBSTOR)."""
+    if winreg is None:
+        return []
+    items: List[Dict[str, Any]] = []
+    root = winreg.HKEY_LOCAL_MACHINE
+    try:
+        with winreg.OpenKey(root, USBSTOR_ENUM_PATH) as parent:
+            class_count = winreg.QueryInfoKey(parent)[0]
+            class_keys = [winreg.EnumKey(parent, index) for index in range(class_count)]
+    except Exception:
+        return []
+    for class_key in class_keys:
+        class_path = f"{USBSTOR_ENUM_PATH}\\{class_key}"
+        try:
+            with winreg.OpenKey(root, class_path) as class_handle:
+                instance_keys = [winreg.EnumKey(class_handle, i) for i in range(winreg.QueryInfoKey(class_handle)[0])]
+        except Exception:
+            continue
+        for instance_key in instance_keys:
+            instance_path = f"{class_path}\\{instance_key}"
+            friendly_name = ""
+            try:
+                with winreg.OpenKey(root, instance_path) as instance_handle:
+                    friendly_name = sanitize_text(winreg.QueryValueEx(instance_handle, "FriendlyName")[0])
+            except Exception:
+                pass
+            stamps = f"{instance_path}\\{USB_TIMESTAMP_PROPERTIES}"
+            first_connected = _read_registry_filetime(root, f"{stamps}\\0065") or _read_registry_filetime(
+                root, f"{stamps}\\0064"
+            )
+            row = parse_usbstor_ids(class_key, instance_key)
+            row.update(
+                {
+                    "kind": "storage",
+                    "friendly_name": friendly_name,
+                    "first_connected_at": first_connected or None,
+                    "last_connected_at": _read_registry_filetime(root, f"{stamps}\\0066") or None,
+                    "last_removed_at": _read_registry_filetime(root, f"{stamps}\\0067") or None,
+                    "present": False,
+                    "size_gb": None,
+                    "pnp_device_id": f"USBSTOR\\{class_key}\\{instance_key}",
+                }
+            )
+            items.append(row)
+    return items
+
+
+def collect_usb_devices(*, limit: int = 500) -> Dict[str, Any]:
+    """USB devices of this computer: storage history from the registry plus what is plugged in right now."""
+    history = _iter_usbstor_history()
+    present_data = _powershell_json(_USB_PRESENT_SCRIPT, timeout_sec=60)
+    present_data = present_data if isinstance(present_data, dict) else {}
+    present_by_id: Dict[str, Dict[str, Any]] = {}
+    for disk in _as_list(present_data.get("disks")):
+        if isinstance(disk, dict) and sanitize_text(disk.get("pnp")):
+            present_by_id[sanitize_text(disk.get("pnp")).lower()] = disk
+    for row in history:
+        match = present_by_id.get(sanitize_text(row.get("pnp_device_id")).lower())
+        if match is not None:
+            row["present"] = True
+            size = _to_int_or_none(match.get("size"))
+            row["size_gb"] = round(size / (1024.0 ** 3), 1) if size else None
+    portable_rows: List[Dict[str, Any]] = []
+    for item in _as_list(present_data.get("portable")):
+        if not isinstance(item, dict) or not sanitize_text(item.get("pnp")):
+            continue
+        pnp_id = sanitize_text(item.get("pnp"))
+        if not pnp_id.upper().startswith(("USB\\", "SWD\\WPDBUSENUM")):
+            continue
+        portable_rows.append(
+            {
+                "kind": "portable",
+                "device_type": sanitize_text(item.get("cls")),
+                "vendor": sanitize_text(item.get("mfr")),
+                "product": sanitize_text(item.get("name")),
+                "friendly_name": sanitize_text(item.get("name")),
+                "revision": "",
+                "serial": pnp_id.rsplit("\\", 1)[-1],
+                "has_unique_serial": False,
+                "first_connected_at": None,
+                "last_connected_at": None,
+                "last_removed_at": None,
+                "present": True,
+                "size_gb": None,
+                "pnp_device_id": pnp_id,
+            }
+        )
+    items = (history + portable_rows)[: max(1, int(limit))]
+    items.sort(key=lambda row: (not row.get("present"), -(row.get("last_connected_at") or 0), row.get("product") or ""))
+    digest = hashlib.sha256(
+        json.dumps(items, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")
+    ).hexdigest()
+    return {"items": items, "count": len(items), "snapshot_hash": digest, "collected_at": int(time.time())}
+
+
+def get_updates_info() -> Dict[str, Any]:
+    last_hotfix_date = ""
+    if wmi is not None:
+        try:
+            c = wmi.WMI()
+            rows = c.Win32_QuickFixEngineering()
+            dates = [sanitize_text(getattr(row, "InstalledOn", "")) for row in rows]
+            dates = [item for item in dates if item]
+            if dates:
+                last_hotfix_date = dates[-1]
+        except Exception as exc:
+            logging.warning("Hotfix data collection failed: %s", exc)
+    return {"last_hotfix_date": last_hotfix_date}
+
+
+def collect_inventory(report_type: str = "full_snapshot", include_full_snapshot: bool = True) -> Dict[str, Any]:
+    now_ts = int(time.time())
+    user_login = get_active_console_user()
+    health_info = get_health_info()
+    outlook_info = collect_outlook_info(user_login, force_refresh=include_full_snapshot)
+    user_profile_sizes = collect_user_profile_sizes(allow_scan=include_full_snapshot)
+    network_info: Optional[Dict[str, Any]] = get_network_info() if include_full_snapshot else None
+    if isinstance(network_info, dict):
+        ip_list = _dedupe_preserve_order([sanitize_text(item) for item in network_info.get("active_ipv4", [])])
+    else:
+        ip_list = get_active_ipv4_addresses()
+    ip_list = _dedupe_preserve_order(ip_list)
+    ip_primary = ip_list[0] if ip_list else ""
+
+    payload: Dict[str, Any] = {
+        "hostname": socket.gethostname(),
+        "mac_address": get_mac_address(),
+        "current_user": user_login,
+        "user_login": user_login,
+        "user_full_name": resolve_user_full_name(user_login),
+        "ip_primary": ip_primary,
+        "ip_list": ip_list,
+        "timestamp": now_ts,
+        "report_type": report_type,
+        "last_seen_at": now_ts,
+        "health": health_info,
+        "outlook": outlook_info,
+        "user_profile_sizes": user_profile_sizes,
+        "uptime_seconds": health_info.get("uptime_seconds"),
+        "cpu_load_percent": health_info.get("cpu_load_percent"),
+        "ram_used_percent": health_info.get("ram_used_percent"),
+        "last_reboot_at": health_info.get("last_reboot_at"),
+        "agent_runtime": {
+            "agent_version": AGENT_VERSION,
+            "inventory_queue_depth": _inventory_queue_depth(),
+            "inventory_dead_letter_depth": _inventory_dead_letter_depth(),
+            "scan_outbox_depth": _scan_outbox_depth(),
+            "scan_dead_letter_depth": _scan_dead_letter_depth(),
+            "last_scan_ingest_ok_at": _read_scan_last_ingest_ok_at(),
+            "sidecars": collect_sidecar_health(),
+        },
+    }
+
+    logical_disks: Optional[List[Dict[str, Any]]] = None
+    if include_full_snapshot:
+        logical_disks = get_logical_disks()
+        payload.update(
+            {
+                "system_serial": get_system_serial(),
+                "cpu_model": get_cpu_model(),
+                "ram_gb": round(psutil.virtual_memory().total / (1024.0 ** 3), 2),
+                "monitors": get_monitors(),
+                "logical_disks": logical_disks,
+                "storage": get_storage_info(),
+                "os_info": get_os_info(),
+                "network": network_info or get_network_info(),
+                "security": get_security_info(),
+                "updates": get_updates_info(),
+                "last_full_snapshot_at": now_ts,
+            }
+        )
+        if _software_inventory_due(now_ts):
+            try:
+                payload["software_inventory"] = collect_software_inventory()
+            except Exception as exc:
+                logging.warning("Software inventory collection failed: %s", exc)
+        if _is_truthy(os.getenv("ITINV_USB_INVENTORY_ENABLED", "1"), default=True):
+            try:
+                payload["usb_devices"] = collect_usb_devices()
+            except Exception as exc:
+                logging.warning("USB device inventory collection failed: %s", exc)
+
+    payload["ops_health"] = build_ops_health(logical_disks)
+
+    logging.info(
+        "Inventory collected for host=%s user=%s type=%s",
+        payload.get("hostname"),
+        payload.get("current_user"),
+        payload.get("report_type"),
+    )
+    return payload
+
+
+def _requests_verify_arg(config: AgentConfig) -> Any:
+    return config.ca_bundle or True
+
+
+def _post_payload(payload: Dict[str, Any], config: AgentConfig) -> bool:
+    headers = {"Content-Type": "application/json", "X-API-Key": config.api_key}
+    verify_arg = _requests_verify_arg(config)
+    retry_delays = [0, 2, 5, 15]
+    # Serialize once so the POST timeout scales with the real body size — a fixed
+    # 10s aborts mid-upload on slow hosts and the same report retries forever.
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    post_timeout = max(float(config.timeout), 60.0, len(body) / (256 * 1024) * 60.0)
+
+    for attempt, delay in enumerate(retry_delays, start=1):
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            logging.info("Sending inventory to %s (attempt=%s)", config.server_url, attempt)
+            response = requests.post(
+                config.server_url,
+                data=body,
+                headers=headers,
+                timeout=post_timeout,
+                verify=verify_arg,
+            )
+            response.raise_for_status()
+            if not _inventory_ack_is_valid(response):
+                # A 2xx that is not the server's ACK (proxy page, wrong target, error JSON)
+                # must not make the agent drop its only copy of the report.
+                logging.warning(
+                    "Inventory send got status=%s without a valid server ACK on attempt=%s",
+                    response.status_code,
+                    attempt,
+                )
+                continue
+            logging.info("Inventory sent successfully, status=%s", response.status_code)
+            return True
+        except requests.exceptions.RequestException as exc:
+            logging.warning("Inventory send failed on attempt=%s: %s", attempt, exc)
+    return False
+
+
+def _inventory_ack_is_valid(response: Any) -> bool:
+    try:
+        body = response.json()
+    except Exception:
+        return False
+    return isinstance(body, dict) and body.get("success") is True
+
+
+def _inventory_queue_paths() -> List[Path]:
+    pending_dir = get_inventory_queue_pending_dir()
+    if not pending_dir.exists():
+        return []
+    return sorted([row for row in pending_dir.glob("*.json") if row.is_file()], key=lambda row: row.name)
+
+
+def _inventory_queue_read(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logging.warning("Inventory queue read failed (%s): %s", path, exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    data["id"] = str(data.get("id") or path.stem)
+    data["created_at"] = _to_int(data.get("created_at"), int(time.time()))
+    data["attempts"] = max(0, _to_int(data.get("attempts"), 0))
+    data["next_attempt_at"] = _to_int(data.get("next_attempt_at"), 0)
+    data["last_error"] = str(data.get("last_error") or "")
+    return data
+
+
+def _inventory_queue_write(path: Path, item: Dict[str, Any]) -> None:
+    _atomic_write_text(path, json.dumps(item, ensure_ascii=False), encoding="utf-8")
+
+
+def _inventory_queue_dead_path(path: Path) -> Path:
+    return get_inventory_queue_dead_dir() / path.name
+
+
+def _inventory_queue_move_to_dead(path: Path, item: Optional[Dict[str, Any]], reason: str) -> bool:
+    payload: Dict[str, Any] = item or {}
+    payload["dropped_reason"] = str(reason or "unknown")
+    payload["dropped_at"] = int(time.time())
+    dead_path = _inventory_queue_dead_path(path)
+    try:
+        _inventory_queue_write(dead_path, payload)
+    except Exception as exc:
+        # Keep the pending report: deleting it now would lose a report the server never acknowledged.
+        logging.warning("Inventory dead-letter write failed, report kept in queue (%s): %s", dead_path, exc)
+        return False
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as exc:
+        logging.warning("Inventory queue delete failed (%s): %s", path, exc)
+    return True
+
+
+def _inventory_queue_enqueue(payload: Dict[str, Any]) -> Path:
+    now_ts = int(time.time())
+    item_id = uuid.uuid4().hex
+    filename = f"{now_ts:010d}_{item_id}.json"
+    path = get_inventory_queue_pending_dir() / filename
+    item = {
+        "id": item_id,
+        "created_at": now_ts,
+        "payload": payload,
+        "attempts": 0,
+        "next_attempt_at": 0,
+        "last_error": "",
+    }
+    _inventory_queue_write(path, item)
+    return path
+
+
+def _inventory_backoff_seconds(attempts: int) -> int:
+    attempts_count = max(1, attempts)
+    base = min(3600, 5 * (2 ** min(attempts_count - 1, 10)))
+    jitter = random.uniform(0.85, 1.25)
+    return max(5, int(base * jitter))
+
+
+def _inventory_queue_prune_limits(config: AgentConfig) -> Dict[Path, int]:
+    now_ts = int(time.time())
+    max_age_seconds = config.inventory_queue_max_age_days * 24 * 60 * 60
+    max_total_size = config.inventory_queue_max_total_mb * 1024 * 1024
+    entries: List[Tuple[Path, int]] = []
+    retry_schedule: Dict[Path, int] = {}
+
+    for path in _inventory_queue_paths():
+        try:
+            size_bytes = int(path.stat().st_size)
+        except Exception:
+            size_bytes = 0
+        item = _inventory_queue_read(path)
+        if item is None:
+            _inventory_queue_move_to_dead(path, None, "QUEUE_CORRUPT")
+            continue
+        retry_schedule[path] = item["next_attempt_at"]
+        if max_age_seconds > 0 and (now_ts - _to_int(item.get("created_at"), now_ts)) > max_age_seconds:
+            logging.warning("Inventory queue item expired by age: %s", path.name)
+            _inventory_queue_move_to_dead(path, item, "QUEUE_MAX_AGE")
+            continue
+        entries.append((path, size_bytes))
+
+    excess_count = len(entries) - config.inventory_queue_max_items
+    total_size = sum(size_bytes for _, size_bytes in entries)
+    for index, (path, size_bytes) in enumerate(entries):
+        if index < excess_count:
+            limit = "COUNT"
+        elif total_size > max_total_size:
+            limit = "SIZE"
+        else:
+            break
+        item = _inventory_queue_read(path)
+        if item is not None:
+            logging.warning("Inventory queue full by %s, moving oldest to dead-letter: %s", limit.lower(), path.name)
+            _inventory_queue_move_to_dead(path, item, f"QUEUE_FULL_{limit}")
+        total_size -= size_bytes
+
+    return retry_schedule
+
+
+def _inventory_queue_depth() -> int:
+    return len(_inventory_queue_paths())
+
+
+def _inventory_dead_letter_depth() -> int:
+    root = get_inventory_queue_dead_dir()
+    if not root.exists():
+        return 0
+    return len([row for row in root.glob("*.json") if row.is_file()])
+
+
+def _scan_outbox_depth() -> int:
+    outbox_pending = PROGRAM_DATA_SCAN_AGENT_ROOT / "outbox" / "pending"
+    if not outbox_pending.exists():
+        return 0
+    return len([row for row in outbox_pending.glob("*.json") if row.is_file()])
+
+
+def _scan_dead_letter_depth() -> int:
+    dead_letter = PROGRAM_DATA_SCAN_AGENT_ROOT / "outbox" / "dead_letter"
+    if not dead_letter.exists():
+        return 0
+    return len([row for row in dead_letter.glob("*.json") if row.is_file()])
+
+
+def _read_scan_last_ingest_ok_at() -> Optional[int]:
+    path = PROGRAM_DATA_SCAN_AGENT_ROOT / "scan_agent_status.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return _to_int(data.get("last_ingest_ok_at"), 0) or None
+
+
+def _write_agent_status(payload: Dict[str, Any]) -> None:
+    path = get_agent_status_path()
+    try:
+        _atomic_write_text(path, json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logging.debug("Agent status write failed (%s): %s", path, exc)
+
+
+def send_data(payload: Dict[str, Any], config: AgentConfig) -> bool:
+    try:
+        enqueued_path = _inventory_queue_enqueue(payload)
+    except Exception as exc:
+        logging.error("Inventory queue enqueue failed: %s", exc)
+        return False
+
+    retry_schedule = _inventory_queue_prune_limits(config)
+    now_ts = int(time.time())
+    sent_this_payload = False
+    queue_paths = _inventory_queue_paths()
+    if enqueued_path in queue_paths:
+        queue_paths.remove(enqueued_path)
+        queue_paths.insert(0, enqueued_path)
+    backlog_remaining = max(0, int(config.inventory_queue_batch))
+
+    for path in queue_paths:
+        is_current = path == enqueued_path
+        if not is_current and backlog_remaining == 0:
+            break
+        if retry_schedule.get(path, 0) > now_ts:
+            continue
+        item = _inventory_queue_read(path)
+        if item is None:
+            _inventory_queue_move_to_dead(path, None, "QUEUE_CORRUPT")
+            continue
+
+        if item["next_attempt_at"] > now_ts:
+            continue
+
+        payload_row = item.get("payload")
+        if not isinstance(payload_row, dict):
+            _inventory_queue_move_to_dead(path, item, "QUEUE_INVALID_PAYLOAD")
+            continue
+
+        if not is_current:
+            backlog_remaining -= 1
+        if _post_payload(payload_row, config):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception as exc:
+                logging.warning("Inventory queue delete after ACK failed (%s): %s", path, exc)
+            if is_current:
+                sent_this_payload = True
+            continue
+
+        attempts = _to_int(item.get("attempts"), 0) + 1
+        item["attempts"] = attempts
+        item["next_attempt_at"] = now_ts + _inventory_backoff_seconds(attempts)
+        item["last_error"] = "NET_TIMEOUT_OR_HTTP_ERROR"
+        try:
+            _inventory_queue_write(path, item)
+        except Exception as exc:
+            logging.warning("Inventory queue rewrite failed (%s): %s", path, exc)
+        if is_current:
+            break
+
+    return sent_this_payload
+
+
+def build_health_url(server_url: str) -> str:
+    parsed = urlparse(server_url)
+    return urlunparse((parsed.scheme, parsed.netloc, "/health", "", "", ""))
+
+
+def check_configuration(config: AgentConfig) -> bool:
+    ok = True
+    if not config.server_url:
+        logging.error("SERVER_URL is empty")
+        ok = False
+    if not config.api_key:
+        logging.error("API_KEY is empty")
+        ok = False
+    if not ok:
+        return False
+
+    parsed = urlparse(config.server_url)
+    if parsed.scheme.lower() != "https":
+        logging.warning("SERVER_URL is not HTTPS: %s", config.server_url)
+
+    host = parsed.hostname or ""
+    port = int(parsed.port or (443 if parsed.scheme.lower() == "https" else 80))
+    if host:
+        try:
+            resolved = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            ips = sorted({str(row[4][0]) for row in resolved if row and len(row) > 4 and row[4]})
+            logging.info("DNS resolve host=%s port=%s -> %s", host, port, ", ".join(ips[:6]) or "no-ip")
+        except Exception as exc:
+            logging.error("DNS resolve failed for %s:%s: %s", host, port, exc)
+            return False
+
+    verify_arg = _requests_verify_arg(config)
+    health_url = build_health_url(config.server_url)
+    try:
+        health_response = requests.get(health_url, timeout=config.timeout, verify=verify_arg)
+        logging.info("Health check %s -> status=%s", health_url, health_response.status_code)
+    except requests.exceptions.RequestException as exc:
+        logging.error("Health endpoint is not reachable: %s", exc)
+        return False
+
+    try:
+        probe_payload = {"timestamp": int(time.time())}
+        probe = requests.post(
+            config.server_url,
+            json=probe_payload,
+            headers={"Content-Type": "application/json", "X-API-Key": config.api_key},
+            timeout=config.timeout,
+            verify=verify_arg,
+        )
+        logging.info("Inventory auth probe %s -> status=%s", config.server_url, probe.status_code)
+        if probe.status_code in (401, 403):
+            logging.error("Inventory auth probe failed: invalid API key")
+            return False
+        if probe.status_code >= 500:
+            logging.error("Inventory endpoint returned server error on probe: status=%s", probe.status_code)
+            return False
+    except requests.exceptions.RequestException as exc:
+        logging.error("Inventory endpoint is not reachable: %s", exc)
+        return False
+
+    return True
+
+
+def run_loop(config: AgentConfig, run_once: bool = False) -> int:
+    process_started_at = int(time.time())
+    if run_once:
+        _run_scan_sidecar(run_once=True)
+        payload = collect_inventory(report_type="full_snapshot", include_full_snapshot=True)
+        health_info = payload.get("health") if isinstance(payload.get("health"), dict) else {}
+        try:
+            maybe_notify_reboot_required(health_info, config)
+        except Exception as exc:
+            logging.warning("Reboot reminder check failed: %s", exc)
+        sent_now = send_data(payload, config)
+        _write_agent_status(
+            {
+                "last_inventory_ok_at": int(time.time()) if sent_now else None,
+                "inventory_queue_depth": _inventory_queue_depth(),
+                "scan_outbox_depth": _scan_outbox_depth(),
+                "last_scan_ingest_ok_at": _read_scan_last_ingest_ok_at(),
+                "last_error": "" if sent_now else "INVENTORY_SEND_FAILED",
+                "version": AGENT_VERSION,
+                "uptime_sec": max(0, int(time.time()) - process_started_at),
+                "updated_at": int(time.time()),
+            }
+        )
+        return 0 if sent_now else 1
+
+    scan_thread: Optional[threading.Thread] = None
+    scan_restart_attempt = 0
+    next_scan_restart_ts = 0
+    fs_egress_thread: Optional[threading.Thread] = None
+    fs_egress_restart_attempt = 0
+    next_fs_egress_restart_ts = 0
+    browser_history_thread: Optional[threading.Thread] = None
+    browser_history_restart_attempt = 0
+    next_browser_history_restart_ts = 0
+    last_telegram_probe_check_ts = 0
+    last_inventory_ok_at: Optional[int] = None
+    last_error = ""
+    last_status_write_ts = 0
+
+    def ensure_scan_sidecar_alive(now_ts: int) -> None:
+        nonlocal scan_thread, scan_restart_attempt, next_scan_restart_ts
+        if scan_thread is not None and scan_thread.is_alive():
+            scan_restart_attempt = 0
+            return
+        if now_ts < next_scan_restart_ts:
+            return
+        if scan_thread is not None:
+            logging.warning("Scan sidecar thread is not alive; restarting")
+        scan_thread = threading.Thread(
+            target=_run_scan_sidecar,
+            kwargs={"run_once": False},
+            daemon=True,
+            name="scan-sidecar",
+        )
+        _SIDECAR_THREADS["scan"] = scan_thread
+        scan_thread.start()
+        if scan_thread.is_alive():
+            logging.info("Scan sidecar thread started (alive=%s)", scan_thread.is_alive())
+            scan_restart_attempt = 0
+            next_scan_restart_ts = now_ts
+            return
+        delays = [10, 30, 60, 300]
+        delay = delays[min(scan_restart_attempt, len(delays) - 1)]
+        scan_restart_attempt += 1
+        next_scan_restart_ts = now_ts + delay
+        logging.warning("Scan sidecar failed to start, next retry in %ss", delay)
+
+    def ensure_fs_egress_alive(now_ts: int) -> None:
+        nonlocal fs_egress_thread, fs_egress_restart_attempt, next_fs_egress_restart_ts
+        if fs_egress_thread is not None and fs_egress_thread.is_alive():
+            fs_egress_restart_attempt = 0
+            return
+        if now_ts < next_fs_egress_restart_ts:
+            return
+        if fs_egress_thread is not None:
+            logging.warning("fs_egress thread is not alive; restarting")
+        fs_egress_thread = threading.Thread(
+            target=_run_fs_egress_sidecar,
+            daemon=True,
+            name="fs-egress",
+        )
+        _SIDECAR_THREADS["fs_egress"] = fs_egress_thread
+        fs_egress_thread.start()
+        if fs_egress_thread.is_alive():
+            logging.info("fs_egress thread started")
+            fs_egress_restart_attempt = 0
+            next_fs_egress_restart_ts = now_ts
+            return
+        delays = [10, 30, 60, 300]
+        delay = delays[min(fs_egress_restart_attempt, len(delays) - 1)]
+        fs_egress_restart_attempt += 1
+        next_fs_egress_restart_ts = now_ts + delay
+        logging.warning("fs_egress failed to start, next retry in %ss", delay)
+
+    def ensure_browser_history_alive(now_ts: int) -> None:
+        nonlocal browser_history_thread, browser_history_restart_attempt, next_browser_history_restart_ts
+        if not _is_truthy(os.getenv("ITINV_BROWSER_HISTORY_ENABLED", "0"), default=False):
+            return
+        if browser_history_thread is not None and browser_history_thread.is_alive():
+            browser_history_restart_attempt = 0
+            return
+        if now_ts < next_browser_history_restart_ts:
+            return
+        if browser_history_thread is not None:
+            logging.warning("Browser history thread is not alive; restarting")
+        browser_history_thread = threading.Thread(
+            target=_run_browser_history_sidecar,
+            daemon=True,
+            name="browser-history",
+        )
+        browser_history_thread.start()
+        if browser_history_thread.is_alive():
+            logging.info("browser history thread started")
+            browser_history_restart_attempt = 0
+            next_browser_history_restart_ts = now_ts
+            return
+        delays = [10, 30, 60, 300]
+        delay = delays[min(browser_history_restart_attempt, len(delays) - 1)]
+        browser_history_restart_attempt += 1
+        next_browser_history_restart_ts = now_ts + delay
+        logging.warning("browser history failed to start, next retry in %ss", delay)
+
+    next_full_snapshot_ts = 0
+    while True:
+        now_ts = int(time.time())
+        ensure_scan_sidecar_alive(now_ts)
+        ensure_fs_egress_alive(now_ts)
+        ensure_browser_history_alive(now_ts)
+        last_telegram_probe_check_ts = _ensure_telegram_probe_task(
+            now_ts, last_check_ts=last_telegram_probe_check_ts
+        )
+        include_full_snapshot = now_ts >= next_full_snapshot_ts
+        report_type = "full_snapshot" if include_full_snapshot else "heartbeat"
+        try:
+            inventory_data = collect_inventory(report_type=report_type, include_full_snapshot=include_full_snapshot)
+            health_info = inventory_data.get("health") if isinstance(inventory_data.get("health"), dict) else {}
+            try:
+                maybe_notify_reboot_required(health_info, config)
+            except Exception as exc:
+                logging.warning("Reboot reminder check failed: %s", exc)
+            sent = send_data(inventory_data, config)
+            if sent:
+                last_inventory_ok_at = now_ts
+                last_error = ""
+            else:
+                last_error = "INVENTORY_SEND_FAILED"
+            if include_full_snapshot:
+                if sent:
+                    next_full_snapshot_ts = now_ts + config.full_snapshot_interval
+                else:
+                    next_full_snapshot_ts = now_ts + min(config.heartbeat_interval, 300)
+        except Exception as exc:
+            logging.error("Unexpected error in main loop: %s", exc)
+            last_error = f"MAIN_LOOP_ERROR:{type(exc).__name__}"
+            if include_full_snapshot and next_full_snapshot_ts == 0:
+                next_full_snapshot_ts = now_ts + min(config.heartbeat_interval, 300)
+
+        if (now_ts - last_status_write_ts) >= STATUS_WRITE_INTERVAL_SEC:
+            _write_agent_status(
+                {
+                    "last_inventory_ok_at": last_inventory_ok_at,
+                    "inventory_queue_depth": _inventory_queue_depth(),
+                    "scan_outbox_depth": _scan_outbox_depth(),
+                    "last_scan_ingest_ok_at": _read_scan_last_ingest_ok_at(),
+                    "last_error": last_error,
+                    "version": AGENT_VERSION,
+                    "uptime_sec": max(0, int(time.time()) - process_started_at),
+                    "updated_at": int(time.time()),
+                }
+            )
+            last_status_write_ts = now_ts
+
+        sleep_seconds = config.heartbeat_interval + random.randint(0, config.heartbeat_jitter_sec)
+        logging.info("Sleeping %s seconds before next cycle", sleep_seconds)
+        time.sleep(sleep_seconds)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    global LOADED_ENV_FILES, RUN_CMD_TIMEOUT_SEC, OUTLOOK_SCAN_CACHE_TTL_SEC
+    LOADED_ENV_FILES = bootstrap_env_from_files()
+    args = parse_args(argv)
+    log_file_path = setup_logging()
+
+    if agent_installer.is_msi_mode(args):
+        if args.msi_install:
+            return agent_installer.run_msi_install(args, logging)
+        if args.msi_full_uninstall_cleanup:
+            return agent_installer.run_msi_full_uninstall_cleanup(args, logging)
+        return agent_installer.run_msi_uninstall_cleanup(args, logging)
+
+    config = load_config()
+    RUN_CMD_TIMEOUT_SEC = config.run_cmd_timeout_sec
+    OUTLOOK_SCAN_CACHE_TTL_SEC = config.outlook_refresh_sec
+
+    logging.info("=== Starting HUB-IT Agent ===")
+    logging.info(
+        "Config: server=%s heartbeat=%ss full_snapshot=%ss jitter=%ss outlook_refresh=%ss once=%s check=%s "
+        "run_cmd_timeout=%ss inv_queue_batch=%s inv_queue_max_items=%s inv_queue_max_age_days=%s inv_queue_max_total_mb=%s "
+        "reminder_enabled=%s reminder_days=%s reminder_interval_h=%s reminder_timeout_s=%s "
+        "reminder_work_start_h=%s reminder_work_end_h=%s reminder_weekdays_only=%s "
+        "log=%s inv_queue_pending=%s inv_queue_dead=%s reminder_state=%s status_file=%s",
+        config.server_url,
+        config.heartbeat_interval,
+        config.full_snapshot_interval,
+        config.heartbeat_jitter_sec,
+        config.outlook_refresh_sec,
+        args.once,
+        args.check,
+        config.run_cmd_timeout_sec,
+        config.inventory_queue_batch,
+        config.inventory_queue_max_items,
+        config.inventory_queue_max_age_days,
+        config.inventory_queue_max_total_mb,
+        config.reboot_reminder_enabled,
+        config.reboot_reminder_days,
+        config.reboot_reminder_interval_hours,
+        config.reboot_reminder_timeout_sec,
+        config.reboot_reminder_work_start_hour,
+        config.reboot_reminder_work_end_hour,
+        config.reboot_reminder_weekdays_only,
+        log_file_path,
+        get_inventory_queue_pending_dir(),
+        get_inventory_queue_dead_dir(),
+        get_reboot_reminder_state_path(),
+        get_agent_status_path(),
+    )
+    if LOADED_ENV_FILES:
+        logging.info("Loaded .env sources for agent: %s", "; ".join(LOADED_ENV_FILES))
+    else:
+        logging.info("No .env sources loaded automatically for agent")
+
+    if args.check:
+        return 0 if check_configuration(config) else 1
+
+    if not config.api_key:
+        logging.error("Agent API key is not configured. Set ITINV_AGENT_API_KEY explicitly.")
+        return 1
+
+    if not is_admin():
+        logging.warning(
+            "Agent is running without Administrator privileges. "
+            "SMART counters may be unavailable for some disks."
+        )
+
+    if lower_process_priority():
+        logging.info("Agent runs at below-normal priority (ITINV_AGENT_LOW_PRIORITY=0 disables)")
+
+    return run_loop(config, run_once=args.once)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

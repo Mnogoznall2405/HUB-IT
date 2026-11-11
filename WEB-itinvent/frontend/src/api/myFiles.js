@@ -1,0 +1,705 @@
+import apiClient, { API_V1_BASE } from './client';
+import { BROWSER_ACCOUNT_EVENT, captureBrowserAccountSession } from '../lib/browserAccountSession';
+
+const RETENTION_OPTIONS = [1, 3, 7, 10, 30, 0];
+/** Transient network blips on multi‑hundred‑MB uploads need more than two short retries. */
+const UPLOAD_RETRY_DELAYS_MS = [1000, 2500, 5000, 10000, 20000];
+/** Очередь на пользователя ограничена: сессию повторяем, пока воркер освобождает слот. */
+const UPLOAD_SESSION_CAPACITY_MAX_RETRIES = 40;
+const UPLOAD_SESSION_CAPACITY_FALLBACK_MS = 5000;
+const UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS = 15000;
+/** 16 MB chunk over a slow link; keep above typical IIS/ARR defaults when raised to 10 min. */
+const UPLOAD_CHUNK_TIMEOUT_MS = 300_000;
+const UPLOAD_COMPLETE_TIMEOUT_MS = 120_000;
+const UPLOAD_PARALLEL_CHUNKS = 4;
+/** Без новых progress-событий дольше этого — считаем запрос повисшим и перезапускаем чанк. */
+const UPLOAD_CHUNK_STALL_MS = 120_000;
+/** Sanity-потолок клиента, совпадает с backend USER_QUOTA_MAX_BYTES; реальная граница — квота пользователя. */
+export const MY_FILES_MAX_UPLOAD_BYTES = 400 * 1024 * 1024 * 1024;
+
+const UPLOAD_RESUME_KEY = 'hubit-my-files-uploads';
+/** Совпадает с backend upload_reservation_ttl_sec; старше — сессия уже сгнила. */
+const UPLOAD_RESUME_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+const readUploadResumeMap = (storageKey = UPLOAD_RESUME_KEY) => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeUploadResumeMap = (map, storageKey = UPLOAD_RESUME_KEY) => {
+  const cutoff = Date.now() - UPLOAD_RESUME_MAX_AGE_MS;
+  const pruned = Object.fromEntries(
+    Object.entries(map).filter(([, entry]) => Number(entry?.savedAt || 0) > cutoff),
+  );
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(pruned));
+    return true;
+  } catch {
+    // Quota/приватный режим — просто не сохраняем resume.
+    return false;
+  }
+};
+
+const uploadResumeKey = (file, folderId) => [
+  String(file?.name || ''),
+  Number(file?.size || 0),
+  String(folderId || ''),
+  Number(file?.lastModified || 0),
+].join('|');
+
+const resumeStorageKey = (account) => `${UPLOAD_RESUME_KEY}:${encodeURIComponent(account.userKey)}`;
+const sessionChangedError = () => Object.assign(new Error('Сессия изменилась. Повторите загрузку в своём аккаунте.'), { code: 'ERR_SESSION_CHANGED' });
+
+const findResumableSession = async ({ file, folderId, signal, account, assertCurrent }) => {
+  assertCurrent();
+  const key = uploadResumeKey(file, folderId);
+  const ownEntry = readUploadResumeMap(resumeStorageKey(account))[key];
+  const entry = ownEntry || readUploadResumeMap()[key];
+  if (!entry || typeof entry !== 'object') return null;
+  if (Date.now() - Number(entry.savedAt || 0) > UPLOAD_RESUME_MAX_AGE_MS) return null;
+  const fileId = String(entry.fileId || '');
+  if (!fileId) return null;
+  try {
+    const status = await myFilesAPI.getUploadSession(fileId, { signal });
+    assertCurrent();
+    if (Number(status?.file_size_bytes || 0) !== Number(file?.size || 0)) return null;
+    if (String(status?.file_id || '') !== fileId) return null;
+    if (!ownEntry) {
+      // The protected endpoint verifies ownership. Migrate only that entry;
+      // unknown legacy entries may still belong to another account.
+      if (saveUploadResume(file, folderId, fileId, account)) {
+        const legacy = readUploadResumeMap();
+        if (legacy[key]?.fileId === fileId) {
+          delete legacy[key];
+          writeUploadResumeMap(legacy);
+        }
+      }
+    }
+    return {
+      file_id: fileId,
+      chunk_size_bytes: status?.chunk_size_bytes,
+      uploaded_bytes: status?.uploaded_bytes,
+      ranges: status?.ranges,
+    };
+  } catch {
+    assertCurrent();
+    return null;
+  }
+};
+
+const saveUploadResume = (file, folderId, fileId, account) => {
+  const storageKey = resumeStorageKey(account);
+  const map = readUploadResumeMap(storageKey);
+  map[uploadResumeKey(file, folderId)] = { fileId, savedAt: Date.now() };
+  return writeUploadResumeMap(map, storageKey);
+};
+
+const clearUploadResume = (file, folderId, account, fileId) => {
+  const storageKey = resumeStorageKey(account);
+  const map = readUploadResumeMap(storageKey);
+  const key = uploadResumeKey(file, folderId);
+  if (map[key]?.fileId === fileId) {
+    delete map[key];
+    writeUploadResumeMap(map, storageKey);
+  }
+  // A failed migration may have left the verified session in legacy storage.
+  // Clear it only after completion/explicit cancellation of that same ID.
+  const legacy = readUploadResumeMap();
+  if (legacy[key]?.fileId === fileId) {
+    delete legacy[key];
+    writeUploadResumeMap(legacy);
+  }
+};
+
+const normalizeRetentionDays = (value) => {
+  const days = Number(value);
+  return RETENTION_OPTIONS.includes(days) ? days : 1;
+};
+
+export const formatMyFilesRetentionLabel = (days) => (
+  Number(days) === 0 ? 'Навсегда' : `${days} дн.`
+);
+
+const buildPublicPath = (token) => {
+  const rawBase = String(import.meta.env.BASE_URL || '/');
+  const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
+  const base = normalizedBase.endsWith('/') ? normalizedBase : `${normalizedBase}/`;
+  return `${base}shared-files/${encodeURIComponent(token)}`;
+};
+
+const emitUploadProgress = (callback, loaded, total) => {
+  if (typeof callback !== 'function') return;
+  callback({
+    loaded: Math.max(0, Math.min(Number(total || 0), Number(loaded || 0))),
+    total: Math.max(0, Number(total || 0)),
+  });
+};
+
+const normalizeUploadRanges = (ranges, totalBytes) => {
+  if (!Array.isArray(ranges)) return null;
+  const normalized = ranges
+    .map((item) => [Number(item?.[0] || 0), Number(item?.[1] || 0)])
+    .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start)
+    .map(([start, end]) => [start, Math.min(end, totalBytes)])
+    .sort((a, b) => a[0] - b[0]);
+  return normalized;
+};
+
+const rangeIsCovered = (ranges, start, end) => (
+  Array.isArray(ranges) && ranges.some(([rs, re]) => rs <= start && re >= end)
+);
+
+const buildUploadTasks = (coveredRanges, totalBytes, chunkSizeBytes) => {
+  const tasks = [];
+  let cursor = 0;
+  const sorted = [...coveredRanges].sort((a, b) => a[0] - b[0]);
+  for (const [start, end] of sorted) {
+    if (start > cursor) {
+      for (let offset = cursor; offset < start; offset += chunkSizeBytes) {
+        tasks.push({ offset, end: Math.min(start, offset + chunkSizeBytes) });
+      }
+    }
+    cursor = Math.max(cursor, end);
+  }
+  for (let offset = cursor; offset < totalBytes; offset += chunkSizeBytes) {
+    tasks.push({ offset, end: Math.min(totalBytes, offset + chunkSizeBytes) });
+  }
+  return tasks;
+};
+
+const waitForUploadRetry = (delayMs, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) {
+    reject(new DOMException('Upload aborted', 'AbortError'));
+    return;
+  }
+  const onAbort = () => {
+    window.clearTimeout(timer);
+    reject(new DOMException('Upload aborted', 'AbortError'));
+  };
+  const timer = window.setTimeout(() => {
+    signal?.removeEventListener?.('abort', onAbort);
+    resolve();
+  }, delayMs);
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+});
+
+const describeUploadFailure = (error, { aborted = false } = {}) => {
+  if (aborted || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') {
+    return 'Upload cancelled';
+  }
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail.trim().slice(0, 2000);
+  }
+  if (Array.isArray(detail)) {
+    const first = detail.find((item) => typeof item?.msg === 'string' && item.msg.trim());
+    if (first?.msg) return String(first.msg).trim().slice(0, 2000);
+  }
+  const message = String(error?.message || '').trim();
+  if (message) return message.slice(0, 2000);
+  const status = Number(error?.response?.status || 0);
+  if (status > 0) return `Upload failed (HTTP ${status})`;
+  return 'Upload failed';
+};
+
+const isRetriableUploadError = (error) => {
+  if (!error) return false;
+  if (error?.code === 'ERR_STALLED') return true;
+  if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return false;
+  const status = Number(error?.response?.status || 0);
+  if (!status) return true; // network / timeout without HTTP status
+  if (status === 400) {
+    const detail = error?.response?.data?.detail;
+    if (typeof detail === 'string') return !detail.trim();
+    return detail === undefined || detail === null;
+  }
+  if (status === 408 || status === 425 || status === 429) return true;
+  if (status >= 500) return true;
+  return false;
+};
+
+const capacityRetryDelayMs = (error) => {
+  const retryAfterSeconds = Number(error?.response?.headers?.['retry-after'] || 0);
+  const suggested = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+    ? retryAfterSeconds * 1000
+    : UPLOAD_SESSION_CAPACITY_FALLBACK_MS;
+  return Math.min(Math.max(suggested, 2000), UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS);
+};
+
+const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folderId, libraryId, signal, assertCurrent }) => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      assertCurrent();
+      const session = await myFilesAPI.createUploadSession({ file, retentionDays, folderId, libraryId, signal });
+      assertCurrent();
+      return session;
+    } catch (error) {
+      assertCurrent();
+      const status = Number(error?.response?.status || 0);
+      if (status !== 429 || signal?.aborted || attempt >= UPLOAD_SESSION_CAPACITY_MAX_RETRIES) {
+        throw error;
+      }
+      await waitForUploadRetry(capacityRetryDelayMs(error), signal);
+    }
+  }
+};
+
+export const myFilesRetentionOptions = RETENTION_OPTIONS;
+
+export const myFilesAPI = {
+  listFiles: async ({ folderId = null, view = '', q = '', libraryId = null, signal } = {}) => {
+    const params = {};
+    if (folderId) params.folder_id = folderId;
+    if (libraryId) params.library_id = libraryId;
+    if (view) params.view = view;
+    if (q) params.q = q;
+    const response = await apiClient.get('/my-files', { params, signal });
+    return response.data;
+  },
+  listFolders: async ({ libraryId = null, signal } = {}) => {
+    const response = await apiClient.get('/my-files/folders', { params: libraryId ? { library_id: libraryId } : {}, signal });
+    return response.data;
+  },
+  createFolder: async ({ name, parentId = null, libraryId = null } = {}) => {
+    const response = await apiClient.post('/my-files/folders', {
+      name: String(name || '').trim(),
+      parent_id: parentId || null,
+      library_id: libraryId || null,
+    });
+    return response.data;
+  },
+  updateFolder: async (folderId, { name, parentId, isFavorite } = {}) => {
+    const payload = {};
+    if (name !== undefined) payload.name = String(name || '').trim();
+    if (parentId !== undefined) payload.parent_id = parentId || null;
+    if (isFavorite !== undefined) payload.is_favorite = Boolean(isFavorite);
+    const response = await apiClient.patch(
+      `/my-files/folders/${encodeURIComponent(folderId)}`,
+      payload,
+    );
+    return response.data;
+  },
+  deleteFolder: async (folderId) => {
+    await apiClient.delete(`/my-files/folders/${encodeURIComponent(folderId)}`);
+  },
+  listFileAudit: async (fileId, { signal } = {}) => {
+    const response = await apiClient.get(
+      `/my-files/${encodeURIComponent(fileId)}/audit`,
+      { signal },
+    );
+    return response.data;
+  },
+  listAdminUserStats: async ({ limit = 200, offset = 0, q = '', signal } = {}) => {
+    const response = await apiClient.get('/my-files/admin/user-stats', {
+      params: { limit, offset, q: q || undefined },
+      signal,
+    });
+    return response.data;
+  },
+  updateFile: async (fileId, { name, folderId, isFavorite } = {}) => {
+    const payload = {};
+    if (name !== undefined) payload.name = String(name || '').trim();
+    if (folderId !== undefined) payload.folder_id = folderId || null;
+    if (isFavorite !== undefined) payload.is_favorite = Boolean(isFavorite);
+    const response = await apiClient.patch(
+      `/my-files/${encodeURIComponent(fileId)}`,
+      payload,
+    );
+    return response.data;
+  },
+  // A copy goes to a folder (of the disk or of a library), to a library's root, or to the disk root.
+  copyFile: async (fileId, { folderId = null, libraryId = null } = {}) => {
+    const response = await apiClient.post(`/my-files/${encodeURIComponent(fileId)}/copy`, {
+      folder_id: folderId || null,
+      library_id: libraryId || null,
+    });
+    return response.data;
+  },
+  listTrash: async ({ libraryId = null, signal } = {}) => {
+    const response = await apiClient.get('/my-files/trash', { params: libraryId ? { library_id: libraryId } : {}, signal });
+    return response.data;
+  },
+  restoreFile: async (fileId) => {
+    await apiClient.post(`/my-files/trash/files/${encodeURIComponent(fileId)}/restore`);
+  },
+  restoreFolder: async (folderId) => {
+    await apiClient.post(`/my-files/trash/folders/${encodeURIComponent(folderId)}/restore`);
+  },
+  purgeFile: async (fileId) => {
+    await apiClient.delete(`/my-files/trash/files/${encodeURIComponent(fileId)}`);
+  },
+  purgeFolder: async (folderId) => {
+    await apiClient.delete(`/my-files/trash/folders/${encodeURIComponent(folderId)}`);
+  },
+  emptyTrash: async ({ libraryId = null } = {}) => {
+    await apiClient.post('/my-files/trash/empty', undefined, { params: libraryId ? { library_id: libraryId } : {} });
+  },
+  createFolderShare: async (folderId, { rotate = false } = {}) => {
+    const response = await apiClient.post(
+      `/my-files/folders/${encodeURIComponent(folderId)}/share`,
+      undefined,
+      { params: rotate ? { rotate: true } : {} },
+    );
+    return response.data;
+  },
+  revokeFolderShare: async (folderId) => {
+    await apiClient.delete(`/my-files/folders/${encodeURIComponent(folderId)}/share`);
+  },
+  getPublicFolder: async (token) => {
+    const response = await apiClient.get(`/my-files/public-folders/${encodeURIComponent(token)}`, {
+      suppressAuthRequired: true,
+    });
+    return response.data;
+  },
+  createPublicFolderDownloadGrant: async (token, fileId) => {
+    const response = await apiClient.post(
+      `/my-files/public-folders/${encodeURIComponent(token)}/files/${encodeURIComponent(fileId)}/download-grant`,
+      undefined,
+      { suppressAuthRequired: true },
+    );
+    return response.data;
+  },
+  createPublicFolderArchiveGrant: async (token) => {
+    const response = await apiClient.post(
+      `/my-files/public-folders/${encodeURIComponent(token)}/archive-grant`,
+      undefined,
+      { suppressAuthRequired: true },
+    );
+    return response.data;
+  },
+  createFolderArchiveGrant: async (folderId) => {
+    const response = await apiClient.post(
+      `/my-files/folders/${encodeURIComponent(folderId)}/archive-grant`,
+    );
+    return response.data;
+  },
+  buildPublicFolderPreviewUrl: (token, fileId) => (
+    `${API_V1_BASE}/my-files/public-folders/${encodeURIComponent(token)}/files/${encodeURIComponent(fileId)}/preview/content`
+  ),
+  buildPublicFolderUrl: (token) => {
+    const rawBase = String(import.meta.env.BASE_URL || '/');
+    const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
+    const base = normalizedBase.endsWith('/') ? normalizedBase : `${normalizedBase}/`;
+    const publicPath = `${base}shared-folders/${encodeURIComponent(token)}`;
+    if (typeof window === 'undefined') return publicPath;
+    return new URL(publicPath, window.location.origin).href;
+  },
+  getQuota: async () => {
+    const response = await apiClient.get('/my-files/quota');
+    return response.data;
+  },
+  createUploadSession: async ({ file, retentionDays = 1, folderId = null, libraryId = null, signal } = {}) => {
+    const response = await apiClient.post('/my-files/upload-sessions', {
+      file_name: String(file?.name || 'file.bin'),
+      file_size: Number(file?.size || 0),
+      retention_days: normalizeRetentionDays(retentionDays),
+      mime_type: file?.type || 'application/octet-stream',
+      folder_id: folderId || null,
+      library_id: libraryId || null,
+    }, { signal });
+    return response.data;
+  },
+  getUploadSession: async (fileId, { signal } = {}) => {
+    const response = await apiClient.get(
+      `/my-files/upload-sessions/${encodeURIComponent(fileId)}`,
+      { signal },
+    );
+    return response.data;
+  },
+  uploadChunk: async (fileId, chunk, { offset = 0, signal, onUploadProgress } = {}) => {
+    const response = await apiClient.put(
+      `/my-files/upload-sessions/${encodeURIComponent(fileId)}/chunks`,
+      chunk,
+      {
+        params: { offset: Math.max(0, Number(offset || 0)) },
+        headers: { 'Content-Type': 'application/octet-stream' },
+        onUploadProgress,
+        signal,
+        timeout: UPLOAD_CHUNK_TIMEOUT_MS,
+      },
+    );
+    return response.data;
+  },
+  completeUploadSession: async (fileId, { signal } = {}) => {
+    const response = await apiClient.post(
+      `/my-files/upload-sessions/${encodeURIComponent(fileId)}/complete`,
+      null,
+      { signal, timeout: UPLOAD_COMPLETE_TIMEOUT_MS },
+    );
+    return response.data;
+  },
+  cancelUploadSession: async (fileId, { reason, signal } = {}) => {
+    const response = await apiClient.delete(
+      `/my-files/upload-sessions/${encodeURIComponent(fileId)}`,
+      {
+        params: reason ? { reason: String(reason).slice(0, 2000) } : undefined,
+        signal,
+      },
+    );
+    return response.data;
+  },
+  uploadFile: async ({ file, retentionDays = 1, folderId = null, libraryId = null, onUploadProgress, signal: outerSignal, parallelChunks = UPLOAD_PARALLEL_CHUNKS, accountSession = captureBrowserAccountSession() } = {}) => {
+    if (!accountSession.isCurrent()) throw sessionChangedError();
+    const accountController = new AbortController();
+    const operationController = new AbortController();
+    const signal = operationController.signal;
+    const onOuterAbort = () => operationController.abort();
+    const onAccountChanged = () => {
+      if (accountSession.isCurrent()) return;
+      accountController.abort();
+      operationController.abort();
+    };
+    if (outerSignal?.aborted) onOuterAbort();
+    outerSignal?.addEventListener('abort', onOuterAbort, { once: true });
+    window.addEventListener(BROWSER_ACCOUNT_EVENT, onAccountChanged);
+    const assertCurrent = () => {
+      if (!accountSession.isCurrent()) throw sessionChangedError();
+      if (signal.aborted) throw new DOMException('Upload aborted', 'AbortError');
+    };
+    const totalBytes = Math.max(0, Number(file?.size || 0));
+    // A resumable session belongs to the place it uploads into: a folder, or the root of a shared library.
+    const resumeScope = folderId || (libraryId ? `library:${libraryId}` : null);
+    let fileId = '';
+    emitUploadProgress(onUploadProgress, 0, totalBytes);
+    try {
+      const session = (await findResumableSession({ file, folderId: resumeScope, signal, account: accountSession, assertCurrent }))
+        || await createUploadSessionWithCapacityRetry({ file, retentionDays, folderId, libraryId, signal, assertCurrent });
+      assertCurrent();
+      fileId = String(session?.file_id || '').trim();
+      const chunkSizeBytes = Number(session?.chunk_size_bytes || 0);
+      if (!fileId || !Number.isFinite(chunkSizeBytes) || chunkSizeBytes <= 0) {
+        throw new Error('My files upload session response is invalid');
+      }
+      saveUploadResume(file, resumeScope, fileId, accountSession);
+
+      const coveredRanges = normalizeUploadRanges(session?.ranges, totalBytes)
+        || (Number(session?.uploaded_bytes || 0) > 0
+          ? [[0, Math.min(totalBytes, Number(session.uploaded_bytes))]]
+          : []);
+      const tasks = buildUploadTasks(coveredRanges, totalBytes, chunkSizeBytes);
+      let confirmedBytes = coveredRanges.reduce((sum, [start, end]) => sum + (end - start), 0);
+      const inFlight = new Map();
+      const emitAggregate = () => {
+        if (!accountSession.isCurrent()) return;
+        let sent = confirmedBytes;
+        inFlight.forEach((loaded) => { sent += loaded; });
+        emitUploadProgress(onUploadProgress, sent, totalBytes);
+      };
+      emitAggregate();
+
+      let nextTaskIndex = 0;
+      const uploadTask = async (taskIndex) => {
+        const { offset, end } = tasks[taskIndex];
+        const chunk = file.slice(offset, end);
+        const uploadChunkWithWatchdog = async () => {
+          assertCurrent();
+          const stallController = new AbortController();
+          const onOuterAbort = () => stallController.abort();
+          if (signal?.aborted) {
+            stallController.abort();
+          } else {
+            signal?.addEventListener?.('abort', onOuterAbort, { once: true });
+          }
+          let stalled = false;
+          let stallTimer = 0;
+          const armStallTimer = () => {
+            window.clearTimeout(stallTimer);
+            stallTimer = window.setTimeout(() => {
+              stalled = true;
+              stallController.abort();
+            }, UPLOAD_CHUNK_STALL_MS);
+          };
+          armStallTimer();
+          try {
+            return await myFilesAPI.uploadChunk(fileId, chunk, {
+              offset,
+              signal: stallController.signal,
+              onUploadProgress: (event) => {
+                armStallTimer();
+                inFlight.set(taskIndex, Math.min(end - offset, Number(event?.loaded || 0)));
+                emitAggregate();
+              },
+            });
+          } catch (error) {
+            if (stalled && !signal?.aborted) {
+              const stalledError = new Error('Upload chunk stalled — retrying');
+              stalledError.code = 'ERR_STALLED';
+              throw stalledError;
+            }
+            throw error;
+          } finally {
+            window.clearTimeout(stallTimer);
+            signal?.removeEventListener?.('abort', onOuterAbort);
+          }
+        };
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            await uploadChunkWithWatchdog();
+            assertCurrent();
+            inFlight.delete(taskIndex);
+            confirmedBytes += end - offset;
+            emitAggregate();
+            return;
+          } catch (error) {
+            assertCurrent();
+            inFlight.delete(taskIndex);
+            if (signal?.aborted) throw error;
+            try {
+              const status = await myFilesAPI.getUploadSession(fileId, { signal });
+              assertCurrent();
+              const ranges = normalizeUploadRanges(status?.ranges, totalBytes);
+              if (ranges && rangeIsCovered(ranges, offset, end)) {
+                confirmedBytes += end - offset;
+                emitAggregate();
+                return;
+              }
+            } catch (statusError) {
+              assertCurrent();
+              if (signal?.aborted) throw statusError;
+            }
+            if (!isRetriableUploadError(error) || attempt >= UPLOAD_RETRY_DELAYS_MS.length) {
+              throw error;
+            }
+            await waitForUploadRetry(UPLOAD_RETRY_DELAYS_MS[attempt], signal);
+          }
+        }
+      };
+
+      const requestedWorkers = Math.trunc(Number(parallelChunks) || UPLOAD_PARALLEL_CHUNKS);
+      const workers = Array.from(
+        { length: Math.min(Math.max(1, requestedWorkers), UPLOAD_PARALLEL_CHUNKS, tasks.length) },
+        async () => {
+          while (nextTaskIndex < tasks.length) {
+            const taskIndex = nextTaskIndex;
+            nextTaskIndex += 1;
+            await uploadTask(taskIndex);
+          }
+        },
+      );
+      await Promise.all(workers);
+
+      assertCurrent();
+      const completed = await myFilesAPI.completeUploadSession(fileId, { signal });
+      assertCurrent();
+      emitUploadProgress(onUploadProgress, totalBytes, totalBytes);
+      clearUploadResume(file, resumeScope, accountSession, fileId);
+      return completed;
+    } catch (error) {
+      if (!accountSession.isCurrent()) throw sessionChangedError();
+      const aborted = Boolean(signal?.aborted) || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED';
+      if (fileId && (aborted || !isRetriableUploadError(error))) {
+        // Отменяем только точные провалы; сетевые сбои оставляем на resume в течение TTL сессии.
+        clearUploadResume(file, resumeScope, accountSession, fileId);
+        try {
+          await myFilesAPI.cancelUploadSession(fileId, {
+            reason: describeUploadFailure(error, { aborted }),
+            signal: accountController.signal,
+          });
+        } catch {
+          // The server expires incomplete reservations if cleanup is unavailable.
+        }
+      }
+      throw error;
+    } finally {
+      operationController.abort();
+      accountController.abort();
+      outerSignal?.removeEventListener('abort', onOuterAbort);
+      window.removeEventListener(BROWSER_ACCOUNT_EVENT, onAccountChanged);
+    }
+  },
+  createDownloadGrant: async (fileId) => {
+    const response = await apiClient.post(`/my-files/${encodeURIComponent(fileId)}/download-grant`);
+    return response.data;
+  },
+  getPreviewMeta: async (fileId) => {
+    const response = await apiClient.get(`/my-files/${encodeURIComponent(fileId)}/preview`);
+    return response.data;
+  },
+  downloadPreviewContent: async (fileId, { variant = '' } = {}) => (
+    apiClient.get(`/my-files/${encodeURIComponent(fileId)}/preview/content`, {
+      params: variant ? { variant } : {},
+      responseType: 'blob',
+    })
+  ),
+  downloadPreviewSource: async (fileId) => (
+    apiClient.get(`/my-files/${encodeURIComponent(fileId)}/preview/source`, {
+      responseType: 'blob',
+    })
+  ),
+  /** Совместимость: всегда grant + нативное скачивание (без blob/XHR). */
+  downloadFile: async (fileId) => {
+    const grant = await myFilesAPI.createDownloadGrant(fileId);
+    const downloadUrl = myFilesAPI.buildDownloadGrantUrl(grant?.download_path);
+    if (!downloadUrl || !myFilesAPI.triggerNativeDownload(downloadUrl)) {
+      throw new Error('Не удалось начать скачивание');
+    }
+    return null;
+  },
+  buildDownloadGrantUrl: (downloadPath) => {
+    const path = String(downloadPath || '').trim();
+    if (!path) return '';
+    if (path.startsWith('http://') || path.startsWith('https://')) return path;
+    const base = String(API_V1_BASE || '/api/v1').replace(/\/$/, '');
+    const suffix = path.startsWith('/') ? path : `/${path}`;
+    if (typeof window === 'undefined') return `${base}${suffix}`;
+    return new URL(`${base}${suffix}`, window.location.origin).href;
+  },
+  triggerNativeDownload: (absoluteUrl) => {
+    const url = String(absoluteUrl || '').trim();
+    if (!url || typeof document === 'undefined') return false;
+    const anchor = document.createElement('a');
+    anchor.setAttribute('aria-hidden', 'true');
+    anchor.setAttribute('tabindex', '-1');
+    anchor.style.display = 'none';
+    anchor.href = url;
+    anchor.download = '';
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return true;
+  },
+  createShare: async (fileId, { rotate = false } = {}) => {
+    const response = await apiClient.post(
+      `/my-files/${encodeURIComponent(fileId)}/share`,
+      undefined,
+      { params: rotate ? { rotate: true } : {} },
+    );
+    return response.data;
+  },
+  revokeShare: async (fileId) => {
+    const response = await apiClient.delete(`/my-files/${encodeURIComponent(fileId)}/share`);
+    return response.data;
+  },
+  deleteFile: async (fileId) => {
+    const response = await apiClient.delete(`/my-files/${encodeURIComponent(fileId)}`);
+    return response.data;
+  },
+  getPublicFile: async (token) => {
+    const response = await apiClient.get(`/my-files/public/${encodeURIComponent(token)}`, {
+      suppressAuthRequired: true,
+    });
+    return response.data;
+  },
+  getPublicPreviewMeta: async (token) => {
+    const response = await apiClient.get(`/my-files/public/${encodeURIComponent(token)}/preview`, {
+      suppressAuthRequired: true,
+    });
+    return response.data;
+  },
+  buildPublicPreviewContentUrl: (token) => (
+    `${API_V1_BASE}/my-files/public/${encodeURIComponent(token)}/preview/content`
+  ),
+  buildPublicUrl: (token) => {
+    const publicPath = buildPublicPath(token);
+    if (typeof window === 'undefined') return publicPath;
+    return new URL(publicPath, window.location.origin).href;
+  },
+  buildPublicDownloadUrl: (token) => `${API_V1_BASE}/my-files/public/${encodeURIComponent(token)}/download`,
+};
+
+export default myFilesAPI;

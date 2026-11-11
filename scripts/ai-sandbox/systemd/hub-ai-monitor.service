@@ -1,0 +1,11 @@
+[Unit]
+Description=HUB OpenCode sandbox health check (read-only)
+Wants=network-online.target
+After=network-online.target hub-ai-worker.service hub-ai-gateway.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=hub-ai-sandbox
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/local/libexec/hub-ai-sandbox/monitor-sandbox.sh
+UMask=0027

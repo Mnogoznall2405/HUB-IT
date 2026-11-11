@@ -1,0 +1,625 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(WEB_ROOT) not in sys.path:
+    sys.path.insert(0, str(WEB_ROOT))
+
+
+def _completion(content: str):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        usage=SimpleNamespace(prompt_tokens=3, completion_tokens=4, total_tokens=7),
+    )
+
+
+class _FakeCompletions:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class _FakeClient:
+    def __init__(self, responses):
+        self.chat = SimpleNamespace(completions=_FakeCompletions(responses))
+
+
+def _patch_build_client(monkeypatch, client, fake_client):
+    monkeypatch.setattr(client, "_build_client", lambda **kwargs: fake_client)
+
+
+def test_complete_json_uses_strict_json_schema_and_response_healing(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    fake_client = _FakeClient([
+        _completion('{"answer_markdown":"ok","artifacts":[],"kb_attachment_send":null,"tool_calls":[]}')
+    ])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+    monkeypatch.setattr(client, "_resolve_default_model", lambda: "openai/gpt-4o-mini")
+
+    schema = {
+        "type": "object",
+        "properties": {"answer_markdown": {"type": "string"}},
+        "required": ["answer_markdown"],
+        "additionalProperties": False,
+    }
+
+    payload, usage = client.complete_json(
+        system_prompt="Return JSON.",
+        user_prompt="Hello",
+        response_schema=schema,
+        schema_name="ai_chat_response_test",
+    )
+
+    call = fake_client.chat.completions.calls[0]
+    assert payload["answer_markdown"] == "ok"
+    assert usage["total_tokens"] == 7
+    assert call["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "ai_chat_response_test",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+    assert call["extra_body"] == {"plugins": [{"id": "response-healing"}]}
+
+
+def test_complete_json_can_disable_model_thinking(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    fake_client = _FakeClient([_completion('{"suggestions":["ok"]}')])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    payload, _usage = client.complete_json(
+        system_prompt="Return JSON.",
+        user_prompt="Hello",
+        model="deepseek/deepseek-v4-flash-0731",
+        response_healing=False,
+        thinking=False,
+    )
+
+    assert payload == {"suggestions": ["ok"]}
+    assert fake_client.chat.completions.calls[0]["extra_body"] == {
+        "thinking": {"type": "disabled"},
+    }
+
+
+@pytest.mark.parametrize("model,open_args,expected_format", [
+    ("anthropic/claude-haiku-5.5", True, "json_object"),
+    ("anthropic/claude-haiku-5.5", False, "json_schema"),
+    ("google/gemini-3.1-flash-lite", True, "json_schema"),
+])
+def test_complete_json_preserves_dynamic_tool_arguments_for_claude(monkeypatch, model, open_args, expected_format):
+    """Provider compatibility: Claude silently closes arbitrary argument maps."""
+    from shared.llm import OpenRouterClient
+
+    calls = []
+    def provider(**kwargs):
+        calls.append(kwargs)
+        # Reproduced RouterAI/Claude response when an open argument map is compiled.
+        loses_args = model.startswith("anthropic/") and open_args and kwargs["response_format"]["type"] == "json_schema"
+        return _completion('{"tool_calls":[{"tool_id":"contacts","args":' +
+                           ('{}' if loses_args else '{"q":"Recipient"}') + '}]}')
+    client = OpenRouterClient()
+    provider_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=provider)))
+    _patch_build_client(monkeypatch, client, provider_client)
+    arg_schema = {"type": "object", "additionalProperties": True} if open_args else {
+        "type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"], "additionalProperties": False}
+    schema = {"type": "object", "properties": {"tool_calls": {"type": "array", "items": {
+        "type": "object", "properties": {"tool_id": {"type": "string"}, "args": arg_schema},
+        "required": ["tool_id", "args"], "additionalProperties": False}}},
+        "required": ["tool_calls"], "additionalProperties": False}
+    payload, _ = client.complete_json(model=model, system_prompt="Find Recipient; return JSON with q.",
+                                     response_schema=schema, response_healing=False)
+    assert payload["tool_calls"][0]["args"] == {"q": "Recipient"}
+    assert len(calls) == 1
+    assert calls[0]["response_format"]["type"] == expected_format
+
+
+def test_complete_json_falls_back_to_json_object_when_schema_mode_is_unsupported(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    fake_client = _FakeClient([
+        RuntimeError("response_format json_schema unsupported by provider"),
+        _completion('{"answer_markdown":"fallback","artifacts":[],"kb_attachment_send":null}'),
+    ])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+    monkeypatch.setattr(client, "_resolve_default_model", lambda: "legacy/model")
+
+    schema = {
+        "type": "object",
+        "properties": {"answer_markdown": {"type": "string"}},
+        "required": ["answer_markdown"],
+        "additionalProperties": False,
+    }
+
+    payload, _usage = client.complete_json(
+        system_prompt="Return JSON.",
+        user_prompt="Hello",
+        response_schema=schema,
+    )
+
+    first_call, second_call = fake_client.chat.completions.calls
+    assert payload["answer_markdown"] == "fallback"
+    assert first_call["response_format"]["type"] == "json_schema"
+    assert first_call["extra_body"] == {"plugins": [{"id": "response-healing"}]}
+    assert second_call["response_format"] == {"type": "json_object"}
+    assert "extra_body" not in second_call
+
+
+def test_extract_json_payload_accepts_fenced_and_mixed_json():
+    from backend.ai_chat.openrouter_client import _extract_json_payload
+
+    assert _extract_json_payload('```json\n{"answer_markdown":"ok"}\n```') == {"answer_markdown": "ok"}
+    assert _extract_json_payload('prefix {"answer_markdown":"ok"} suffix') == {"answer_markdown": "ok"}
+
+
+def test_complete_text_and_multimodal_user_content(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    fake_client = _FakeClient([_completion("# Hello")])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    text, usage = client.complete_text(
+        system_prompt="Convert to markdown.",
+        user_prompt="Hello",
+        model="openai/gpt-4o-mini",
+        purpose="markdown",
+    )
+    assert text == "# Hello"
+    assert usage["model"] == "openai/gpt-4o-mini"
+    assert fake_client.chat.completions.calls[0]["messages"][1]["content"] == "Hello"
+
+    fake_client2 = _FakeClient([_completion('{"from_employee":"A"}')])
+    client2 = OpenRouterClient()
+    _patch_build_client(monkeypatch, client2, fake_client2)
+    payload, _ = client2.complete_json(
+        system_prompt="Extract JSON.",
+        user_content=[{"type": "text", "text": "doc"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}],
+        model="ocr-model",
+        purpose="act",
+        response_healing=False,
+    )
+    assert payload["from_employee"] == "A"
+    assert isinstance(fake_client2.chat.completions.calls[0]["messages"][1]["content"], list)
+
+
+def test_stream_chat_completion_forwards_only_supported_openai_fields(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    chunks = [SimpleNamespace(id="chunk-1"), SimpleNamespace(id="chunk-2")]
+    fake_client = _FakeClient([iter(chunks)])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    result = list(
+        client.stream_chat_completion(
+            messages=[{"role": "user", "content": "Create a file"}],
+            model="openai/gpt-test",
+            temperature=0.1,
+            max_tokens=900,
+            tools=[{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}],
+            tool_choice="auto",
+        )
+    )
+
+    assert result == chunks
+    assert fake_client.chat.completions.calls == [
+        {
+            "model": "openai/gpt-test",
+            "temperature": 0.1,
+            "max_tokens": 900,
+            "messages": [{"role": "user", "content": "Create a file"}],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "tools": [{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}],
+            "tool_choice": "auto",
+        }
+    ]
+
+
+def test_stream_chat_completion_rejects_empty_message_list(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient, OpenRouterClientError
+
+    fake_client = _FakeClient([])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    with pytest.raises(OpenRouterClientError, match="At least one chat message"):
+        client.stream_chat_completion(messages=[], model="openai/gpt-test")
+
+    assert fake_client.chat.completions.calls == []
+
+
+def test_resolve_model_purpose_chains(monkeypatch):
+    from shared.llm import env as env_mod
+    from shared.llm.models import resolve_model, resolve_model_candidates
+
+    monkeypatch.setattr(env_mod, "ROOT_ENV", {})
+    monkeypatch.delenv("ROUTERAI_MODEL", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_MAIL", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_CHAT", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_MARKDOWN", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_ACT", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_ACT_FALLBACK", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_OCR", raising=False)
+    monkeypatch.delenv("ROUTERAI_MODEL_DOC_CONVERT", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL_MAIL", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL_CHAT", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL_MARKDOWN", raising=False)
+    monkeypatch.delenv("ACT_PARSE_MODEL", raising=False)
+    monkeypatch.delenv("OCR_MODEL", raising=False)
+    monkeypatch.setenv("OPENROUTER_MODEL_CHAT", "chat-model")
+    monkeypatch.setenv("OCR_MODEL", "ocr-model")
+
+    assert resolve_model("mail") == "chat-model"
+    assert resolve_model("ocr") == "ocr-model"
+    assert resolve_model_candidates("act") == ["ocr-model"]
+
+    monkeypatch.setenv("ROUTERAI_MODEL", "google/gemini-3.6-flash")
+    assert resolve_model("mail") == "google/gemini-3.6-flash"
+    assert resolve_model("ocr") == "google/gemini-3.6-flash"
+    assert resolve_model("doc_convert") == "google/gemini-3.6-flash"
+
+    monkeypatch.setenv("ACT_PARSE_MODEL", "google/gemini-3.6-flash")
+    monkeypatch.setenv("ROUTERAI_MODEL_ACT_FALLBACK", "mistralai/mistral-small-2603")
+    assert resolve_model_candidates("act") == [
+        "google/gemini-3.6-flash",
+        "mistralai/mistral-small-2603",
+        "ocr-model",
+    ]
+
+
+def test_routerai_configuration_takes_precedence_over_legacy_provider(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+    from shared.llm import env as env_mod
+
+    monkeypatch.setattr(env_mod, "ROOT_ENV", {})
+    monkeypatch.setenv("ROUTERAI_API_KEY", "routerai-key")
+    monkeypatch.setenv("ROUTERAI_BASE_URL", "https://routerai.ru/api/v1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "legacy-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+    client = OpenRouterClient()
+    assert client._resolve_api_key() == "routerai-key"
+    assert client._resolve_base_url() == "https://routerai.ru/api/v1"
+    assert client.get_status()["provider"] == "routerai"
+
+
+def test_routerai_dns_failure_retries_with_doh_address(monkeypatch):
+    from shared.llm import client as client_module
+
+    class _FakeBackend:
+        def __init__(self):
+            self.hosts = []
+
+        def connect_tcp(self, host, port, **kwargs):
+            self.hosts.append(host)
+            if host == "routerai.ru":
+                raise OSError("[Errno 11002] getaddrinfo failed")
+            return "stream"
+
+    delegate = _FakeBackend()
+    monkeypatch.setattr(client_module, "_resolve_routerai_ipv4_via_doh", lambda host: "95.129.236.184")
+    monkeypatch.setattr(client_module, "_routerai_dns_fallback_enabled", lambda: True)
+    monkeypatch.setattr(client_module, "_routerai_dns_prefer_doh", lambda: False, raising=False)
+
+    backend = client_module._RouterAIDnsFallbackBackend(delegate)
+    assert backend.connect_tcp("routerai.ru", 443) == "stream"
+    assert delegate.hosts == ["routerai.ru", "95.129.236.184"]
+
+
+def test_routerai_preferred_doh_skips_slow_system_dns(monkeypatch):
+    from shared.llm import client as client_module
+
+    class _FakeBackend:
+        def __init__(self):
+            self.hosts = []
+
+        def connect_tcp(self, host, port, **kwargs):
+            self.hosts.append(host)
+            return "stream"
+
+    delegate = _FakeBackend()
+    monkeypatch.setattr(client_module, "_resolve_routerai_ipv4_via_doh", lambda host: "95.129.236.184")
+    monkeypatch.setattr(client_module, "_routerai_dns_fallback_enabled", lambda: True)
+    monkeypatch.setattr(client_module, "_routerai_dns_prefer_doh", lambda: True, raising=False)
+
+    backend = client_module._RouterAIDnsFallbackBackend(delegate)
+    assert backend.connect_tcp("routerai.ru", 443) == "stream"
+    assert delegate.hosts == ["95.129.236.184"]
+
+
+def test_routerai_dns_fallback_does_not_mask_non_dns_errors(monkeypatch):
+    from shared.llm import client as client_module
+
+    class _FakeBackend:
+        def connect_tcp(self, host, port, **kwargs):
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(
+        client_module,
+        "_resolve_routerai_ipv4_via_doh",
+        lambda host: (_ for _ in ()).throw(AssertionError("DoH must not be called")),
+    )
+    backend = client_module._RouterAIDnsFallbackBackend(_FakeBackend())
+    with pytest.raises(OSError, match="connection refused"):
+        backend.connect_tcp("routerai.ru", 443)
+
+
+def test_per_call_timeout_does_not_mutate_singleton(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient, openrouter_client
+
+    seen = {}
+
+    def _fake_build(*, timeout=None):
+        seen["timeout"] = timeout
+        return _FakeClient([_completion("ok")])
+
+    client = OpenRouterClient(request_timeout_sec=45.0)
+    monkeypatch.setattr(client, "_build_client", _fake_build)
+    previous = openrouter_client.request_timeout_sec
+
+    text, _ = client.complete_text(
+        user_prompt="hi",
+        model="m",
+        timeout=20.0,
+    )
+    assert text == "ok"
+    assert seen["timeout"] == 20.0
+    assert client.request_timeout_sec == 45.0
+    assert openrouter_client.request_timeout_sec == previous
+
+
+def test_error_message_includes_provider_text(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient, OpenRouterClientError
+
+    # Non-transient error so gateway does not consume multiple fake responses via retry.
+    fake_client = _FakeClient([RuntimeError("401 Unauthorized invalid api key")])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    try:
+        client.complete_text(user_prompt="hi", model="m")
+        assert False, "expected OpenRouterClientError"
+    except OpenRouterClientError as exc:
+        assert "401 Unauthorized invalid api key" in str(exc)
+        assert isinstance(exc.__cause__, RuntimeError)
+
+
+def test_complete_vision_system_prompt_none_vs_empty(monkeypatch):
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    fake_client = _FakeClient([_completion("Серийный номер: ABC12345")])
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    text, _ = client.complete_vision(
+        image_bytes=b"fake",
+        mime_type="image/jpeg",
+        prompt="Find serial",
+        system_prompt="",
+        model="ocr-model",
+    )
+    assert "ABC12345" in text
+    messages = fake_client.chat.completions.calls[0]["messages"]
+    assert messages[0]["role"] == "user"
+    assert all(m["role"] != "system" for m in messages)
+
+    fake_client2 = _FakeClient([_completion("text")])
+    client2 = OpenRouterClient()
+    _patch_build_client(monkeypatch, client2, fake_client2)
+    client2.complete_vision(
+        image_bytes=b"fake",
+        prompt="OCR",
+        system_prompt=None,
+        model="ocr-model",
+    )
+    messages2 = fake_client2.chat.completions.calls[0]["messages"]
+    assert messages2[0]["role"] == "system"
+    assert "OCR" in messages2[0]["content"]
+
+
+def test_is_image_unsupported_error_walks_cause_chain():
+    from shared.llm.client import is_image_unsupported_error
+    from shared.llm.errors import OpenRouterClientError
+
+    root = RuntimeError("model does not support vision inputs")
+    wrapped = OpenRouterClientError("Failed to call OpenRouter: model does not support vision inputs")
+    wrapped.__cause__ = root
+    assert is_image_unsupported_error(wrapped) is True
+    assert is_image_unsupported_error(RuntimeError("plain timeout")) is False
+
+
+def test_act_parser_empty_json_continues_to_next_model(monkeypatch):
+    from backend.services import act_upload_service
+
+    calls = {"n": 0, "kwargs": []}
+
+    def _fake_complete_json(**kwargs):
+        calls["n"] += 1
+        calls["kwargs"].append(kwargs)
+        model = kwargs.get("model")
+        if model == "model-a":
+            return {}, {"model": model}
+        return {"from_employee": "A", "to_employee": "B", "doc_date": "", "equipment_inv_nos": ["100887"]}, {
+            "model": model
+        }
+
+    monkeypatch.setattr(act_upload_service, "resolve_model_candidates", lambda purpose="act": ["model-a", "model-b"])
+    monkeypatch.setattr(act_upload_service.openrouter_client, "is_configured", lambda: True)
+    monkeypatch.setattr(act_upload_service.openrouter_client, "complete_json", _fake_complete_json)
+
+    payload, warnings = act_upload_service._call_openrouter_act_parser(
+        file_name="act.pdf",
+        pdf_text="Инвентарный номер 100887",
+    )
+    assert payload["equipment_inv_nos"] == ["100887"]
+    assert calls["n"] == 2
+    assert any("пустой JSON" in w for w in warnings)
+    assert all(kwargs.get("response_healing") is True for kwargs in calls["kwargs"])
+    assert all(kwargs.get("max_tokens") == act_upload_service._ACT_PARSE_MAX_TOKENS for kwargs in calls["kwargs"])
+
+
+def test_act_parser_partial_text_payload_retries_vision_and_merges_fields(monkeypatch):
+    from backend.services import act_upload_service
+
+    calls = []
+
+    def _fake_complete_json(**kwargs):
+        calls.append(kwargs)
+        if isinstance(kwargs.get("user_content"), str):
+            return {
+                "from_employee": "Ivanov",
+                "to_employee": "Petrov",
+                "doc_date": "2026-09-03",
+                "equipment_inv_nos": ["SERIAL-ABC"],
+            }, {"model": kwargs.get("model")}
+        return {
+            "from_employee": "",
+            "to_employee": "",
+            "doc_date": "",
+            "equipment_inv_nos": ["100887"],
+        }, {"model": kwargs.get("model")}
+
+    monkeypatch.setattr(act_upload_service, "resolve_model_candidates", lambda purpose="act": ["model-a"])
+    monkeypatch.setattr(act_upload_service.openrouter_client, "is_configured", lambda: True)
+    monkeypatch.setattr(act_upload_service.openrouter_client, "complete_json", _fake_complete_json)
+    monkeypatch.setattr(
+        act_upload_service,
+        "_extract_pdf_images_for_llm",
+        lambda file_bytes, max_pages=3: (["data:image/png;base64,aaa"], []),
+    )
+
+    payload, warnings = act_upload_service._call_openrouter_act_parser(
+        file_name="act.pdf",
+        pdf_text=(
+            "Акт приема-передачи. Инвентарный номер 100887. "
+            "Сдал Иванов. Принял Петров."
+        ),
+        file_bytes=b"%PDF-1.4",
+    )
+
+    assert payload == {
+        "from_employee": "Ivanov",
+        "to_employee": "Petrov",
+        "doc_date": "2026-09-03",
+        "equipment_inv_nos": ["100887"],
+    }
+    assert [isinstance(call["user_content"], list) for call in calls] == [False, True]
+    assert any("без INV_NO" in warning for warning in warnings)
+
+
+def test_pdf_text_looks_weak_for_scan_filenames():
+    from backend.services import act_upload_service
+
+    good_text = (
+        "\u0410\u043a\u0442 \u043f\u0440\u0438\u0435\u043c\u0430-\u043f\u0435\u0440\u0435\u0434\u0430\u0447\u0438. "
+        "\u0418\u043d\u0432\u0435\u043d\u0442\u0430\u0440\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440 100887. "
+        "\u0421\u0434\u0430\u043b \u0418\u0432\u0430\u043d\u043e\u0432. \u041f\u0440\u0438\u043d\u044f\u043b \u041f\u0435\u0442\u0440\u043e\u0432."
+    )
+    assert act_upload_service._pdf_text_looks_weak(good_text, file_name="IMG_0001.pdf") is True
+    assert act_upload_service._pdf_text_looks_weak(good_text, file_name="act.pdf") is False
+    assert act_upload_service._pdf_text_looks_weak("@@@ ###", file_name="doc.pdf") is True
+
+
+def test_act_parser_prefers_vision_for_scan_then_falls_back(monkeypatch):
+    from backend.services import act_upload_service
+
+    calls = []
+
+    def _fake_complete_json(**kwargs):
+        calls.append(kwargs)
+        content = kwargs.get("user_content")
+        uses_images = isinstance(content, list)
+        if uses_images:
+            return {}, {"model": kwargs.get("model")}
+        return {
+            "from_employee": "Ivanov",
+            "to_employee": "Petrov",
+            "doc_date": "2026-03-15",
+            "equipment_inv_nos": ["100887"],
+        }, {"model": kwargs.get("model")}
+
+    monkeypatch.setattr(act_upload_service, "resolve_model_candidates", lambda purpose="act": ["model-a"])
+    monkeypatch.setattr(act_upload_service.openrouter_client, "is_configured", lambda: True)
+    monkeypatch.setattr(act_upload_service.openrouter_client, "complete_json", _fake_complete_json)
+    monkeypatch.setattr(
+        act_upload_service,
+        "_extract_pdf_images_for_llm",
+        lambda file_bytes, max_pages=3: (["data:image/png;base64,aaa"], []),
+    )
+
+    payload, warnings = act_upload_service._call_openrouter_act_parser(
+        file_name="IMG_0001.pdf",
+        pdf_text="\u0418\u043d\u0432\u0435\u043d\u0442\u0430\u0440\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440 100887",
+        file_bytes=b"%PDF-1.4",
+    )
+    assert payload["equipment_inv_nos"] == ["100887"]
+    assert len(calls) == 2
+    assert isinstance(calls[0]["user_content"], list)
+    assert isinstance(calls[1]["user_content"], str)
+    assert any("vision OCR" in w or "\u0441\u043a\u0430\u043d" in w for w in warnings)
+    assert calls[0]["response_healing"] is True
+
+
+def test_sdk_retries_are_disabled_so_gateway_owns_the_retry_policy(monkeypatch):
+    """DAI-06: SDK-level retries would multiply with the gateway's own attempts."""
+    import shared.llm.client as llm_client
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    seen = {}
+
+    class _CapturingOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(llm_client, "OpenAI", _CapturingOpenAI)
+    client = OpenRouterClient()
+    monkeypatch.setattr(client, "_resolve_api_key", lambda: "test-key")
+    client._build_client(timeout=7.0)
+
+    assert seen["max_retries"] == 0
+
+
+@pytest.mark.parametrize("budget, expected_calls", [(1.0, 1), (600.0, 3)])
+def test_transient_retries_stop_when_the_wall_clock_budget_cannot_cover_the_backoff(
+    monkeypatch, budget, expected_calls
+):
+    import shared.llm.client as llm_client
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    monkeypatch.setattr(llm_client, "DEFAULT_RETRY_WALL_BUDGET_SEC", budget)
+    monkeypatch.setattr(llm_client, "DEFAULT_RETRY_BASE_DELAY_SEC", 2.0)
+    monkeypatch.setattr(llm_client, "DEFAULT_MAX_TRANSIENT_RETRIES", 3)
+    monkeypatch.setattr(llm_client.time, "sleep", lambda _s: None)
+    fake_client = _FakeClient([RuntimeError("request timeout")] * 3)
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    with pytest.raises(Exception):
+        client.complete_text(user_prompt="hi", model="m")
+
+    assert len(fake_client.chat.completions.calls) == expected_calls

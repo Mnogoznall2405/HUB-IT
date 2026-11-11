@@ -1,0 +1,1367 @@
+/* global window document fetch File URL CustomEvent */
+/* eslint-disable no-control-regex */
+
+import { isPendingLifecycleEnvelopeFresh } from './desktopLifecyclePolicy';
+
+export const DESKTOP_BRIDGE_PROTOCOL_VERSION = 1;
+
+const READY_MESSAGE_TYPE = 'desktop.ready';
+const HOST_READY_MESSAGE_TYPE = 'desktop.hostReady';
+const CAPABILITIES_MESSAGE_TYPE = 'desktop.capabilities';
+const SHOW_NOTIFICATION_MESSAGE_TYPE = 'notification.show';
+const CLEAR_NOTIFICATION_GROUP_MESSAGE_TYPE = 'notification.clearGroup';
+const SHELL_STATUS_MESSAGE_TYPE = 'shell.status';
+const QUICK_ROUTES_MESSAGE_TYPE = 'shell.quickRoutes';
+const PRINT_CURRENT_DOCUMENT_MESSAGE_TYPE = 'document.printCurrent';
+const EQUIPMENT_QR_PRINT_MESSAGE_TYPE = 'equipmentQr.print';
+const EQUIPMENT_QR_PRINT_RESULT_MESSAGE_TYPE = 'equipmentQr.printResult';
+const OPEN_DOWNLOADS_MESSAGE_TYPE = 'desktop.openDownloads';
+const OPEN_DIAGNOSTICS_MESSAGE_TYPE = 'desktop.openDiagnostics';
+const CHECK_FOR_UPDATES_MESSAGE_TYPE = 'desktop.checkForUpdates';
+const OPEN_CURRENT_IN_BROWSER_MESSAGE_TYPE = 'desktop.openCurrentInBrowser';
+const SET_THEME_MESSAGE_TYPE = 'appearance.theme';
+const OPEN_DOWNLOADED_FILE_MESSAGE_TYPE = 'file.openDownloaded';
+const OPEN_DOWNLOADED_FILE_RESULT_MESSAGE_TYPE = 'file.openDownloadedResult';
+const PREPARE_DOWNLOADED_FILE_MESSAGE_TYPE = 'file.prepareDownload';
+const PREPARE_DOWNLOADED_FILE_RESULT_MESSAGE_TYPE = 'file.prepareDownloadResult';
+const OPEN_NAVIGATION_MESSAGE_TYPE = 'navigation.open';
+const WINDOW_STATE_MESSAGE_TYPE = 'desktop.windowState';
+const SYSTEM_RESUME_MESSAGE_TYPE = 'desktop.system.resume';
+const SYSTEM_NETWORK_CHANGED_MESSAGE_TYPE = 'desktop.network.changed';
+const OPEN_COMMAND_PALETTE_MESSAGE_TYPE = 'command.openPalette';
+const VNC_PREFLIGHT_MESSAGE_TYPE = 'remote.vncPreflight';
+const VNC_PREFLIGHT_RESULT_MESSAGE_TYPE = 'remote.vncPreflightResult';
+const MAIL_COMPOSE_WINDOW_OPEN_MESSAGE_TYPE = 'mail.composeWindow.open';
+const MAIL_COMPOSE_WINDOW_RESULT_MESSAGE_TYPE = 'mail.composeWindow.result';
+const MAIL_COMPOSE_WINDOW_CLOSE_REQUESTED_MESSAGE_TYPE = 'mail.composeWindow.closeRequested';
+const MAIL_COMPOSE_WINDOW_CLOSE_RESULT_MESSAGE_TYPE = 'mail.composeWindow.closeResult';
+const MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE = 'mail.composeWindow.sent';
+const MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE = 'mail.composeWindow.completed';
+const WORKSPACE_WINDOW_OPEN_MESSAGE_TYPE = 'workspace.window.open';
+const WORKSPACE_WINDOW_RESULT_MESSAGE_TYPE = 'workspace.window.result';
+const FILE_SHARED_MESSAGE_TYPE = 'file.shared';
+const MICROPHONE_DIAGNOSE_MESSAGE_TYPE = 'media.microphoneDiagnose';
+const MICROPHONE_DIAGNOSIS_MESSAGE_TYPE = 'media.microphoneDiagnosis';
+const OPEN_MEDIA_SETTINGS_MESSAGE_TYPE = 'media.openSettings';
+const MICROPHONE_DIAGNOSIS_TIMEOUT_MS = 12000;
+const MAXIMUM_MICROPHONE_DIAGNOSIS_LENGTH = 16384;
+const DESKTOP_MEDIA_SETTINGS_KINDS = new Set(['privacy-microphone', 'sound']);
+const FILE_DROPPED_MESSAGE_TYPE = 'file.dropped';
+const SHARED_FILE_URL_PATH_PREFIX = '/__desktop_share__/';
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 1000;
+const OPEN_DOWNLOADED_FILE_RESULT_TIMEOUT_MS = 600;
+const VNC_PREFLIGHT_RESULT_TIMEOUT_MS = 1000;
+const EQUIPMENT_QR_PRINT_RESULT_TIMEOUT_MS = 120000;
+const LEGACY_OPEN_INTENT_LIFETIME_MS = 15000;
+const MAXIMUM_INBOUND_MESSAGE_LENGTH = 4096;
+const MAXIMUM_SYSTEM_LIFECYCLE_MESSAGE_LENGTH = 512;
+const MAXIMUM_NOTIFICATION_ID_LENGTH = 128;
+const MAXIMUM_NOTIFICATION_TITLE_LENGTH = 128;
+const MAXIMUM_NOTIFICATION_BODY_LENGTH = 512;
+const MAXIMUM_ROUTE_LENGTH = 1024;
+const MAXIMUM_WINDOWS_USERNAME_LENGTH = 50;
+const MAXIMUM_CAPABILITIES = 16;
+const MAXIMUM_CAPABILITY_LENGTH = 64;
+const MAXIMUM_SHELL_COUNTER = 9999;
+const MAXIMUM_QUICK_ROUTES = 12;
+const MAXIMUM_QUICK_ROUTE_ID_LENGTH = 32;
+const MAXIMUM_QUICK_ROUTE_LABEL_LENGTH = 48;
+const NOTIFICATION_ID_PATTERN = /^[A-Za-z0-9._:-]+$/u;
+const MAIL_COMPOSE_REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]+$/u;
+const CAPABILITY_PATTERN = /^[a-z][a-z0-9-]*$/u;
+const DESKTOP_DOWNLOADED_FILE_ACTIONS = new Set(['open', 'print', 'copy', 'saveAs']);
+const QUICK_ROUTE_ID_PATTERN = /^[a-z][a-z0-9-]*$/u;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F-\u009F]/u;
+
+let bridgeReady = false;
+let notificationCapabilityAvailable = false;
+let initializationPromise = null;
+let pendingNavigationRoute = null;
+let desktopWindowForeground = true;
+let desktopWindowsUsername = '';
+let desktopCapabilities = new Set();
+let pendingDesktopShellStatus = null;
+let pendingDesktopQuickRoutes = null;
+let pendingOpenDownloadedFileRequest = null;
+let pendingPreparedDownloadRequest = null;
+let pendingVncPreflightRequest = null;
+let pendingEquipmentQrPrintRequest = null;
+let pendingMailComposeWindowRequest = null;
+let pendingWorkspaceWindowRequest = null;
+let pendingMicrophoneDiagnosisRequest = null;
+let pendingDesktopSharedFiles = [];
+const mailComposeCloseListeners = new Set();
+const pendingNotificationResults = new Map();
+let legacyOpenIntentBusyUntil = 0;
+const navigationListeners = new Set();
+const lifecycleListeners = new Set();
+const bridgeReadyWaiters = new Set();
+let pendingLifecycleEvent = null;
+
+export const DESKTOP_WINDOW_STATE_CHANGED_EVENT = 'itinvent:desktop-window-state-changed';
+export const DESKTOP_OPEN_COMMAND_PALETTE_EVENT = 'itinvent:desktop-open-command-palette';
+export const DESKTOP_CAPABILITIES_CHANGED_EVENT = 'itinvent:desktop-capabilities-changed';
+export const DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY = 'equipment-qr-print';
+export const DESKTOP_NOTIFICATION_CLEAR_GROUP_CAPABILITY = 'notification-clear-group';
+export const DESKTOP_MICROPHONE_DIAGNOSTICS_CAPABILITY = 'microphone-diagnostics';
+const MAXIMUM_NOTIFICATION_GROUP_LENGTH = 64;
+const NOTIFICATION_GROUP_PATTERN = /^(?:chat|task):[A-Za-z0-9._:-]{1,59}$/u;
+export const DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT = 'itinvent:desktop-mail-compose-completed';
+export const DESKTOP_SYSTEM_RESUME_EVENT = 'desktop.system.resume';
+export const DESKTOP_NETWORK_CHANGED_EVENT = 'desktop.network.changed';
+export const DESKTOP_SHARED_FILES_EVENT = 'itinvent:desktop-shared-files';
+
+const getWebViewTransport = () => {
+  if (typeof window === 'undefined') return null;
+  const transport = window.chrome?.webview;
+  if (typeof transport?.postMessage !== 'function') return null;
+  if (typeof transport?.addEventListener !== 'function') return null;
+  return transport;
+};
+
+const isValidHostReadyMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  if (
+    (keys.length !== 3 && keys.length !== 4)
+    || !keys.includes('type')
+    || !keys.includes('version')
+    || !keys.includes('capabilities')
+  ) return false;
+  if (
+    keys.length === 4
+    && (
+      !keys.includes('windowsUsername')
+      || (message.windowsUsername !== null
+        && !isValidBoundedText(message.windowsUsername, MAXIMUM_WINDOWS_USERNAME_LENGTH))
+    )
+  ) return false;
+  const capabilities = message.capabilities;
+  if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return false;
+  const capabilityKeys = Object.keys(capabilities);
+  if (
+    capabilityKeys.length !== 1
+    || capabilityKeys[0] !== 'notifications'
+    || typeof capabilities.notifications !== 'boolean'
+  ) return false;
+  return message.type === HOST_READY_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION;
+};
+
+const isValidCapabilitiesMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  if (
+    keys.length !== 3
+    || !keys.includes('type')
+    || !keys.includes('version')
+    || !keys.includes('capabilities')
+    || message.type !== CAPABILITIES_MESSAGE_TYPE
+    || message.version !== DESKTOP_BRIDGE_PROTOCOL_VERSION
+    || !Array.isArray(message.capabilities)
+    || message.capabilities.length > MAXIMUM_CAPABILITIES
+  ) return false;
+
+  const uniqueCapabilities = new Set();
+  for (const capability of message.capabilities) {
+    if (
+      typeof capability !== 'string'
+      || capability.length === 0
+      || capability.length > MAXIMUM_CAPABILITY_LENGTH
+      || !CAPABILITY_PATTERN.test(capability)
+      || uniqueCapabilities.has(capability)
+    ) return false;
+    uniqueCapabilities.add(capability);
+  }
+  return true;
+};
+
+const isValidShellCounter = (value) => (
+  Number.isInteger(value)
+  && value >= 0
+  && value <= MAXIMUM_SHELL_COUNTER
+);
+
+const isValidShellStatus = (status) => {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
+  const keys = Object.keys(status);
+  return keys.length === 6
+    && keys.includes('authenticated')
+    && keys.includes('online')
+    && keys.includes('unread_total')
+    && keys.includes('chat_unread')
+    && keys.includes('mail_unread')
+    && keys.includes('tasks_attention')
+    && typeof status.authenticated === 'boolean'
+    && typeof status.online === 'boolean'
+    && isValidShellCounter(status.unread_total)
+    && isValidShellCounter(status.chat_unread)
+    && isValidShellCounter(status.mail_unread)
+    && isValidShellCounter(status.tasks_attention);
+};
+
+const postDesktopShellStatus = (status) => {
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({
+      type: SHELL_STATUS_MESSAGE_TYPE,
+      version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      ...status,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isValidQuickRoute = (route) => {
+  if (!route || typeof route !== 'object' || Array.isArray(route)) return false;
+  const keys = Object.keys(route);
+  return keys.length === 4
+    && keys.includes('id')
+    && keys.includes('label')
+    && keys.includes('route')
+    && keys.includes('badge')
+    && isValidBoundedText(route.id, MAXIMUM_QUICK_ROUTE_ID_LENGTH)
+    && QUICK_ROUTE_ID_PATTERN.test(route.id)
+    && isValidBoundedText(route.label, MAXIMUM_QUICK_ROUTE_LABEL_LENGTH)
+    && isValidRoute(route.route)
+    && isValidShellCounter(route.badge);
+};
+
+const isValidQuickRoutes = (routes) => {
+  if (!Array.isArray(routes) || routes.length > MAXIMUM_QUICK_ROUTES) return false;
+  const ids = new Set();
+  for (const route of routes) {
+    if (!isValidQuickRoute(route) || ids.has(route.id)) return false;
+    ids.add(route.id);
+  }
+  return true;
+};
+
+const postDesktopQuickRoutes = (routes) => {
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    const message = {
+      type: QUICK_ROUTES_MESSAGE_TYPE,
+      version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      routes,
+    };
+    if (JSON.stringify(message).length > MAXIMUM_INBOUND_MESSAGE_LENGTH) return false;
+    transport.postMessage(message);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isValidBoundedText = (value, maximumLength) => (
+  typeof value === 'string'
+  && value.trim().length > 0
+  && value.length <= maximumLength
+  && !CONTROL_CHARACTER_PATTERN.test(value)
+);
+
+const isValidRoute = (route) => (
+  isValidBoundedText(route, MAXIMUM_ROUTE_LENGTH)
+  && route.startsWith('/')
+  && !route.startsWith('//')
+  && !route.includes('\\')
+);
+
+const isValidOpenNavigationMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 3
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('route')
+    && message.type === OPEN_NAVIGATION_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidRoute(message.route);
+};
+
+const isValidWindowStateMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 3
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('foreground')
+    && message.type === WINDOW_STATE_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && typeof message.foreground === 'boolean';
+};
+
+const isValidLifecycleGeneration = (value) => (
+  Number.isInteger(value)
+  && value >= 1
+  && value <= 2147483647
+);
+
+const isValidOccurredUtc = (value) => (
+  typeof value === 'string'
+  && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)
+);
+
+const isCompactLifecycleMessage = (message) => {
+  try {
+    return JSON.stringify(message).length <= MAXIMUM_SYSTEM_LIFECYCLE_MESSAGE_LENGTH;
+  } catch {
+    return false;
+  }
+};
+
+const isValidSystemResumeMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('generation')
+    && keys.includes('occurredUtc')
+    && message.type === SYSTEM_RESUME_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidLifecycleGeneration(message.generation)
+    && isValidOccurredUtc(message.occurredUtc)
+    && isCompactLifecycleMessage(message);
+};
+
+const isValidNetworkChangedMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 5
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('generation')
+    && keys.includes('available')
+    && keys.includes('occurredUtc')
+    && message.type === SYSTEM_NETWORK_CHANGED_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidLifecycleGeneration(message.generation)
+    && typeof message.available === 'boolean'
+    && isValidOccurredUtc(message.occurredUtc)
+    && isCompactLifecycleMessage(message);
+};
+
+const normalizeLifecycleEvent = (message) => {
+  if (isValidSystemResumeMessage(message)) {
+    return {
+      type: SYSTEM_RESUME_MESSAGE_TYPE,
+      generation: message.generation,
+      occurredUtc: message.occurredUtc,
+      available: null,
+      isRecoveryAttempt: true,
+    };
+  }
+  if (isValidNetworkChangedMessage(message)) {
+    return {
+      type: SYSTEM_NETWORK_CHANGED_MESSAGE_TYPE,
+      generation: message.generation,
+      occurredUtc: message.occurredUtc,
+      available: message.available,
+      isRecoveryAttempt: message.available === true,
+    };
+  }
+  return null;
+};
+
+const dispatchDesktopLifecycle = (event) => {
+  const envelope = {
+    event,
+    receivedAt: Date.now(),
+  };
+  if (lifecycleListeners.size === 0) {
+    pendingLifecycleEvent = envelope;
+    return;
+  }
+
+  pendingLifecycleEvent = null;
+  lifecycleListeners.forEach((listener) => listener(event));
+};
+
+const flushBridgeReadyWaiters = () => {
+  const waiters = [...bridgeReadyWaiters];
+  bridgeReadyWaiters.clear();
+  waiters.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // Waiters must not break the host handshake.
+    }
+  });
+};
+
+const isValidOpenCommandPaletteMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 2
+    && keys.includes('type')
+    && keys.includes('version')
+    && message.type === OPEN_COMMAND_PALETTE_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION;
+};
+
+const isValidOpenDownloadedFileResultMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 3
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('status')
+    && message.type === OPEN_DOWNLOADED_FILE_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && (message.status === 'accepted' || message.status === 'busy');
+};
+
+const isValidPreparedDownloadResultMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('action')
+    && keys.includes('status')
+    && message.type === PREPARE_DOWNLOADED_FILE_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && DESKTOP_DOWNLOADED_FILE_ACTIONS.has(message.action)
+    && (message.status === 'accepted' || message.status === 'busy');
+};
+
+const isValidEquipmentQrPrintResultMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && keys.includes('status')
+    && message.type === EQUIPMENT_QR_PRINT_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    && ['succeeded', 'dialog-opened', 'failed'].includes(message.status);
+};
+
+const isValidVncPreflightResultMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 3
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('status')
+    && message.type === VNC_PREFLIGHT_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && (message.status === 'available' || message.status === 'missing');
+};
+
+// Host-produced diagnosis; the content is data for the calls UI, never HTML.
+const isValidMicrophoneDiagnosisMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  if (
+    keys.length !== 5
+    || message.type !== MICROPHONE_DIAGNOSIS_MESSAGE_TYPE
+    || message.version !== DESKTOP_BRIDGE_PROTOCOL_VERSION
+    || !isValidBoundedText(message.requestId, 64)
+    || !MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    || !['completed', 'failed'].includes(message.status)
+  ) {
+    return false;
+  }
+  if (message.status === 'failed') return message.diagnosis === null;
+  const { diagnosis } = message;
+  return Boolean(diagnosis)
+    && typeof diagnosis === 'object'
+    && !Array.isArray(diagnosis)
+    && typeof diagnosis.reason === 'string'
+    && Array.isArray(diagnosis.devices)
+    && JSON.stringify(message).length <= MAXIMUM_MICROPHONE_DIAGNOSIS_LENGTH;
+};
+
+const dispatchDesktopNavigation = (route) => {
+  if (navigationListeners.size === 0) {
+    pendingNavigationRoute = route;
+    return;
+  }
+
+  pendingNavigationRoute = null;
+  navigationListeners.forEach((listener) => listener(route));
+};
+
+const isValidMailComposeRoute = (route) => {
+  if (!isValidRoute(route)) return false;
+  try {
+    const url = new URL(route, 'https://hubit.invalid');
+    if (url.pathname !== '/mail/compose' || url.hash) return false;
+    const entries = [...url.searchParams.entries()];
+    const keys = entries.map(([key]) => key);
+    if (
+      keys.some((key) => key !== 'draft_id' && key !== 'mailbox_id')
+      || new Set(keys).size !== keys.length
+      || entries.some(([, value]) => /[\u0000-\u001f\u007f]/u.test(value))
+    ) return false;
+    const draftId = String(url.searchParams.get('draft_id') || '').trim();
+    const mailboxId = String(url.searchParams.get('mailbox_id') || '').trim();
+    return draftId.length > 0 && draftId.length <= 1024 && mailboxId.length <= 256;
+  } catch {
+    return false;
+  }
+};
+
+const isValidWorkspaceEditorRoute = (route) => (
+  isValidRoute(route) && /^\/my-files\/edit\/[A-Za-z0-9_-]{1,64}$/u.test(route)
+);
+
+const isValidWorkspaceWindowResult = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && keys.includes('status')
+    && message.type === WORKSPACE_WINDOW_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    && ['opened', 'activated', 'failed'].includes(message.status);
+};
+
+const isValidMailComposeWindowResult = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && keys.includes('status')
+    && message.type === MAIL_COMPOSE_WINDOW_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    && ['opened', 'activated', 'busy', 'failed'].includes(message.status);
+};
+
+const isValidMailComposeCloseRequested = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 3
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && message.type === MAIL_COMPOSE_WINDOW_CLOSE_REQUESTED_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId);
+};
+
+const isValidMailComposeCompleted = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 2
+    && message.type === MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION;
+};
+
+const isValidSharedFileEntry = (entry) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  const keys = Object.keys(entry);
+  if (keys.length !== 4
+    || !keys.includes('name')
+    || !keys.includes('size')
+    || !keys.includes('url')
+    || !keys.includes('relativePath')) return false;
+  if (!isValidBoundedText(entry.name, 260)) return false;
+  if (!Number.isInteger(entry.size) || entry.size < 0) return false;
+  if (typeof entry.url !== 'string' || entry.url.length > 2048) return false;
+  if (entry.relativePath !== null
+    && !(typeof entry.relativePath === 'string'
+      && entry.relativePath.length <= 1024
+      && entry.relativePath.includes('/')
+      && !entry.relativePath.split('/').includes('..'))) return false;
+  try {
+    const url = new URL(entry.url);
+    return url.origin === window.location.origin
+      && url.pathname.startsWith(SHARED_FILE_URL_PATH_PREFIX);
+  } catch {
+    return false;
+  }
+};
+
+const isValidSharedFilesMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 3
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('files')
+    && (message.type === FILE_SHARED_MESSAGE_TYPE || message.type === FILE_DROPPED_MESSAGE_TYPE)
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && Array.isArray(message.files)
+    && message.files.length <= 100
+    && message.files.every(isValidSharedFileEntry);
+};
+
+const fetchDesktopSharedFile = async (entry) => {
+  try {
+    const response = await fetch(entry.url, { credentials: 'same-origin' });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    const file = new File([blob], entry.name, { lastModified: Date.now() });
+    if (typeof entry.relativePath === 'string' && entry.relativePath) {
+      const { attachRelativePath } = await import('./myFilesFolderZip');
+      return attachRelativePath(file, entry.relativePath);
+    }
+    return file;
+  } catch {
+    return null;
+  }
+};
+
+const handleDesktopSharedFiles = (entries) => {
+  void (async () => {
+    const files = (await Promise.all(entries.map(fetchDesktopSharedFile))).filter(Boolean);
+    if (files.length === 0) return;
+    pendingDesktopSharedFiles = pendingDesktopSharedFiles.concat(files);
+    window.dispatchEvent(new CustomEvent(DESKTOP_SHARED_FILES_EVENT, {
+      detail: { count: files.length },
+    }));
+  })();
+};
+
+export function consumeDesktopSharedFiles() {
+  const files = pendingDesktopSharedFiles;
+  pendingDesktopSharedFiles = [];
+  return files;
+}
+
+export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS } = {}) {
+  if (bridgeReady) return Promise.resolve(true);
+  if (initializationPromise) return initializationPromise;
+
+  const transport = getWebViewTransport();
+  if (!transport) {
+    initializationPromise = Promise.resolve(false);
+    return initializationPromise;
+  }
+
+  initializationPromise = new Promise((resolve) => {
+    let settled = false;
+    let timeoutId;
+
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+      resolve(value);
+    };
+
+    transport.addEventListener('message', (event) => {
+      const message = event?.data;
+      if (bridgeReady && message?.type === 'notification.result'
+        && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+        && Object.keys(message).length === 4
+        && isValidBoundedText(message.id, MAXIMUM_NOTIFICATION_ID_LENGTH)
+        && NOTIFICATION_ID_PATTERN.test(message.id)
+        && typeof message.accepted === 'boolean') {
+        pendingNotificationResults.get(message.id)?.(message.accepted);
+        return;
+      }
+      if (isValidHostReadyMessage(message)) {
+        bridgeReady = true;
+        notificationCapabilityAvailable = message.capabilities.notifications;
+        desktopWindowsUsername = typeof message.windowsUsername === 'string'
+          ? message.windowsUsername.trim()
+          : '';
+        document.documentElement?.setAttribute('data-desktop-shell', 'true');
+        settle(true);
+        flushBridgeReadyWaiters();
+        return;
+      }
+
+      if (bridgeReady && isValidCapabilitiesMessage(message)) {
+        desktopCapabilities = new Set(message.capabilities);
+        window.dispatchEvent(new CustomEvent(DESKTOP_CAPABILITIES_CHANGED_EVENT, {
+          detail: { capabilities: [...desktopCapabilities] },
+        }));
+        if (
+          pendingDesktopShellStatus
+          && desktopCapabilities.has('shell-status')
+          && postDesktopShellStatus(pendingDesktopShellStatus)
+        ) {
+          pendingDesktopShellStatus = null;
+        }
+        if (
+          pendingDesktopQuickRoutes
+          && desktopCapabilities.has('quick-routes')
+          && postDesktopQuickRoutes(pendingDesktopQuickRoutes)
+        ) {
+          pendingDesktopQuickRoutes = null;
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidOpenNavigationMessage(message)) {
+        dispatchDesktopNavigation(message.route);
+        return;
+      }
+
+      if (bridgeReady && isValidOpenCommandPaletteMessage(message)) {
+        window.dispatchEvent(new CustomEvent(DESKTOP_OPEN_COMMAND_PALETTE_EVENT));
+        return;
+      }
+
+      if (bridgeReady && isValidOpenDownloadedFileResultMessage(message)) {
+        const pending = pendingOpenDownloadedFileRequest;
+        if (pending) {
+          pendingOpenDownloadedFileRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({
+            accepted: message.status === 'accepted',
+            status: message.status,
+          });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidPreparedDownloadResultMessage(message)) {
+        const pending = pendingPreparedDownloadRequest;
+        if (pending && pending.action === message.action) {
+          pendingPreparedDownloadRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({
+            accepted: message.status === 'accepted',
+            status: message.status,
+          });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidEquipmentQrPrintResultMessage(message)) {
+        const pending = pendingEquipmentQrPrintRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingEquipmentQrPrintRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({
+            accepted: message.status === 'succeeded' || message.status === 'dialog-opened',
+            status: message.status,
+          });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidVncPreflightResultMessage(message)) {
+        const pending = pendingVncPreflightRequest;
+        if (pending) {
+          pendingVncPreflightRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({
+            available: message.status === 'available',
+            status: message.status,
+          });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidWorkspaceWindowResult(message)) {
+        const pending = pendingWorkspaceWindowRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingWorkspaceWindowRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({ status: message.status });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidMailComposeWindowResult(message)) {
+        const pending = pendingMailComposeWindowRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingMailComposeWindowRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({ status: message.status });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidMicrophoneDiagnosisMessage(message)) {
+        const pending = pendingMicrophoneDiagnosisRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingMicrophoneDiagnosisRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve(message.status === 'completed'
+            ? { status: 'completed', diagnosis: message.diagnosis }
+            : { status: 'failed', diagnosis: null });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidMailComposeCloseRequested(message)) {
+        mailComposeCloseListeners.forEach((listener) => listener(message.requestId));
+        return;
+      }
+
+      if (bridgeReady && isValidMailComposeCompleted(message)) {
+        window.dispatchEvent(new CustomEvent(DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT));
+        return;
+      }
+
+      if (bridgeReady && isValidSharedFilesMessage(message)) {
+        handleDesktopSharedFiles(message.files);
+        return;
+      }
+
+      if (bridgeReady && isValidWindowStateMessage(message)) {
+        desktopWindowForeground = message.foreground;
+        window.dispatchEvent(new CustomEvent(DESKTOP_WINDOW_STATE_CHANGED_EVENT, {
+          detail: { foreground: desktopWindowForeground },
+        }));
+        return;
+      }
+
+      if (bridgeReady) {
+        const lifecycleEvent = normalizeLifecycleEvent(message);
+        if (lifecycleEvent) {
+          dispatchDesktopLifecycle(lifecycleEvent);
+        }
+      }
+    });
+
+    timeoutId = window.setTimeout(() => settle(false), Math.max(0, timeoutMs));
+
+    try {
+      transport.postMessage({
+        type: READY_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      });
+    } catch {
+      settle(false);
+    }
+  });
+
+  return initializationPromise;
+}
+
+export function isDesktopBridgeReady() {
+  return bridgeReady;
+}
+
+export function isDesktopNotificationAvailable() {
+  return bridgeReady && notificationCapabilityAvailable;
+}
+
+export function isDesktopCapabilityAvailable(capability) {
+  return bridgeReady
+    && typeof capability === 'string'
+    && desktopCapabilities.has(capability);
+}
+
+export function syncDesktopShellStatus(status) {
+  if (!isValidShellStatus(status)) return false;
+
+  const transport = getWebViewTransport();
+  if (!transport) return false;
+
+  pendingDesktopShellStatus = status;
+  if (!isDesktopCapabilityAvailable('shell-status')) return false;
+  if (!postDesktopShellStatus(status)) return false;
+
+  pendingDesktopShellStatus = null;
+  return true;
+}
+
+export function syncDesktopQuickRoutes(routes) {
+  if (!isValidQuickRoutes(routes)) return false;
+
+  const transport = getWebViewTransport();
+  if (!transport) return false;
+
+  pendingDesktopQuickRoutes = routes;
+  if (!isDesktopCapabilityAvailable('quick-routes')) return false;
+  if (!postDesktopQuickRoutes(routes)) return false;
+
+  pendingDesktopQuickRoutes = null;
+  return true;
+}
+
+export function getDesktopWindowForeground() {
+  return bridgeReady ? desktopWindowForeground : null;
+}
+
+export function getDesktopWindowsUsername() {
+  return bridgeReady ? desktopWindowsUsername : '';
+}
+
+export function subscribeDesktopNavigation(listener) {
+  if (typeof listener !== 'function') return () => {};
+
+  navigationListeners.add(listener);
+  if (pendingNavigationRoute) {
+    const route = pendingNavigationRoute;
+    pendingNavigationRoute = null;
+    listener(route);
+  }
+
+  return () => {
+    navigationListeners.delete(listener);
+  };
+}
+
+export function subscribeDesktopBridgeReady(listener) {
+  if (typeof listener !== 'function') return () => {};
+  if (bridgeReady) {
+    listener();
+    return () => {};
+  }
+
+  bridgeReadyWaiters.add(listener);
+  return () => {
+    bridgeReadyWaiters.delete(listener);
+  };
+}
+
+export function subscribeDesktopLifecycle(listener) {
+  if (typeof listener !== 'function') return () => {};
+
+  lifecycleListeners.add(listener);
+  if (pendingLifecycleEvent) {
+    const pending = pendingLifecycleEvent;
+    pendingLifecycleEvent = null;
+    if (isPendingLifecycleEnvelopeFresh(pending, Date.now())) {
+      listener(pending.event);
+    }
+  }
+
+  return () => {
+    lifecycleListeners.delete(listener);
+  };
+}
+
+export function showDesktopNotification({ id, title, body, route, onResult } = {}) {
+  if (!isDesktopNotificationAvailable()) return false;
+  if (
+    !isValidBoundedText(id, MAXIMUM_NOTIFICATION_ID_LENGTH)
+    || !NOTIFICATION_ID_PATTERN.test(id)
+    || !isValidBoundedText(title, MAXIMUM_NOTIFICATION_TITLE_LENGTH)
+    || !isValidBoundedText(body, MAXIMUM_NOTIFICATION_BODY_LENGTH)
+    || !isValidRoute(route)
+  ) return false;
+
+  const message = {
+    type: SHOW_NOTIFICATION_MESSAGE_TYPE,
+    version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+    id,
+    title,
+    body,
+    route,
+  };
+  if (JSON.stringify(message).length > MAXIMUM_INBOUND_MESSAGE_LENGTH) return false;
+
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    if (typeof onResult === 'function') {
+      if (pendingNotificationResults.has(id) || pendingNotificationResults.size >= 100) return false;
+      const timeout = window.setTimeout(() => finish(false), 10000);
+      const finish = (accepted) => {
+        window.clearTimeout(timeout);
+        pendingNotificationResults.delete(id);
+        onResult(accepted);
+      };
+      pendingNotificationResults.set(id, finish);
+    }
+    transport.postMessage(message);
+    return true;
+  } catch {
+    pendingNotificationResults.get(id)?.(false);
+    return false;
+  }
+}
+
+export function isValidDesktopNotificationGroup(group) {
+  return typeof group === 'string'
+    && group.length <= MAXIMUM_NOTIFICATION_GROUP_LENGTH
+    && NOTIFICATION_GROUP_PATTERN.test(group);
+}
+
+// Removes every native notification of a chat/task group. Old hosts without
+// the capability would reject the unknown message type, so it is not sent.
+export function clearDesktopNotificationGroup(group) {
+  if (!isDesktopCapabilityAvailable(DESKTOP_NOTIFICATION_CLEAR_GROUP_CAPABILITY)) return false;
+  if (!isValidDesktopNotificationGroup(group)) return false;
+
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({
+      type: CLEAR_NOTIFICATION_GROUP_MESSAGE_TYPE,
+      version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      group,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function syncDesktopTheme(mode) {
+  if (!bridgeReady || (mode !== 'light' && mode !== 'dark')) return false;
+
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({
+      type: SET_THEME_MESSAGE_TYPE,
+      version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      mode,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function requestDesktopOpenDownloadedFile() {
+  if (!bridgeReady) {
+    return Promise.resolve({ accepted: false, status: 'unavailable' });
+  }
+  if (pendingOpenDownloadedFileRequest || Date.now() < legacyOpenIntentBusyUntil) {
+    return Promise.resolve({ accepted: false, status: 'busy' });
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ accepted: false, status: 'unavailable' });
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (!pendingOpenDownloadedFileRequest) return;
+        pendingOpenDownloadedFileRequest = null;
+        legacyOpenIntentBusyUntil = Date.now() + LEGACY_OPEN_INTENT_LIFETIME_MS;
+        resolve({ accepted: true, status: 'legacy' });
+      }, OPEN_DOWNLOADED_FILE_RESULT_TIMEOUT_MS);
+      pendingOpenDownloadedFileRequest = { resolve, timeoutId };
+      transport.postMessage({
+        type: OPEN_DOWNLOADED_FILE_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      });
+    } catch {
+      const pending = pendingOpenDownloadedFileRequest;
+      pendingOpenDownloadedFileRequest = null;
+      if (pending) window.clearTimeout(pending.timeoutId);
+      resolve({ accepted: false, status: 'unavailable' });
+    }
+  });
+}
+
+export function requestDesktopDownloadedFileAction(action) {
+  if (!DESKTOP_DOWNLOADED_FILE_ACTIONS.has(action)) {
+    return Promise.resolve({ accepted: false, status: 'unsupported' });
+  }
+  if (action === 'open' && !isDesktopCapabilityAvailable('file-actions-v2')) {
+    return requestDesktopOpenDownloadedFile();
+  }
+  if (!isDesktopCapabilityAvailable('file-actions-v2')) {
+    return Promise.resolve({ accepted: false, status: 'unavailable' });
+  }
+  if (pendingPreparedDownloadRequest) {
+    return Promise.resolve({ accepted: false, status: 'busy' });
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ accepted: false, status: 'unavailable' });
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (!pendingPreparedDownloadRequest) return;
+        pendingPreparedDownloadRequest = null;
+        resolve({ accepted: false, status: 'unavailable' });
+      }, OPEN_DOWNLOADED_FILE_RESULT_TIMEOUT_MS);
+      pendingPreparedDownloadRequest = { action, resolve, timeoutId };
+      transport.postMessage({
+        type: PREPARE_DOWNLOADED_FILE_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        action,
+      });
+    } catch {
+      const pending = pendingPreparedDownloadRequest;
+      pendingPreparedDownloadRequest = null;
+      if (pending) window.clearTimeout(pending.timeoutId);
+      resolve({ accepted: false, status: 'unavailable' });
+    }
+  });
+}
+
+export function requestDesktopPrintCurrent() {
+  if (!isDesktopCapabilityAvailable('print')) return false;
+
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({
+      type: PRINT_CURRENT_DOCUMENT_MESSAGE_TYPE,
+      version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function requestDesktopEquipmentQrPrint(mode) {
+  if (
+    !isDesktopCapabilityAvailable(DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY)
+    || !['quick', 'dialog'].includes(mode)
+  ) {
+    return Promise.resolve({ accepted: false, status: 'unavailable' });
+  }
+  if (pendingEquipmentQrPrintRequest) {
+    return Promise.resolve({ accepted: false, status: 'busy' });
+  }
+
+  return new Promise((resolve) => {
+    const requestId = globalThis.crypto?.randomUUID?.() || `qr-print-${Date.now()}`;
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ accepted: false, status: 'unavailable' });
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (pendingEquipmentQrPrintRequest?.requestId !== requestId) return;
+        pendingEquipmentQrPrintRequest = null;
+        resolve({ accepted: false, status: 'timeout' });
+      }, EQUIPMENT_QR_PRINT_RESULT_TIMEOUT_MS);
+      pendingEquipmentQrPrintRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: EQUIPMENT_QR_PRINT_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+        mode,
+      });
+    } catch {
+      const pending = pendingEquipmentQrPrintRequest;
+      pendingEquipmentQrPrintRequest = null;
+      if (pending) window.clearTimeout(pending.timeoutId);
+      resolve({ accepted: false, status: 'unavailable' });
+    }
+  });
+}
+
+const postDesktopAction = (type) => {
+  if (!isDesktopCapabilityAvailable('desktop-actions')) return false;
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({ type, version: DESKTOP_BRIDGE_PROTOCOL_VERSION });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const requestDesktopOpenDownloads = () => postDesktopAction(OPEN_DOWNLOADS_MESSAGE_TYPE);
+export const requestDesktopOpenDiagnostics = () => postDesktopAction(OPEN_DIAGNOSTICS_MESSAGE_TYPE);
+export const requestDesktopCheckForUpdates = () => postDesktopAction(CHECK_FOR_UPDATES_MESSAGE_TYPE);
+export const requestDesktopOpenCurrentInBrowser = () => postDesktopAction(OPEN_CURRENT_IN_BROWSER_MESSAGE_TYPE);
+
+export function requestDesktopVncPreflight() {
+  if (!isDesktopCapabilityAvailable('vnc-preflight')) {
+    return Promise.resolve({ available: false, status: 'unavailable' });
+  }
+  if (pendingVncPreflightRequest) {
+    return Promise.resolve({ available: false, status: 'busy' });
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ available: false, status: 'unavailable' });
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (!pendingVncPreflightRequest) return;
+        pendingVncPreflightRequest = null;
+        resolve({ available: false, status: 'unavailable' });
+      }, VNC_PREFLIGHT_RESULT_TIMEOUT_MS);
+      pendingVncPreflightRequest = { resolve, timeoutId };
+      transport.postMessage({
+        type: VNC_PREFLIGHT_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      });
+    } catch {
+      const pending = pendingVncPreflightRequest;
+      pendingVncPreflightRequest = null;
+      if (pending) window.clearTimeout(pending.timeoutId);
+      resolve({ available: false, status: 'unavailable' });
+    }
+  });
+}
+
+export function requestDesktopMailComposeWindow(route) {
+  if (!isDesktopCapabilityAvailable('mail-compose-window') || !isValidMailComposeRoute(route)) {
+    return Promise.resolve({ status: 'failed' });
+  }
+  if (pendingMailComposeWindowRequest) return Promise.resolve({ status: 'busy' });
+  return new Promise((resolve) => {
+    const requestId = globalThis.crypto?.randomUUID?.() || `compose-${Date.now()}`;
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ status: 'failed' });
+        return;
+      }
+      const timeoutId = window.setTimeout(() => {
+        if (pendingMailComposeWindowRequest?.requestId !== requestId) return;
+        pendingMailComposeWindowRequest = null;
+        resolve({ status: 'failed' });
+      }, 2000);
+      pendingMailComposeWindowRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: MAIL_COMPOSE_WINDOW_OPEN_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+        route,
+      });
+    } catch {
+      pendingMailComposeWindowRequest = null;
+      resolve({ status: 'failed' });
+    }
+  });
+}
+
+/** Opens the online editor of a file in the second HUB Desktop window, so the first one stays free to work in. */
+export function requestDesktopEditorWindow(route) {
+  if (!isDesktopCapabilityAvailable('workspace-window') || !isValidWorkspaceEditorRoute(route)) {
+    return Promise.resolve({ status: 'unavailable' });
+  }
+  if (pendingWorkspaceWindowRequest) return Promise.resolve({ status: 'busy' });
+  return new Promise((resolve) => {
+    const requestId = globalThis.crypto?.randomUUID?.() || `workspace-${Date.now()}`;
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ status: 'failed' });
+        return;
+      }
+      const timeoutId = window.setTimeout(() => {
+        if (pendingWorkspaceWindowRequest?.requestId !== requestId) return;
+        pendingWorkspaceWindowRequest = null;
+        resolve({ status: 'failed' });
+      }, 2000);
+      pendingWorkspaceWindowRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: WORKSPACE_WINDOW_OPEN_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+        route,
+      });
+    } catch {
+      pendingWorkspaceWindowRequest = null;
+      resolve({ status: 'failed' });
+    }
+  });
+}
+
+export function subscribeDesktopMailComposeCloseRequested(listener) {
+  if (typeof listener !== 'function') return () => {};
+  mailComposeCloseListeners.add(listener);
+  return () => mailComposeCloseListeners.delete(listener);
+}
+
+export function completeDesktopMailComposeClose(requestId, { saved = false } = {}) {
+  if (!isValidBoundedText(requestId, 64) || !MAIL_COMPOSE_REQUEST_ID_PATTERN.test(requestId)) return false;
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({
+      type: MAIL_COMPOSE_WINDOW_CLOSE_RESULT_MESSAGE_TYPE,
+      version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      requestId,
+      status: saved ? 'saved' : 'failed',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function notifyDesktopMailComposeSent() {
+  if (!isDesktopCapabilityAvailable('mail-compose-window')) return false;
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({ type: MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE, version: DESKTOP_BRIDGE_PROTOCOL_VERSION });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const isDesktopMicrophoneDiagnosticsAvailable = () => (
+  isDesktopCapabilityAvailable(DESKTOP_MICROPHONE_DIAGNOSTICS_CAPABILITY)
+);
+
+// Asks the Desktop host why Windows refuses the microphone.
+// Resolves { status: 'completed' | 'failed' | 'unavailable' | 'busy' | 'timeout', diagnosis }.
+export function requestDesktopMicrophoneDiagnosis() {
+  if (!isDesktopMicrophoneDiagnosticsAvailable()) {
+    return Promise.resolve({ status: 'unavailable', diagnosis: null });
+  }
+  if (pendingMicrophoneDiagnosisRequest) {
+    return Promise.resolve({ status: 'busy', diagnosis: null });
+  }
+
+  return new Promise((resolve) => {
+    const requestId = (globalThis.crypto?.randomUUID?.() || `mic-${Date.now()}`).replace(/[^A-Za-z0-9_-]/gu, '');
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ status: 'unavailable', diagnosis: null });
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (pendingMicrophoneDiagnosisRequest?.requestId !== requestId) return;
+        pendingMicrophoneDiagnosisRequest = null;
+        resolve({ status: 'timeout', diagnosis: null });
+      }, MICROPHONE_DIAGNOSIS_TIMEOUT_MS);
+      pendingMicrophoneDiagnosisRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: MICROPHONE_DIAGNOSE_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+      });
+    } catch {
+      const pending = pendingMicrophoneDiagnosisRequest;
+      pendingMicrophoneDiagnosisRequest = null;
+      if (pending) window.clearTimeout(pending.timeoutId);
+      resolve({ status: 'unavailable', diagnosis: null });
+    }
+  });
+}
+
+// Opens a Windows Settings page; the host accepts only these two kinds.
+export function requestDesktopOpenMediaSettings(kind) {
+  if (!isDesktopMicrophoneDiagnosticsAvailable() || !DESKTOP_MEDIA_SETTINGS_KINDS.has(kind)) return false;
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({ type: OPEN_MEDIA_SETTINGS_MESSAGE_TYPE, version: DESKTOP_BRIDGE_PROTOCOL_VERSION, kind });
+    return true;
+  } catch {
+    return false;
+  }
+}

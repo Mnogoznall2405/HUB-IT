@@ -1,0 +1,519 @@
+using System.Diagnostics;
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Net.Security;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using Hub.Desktop.Configuration;
+using Hub.Desktop.Diagnostics;
+using Hub.Desktop.UpdateCore;
+
+namespace Hub.Desktop.Updates;
+
+public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
+{
+    private const long DownloadReserveBytes = 100L * 1024 * 1024;
+    private const string RunnerFileName = "HUB.Desktop.UpdateRunner.exe";
+    private readonly DesktopUpdateOptions _options;
+    private readonly Version _currentVersion;
+    private readonly HttpClient _httpClient;
+    private readonly bool _ownsHttpClient;
+    private readonly X509Certificate2? _trustCertificate;
+    private readonly string _updatesFolder;
+    private readonly string _packagesFolder;
+    private readonly string _runnersFolder;
+    private readonly DesktopSettingsStore _settings;
+    private readonly Func<string, long> _getAvailableFreeSpace;
+
+    public DesktopUpdateService(
+        DesktopUpdateOptions options,
+        Version? currentVersion = null,
+        HttpClient? httpClient = null)
+        : this(
+            options,
+            currentVersion,
+            httpClient,
+            null,
+            DesktopPaths.UpdatesFolder,
+            null,
+            new DesktopSettingsStore(DesktopPaths.SettingsFile))
+    {
+    }
+
+    internal DesktopUpdateService(
+        DesktopUpdateOptions options,
+        Version? currentVersion,
+        HttpClient? httpClient,
+        X509Certificate2? trustCertificate,
+        string updatesFolder,
+        Func<string, long>? getAvailableFreeSpace = null,
+        DesktopSettingsStore? settings = null)
+    {
+        _options = options;
+        _currentVersion = currentVersion
+            ?? Assembly.GetExecutingAssembly().GetName().Version
+            ?? new Version(0, 0, 0);
+        _ownsHttpClient = httpClient is null;
+        _httpClient = httpClient ?? CreateHttpClient();
+        _trustCertificate = trustCertificate;
+        _updatesFolder = Path.GetFullPath(updatesFolder);
+        _packagesFolder = Path.Combine(_updatesFolder, "Packages");
+        _runnersFolder = Path.Combine(_updatesFolder, "Runners");
+        _settings = settings ?? new DesktopSettingsStore(
+            Path.Combine(_updatesFolder, "settings.json"));
+        _getAvailableFreeSpace = getAvailableFreeSpace ?? GetAvailableFreeSpace;
+    }
+
+    public event EventHandler<DesktopUpdateDownloadProgress>? DownloadProgress;
+
+    public IReadOnlyList<string> InstalledReleaseNotes =>
+        _settings.GetInstalledReleaseNotes(_currentVersion);
+
+    public async Task<DesktopUpdatePackage?> CheckOnceAsync(
+        CancellationToken cancellationToken = default)
+    {
+        CleanupOldFiles();
+        using var request = new HttpRequestMessage(HttpMethod.Get, _options.ManifestUri);
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentLength
+            is > DesktopUpdateManifestVerifier.MaximumManifestBytes)
+        {
+            throw new InvalidDataException("Update manifest is too large.");
+        }
+
+        var manifestBytes = await ReadBoundedAsync(
+            response.Content,
+            DesktopUpdateManifestVerifier.MaximumManifestBytes,
+            cancellationToken);
+        if (!DesktopUpdateManifestVerifier.TryParse(
+                manifestBytes,
+                new Uri(_options.ManifestUri.GetLeftPart(UriPartial.Authority) + "/"),
+                out var manifest,
+                out var parseError))
+        {
+            throw new InvalidDataException($"Update manifest was rejected: {parseError}.");
+        }
+
+        var signatureValid = _trustCertificate is null
+            ? DesktopUpdateManifestVerifier.VerifySignature(manifest)
+            : DesktopUpdateManifestVerifier.VerifySignature(manifest, _trustCertificate);
+        if (!signatureValid)
+        {
+            throw new InvalidDataException("Update manifest signature is invalid.");
+        }
+
+        if (!DesktopUpdateManifestVerifier.IsNewerThan(manifest, _currentVersion))
+        {
+            if (string.Equals(
+                    DesktopUpdateManifestVerifier.FormatVersion(manifest.Version),
+                    DesktopUpdateManifestVerifier.FormatVersion(_currentVersion),
+                    StringComparison.Ordinal))
+            {
+                _settings.SetInstalledReleaseNotes(
+                    manifest.Version,
+                    manifest.ReleaseNotes);
+            }
+
+            return null;
+        }
+
+        var package = await EnsurePackageAsync(
+            manifest,
+            manifestBytes,
+            cancellationToken);
+        return package with { DeferredUntil = ReadDeferredUntil(manifest.Version) };
+    }
+
+    public Task DeferAsync(
+        DesktopUpdatePackage package,
+        DateTimeOffset deferredUntil,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _settings.SetDeferredUpdate(package.Manifest.Version, deferredUntil);
+        return Task.CompletedTask;
+    }
+
+    public bool TryLaunchInstaller(
+        DesktopUpdatePackage package,
+        string applicationPath)
+    {
+        try
+        {
+            var installedRunnerPath = Path.Combine(AppContext.BaseDirectory, RunnerFileName);
+            if (!File.Exists(installedRunnerPath))
+            {
+                DesktopLog.Warning("Update runner is missing");
+                return false;
+            }
+
+            var runnerHashPath = Path.Combine(AppContext.BaseDirectory, $"{RunnerFileName}.sha256");
+            if (File.Exists(runnerHashPath)
+                && !VerifyRunnerHash(installedRunnerPath, runnerHashPath))
+            {
+                DesktopLog.Warning("Update runner hash verification failed");
+                return false;
+            }
+
+            var runnerDirectory = Path.Combine(
+                _runnersFolder,
+                Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(runnerDirectory);
+            var runnerPath = Path.Combine(runnerDirectory, RunnerFileName);
+            File.Copy(installedRunnerPath, runnerPath, overwrite: false);
+
+            var startInfo = new ProcessStartInfo(runnerPath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = runnerDirectory,
+            };
+            startInfo.ArgumentList.Add("--parent-pid");
+            startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+            startInfo.ArgumentList.Add("--setup");
+            startInfo.ArgumentList.Add(package.SetupPath);
+            startInfo.ArgumentList.Add("--manifest");
+            startInfo.ArgumentList.Add(package.ManifestPath);
+            startInfo.ArgumentList.Add("--application");
+            startInfo.ArgumentList.Add(applicationPath);
+
+            _ = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Update runner did not start.");
+            _settings.SetInstalledReleaseNotes(
+                package.Manifest.Version,
+                package.Manifest.ReleaseNotes);
+            DesktopLog.Info(
+                $"Update runner started; version={DesktopUpdateManifestVerifier.FormatVersion(package.Manifest.Version)}");
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Update runner failed to start", exception);
+            return false;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_ownsHttpClient)
+        {
+            _httpClient.Dispose();
+        }
+
+        _trustCertificate?.Dispose();
+    }
+
+    private async Task<DesktopUpdatePackage> EnsurePackageAsync(
+        DesktopUpdateManifest manifest,
+        byte[] manifestBytes,
+        CancellationToken cancellationToken)
+    {
+        var versionText = DesktopUpdateManifestVerifier.FormatVersion(manifest.Version);
+        var packageDirectory = Path.Combine(_packagesFolder, versionText);
+        Directory.CreateDirectory(packageDirectory);
+        var setupPath = Path.Combine(packageDirectory, Path.GetFileName(manifest.DownloadUri.LocalPath));
+        var manifestPath = Path.Combine(packageDirectory, "manifest.json");
+
+        if (await DesktopUpdateManifestVerifier.VerifyFileAsync(
+                manifest,
+                setupPath,
+                cancellationToken))
+        {
+            await WriteManifestAtomicallyAsync(manifestPath, manifestBytes, cancellationToken);
+            return new DesktopUpdatePackage(manifest, setupPath, manifestPath, null);
+        }
+
+        if (File.Exists(setupPath))
+        {
+            File.Delete(setupPath);
+        }
+
+        if (File.Exists(manifestPath))
+        {
+            File.Delete(manifestPath);
+        }
+
+        EnsureFreeSpace(packageDirectory, manifest.SizeBytes + DownloadReserveBytes);
+        var partialPath = setupPath + ".partial";
+        if (File.Exists(partialPath))
+        {
+            File.Delete(partialPath);
+        }
+
+        try
+        {
+            DownloadProgress?.Invoke(
+                this,
+                new DesktopUpdateDownloadProgress(manifest.Version, 0, manifest.SizeBytes));
+            using var request = new HttpRequestMessage(HttpMethod.Get, manifest.DownloadUri);
+            using var response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength is long contentLength
+                && contentLength != manifest.SizeBytes)
+            {
+                throw new InvalidDataException("Update package length does not match manifest.");
+            }
+
+            await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken))
+            await using (var destination = new FileStream(
+                partialPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                128 * 1024,
+                useAsync: true))
+            {
+                var buffer = new byte[128 * 1024];
+                long totalBytes = 0;
+                while (true)
+                {
+                    var read = await source.ReadAsync(buffer, cancellationToken);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    totalBytes += read;
+                    if (totalBytes > manifest.SizeBytes)
+                    {
+                        throw new InvalidDataException("Update package exceeded manifest size.");
+                    }
+
+                    await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                    DownloadProgress?.Invoke(
+                        this,
+                        new DesktopUpdateDownloadProgress(
+                            manifest.Version,
+                            totalBytes,
+                            manifest.SizeBytes));
+                }
+            }
+
+            if (!await DesktopUpdateManifestVerifier.VerifyFileAsync(
+                    manifest,
+                    partialPath,
+                    cancellationToken))
+            {
+                throw new InvalidDataException("Downloaded update package verification failed.");
+            }
+
+            File.Move(partialPath, setupPath);
+            await WriteManifestAtomicallyAsync(manifestPath, manifestBytes, cancellationToken);
+            CleanupOldPackages(manifest.Version);
+            return new DesktopUpdatePackage(manifest, setupPath, manifestPath, null);
+        }
+        catch
+        {
+            if (File.Exists(partialPath))
+            {
+                File.Delete(partialPath);
+            }
+
+            TryDeleteEmptyDirectory(packageDirectory);
+
+            throw;
+        }
+    }
+
+    private static async Task<byte[]> ReadBoundedAsync(
+        HttpContent content,
+        int maximumBytes,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = await content.ReadAsStreamAsync(cancellationToken);
+        using var destination = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer, cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            if (destination.Length + read > maximumBytes)
+            {
+                throw new InvalidDataException("Update manifest is too large.");
+            }
+
+            destination.Write(buffer, 0, read);
+        }
+
+        return destination.ToArray();
+    }
+
+    private static async Task WriteManifestAtomicallyAsync(
+        string manifestPath,
+        byte[] manifestBytes,
+        CancellationToken cancellationToken)
+    {
+        var temporaryPath = manifestPath + ".tmp";
+        await File.WriteAllBytesAsync(temporaryPath, manifestBytes, cancellationToken);
+        File.Move(temporaryPath, manifestPath, overwrite: true);
+    }
+
+    private void EnsureFreeSpace(string path, long requiredBytes)
+    {
+        if (_getAvailableFreeSpace(path) < requiredBytes)
+        {
+            throw new IOException("Not enough free space for desktop update.");
+        }
+    }
+
+    private static long GetAvailableFreeSpace(string path)
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(path))
+            ?? throw new InvalidOperationException("Update drive is unavailable.");
+        return new DriveInfo(root).AvailableFreeSpace;
+    }
+
+    private DateTimeOffset? ReadDeferredUntil(Version version)
+    {
+        return _settings.GetDeferredUpdateUntil(version);
+    }
+
+    private void CleanupOldFiles()
+    {
+        Directory.CreateDirectory(_packagesFolder);
+        Directory.CreateDirectory(_runnersFolder);
+        foreach (var partialPath in Directory.EnumerateFiles(
+                     _packagesFolder,
+                     "*.partial",
+                     SearchOption.AllDirectories))
+        {
+            try
+            {
+                File.Delete(partialPath);
+                var packageDirectory = Path.GetDirectoryName(partialPath);
+                if (packageDirectory is not null)
+                {
+                    TryDeleteEmptyDirectory(packageDirectory);
+                }
+            }
+            catch
+            {
+                // Cleanup is best-effort.
+            }
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(_runnersFolder))
+        {
+            try
+            {
+                if (Directory.GetCreationTimeUtc(directory) < DateTime.UtcNow.AddDays(-1))
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+            }
+            catch
+            {
+                // A previous runner may still be finishing.
+            }
+        }
+    }
+
+    private static void TryDeleteEmptyDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory)
+                && !Directory.EnumerateFileSystemEntries(directory).Any())
+            {
+                Directory.Delete(directory);
+            }
+        }
+        catch
+        {
+            // Cleanup is best-effort.
+        }
+    }
+
+    private void CleanupOldPackages(Version currentVersion)
+    {
+        var packages = Directory.EnumerateDirectories(_packagesFolder)
+            .Select(path => new
+            {
+                Path = path,
+                Parsed = Version.TryParse(Path.GetFileName(path), out var parsed)
+                    ? parsed
+                    : null,
+            })
+            .Where(item => item.Parsed is not null)
+            .OrderByDescending(item => item.Parsed)
+            .ToArray();
+        foreach (var package in packages.Skip(2))
+        {
+            try
+            {
+                if (package.Parsed != currentVersion)
+                {
+                    Directory.Delete(package.Path, recursive: true);
+                }
+            }
+            catch
+            {
+                // Cleanup is best-effort.
+            }
+        }
+    }
+
+    private static HttpClient CreateHttpClient()
+    {
+        // No leaf-certificate pin: it broke on every TLS re-issue. Integrity rests on the
+        // signed manifest (allowlisted key id) and the signed SHA-256 of the setup; TLS
+        // validation errors stay fatal because the default handler validation is kept.
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseCookies = false,
+        };
+        return new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromMinutes(15),
+        };
+    }
+
+    private static bool VerifyRunnerHash(string runnerPath, string hashPath)
+    {
+        try
+        {
+            var expectedHash = File.ReadAllText(hashPath).Trim().Split(' ', 2)[0];
+            if (string.IsNullOrWhiteSpace(expectedHash))
+            {
+                DesktopLog.Warning("Update runner hash file is empty");
+                return false;
+            }
+
+            using var stream = File.OpenRead(runnerPath);
+            var actualHash = SHA256.HashData(stream);
+            var actualHashHex = Convert.ToHexString(actualHash);
+            if (!string.Equals(actualHashHex, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                DesktopLog.Warning($"Update runner hash mismatch; expected={expectedHash}; actual={actualHashHex}");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Update runner hash verification failed", exception);
+            return false;
+        }
+    }
+
+}

@@ -1,0 +1,717 @@
+"""Web Push helpers for chat notifications."""
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import lru_cache
+from typing import Any, Optional
+from urllib.parse import urlencode
+
+from sqlalchemy import select
+
+from backend.chat.db import chat_session
+from backend.chat.models import ChatConversation, ChatPushSubscription
+from backend.chat.utils import normalize_text as _normalize_text
+from backend.config import config
+from backend.services.notification_preferences_service import (
+    chat_notification_channel,
+    notification_preferences_service,
+)
+from cryptography.hazmat.primitives import serialization
+
+try:
+    from pywebpush import WebPushException, webpush
+except Exception:  # pragma: no cover - optional dependency at runtime
+    WebPushException = Exception
+    webpush = None
+
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_PUSH_TTL_SEC = 12 * 60 * 60
+CHAT_PUSH_TTL_SEC = 12 * 60 * 60
+CHAT_PUSH_IDEMPOTENCY_SEC = 5 * 60
+MAX_APP_BADGE_COUNT = 999
+_recent_chat_push_deliveries: dict[tuple[int, str], float] = {}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _fcm_channel(conversation_kind: object) -> str:
+    """Android notification channel id for a chat push by conversation kind."""
+    normalized_kind = _normalize_text(conversation_kind).lower()
+    if normalized_kind == "ai":
+        return "hubit_chat_ai"
+    return "hubit_chat"
+
+
+
+def _encode_base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _decode_base64url(value: str) -> bytes:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return b""
+    padding = "=" * ((4 - len(normalized) % 4) % 4)
+    return base64.urlsafe_b64decode(f"{normalized}{padding}")
+
+
+@lru_cache(maxsize=8)
+def _resolve_vapid_private_key(value: Optional[str]) -> Optional[str]:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return None
+
+    try:
+        raw_private_key = _decode_base64url(normalized)
+        if len(raw_private_key) == 32:
+            return normalized
+    except Exception:
+        raw_private_key = b""
+
+    pem_candidate = normalized.replace("\\n", "\n")
+    for loader in (
+        lambda: serialization.load_pem_private_key(pem_candidate.encode("utf-8"), password=None),
+        lambda: serialization.load_der_private_key(raw_private_key or pem_candidate.encode("utf-8"), password=None),
+    ):
+        try:
+            private_key = loader()
+            private_value = private_key.private_numbers().private_value
+            return _encode_base64url(private_value.to_bytes(32, "big"))
+        except Exception:
+            continue
+
+    return normalized
+
+
+@dataclass
+class ChatPushSendResult:
+    sent: int = 0
+    disabled: int = 0
+    failed: int = 0
+    # Deliveries deliberately skipped by policy (e.g. HUB Desktop is active).
+    suppressed: int = 0
+    suppressed_reason: str = ""
+
+
+def _desktop_active_push_suppression(recipient_user_id: int) -> tuple[bool, bool]:
+    """(skip_web, skip_native) for a chat message push; fail-open on any error."""
+    try:
+        from backend.chat import desktop_presence
+
+        skip_web_enabled = desktop_presence.suppress_web_push_when_desktop_active()
+        skip_native_enabled = desktop_presence.suppress_mobile_push_when_desktop_active()
+        if not skip_web_enabled and not skip_native_enabled:
+            return False, False
+        remaining_sec = desktop_presence.desktop_active_remaining_sec(int(recipient_user_id))
+    except Exception:
+        logger.warning("chat push: desktop presence check failed", exc_info=True)
+        return False, False
+    if remaining_sec is None or remaining_sec <= 0:
+        return False, False
+    return bool(skip_web_enabled), bool(skip_native_enabled)
+
+
+class ChatPushService:
+    """Store chat push subscriptions and send chat message pushes."""
+
+    def _dedupe_active_subscriptions_in_session(
+        self,
+        session,
+        *,
+        user_id: int,
+        now: Optional[datetime] = None,
+    ) -> list[ChatPushSubscription]:
+        normalized_user_id = int(user_id)
+        # Endpoint is the only reliable browser-installation identifier. Modern
+        # Android user-agent reduction makes different phones expose the same
+        # browser/platform/UA tuple, so deactivating by that tuple silently
+        # drops valid devices. Expired rotated endpoints are retired on 404/410.
+        subscriptions = list(
+            session.execute(
+                select(ChatPushSubscription).where(
+                    ChatPushSubscription.user_id == normalized_user_id,
+                    ChatPushSubscription.is_active.is_(True),
+                )
+            ).scalars()
+        )
+        return subscriptions
+
+    def _select_chat_push_subscriptions(
+        self,
+        subscriptions: list[ChatPushSubscription],
+    ) -> list[ChatPushSubscription]:
+        # Active subscriptions have already been deduplicated per physical
+        # browser installation. Keep every remaining device so a user can
+        # receive the same chat message on Android and iOS.
+        return list(subscriptions)
+
+    def _has_recent_chat_push_delivery(self, *, recipient_user_id: int, message_id: str) -> bool:
+        normalized_message_id = _normalize_text(message_id)
+        normalized_user_id = int(recipient_user_id)
+        if not normalized_message_id or normalized_user_id <= 0:
+            return False
+        cache_key = (normalized_user_id, normalized_message_id)
+        now = time.monotonic()
+        previous_at = float(_recent_chat_push_deliveries.get(cache_key, 0.0) or 0.0)
+        return previous_at > 0 and (now - previous_at) < CHAT_PUSH_IDEMPOTENCY_SEC
+
+    def _record_chat_push_delivery(self, *, recipient_user_id: int, message_id: str) -> None:
+        normalized_message_id = _normalize_text(message_id)
+        normalized_user_id = int(recipient_user_id)
+        if not normalized_message_id or normalized_user_id <= 0:
+            return
+        cache_key = (normalized_user_id, normalized_message_id)
+        now = time.monotonic()
+        _recent_chat_push_deliveries[cache_key] = now
+        if len(_recent_chat_push_deliveries) > 5000:
+            stale_before = now - CHAT_PUSH_IDEMPOTENCY_SEC
+            for key, seen_at in list(_recent_chat_push_deliveries.items()):
+                if seen_at < stale_before:
+                    _recent_chat_push_deliveries.pop(key, None)
+
+    @property
+    def dependency_available(self) -> bool:
+        return webpush is not None
+
+    @property
+    def enabled(self) -> bool:
+        public_key = _normalize_text(config.web_push.public_key)
+        private_key = _normalize_text(config.web_push.private_key)
+        subject = _normalize_text(config.web_push.subject)
+        placeholder_keys = {
+            "your_vapid_public_key",
+            "your_vapid_private_key",
+        }
+        keys_configured = bool(
+            public_key
+            and private_key
+            and subject
+            and public_key.lower() not in placeholder_keys
+            and private_key.lower() not in placeholder_keys
+        )
+        return bool(keys_configured and self.dependency_available)
+
+    def get_runtime_status(self) -> dict:
+        return {
+            "enabled": bool(self.enabled),
+            "configured": bool(config.web_push.enabled),
+            "dependency_available": bool(self.dependency_available),
+            "public_key_present": bool(_normalize_text(config.web_push.public_key)),
+            "private_key_present": bool(_normalize_text(config.web_push.private_key)),
+            "subject_present": bool(_normalize_text(config.web_push.subject)),
+        }
+
+    def get_public_config(self) -> dict:
+        return {
+            "enabled": bool(self.enabled),
+            "vapid_public_key": _normalize_text(config.web_push.public_key) or None,
+            "requires_installed_pwa": True,
+            "icon_url": "/pwa-192.png",
+            "badge_url": "/hubit-badge.svg",
+        }
+
+    def upsert_subscription(
+        self,
+        *,
+        current_user_id: int,
+        endpoint: str,
+        p256dh_key: str,
+        auth_key: str,
+        expiration_time: Optional[int] = None,
+        user_agent: Optional[str] = None,
+        platform: Optional[str] = None,
+        browser_family: Optional[str] = None,
+        install_mode: Optional[str] = None,
+    ) -> dict:
+        normalized_endpoint = _normalize_text(endpoint)
+        normalized_p256dh = _normalize_text(p256dh_key)
+        normalized_auth = _normalize_text(auth_key)
+        normalized_user_agent = _normalize_text(user_agent) or None
+        normalized_platform = _normalize_text(platform) or None
+        normalized_browser_family = _normalize_text(browser_family) or None
+        normalized_install_mode = _normalize_text(install_mode) or None
+        if not normalized_endpoint or not normalized_p256dh or not normalized_auth:
+            raise ValueError("Push subscription is incomplete")
+
+        now = _utc_now()
+        with chat_session() as session:
+            subscription = session.execute(
+                select(ChatPushSubscription).where(ChatPushSubscription.endpoint == normalized_endpoint)
+            ).scalar_one_or_none()
+            if subscription is None:
+                subscription = ChatPushSubscription(
+                    user_id=int(current_user_id),
+                    endpoint=normalized_endpoint,
+                )
+                session.add(subscription)
+
+            subscription.user_id = int(current_user_id)
+            subscription.endpoint = normalized_endpoint
+            subscription.p256dh_key = normalized_p256dh
+            subscription.auth_key = normalized_auth
+            subscription.expiration_time = int(expiration_time) if expiration_time is not None else None
+            subscription.user_agent = normalized_user_agent
+            subscription.platform = normalized_platform
+            subscription.browser_family = normalized_browser_family
+            subscription.install_mode = normalized_install_mode
+            subscription.is_active = True
+            subscription.failure_count = 0
+            subscription.updated_at = now
+            subscription.last_seen_at = now
+            subscription.last_error_at = None
+            subscription.last_error_text = None
+
+            self._dedupe_active_subscriptions_in_session(
+                session,
+                user_id=int(current_user_id),
+                now=now,
+            )
+            session.flush()
+
+        return {
+            "ok": True,
+            "subscribed": True,
+            "push_enabled": bool(self.enabled),
+        }
+
+    def delete_subscription(
+        self,
+        *,
+        current_user_id: int,
+        endpoint: str,
+    ) -> dict:
+        normalized_endpoint = _normalize_text(endpoint)
+        if not normalized_endpoint:
+            raise ValueError("Subscription endpoint is required")
+
+        removed = False
+        with chat_session() as session:
+            subscription = session.execute(
+                select(ChatPushSubscription).where(
+                    ChatPushSubscription.endpoint == normalized_endpoint,
+                    ChatPushSubscription.user_id == int(current_user_id),
+                )
+            ).scalar_one_or_none()
+            if subscription is not None:
+                session.delete(subscription)
+                removed = True
+
+        return {
+            "ok": True,
+            "subscribed": False,
+            "push_enabled": bool(self.enabled),
+            "removed": bool(removed),
+        }
+
+    def _get_active_subscriptions(self, *, recipient_user_id: int) -> list[ChatPushSubscription]:
+        with chat_session() as session:
+            return self._dedupe_active_subscriptions_in_session(
+                session,
+                user_id=int(recipient_user_id),
+            )
+
+    def _build_notification_options(
+        self,
+        *,
+        channel: str,
+        route: str,
+        data: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        normalized_channel = _normalize_text(channel) or "system"
+        normalized_route = _normalize_text(route) or "/"
+        options: dict[str, Any] = {
+            "renotify": False,
+            "require_interaction": False,
+            "silent": False,
+            "timestamp": int(_utc_now().timestamp() * 1000),
+            "vibrate": [160, 80, 160],
+            "actions": [
+                {
+                    "action": "open",
+                    "title": "Открыть",
+                    "route": normalized_route,
+                },
+                {
+                    "action": "dismiss",
+                    "title": "Закрыть",
+                },
+            ],
+        }
+
+        if normalized_channel == "chat":
+            conversation_id = _normalize_text((data or {}).get("conversation_id"))
+            message_id = _normalize_text((data or {}).get("message_id"))
+            chat_route = normalized_route
+            if not chat_route or chat_route == "/":
+                if conversation_id and message_id:
+                    chat_route = f"/chat?conversation={conversation_id}&message={message_id}"
+                elif conversation_id:
+                    chat_route = f"/chat?conversation={conversation_id}"
+            options.update({
+                "renotify": False,
+                "require_interaction": False,
+                "vibrate": [260, 120, 260, 120, 360],
+                "actions": [
+                    {
+                        "action": "open-chat",
+                        "title": "Открыть чат",
+                        "route": chat_route,
+                    },
+                    {
+                        "action": "dismiss",
+                        "title": "Позже",
+                    },
+                ],
+            })
+        elif normalized_channel == "mail":
+            options.update({
+                "vibrate": [220, 100, 220],
+                "actions": [
+                    {
+                        "action": "open-mail",
+                        "title": "Открыть письмо",
+                        "route": normalized_route,
+                    },
+                    {
+                        "action": "dismiss",
+                        "title": "Закрыть",
+                    },
+                ],
+            })
+        elif normalized_channel in {"hub", "tasks", "announcements"}:
+            options.update({
+                "vibrate": [180, 90, 180],
+            })
+
+        return options
+
+    def _send_payload_to_subscriptions(
+        self,
+        *,
+        subscriptions: list[ChatPushSubscription],
+        payload: dict[str, Any],
+        ttl: int = DEFAULT_PUSH_TTL_SEC,
+        headers: Optional[dict[str, Any]] = None,
+    ) -> ChatPushSendResult:
+        result = ChatPushSendResult()
+        if not self.enabled or not subscriptions:
+            return result
+
+        serialized_payload = json.dumps(payload or {}, ensure_ascii=False)
+        now = _utc_now()
+        vapid_private_key = _resolve_vapid_private_key(config.web_push.private_key)
+
+        with chat_session() as session:
+            for subscription in subscriptions:
+                managed = session.get(ChatPushSubscription, subscription.id) or subscription
+                try:
+                    webpush(
+                        subscription_info={
+                            "endpoint": managed.endpoint,
+                            "keys": {
+                                "p256dh": managed.p256dh_key,
+                                "auth": managed.auth_key,
+                            },
+                        },
+                        data=serialized_payload,
+                        vapid_private_key=vapid_private_key,
+                        vapid_claims={"sub": _normalize_text(config.web_push.subject)},
+                        ttl=max(30, int(ttl or DEFAULT_PUSH_TTL_SEC)),
+                        headers=headers or None,
+                        timeout=10,
+                    )
+                    managed.failure_count = 0
+                    managed.last_push_at = now
+                    managed.last_seen_at = now
+                    managed.updated_at = now
+                    managed.last_error_at = None
+                    managed.last_error_text = None
+                    result.sent += 1
+                except WebPushException as exc:  # pragma: no branch - status driven
+                    status_code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
+                    managed.failure_count = int(managed.failure_count or 0) + 1
+                    managed.updated_at = now
+                    managed.last_error_at = now
+                    managed.last_error_text = _normalize_text(exc)
+                    if status_code in {404, 410}:
+                        managed.is_active = False
+                        result.disabled += 1
+                    else:
+                        result.failed += 1
+                except Exception as exc:  # pragma: no cover - best-effort fallback
+                    managed.failure_count = int(managed.failure_count or 0) + 1
+                    managed.updated_at = now
+                    managed.last_error_at = now
+                    managed.last_error_text = _normalize_text(exc)
+                    result.failed += 1
+        return result
+
+    def _compute_app_badge_count(self, *, recipient_user_id: int) -> int:
+        """Bell icon badge: hub unread notifications + aggregate mail unread."""
+        hub_total = 0
+        mail_total = 0
+        try:
+            from backend.services.hub_service import hub_service
+
+            hub_counts = hub_service.get_unread_counts(user_id=int(recipient_user_id))
+            hub_total = int(hub_counts.get("notifications_unread_total") or 0)
+        except Exception:
+            logger.warning("push badge: failed to resolve hub unread counts", exc_info=True)
+        try:
+            from backend.services.mail_service import mail_service
+
+            mail_total = int(mail_service.get_unread_count(user_id=int(recipient_user_id)) or 0)
+        except Exception:
+            logger.warning("push badge: failed to resolve mail unread count", exc_info=True)
+        return min(MAX_APP_BADGE_COUNT, max(0, hub_total + mail_total))
+
+    def send_notification(
+        self,
+        *,
+        recipient_user_id: int,
+        title: str,
+        body: str,
+        channel: str = "system",
+        route: str = "/",
+        tag: str = "",
+        icon: str = "/pwa-192.png",
+        badge: str = "/hubit-badge.svg",
+        data: Optional[dict[str, Any]] = None,
+        ttl: int = DEFAULT_PUSH_TTL_SEC,
+        app_badge_count: Optional[int] = None,
+        native_channel: Optional[str] = None,
+        skip_web_push: bool = False,
+        skip_native_push: bool = False,
+    ) -> ChatPushSendResult:
+        normalized_channel = _normalize_text(channel) or "system"
+        if notification_preferences_service.is_quiet_hours_active(
+            user_id=int(recipient_user_id),
+            channel=normalized_channel,
+        ):
+            logger.info(
+                "APP_PUSH_SKIP quiet_hours user_id=%s channel=%s",
+                int(recipient_user_id),
+                normalized_channel,
+            )
+            return ChatPushSendResult()
+        if normalized_channel == "mail":
+            try:
+                if not notification_preferences_service.is_enabled(
+                    user_id=int(recipient_user_id), channel="mail"
+                ):
+                    return ChatPushSendResult()
+            except Exception:
+                logger.warning("mail push: failed to read notification preferences", exc_info=True)
+        subscriptions = (
+            []
+            if skip_web_push
+            else self._get_active_subscriptions(recipient_user_id=int(recipient_user_id))
+        )
+        headers: dict[str, Any] = {}
+        if normalized_channel in {"chat", "mail", "tasks"}:
+            headers["Urgency"] = "high"
+        normalized_route = _normalize_text(route) or "/"
+        payload_data = {
+            "route": normalized_route,
+            **({} if not isinstance(data, dict) else data),
+        }
+        normalized_tag = _normalize_text(tag) or f"{normalized_channel}:{int(recipient_user_id)}"
+        payload: dict[str, Any] = {
+            "title": _normalize_text(title) or "Новое уведомление",
+            "body": _normalize_text(body) or "Откройте приложение, чтобы посмотреть подробности.",
+            "tag": normalized_tag,
+            "channel": normalized_channel,
+            "icon": _normalize_text(icon) or "/pwa-192.png",
+            "badge": _normalize_text(badge) or "/hubit-badge.svg",
+            "data": payload_data,
+            **self._build_notification_options(
+                channel=normalized_channel,
+                route=normalized_route,
+                data=payload_data,
+            ),
+        }
+        if normalized_channel == "mail" or app_badge_count is not None:
+            resolved_badge_count = (
+                min(MAX_APP_BADGE_COUNT, max(0, int(app_badge_count)))
+                if app_badge_count is not None
+                else self._compute_app_badge_count(recipient_user_id=int(recipient_user_id))
+            )
+            payload["app_badge_count"] = resolved_badge_count
+        result = ChatPushSendResult()
+        delivery_subscriptions = subscriptions
+        if normalized_channel == "chat":
+            delivery_subscriptions = self._select_chat_push_subscriptions(subscriptions)
+        web_subscription_count = len(delivery_subscriptions)
+        if delivery_subscriptions:
+            result = self._send_payload_to_subscriptions(
+                subscriptions=delivery_subscriptions,
+                payload=payload,
+                ttl=ttl,
+                headers=headers or None,
+            )
+        web_sent = int(result.sent or 0)
+        native_tokens = 0
+        # Browser/PWA and native registrations are independent clients. A browser
+        # subscription must not silence FCM on the user's Android devices.
+        if not skip_native_push:
+            try:
+                from backend.services.native_push_service import native_push_service
+
+                native_result = native_push_service.send_notification(
+                    recipient_user_id=int(recipient_user_id),
+                    title=payload["title"],
+                    body=payload["body"],
+                    channel=normalized_channel,
+                    route=normalized_route,
+                    tag=normalized_tag,
+                    data=payload_data,
+                    ttl=ttl,
+                    app_badge_count=payload.get("app_badge_count"),
+                    native_channel=native_channel,
+                )
+                native_tokens = int(getattr(native_result, "tokens", 0) or 0)
+                result.sent += int(getattr(native_result, "sent", 0) or 0)
+                result.disabled += int(getattr(native_result, "disabled", 0) or 0)
+                result.failed += int(getattr(native_result, "failed", 0) or 0)
+            except Exception:
+                logger.warning("Native push send failed", exc_info=True)
+                result.failed += 1
+
+        subscription_count = web_subscription_count + native_tokens
+        logger.info(
+            "APP_PUSH_SEND user_id=%s channel=%s subscriptions=%s sent=%s disabled=%s failed=%s tag=%s route=%s",
+            int(recipient_user_id),
+            normalized_channel,
+            subscription_count,
+            int(result.sent),
+            int(result.disabled),
+            int(result.failed),
+            _normalize_text(payload.get("tag")),
+            _normalize_text(payload.get("data", {}).get("route")) or "/",
+        )
+        return result
+
+    def send_chat_message_notification(
+        self,
+        *,
+        recipient_user_id: int,
+        conversation_id: str,
+        message_id: str,
+        title: str,
+        body: str,
+        preference_channel: Optional[str] = None,
+        conversation_kind: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> ChatPushSendResult:
+        normalized_conversation_id = _normalize_text(conversation_id)
+        normalized_message_id = _normalize_text(message_id)
+        if not normalized_conversation_id or not normalized_message_id:
+            return ChatPushSendResult()
+        if self._has_recent_chat_push_delivery(
+            recipient_user_id=int(recipient_user_id),
+            message_id=normalized_message_id,
+        ):
+            logger.info(
+                "APP_PUSH_SKIP duplicate chat delivery user_id=%s message_id=%s",
+                int(recipient_user_id),
+                normalized_message_id,
+            )
+            return ChatPushSendResult(sent=1)
+        resolved_preference_channel = _normalize_text(preference_channel)
+        resolved_conversation_kind = _normalize_text(conversation_kind).lower()
+        resolved_task_id = _normalize_text(task_id)
+        if not resolved_preference_channel or not resolved_conversation_kind:
+            try:
+                with chat_session() as session:
+                    conversation = session.get(ChatConversation, normalized_conversation_id)
+                    resolved_conversation_kind = (
+                        resolved_conversation_kind
+                        or _normalize_text(getattr(conversation, "kind", None)).lower()
+                    )
+                    resolved_task_id = (
+                        resolved_task_id
+                        or _normalize_text(getattr(conversation, "task_id", None))
+                    )
+                    if not resolved_preference_channel:
+                        resolved_preference_channel = chat_notification_channel(
+                            getattr(conversation, "kind", None)
+                        )
+            except Exception:
+                if not resolved_preference_channel:
+                    resolved_preference_channel = "chat"
+        try:
+            if not notification_preferences_service.is_enabled(
+                user_id=int(recipient_user_id),
+                channel=resolved_preference_channel or "chat",
+            ):
+                return ChatPushSendResult()
+        except Exception:
+            logger.warning("chat push: failed to read notification preferences", exc_info=True)
+        if resolved_conversation_kind == "task" and resolved_task_id:
+            route_query = urlencode({
+                "task": resolved_task_id,
+                "task_detail_view": "discussion",
+                "message": normalized_message_id,
+            })
+            route = f"/tasks?{route_query}"
+        else:
+            route_query = urlencode({
+                "conversation": normalized_conversation_id,
+                "message": normalized_message_id,
+            })
+            route = f"/chat?{route_query}"
+        skip_web_push, skip_native_push = _desktop_active_push_suppression(int(recipient_user_id))
+        if skip_web_push and skip_native_push:
+            logger.info(
+                "APP_PUSH_SKIP desktop_active user_id=%s message_id=%s",
+                int(recipient_user_id),
+                normalized_message_id,
+            )
+            return ChatPushSendResult(suppressed=1, suppressed_reason="desktop_active")
+        notification_data = {
+            "conversation_id": normalized_conversation_id,
+            "message_id": normalized_message_id,
+        }
+        if resolved_conversation_kind:
+            notification_data["conversation_kind"] = resolved_conversation_kind
+        if resolved_task_id:
+            notification_data["task_id"] = resolved_task_id
+        result = self.send_notification(
+            recipient_user_id=int(recipient_user_id),
+            title=title,
+            body=body,
+            channel="chat",
+            route=route,
+            tag=f"chat:msg:{normalized_message_id}",
+            data=notification_data,
+            ttl=CHAT_PUSH_TTL_SEC,
+            native_channel=_fcm_channel(resolved_conversation_kind),
+            skip_web_push=skip_web_push,
+            skip_native_push=skip_native_push,
+        )
+        if skip_web_push:
+            logger.info(
+                "APP_PUSH_SKIP web desktop_active user_id=%s message_id=%s",
+                int(recipient_user_id),
+                normalized_message_id,
+            )
+            result.suppressed += 1
+            result.suppressed_reason = "desktop_active"
+        if int(result.sent or 0) > 0:
+            self._record_chat_push_delivery(
+                recipient_user_id=int(recipient_user_id),
+                message_id=normalized_message_id,
+            )
+        return result
+
+
+chat_push_service = ChatPushService()

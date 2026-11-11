@@ -1,0 +1,206 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  MAIL_ATTACHMENT_CONTEXT_MISSING_CODE,
+  buildAttachmentBlobPayload,
+  buildAttachmentContextError,
+  buildAttachmentDownloadKey,
+  buildAttachmentPreviewState,
+  buildAttachmentRequestContext,
+  buildMessageSourceDownloadPayload,
+  buildPrintMailDocumentHtml,
+  normalizeAttachmentPreviewMetadata,
+  parseDownloadFilename,
+} from './mailMessageFileActions';
+
+describe('mailMessageFileActions', () => {
+  it('parses download filenames from RFC 6266 headers with safe fallbacks', () => {
+    expect(parseDownloadFilename("attachment; filename*=UTF-8''report%20final.eml", 'fallback.eml'))
+      .toBe('report final.eml');
+    expect(parseDownloadFilename('attachment; filename="plain.txt"', 'fallback.txt'))
+      .toBe('plain.txt');
+    expect(parseDownloadFilename('', 'fallback.bin')).toBe('fallback.bin');
+  });
+
+  it('builds attachment request context without owning mailbox state', () => {
+    const context = buildAttachmentRequestContext({
+      messageOrId: 'msg-42',
+      fallbackMessage: { id: 'msg-fallback', mailbox_id: 'mailbox-1' },
+      attachment: { download_token: 'att-token', id: 'att-id' },
+      resolveMailboxId: (message) => message?.mailbox_id || '',
+    });
+
+    expect(context).toEqual({
+      messageId: 'msg-42',
+      attachmentRef: 'att-token',
+      mailboxId: 'mailbox-1',
+    });
+  });
+
+  it('keeps custom-folder message ids when opening an attachment chip', () => {
+    const customFolderMessageId = 'v2CustomFolderMessageIdWithCASE';
+    const context = buildAttachmentRequestContext({
+      messageOrId: {
+        id: customFolderMessageId,
+        mailbox_id: 'mailbox-1',
+        folder: 'bWFpbGJveDo6QWJjREVfMTIz',
+      },
+      attachment: { download_token: 'att2_ZGVtbw', id: 'att-id' },
+      resolveMailboxId: (message) => message?.mailbox_id || '',
+    });
+
+    expect(context.messageId).toBe(customFolderMessageId);
+    expect(context.attachmentRef).toBe('att2_ZGVtbw');
+    expect(context.mailboxId).toBe('mailbox-1');
+  });
+
+  it('builds structured attachment context errors and stable download keys', () => {
+    const error = buildAttachmentContextError({
+      attachment: { name: 'broken.txt', size: 64 },
+      messageId: 'msg-42',
+      mailboxId: 'mailbox-1',
+    });
+
+    expect(error.code).toBe(MAIL_ATTACHMENT_CONTEXT_MISSING_CODE);
+    expect(error.message).toContain('broken.txt');
+    expect(error.attachment).toMatchObject({
+      name: 'broken.txt',
+      size: 64,
+      mailbox_id: 'mailbox-1',
+      message_id: 'msg-42',
+    });
+    expect(buildAttachmentDownloadKey({ messageId: 'msg-42', attachmentRef: 'att-token', mailboxId: 'mailbox-1' }))
+      .toBe('msg-42::att-token::mailbox-1');
+  });
+
+  it('builds source and attachment blob payloads from response headers', () => {
+    const sourcePayload = buildMessageSourceDownloadPayload({
+      message: { subject: 'Fallback subject' },
+      response: {
+        data: 'raw message',
+        headers: {
+          'content-type': 'message/rfc822',
+          'content-disposition': 'attachment; filename="source.eml"',
+        },
+      },
+    });
+    const attachmentPayload = buildAttachmentBlobPayload({
+      attachment: { name: 'fallback.txt', content_type: 'text/plain' },
+      response: {
+        data: 'attachment body',
+        headers: {},
+      },
+    });
+
+    expect(sourcePayload.filename).toBe('source.eml');
+    expect(sourcePayload.blob.type).toBe('message/rfc822');
+    expect(attachmentPayload.filename).toBe('fallback.txt');
+    expect(attachmentPayload.contentType).toBe('text/plain');
+    expect(attachmentPayload.blob.type).toBe('text/plain');
+  });
+
+  it('builds attachment preview state for text and object-url previews', async () => {
+    const textPreview = await buildAttachmentPreviewState({
+      attachment: { name: 'notes.txt', content_type: 'text/plain' },
+      response: {
+        data: 'abcdef',
+        headers: { 'content-type': 'text/plain' },
+      },
+      maxTextPreviewBytes: 3,
+      maxPreviewFileBytes: 4,
+    });
+    const imagePreview = await buildAttachmentPreviewState({
+      attachment: { name: 'photo.png', content_type: 'image/png' },
+      response: {
+        data: 'png',
+        headers: { 'content-type': 'image/png' },
+      },
+      createObjectUrl: () => 'blob:photo',
+    });
+
+    expect(textPreview).toMatchObject({
+      open: true,
+      kind: 'text',
+      filename: 'notes.txt',
+      textContent: 'abc',
+      textTruncated: true,
+      tooLargeForPreview: true,
+    });
+    expect(textPreview.blob).toBeInstanceOf(Blob);
+    expect(imagePreview).toMatchObject({
+      kind: 'image',
+      objectUrl: 'blob:photo',
+    });
+  });
+
+  it('marks office documents (Word, Excel) for server-side PDF preview', async () => {
+    const wordPreview = await buildAttachmentPreviewState({
+      attachment: { name: 'report.docx', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      response: {
+        data: 'word-binary',
+        headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      },
+    });
+    const excelPreview = await buildAttachmentPreviewState({
+      attachment: { name: 'table.xlsx', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      response: {
+        data: 'excel-binary',
+        headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      },
+    });
+
+    expect(wordPreview).toMatchObject({
+      open: true,
+      kind: 'office_pdf',
+      filename: 'report.docx',
+      sourceKind: 'word',
+      previewKind: 'office_pdf',
+      objectUrl: '',
+      textContent: '',
+    });
+    expect(excelPreview).toMatchObject({
+      open: true,
+      kind: 'office_pdf',
+      filename: 'table.xlsx',
+      sourceKind: 'excel',
+      previewKind: 'office_pdf',
+      objectUrl: '',
+      textContent: '',
+    });
+  });
+
+  it('normalizes office preview sheet metadata with page ranges', () => {
+    expect(normalizeAttachmentPreviewMetadata({
+      preview_kind: 'office_pdf',
+      source_kind: 'excel',
+      source_filename: 'table.xlsx',
+      pdf_filename: 'table.pdf',
+      page_count: 4,
+      sheets: [
+        { index: 0, name: 'Лист1', page: 1, page_end: 2, page_count: 2 },
+        { index: 1, name: 'Лист2', page: 3, page_count: 1 },
+      ],
+    })).toMatchObject({
+      previewKind: 'office_pdf',
+      sourceKind: 'excel',
+      pageCount: 4,
+      sheets: [
+        { index: 0, name: 'Лист1', page: 1, pageEnd: 2, pageCount: 2 },
+        { index: 1, name: 'Лист2', page: 3, pageEnd: 3, pageCount: 1 },
+      ],
+    });
+  });
+
+  it('escapes sender text without altering the rendered message body', () => {
+    const printHtml = buildPrintMailDocumentHtml({
+      subject: 'Quarterly report',
+      senderLine: 'Ops <ops@example.com>',
+      dateLine: '2026-05-03 10:00',
+      html: '<p>Hello</p>',
+    });
+
+    expect(printHtml).toContain('<title>Quarterly report</title>');
+    expect(printHtml).toContain('Ops &lt;ops@example.com&gt;');
+    expect(printHtml).toContain('<p>Hello</p>');
+  });
+});

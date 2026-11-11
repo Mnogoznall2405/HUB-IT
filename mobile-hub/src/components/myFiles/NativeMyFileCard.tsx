@@ -1,0 +1,273 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { memo, useCallback, useState, type ComponentProps } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { MyFileRecord } from '../../api/myFilesApi';
+import {
+  formatMyFileDate,
+  formatMyFileSize,
+  isMyFileProcessing,
+  isMyFileReady,
+  myFileIcon,
+  myFileName,
+  nativeMyFilePreviewKind,
+  myFileStatusLabel,
+} from '../../myFiles/nativeMyFilesModel';
+import type { FluentTokens } from '../../theme/fluentTokens';
+
+export type MyFileCardAction =
+  | 'preview' | 'open' | 'share-file' | 'save-offline' | 'remove-offline'
+  | 'share-link' | 'rotate' | 'revoke' | 'favorite' | 'rename' | 'move' | 'delete';
+
+export const NativeMyFileCard = memo(function NativeMyFileCard({
+  item,
+  tokens,
+  offline,
+  availableOffline,
+  actionsLocked,
+  busyAction,
+  trashed = false,
+  onPrimary,
+  onOpen,
+  onShareFile,
+  onMore,
+}: {
+  item: MyFileRecord;
+  tokens: FluentTokens;
+  offline: boolean;
+  availableOffline: boolean;
+  actionsLocked: boolean;
+  busyAction: MyFileCardAction | null;
+  trashed?: boolean;
+  onPrimary: (item: MyFileRecord) => void;
+  onOpen: (item: MyFileRecord) => void;
+  onShareFile: (item: MyFileRecord) => void;
+  onMore: (item: MyFileRecord) => void;
+}) {
+  const [nameExpanded, setNameExpanded] = useState(false);
+  const [nameTruncated, setNameTruncated] = useState(false);
+  const ready = isMyFileReady(item);
+  const previewKind = nativeMyFilePreviewKind(item);
+  const processing = isMyFileProcessing(item);
+  const busy = Boolean(busyAction);
+  const statusColor = item.status === 'failed' || item.security_scan_status === 'blocked'
+    ? tokens.error
+    : ready && item.security_scan_status === 'clean'
+      ? tokens.success
+      : tokens.warning;
+  const fileName = myFileName(item);
+  const isForever = Number(item.retention_days) === 0;
+  const retentionPeriod = isForever ? 'Навсегда' : `${item.retention_days} дн.`;
+  const remainingShort = (() => {
+    if (isForever) return '';
+    const target = new Date(String(item.expires_at || '')).getTime();
+    if (!Number.isFinite(target)) return '';
+    const diffMs = target - Date.now();
+    if (diffMs <= 0) return 'срок истёк';
+    const days = Math.floor(diffMs / 86400000);
+    if (days > 0) return `ещё ${days} дн.`;
+    const hours = Math.floor(diffMs / 3600000);
+    if (hours > 0) return `ещё ${hours} ч.`;
+    return 'меньше часа';
+  })();
+  const storedUntil = isForever
+    ? 'Навсегда'
+    : remainingShort
+      ? `${formatMyFileDate(item.expires_at)} · ${remainingShort}`
+      : formatMyFileDate(item.expires_at);
+  const handlePrimary = useCallback(() => onPrimary(item), [item, onPrimary]);
+  const handleOpen = useCallback(() => onOpen(item), [item, onOpen]);
+  const handleShareFile = useCallback(() => onShareFile(item), [item, onShareFile]);
+  const handleMore = useCallback(() => onMore(item), [item, onMore]);
+
+  return (
+    <View
+      testID={`native-my-file-${item.id}`}
+      style={[styles.card, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}
+    >
+      <View style={styles.heading}>
+        <View style={[styles.icon, { backgroundColor: tokens.accentSoft }]}>
+          <MaterialCommunityIcons name={myFileIcon(item)} size={26} color={tokens.primary} />
+        </View>
+        <View style={styles.titleBody}>
+          {nameTruncated ? (
+            <Pressable testID={`native-my-file-expand-${item.id}`} accessibilityRole="button" accessibilityLabel={`${nameExpanded ? 'Свернуть название файла' : 'Показать полное название файла'}: ${fileName}`} accessibilityState={{ expanded: nameExpanded }} onPress={() => setNameExpanded(value => !value)} style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text numberOfLines={nameExpanded ? undefined : 2} style={[styles.title, { flex: 1, color: tokens.textPrimary }]}>{fileName}</Text>
+              <MaterialCommunityIcons name={nameExpanded ? 'chevron-up' : 'chevron-down'} size={20} color={tokens.iconMuted} />
+            </Pressable>
+          ) : (
+            <View>
+              <Text numberOfLines={2} style={[styles.title, { color: tokens.textPrimary }]}>{fileName}</Text>
+              <Text
+                testID={`native-my-file-name-measure-${item.id}`}
+                style={[styles.title, styles.titleMeasure]}
+                pointerEvents="none"
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+                onTextLayout={(event) => { if (event.nativeEvent.lines.length > 2) setNameTruncated(true); }}
+              >
+                {fileName}
+              </Text>
+            </View>
+          )}
+          <View style={styles.statusRow}>
+            {processing ? <ActivityIndicator size="small" color={statusColor} /> : <View style={[styles.statusDot, { backgroundColor: statusColor }]} />}
+            <Text style={[styles.status, { color: statusColor }]}>{myFileStatusLabel(item)}</Text>
+            {item.is_favorite ? (
+              <MaterialCommunityIcons name="star" size={15} color={tokens.warning} />
+            ) : null}
+            {item.is_shared ? (
+              <View style={[styles.sharedBadge, { backgroundColor: tokens.selected }]}>
+                <MaterialCommunityIcons name="link-variant" size={14} color={tokens.primary} />
+                <Text style={[styles.sharedText, { color: tokens.primary }]}>ссылка</Text>
+              </View>
+            ) : null}
+            {availableOffline ? (
+              <View style={[styles.offlineBadge, { backgroundColor: tokens.accentSoft }]}>
+                <MaterialCommunityIcons name="check-circle-outline" size={14} color={tokens.success} />
+                <Text style={[styles.offlineText, { color: tokens.success }]}>Офлайн</Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.metaRow}>
+        <View style={styles.metaBlock}>
+          <Text style={[styles.metaLabel, { color: tokens.textTertiary }]}>Размер</Text>
+          <Text style={[styles.metaValue, { color: tokens.textPrimary }]}>{formatMyFileSize(item.original_size_bytes)}</Text>
+        </View>
+        <View style={styles.metaBlock}>
+          <Text style={[styles.metaLabel, { color: tokens.textTertiary }]}>Срок</Text>
+          <Text testID={`native-my-file-retention-${item.id}`} style={[styles.metaValue, { color: tokens.textPrimary }]}>{retentionPeriod}</Text>
+        </View>
+        <View style={styles.metaBlock}>
+          <Text style={[styles.metaLabel, { color: tokens.textTertiary }]}>Хранится до</Text>
+          <Text style={[styles.metaValue, { color: tokens.textPrimary }]}>{storedUntil}</Text>
+        </View>
+      </View>
+
+      {item.is_shared && !trashed ? (
+        <Text style={[styles.shareExpiry, { color: tokens.textSecondary }]}>
+          {isForever
+            ? 'Публичная ссылка бессрочная'
+            : `Публичная ссылка действует до ${formatMyFileDate(item.share_expires_at || item.expires_at)}`}
+        </Text>
+      ) : null}
+
+      <View style={styles.actions}>
+        {!trashed && previewKind ? (
+          <Action
+            testID={`native-my-file-preview-${item.id}`}
+            label="Просмотр"
+            icon="eye-outline"
+            tokens={tokens}
+            primary
+            busy={busyAction === 'preview'}
+            disabled={actionsLocked || busy}
+            onPress={handlePrimary}
+          />
+        ) : null}
+        {!trashed && ready ? (
+          <Action
+            testID={`native-my-file-open-${item.id}`}
+            label="Открыть"
+            icon="open-in-new"
+            tokens={tokens}
+            primary={!previewKind}
+            busy={busyAction === 'open'}
+            disabled={actionsLocked || busy}
+            onPress={handleOpen}
+          />
+        ) : null}
+        {ready && !trashed ? (
+          <Action
+            testID={`native-my-file-share-file-${item.id}`}
+            label="Файлом"
+            icon="share-variant-outline"
+            tokens={tokens}
+            busy={busyAction === 'share-file'}
+            disabled={actionsLocked || busy}
+            onPress={handleShareFile}
+          />
+        ) : null}
+        <Action
+          testID={`native-my-file-more-${item.id}`}
+          label="Ещё"
+          icon="dots-horizontal"
+          tokens={tokens}
+          disabled={actionsLocked}
+          busy={false}
+          onPress={handleMore}
+        />
+      </View>
+    </View>
+  );
+});
+
+function Action({
+  testID,
+  label,
+  icon,
+  tokens,
+  primary = false,
+  busy,
+  disabled,
+  onPress,
+}: {
+  testID?: string;
+  label: string;
+  icon: ComponentProps<typeof MaterialCommunityIcons>['name'];
+  tokens: FluentTokens;
+  primary?: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const foreground = primary ? '#fff' : tokens.textPrimary;
+  return (
+    <Pressable
+      testID={testID}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={label === 'Файлом' ? 'Поделиться файлом' : label === 'Ещё' ? 'Другие действия с файлом' : label}
+      accessibilityState={{ disabled, busy }}
+      style={({ pressed }) => [
+        styles.action,
+        {
+          backgroundColor: primary ? tokens.primary : 'transparent',
+          borderColor: primary ? tokens.primary : tokens.border,
+          opacity: disabled ? 0.5 : pressed ? 0.75 : 1,
+          transform: [{ scale: pressed && !disabled ? 0.96 : 1 }],
+        },
+      ]}
+    >
+      {busy ? <ActivityIndicator size="small" color={foreground} /> : <MaterialCommunityIcons name={icon} size={17} color={foreground} />}
+      <Text style={[styles.actionText, { color: foreground }]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: { borderRadius: 16, borderWidth: 1, padding: 13, gap: 12, marginBottom: 9 },
+  heading: { flexDirection: 'row', alignItems: 'flex-start', gap: 11 },
+  icon: { width: 50, height: 50, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  titleBody: { flex: 1, minWidth: 0, gap: 6 },
+  title: { fontSize: 15, lineHeight: 20, fontWeight: '800' },
+  titleMeasure: { position: 'absolute', left: 0, right: 0, top: 0, opacity: 0 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  status: { flexShrink: 1, fontSize: 12, lineHeight: 18, fontWeight: '800' },
+  sharedBadge: { minHeight: 24, borderRadius: 12, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 3 },
+  sharedText: { fontSize: 12, fontWeight: '800' },
+  offlineBadge: { minHeight: 24, borderRadius: 12, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 3 },
+  offlineText: { fontSize: 12, fontWeight: '800' },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  metaBlock: { flexGrow: 1, flexBasis: 140, minWidth: 0 },
+  metaLabel: { fontSize: 12, lineHeight: 18 },
+  metaValue: { marginTop: 2, fontSize: 12, lineHeight: 16, fontWeight: '700' },
+  shareExpiry: { fontSize: 11, lineHeight: 16, fontWeight: '700' },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  action: { maxWidth: '100%', minHeight: 44, borderRadius: 11, borderWidth: 1, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  actionText: { flexShrink: 1, fontSize: 12, fontWeight: '800' },
+});

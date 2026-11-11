@@ -1,0 +1,323 @@
+import {
+  addNativeSnapshotClearListener,
+  readNativeSnapshot,
+  writeNativeSnapshot,
+  type NativeSnapshot,
+  type NativeSnapshotScope,
+} from './nativeSnapshotCache';
+import {
+  deleteEncryptedNativeSnapshot,
+  MAX_NATIVE_SNAPSHOT_BYTES,
+} from './nativeSnapshotStorage';
+import { recordSnapshotFailure } from '../diagnostics/diagnostics';
+
+const ADDRESS_BOOK_MANIFEST_KIND = 'address-book-shards-v1';
+const ADDRESS_BOOK_SHARD_KIND = 'address-book-shard-v1';
+// Keep native AES/base64 and file-system bridge calls comfortably below their
+// generic 2 MiB ceiling. The Android bridge has to hold both plaintext and the
+// encoded ciphertext while a shard is written, so a near-limit shard is risky.
+const ADDRESS_BOOK_SHARD_TARGET_BYTES = 512 * 1024;
+const ADDRESS_BOOK_OVERSIZED_ITEM_LIMIT_BYTES = MAX_NATIVE_SNAPSHOT_BYTES - 256 * 1024;
+const ADDRESS_BOOK_SPLIT_SLICE_ITEMS = 128;
+const ADDRESS_BOOK_SPLIT_SLICE_BYTES = 256 * 1024;
+
+type AddressBookPayload = {
+  items: unknown[];
+  [key: string]: unknown;
+};
+
+type AddressBookShardManifestEntry = {
+  scope: string;
+  count: number;
+};
+
+type AddressBookManifest = {
+  kind: typeof ADDRESS_BOOK_MANIFEST_KIND;
+  revision: string;
+  metadata: Record<string, unknown>;
+  itemCount: number;
+  shards: AddressBookShardManifestEntry[];
+};
+
+type AddressBookShard = {
+  kind: typeof ADDRESS_BOOK_SHARD_KIND;
+  revision: string;
+  index: number;
+  items: unknown[];
+};
+
+let revisionSequence = 0;
+const directoryOperations = new Map<number, Promise<void>>();
+
+function withDirectoryOperation<T>(userId: number, operation: () => Promise<T>): Promise<T> {
+  const previous = directoryOperations.get(userId) || Promise.resolve();
+  const result = previous.catch(() => undefined).then(operation);
+  const marker = result.then(() => undefined, () => undefined).finally(() => {
+    if (directoryOperations.get(userId) === marker) directoryOperations.delete(userId);
+  });
+  directoryOperations.set(userId, marker);
+  return result;
+}
+
+function isAddressBookManifest(value: unknown): value is AddressBookManifest {
+  const candidate = value as Partial<AddressBookManifest> | null;
+  return Boolean(
+    candidate
+    && candidate.kind === ADDRESS_BOOK_MANIFEST_KIND
+    && typeof candidate.revision === 'string'
+    && candidate.metadata
+    && typeof candidate.metadata === 'object'
+    && Number.isInteger(candidate.itemCount)
+    && Array.isArray(candidate.shards),
+  );
+}
+
+function isCompleteAddressBookPayload(value: unknown): value is AddressBookPayload {
+  const candidate = value as Partial<AddressBookPayload> | null;
+  if (!candidate || !Array.isArray(candidate.items) || candidate.has_more === true) return false;
+  if (candidate.total == null) return true;
+  const total = Number(candidate.total);
+  return Number.isInteger(total) && total >= 0 && total === candidate.items.length;
+}
+
+function shardScope(revision: string, index: number): string {
+  return `address-book-shard-${revision}-${index}`;
+}
+
+function byteLength(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function splitItems(items: unknown[]): Promise<unknown[][] | null> {
+  const shards: unknown[][] = [];
+  let current: unknown[] = [];
+  let currentBytes = 2;
+  let sliceItems = 0;
+  let sliceBytes = 0;
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const itemBytes = byteLength(item) + (current.length > 0 ? 1 : 0);
+    if (itemBytes > ADDRESS_BOOK_OVERSIZED_ITEM_LIMIT_BYTES) return null;
+    if (current.length > 0 && currentBytes + itemBytes > ADDRESS_BOOK_SHARD_TARGET_BYTES) {
+      shards.push(current);
+      current = [];
+      currentBytes = 2;
+    }
+    current.push(item);
+    currentBytes += itemBytes;
+    sliceItems += 1;
+    sliceBytes += itemBytes;
+    if (
+      index < items.length - 1
+      && (
+        sliceItems >= ADDRESS_BOOK_SPLIT_SLICE_ITEMS
+        || sliceBytes >= ADDRESS_BOOK_SPLIT_SLICE_BYTES
+      )
+    ) {
+      await yieldToEventLoop();
+      sliceItems = 0;
+      sliceBytes = 0;
+    }
+  }
+  if (current.length > 0) shards.push(current);
+  return shards;
+}
+
+function metadataFromPayload(payload: AddressBookPayload): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(payload).filter(([key]) => key !== 'items'));
+}
+
+async function cleanupScopes(userId: number, scopes: string[]): Promise<void> {
+  await Promise.allSettled(scopes.map((scope) => deleteEncryptedNativeSnapshot(scope, userId)));
+}
+
+async function readAddressBookSnapshot<T extends AddressBookPayload>(
+  userId: number,
+): Promise<NativeSnapshot<T> | null> {
+  const root = await readNativeSnapshot<T | AddressBookManifest>('address-book', userId);
+  if (!root) return null;
+  if (!isAddressBookManifest(root.data)) {
+    return isCompleteAddressBookPayload(root.data) ? root as NativeSnapshot<T> : null;
+  }
+
+  const items: unknown[] = [];
+  for (let index = 0; index < root.data.shards.length; index += 1) {
+    const descriptor = root.data.shards[index];
+    const snapshot = await readNativeSnapshot<AddressBookShard>(
+      descriptor.scope as NativeSnapshotScope,
+      userId,
+    );
+    if (
+      !snapshot
+      || snapshot.data.kind !== ADDRESS_BOOK_SHARD_KIND
+      || snapshot.data.revision !== root.data.revision
+      || snapshot.data.index !== index
+      || !Array.isArray(snapshot.data.items)
+      || snapshot.data.items.length !== descriptor.count
+    ) {
+      await recordSnapshotFailure(descriptor.scope, 'shard-verify', new Error('Snapshot shard verification failed'), {
+        sizes: { shardIndex: index, expectedItems: descriptor.count, actualItems: snapshot?.data?.items?.length ?? 0 },
+      });
+      return null;
+    }
+    items.push(...snapshot.data.items);
+    if (index < root.data.shards.length - 1) await yieldToEventLoop();
+  }
+  if (items.length !== root.data.itemCount) {
+    await recordSnapshotFailure('address-book', 'manifest-verify', new Error('Snapshot manifest verification failed'), {
+      sizes: { expectedItems: root.data.itemCount, actualItems: items.length },
+    });
+    return null;
+  }
+  const data = { ...root.data.metadata, items };
+  if (!isCompleteAddressBookPayload(data)) return null;
+  return {
+    savedAt: root.savedAt,
+    data: data as T,
+  };
+}
+
+async function writeAddressBookSnapshot<T extends AddressBookPayload>(
+  userId: number,
+  payload: T,
+): Promise<boolean> {
+  if (!isCompleteAddressBookPayload(payload)) return false;
+  const itemShards = await splitItems(payload.items);
+  if (!itemShards) return false;
+
+  const previous = await readNativeSnapshot<T | AddressBookManifest>('address-book', userId);
+  revisionSequence += 1;
+  const revision = `${Date.now().toString(36)}-${revisionSequence.toString(36)}`;
+  const writtenScopes: string[] = [];
+  const shards: AddressBookShardManifestEntry[] = [];
+
+  for (let index = 0; index < itemShards.length; index += 1) {
+    const scope = shardScope(revision, index);
+    const stored = await writeNativeSnapshot(
+      scope as NativeSnapshotScope,
+      userId,
+      {
+        kind: ADDRESS_BOOK_SHARD_KIND,
+        revision,
+        index,
+        items: itemShards[index],
+      } satisfies AddressBookShard,
+    );
+    if (!stored) {
+      await cleanupScopes(userId, writtenScopes);
+      return false;
+    }
+    writtenScopes.push(scope);
+    shards.push({ scope, count: itemShards[index].length });
+  }
+
+  const committed = await writeNativeSnapshot('address-book', userId, {
+    kind: ADDRESS_BOOK_MANIFEST_KIND,
+    revision,
+    metadata: metadataFromPayload(payload),
+    itemCount: payload.items.length,
+    shards,
+  } satisfies AddressBookManifest);
+  if (!committed) {
+    await cleanupScopes(userId, writtenScopes);
+    return false;
+  }
+
+  const verified = await readAddressBookSnapshot<T>(userId).catch(async (error) => {
+    await recordSnapshotFailure('address-book', 'manifest-verify', error);
+    return null;
+  });
+  if (
+    !verified
+    || verified.data.items.length !== payload.items.length
+    || Number(verified.data.total ?? payload.items.length) !== Number(payload.total ?? payload.items.length)
+  ) {
+    await recordSnapshotFailure('address-book', 'manifest-verify', new Error('Snapshot manifest verification failed'));
+    const restored = previous
+      ? await writeNativeSnapshot('address-book', userId, previous.data).catch(() => false)
+      : false;
+    if (!restored) {
+      await deleteEncryptedNativeSnapshot('address-book', userId).catch(() => undefined);
+    }
+    await cleanupScopes(userId, writtenScopes);
+    return false;
+  }
+
+  if (previous && isAddressBookManifest(previous.data)) {
+    await cleanupScopes(userId, previous.data.shards.map((shard) => shard.scope));
+  }
+  // Keep the freshly verified copy warm for the next screen entry.
+  directoryMemorySlot = { userId, snapshot: verified };
+  return true;
+}
+
+// N4: the parsed directory is kept in memory per user so reopening the screen
+// does not re-read and re-decrypt every shard. A single slot is enough — the
+// directory belongs to exactly one logged-in user at a time.
+type DirectoryMemorySlot = {
+  userId: number;
+  snapshot: NativeSnapshot<AddressBookPayload>;
+};
+
+let directoryMemorySlot: DirectoryMemorySlot | null = null;
+
+export function invalidateAddressBookDirectoryCache(userId?: number): void {
+  if (userId === undefined || directoryMemorySlot?.userId === userId) {
+    directoryMemorySlot = null;
+  }
+}
+
+// Logout/cache clear must drop the in-memory copy too. Partial test mocks of
+// the cache module may not expose the listener API, hence the typeof guard.
+if (typeof addNativeSnapshotClearListener === 'function') {
+  addNativeSnapshotClearListener(invalidateAddressBookDirectoryCache);
+}
+
+export function readNativeAddressBookSnapshot<T extends AddressBookPayload>(
+  userId: number,
+  options: { bypassMemory?: boolean } = {},
+): Promise<NativeSnapshot<T> | null> {
+  if (!options.bypassMemory) {
+    const cached = directoryMemorySlot;
+    if (cached && cached.userId === userId) {
+      return Promise.resolve(cached.snapshot as NativeSnapshot<T>);
+    }
+  }
+  return withDirectoryOperation(userId, async () => {
+    if (!options.bypassMemory) {
+      const slot = directoryMemorySlot;
+      if (slot && slot.userId === userId) {
+        return slot.snapshot as NativeSnapshot<T>;
+      }
+    }
+    // Post-write verification callers pass bypassMemory so the check re-reads
+    // the encrypted shards instead of the just-populated slot.
+    const snapshot = await readAddressBookSnapshot<T>(userId);
+    if (snapshot) directoryMemorySlot = { userId, snapshot };
+    return snapshot;
+  });
+}
+
+export function writeNativeAddressBookSnapshot<T extends AddressBookPayload>(userId: number, payload: T): Promise<boolean> {
+  return withDirectoryOperation(userId, async () => {
+    try {
+      const stored = await writeAddressBookSnapshot(userId, payload);
+      if (!stored) {
+        // Disk state after a failed write is uncertain — drop the cached copy.
+        invalidateAddressBookDirectoryCache(userId);
+        return false;
+      }
+      return true;
+    }
+    catch (error) {
+      await recordSnapshotFailure('address-book', 'shard-serialize-or-write', error);
+      invalidateAddressBookDirectoryCache(userId);
+      return false;
+    }
+  });
+}

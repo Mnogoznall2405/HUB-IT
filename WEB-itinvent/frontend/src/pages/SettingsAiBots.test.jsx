@@ -1,0 +1,500 @@
+import React from 'react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { ThemeProvider, createTheme } from '@mui/material/styles';
+import { describe, expect, it, vi } from 'vitest';
+
+import { AiBotsAdminSection, resolveAvailableSettingsTabs, SETTINGS_PERMISSION_GROUPS } from './Settings';
+
+vi.mock('../api/aiBalance', () => ({ aiBalanceAPI: { get: vi.fn().mockResolvedValue({ balance: null, threshold: 0, low: false, status: 'unknown' }), check: vi.fn(), setThreshold: vi.fn() } }));
+
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({
+    user: { id: 1, username: 'admin' },
+  }),
+}));
+
+vi.mock('../contexts/NotificationContext', () => ({
+  useNotification: () => ({
+    notifyInfo: vi.fn(),
+    notifySuccess: vi.fn(),
+    notifyWarning: vi.fn(),
+  }),
+}));
+
+const theme = createTheme();
+
+describe('resolveAvailableSettingsTabs', () => {
+  it('includes the dedicated AI Bots tab when settings.ai.manage is granted', () => {
+    const tabs = resolveAvailableSettingsTabs({
+      isAdmin: false,
+      hasPermission: (permission) => permission === 'settings.ai.manage',
+    });
+
+    expect(tabs.some((item) => item.value === 'ai-bots')).toBe(true);
+    expect(tabs.some((item) => item.value === 'env')).toBe(false);
+  });
+
+  it('hides the AI Bots tab when settings.ai.manage is missing', () => {
+    const tabs = resolveAvailableSettingsTabs({
+      isAdmin: true,
+      hasPermission: () => false,
+    });
+
+    expect(tabs.some((item) => item.value === 'ai-bots')).toBe(true);
+    expect(tabs.some((item) => item.value === 'env')).toBe(true);
+  });
+
+  it('keeps permission-gated tabs visible for admin even without explicit custom permissions', () => {
+    const tabs = resolveAvailableSettingsTabs({
+      isAdmin: true,
+      hasPermission: () => false,
+    });
+
+    expect(tabs.some((item) => item.value === 'users')).toBe(true);
+    expect(tabs.some((item) => item.value === 'sessions')).toBe(true);
+    expect(tabs.some((item) => item.value === 'ai-bots')).toBe(true);
+  });
+});
+
+describe('SETTINGS_PERMISSION_GROUPS', () => {
+  it('marks the AD viewer baseline as always granted for custom permissions', () => {
+    const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
+    const alwaysGranted = new Set(
+      flattened.filter((permission) => permission.alwaysGranted).map((permission) => permission.value),
+    );
+
+    expect(alwaysGranted).toEqual(new Set([
+      'address_book.read',
+      'announcements.read',
+      'chat.ai.use',
+      'chat.read',
+      'chat.write',
+      'company_structure.read',
+      'dashboard.read',
+      'docflow.act',
+      'docflow.read',
+      'mail.access',
+      'my_files.read',
+      'my_files.share',
+      'my_files.write',
+      'settings.read',
+      'tasks.create',
+      'tasks.read',
+    ]));
+  });
+
+  it('exposes separate address-book personal field permissions', () => {
+    const addressBookGroup = SETTINGS_PERMISSION_GROUPS.find((group) => group.group === 'Адресная книга');
+
+    expect(addressBookGroup?.permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'address_book.read', alwaysGranted: true }),
+      expect.objectContaining({ value: 'address_book.age.read', label: 'Адресная книга: просмотр возраста' }),
+      expect.objectContaining({ value: 'address_book.hire_date.read', label: 'Адресная книга: просмотр даты приёма на работу' }),
+      expect.objectContaining({ value: 'address_book.personal_phone.read', label: 'Адресная книга: просмотр личных телефонов' }),
+      expect.objectContaining({ value: 'address_book.personal_email.read', label: 'Адресная книга: просмотр личной почты' }),
+    ]));
+  });
+
+  it('exposes the AI permissions in the user permission matrix', () => {
+    const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
+
+    expect(flattened).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'chat.ai.use', label: 'Chat: AI access' }),
+      expect.objectContaining({ value: 'settings.ai.manage', label: 'Settings: AI bots manage' }),
+    ]));
+  });
+
+  it('exposes my-files permissions in the user permission matrix', () => {
+    const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
+
+    expect(flattened).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'my_files.read', label: 'Мой диск: просмотр' }),
+      expect.objectContaining({ value: 'my_files.write', label: 'Мой диск: загрузка и удаление' }),
+      expect.objectContaining({ value: 'my_files.share', label: 'Мой диск: публичные ссылки' }),
+      expect.objectContaining({ value: 'my_files.audit.read', label: 'Мой диск: журнал аудита' }),
+    ]));
+  });
+
+  it('exposes task creation as a separate permission in the user permission matrix', () => {
+    const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
+
+    expect(flattened).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'tasks.create', label: 'Задачи: создание' }),
+    ]));
+  });
+
+  it('exposes the explicit HUB-side PART_NO reconcile permission', () => {
+    const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
+
+    expect(flattened).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        value: 'warehouse_1c.reconcile.write',
+        label: 'Склад 1С: подтверждать PART_NO в HUB',
+      }),
+    ]));
+  });
+});
+
+describe('AiBotsAdminSection', () => {
+  it('shows empty diagnostics and PM2 hints when no bots exist yet', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={vi.fn()}
+          openrouterConfigured={false}
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText('Настройки агентов')).toBeInTheDocument();
+    expect(screen.getByText(/AI-боты ещё не созданы/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Создать бота' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Возможности' }));
+    expect(screen.getByLabelText(/Инструменты ITinvent/i)).toBeInTheDocument();
+    expect(screen.getByText(/Данные ITinvent/i)).toBeInTheDocument();
+  });
+
+  it('warns when an enabled bot has no live tools and saves the default tool set', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-1',
+      slug: 'corp-assistant',
+      title: 'Corp Assistant',
+      description: 'KB bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: true,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: false,
+      bot_user_id: 77,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: [],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    const { rerender } = render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('Corp Assistant'));
+    expect(screen.getByText(/Инструменты не выбраны/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByLabelText(/Инструменты ITinvent/i).slice(-1)[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    expect(onSave).toHaveBeenCalledWith('bot-1', expect.objectContaining({
+      enabled_tools: expect.arrayContaining([
+        'itinvent.database.current',
+        'itinvent.equipment.search',
+        'itinvent.equipment.search_universal',
+        'itinvent.equipment.get_card',
+        'itinvent.equipment.list_by_branch',
+        'itinvent.consumables.search',
+        'itinvent.directory.equipment_types',
+        'itinvent.directory.statuses',
+        'itinvent.analytics.summary',
+      ]),
+      multi_db_mode: 'single',
+    }));
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.create');
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.report');
+
+    const persistedBot = {
+      ...bot,
+      enabled_tools: onSave.mock.calls[0][1].enabled_tools,
+      live_data_enabled: true,
+    };
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[persistedBot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('Corp Assistant'));
+    expect(screen.queryByText(/пока инструменты не будут включены/i)).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText(/Инструменты ITinvent/i).slice(-1)[0]).toBeChecked();
+  });
+
+  it('keeps admin multi-DB mode and the multi-DB tool in sync when saving', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-2',
+      slug: 'admin-assistant',
+      title: 'Admin Assistant',
+      description: 'Admin bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: true,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: true,
+      bot_user_id: 88,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: ['itinvent.database.current'],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[
+            { id: 'ITINVENT', name: 'ITINVENT' },
+            { id: 'OBJ-ITINVENT', name: 'OBJ-ITINVENT' },
+          ]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('Admin Assistant'));
+    fireEvent.mouseDown(screen.getByLabelText(/Режим базы данных/i));
+    fireEvent.click(screen.getByRole('option', { name: /Админ: несколько баз/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    expect(onSave).toHaveBeenCalledWith('bot-2', expect.objectContaining({
+      enabled_tools: expect.arrayContaining(['itinvent.equipment.search_multi_db']),
+      multi_db_mode: 'admin_multi_db',
+      allowed_databases: [],
+    }));
+  });
+
+  it('shows and saves the generated files tool only when explicitly enabled', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-3',
+      slug: 'files-assistant',
+      title: 'Files Assistant',
+      description: 'Files bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: true,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: true,
+      bot_user_id: 89,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: ['itinvent.database.current'],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('Files Assistant'));
+    expect(screen.getAllByLabelText(/Инструменты файлов/i).slice(-1)[0]).not.toBeChecked();
+
+    fireEvent.click(screen.getAllByLabelText(/Инструменты файлов/i).slice(-1)[0]);
+    expect(screen.getByLabelText(/Создание файлов/i)).toBeChecked();
+    expect(screen.getByLabelText(/Красивые отчёты/i)).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    expect(onSave).toHaveBeenCalledWith('bot-3', expect.objectContaining({
+      enabled_tools: expect.arrayContaining(['ai.files.create', 'ai.files.report']),
+    }));
+  });
+
+  it('shows and saves office tools separately from ITinvent and file tools', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-4',
+      slug: 'office-assistant',
+      title: 'Office Assistant',
+      description: 'Office bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: false,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: false,
+      bot_user_id: 90,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: [],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('Office Assistant'));
+    expect(screen.getAllByLabelText(/Офисные инструменты/i).slice(-1)[0]).not.toBeChecked();
+
+    fireEvent.click(screen.getAllByLabelText(/Офисные инструменты/i).slice(-1)[0]);
+    expect(screen.getByLabelText(/Поиск писем/i)).toBeChecked();
+    expect(screen.getByLabelText(/Черновик смены статуса задачи/i)).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    expect(onSave).toHaveBeenCalledWith('bot-4', expect.objectContaining({
+      enabled_tools: expect.arrayContaining([
+        'office.mail.search',
+        'office.tasks.search',
+        'office.action.mail_send_draft',
+        'office.action.task_create_draft',
+      ]),
+    }));
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('itinvent.database.current');
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.create');
+  });
+
+  it('shows and saves AD password status tools only when explicitly enabled', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-5',
+      slug: 'ad-assistant',
+      title: 'AD Assistant',
+      description: 'AD bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: false,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: false,
+      bot_user_id: 91,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: [],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('AD Assistant'));
+    expect(screen.getAllByLabelText(/AD инструменты/i).slice(-1)[0]).not.toBeChecked();
+
+    fireEvent.click(screen.getAllByLabelText(/AD инструменты/i).slice(-1)[0]);
+    expect(screen.getByLabelText(/Срок смены пароля AD/i)).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    expect(onSave).toHaveBeenCalledWith('bot-5', expect.objectContaining({
+      enabled_tools: expect.arrayContaining(['ad.user.password_status']),
+    }));
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('itinvent.database.current');
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.create');
+  });
+});

@@ -1,0 +1,196 @@
+import { useCallback } from 'react';
+
+import { chatAPI } from '../../api/client';
+import { GENERAL_AI_OPENING_ID } from '../../components/chat/chatAiSidebarModel';
+import { resolveDirectConversationId } from '../../components/chat/chatHelpers';
+
+export default function useChatNavigationController({
+  activeConversationIdRef,
+  conversationsRef,
+  focusComposer,
+  handleActiveFolderChange,
+  isMobile,
+  logChatDebug,
+  notifyApiError,
+  openMobileThreadView,
+  prefetchThreadBootstrap,
+  resetMessageSearch,
+  resetSidebarSearch,
+  searchChats = [],
+  setActiveConversationId,
+  setAiBots,
+  setAiStatusByConversation,
+  setInfoOpen,
+  setOpeningAiBotId,
+  setOpeningPeerId,
+  upsertConversation,
+}) {
+  const openConversation = useCallback((conversationId) => {
+    const normalizedConversationId = String(conversationId || '').trim();
+    logChatDebug('openConversation', {
+      conversationId: normalizedConversationId,
+    });
+    void prefetchThreadBootstrap(normalizedConversationId);
+    if (normalizedConversationId && normalizedConversationId === String(activeConversationIdRef.current || '').trim()) {
+      void prefetchThreadBootstrap(normalizedConversationId, { force: true });
+    }
+    setInfoOpen(false);
+    setActiveConversationId(normalizedConversationId);
+    resetMessageSearch();
+    if (isMobile) {
+      openMobileThreadView(normalizedConversationId);
+      resetSidebarSearch();
+    }
+  }, [
+    activeConversationIdRef,
+    isMobile,
+    logChatDebug,
+    openMobileThreadView,
+    prefetchThreadBootstrap,
+    resetMessageSearch,
+    resetSidebarSearch,
+    setActiveConversationId,
+    setInfoOpen,
+  ]);
+
+  const handleOpenArchiveFolder = useCallback(() => {
+    handleActiveFolderChange('archived');
+  }, [handleActiveFolderChange]);
+
+  const handleOpenPeer = useCallback(async (peer) => {
+    const peerId = Number(peer?.id || 0);
+    if (!Number.isFinite(peerId) || peerId <= 0) return;
+
+    const existingConversationId = resolveDirectConversationId(peerId, {
+      conversations: conversationsRef?.current,
+      searchChats,
+    });
+    if (existingConversationId) {
+      resetSidebarSearch();
+      openConversation(existingConversationId);
+      focusComposer();
+      return;
+    }
+
+    setOpeningPeerId(String(peerId));
+    try {
+      const created = await chatAPI.createDirectConversation(peerId);
+      resetSidebarSearch();
+      const createdId = String(created?.id || '').trim();
+      if (!createdId) {
+        throw new Error('Direct conversation id is missing');
+      }
+      upsertConversation(created, { promote: true });
+      await prefetchThreadBootstrap(createdId, { force: true });
+      openConversation(createdId);
+      focusComposer();
+    } catch (error) {
+      notifyApiError(error, 'Не удалось открыть личный диалог.');
+    } finally {
+      setOpeningPeerId('');
+    }
+  }, [
+    conversationsRef,
+    focusComposer,
+    notifyApiError,
+    openConversation,
+    prefetchThreadBootstrap,
+    resetSidebarSearch,
+    searchChats,
+    setOpeningPeerId,
+    upsertConversation,
+  ]);
+
+  const registerAiConversation = useCallback((conversation, bot = null) => {
+    const normalizedConversationId = String(conversation?.id || '').trim();
+    if (!normalizedConversationId) {
+      throw new Error('AI conversation id is missing');
+    }
+    const botId = String(bot?.id || '').trim();
+    upsertConversation(conversation, { promote: true });
+    if (botId) {
+      setAiBots((current) => current.map((item) => (
+        String(item?.id || '').trim() === botId
+          ? {
+            ...item,
+            conversation_id: normalizedConversationId,
+            conversation_ids: [
+              normalizedConversationId,
+              ...(Array.isArray(item?.conversation_ids) ? item.conversation_ids : []),
+            ].filter((value, index, values) => value && values.indexOf(value) === index),
+          }
+          : item
+      )));
+    }
+    setAiStatusByConversation((current) => ({
+      ...current,
+      [normalizedConversationId]: {
+        conversation_id: normalizedConversationId,
+        bot_id: botId || null,
+        bot_title: String(bot?.title || conversation?.title || 'ИИ').trim(),
+        status: null,
+        run_id: null,
+        error_text: null,
+        updated_at: null,
+      },
+    }));
+    openConversation(normalizedConversationId);
+    focusComposer();
+    return conversation;
+  }, [focusComposer, openConversation, setAiBots, setAiStatusByConversation, upsertConversation]);
+
+  const handleOpenAiBot = useCallback(async (bot) => {
+    // Sidebar rows carry `bot_id` (spread bot object keeps `id` empty when the
+    // bot is gone); opening state keys on the conversation id when present.
+    const botId = String(bot?.bot_id || bot?.id || '').trim();
+    if (!botId) return null;
+    const openingKey = String(bot?.conversation_id || '').trim() || botId;
+    setOpeningAiBotId(openingKey);
+    try {
+      const conversation = await chatAPI.openAiBotConversation(botId);
+      return registerAiConversation(conversation, bot);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось открыть AI-чат.');
+      return null;
+    } finally {
+      setOpeningAiBotId('');
+    }
+  }, [notifyApiError, registerAiConversation, setOpeningAiBotId]);
+
+  const handleCreateAiBotConversation = useCallback(async (bot) => {
+    const botId = String(bot?.id || '').trim();
+    if (!botId) return null;
+    setOpeningAiBotId(botId);
+    try {
+      const conversation = await chatAPI.createAiBotConversation(botId);
+      return registerAiConversation(conversation, bot);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось создать новый чат с помощником.');
+      return null;
+    } finally {
+      setOpeningAiBotId('');
+    }
+  }, [notifyApiError, registerAiConversation, setOpeningAiBotId]);
+
+  const handleCreateAiConversation = useCallback(async () => {
+    setOpeningAiBotId(GENERAL_AI_OPENING_ID);
+    try {
+      const conversation = await chatAPI.createAiConversation();
+      return registerAiConversation(conversation);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось создать новый AI-чат.');
+      return null;
+    } finally {
+      setOpeningAiBotId('');
+    }
+  }, [notifyApiError, registerAiConversation, setOpeningAiBotId]);
+
+  return {
+    handleCreateAiBotConversation,
+    handleCreateAiConversation,
+    handleOpenAiBot,
+    handleOpenArchiveFolder,
+    handleOpenPeer,
+    openConversation,
+  };
+}

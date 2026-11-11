@@ -1,0 +1,5103 @@
+"""Personal file storage with retention, deduplication and public share links."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import mimetypes
+import os
+import queue
+import secrets
+import shutil
+import threading
+import time
+import uuid
+import warnings
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, BinaryIO, Callable
+
+from sqlalchemy import case, delete, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+
+from backend.appdb.db import AppDatabaseConfigurationError, app_session, ensure_app_schema_initialized, is_app_database_configured
+from backend.config import config
+from backend.services.my_files_recovery import cleanup_tmp_blob_files
+from backend.appdb.models import (
+    AppMyFile,
+    AppMyFileAudit,
+    AppMyFileBlob,
+    AppMyFileCollaborator,
+    AppMyFileDownloadGrant,
+    AppMyFileFolder,
+    AppMyFileFolderCollaborator,
+    AppMyFileLibrary,
+    AppMyFileLibraryMember,
+    AppMyFilePreview,
+    AppMyFileVersion,
+    AppDepartment,
+    AppDepartmentMembership,
+    AppUser,
+)
+from backend.services.hubit_storage import HubitStorageError
+from backend.services.my_files_antivirus_service import (
+    POLICY_SKIP_ENGINES,
+    SecurityScanResult,
+    is_policy_skip,
+    scan_my_file,
+    scan_policy_skip,
+)
+from backend.services.my_files_storage_layout import (
+    configured_previews_dir,
+    configured_spool_dir,
+    configured_storage_dir,
+    ensure_storage_ready,
+    _is_unc,
+    publish_local_to_blob,
+    relative_blob_path,
+    relative_preview_path,
+    resolve_under_root,
+    storage_v2_enabled,
+)
+from backend.services.secret_crypto_service import (
+    SecretCryptoError,
+    decrypt_my_files_share_token,
+    encrypt_my_files_share_token,
+)
+
+
+logger = logging.getLogger("backend.services.my_files_service")
+
+ALLOWED_RETENTION_DAYS = (0, 1, 3, 7, 10, 30)
+DEFAULT_RETENTION_DAYS = 1
+MAX_RETENTION_DAYS = 30
+# 0 означает «Навсегда»: удаление по expires_at не срабатывает, т.к.
+# expires_at выставляется далеко в будущее (без миграции NOT NULL -> NULL).
+FOREVER_RETENTION_DAYS = 0
+FOREVER_EXPIRES_DAYS = 36500
+USER_QUOTA_BYTES = 50 * 1024 * 1024 * 1024
+# Hard ceiling for per-user quota overrides set by admins.
+USER_QUOTA_MAX_BYTES = 400 * 1024 * 1024 * 1024
+IIS_MAX_CONTENT_LENGTH_BYTES = (2**32) - 1
+# Single-request limit (also imported by chat attachments); resumable uploads
+# bypass it because each chunk is a separate request.
+MAX_FILE_SIZE_BYTES = min(USER_QUOTA_BYTES, IIS_MAX_CONTENT_LENGTH_BYTES)
+UPLOAD_CHUNK_SIZE_BYTES = 16 * 1024 * 1024
+UPLOAD_CHUNK_MAX_SIZE_BYTES = 16 * 1024 * 1024
+MAX_ZSTD_WINDOW_SIZE_BYTES = 1024 * 1024 * 1024
+CHUNK_SIZE = 1024 * 1024
+
+STATUS_UPLOADING = "uploading"
+STATUS_QUEUED = "queued"
+STATUS_SCANNING = "scanning"
+STATUS_PROCESSING = "processing"
+STATUS_READY = "ready"
+STATUS_FAILED = "failed"
+STATUS_DELETED = "deleted"
+PREVIEW_STATUS_QUEUED = "queued"
+PREVIEW_STATUS_PROCESSING = "processing"
+PREVIEW_STATUS_READY = "ready"
+PREVIEW_STATUS_ERROR = "error"
+
+STORAGE_STORED = "stored"
+STORAGE_ZSTD = "zstd"
+STORAGE_OPTIMIZED_MEDIA = "optimized_media"
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+ZSTD_SKIP_EXTENSIONS = {
+    ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".zst", ".cab", ".msi",
+    ".exe", ".jar", ".apk", ".pdf", ".docx", ".xlsx", ".pptx",
+    ".jpg", ".jpeg", ".png", ".webp", ".gif",
+    ".mp3", ".aac", ".ogg", ".flac",
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".iso",
+}
+PREVIEW_UNAVAILABLE_MESSAGE = "Preview is temporarily unavailable. Download is still available."
+
+_UNSET = object()
+
+# What a collaborator may do with a file or folder: higher rank includes the lower ones.
+_ACCESS_ROLE_RANK = {"view": 1, "comment": 2, "edit": 3}
+_FOLDER_CHAIN_LIMIT = 64
+# Library roles: ``manage`` adds access control, trash restore/purge and public links on top of ``edit``.
+_LIBRARY_ROLE_RANK = {"view": 1, "comment": 2, "edit": 3, "manage": 4}
+# A library without its own quota is bounded only by the disk.
+LIBRARY_UNLIMITED_BYTES = 1 << 60
+
+
+class MyFilesError(RuntimeError):
+    """Base my-files domain error."""
+
+
+class MyFilesConfigurationError(MyFilesError):
+    """Raised when the app database is not configured."""
+
+
+class MyFilesNotFoundError(MyFilesError):
+    """Raised when a file or public token does not resolve to a downloadable file."""
+
+
+class MyFilesValidationError(MyFilesError):
+    """Raised when user input cannot be accepted."""
+
+
+class MyFilesCapacityError(MyFilesError):
+    """Raised when upload or processing capacity is temporarily exhausted."""
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _storage_root() -> Path:
+    return configured_storage_dir()
+
+
+def _spool_root() -> Path:
+    return configured_spool_dir()
+
+
+def _previews_override() -> Path | None:
+    return configured_previews_dir()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _coerce_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _safe_file_name(value: Any, *, fallback: str = "file.bin") -> str:
+    raw = Path(_normalize_text(value) or fallback).name
+    cleaned = "".join(ch if ch >= " " and ch not in '<>:"/\\|?*' else "_" for ch in raw).strip(" .")
+    return (cleaned or fallback)[:512]
+
+
+def _extension(value: str) -> str:
+    suffix = Path(_safe_file_name(value)).suffix.lower()
+    if len(suffix) > 32:
+        return ""
+    return suffix
+
+
+def _guess_mime(file_name: str, content_type: str | None = None) -> str:
+    normalized = _normalize_text(content_type).lower()
+    if normalized and normalized != "application/octet-stream":
+        return normalized[:255]
+    guessed, _encoding = mimetypes.guess_type(file_name)
+    return _normalize_text(guessed).lower()[:255] or "application/octet-stream"
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(_normalize_text(token).encode("utf-8")).hexdigest()
+
+
+_SHA256_PARALLEL_MIN_BYTES = 1 * 1024 * 1024 * 1024
+_SHA256_PARALLEL_BLOCK_BYTES = 16 * 1024 * 1024
+_SHA256_PARALLEL_READERS = 4
+
+
+def _sha256_file_parallel(path: Path, *, block_size: int, readers: int, on_progress=None) -> tuple[str, int]:
+    """Ordered multi-stream hash: each reader owns every Nth block of the file.
+
+    Parallel SMB reads overlap network round-trips; hashing stays sequential
+    in block order so the digest is identical to a single-stream pass.
+    """
+    size = path.stat().st_size
+    digest = hashlib.sha256()
+    if size == 0:
+        return digest.hexdigest(), 0
+    block_count = (size + block_size - 1) // block_size
+    results: queue.Queue = queue.Queue(maxsize=readers * 2)
+    STOP = object()
+
+    def _reader(start_index: int) -> None:
+        try:
+            with path.open("rb") as handle:
+                index = start_index
+                while index < block_count:
+                    handle.seek(index * block_size)
+                    results.put((index, handle.read(block_size)))
+                    index += readers
+        finally:
+            results.put(STOP)
+
+    for i in range(readers):
+        threading.Thread(target=_reader, args=(i,), daemon=True).start()
+
+    pending: dict[int, bytes] = {}
+    next_index = 0
+    finished = 0
+    last_progress_at = time.monotonic()
+    while finished < readers:
+        item = results.get()
+        if item is STOP:
+            finished += 1
+            continue
+        index, data = item
+        pending[index] = data
+        while next_index in pending:
+            digest.update(pending.pop(next_index))
+            next_index += 1
+        if on_progress is not None:
+            now = time.monotonic()
+            if now - last_progress_at >= 20:
+                last_progress_at = now
+                on_progress()
+    if next_index != block_count:
+        raise OSError(f"Incomplete hash read for {path}")
+    return digest.hexdigest(), size
+
+
+def _sha256_file(path: Path, on_progress=None) -> tuple[str, int]:
+    if _is_unc(path) and path.stat().st_size >= _SHA256_PARALLEL_MIN_BYTES:
+        return _sha256_file_parallel(
+            path,
+            block_size=_SHA256_PARALLEL_BLOCK_BYTES,
+            readers=_SHA256_PARALLEL_READERS,
+            on_progress=on_progress,
+        )
+    digest = hashlib.sha256()
+    size = 0
+    last_progress_at = time.monotonic()
+    with path.open("rb") as source:
+        while True:
+            chunk = source.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            size += len(chunk)
+            digest.update(chunk)
+            if on_progress is not None:
+                now = time.monotonic()
+                if now - last_progress_at >= 20:
+                    last_progress_at = now
+                    on_progress()
+    return digest.hexdigest(), size
+
+
+def _copy_file(source: Path, target: Path) -> int:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with source.open("rb") as src, target.open("wb") as dst:
+        shutil.copyfileobj(src, dst, CHUNK_SIZE)
+    return target.stat().st_size
+
+
+def _load_spool_ranges(parts_path: Path) -> list[list[int]]:
+    raw: object = None
+    last_error: OSError | None = None
+    for attempt in range(4):
+        try:
+            raw = json.loads(parts_path.read_text(encoding="utf-8"))
+            last_error = None
+            break
+        except FileNotFoundError:
+            return []
+        except ValueError as exc:
+            # Corrupt journal must not read as "no ranges": the next store would
+            # drop already acknowledged chunks and punch holes into the upload.
+            raise MyFilesCapacityError("Upload progress is temporarily busy") from exc
+        except OSError as exc:
+            # Windows sharing violation while a status read rewrites/locks the file.
+            last_error = exc
+            time.sleep(0.02 * (attempt + 1))
+    if last_error is not None:
+        raise MyFilesCapacityError("Upload progress is temporarily busy") from last_error
+    ranges: list[list[int]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            start, end = int(item[0]), int(item[1])
+            if 0 <= start < end:
+                ranges.append([start, end])
+    ranges.sort()
+    return ranges
+
+
+def _store_spool_ranges(parts_path: Path, ranges: list[list[int]]) -> None:
+    tmp_path = parts_path.with_name(f"{parts_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(ranges), encoding="utf-8")
+        last_error: OSError | None = None
+        for attempt in range(6):
+            try:
+                tmp_path.replace(parts_path)
+                return
+            except PermissionError as exc:
+                # Windows: parts.json is briefly open for a concurrent status read.
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        raise MyFilesCapacityError("Upload progress is temporarily busy") from last_error
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _merge_spool_range(ranges: list[list[int]], start: int, end: int) -> list[list[int]]:
+    merged: list[list[int]] = []
+    for item in sorted(ranges + [[start, end]]):
+        if merged and item[0] <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], item[1])
+        else:
+            merged.append([item[0], item[1]])
+    return merged
+
+
+def _spool_covered_prefix(ranges: list[list[int]]) -> int:
+    covered = 0
+    for start, end in sorted(ranges):
+        if start > covered:
+            break
+        covered = max(covered, end)
+    return covered
+
+
+def _spool_range_covered(ranges: list[list[int]], start: int, end: int) -> bool:
+    return any(item[0] <= start and item[1] >= end for item in ranges)
+
+
+def _spool_range_overlaps(ranges: list[list[int]], start: int, end: int) -> bool:
+    return any(item[0] < end and item[1] > start for item in ranges)
+
+
+def _actor_id(actor: Any) -> int:
+    try:
+        return int(getattr(actor, "id", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _actor_username(actor: Any) -> str:
+    return _normalize_text(getattr(actor, "username", "") if actor is not None else "")[:50]
+
+
+def _replace_extension(file_name: str, extension: str) -> str:
+    safe_name = _safe_file_name(file_name)
+    clean_ext = _normalize_text(extension).lower()
+    if clean_ext and not clean_ext.startswith("."):
+        clean_ext = f".{clean_ext}"
+    if not clean_ext:
+        return safe_name
+    stem = Path(safe_name).stem or "file"
+    return _safe_file_name(f"{stem}{clean_ext}")
+
+
+@dataclass(frozen=True)
+class StoredPayload:
+    path: Path
+    mode: str
+    stored_sha256: str
+    stored_size_bytes: int
+    output_mime_type: str
+    output_extension: str
+
+
+@dataclass(frozen=True)
+class DownloadPayload:
+    path: Path
+    mode: str
+    file_name: str
+    media_type: str
+    download_size_bytes: int
+    file_id: str = ""
+    cleanup_after: bool = False
+
+
+@dataclass(frozen=True)
+class MyFilesRequestMeta:
+    ip_address: str = ""
+    user_agent: str = ""
+
+
+class MyFilesService:
+    """App DB-backed personal file storage."""
+
+    _collab_tables_ready = False
+    _collab_tables_checked_at = -60.0
+    _folder_shares_ready = False
+    _folder_shares_checked_at = -60.0
+    _libraries_ready = False
+    _libraries_checked_at = -60.0
+
+    def __init__(
+        self,
+        *,
+        database_url: str | None = None,
+        storage_root: Path | None = None,
+        spool_root: Path | None = None,
+        previews_root: Path | None = None,
+        antivirus_scanner: Callable[[Path], SecurityScanResult] | None = None,
+    ) -> None:
+        self._database_url = _normalize_text(database_url) or None
+        self.storage_root = storage_root or _storage_root()
+        if spool_root is not None:
+            self.spool_root = spool_root
+        elif storage_root is not None:
+            # Explicit storage_root in tests/dev keeps spool alongside that root.
+            self.spool_root = Path(storage_root) / "spool"
+        else:
+            self.spool_root = _spool_root()
+        override_previews = previews_root if previews_root is not None else (
+            None if storage_root is not None else _previews_override()
+        )
+        # Empty override means per-user previews under storage_root.
+        self._previews_override = override_previews
+        self.previews_root = override_previews if override_previews is not None else self.storage_root
+        # Legacy alias kept for older tests / call sites that inspect blobs_root.
+        self.blobs_root = self.storage_root
+        self._antivirus_scanner = antivirus_scanner or scan_my_file
+        self._reservation_lock = threading.RLock()
+        self._upload_locks = [threading.RLock() for _ in range(64)]
+        # Byte ranges whose disk write is in flight, per upload: (start, end, done-event).
+        self._chunk_inflight: dict[str, list[tuple[int, int, threading.Event]]] = {}
+        self._chunk_inflight_lock = threading.Lock()
+        self._legacy_share_migration_disabled = False
+        self._last_stale_cleanup_at = float("-inf")
+        self._last_tmp_cleanup_at = float("-inf")
+
+    def _upload_lock(self, file_id: str) -> threading.RLock:
+        digest = hashlib.sha256(_normalize_text(file_id).encode("utf-8")).digest()
+        index = int.from_bytes(digest[:8], "big") % len(self._upload_locks)
+        return self._upload_locks[index]
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._database_url or is_app_database_configured())
+
+    def _database_url_or_raise(self) -> str:
+        try:
+            return ensure_app_schema_initialized(self._database_url)
+        except AppDatabaseConfigurationError as exc:
+            raise MyFilesConfigurationError(str(exc)) from exc
+
+    def _ensure_dirs(self) -> None:
+        try:
+            ensure_storage_ready(self.spool_root)
+        except HubitStorageError as exc:
+            raise MyFilesCapacityError(str(exc)) from exc
+        self.spool_root.mkdir(parents=True, exist_ok=True)
+        if storage_v2_enabled():
+            try:
+                ensure_storage_ready(self.storage_root)
+            except HubitStorageError as exc:
+                raise MyFilesCapacityError(str(exc)) from exc
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+        if self._previews_override is not None:
+            self._previews_override.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _write_audit(
+        session,
+        *,
+        action: str,
+        row: AppMyFile | None,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+        actor_user_id: int | None = None,
+        actor_username: str | None = None,
+        details: str = "",
+    ) -> None:
+        safe_meta = meta or MyFilesRequestMeta()
+        resolved_user_id = (
+            int(actor_user_id)
+            if actor_user_id is not None
+            else (_actor_id(actor) or int(getattr(row, "owner_user_id", 0) or 0))
+        )
+        resolved_username = (
+            _normalize_text(actor_username)[:50]
+            if actor_username is not None
+            else (_actor_username(actor) or _normalize_text(getattr(row, "owner_username", "")))[:50]
+        )
+        session.add(
+            AppMyFileAudit(
+                file_id=_normalize_text(getattr(row, "id", "")) or None,
+                action=_normalize_text(action)[:40],
+                actor_user_id=resolved_user_id,
+                actor_username=resolved_username,
+                ip_address=_normalize_text(safe_meta.ip_address)[:128],
+                user_agent=_normalize_text(safe_meta.user_agent)[:1024],
+                details=_normalize_text(details)[:1000],
+                created_at=_utc_now(),
+            )
+        )
+
+    @staticmethod
+    def _clear_share(row: AppMyFile) -> None:
+        row.share_token = None
+        row.share_token_enc = None
+        row.share_token_hash = None
+        row.share_created_at = None
+
+    @staticmethod
+    def _encrypt_share_token(token: str) -> str:
+        try:
+            return encrypt_my_files_share_token(token)
+        except SecretCryptoError as exc:
+            raise MyFilesConfigurationError("MY_FILES_SHARE_TOKEN_KEY is not configured correctly") from exc
+
+    @staticmethod
+    def _decrypt_share_token(token_enc: str) -> str:
+        try:
+            return decrypt_my_files_share_token(token_enc)
+        except SecretCryptoError as exc:
+            raise MyFilesConfigurationError("Failed to decrypt the existing public share link") from exc
+
+    def _existing_share_token_locked(self, row: AppMyFile) -> str:
+        token_hash = _normalize_text(row.share_token_hash)
+        encrypted = _normalize_text(row.share_token_enc)
+        if encrypted:
+            token = self._decrypt_share_token(encrypted)
+            if token_hash and token_hash == _hash_token(token):
+                return token
+            raise MyFilesConfigurationError("Stored public share link failed integrity validation")
+
+        legacy_token = _normalize_text(row.share_token)
+        if legacy_token and token_hash and token_hash == _hash_token(legacy_token):
+            row.share_token_enc = self._encrypt_share_token(legacy_token)
+            row.share_token = None
+            row.updated_at = _utc_now()
+            return legacy_token
+        return ""
+
+    @staticmethod
+    def _audit_response(row: AppMyFileAudit) -> dict[str, Any]:
+        return {
+            "id": int(row.id or 0),
+            "file_id": _normalize_text(row.file_id) or None,
+            "action": _normalize_text(row.action),
+            "actor_user_id": int(row.actor_user_id or 0),
+            "actor_username": _normalize_text(row.actor_username),
+            "ip_address": _normalize_text(row.ip_address),
+            "user_agent": _normalize_text(row.user_agent),
+            "details": _normalize_text(row.details),
+            "created_at": _coerce_utc(row.created_at),
+        }
+
+    def new_spool_path(self, file_name: str) -> Path:
+        self._ensure_dirs()
+        file_id = uuid.uuid4().hex
+        suffix = _extension(file_name) or ".bin"
+        return self.spool_root / f"{file_id}{suffix}"
+
+    @staticmethod
+    def validate_retention_days(value: Any) -> int:
+        try:
+            days = int(value)
+        except Exception as exc:
+            raise MyFilesValidationError("Retention days must be a number") from exc
+        if days not in ALLOWED_RETENTION_DAYS or days > MAX_RETENTION_DAYS:
+            raise MyFilesValidationError("Retention days must be one of 0, 1, 3, 7, 10 or 30 (0 keeps files forever)")
+        return days
+
+    def _preview_summary_locked(self, session, row: AppMyFile, *, preview: Any = _UNSET) -> dict[str, Any]:
+        file_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin"
+        mime_type = _normalize_text(row.download_mime_type) or _normalize_text(row.mime_type) or "application/octet-stream"
+        preview_kind = self._classify_preview_kind(filename=file_name, mime_type=mime_type)
+        preview_max_bytes = self._preview_max_bytes()
+        preview_status = "unsupported" if preview_kind == "unsupported" else PREVIEW_STATUS_QUEUED
+        preview_available = False
+        if preview_kind != "unsupported":
+            download_size = self._preview_download_size_locked(row)
+            if preview is _UNSET:
+                preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+            if preview is not None:
+                preview_status = _normalize_text(preview.status) or preview_status
+                preview_path = Path(_normalize_text(preview.preview_path))
+                preview_available = bool(
+                    preview.status == PREVIEW_STATUS_READY
+                    and download_size > 0
+                    and download_size <= preview_max_bytes
+                    and preview_path.is_file()
+                )
+            elif download_size <= 0 or download_size > preview_max_bytes:
+                preview_status = PREVIEW_STATUS_ERROR
+        return {
+            "preview_kind": preview_kind,
+            "preview_available": preview_available,
+            "preview_status": preview_status,
+            "preview_max_bytes": preview_max_bytes,
+        }
+
+    def _response(
+        self,
+        row: AppMyFile,
+        session=None,
+        *,
+        preview: Any = _UNSET,
+        folder_name: str = "",
+        collaborators_count: int = 0,
+        shared_with_me: bool = False,
+        my_role: str = "",
+        viewer_user_id: int | None = None,
+    ) -> dict[str, Any]:
+        original_size = int(row.original_size_bytes or 0)
+        stored_size = int(row.stored_size_bytes or 0)
+        preview_summary = (
+            self._preview_summary_locked(session, row, preview=preview)
+            if session is not None
+            else {
+                "preview_kind": "unsupported",
+                "preview_available": False,
+                "preview_status": "unsupported",
+                "preview_max_bytes": self._preview_max_bytes(),
+            }
+        )
+        return {
+            "id": _normalize_text(row.id),
+            "original_file_name": _normalize_text(row.original_file_name),
+            "download_file_name": _normalize_text(row.download_file_name),
+            "mime_type": _normalize_text(row.mime_type) or "application/octet-stream",
+            "download_mime_type": _normalize_text(row.download_mime_type) or "application/octet-stream",
+            "original_size_bytes": original_size,
+            "stored_size_bytes": stored_size,
+            "saved_size_bytes": max(0, original_size - stored_size) if stored_size else 0,
+            "retention_days": int(row.retention_days) if row.retention_days is not None else DEFAULT_RETENTION_DAYS,
+            "folder_id": _normalize_text(getattr(row, "folder_id", "")) or None,
+            "status": _normalize_text(row.status) or STATUS_QUEUED,
+            "storage_mode": _normalize_text(row.storage_mode),
+            "error_text": _normalize_text(row.error_text),
+            "security_scan_status": _normalize_text(row.security_scan_status) or "pending",
+            **preview_summary,
+            "is_shared": bool(_normalize_text(row.share_token_hash)),
+            "is_favorite": bool(getattr(row, "is_favorite", False)),
+            "collaborators_count": int(collaborators_count or 0),
+            "shared_with_me": bool(shared_with_me),
+            "can_manage_access": (
+                self.may_manage_file_access_locked(session, row, int(viewer_user_id or (0 if shared_with_me else row.owner_user_id)))
+                if session is not None else False
+            ),
+            "my_role": _normalize_text(my_role),
+            "owner_username": _normalize_text(row.owner_username) if shared_with_me else "",
+            "folder_name": _normalize_text(folder_name),
+            "share_expires_at": _coerce_utc(row.expires_at),
+            "created_at": _coerce_utc(row.created_at),
+            "updated_at": _coerce_utc(row.updated_at),
+            "expires_at": _coerce_utc(row.expires_at),
+        }
+
+    def _quota_used_locked(self, session, user_id: int) -> int:
+        rows = session.execute(
+            select(func.coalesce(func.sum(AppMyFile.original_size_bytes), 0)).where(
+                AppMyFile.owner_user_id == int(user_id),
+                AppMyFile.deleted_at.is_(None),
+                AppMyFile.status.in_([STATUS_UPLOADING, STATUS_QUEUED, STATUS_SCANNING, STATUS_PROCESSING, STATUS_READY]),
+                AppMyFile.expires_at > _utc_now(),
+            )
+        ).scalar()
+        used = int(rows or 0)
+        if self._collab_tables_present(session):
+            used += int(
+                session.execute(
+                    select(func.coalesce(func.sum(AppMyFileVersion.original_size_bytes + AppMyFileVersion.office_changes_size_bytes), 0))
+                    .join(AppMyFile, AppMyFile.id == AppMyFileVersion.file_id)
+                    .where(
+                        AppMyFile.owner_user_id == int(user_id),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.expires_at > _utc_now(),
+                    )
+                ).scalar()
+                or 0
+            )
+        return used
+
+    def _collab_tables_present(self, session) -> bool:
+        """Co-editing tables come from an explicit release migration; stay inert until applied."""
+        if self._collab_tables_ready:
+            return True
+        now = time.monotonic()
+        if now - self._collab_tables_checked_at < 60:
+            return False
+        self._collab_tables_checked_at = now
+        try:
+            with session.begin_nested():
+                session.execute(select(AppMyFileVersion.id).limit(1))
+                session.execute(select(AppMyFileCollaborator.file_id, AppMyFileCollaborator.role).limit(1))
+        except SQLAlchemyError:
+            return False
+        self._collab_tables_ready = True
+        return True
+
+    def _collab_counts_locked(
+        self,
+        session,
+        file_ids,
+        *,
+        inherited_user_ids: frozenset[int] = frozenset(),
+    ) -> dict[str, int]:
+        """People with access per file, for the "co-editing" mark on file rows.
+
+        ``inherited_user_ids`` are the users who reach every listed file through a folder grant.
+        """
+        ids = [_normalize_text(item) for item in file_ids if _normalize_text(item)]
+        if not ids or not self._collab_tables_present(session):
+            return {}
+        direct: dict[str, set[int]] = {}
+        for file_id, member_id in session.execute(
+            select(AppMyFileCollaborator.file_id, AppMyFileCollaborator.user_id).where(
+                AppMyFileCollaborator.file_id.in_(ids)
+            )
+        ).all():
+            direct.setdefault(_normalize_text(file_id), set()).add(int(member_id))
+        counts: dict[str, int] = {}
+        for file_id in ids:
+            total = len(direct.get(file_id, set()) | set(inherited_user_ids))
+            if total:
+                counts[file_id] = total
+        return counts
+
+    # -- shared libraries -------------------------------------------------------------------
+
+    def _libraries_present(self, session) -> bool:
+        """Library tables come from their own release migration; stay inert until applied."""
+        if self._libraries_ready:
+            return True
+        now = time.monotonic()
+        if now - self._libraries_checked_at < 60:
+            return False
+        self._libraries_checked_at = now
+        try:
+            with session.begin_nested():
+                session.execute(select(AppMyFileLibrary.id, AppMyFileLibrary.quota_bytes).limit(1))
+                session.execute(select(AppMyFileLibraryMember.library_id, AppMyFileLibraryMember.role).limit(1))
+                session.execute(select(AppMyFile.uploaded_by_user_id).limit(1))
+        except SQLAlchemyError:
+            return False
+        self._libraries_ready = True
+        return True
+
+    @staticmethod
+    def _norm_library_role(value: Any) -> str:
+        role = _normalize_text(value).lower()
+        return role if role in _LIBRARY_ROLE_RANK else "view"
+
+    def _library_by_owner_locked(self, session, owner_user_id: int) -> AppMyFileLibrary | None:
+        if int(owner_user_id) >= 0 or not self._libraries_present(session):
+            return None
+        return session.scalars(
+            select(AppMyFileLibrary).where(
+                AppMyFileLibrary.owner_user_id == int(owner_user_id),
+                AppMyFileLibrary.deleted_at.is_(None),
+            )
+        ).first()
+
+    @staticmethod
+    def _user_department_ids_locked(session, user_id: int) -> set[str]:
+        """Active departments the user belongs to (library membership follows them live)."""
+        return {
+            _normalize_text(department_id)
+            for department_id in session.scalars(
+                select(AppDepartmentMembership.department_id)
+                .join(AppDepartment, AppDepartment.id == AppDepartmentMembership.department_id)
+                .where(
+                    AppDepartmentMembership.user_id == int(user_id),
+                    AppDepartmentMembership.is_active.is_(True),
+                    AppDepartment.is_active.is_(True),
+                )
+            ).all()
+        }
+
+    @staticmethod
+    def is_admin_locked(session, user_id: int) -> bool:
+        """Use the active database identity; a library manager is not a platform administrator."""
+        uid = int(user_id)
+        if uid <= 0:
+            return False
+        key = ("my_files_admin", uid)
+        if key not in session.info:
+            user = session.get(AppUser, uid)
+            session.info[key] = bool(user and user.is_active and _normalize_text(user.role).lower() == "admin")
+        return bool(session.info[key])
+
+    def may_manage_file_access_locked(self, session, row: AppMyFile, user_id: int) -> bool:
+        uid = int(user_id)
+        if self.is_admin_locked(session, uid) or (uid > 0 and int(row.owner_user_id) == uid):
+            return True
+        return bool(int(row.owner_user_id) < 0 and int(row.uploaded_by_user_id or 0) == uid
+                    and self.library_access_role_locked(session, row.owner_user_id, uid))
+
+    def may_manage_folder_access_locked(self, session, row: AppMyFileFolder, user_id: int) -> bool:
+        return self.is_admin_locked(session, user_id) or int(row.owner_user_id) == int(user_id)
+
+    def _may_share_file_locked(self, session, row: AppMyFile, user_id: int) -> bool:
+        """Public-link gate: a personal file follows access management; a library file needs ``manage``."""
+        if int(row.owner_user_id) < 0:
+            return self.may_act_locked(session, user_id, row.owner_user_id, "manage")
+        return self.may_manage_file_access_locked(session, row, user_id)
+
+    def library_role_locked(self, session, library: AppMyFileLibrary, user_id: int) -> str:
+        """Best role of the user in the library: own entry or through any of the user's departments."""
+        if self.is_admin_locked(session, user_id):
+            return "manage"
+        condition = (AppMyFileLibraryMember.principal_type == "user") & (
+            AppMyFileLibraryMember.principal_id == str(int(user_id))
+        )
+        department_ids = self._user_department_ids_locked(session, user_id)
+        if department_ids:
+            condition = condition | (
+                (AppMyFileLibraryMember.principal_type == "department")
+                & AppMyFileLibraryMember.principal_id.in_(department_ids)
+            )
+        roles = session.scalars(
+            select(AppMyFileLibraryMember.role).where(AppMyFileLibraryMember.library_id == library.id, condition)
+        ).all()
+        best = ""
+        for role in roles:
+            role = self._norm_library_role(role)
+            if _LIBRARY_ROLE_RANK[role] > _LIBRARY_ROLE_RANK.get(best, 0):
+                best = role
+        return best
+
+    def library_member_user_ids_locked(self, session, library_id: str, roles) -> set[int]:
+        """Users whose library role is in ``roles``, departments expanded to their current members."""
+        members = session.scalars(
+            select(AppMyFileLibraryMember).where(AppMyFileLibraryMember.library_id == _normalize_text(library_id))
+        ).all()
+        user_ids: set[int] = set()
+        department_ids: set[str] = set()
+        for member in members:
+            if self._norm_library_role(member.role) not in roles:
+                continue
+            if member.principal_type == "user":
+                try:
+                    user_ids.add(int(member.principal_id))
+                except (TypeError, ValueError):
+                    continue
+            elif member.principal_type == "department":
+                department_ids.add(_normalize_text(member.principal_id))
+        if department_ids:
+            user_ids |= {
+                int(user_id)
+                for user_id in session.scalars(
+                    select(AppDepartmentMembership.user_id).where(
+                        AppDepartmentMembership.department_id.in_(department_ids),
+                        AppDepartmentMembership.is_active.is_(True),
+                    )
+                ).all()
+            }
+        return user_ids
+
+    def may_act_locked(self, session, actor_id: int, owner_user_id: int, need: str = "edit") -> bool:
+        """True when the actor may change things owned by ``owner_user_id``.
+
+        A person acts on their own files; a library (negative owner) needs a member role of at least ``need``
+        (``edit`` for content, ``manage`` for trash restore/purge and public links).
+        """
+        owner = int(owner_user_id)
+        actor = int(actor_id)
+        if self.is_admin_locked(session, actor):
+            return True
+        if actor > 0 and owner == actor:
+            return True
+        library = self._library_by_owner_locked(session, owner)
+        if library is None or actor <= 0:
+            return False
+        role = self.library_role_locked(session, library, actor)
+        return _LIBRARY_ROLE_RANK.get(role, 0) >= _LIBRARY_ROLE_RANK[need]
+
+    def library_access_role_locked(self, session, owner_user_id: int, user_id: int) -> str:
+        """Library role of the user for a library-owned item, ``""`` for a personal item or no access."""
+        library = self._library_by_owner_locked(session, owner_user_id)
+        if library is None:
+            return ""
+        return self.library_role_locked(session, library, user_id)
+
+    # -- folder-level access ----------------------------------------------------------------
+
+    def _folder_shares_present(self, session) -> bool:
+        """The folder-access table comes from its own release migration; stay inert until applied."""
+        if self._folder_shares_ready:
+            return True
+        now = time.monotonic()
+        if now - self._folder_shares_checked_at < 60:
+            return False
+        self._folder_shares_checked_at = now
+        try:
+            with session.begin_nested():
+                session.execute(
+                    select(AppMyFileFolderCollaborator.folder_id, AppMyFileFolderCollaborator.role).limit(1)
+                )
+        except SQLAlchemyError:
+            return False
+        self._folder_shares_ready = True
+        return True
+
+    @staticmethod
+    def _norm_access_role(value: Any) -> str:
+        role = _normalize_text(value).lower()
+        return role if role in _ACCESS_ROLE_RANK else "edit"
+
+    @staticmethod
+    def _best_access_role(*roles: str) -> str:
+        best = ""
+        for role in roles:
+            if _ACCESS_ROLE_RANK.get(role, 0) > _ACCESS_ROLE_RANK.get(best, 0):
+                best = role
+        return best
+
+    @staticmethod
+    def _folder_chain_locked(session, folder_id: str | None, owner_user_id: int) -> list[str]:
+        """Folder ids from ``folder_id`` up to the root; empty when any link is deleted or foreign.
+
+        A deleted folder anywhere above revokes inherited access, and the length is capped so a
+        broken parent link cannot loop forever.
+        """
+        chain: list[str] = []
+        current = _normalize_text(folder_id)
+        while current and current not in chain:
+            if len(chain) >= _FOLDER_CHAIN_LIMIT:
+                break
+            folder = session.get(AppMyFileFolder, current)
+            if folder is None or folder.deleted_at is not None or int(folder.owner_user_id) != int(owner_user_id):
+                return []
+            chain.append(folder.id)
+            current = _normalize_text(folder.parent_id)
+        return chain
+
+    def _folder_role_locked(self, session, folder_id: str | None, owner_user_id: int, user_id: int) -> str:
+        """Best role a user holds on a folder through grants on it or on any parent."""
+        if not _normalize_text(folder_id) or not self._folder_shares_present(session):
+            return ""
+        chain = self._folder_chain_locked(session, folder_id, owner_user_id)
+        if not chain:
+            return ""
+        roles = session.scalars(
+            select(AppMyFileFolderCollaborator.role).where(
+                AppMyFileFolderCollaborator.folder_id.in_(chain),
+                AppMyFileFolderCollaborator.user_id == int(user_id),
+            )
+        ).all()
+        return self._best_access_role(*[self._norm_access_role(role) for role in roles])
+
+    def effective_role_locked(self, session, row: AppMyFile, user_id: int) -> str:
+        """``owner``, the best of the file's own role and the roles of its folders, or ``""`` for no access."""
+        if self.is_admin_locked(session, user_id) or int(row.owner_user_id) == int(user_id):
+            return "owner"
+        direct = ""
+        if self._collab_tables_present(session):
+            member = session.get(AppMyFileCollaborator, (row.id, int(user_id)))
+            if member is not None:
+                direct = self._norm_access_role(member.role)
+        if int(row.owner_user_id) < 0:
+            library_role = self.library_access_role_locked(session, row.owner_user_id, user_id)
+            return "owner" if library_role == "manage" else self._best_access_role(library_role, direct)
+        inherited = self._folder_role_locked(session, row.folder_id, row.owner_user_id, user_id)
+        return self._best_access_role(direct, inherited)
+
+    def writer_ids_locked(self, session, row: AppMyFile, writing_roles) -> set[int]:
+        """Owner plus everyone whose own or folder-inherited role lets them change the file."""
+        allowed = {int(row.owner_user_id)} | set(session.scalars(
+            select(AppUser.id).where(AppUser.role == "admin", AppUser.is_active.is_(True))
+        ).all())
+        if int(row.owner_user_id) < 0:
+            library = self._library_by_owner_locked(session, row.owner_user_id)
+            if library is not None:
+                library_roles = {role for role in writing_roles if role in _LIBRARY_ROLE_RANK} | {"manage"}
+                allowed |= self.library_member_user_ids_locked(session, library.id, library_roles)
+        if self._collab_tables_present(session):
+            allowed |= {
+                int(item.user_id)
+                for item in session.scalars(
+                    select(AppMyFileCollaborator).where(AppMyFileCollaborator.file_id == row.id)
+                ).all()
+                if self._norm_access_role(item.role) in writing_roles
+            }
+        chain = (
+            self._folder_chain_locked(session, row.folder_id, row.owner_user_id)
+            if _normalize_text(row.folder_id) and self._folder_shares_present(session)
+            else []
+        )
+        if chain:
+            allowed |= {
+                int(item.user_id)
+                for item in session.scalars(
+                    select(AppMyFileFolderCollaborator).where(AppMyFileFolderCollaborator.folder_id.in_(chain))
+                ).all()
+                if self._norm_access_role(item.role) in writing_roles
+            }
+        return allowed
+
+    def folder_grant_user_ids_locked(self, session, folder_id: str | None, owner_user_id: int) -> set[int]:
+        """Everyone holding a grant on the folder or on one of its parents."""
+        if not _normalize_text(folder_id) or not self._folder_shares_present(session):
+            return set()
+        chain = self._folder_chain_locked(session, folder_id, owner_user_id)
+        if not chain:
+            return set()
+        return {
+            int(user_id)
+            for user_id in session.scalars(
+                select(AppMyFileFolderCollaborator.user_id).where(AppMyFileFolderCollaborator.folder_id.in_(chain))
+            ).all()
+        }
+
+    def _folder_grants_for_user_locked(self, session, user_id: int) -> list[tuple[AppMyFileFolder, str]]:
+        """Live folders the user was granted directly, with the granted role."""
+        if not self._folder_shares_present(session):
+            return []
+        rows = session.execute(
+            select(AppMyFileFolder, AppMyFileFolderCollaborator.role)
+            .join(AppMyFileFolderCollaborator, AppMyFileFolderCollaborator.folder_id == AppMyFileFolder.id)
+            .where(
+                AppMyFileFolderCollaborator.user_id == int(user_id),
+                AppMyFileFolder.deleted_at.is_(None),
+            )
+        ).all()
+        return [
+            (folder, self._norm_access_role(role))
+            for folder, role in rows
+            if self._folder_chain_locked(session, folder.id, folder.owner_user_id)
+        ]
+
+    def shared_rows_locked(self, session, user_id: int, now: datetime) -> list[tuple[AppMyFile, str]]:
+        """Every live file the user may open: shared on its own or through a folder (best role wins)."""
+        found: dict[str, tuple[AppMyFile, str]] = {}
+        if self._collab_tables_present(session):
+            for row, role in session.execute(
+                select(AppMyFile, AppMyFileCollaborator.role)
+                .join(AppMyFileCollaborator, AppMyFileCollaborator.file_id == AppMyFile.id)
+                .where(
+                    AppMyFileCollaborator.user_id == int(user_id),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+            ).all():
+                found[row.id] = (row, self._norm_access_role(role))
+        for folder, role in self._folder_grants_for_user_locked(session, user_id):
+            folder_ids = [
+                folder.id,
+                *self._folder_descendant_ids_locked(session, owner_user_id=folder.owner_user_id, folder_id=folder.id),
+            ]
+            for row in session.scalars(
+                select(AppMyFile).where(
+                    AppMyFile.owner_user_id == int(folder.owner_user_id),
+                    AppMyFile.folder_id.in_(folder_ids),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+            ).all():
+                previous = found.get(row.id)
+                found[row.id] = (row, self._best_access_role(previous[1], role) if previous else role)
+        return sorted(found.values(), key=lambda item: _coerce_utc(item[0].updated_at) or now, reverse=True)
+
+    def _shared_folder_response(
+        self,
+        folder: AppMyFileFolder,
+        *,
+        role: str,
+        owner_username: str,
+        collaborators_count: int,
+        file_count: int = 0,
+    ) -> dict[str, Any]:
+        payload = self._folder_response(
+            folder,
+            collaborators_count=collaborators_count,
+            shared_with_me=True,
+            my_role=role,
+            owner_username=owner_username,
+        )
+        payload["file_count"] = int(file_count)
+        return payload
+
+    def _folder_grant_counts_locked(self, session, folder_ids) -> dict[str, int]:
+        ids = [_normalize_text(item) for item in folder_ids if _normalize_text(item)]
+        if not ids or not self._folder_shares_present(session):
+            return {}
+        return {
+            _normalize_text(folder_id): int(count)
+            for folder_id, count in session.execute(
+                select(AppMyFileFolderCollaborator.folder_id, func.count(AppMyFileFolderCollaborator.user_id))
+                .where(AppMyFileFolderCollaborator.folder_id.in_(ids))
+                .group_by(AppMyFileFolderCollaborator.folder_id)
+            ).all()
+        }
+
+    def _owner_username_locked(self, session, owner_user_id: int) -> str:
+        if int(owner_user_id) < 0:
+            library = self._library_by_owner_locked(session, owner_user_id)
+            return _normalize_text(getattr(library, "name", "")) or f"library-{abs(int(owner_user_id))}"
+        user = session.get(AppUser, int(owner_user_id))
+        return _normalize_text(getattr(user, "username", "")) or f"user-{int(owner_user_id)}"
+
+    def _list_shared_with_me_locked(
+        self,
+        session,
+        user_id: int,
+        now: datetime,
+        folder_id: str | None = None,
+    ) -> dict[str, Any]:
+        if _normalize_text(folder_id):
+            return self._list_shared_folder_locked(session, int(user_id), _normalize_text(folder_id), now)
+        direct: list[tuple[AppMyFile, str]] = []
+        if self._collab_tables_present(session):
+            direct = [
+                (row, self._norm_access_role(role))
+                for row, role in session.execute(
+                    select(AppMyFile, AppMyFileCollaborator.role)
+                    .join(AppMyFileCollaborator, AppMyFileCollaborator.file_id == AppMyFile.id)
+                    .where(
+                        AppMyFileCollaborator.user_id == int(user_id),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.expires_at > now,
+                    )
+                    .order_by(AppMyFile.updated_at.desc())
+                ).all()
+            ]
+        counts = self._collab_counts_locked(session, [row.id for row, _role in direct])
+        grants = self._folder_grants_for_user_locked(session, user_id)
+        granted_ids = {folder.id for folder, _role in grants}
+        top = [
+            (folder, role)
+            for folder, role in grants
+            if not any(
+                ancestor in granted_ids
+                for ancestor in self._folder_chain_locked(session, folder.parent_id, folder.owner_user_id)
+            )
+        ]
+        grant_counts = self._folder_grant_counts_locked(session, [folder.id for folder, _role in top])
+        folder_payloads = [
+            self._shared_folder_response(
+                folder,
+                role=role,
+                owner_username=self._owner_username_locked(session, folder.owner_user_id),
+                collaborators_count=grant_counts.get(folder.id, 0),
+                file_count=self._folder_subtree_file_count_locked(session, folder, now),
+            )
+            for folder, role in sorted(top, key=lambda item: _normalize_text(item[0].name).casefold())
+        ]
+        return {
+            "items": [
+                self._response(
+                    row,
+                    session=session,
+                    collaborators_count=counts.get(_normalize_text(row.id), 0),
+                    shared_with_me=True,
+                    my_role=role,
+                )
+                for row, role in direct
+            ],
+            "folders": folder_payloads,
+            "breadcrumbs": [],
+            "folder": None,
+        }
+
+    def _folder_subtree_file_count_locked(self, session, folder: AppMyFileFolder, now: datetime) -> int:
+        folder_ids = [
+            folder.id,
+            *self._folder_descendant_ids_locked(session, owner_user_id=folder.owner_user_id, folder_id=folder.id),
+        ]
+        return int(
+            session.execute(
+                select(func.count(AppMyFile.id)).where(
+                    AppMyFile.owner_user_id == int(folder.owner_user_id),
+                    AppMyFile.folder_id.in_(folder_ids),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+            ).scalar()
+            or 0
+        )
+
+    def _list_shared_folder_locked(self, session, user_id: int, folder_id: str, now: datetime) -> dict[str, Any]:
+        """Content of a folder opened through a grant; only folders inside a shared subtree qualify."""
+        folder = session.get(AppMyFileFolder, folder_id)
+        if folder is None or folder.deleted_at is not None or int(folder.owner_user_id) == int(user_id):
+            raise MyFilesNotFoundError("Folder not found")
+        role = self._folder_role_locked(session, folder.id, folder.owner_user_id, user_id)
+        if not role:
+            raise MyFilesNotFoundError("Folder not found")
+        owner_id = int(folder.owner_user_id)
+        owner_name = self._owner_username_locked(session, owner_id)
+        chain = self._folder_chain_locked(session, folder.id, owner_id)  # folder first, root last
+        granted = {
+            _normalize_text(item)
+            for item in session.scalars(
+                select(AppMyFileFolderCollaborator.folder_id).where(
+                    AppMyFileFolderCollaborator.folder_id.in_(chain),
+                    AppMyFileFolderCollaborator.user_id == int(user_id),
+                )
+            ).all()
+        }
+        top_index = max(index for index, item in enumerate(chain) if item in granted)
+        breadcrumbs = []
+        for crumb_id in reversed(chain[: top_index + 1]):
+            crumb = session.get(AppMyFileFolder, crumb_id)
+            breadcrumbs.append(
+                self._shared_folder_response(crumb, role=role, owner_username=owner_name, collaborators_count=0)
+            )
+        files = session.scalars(
+            select(AppMyFile)
+            .where(
+                AppMyFile.owner_user_id == owner_id,
+                AppMyFile.folder_id == folder.id,
+                AppMyFile.deleted_at.is_(None),
+                AppMyFile.status == STATUS_READY,
+                AppMyFile.expires_at > now,
+            )
+            .order_by(AppMyFile.created_at.desc())
+        ).all()
+        direct_roles: dict[str, str] = {}
+        if files and self._collab_tables_present(session):
+            direct_roles = {
+                _normalize_text(file_id): self._norm_access_role(file_role)
+                for file_id, file_role in session.execute(
+                    select(AppMyFileCollaborator.file_id, AppMyFileCollaborator.role).where(
+                        AppMyFileCollaborator.file_id.in_([row.id for row in files]),
+                        AppMyFileCollaborator.user_id == int(user_id),
+                    )
+                ).all()
+            }
+        children = session.scalars(
+            select(AppMyFileFolder)
+            .where(AppMyFileFolder.owner_user_id == owner_id, AppMyFileFolder.parent_id == folder.id, AppMyFileFolder.deleted_at.is_(None))
+            .order_by(AppMyFileFolder.name.asc())
+        ).all()
+        child_roles: dict[str, str] = {}
+        if children:
+            child_roles = {
+                _normalize_text(child_id): self._norm_access_role(child_role)
+                for child_id, child_role in session.execute(
+                    select(AppMyFileFolderCollaborator.folder_id, AppMyFileFolderCollaborator.role).where(
+                        AppMyFileFolderCollaborator.folder_id.in_([child.id for child in children]),
+                        AppMyFileFolderCollaborator.user_id == int(user_id),
+                    )
+                ).all()
+            }
+        return {
+            "items": [
+                self._response(
+                    row,
+                    session=session,
+                    shared_with_me=True,
+                    my_role=self._best_access_role(role, direct_roles.get(row.id, "")),
+                )
+                for row in files
+            ],
+            "folders": [
+                self._shared_folder_response(
+                    child,
+                    role=self._best_access_role(role, child_roles.get(child.id, "")),
+                    owner_username=owner_name,
+                    collaborators_count=0,
+                    file_count=self._folder_subtree_file_count_locked(session, child, now),
+                )
+                for child in children
+            ],
+            "breadcrumbs": breadcrumbs,
+            "folder": self._shared_folder_response(folder, role=role, owner_username=owner_name, collaborators_count=0),
+        }
+
+    def _release_folder_shares_locked(self, session, folder_ids) -> None:
+        """Drop the access grants of folders that are being removed for good."""
+        ids = [_normalize_text(item) for item in folder_ids if _normalize_text(item)]
+        if ids and self._folder_shares_present(session):
+            session.execute(
+                delete(AppMyFileFolderCollaborator).where(AppMyFileFolderCollaborator.folder_id.in_(ids))
+            )
+
+    def _release_file_collab_locked(self, session, file_id: str, blob_paths: list[Path]) -> None:
+        """Drop version history and collaborators of a file that is being purged."""
+        if not self._collab_tables_present(session):
+            return
+        normalized = _normalize_text(file_id)
+        versions = session.scalars(
+            select(AppMyFileVersion).where(AppMyFileVersion.file_id == normalized)
+        ).all()
+        for version in versions:
+            self._release_blob_locked(session, version.blob_id, blob_paths)
+            if version.office_changes_blob_id:
+                self._release_blob_locked(session, version.office_changes_blob_id, blob_paths)
+            session.delete(version)
+        session.execute(delete(AppMyFileCollaborator).where(AppMyFileCollaborator.file_id == normalized))
+
+    @staticmethod
+    def _advisory_lock_key(scope: str) -> int:
+        raw = hashlib.sha256(scope.encode("utf-8")).digest()[:8]
+        return int.from_bytes(raw, byteorder="big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+
+    def _lock_reservation_locked(self, session, owner_user_id: int) -> None:
+        bind = session.get_bind()
+        if bind is None or bind.dialect.name != "postgresql":
+            return
+        for scope in ("my-files:global", f"my-files:user:{int(owner_user_id)}"):
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": self._advisory_lock_key(scope)},
+            )
+
+    @staticmethod
+    def _count_statuses_locked(session, statuses: list[str], *, user_id: int | None = None) -> int:
+        query = select(func.count(AppMyFile.id)).where(
+            AppMyFile.deleted_at.is_(None),
+            AppMyFile.expires_at > _utc_now(),
+            AppMyFile.status.in_(statuses),
+        )
+        if user_id is not None:
+            query = query.where(AppMyFile.owner_user_id == int(user_id))
+        return int(session.execute(query).scalar() or 0)
+
+    def _user_quota_limit_locked(self, session, user_id: int) -> int:
+        if int(user_id) < 0:
+            library = self._library_by_owner_locked(session, user_id)
+            limit = int(library.quota_bytes or 0) if library is not None else 0
+            return limit if limit > 0 else LIBRARY_UNLIMITED_BYTES
+        row = session.get(AppUser, int(user_id))
+        override = int(row.my_files_quota_bytes or 0) if row is not None else 0
+        if override <= 0:
+            return USER_QUOTA_BYTES
+        return min(override, USER_QUOTA_MAX_BYTES)
+
+    def quota(self, *, user_id: int) -> dict[str, int]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            used = self._quota_used_locked(session, int(user_id))
+            limit = self._user_quota_limit_locked(session, int(user_id))
+        return {
+            "used_bytes": used,
+            "limit_bytes": limit,
+            "remaining_bytes": max(0, limit - used),
+        }
+
+    def reserve_upload(
+        self,
+        *,
+        actor: Any,
+        original_file_name: str,
+        mime_type: str | None,
+        spool_path: Path,
+        expected_size_bytes: int,
+        retention_days: int,
+        folder_id: str | None = None,
+        meta: MyFilesRequestMeta | None = None,
+        reuse_existing: bool = False,
+        library_id: str | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_stale_cleanup_at > 60:
+            # Maintenance sweep on the request path: cheap when idle, but it must
+            # not run for every chunk-session open. The worker sweeps too.
+            self._last_stale_cleanup_at = now_monotonic
+            self.cleanup_stale_uploads(limit=100)
+        actor_id = _actor_id(actor)
+        if actor_id <= 0:
+            raise MyFilesValidationError("Authenticated user is required")
+        safe_name = _safe_file_name(original_file_name)
+        safe_mime = _guess_mime(safe_name, mime_type)
+        safe_days = self.validate_retention_days(retention_days)
+        size = int(expected_size_bytes or 0)
+        if size <= 0:
+            raise MyFilesValidationError("File is empty")
+
+        now = _utc_now()
+        limits = config.my_files_security
+        with self._reservation_lock:
+            with app_session(database_url) as session:
+                owner_user_id = self._upload_owner_locked(
+                    session, actor_id=actor_id, folder_id=folder_id, library_id=library_id
+                )
+                in_library = owner_user_id < 0
+                if in_library:
+                    # Library files are kept until someone deletes them.
+                    safe_days = FOREVER_RETENTION_DAYS
+                if safe_days == FOREVER_RETENTION_DAYS:
+                    expires_at = now + timedelta(days=FOREVER_EXPIRES_DAYS)
+                else:
+                    expires_at = now + timedelta(days=safe_days)
+                self._lock_reservation_locked(session, owner_user_id)
+                if reuse_existing:
+                    # Atomic find-or-create: a concurrent retried upload of the
+                    # same file must reuse the live reservation instead of
+                    # consuming a second concurrency slot and double quota.
+                    resume_cutoff = now - timedelta(
+                        seconds=max(60, int(limits.upload_reservation_ttl_sec))
+                    )
+                    normalized_folder = _normalize_text(folder_id)
+                    resume_query = select(AppMyFile).where(
+                        AppMyFile.owner_user_id == owner_user_id,
+                        AppMyFile.status == STATUS_UPLOADING,
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.original_file_name == safe_name,
+                        AppMyFile.original_size_bytes == size,
+                        AppMyFile.updated_at > resume_cutoff,
+                    )
+                    if in_library:
+                        resume_query = resume_query.where(AppMyFile.uploaded_by_user_id == actor_id)
+                    if normalized_folder:
+                        resume_query = resume_query.where(AppMyFile.folder_id == normalized_folder)
+                    else:
+                        resume_query = resume_query.where(AppMyFile.folder_id.is_(None))
+                    existing = session.scalars(
+                        resume_query.order_by(AppMyFile.created_at.desc()).limit(1).with_for_update()
+                    ).first()
+                    if existing is not None:
+                        return self._response(existing, session=session)
+                used = self._quota_used_locked(session, owner_user_id)
+                if used + size > self._user_quota_limit_locked(session, owner_user_id):
+                    raise MyFilesValidationError("User storage quota exceeded")
+                # Per-person caps follow the uploader; a library is shared by many people, so only the
+                # global caps bound it.
+                if not in_library and self._count_statuses_locked(session, [STATUS_UPLOADING], user_id=owner_user_id) >= limits.max_uploading_per_user:
+                    raise MyFilesCapacityError("Too many concurrent uploads for this user")
+                if self._count_statuses_locked(session, [STATUS_UPLOADING]) >= limits.max_uploading_global:
+                    raise MyFilesCapacityError("Upload capacity is temporarily exhausted")
+                active_statuses = [STATUS_UPLOADING, STATUS_QUEUED, STATUS_SCANNING, STATUS_PROCESSING]
+                if not in_library and self._count_statuses_locked(session, active_statuses, user_id=owner_user_id) >= limits.max_active_jobs_per_user:
+                    raise MyFilesCapacityError("Too many files are already queued for this user")
+                if self._count_statuses_locked(session, active_statuses) >= limits.max_active_jobs_global:
+                    raise MyFilesCapacityError("File processing queue is full")
+                target_folder = self._folder_row_locked(
+                    session, owner_user_id=owner_user_id, folder_id=folder_id
+                )
+                row = AppMyFile(
+                    id=uuid.uuid4().hex,
+                    owner_user_id=owner_user_id,
+                    owner_username=(
+                        self._owner_username_locked(session, owner_user_id)[:50] if in_library else _actor_username(actor)
+                    ),
+                    uploaded_by_user_id=actor_id if in_library else None,
+                    folder_id=target_folder.id if target_folder else None,
+                    original_file_name=safe_name,
+                    download_file_name=safe_name,
+                    mime_type=safe_mime,
+                    download_mime_type=safe_mime,
+                    original_size_bytes=size,
+                    stored_size_bytes=0,
+                    retention_days=safe_days,
+                    status=STATUS_UPLOADING,
+                    storage_mode="",
+                    spool_path=str(spool_path),
+                    security_scan_status="pending",
+                    created_at=now,
+                    updated_at=now,
+                    expires_at=expires_at,
+                )
+                session.add(row)
+                session.flush()
+                self._write_audit(session, action="upload_reserved", row=row, actor=actor, meta=meta)
+                return self._response(row, session=session)
+
+    def _upload_owner_locked(
+        self,
+        session,
+        *,
+        actor_id: int,
+        folder_id: str | None,
+        library_id: str | None,
+    ) -> int:
+        """Owner namespace an upload lands in: the actor's own files, or a library the actor may write to."""
+        owner = int(actor_id)
+        normalized_folder = _normalize_text(folder_id)
+        normalized_library = _normalize_text(library_id)
+        if normalized_folder:
+            folder = session.get(AppMyFileFolder, normalized_folder)
+            if folder is None or folder.deleted_at is not None:
+                raise MyFilesNotFoundError("Folder not found")
+            owner = int(folder.owner_user_id)
+        elif normalized_library:
+            library = session.get(AppMyFileLibrary, normalized_library) if self._libraries_present(session) else None
+            if library is None or library.deleted_at is not None:
+                raise MyFilesNotFoundError("Library not found")
+            owner = int(library.owner_user_id)
+        if not self.may_act_locked(session, actor_id, owner, "edit"):
+            raise MyFilesNotFoundError("Folder not found" if normalized_folder else "Library not found")
+        return owner
+
+    @staticmethod
+    def _upload_belongs_to(row: AppMyFile, user_id: int) -> bool:
+        """Chunks, completion and abort belong to the person who reserved the upload."""
+        uid = int(user_id)
+        if int(row.owner_user_id) == uid:
+            return True
+        return int(row.owner_user_id) < 0 and int(row.uploaded_by_user_id or 0) == uid
+
+    @staticmethod
+    def _active_upload_locked(session, *, file_id: str, user_id: int) -> AppMyFile:
+        row = session.scalars(
+            select(AppMyFile)
+            .where(
+                AppMyFile.id == _normalize_text(file_id),
+                AppMyFile.deleted_at.is_(None),
+            )
+            .with_for_update()
+        ).first()
+        if row is None or not MyFilesService._upload_belongs_to(row, user_id):
+            raise MyFilesNotFoundError("File not found")
+        if row.status != STATUS_UPLOADING:
+            raise MyFilesValidationError("Upload reservation is not active")
+        return row
+
+    @staticmethod
+    def _spool_parts_path(spool_path: Path) -> Path:
+        return spool_path.with_name(f"{spool_path.name}.parts.json")
+
+    @staticmethod
+    def _delete_spool_payload(path: Path) -> None:
+        for target in (path, MyFilesService._spool_parts_path(path)):
+            try:
+                target.unlink(missing_ok=True)
+            except OSError as exc:
+                # Antivirus/indexer may hold the file open; the orphan sweeper
+                # retries later. Never mask the caller's flow with PermissionError.
+                logger.warning("Failed to remove my-file spool path=%s error=%s", target, exc)
+
+    @staticmethod
+    def _spool_ranges(spool_path: Path) -> list[list[int]]:
+        parts_path = MyFilesService._spool_parts_path(spool_path)
+        if parts_path.is_file():
+            return _load_spool_ranges(parts_path)
+        # A spool file without a journal has no verifiable progress. Inferring
+        # coverage from st_size marks sparse out-of-order chunk writes as
+        # complete and punches holes into stored files.
+        return []
+
+    @staticmethod
+    def _upload_session_response(row: AppMyFile, spool_path: Path, *, ranges: list[list[int]] | None = None) -> dict[str, Any]:
+        if ranges is None:
+            ranges = MyFilesService._spool_ranges(spool_path)
+        uploaded_bytes = _spool_covered_prefix(ranges)
+        expected_size = int(row.original_size_bytes or 0)
+        if uploaded_bytes > expected_size:
+            raise MyFilesValidationError("Uploaded file exceeds reservation")
+        return {
+            "file_id": _normalize_text(row.id),
+            "chunk_size_bytes": UPLOAD_CHUNK_SIZE_BYTES,
+            "uploaded_bytes": uploaded_bytes,
+            "file_size_bytes": expected_size,
+            "ranges": ranges,
+            "complete": uploaded_bytes == expected_size,
+        }
+
+    def get_upload_session(self, *, file_id: str, user_id: int) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        with self._upload_lock(file_id), app_session(database_url) as session:
+            row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
+            spool_path = Path(_normalize_text(row.spool_path))
+            return self._upload_session_response(row, spool_path)
+
+    def append_upload_chunk(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        offset: int,
+        payload: bytes,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        chunk = bytes(payload or b"")
+        requested_offset = int(offset)
+        if requested_offset < 0:
+            raise MyFilesValidationError("Upload chunk offset is invalid")
+        if not chunk:
+            raise MyFilesValidationError("Upload chunk is empty")
+        if len(chunk) > UPLOAD_CHUNK_MAX_SIZE_BYTES:
+            raise MyFilesValidationError("Upload chunk exceeds size limit")
+
+        reservation: tuple[int, int, threading.Event] | None = None
+        try:
+            while reservation is None:
+                with self._upload_lock(file_id), app_session(database_url) as session:
+                    row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
+                    spool_path = Path(_normalize_text(row.spool_path))
+                    if not _normalize_text(row.spool_path):
+                        raise MyFilesValidationError("Upload payload path is missing")
+                    try:
+                        ensure_storage_ready(spool_path)
+                    except HubitStorageError as exc:
+                        raise MyFilesCapacityError(str(exc)) from exc
+                    spool_path.parent.mkdir(parents=True, exist_ok=True)
+                    expected_size = int(row.original_size_bytes or 0)
+                    end_offset = requested_offset + len(chunk)
+
+                    if end_offset > expected_size:
+                        raise MyFilesValidationError("Upload chunk exceeds reservation")
+
+                    parts_path = self._spool_parts_path(spool_path)
+                    ranges = self._spool_ranges(spool_path)
+                    if _spool_range_covered(ranges, requested_offset, end_offset):
+                        with spool_path.open("rb") as source:
+                            source.seek(requested_offset)
+                            if source.read(len(chunk)) != chunk:
+                                raise MyFilesValidationError("Upload chunk retry does not match stored data")
+                        return self._upload_session_response(row, spool_path)
+                    if _spool_range_overlaps(ranges, requested_offset, end_offset):
+                        raise MyFilesValidationError("Upload chunk overlaps partially stored data")
+                    # Claim the range before writing: a second request for the same bytes must
+                    # wait and then verify against what was stored, never write over it.
+                    with self._chunk_inflight_lock:
+                        pending = next(
+                            (
+                                event
+                                for start, end, event in self._chunk_inflight.get(file_id, ())
+                                if start < end_offset and end > requested_offset
+                            ),
+                            None,
+                        )
+                        if pending is None:
+                            reservation = (requested_offset, end_offset, threading.Event())
+                            self._chunk_inflight.setdefault(file_id, []).append(reservation)
+                if reservation is None:
+                    pending.wait(timeout=120)
+
+            # Claimed ranges are disjoint, so the slow SMB write runs outside the
+            # per-file lock and parallel chunk workers still overlap.
+            fd = os.open(spool_path, os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o666)
+            try:
+                os.lseek(fd, requested_offset, os.SEEK_SET)
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(fd, view):]
+                try:
+                    os.fsync(fd)
+                except OSError:
+                    pass
+            finally:
+                os.close(fd)
+
+            with self._upload_lock(file_id), app_session(database_url) as session:
+                row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
+                ranges = self._spool_ranges(spool_path)
+                if _spool_range_covered(ranges, requested_offset, end_offset):
+                    with spool_path.open("rb") as source:
+                        source.seek(requested_offset)
+                        if source.read(len(chunk)) != chunk:
+                            raise MyFilesValidationError("Upload chunk retry does not match stored data")
+                    return self._upload_session_response(row, spool_path)
+                if _spool_range_overlaps(ranges, requested_offset, end_offset):
+                    raise MyFilesValidationError("Upload chunk overlaps partially stored data")
+                merged = _merge_spool_range(ranges, requested_offset, end_offset)
+                _store_spool_ranges(parts_path, merged)
+                row.updated_at = _utc_now()
+                return self._upload_session_response(row, spool_path, ranges=merged)
+        finally:
+            if reservation is not None:
+                with self._chunk_inflight_lock:
+                    claimed = self._chunk_inflight.get(file_id, [])
+                    if reservation in claimed:
+                        claimed.remove(reservation)
+                    if not claimed:
+                        self._chunk_inflight.pop(file_id, None)
+                reservation[2].set()
+
+    def complete_upload(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        actual_size_bytes: int,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        size = int(actual_size_bytes or 0)
+        with self._upload_lock(file_id), app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or not self._upload_belongs_to(row, user_id) or row.deleted_at is not None:
+                raise MyFilesNotFoundError("File not found")
+            if row.status != STATUS_UPLOADING:
+                raise MyFilesValidationError("Upload reservation is not active")
+            if size != int(row.original_size_bytes or 0):
+                raise MyFilesValidationError("Uploaded file size does not match reservation")
+            spool_path = Path(_normalize_text(row.spool_path))
+            if not spool_path.exists() or not spool_path.is_file() or spool_path.stat().st_size != size:
+                raise MyFilesValidationError("Uploaded file is incomplete")
+            if self._spool_parts_path(spool_path).is_file() and _spool_covered_prefix(self._spool_ranges(spool_path)) < size:
+                raise MyFilesValidationError("Uploaded file is incomplete")
+            row.status = STATUS_QUEUED
+            row.updated_at = _utc_now()
+            self._write_audit(session, action="upload_completed", row=row, actor=actor, meta=meta)
+            return self._response(row, session=session)
+
+    def abort_upload(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        error_text: str = "Upload interrupted",
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> None:
+        database_url = self._database_url_or_raise()
+        spool_path: Path | None = None
+        with self._upload_lock(file_id):
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, _normalize_text(file_id))
+                if row is None or not self._upload_belongs_to(row, user_id) or row.deleted_at is not None:
+                    return
+                if _normalize_text(row.spool_path):
+                    spool_path = Path(_normalize_text(row.spool_path))
+                row.status = STATUS_FAILED
+                row.error_text = _normalize_text(error_text)[:2000] or "Upload interrupted"
+                row.spool_path = ""
+                row.updated_at = _utc_now()
+                self._write_audit(session, action="upload_aborted", row=row, actor=actor, meta=meta)
+            # Delete the payload only after the row stopped pointing at it and
+            # while holding the same lock appends use, so a late chunk cannot
+            # resurrect a half-deleted spool file.
+            if spool_path is not None:
+                self._delete_spool_payload(spool_path)
+
+    def create_pending_upload(
+        self,
+        *,
+        actor: Any,
+        original_file_name: str,
+        mime_type: str | None,
+        spool_path: Path,
+        original_size_bytes: int,
+        retention_days: int,
+        folder_id: str | None = None,
+        library_id: str | None = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        reserved = self.reserve_upload(
+            actor=actor,
+            original_file_name=original_file_name,
+            mime_type=mime_type,
+            spool_path=spool_path,
+            expected_size_bytes=original_size_bytes,
+            retention_days=retention_days,
+            folder_id=folder_id,
+            library_id=library_id,
+            meta=meta,
+        )
+        try:
+            return self.complete_upload(
+                file_id=reserved["id"],
+                user_id=_actor_id(actor),
+                actual_size_bytes=original_size_bytes,
+                actor=actor,
+                meta=meta,
+            )
+        except Exception:
+            self.abort_upload(file_id=reserved["id"], user_id=_actor_id(actor))
+            raise
+
+    @staticmethod
+    def _folder_response(
+        row: AppMyFileFolder,
+        *,
+        collaborators_count: int = 0,
+        shared_with_me: bool = False,
+        my_role: str = "",
+        owner_username: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "id": _normalize_text(row.id),
+            "name": _normalize_text(row.name),
+            "parent_id": _normalize_text(row.parent_id) or None,
+            "is_shared": bool(_normalize_text(getattr(row, "share_token_hash", ""))) and not shared_with_me,
+            "is_favorite": bool(getattr(row, "is_favorite", False)) and not shared_with_me,
+            "collaborators_count": int(collaborators_count or 0),
+            "shared_with_me": bool(shared_with_me),
+            "my_role": _normalize_text(my_role),
+            "owner_username": _normalize_text(owner_username),
+            "created_at": _coerce_utc(row.created_at),
+            "updated_at": _coerce_utc(row.updated_at),
+        }
+
+    @staticmethod
+    def _folder_row_locked(session, *, owner_user_id: int, folder_id: str | None) -> AppMyFileFolder | None:
+        normalized = _normalize_text(folder_id)
+        if not normalized:
+            return None
+        row = session.get(AppMyFileFolder, normalized)
+        if row is None or row.owner_user_id != int(owner_user_id) or row.deleted_at is not None:
+            raise MyFilesNotFoundError("Folder not found")
+        return row
+
+    def _assert_folder_name_free_locked(
+        self,
+        session,
+        *,
+        owner_user_id: int,
+        parent_id: str | None,
+        name: str,
+        exclude_id: str | None = None,
+    ) -> None:
+        query = select(AppMyFileFolder.id, AppMyFileFolder.name).where(
+            AppMyFileFolder.owner_user_id == int(owner_user_id),
+            AppMyFileFolder.deleted_at.is_(None),
+        )
+        if parent_id:
+            query = query.where(AppMyFileFolder.parent_id == parent_id)
+        else:
+            query = query.where(AppMyFileFolder.parent_id.is_(None))
+        if exclude_id:
+            query = query.where(AppMyFileFolder.id != exclude_id)
+        target = name.casefold()
+        for _fid, sibling_name in session.execute(query).all():
+            if str(sibling_name or "").casefold() == target:
+                raise MyFilesValidationError("Folder with this name already exists")
+
+    def _folder_descendant_ids_locked(
+        self,
+        session,
+        *,
+        owner_user_id: int,
+        folder_id: str,
+        include_deleted: bool = False,
+    ) -> list[str]:
+        query = select(AppMyFileFolder.id, AppMyFileFolder.parent_id).where(
+            AppMyFileFolder.owner_user_id == int(owner_user_id),
+        )
+        if not include_deleted:
+            query = query.where(AppMyFileFolder.deleted_at.is_(None))
+        rows = session.execute(query).all()
+        children: dict[str | None, list[str]] = {}
+        for fid, pid in rows:
+            children.setdefault(pid, []).append(fid)
+        descendants: list[str] = []
+        stack = [folder_id]
+        while stack:
+            current = stack.pop()
+            for child in children.get(current, []):
+                descendants.append(child)
+                stack.append(child)
+        return descendants
+
+    def _read_owner_locked(
+        self,
+        session,
+        *,
+        user_id: int,
+        library_id: str | None = None,
+        folder_id: str | None = None,
+        need: str = "view",
+    ) -> int:
+        """Owner namespace to read: the user's own, or a library the user has at least ``need`` in.
+
+        A folder id wins over the library id, so item routes need nothing but the id.
+        """
+        normalized_folder = _normalize_text(folder_id)
+        normalized_library = _normalize_text(library_id)
+        owner = int(user_id)
+        if normalized_folder:
+            folder = session.get(AppMyFileFolder, normalized_folder)
+            if folder is not None and int(folder.owner_user_id) < 0:
+                owner = int(folder.owner_user_id)
+        elif normalized_library:
+            library = session.get(AppMyFileLibrary, normalized_library) if self._libraries_present(session) else None
+            if library is None or library.deleted_at is not None:
+                raise MyFilesNotFoundError("Library not found")
+            owner = int(library.owner_user_id)
+        if owner < 0 and not self.may_act_locked(session, user_id, owner, need):
+            raise MyFilesNotFoundError("Library not found")
+        return owner
+
+    def list_folders(self, *, user_id: int, library_id: str | None = None) -> list[dict[str, Any]]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            owner = self._read_owner_locked(session, user_id=user_id, library_id=library_id)
+            rows = session.scalars(
+                select(AppMyFileFolder)
+                .where(
+                    AppMyFileFolder.owner_user_id == owner,
+                    AppMyFileFolder.deleted_at.is_(None),
+                )
+                .order_by(AppMyFileFolder.name.asc())
+            ).all()
+            return [self._folder_response(row) for row in rows]
+
+    def _folder_map_locked(self, session, *, owner_user_id: int) -> dict[str, AppMyFileFolder]:
+        rows = session.scalars(
+            select(AppMyFileFolder).where(
+                AppMyFileFolder.owner_user_id == int(owner_user_id),
+                AppMyFileFolder.deleted_at.is_(None),
+            )
+        ).all()
+        return {row.id: row for row in rows}
+
+    def folder_breadcrumbs(self, *, user_id: int, folder_id: str | None) -> list[dict[str, Any]]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            chain: list[dict[str, Any]] = []
+            owner = self._read_owner_locked(session, user_id=user_id, folder_id=folder_id)
+            current = self._folder_row_locked(session, owner_user_id=owner, folder_id=folder_id)
+            if current is None:
+                return chain
+            ancestors = self._folder_map_locked(session, owner_user_id=owner)
+            seen: set[str] = set()
+            while current is not None and current.id not in seen:
+                seen.add(current.id)
+                chain.append(self._folder_response(current))
+                current = ancestors.get(current.parent_id)
+            chain.reverse()
+            return chain
+
+    def create_folder(
+        self,
+        *,
+        actor: Any,
+        name: str,
+        parent_id: str | None = None,
+        meta: MyFilesRequestMeta | None = None,
+        library_id: str | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        if actor_id <= 0:
+            raise MyFilesValidationError("Authenticated user is required")
+        safe_name = _normalize_text(name)[:255]
+        if not safe_name:
+            raise MyFilesValidationError("Folder name is required")
+        if any(ch in safe_name for ch in '<>:"/\\|?*') or safe_name in {".", ".."}:
+            raise MyFilesValidationError("Folder name contains invalid characters")
+        with app_session(database_url) as session:
+            owner_user_id = self._upload_owner_locked(
+                session, actor_id=actor_id, folder_id=parent_id, library_id=library_id
+            )
+            parent =self._folder_row_locked(session, owner_user_id=owner_user_id, folder_id=parent_id)
+            self._assert_folder_name_free_locked(
+                session,
+                owner_user_id=owner_user_id,
+                parent_id=parent.id if parent else None,
+                name=safe_name,
+            )
+            now = _utc_now()
+            row = AppMyFileFolder(
+                id=uuid.uuid4().hex,
+                owner_user_id=owner_user_id,
+                parent_id=parent.id if parent else None,
+                name=safe_name,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            session.flush()
+            self._write_audit(session, action="folder_created", row=None, actor=actor, meta=meta)
+            return self._folder_response(row)
+
+    def update_folder(
+        self,
+        *,
+        actor: Any,
+        folder_id: str,
+        name: Any = _UNSET,
+        parent_id: Any = _UNSET,
+        is_favorite: Any = _UNSET,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        with app_session(database_url) as session:
+            row = session.get(AppMyFileFolder, _normalize_text(folder_id))
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id):
+                raise MyFilesNotFoundError("Folder not found")
+            owner_user_id = int(row.owner_user_id)
+
+            new_parent_id = row.parent_id
+            if parent_id is not _UNSET:
+                new_parent_id = _normalize_text(parent_id) or None
+                if new_parent_id == row.id:
+                    raise MyFilesValidationError("Folder cannot be moved into itself")
+                parent = self._folder_row_locked(session, owner_user_id=owner_user_id, folder_id=new_parent_id)
+                if parent is not None and parent.id in self._folder_descendant_ids_locked(
+                    session, owner_user_id=owner_user_id, folder_id=row.id
+                ):
+                    raise MyFilesValidationError("Folder cannot be moved into its own subfolder")
+                row.parent_id = new_parent_id
+
+            if name is not _UNSET:
+                safe_name = _normalize_text(name)[:255]
+                if not safe_name:
+                    raise MyFilesValidationError("Folder name is required")
+                if any(ch in safe_name for ch in '<>:"/\\|?*') or safe_name in {".", ".."}:
+                    raise MyFilesValidationError("Folder name contains invalid characters")
+                self._assert_folder_name_free_locked(
+                    session,
+                    owner_user_id=owner_user_id,
+                    parent_id=new_parent_id,
+                    name=safe_name,
+                    exclude_id=row.id,
+                )
+                row.name = safe_name
+            elif parent_id is not _UNSET:
+                self._assert_folder_name_free_locked(
+                    session,
+                    owner_user_id=owner_user_id,
+                    parent_id=new_parent_id,
+                    name=row.name,
+                    exclude_id=row.id,
+                )
+            if is_favorite is not _UNSET:
+                if owner_user_id < 0:
+                    raise MyFilesValidationError("Favourites are not supported in shared libraries")
+                row.is_favorite = bool(is_favorite)
+
+            row.updated_at = _utc_now()
+            self._write_audit(session, action="folder_updated", row=None, actor=actor, meta=meta)
+            return self._folder_response(row)
+
+    def delete_folder(
+        self,
+        *,
+        actor: Any,
+        folder_id: str,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> int:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        spool_paths: list[Path] = []
+        with app_session(database_url) as session:
+            row = session.get(AppMyFileFolder, _normalize_text(folder_id))
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id):
+                raise MyFilesNotFoundError("Folder not found")
+            owner_user_id = int(row.owner_user_id)
+            folder_ids = [row.id, *self._folder_descendant_ids_locked(session, owner_user_id=owner_user_id, folder_id=row.id)]
+            now = _utc_now()
+
+            files = session.scalars(
+                select(AppMyFile).where(
+                    AppMyFile.owner_user_id == owner_user_id,
+                    AppMyFile.folder_id.in_(folder_ids),
+                    AppMyFile.deleted_at.is_(None),
+                )
+            ).all()
+            for file_row in files:
+                if _normalize_text(file_row.spool_path):
+                    spool_paths.append(Path(_normalize_text(file_row.spool_path)))
+                # Папка удаляется в корзину вместе с содержимым: блобы
+                # сохраняются до окончательной очистки по expires_at.
+                file_row.deleted_at = now
+                file_row.updated_at = now
+                file_row.spool_path = ""
+                self._clear_share(file_row)
+            if files:
+                session.execute(
+                    delete(AppMyFileDownloadGrant).where(
+                        AppMyFileDownloadGrant.file_id.in_([f.id for f in files])
+                    )
+                )
+
+            for folder_row in session.scalars(
+                select(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_ids))
+            ).all():
+                self._clear_share(folder_row)
+                folder_row.deleted_at = now
+                folder_row.updated_at = now
+
+            self._write_audit(session, action="folder_deleted", row=None, actor=actor, meta=meta)
+            deleted_count = len(files)
+
+        for path in spool_paths:
+            self._delete_spool_payload(path)
+        return deleted_count
+
+    def restore_folder(
+        self,
+        *,
+        actor: Any,
+        folder_id: str,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> int:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        with app_session(database_url) as session:
+            row = session.get(AppMyFileFolder, _normalize_text(folder_id))
+            if (
+                row is None
+                or row.deleted_at is None
+                or not self.may_act_locked(session, actor_id, row.owner_user_id, "manage")
+            ):
+                raise MyFilesNotFoundError("Folder not found")
+            owner_user_id = int(row.owner_user_id)
+            if row.parent_id:
+                parent = session.get(AppMyFileFolder, row.parent_id)
+                if parent is None or parent.deleted_at is not None:
+                    row.parent_id = None
+            folder_ids = [
+                row.id,
+                *self._folder_descendant_ids_locked(
+                    session, owner_user_id=owner_user_id, folder_id=row.id, include_deleted=True,
+                ),
+            ]
+            now = _utc_now()
+            files = session.scalars(
+                select(AppMyFile).where(
+                    AppMyFile.owner_user_id == owner_user_id,
+                    AppMyFile.folder_id.in_(folder_ids),
+                    AppMyFile.deleted_at.is_not(None),
+                    AppMyFile.status != STATUS_DELETED,
+                )
+            ).all()
+            for file_row in files:
+                file_row.deleted_at = None
+                file_row.updated_at = now
+            for folder_row in session.scalars(
+                select(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_ids))
+            ).all():
+                folder_row.deleted_at = None
+                folder_row.updated_at = now
+            self._write_audit(session, action="folder_restored", row=None, actor=actor, meta=meta)
+            return len(files)
+
+    def purge_folder(
+        self,
+        *,
+        actor: Any,
+        folder_id: str,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> int:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        spool_paths: list[Path] = []
+        blob_paths: list[Path] = []
+        with app_session(database_url) as session:
+            row = session.get(AppMyFileFolder, _normalize_text(folder_id))
+            if (
+                row is None
+                or row.deleted_at is None
+                or not self.may_act_locked(session, actor_id, row.owner_user_id, "manage")
+            ):
+                raise MyFilesNotFoundError("Folder not found")
+            owner_user_id = int(row.owner_user_id)
+            folder_ids = [
+                row.id,
+                *self._folder_descendant_ids_locked(
+                    session, owner_user_id=owner_user_id, folder_id=row.id, include_deleted=True,
+                ),
+            ]
+            now = _utc_now()
+            files = session.scalars(
+                select(AppMyFile).where(
+                    AppMyFile.owner_user_id == owner_user_id,
+                    AppMyFile.folder_id.in_(folder_ids),
+                    AppMyFile.deleted_at.is_not(None),
+                    AppMyFile.status != STATUS_DELETED,
+                )
+            ).all()
+            for file_row in files:
+                if _normalize_text(file_row.spool_path):
+                    spool_paths.append(Path(_normalize_text(file_row.spool_path)))
+                if file_row.status == STATUS_READY:
+                    self._release_blob_locked(session, file_row.blob_id, blob_paths)
+                self._release_file_collab_locked(session, file_row.id, blob_paths)
+                file_row.status = STATUS_DELETED
+                file_row.folder_id = None
+                file_row.updated_at = now
+                file_row.spool_path = ""
+                self._clear_share(file_row)
+            if files:
+                session.execute(
+                    delete(AppMyFileDownloadGrant).where(
+                        AppMyFileDownloadGrant.file_id.in_([f.id for f in files])
+                    )
+                )
+            self._release_folder_shares_locked(session, folder_ids)
+            session.execute(delete(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_ids)))
+            self._write_audit(session, action="folder_purged", row=None, actor=actor, meta=meta)
+            purged_count = len(files)
+
+        self._delete_physical_files(blob_paths)
+        for path in spool_paths:
+            self._delete_spool_payload(path)
+        return purged_count
+
+    def list_trash(self, *, user_id: int, library_id: str | None = None) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        with app_session(database_url) as session:
+            # A library's trash is for its managers: restoring and purging need that role too.
+            owner = self._read_owner_locked(session, user_id=user_id, library_id=library_id, need="manage")
+            trashed_folders = session.scalars(
+                select(AppMyFileFolder)
+                .where(
+                    AppMyFileFolder.owner_user_id == owner,
+                    AppMyFileFolder.deleted_at.is_not(None),
+                )
+                .order_by(AppMyFileFolder.deleted_at.desc())
+            ).all()
+            trashed_folder_ids = {folder.id for folder in trashed_folders}
+            visible_folders = [
+                folder for folder in trashed_folders if folder.parent_id not in trashed_folder_ids
+            ]
+            trashed_files = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.owner_user_id == owner,
+                    AppMyFile.deleted_at.is_not(None),
+                    AppMyFile.status != STATUS_DELETED,
+                    AppMyFile.expires_at > now,
+                )
+                .order_by(AppMyFile.deleted_at.desc())
+            ).all()
+            visible_files = [
+                file_row for file_row in trashed_files if file_row.folder_id not in trashed_folder_ids
+            ]
+            return {
+                "folders": [self._folder_response(folder) for folder in visible_folders],
+                "items": [self._response(file_row) for file_row in visible_files],
+            }
+
+    def empty_trash(
+        self,
+        *,
+        actor: Any,
+        meta: MyFilesRequestMeta | None = None,
+        library_id: str | None = None,
+    ) -> int:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        with app_session(database_url) as session:
+            owner_user_id = self._read_owner_locked(session, user_id=actor_id, library_id=library_id, need="manage")
+        purged_files = 0
+        while True:
+            with app_session(database_url) as session:
+                file_row = session.scalars(
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.owner_user_id == owner_user_id,
+                        AppMyFile.deleted_at.is_not(None),
+                        AppMyFile.status != STATUS_DELETED,
+                    )
+                    .limit(1)
+                ).first()
+                if file_row is None:
+                    break
+                file_id = file_row.id
+            self.purge_file(file_id=file_id, user_id=actor_id, actor=actor, meta=meta)
+            purged_files += 1
+            if purged_files >= 500:
+                break
+        with app_session(database_url) as session:
+            folder_rows = session.scalars(
+                select(AppMyFileFolder.id).where(
+                    AppMyFileFolder.owner_user_id == owner_user_id,
+                    AppMyFileFolder.deleted_at.is_not(None),
+                )
+            ).all()
+            if folder_rows:
+                self._release_folder_shares_locked(session, folder_rows)
+                session.execute(delete(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_rows)))
+                self._write_audit(session, action="trash_emptied", row=None, actor=actor, meta=meta)
+        return purged_files
+
+    def update_file(
+        self,
+        *,
+        actor: Any,
+        file_id: str,
+        name: Any = _UNSET,
+        folder_id: Any = _UNSET,
+        is_favorite: Any = _UNSET,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id):
+                raise MyFilesNotFoundError("File not found")
+            owner_user_id = int(row.owner_user_id)
+            changed = False
+            if folder_id is not _UNSET:
+                target = _normalize_text(folder_id) or None
+                self._folder_row_locked(session, owner_user_id=owner_user_id, folder_id=target)
+                row.folder_id = target
+                changed = True
+            if name is not _UNSET:
+                safe_name = _safe_file_name(name)
+                if not safe_name:
+                    raise MyFilesValidationError("File name is required")
+                row.original_file_name = safe_name
+                row.download_file_name = safe_name
+                changed = True
+            if is_favorite is not _UNSET:
+                if owner_user_id < 0:
+                    raise MyFilesValidationError("Favourites are not supported in shared libraries")
+                row.is_favorite = bool(is_favorite)
+                changed = True
+            if changed:
+                row.updated_at = _utc_now()
+                self._write_audit(session, action="file_updated", row=row, actor=actor, meta=meta)
+            return self._response(row, session=session)
+
+    def list_files(
+        self,
+        *,
+        user_id: int,
+        folder_id: str | None = None,
+        view: str = "",
+        query: str = "",
+        library_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_view = _normalize_text(view).lower()
+        if normalized_view != "library" and not _normalize_text(library_id):
+            result = self._list_files_impl(user_id=user_id, folder_id=folder_id, view=view, query=query)
+            if normalized_view != "shared" and (normalized_view == "recent" or _normalize_text(query)):
+                self._merge_library_results(result, user_id=user_id, view=normalized_view, query=query)
+            return result
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            owner = self._read_owner_locked(session, user_id=user_id, library_id=library_id, folder_id=folder_id)
+            library = self._library_by_owner_locked(session, owner)
+            if library is None:
+                raise MyFilesNotFoundError("Library not found")
+            role = self.library_role_locked(session, library, user_id)
+            library_info = {"id": library.id, "name": _normalize_text(library.name), "my_role": role}
+        result = self._list_files_impl(user_id=owner, folder_id=folder_id, view="", query=query, viewer_user_id=user_id)
+        for entry in [*result.get("items", []), *result.get("folders", []), *result.get("breadcrumbs", [])]:
+            entry["my_role"] = role
+        if result.get("folder"):
+            result["folder"]["my_role"] = role
+        result["library"] = library_info
+        return result
+
+    def _merge_library_results(self, result: dict[str, Any], *, user_id: int, view: str, query: str) -> None:
+        """Add what the user may see in shared libraries to a cross-folder listing (recent files, search).
+
+        Every row names its library and carries the user's role there, so the page can gate actions per row
+        and open the right library. Favourites are left out: that flag lives on the row, not per person.
+        """
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            if not self._libraries_present(session):
+                return
+            libraries = []
+            for library in session.scalars(
+                select(AppMyFileLibrary).where(AppMyFileLibrary.deleted_at.is_(None))
+            ).all():
+                role = self.library_role_locked(session, library, user_id)
+                if role:
+                    libraries.append((library.id, _normalize_text(library.name), int(library.owner_user_id), role))
+        if not libraries:
+            return
+        recent = view == "recent"
+        items = list(result.get("items", []))
+        folders = list(result.get("folders", []))
+        for library_id, library_name, owner_user_id, role in libraries:
+            part = self._list_files_impl(user_id=owner_user_id, view="recent" if recent else "", query=query, viewer_user_id=user_id)
+            for entry in [*part.get("items", []), *part.get("folders", [])]:
+                entry["library_id"] = library_id
+                entry["library_name"] = library_name
+                entry["my_role"] = role
+            items.extend(part.get("items", []))
+            folders.extend(part.get("folders", []))
+        stamp = lambda entry: str(entry.get("updated_at") or "")  # noqa: E731
+        items.sort(key=stamp, reverse=True)
+        limit = 50 if recent else 500
+        result["items"] = items[:limit]
+        result["folders"] = folders
+
+    def _list_files_impl(
+        self,
+        *,
+        user_id: int,
+        folder_id: str | None = None,
+        view: str = "",
+        query: str = "",
+        viewer_user_id: int | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        normalized_view = _normalize_text(view).lower()
+        normalized_query = _normalize_text(query)
+        with app_session(database_url) as session:
+            if normalized_view == "shared" and not normalized_query:
+                return self._list_shared_with_me_locked(session, int(user_id), now, folder_id)
+            if normalized_query:
+                # Global search across every folder — the client-side filter can
+                # only see the currently loaded folder, which makes deep trees
+                # unsearchable without a server query.
+                pattern = f"%{normalized_query.lower()}%"
+                file_query = (
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.owner_user_id == int(user_id),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.expires_at > now,
+                        or_(
+                            func.lower(AppMyFile.original_file_name).like(pattern),
+                            func.lower(AppMyFile.download_file_name).like(pattern),
+                        ),
+                    )
+                    .order_by(AppMyFile.updated_at.desc())
+                    .limit(500)
+                )
+                flat_folders = session.scalars(
+                    select(AppMyFileFolder)
+                    .where(
+                        AppMyFileFolder.owner_user_id == int(user_id),
+                        AppMyFileFolder.deleted_at.is_(None),
+                        func.lower(AppMyFileFolder.name).like(pattern),
+                    )
+                    .order_by(AppMyFileFolder.name.asc())
+                ).all()
+                all_folders = self._folder_map_locked(session, owner_user_id=user_id)
+                rows = session.scalars(file_query).all()
+                collab_counts = self._collab_counts_locked(session, [row.id for row in rows])
+                blob_ids = [
+                    _normalize_text(row.blob_id)
+                    for row in rows
+                    if _normalize_text(row.blob_id)
+                ]
+                preview_map = {
+                    _normalize_text(preview_row.blob_id): preview_row
+                    for preview_row in session.scalars(
+                        select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
+                    ).all()
+                } if blob_ids else {}
+                return {
+                    "items": [
+                        self._response(
+                            row,
+                            session=session,
+                            preview=preview_map.get(_normalize_text(row.blob_id)),
+                            viewer_user_id=viewer_user_id or user_id,
+                            folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
+                            collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
+                        )
+                        for row in rows
+                    ],
+                    "folders": [self._folder_response(folder_row) for folder_row in flat_folders],
+                    "breadcrumbs": [],
+                    "folder": None,
+                }
+            if normalized_view in {"favorites", "recent"}:
+                file_query = select(AppMyFile).where(
+                    AppMyFile.owner_user_id == int(user_id),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.expires_at > now,
+                )
+                if normalized_view == "favorites":
+                    file_query = file_query.where(AppMyFile.is_favorite.is_(True)).order_by(AppMyFile.updated_at.desc())
+                    flat_folders = session.scalars(
+                        select(AppMyFileFolder)
+                        .where(
+                            AppMyFileFolder.owner_user_id == int(user_id),
+                            AppMyFileFolder.deleted_at.is_(None),
+                            AppMyFileFolder.is_favorite.is_(True),
+                        )
+                        .order_by(AppMyFileFolder.name.asc())
+                    ).all()
+                else:
+                    file_query = file_query.order_by(AppMyFile.updated_at.desc()).limit(50)
+                    flat_folders = []
+                all_folders = self._folder_map_locked(session, owner_user_id=user_id)
+                rows = session.scalars(file_query).all()
+                collab_counts = self._collab_counts_locked(session, [row.id for row in rows])
+                blob_ids = [
+                    _normalize_text(row.blob_id)
+                    for row in rows
+                    if _normalize_text(row.blob_id)
+                ]
+                preview_map = {
+                    _normalize_text(preview_row.blob_id): preview_row
+                    for preview_row in session.scalars(
+                        select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
+                    ).all()
+                } if blob_ids else {}
+                return {
+                    "items": [
+                        self._response(
+                            row,
+                            session=session,
+                            preview=preview_map.get(_normalize_text(row.blob_id)),
+                            viewer_user_id=viewer_user_id or user_id,
+                            folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
+                            collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
+                        )
+                        for row in rows
+                    ],
+                    "folders": [self._folder_response(folder_row) for folder_row in flat_folders],
+                    "breadcrumbs": [],
+                    "folder": None,
+                }
+
+            folder = self._folder_row_locked(session, owner_user_id=user_id, folder_id=folder_id)
+            rows = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.owner_user_id == int(user_id),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.expires_at > now,
+                    AppMyFile.folder_id.is_(None) if folder is None else AppMyFile.folder_id == folder.id,
+                )
+                .order_by(AppMyFile.created_at.desc())
+            ).all()
+            folders = session.scalars(
+                select(AppMyFileFolder)
+                .where(
+                    AppMyFileFolder.owner_user_id == int(user_id),
+                    AppMyFileFolder.deleted_at.is_(None),
+                    AppMyFileFolder.parent_id.is_(None) if folder is None else AppMyFileFolder.parent_id == folder.id,
+                )
+                .order_by(AppMyFileFolder.name.asc())
+            ).all()
+            all_folders = self._folder_map_locked(session, owner_user_id=user_id)
+            children_map: dict[str | None, list[str]] = {}
+            for folder_row in all_folders.values():
+                children_map.setdefault(folder_row.parent_id, []).append(folder_row.id)
+            breadcrumbs: list[dict[str, Any]] = []
+            if folder is not None:
+                current = folder
+                seen: set[str] = set()
+                while current is not None and current.id not in seen:
+                    seen.add(current.id)
+                    breadcrumbs.append(self._folder_response(current))
+                    current = all_folders.get(current.parent_id)
+                breadcrumbs.reverse()
+            counts_by_folder: dict[str | None, int] = {
+                folder_key: int(count)
+                for folder_key, count in session.execute(
+                    select(AppMyFile.folder_id, func.count(AppMyFile.id))
+                    .where(
+                        AppMyFile.owner_user_id == int(user_id),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.status != STATUS_DELETED,
+                        AppMyFile.expires_at > now,
+                    )
+                    .group_by(AppMyFile.folder_id)
+                ).all()
+            }
+
+            def subtree_file_count(root_id: str) -> int:
+                total = counts_by_folder.get(root_id, 0)
+                stack = [root_id]
+                while stack:
+                    current = stack.pop()
+                    for child_id in children_map.get(current, []):
+                        total += counts_by_folder.get(child_id, 0)
+                        stack.append(child_id)
+                return total
+
+            folder_grant_counts = self._folder_grant_counts_locked(session, [folder_row.id for folder_row in folders])
+            folder_payloads: list[dict[str, Any]] = []
+            for folder_row in folders:
+                payload = self._folder_response(
+                    folder_row, collaborators_count=folder_grant_counts.get(folder_row.id, 0)
+                )
+                payload["file_count"] = subtree_file_count(folder_row.id)
+                folder_payloads.append(payload)
+            blob_ids = [
+                _normalize_text(row.blob_id)
+                for row in rows
+                if _normalize_text(row.blob_id)
+            ]
+            preview_map = {
+                _normalize_text(preview_row.blob_id): preview_row
+                for preview_row in session.scalars(
+                    select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
+                ).all()
+            } if blob_ids else {}
+            inherited_users = (
+                frozenset(self.folder_grant_user_ids_locked(session, folder.id, user_id)) if folder is not None else frozenset()
+            )
+            collab_counts = self._collab_counts_locked(
+                session, [row.id for row in rows], inherited_user_ids=inherited_users
+            )
+            return {
+                "items": [
+                    self._response(
+                        row,
+                        session=session,
+                        preview=preview_map.get(_normalize_text(row.blob_id)),
+                        viewer_user_id=viewer_user_id or user_id,
+                        collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
+                    )
+                    for row in rows
+                ],
+                "folders": folder_payloads,
+                "breadcrumbs": breadcrumbs,
+                "folder": self._folder_response(folder) if folder else None,
+            }
+
+    def list_audit(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            rows = session.scalars(
+                select(AppMyFileAudit)
+                .order_by(AppMyFileAudit.created_at.desc(), AppMyFileAudit.id.desc())
+                .limit(max(1, min(500, int(limit or 100))))
+            ).all()
+            return [self._audit_response(row) for row in rows]
+
+    def list_file_audit(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if (row is None or (row.deleted_at is not None and not self.is_admin_locked(session, user_id))
+                    or not (self.may_manage_file_access_locked(session, row, user_id)
+                            or self.may_act_locked(session, user_id, row.owner_user_id, "manage"))):
+                raise MyFilesNotFoundError("File not found")
+            rows = session.scalars(
+                select(AppMyFileAudit)
+                .where(AppMyFileAudit.file_id == row.id)
+                .order_by(AppMyFileAudit.created_at.desc(), AppMyFileAudit.id.desc())
+                .limit(max(1, min(500, int(limit or 200))))
+            ).all()
+            download_ips = session.scalars(
+                select(AppMyFileAudit.ip_address).where(
+                    AppMyFileAudit.file_id == row.id,
+                    AppMyFileAudit.action.like("%download%"),
+                )
+            ).all()
+            return {
+                "items": [self._audit_response(item) for item in rows],
+                "download_count": len(download_ips),
+                "unique_download_ips": len({ip for ip in download_ips if ip}),
+            }
+
+    def admin_user_stats(self, *, limit: int = 200, offset: int = 0, query: str = "") -> dict[str, Any]:
+        """Per-user storage aggregates for the admin My Files panel."""
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        live_statuses = [STATUS_UPLOADING, STATUS_QUEUED, STATUS_SCANNING, STATUS_PROCESSING, STATUS_READY]
+        with app_session(database_url) as session:
+            file_agg = (
+                select(
+                    AppMyFile.owner_user_id.label("owner_user_id"),
+                    func.count(AppMyFile.id).label("files_count"),
+                    func.coalesce(func.sum(AppMyFile.original_size_bytes), 0).label("used_bytes"),
+                    func.coalesce(func.sum(case((AppMyFile.share_token_hash.is_not(None), 1), else_=0)), 0).label("shared_count"),
+                    func.coalesce(func.sum(case((AppMyFile.status == STATUS_UPLOADING, 1), else_=0)), 0).label("active_uploads"),
+                    func.max(AppMyFile.updated_at).label("last_activity_at"),
+                )
+                .where(
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.expires_at > now,
+                    AppMyFile.status.in_(live_statuses),
+                )
+                .group_by(AppMyFile.owner_user_id)
+                .subquery()
+            )
+            folder_agg = (
+                select(
+                    AppMyFileFolder.owner_user_id.label("owner_user_id"),
+                    func.count(AppMyFileFolder.id).label("folders_count"),
+                )
+                .where(AppMyFileFolder.deleted_at.is_(None))
+                .group_by(AppMyFileFolder.owner_user_id)
+                .subquery()
+            )
+            base = (
+                select(
+                    AppUser,
+                    file_agg.c.files_count,
+                    file_agg.c.used_bytes,
+                    file_agg.c.shared_count,
+                    file_agg.c.active_uploads,
+                    file_agg.c.last_activity_at,
+                    folder_agg.c.folders_count,
+                )
+                .join(file_agg, file_agg.c.owner_user_id == AppUser.id)
+                .outerjoin(folder_agg, folder_agg.c.owner_user_id == AppUser.id)
+            )
+            text_filter = _normalize_text(query).lower()
+            if text_filter:
+                pattern = f"%{text_filter}%"
+                base = base.where(or_(
+                    func.lower(AppUser.username).like(pattern),
+                    func.lower(func.coalesce(AppUser.full_name, "")).like(pattern),
+                ))
+            total = int(session.execute(select(func.count()).select_from(base.subquery())).scalar() or 0)
+            rows = session.execute(
+                base
+                .order_by(file_agg.c.used_bytes.desc(), AppUser.username.asc())
+                .offset(max(0, int(offset or 0)))
+                .limit(max(1, min(500, int(limit or 200))))
+            ).all()
+            items: list[dict[str, Any]] = []
+            for user_row, files_count, used_bytes, shared_count, active_uploads, last_activity_at, folders_count in rows:
+                override = int(getattr(user_row, "my_files_quota_bytes", 0) or 0)
+                items.append({
+                    "user_id": int(user_row.id),
+                    "username": _normalize_text(user_row.username),
+                    "full_name": _normalize_text(user_row.full_name) or None,
+                    "files_count": int(files_count or 0),
+                    "used_bytes": int(used_bytes or 0),
+                    "shared_count": int(shared_count or 0),
+                    "folders_count": int(folders_count or 0),
+                    "active_uploads": int(active_uploads or 0),
+                    "last_activity_at": _coerce_utc(last_activity_at),
+                    "quota_limit_bytes": override if override > 0 else USER_QUOTA_BYTES,
+                    "quota_is_custom": override > 0,
+                })
+            totals_row = session.execute(
+                select(
+                    func.coalesce(func.sum(file_agg.c.files_count), 0),
+                    func.coalesce(func.sum(file_agg.c.used_bytes), 0),
+                    func.coalesce(func.sum(file_agg.c.shared_count), 0),
+                    func.coalesce(func.sum(file_agg.c.active_uploads), 0),
+                ).select_from(file_agg)
+            ).one()
+            stored_bytes = int(session.execute(
+                select(func.coalesce(func.sum(AppMyFileBlob.stored_size_bytes), 0))
+            ).scalar() or 0)
+            processing_queue = int(session.execute(
+                select(func.count(AppMyFile.id)).where(
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status.in_([STATUS_QUEUED, STATUS_SCANNING, STATUS_PROCESSING]),
+                )
+            ).scalar() or 0)
+            # Real capacity of the storage volume (UNC share / local dir) —
+            # what an admin actually watches, unlike the blob-sum above.
+            storage_total_bytes = 0
+            storage_free_bytes = 0
+            try:
+                usage = shutil.disk_usage(self.storage_root)
+                storage_total_bytes = int(usage.total)
+                storage_free_bytes = int(usage.free)
+            except OSError:
+                pass
+            return {
+                "items": items,
+                "total": total,
+                "totals": {
+                    "files_count": int(totals_row[0] or 0),
+                    "used_bytes": int(totals_row[1] or 0),
+                    "shared_count": int(totals_row[2] or 0),
+                    "active_uploads": int(totals_row[3] or 0),
+                    "stored_bytes": stored_bytes,
+                    "storage_total_bytes": storage_total_bytes,
+                    "storage_free_bytes": storage_free_bytes,
+                    "processing_queue": processing_queue,
+                },
+            }
+
+    def _blob_relative_path(self, owner_user_id: int, original_sha256: str, extension: str) -> str:
+        return relative_blob_path(int(owner_user_id), original_sha256, extension)
+
+    def _blob_path(self, owner_user_id: int, original_sha256: str, extension: str) -> Path:
+        relative = self._blob_relative_path(owner_user_id, original_sha256, extension)
+        return resolve_under_root(self.storage_root, relative)
+
+    def _resolve_stored_path(self, storage_path: str) -> Path:
+        raw = _normalize_text(storage_path)
+        if not raw:
+            raise MyFilesNotFoundError("Blob storage path is empty")
+        path = Path(raw)
+        # Absolute / UNC legacy paths remain readable during migration.
+        if path.is_absolute() or raw.startswith("\\\\") or raw.startswith("//"):
+            return path
+        return resolve_under_root(self.storage_root, raw)
+
+    def _find_owner_blob(self, session, *, owner_user_id: int, original_sha256: str) -> AppMyFileBlob | None:
+        return session.execute(
+            select(AppMyFileBlob).where(
+                AppMyFileBlob.owner_user_id == int(owner_user_id),
+                AppMyFileBlob.original_sha256 == _normalize_text(original_sha256).lower(),
+            )
+        ).scalar_one_or_none()
+
+    def _try_image_optimization(self, source: Path, original_file_name: str, mime_type: str, source_size: int) -> StoredPayload | None:
+        if _extension(original_file_name) not in IMAGE_EXTENSIONS and not _normalize_text(mime_type).startswith("image/"):
+            return None
+        if _extension(original_file_name) == ".gif" or _normalize_text(mime_type) == "image/gif":
+            return None
+        try:
+            from PIL import Image, ImageOps
+        except Exception:
+            return None
+
+        candidate = source.with_name(f"{source.stem}.{uuid.uuid4().hex}.webp")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(source) as image:
+                    image = ImageOps.exif_transpose(image)
+                    resample = getattr(Image, "Resampling", Image).LANCZOS
+                    image.thumbnail((1920, 1920), resample)
+                    if image.mode not in {"RGB", "RGBA"}:
+                        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                    image.save(candidate, format="WEBP", quality=85, method=4)
+            if not candidate.exists() or candidate.stat().st_size <= 0 or candidate.stat().st_size >= source_size:
+                candidate.unlink(missing_ok=True)
+                return None
+            stored_sha256, stored_size = _sha256_file(candidate)
+            return StoredPayload(
+                path=candidate,
+                mode=STORAGE_OPTIMIZED_MEDIA,
+                stored_sha256=stored_sha256,
+                stored_size_bytes=stored_size,
+                output_mime_type="image/webp",
+                output_extension=".webp",
+            )
+        except Exception as exc:
+            logger.warning("Image optimization skipped for %s: %s", original_file_name, exc)
+            candidate.unlink(missing_ok=True)
+            return None
+
+    def _try_video_optimization(self, source: Path, original_file_name: str, mime_type: str, source_size: int) -> StoredPayload | None:
+        if _extension(original_file_name) not in VIDEO_EXTENSIONS and not _normalize_text(mime_type).startswith("video/"):
+            return None
+        candidate = source.with_name(f"{source.stem}.{uuid.uuid4().hex}.mp4")
+        try:
+            from backend.chat.video_compress import compress_video
+
+            result = compress_video(source, candidate)
+            if not result or not candidate.exists() or candidate.stat().st_size <= 0 or candidate.stat().st_size >= source_size:
+                candidate.unlink(missing_ok=True)
+                return None
+            stored_sha256, stored_size = _sha256_file(candidate)
+            return StoredPayload(
+                path=candidate,
+                mode=STORAGE_OPTIMIZED_MEDIA,
+                stored_sha256=stored_sha256,
+                stored_size_bytes=stored_size,
+                output_mime_type="video/mp4",
+                output_extension=".mp4",
+            )
+        except Exception as exc:
+            logger.warning("Video optimization skipped for %s: %s", original_file_name, exc)
+            candidate.unlink(missing_ok=True)
+            return None
+
+    def _try_zstd_compression(self, source: Path, source_size: int, mime_type: str, original_file_name: str) -> StoredPayload | None:
+        if _extension(original_file_name) in ZSTD_SKIP_EXTENSIONS:
+            return None
+        max_source_bytes = int(config.my_files_security.zstd_max_source_bytes or 0)
+        if max_source_bytes > 0 and source_size > max_source_bytes:
+            return None
+        candidate = source.with_name(f"{source.stem}.{uuid.uuid4().hex}.zst")
+        try:
+            import zstandard as zstd  # type: ignore
+        except Exception as exc:
+            logger.warning("zstandard is not available, storing original payload: %s", exc)
+            return None
+
+        try:
+            zstd_threads = max(1, int(config.my_files_security.zstd_threads))
+            zstd_level = max(1, min(22, int(config.my_files_security.zstd_level)))
+            try:
+                params = zstd.ZstdCompressionParameters.from_level(
+                    zstd_level,
+                    source_size=source_size,
+                    threads=zstd_threads,
+                    enable_ldm=True,
+                    window_log=27,
+                    write_checksum=True,
+                    write_content_size=True,
+                )
+                compressor = zstd.ZstdCompressor(compression_params=params)
+            except TypeError:
+                compressor = zstd.ZstdCompressor(
+                    level=zstd_level,
+                    threads=zstd_threads,
+                    write_checksum=True,
+                    write_content_size=True,
+                )
+            with source.open("rb") as src, candidate.open("wb") as dst:
+                compressor.copy_stream(src, dst)
+            if not candidate.exists() or candidate.stat().st_size <= 0 or candidate.stat().st_size >= source_size:
+                candidate.unlink(missing_ok=True)
+                return None
+            stored_sha256, stored_size = _sha256_file(candidate)
+            min_savings_percent = max(0, int(config.my_files_security.zstd_min_savings_percent or 0))
+            if (source_size - stored_size) * 100 < min_savings_percent * source_size:
+                candidate.unlink(missing_ok=True)
+                return None
+            return StoredPayload(
+                path=candidate,
+                mode=STORAGE_ZSTD,
+                stored_sha256=stored_sha256,
+                stored_size_bytes=stored_size,
+                output_mime_type=_normalize_text(mime_type) or "application/octet-stream",
+                output_extension=".zst",
+            )
+        except Exception:
+            candidate.unlink(missing_ok=True)
+            raise
+
+    def _build_stored_payload(self, source: Path, original_file_name: str, mime_type: str, original_sha256: str, source_size: int) -> StoredPayload:
+        media_payload = (
+            self._try_image_optimization(source, original_file_name, mime_type, source_size)
+            or self._try_video_optimization(source, original_file_name, mime_type, source_size)
+        )
+        if media_payload is not None:
+            return media_payload
+
+        zstd_payload = self._try_zstd_compression(source, source_size, mime_type, original_file_name)
+        if zstd_payload is not None:
+            return zstd_payload
+
+        return StoredPayload(
+            path=source,
+            mode=STORAGE_STORED,
+            stored_sha256=original_sha256,
+            stored_size_bytes=source_size,
+            output_mime_type=_normalize_text(mime_type) or "application/octet-stream",
+            output_extension=_extension(original_file_name),
+        )
+
+    def _finalize_blob_path(
+        self,
+        payload: StoredPayload,
+        *,
+        owner_user_id: int,
+        original_sha256: str,
+    ) -> tuple[Path, str]:
+        extension = ".zst" if payload.mode == STORAGE_ZSTD else payload.output_extension
+        relative = self._blob_relative_path(owner_user_id, original_sha256, extension)
+        target = resolve_under_root(self.storage_root, relative)
+        if storage_v2_enabled() or str(target).startswith("\\\\"):
+            try:
+                ensure_storage_ready(target)
+            except HubitStorageError as exc:
+                raise MyFilesCapacityError(str(exc)) from exc
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if payload.path.resolve() == target.resolve() and target.exists():
+            return target, relative
+        try:
+            publish_local_to_blob(
+                source=payload.path,
+                destination=target,
+                expected_sha256=payload.stored_sha256,
+                expected_size=int(payload.stored_size_bytes or 0) or None,
+            )
+        except HubitStorageError as exc:
+            raise MyFilesCapacityError(str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise MyFilesValidationError(f"Failed to publish blob to storage: {exc}") from exc
+        return target, relative
+
+    def _download_name(self, original_file_name: str, payload: StoredPayload) -> str:
+        if payload.mode == STORAGE_OPTIMIZED_MEDIA:
+            return _replace_extension(original_file_name, payload.output_extension)
+        return _safe_file_name(original_file_name)
+
+    def _preview_path(
+        self,
+        *,
+        blob_id: str,
+        file_name: str,
+        preview_kind: str,
+        media_type: str,
+        owner_user_id: int = 0,
+    ) -> Path:
+        self._ensure_dirs()
+        normalized_blob_id = _normalize_text(blob_id) or uuid.uuid4().hex
+        if preview_kind in {"pdf", "office_pdf"}:
+            suffix = ".pdf"
+            preview_name = f"preview{suffix}"
+        else:
+            suffix = _extension(file_name)
+            if not suffix:
+                guessed_extension = mimetypes.guess_extension(_normalize_text(media_type).lower())
+                suffix = guessed_extension or ".bin"
+            preview_name = f"preview{suffix}"
+        if self._previews_override is not None:
+            return self._previews_override / normalized_blob_id[:2] / normalized_blob_id / preview_name
+        relative = relative_preview_path(int(owner_user_id), normalized_blob_id, preview_name)
+        return resolve_under_root(self.storage_root, relative)
+
+    @staticmethod
+    def _preview_thumb_path(preview_path: Path) -> Path:
+        return preview_path.with_name("thumb.webp")
+
+    def _write_preview_thumb(self, preview_path: Path, image_bytes: bytes) -> None:
+        try:
+            from io import BytesIO
+            from PIL import Image, ImageOps
+        except Exception:
+            return
+        thumb_path = self._preview_thumb_path(preview_path)
+        tmp_path = thumb_path.with_name(f"{thumb_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(BytesIO(image_bytes)) as image:
+                    image = ImageOps.exif_transpose(image)
+                    resample = getattr(Image, "Resampling", Image).LANCZOS
+                    image.thumbnail((480, 480), resample)
+                    if image.mode not in {"RGB", "RGBA"}:
+                        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                    image.save(tmp_path, format="WEBP", quality=80, method=4)
+            tmp_path.replace(thumb_path)
+            tmp_path = None
+        except Exception as exc:
+            logger.warning("Preview thumbnail skipped for %s: %s", preview_path.name, exc)
+            thumb_path.unlink(missing_ok=True)
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _safe_pdf_page_count_from_bytes(pdf_bytes: bytes) -> int:
+        try:
+            from io import BytesIO
+            from pypdf import PdfReader
+
+            with PdfReader(BytesIO(pdf_bytes)) as reader:
+                return max(0, len(reader.pages))
+        except Exception:
+            return 0
+
+    def _delete_preview_artifact_locked(
+        self,
+        session,
+        blob_id: str | None,
+        pending_deletes: list[Path],
+    ) -> None:
+        # Физические файлы превью не удаляются здесь: пути копятся в pending_deletes
+        # и удаляются вызывающим только после успешного commit транзакции.
+        normalized = _normalize_text(blob_id)
+        if not normalized:
+            return
+        preview = session.get(AppMyFilePreview, normalized)
+        if preview is None:
+            return
+        raw_path = _normalize_text(preview.preview_path)
+        session.delete(preview)
+        if not raw_path:
+            return
+        path = Path(raw_path)
+        # Каталог идёт последним: _delete_physical_files удалит его, только если он пуст.
+        pending_deletes.extend([path, self._preview_thumb_path(path), path.parent])
+
+    def _preview_download_size_locked(self, row: AppMyFile) -> int:
+        if row.storage_mode == STORAGE_OPTIMIZED_MEDIA:
+            return int(row.stored_size_bytes or 0)
+        return int(row.original_size_bytes or 0)
+
+    def _queue_preview_for_row_locked(self, session, row: AppMyFile) -> bool:
+        blob_id = _normalize_text(row.blob_id)
+        if not blob_id or row.status != STATUS_READY or row.deleted_at is not None:
+            return False
+        if not self._security_scan_allows_access(row):
+            return False
+        if (_coerce_utc(row.expires_at) or _utc_now()) <= _utc_now():
+            return False
+        file_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin"
+        mime_type = _normalize_text(row.download_mime_type) or _normalize_text(row.mime_type) or "application/octet-stream"
+        preview_kind = self._classify_preview_kind(filename=file_name, mime_type=mime_type)
+        if preview_kind == "unsupported":
+            return False
+        preview = session.get(AppMyFilePreview, blob_id)
+        now = _utc_now()
+        download_size = self._preview_download_size_locked(row)
+        if download_size <= 0 or download_size > self._preview_max_bytes():
+            if preview is None:
+                session.add(
+                    AppMyFilePreview(
+                        blob_id=blob_id,
+                        status=PREVIEW_STATUS_ERROR,
+                        preview_kind=preview_kind,
+                        source_filename=file_name,
+                        content_type=mime_type,
+                        error_text="File is too large for preview" if download_size > 0 else "File is empty",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            elif preview.status != PREVIEW_STATUS_READY:
+                preview.status = PREVIEW_STATUS_ERROR
+                preview.preview_kind = preview_kind
+                preview.source_filename = file_name
+                preview.content_type = mime_type
+                preview.error_text = "File is too large for preview" if download_size > 0 else "File is empty"
+                preview.updated_at = now
+            return False
+        if preview is None:
+            session.add(
+                AppMyFilePreview(
+                    blob_id=blob_id,
+                    status=PREVIEW_STATUS_QUEUED,
+                    preview_kind=preview_kind,
+                    source_filename=file_name,
+                    content_type=mime_type,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            return True
+        if preview.status in {PREVIEW_STATUS_READY, PREVIEW_STATUS_PROCESSING}:
+            return False
+        if preview.status == PREVIEW_STATUS_ERROR:
+            return False
+        preview.status = PREVIEW_STATUS_QUEUED
+        preview.preview_kind = preview_kind
+        preview.source_filename = file_name
+        preview.content_type = mime_type
+        preview.error_text = ""
+        preview.updated_at = now
+        return True
+
+    def _record_security_scan(self, file_id: str, result: SecurityScanResult) -> None:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or row.deleted_at is not None:
+                return
+            row.security_scan_status = _normalize_text(result.status)[:32] or "error"
+            row.security_scan_engine = _normalize_text(result.engine)[:64]
+            row.security_scanned_at = _utc_now()
+            row.updated_at = _utc_now()
+            self._write_audit(
+                session,
+                action=f"security_scan_{_normalize_text(result.status).lower() or 'error'}",
+                row=row,
+            )
+
+    def _run_antivirus(self, path: Path, file_name: str, size_bytes: int | None = None) -> SecurityScanResult:
+        skipped = scan_policy_skip(file_name, path.stat().st_size if size_bytes is None else size_bytes)
+        if skipped is not None:
+            return skipped
+        return self._antivirus_scanner(path)
+
+    def _scan_spool_payload(self, file_id: str, spool_path: Path, file_name: str) -> SecurityScanResult:
+        try:
+            result = self._run_antivirus(spool_path, file_name)
+        except Exception as exc:
+            logger.error("Security scan failed for my-file %s: %s", file_id, exc)
+            result = SecurityScanResult(
+                status="error",
+                engine=_normalize_text(getattr(exc, "engine", "")) or "unknown",
+            )
+            self._record_security_scan(file_id, result)
+            if config.my_files_security.antivirus_fail_closed:
+                raise MyFilesValidationError("Security scan is temporarily unavailable") from exc
+            return result
+
+        self._record_security_scan(file_id, result)
+        if result.status == "blocked":
+            raise MyFilesValidationError("File blocked by security scan")
+        if result.status != "clean" and config.my_files_security.antivirus_fail_closed:
+            if not self._security_scan_is_size_limited(result.status, result.engine):
+                raise MyFilesValidationError("File did not pass security scan")
+        return result
+
+    @staticmethod
+    def _security_scan_is_size_limited(status: Any, engine: Any) -> bool:
+        return is_policy_skip(_normalize_text(status), _normalize_text(engine))
+
+    @classmethod
+    def _security_scan_allows_access(cls, row: AppMyFile) -> bool:
+        scan_status = _normalize_text(row.security_scan_status).lower()
+        if scan_status == "clean":
+            return True
+        if cls._security_scan_is_size_limited(row.security_scan_status, row.security_scan_engine):
+            return True
+        return not config.my_files_security.antivirus_fail_closed and scan_status in {"skipped", "error"}
+
+    def cleanup_stale_uploads(self, *, limit: int = 100) -> int:
+        if not self.configured:
+            return 0
+        database_url = self._database_url_or_raise()
+        cutoff = _utc_now() - timedelta(seconds=max(60, int(config.my_files_security.upload_reservation_ttl_sec)))
+        spool_paths: list[tuple[str, Path]] = []
+        count = 0
+        with app_session(database_url) as session:
+            rows = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.status == STATUS_UPLOADING,
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.updated_at <= cutoff,
+                )
+                .order_by(AppMyFile.updated_at.asc())
+                .limit(max(1, int(limit or 100)))
+                .with_for_update(skip_locked=True)
+            ).all()
+            for row in rows:
+                try:
+                    with session.begin_nested():
+                        # A concurrent chunk may have refreshed the reservation
+                        # while we waited for the row lock.
+                        session.refresh(row)
+                        refreshed_at = _coerce_utc(row.updated_at)
+                        if refreshed_at and refreshed_at > cutoff:
+                            continue
+                        if row.status != STATUS_UPLOADING or row.deleted_at is not None:
+                            continue
+                        if _normalize_text(row.spool_path):
+                            spool_paths.append((_normalize_text(row.id), Path(_normalize_text(row.spool_path))))
+                        row.status = STATUS_FAILED
+                        row.error_text = "Upload reservation expired"
+                        row.spool_path = ""
+                        row.updated_at = _utc_now()
+                        self._write_audit(session, action="upload_expired", row=row)
+                        count += 1
+                except Exception:
+                    logger.exception("Failed to expire my-file upload %s", row.id)
+        for file_id, path in spool_paths:
+            # Same lock append_upload_chunk takes, so a late chunk cannot write
+            # into a spool file we are about to delete.
+            with self._upload_lock(file_id):
+                self._delete_spool_payload(path)
+        return count
+
+    def recover_stale_processing(self, *, force: bool = False) -> int:
+        if not self.configured:
+            return 0
+        database_url = self._database_url_or_raise()
+        cutoff = _utc_now() - timedelta(seconds=max(300, int(config.my_files_security.processing_timeout_sec)))
+        with app_session(database_url) as session:
+            backfill_conditions = [
+                AppMyFile.status == STATUS_SCANNING,
+                AppMyFile.blob_id.is_not(None),
+                AppMyFile.spool_path == "",
+                AppMyFile.deleted_at.is_(None),
+            ]
+            processing_conditions = [
+                AppMyFile.status.in_([STATUS_SCANNING, STATUS_PROCESSING]),
+                AppMyFile.deleted_at.is_(None),
+            ]
+            if not force:
+                backfill_conditions.append(AppMyFile.updated_at <= cutoff)
+                processing_conditions.append(AppMyFile.updated_at <= cutoff)
+            recovered_backfills = session.execute(
+                update(AppMyFile)
+                .where(*backfill_conditions)
+                .values(
+                    status=STATUS_READY,
+                    error_text="Security scan was interrupted",
+                    updated_at=_utc_now(),
+                )
+            )
+            recovered_processing = session.execute(
+                update(AppMyFile)
+                .where(*processing_conditions)
+                .values(
+                    status=STATUS_QUEUED,
+                    error_text="",
+                    updated_at=_utc_now(),
+                )
+            )
+            return int(recovered_backfills.rowcount or 0) + int(recovered_processing.rowcount or 0)
+
+    def run_job_maintenance(self) -> None:
+        if not self.configured:
+            return
+        self.cleanup_expired(limit=100)
+        self.cleanup_stale_uploads(limit=100)
+        self.cleanup_orphan_tmp_files()
+        if not self._legacy_share_migration_disabled:
+            try:
+                self.migrate_legacy_share_tokens(limit=100)
+            except MyFilesConfigurationError as exc:
+                self._legacy_share_migration_disabled = True
+                logger.error("Legacy my-files share-token migration disabled: %s", exc)
+        self.recover_stale_processing()
+
+    def cleanup_orphan_tmp_files(self) -> dict[str, int]:
+        """Drop stale ``*.tmp`` / ``*.tmp-*`` artifacts left by crashed writers."""
+        totals = {"scanned": 0, "removed": 0, "errors": 0}
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_tmp_cleanup_at < 3600:
+            # Full-tree rglob on every worker cycle would hammer the storage
+            # volume; orphaned tmp files are harmless for an hour by design.
+            return totals
+        self._last_tmp_cleanup_at = now_monotonic
+        roots = [self.spool_root, self.storage_root]
+        if self.previews_root != self.storage_root:
+            roots.append(self.previews_root)
+        for root in roots:
+            try:
+                stats = cleanup_tmp_blob_files(root, max_age_sec=3600)
+            except OSError as exc:
+                logger.warning("Failed to scan tmp files under %s: %s", root, exc)
+                continue
+            for key in totals:
+                totals[key] += int(stats.get(key, 0))
+        totals["scanned"] += 1
+        try:
+            for orphan in self.spool_root.glob("*.zip"):
+                try:
+                    if time.time() - orphan.stat().st_mtime > 12 * 3600:
+                        orphan.unlink(missing_ok=True)
+                        totals["removed"] += 1
+                except OSError:
+                    totals["errors"] += 1
+        except OSError:
+            totals["errors"] += 1
+        return totals
+
+    def claim_next_job(self) -> str:
+        """Mark the oldest queued file as scanning; returns its id or ''."""
+        if not self.configured:
+            return ""
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        with self._reservation_lock:
+            with app_session(database_url) as session:
+                self._lock_reservation_locked(session, 0)
+                active_processing = self._count_statuses_locked(session, [STATUS_SCANNING, STATUS_PROCESSING])
+                if active_processing >= config.my_files_security.max_processing_global:
+                    return ""
+                row = session.scalars(
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.status == STATUS_QUEUED,
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.expires_at > now,
+                    )
+                    .order_by(AppMyFile.created_at.asc())
+                    .with_for_update(skip_locked=True)
+                ).first()
+                if row is None:
+                    return ""
+                row.status = STATUS_SCANNING
+                row.updated_at = now
+                return _normalize_text(row.id)
+
+    def process_next_job(self) -> bool:
+        if not self.configured:
+            return False
+        try:
+            self.run_job_maintenance()
+        except Exception:
+            logger.exception("My-files maintenance cycle failed")
+        file_id = self.claim_next_job()
+        if not file_id:
+            return False
+        self.process_file(file_id)
+        return True
+
+    def process_next_security_backfill(self) -> bool:
+        if not self.configured or not config.my_files_security.antivirus_fail_closed:
+            return False
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        retry_before = now - timedelta(minutes=5)
+        file_id = ""
+        with self._reservation_lock:
+            with app_session(database_url) as session:
+                self._lock_reservation_locked(session, 0)
+                active_processing = self._count_statuses_locked(session, [STATUS_SCANNING, STATUS_PROCESSING])
+                if active_processing >= config.my_files_security.max_processing_global:
+                    return False
+                row = session.scalars(
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.expires_at > now,
+                        AppMyFile.security_scan_status != "clean",
+                        ~(
+                            (AppMyFile.security_scan_status == "skipped")
+                            & AppMyFile.security_scan_engine.in_(sorted(POLICY_SKIP_ENGINES))
+                        ),
+                        (
+                            AppMyFile.security_scanned_at.is_(None)
+                            | (AppMyFile.security_scanned_at <= retry_before)
+                        ),
+                    )
+                    .order_by(AppMyFile.created_at.asc())
+                    .with_for_update(skip_locked=True)
+                ).first()
+                if row is None:
+                    return False
+                row.status = STATUS_SCANNING
+                row.security_scan_status = "scanning"
+                row.security_scanned_at = now
+                row.updated_at = now
+                file_id = row.id
+        self.process_security_backfill(file_id)
+        return True
+
+    def process_next_preview_job(self) -> bool:
+        if not self.configured:
+            return False
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        blob_id = ""
+        with app_session(database_url) as session:
+            preview = session.scalars(
+                select(AppMyFilePreview)
+                .where(AppMyFilePreview.status == PREVIEW_STATUS_QUEUED)
+                .order_by(AppMyFilePreview.updated_at.asc())
+                .with_for_update(skip_locked=True)
+            ).first()
+            if preview is None:
+                rows = session.scalars(
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.blob_id.is_not(None),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.expires_at > now,
+                    )
+                    .order_by(AppMyFile.created_at.asc())
+                    .limit(100)
+                ).all()
+                # Keep strong references so session.get inside the queue helper
+                # reuses these rows instead of issuing one SELECT per file.
+                blob_ids = {_normalize_text(row.blob_id) for row in rows}
+                previews_by_blob_id = {
+                    item.blob_id: item
+                    for item in session.scalars(
+                        select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(blob_ids))
+                    )
+                } if blob_ids else {}
+                for row in rows:
+                    existing = previews_by_blob_id.get(_normalize_text(row.blob_id))
+                    if existing is not None and existing.status == PREVIEW_STATUS_QUEUED:
+                        # The claim query above skipped it because another worker holds
+                        # the row lock; rewriting it here would block on that lock and
+                        # pile up every worker thread on one row.
+                        continue
+                    if not self._queue_preview_for_row_locked(session, row):
+                        continue
+                    blob_id = _normalize_text(row.blob_id)
+                    queued = previews_by_blob_id.get(blob_id) or session.get(AppMyFilePreview, blob_id)
+                    if queued is not None and queued.status == PREVIEW_STATUS_QUEUED:
+                        preview = queued
+                        break
+            if preview is None:
+                return False
+            preview.status = PREVIEW_STATUS_PROCESSING
+            preview.error_text = ""
+            preview.updated_at = now
+            blob_id = _normalize_text(preview.blob_id)
+        if not blob_id:
+            return False
+        self.process_preview_blob(blob_id)
+        return True
+
+    def process_preview_blob(self, blob_id: str) -> bool:
+        from backend.services.mail_attachment_preview_service import (
+            MailAttachmentPreviewError,
+            build_office_preview_artifact,
+        )
+
+        normalized_blob_id = _normalize_text(blob_id)
+        if not normalized_blob_id:
+            return False
+        database_url = self._database_url_or_raise()
+        preview_path: Path | None = None
+        tmp_path: Path | None = None
+        owner_user_id = 0
+        try:
+            with app_session(database_url) as session:
+                preview = session.get(AppMyFilePreview, normalized_blob_id)
+                if preview is None:
+                    return False
+                row = session.scalars(
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.blob_id == normalized_blob_id,
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.expires_at > _utc_now(),
+                    )
+                    .order_by(AppMyFile.created_at.asc())
+                ).first()
+                if row is None or not self._security_scan_allows_access(row):
+                    preview.status = PREVIEW_STATUS_ERROR
+                    preview.error_text = "File is not available for preview"
+                    preview.updated_at = _utc_now()
+                    return False
+                payload = self._download_payload_for_row_locked(session, row)
+                owner_user_id = int(row.owner_user_id or 0)
+                preview_kind = self._classify_preview_kind(
+                    filename=payload.file_name,
+                    mime_type=payload.media_type,
+                )
+                if preview_kind == "unsupported":
+                    preview.status = PREVIEW_STATUS_ERROR
+                    preview.preview_kind = preview_kind
+                    preview.error_text = "Preview is not available for this file type"
+                    preview.updated_at = _utc_now()
+                    return False
+                if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+                    preview.status = PREVIEW_STATUS_ERROR
+                    preview.preview_kind = preview_kind
+                    preview.error_text = "File is too large for preview"
+                    preview.updated_at = _utc_now()
+                    return False
+
+            content = self._read_payload_bytes(payload)
+            source_kind = ""
+            page_count = 0
+            sheets: list[dict[str, Any]] = []
+            preview_bytes = content
+            preview_media_type = payload.media_type
+            preview_filename = payload.file_name
+
+            if preview_kind == "office_pdf":
+                artifact = build_office_preview_artifact(
+                    filename=payload.file_name,
+                    content_type=payload.media_type,
+                    content=content,
+                )
+                preview_bytes = artifact.pdf_bytes
+                preview_media_type = "application/pdf"
+                preview_filename = _replace_extension(payload.file_name, ".pdf")
+                source_kind = artifact.source_kind
+                page_count = int(artifact.page_count or 0)
+                sheets = list(artifact.sheets or [])
+            elif preview_kind == "pdf":
+                preview_media_type = "application/pdf"
+                page_count = self._safe_pdf_page_count_from_bytes(content)
+
+            preview_path = self._preview_path(
+                blob_id=normalized_blob_id,
+                file_name=preview_filename,
+                preview_kind=preview_kind,
+                media_type=preview_media_type,
+                owner_user_id=owner_user_id,
+            )
+            preview_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = preview_path.with_name(f"{preview_path.name}.{uuid.uuid4().hex}.tmp")
+            tmp_path.write_bytes(preview_bytes)
+            tmp_path.replace(preview_path)
+            tmp_path = None
+            if preview_kind == "image":
+                self._write_preview_thumb(preview_path, preview_bytes)
+
+            with app_session(database_url) as session:
+                preview = session.get(AppMyFilePreview, normalized_blob_id)
+                if preview is None:
+                    self._delete_physical_file(preview_path)
+                    return False
+                now = _utc_now()
+                preview.status = PREVIEW_STATUS_READY
+                preview.preview_kind = preview_kind
+                preview.source_kind = source_kind
+                preview.source_filename = payload.file_name
+                preview.content_type = payload.media_type
+                preview.preview_path = str(preview_path)
+                preview.preview_mime_type = preview_media_type
+                preview.preview_filename = preview_filename
+                preview.page_count = page_count
+                preview.sheets_json = json.dumps(sheets, ensure_ascii=False)
+                preview.error_text = ""
+                preview.updated_at = now
+                preview.generated_at = now
+            return True
+        except MailAttachmentPreviewError as exc:
+            error_text = PREVIEW_UNAVAILABLE_MESSAGE
+            logger.warning("My-files preview unavailable for blob %s: %s", normalized_blob_id, exc)
+        except Exception as exc:
+            error_text = PREVIEW_UNAVAILABLE_MESSAGE
+            logger.exception("Failed to render my-files preview for blob %s: %s", normalized_blob_id, exc)
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+        with app_session(database_url) as session:
+            preview = session.get(AppMyFilePreview, normalized_blob_id)
+            if preview is not None:
+                preview.status = PREVIEW_STATUS_ERROR
+                preview.error_text = error_text[:2000]
+                preview.preview_path = ""
+                preview.updated_at = _utc_now()
+        if preview_path is not None:
+            self._delete_physical_file(preview_path)
+        return False
+
+    def process_security_backfill(self, file_id: str) -> None:
+        database_url = self._database_url_or_raise()
+        temporary_path: Path | None = None
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or row.deleted_at is not None:
+                return
+            blob = session.get(AppMyFileBlob, _normalize_text(row.blob_id))
+            if blob is None:
+                row.status = STATUS_FAILED
+                row.error_text = "Stored payload is missing"
+                row.updated_at = _utc_now()
+                return
+            blob_path = self._resolve_stored_path(blob.storage_path)
+            blob_mode = _normalize_text(blob.storage_mode)
+            original_file_name = _normalize_text(row.original_file_name) or "file.bin"
+            original_size = int(row.original_size_bytes or 0)
+
+        try:
+            if not blob_path.exists() or not blob_path.is_file():
+                raise MyFilesValidationError("Stored payload is missing")
+            skipped = scan_policy_skip(original_file_name, original_size)
+            if skipped is not None:
+                self._record_security_scan(file_id, skipped)
+                with app_session(database_url) as session:
+                    row = session.get(AppMyFile, _normalize_text(file_id))
+                    if row is not None and row.deleted_at is None:
+                        row.status = STATUS_READY
+                        row.error_text = ""
+                        row.updated_at = _utc_now()
+                        self._queue_preview_for_row_locked(session, row)
+                return
+            scan_path = blob_path
+            if blob_mode == STORAGE_ZSTD:
+                temporary_path = self.new_spool_path(f"{original_file_name}.security-scan")
+                size = 0
+                with temporary_path.open("wb") as target:
+                    for chunk in self.iter_zstd_download(blob_path):
+                        size += len(chunk)
+                        if size > USER_QUOTA_MAX_BYTES:
+                            raise MyFilesValidationError("Stored payload exceeds scan limit")
+                        target.write(chunk)
+                scan_path = temporary_path
+            result = self._antivirus_scanner(scan_path)
+            self._record_security_scan(file_id, result)
+            if result.status == "blocked":
+                blob_paths: list[Path] = []
+                with app_session(database_url) as session:
+                    row = session.get(AppMyFile, _normalize_text(file_id))
+                    if row is None or row.deleted_at is not None:
+                        return
+                    self._release_blob_locked(session, row.blob_id, blob_paths)
+                    row.status = STATUS_FAILED
+                    row.error_text = "File blocked by security scan"
+                    self._clear_share(row)
+                    row.blob_id = None
+                    row.storage_mode = ""
+                    row.stored_size_bytes = 0
+                    row.updated_at = _utc_now()
+                    session.execute(delete(AppMyFileDownloadGrant).where(AppMyFileDownloadGrant.file_id == row.id))
+                self._delete_physical_files(blob_paths)
+                return
+            if result.status != "clean" and not is_policy_skip(result.status, result.engine):
+                raise MyFilesValidationError("File did not pass security scan")
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, _normalize_text(file_id))
+                if row is not None and row.deleted_at is None:
+                    row.status = STATUS_READY
+                    row.error_text = ""
+                    row.updated_at = _utc_now()
+                    self._queue_preview_for_row_locked(session, row)
+        except Exception as exc:
+            logger.error("Security backfill failed for my-file %s: %s", file_id, exc)
+            self._record_security_scan(
+                file_id,
+                SecurityScanResult(
+                    status="error",
+                    engine=_normalize_text(getattr(exc, "engine", "")) or "unknown",
+                ),
+            )
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, _normalize_text(file_id))
+                if row is not None and row.deleted_at is None:
+                    row.status = STATUS_READY
+                    row.error_text = "Security scan is temporarily unavailable"
+                    row.updated_at = _utc_now()
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    def process_file(self, file_id: str) -> dict[str, Any] | None:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or row.deleted_at is not None or row.status == STATUS_DELETED:
+                return None
+            if row.status == STATUS_READY:
+                return self._response(row, session=session)
+            spool_path = Path(_normalize_text(row.spool_path))
+            original_file_name = _normalize_text(row.original_file_name)
+            mime_type = _normalize_text(row.mime_type) or "application/octet-stream"
+            reserved_size = int(row.original_size_bytes or 0)
+            expires_at = _coerce_utc(row.expires_at)
+            if expires_at is not None and expires_at <= _utc_now():
+                return None
+            row.status = STATUS_SCANNING
+            row.updated_at = _utc_now()
+
+        try:
+            if not spool_path.exists() or not spool_path.is_file():
+                raise MyFilesValidationError("Upload payload is missing from spool")
+            if spool_path.stat().st_size != reserved_size:
+                raise MyFilesValidationError("Uploaded file size does not match reservation")
+            self._scan_spool_payload(file_id, spool_path, original_file_name)
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, _normalize_text(file_id))
+                if row is None or row.deleted_at is not None:
+                    return None
+                row.status = STATUS_PROCESSING
+                row.updated_at = _utc_now()
+
+            def _processing_heartbeat() -> None:
+                try:
+                    with app_session(database_url) as hb_session:
+                        hb_session.execute(
+                            update(AppMyFile)
+                            .where(
+                                AppMyFile.id == _normalize_text(file_id),
+                                AppMyFile.status == STATUS_PROCESSING,
+                            )
+                            .values(updated_at=_utc_now())
+                        )
+                except Exception:
+                    logger.debug("Processing heartbeat failed for %s", file_id)
+
+            original_sha256, actual_size = _sha256_file(spool_path, on_progress=_processing_heartbeat)
+            owner_user_id = 0
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, _normalize_text(file_id))
+                if row is None or row.deleted_at is not None:
+                    return None
+                owner_user_id = int(row.owner_user_id or 0)
+                blob = self._find_owner_blob(
+                    session,
+                    owner_user_id=owner_user_id,
+                    original_sha256=original_sha256,
+                )
+                if blob is not None:
+                    try:
+                        resolved = self._resolve_stored_path(blob.storage_path)
+                    except Exception:
+                        resolved = None
+                    if resolved is not None and resolved.exists():
+                        self._add_blob_reference_locked(session, blob)
+                        row.status = STATUS_READY
+                        row.original_sha256 = original_sha256
+                        row.blob_id = blob.id
+                        row.storage_mode = blob.storage_mode
+                        row.stored_size_bytes = int(blob.stored_size_bytes or 0)
+                        row.download_mime_type = _normalize_text(blob.output_mime_type) or row.mime_type
+                        row.download_file_name = (
+                            _replace_extension(row.original_file_name, blob.output_extension)
+                            if blob.storage_mode == STORAGE_OPTIMIZED_MEDIA
+                            else _safe_file_name(row.original_file_name)
+                        )
+                        row.spool_path = ""
+                        row.error_text = ""
+                        row.updated_at = _utc_now()
+                        self._queue_preview_for_row_locked(session, row)
+                        self._delete_spool_payload(spool_path)
+                        return self._response(row, session=session)
+
+            payload = self._build_stored_payload(spool_path, original_file_name, mime_type, original_sha256, actual_size)
+            final_path, relative_storage_path = self._finalize_blob_path(
+                payload,
+                owner_user_id=owner_user_id,
+                original_sha256=original_sha256,
+            )
+            final_payload = StoredPayload(
+                path=final_path,
+                mode=payload.mode,
+                stored_sha256=payload.stored_sha256,
+                stored_size_bytes=payload.stored_size_bytes,
+                output_mime_type=payload.output_mime_type,
+                output_extension=payload.output_extension,
+            )
+
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, _normalize_text(file_id))
+                if row is None or row.deleted_at is not None:
+                    self._delete_physical_file(final_path)
+                    return None
+                now = _utc_now()
+                existing_blob = self._find_owner_blob(
+                    session,
+                    owner_user_id=int(row.owner_user_id or 0),
+                    original_sha256=original_sha256,
+                )
+                if existing_blob is None:
+                    candidate = AppMyFileBlob(
+                        id=uuid.uuid4().hex,
+                        owner_user_id=int(row.owner_user_id or 0),
+                        original_sha256=original_sha256.lower(),
+                        storage_path=relative_storage_path,
+                        storage_mode=final_payload.mode,
+                        stored_sha256=final_payload.stored_sha256,
+                        original_size_bytes=actual_size,
+                        stored_size_bytes=final_payload.stored_size_bytes,
+                        output_mime_type=final_payload.output_mime_type,
+                        output_extension=final_payload.output_extension,
+                        ref_count=1,
+                        created_at=now,
+                        updated_at=now,
+                        last_used_at=now,
+                    )
+                    try:
+                        with session.begin_nested():
+                            session.add(candidate)
+                            session.flush()
+                        existing_blob = candidate
+                    except IntegrityError:
+                        existing_blob = self._find_owner_blob(
+                            session,
+                            owner_user_id=int(row.owner_user_id or 0),
+                            original_sha256=original_sha256,
+                        )
+                        if existing_blob is None:
+                            self._delete_physical_file(final_path)
+                            raise MyFilesValidationError(
+                                "Failed to persist blob after concurrent upload"
+                            )
+                        self._add_blob_reference_locked(session, existing_blob)
+                        self._discard_unregistered_candidate(final_path, existing_blob)
+                else:
+                    self._add_blob_reference_locked(session, existing_blob)
+                    self._discard_unregistered_candidate(final_path, existing_blob)
+                row.status = STATUS_READY
+                row.original_size_bytes = actual_size
+                row.original_sha256 = original_sha256
+                row.blob_id = existing_blob.id
+                row.storage_mode = existing_blob.storage_mode
+                row.stored_size_bytes = int(existing_blob.stored_size_bytes or 0)
+                row.download_mime_type = _normalize_text(existing_blob.output_mime_type) or row.mime_type
+                row.download_file_name = self._download_name(row.original_file_name, final_payload)
+                row.spool_path = ""
+                row.error_text = ""
+                row.updated_at = now
+                self._queue_preview_for_row_locked(session, row)
+                if payload.path != spool_path:
+                    self._delete_spool_payload(spool_path)
+                return self._response(row, session=session)
+        except Exception as exc:
+            logger.exception("Failed to process my-file upload %s", file_id)
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, _normalize_text(file_id))
+                if row is not None and row.deleted_at is None and row.status != STATUS_READY:
+                    row.status = STATUS_FAILED
+                    row.error_text = str(exc)[:2000]
+                    row.spool_path = ""
+                    row.updated_at = _utc_now()
+            self._delete_spool_payload(spool_path)
+            return None
+
+    @staticmethod
+    def _add_blob_reference_locked(session, blob: AppMyFileBlob) -> None:
+        """Atomic ``ref_count + 1`` in SQL: several files share one blob row (DFILE-03)."""
+        now = _utc_now()
+        session.execute(
+            update(AppMyFileBlob)
+            .where(AppMyFileBlob.id == blob.id)
+            .values(ref_count=AppMyFileBlob.ref_count + 1, last_used_at=now, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        session.expire(blob)
+
+    def _discard_unregistered_candidate(self, candidate_path: Path, existing_blob: AppMyFileBlob) -> None:
+        """Delete a private upload candidate, never the canonical file another blob row owns (DFILE-02).
+
+        The blob path is derived from owner/hash/extension, so the losing worker's candidate can be
+        the very file the winning blob already points at.
+        """
+        try:
+            registered = self._resolve_stored_path(existing_blob.storage_path)
+            if Path(registered) == Path(candidate_path) or (
+                registered.exists() and candidate_path.exists() and registered.samefile(candidate_path)
+            ):
+                return
+        except Exception:
+            # Unknown ownership: keeping a stray file is safe, deleting a shared blob is not.
+            return
+        self._delete_physical_file(candidate_path)
+
+    @staticmethod
+    def _delete_physical_file(path: Path) -> None:
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+        except OSError as exc:
+            logger.warning("Failed to delete my-files blob %s: %s", path, exc)
+
+    def _delete_physical_files(self, paths: list[Path]) -> None:
+        """Best-effort удаление файлов (и пустых каталогов) после commit транзакции."""
+        for path in paths:
+            try:
+                if path.is_dir():
+                    if not any(path.iterdir()):
+                        path.rmdir()
+                else:
+                    self._delete_physical_file(path)
+            except OSError as exc:
+                logger.warning("Failed to delete my-files path %s: %s", path, exc)
+
+    def _release_blob_locked(
+        self,
+        session,
+        blob_id: str | None,
+        pending_deletes: list[Path],
+    ) -> None:
+        # Физические файлы НЕ удаляются внутри транзакции: при rollback строка БД
+        # вернётся, а файл уже был бы потерян. Пути копятся в pending_deletes,
+        # вызывающий удаляет их через _delete_physical_files после успешного commit.
+        normalized = _normalize_text(blob_id)
+        if not normalized:
+            return
+        blob = session.get(AppMyFileBlob, normalized)
+        if blob is None:
+            return
+        # Atomic decrement (DFILE-03): the shared row is changed in SQL, not from a stale Python value.
+        decremented = session.execute(
+            update(AppMyFileBlob)
+            .where(AppMyFileBlob.id == normalized, AppMyFileBlob.ref_count > 1)
+            .values(ref_count=AppMyFileBlob.ref_count - 1, updated_at=_utc_now())
+            .execution_options(synchronize_session=False)
+        )
+        if int(decremented.rowcount or 0) == 1:
+            session.expire(blob)
+            return
+        path = self._resolve_stored_path(blob.storage_path)
+        self._delete_preview_artifact_locked(session, normalized, pending_deletes)
+        removed = session.execute(
+            delete(AppMyFileBlob)
+            .where(AppMyFileBlob.id == normalized, AppMyFileBlob.ref_count <= 1)
+            .execution_options(synchronize_session=False)
+        )
+        if int(removed.rowcount or 0) != 1:
+            # A reference was added after the decrement check: the blob is still in use.
+            session.execute(
+                update(AppMyFileBlob)
+                .where(AppMyFileBlob.id == normalized, AppMyFileBlob.ref_count > 1)
+                .values(ref_count=AppMyFileBlob.ref_count - 1, updated_at=_utc_now())
+                .execution_options(synchronize_session=False)
+            )
+            session.expire(blob)
+            return
+        session.expire(blob)
+        pending_deletes.append(path)
+
+    def delete_file(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> None:
+        database_url = self._database_url_or_raise()
+        spool_path: Path | None = None
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, user_id, row.owner_user_id):
+                raise MyFilesNotFoundError("File not found")
+            now = _utc_now()
+            spool_path = Path(_normalize_text(row.spool_path)) if _normalize_text(row.spool_path) else None
+            # Удаление отправляет файл в корзину: блоб и статус сохраняются
+            # до окончательной очистки по expires_at (cleanup_expired).
+            self._clear_share(row)
+            session.execute(delete(AppMyFileDownloadGrant).where(AppMyFileDownloadGrant.file_id == row.id))
+            row.deleted_at = now
+            row.updated_at = now
+            row.spool_path = ""
+            self._write_audit(session, action="trashed", row=row, actor=actor, meta=meta)
+        if spool_path is not None:
+            self._delete_spool_payload(spool_path)
+
+    def restore_file(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> None:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if (
+                row is None
+                or row.deleted_at is None
+                or row.status == STATUS_DELETED
+                or not self.may_act_locked(session, user_id, row.owner_user_id, "manage")
+            ):
+                raise MyFilesNotFoundError("File not found")
+            if row.folder_id:
+                parent = session.get(AppMyFileFolder, row.folder_id)
+                if parent is None or parent.deleted_at is not None:
+                    row.folder_id = None
+            row.deleted_at = None
+            row.updated_at = _utc_now()
+            self._write_audit(session, action="restored", row=row, actor=actor, meta=meta)
+
+    def purge_file(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> None:
+        database_url = self._database_url_or_raise()
+        spool_path: Path | None = None
+        blob_paths: list[Path] = []
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if (
+                row is None
+                or row.deleted_at is None
+                or row.status == STATUS_DELETED
+                or not self.may_act_locked(session, user_id, row.owner_user_id, "manage")
+            ):
+                raise MyFilesNotFoundError("File not found")
+            now = _utc_now()
+            spool_path = Path(_normalize_text(row.spool_path)) if _normalize_text(row.spool_path) else None
+            if row.status == STATUS_READY:
+                self._release_blob_locked(session, row.blob_id, blob_paths)
+            self._release_file_collab_locked(session, row.id, blob_paths)
+            row.status = STATUS_DELETED
+            self._clear_share(row)
+            session.execute(delete(AppMyFileDownloadGrant).where(AppMyFileDownloadGrant.file_id == row.id))
+            row.updated_at = now
+            row.spool_path = ""
+            self._write_audit(session, action="purged", row=row, actor=actor, meta=meta)
+        self._delete_physical_files(blob_paths)
+        if spool_path is not None:
+            self._delete_spool_payload(spool_path)
+
+    def create_share(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        rotate: bool = False,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or row.deleted_at is not None or not self._may_share_file_locked(session, row, user_id):
+                raise MyFilesNotFoundError("File not found")
+            if row.status != STATUS_READY:
+                raise MyFilesValidationError("Only ready files can be shared")
+            if not self._security_scan_allows_access(row):
+                raise MyFilesValidationError("File is waiting for security scan")
+            if (_coerce_utc(row.expires_at) or _utc_now()) <= _utc_now():
+                raise MyFilesNotFoundError("File not found")
+
+            existing_token = self._existing_share_token_locked(row)
+            if not rotate and existing_token:
+                return {
+                    "token": existing_token,
+                    "public_path": f"/shared-files/{existing_token}",
+                    "expires_at": row.expires_at,
+                }
+
+            token = secrets.token_urlsafe(32)
+            token_hash = _hash_token(token)
+            row.share_token = None
+            row.share_token_enc = self._encrypt_share_token(token)
+            row.share_token_hash = token_hash
+            row.share_created_at = _utc_now()
+            row.updated_at = _utc_now()
+            self._write_audit(
+                session,
+                action="share_rotated" if rotate and existing_token else "share_created",
+                row=row,
+                actor=actor,
+                meta=meta,
+            )
+            return {
+                "token": token,
+                "public_path": f"/shared-files/{token}",
+                "expires_at": row.expires_at,
+            }
+
+    def revoke_share(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> None:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or row.deleted_at is not None or not self._may_share_file_locked(session, row, user_id):
+                raise MyFilesNotFoundError("File not found")
+            self._clear_share(row)
+            row.updated_at = _utc_now()
+            self._write_audit(session, action="share_revoked", row=row, actor=actor, meta=meta)
+
+    def create_folder_share(
+        self,
+        *,
+        actor: Any,
+        folder_id: str,
+        rotate: bool = False,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        with app_session(database_url) as session:
+            row = session.get(AppMyFileFolder, _normalize_text(folder_id))
+            if row is None or row.deleted_at is not None or not self.may_manage_folder_access_locked(session, row, actor_id):
+                raise MyFilesNotFoundError("Folder not found")
+
+            existing_token = self._existing_share_token_locked(row)
+            if not rotate and existing_token:
+                return {
+                    "token": existing_token,
+                    "public_path": f"/shared-folders/{existing_token}",
+                    "expires_at": None,
+                }
+
+            token = secrets.token_urlsafe(32)
+            row.share_token = None
+            row.share_token_enc = self._encrypt_share_token(token)
+            row.share_token_hash = _hash_token(token)
+            row.share_created_at = _utc_now()
+            row.updated_at = _utc_now()
+            self._write_audit(
+                session,
+                action="folder_share_rotated" if rotate and existing_token else "folder_share_created",
+                row=None,
+                actor=actor,
+                meta=meta,
+            )
+            return {
+                "token": token,
+                "public_path": f"/shared-folders/{token}",
+                "expires_at": None,
+            }
+
+    def revoke_folder_share(
+        self,
+        *,
+        actor: Any,
+        folder_id: str,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> None:
+        database_url = self._database_url_or_raise()
+        actor_id = _actor_id(actor)
+        with app_session(database_url) as session:
+            row = session.get(AppMyFileFolder, _normalize_text(folder_id))
+            if row is None or row.deleted_at is not None or not self.may_manage_folder_access_locked(session, row, actor_id):
+                raise MyFilesNotFoundError("Folder not found")
+            self._clear_share(row)
+            row.updated_at = _utc_now()
+            self._write_audit(session, action="folder_share_revoked", row=None, actor=actor, meta=meta)
+
+    def _public_folder_locked(self, session, token: str) -> AppMyFileFolder:
+        row = session.scalars(
+            select(AppMyFileFolder).where(
+                AppMyFileFolder.share_token_hash == _hash_token(token),
+                AppMyFileFolder.deleted_at.is_(None),
+            )
+        ).first()
+        if row is None or not _normalize_text(row.share_token_enc):
+            raise MyFilesNotFoundError("Folder not found")
+        return row
+
+    def _public_folder_file_rows_locked(self, session, folder: AppMyFileFolder) -> tuple[list[str], dict[str, str]]:
+        subtree_ids = [
+            folder.id,
+            *self._folder_descendant_ids_locked(
+                session, owner_user_id=folder.owner_user_id, folder_id=folder.id,
+            ),
+        ]
+        folder_rows = session.scalars(
+            select(AppMyFileFolder).where(AppMyFileFolder.id.in_(subtree_ids))
+        ).all()
+        by_id = {folder_row.id: folder_row for folder_row in folder_rows}
+
+        def relative_path(folder_id: str | None) -> str:
+            parts: list[str] = []
+            current = by_id.get(folder_id)
+            while current is not None and current.id != folder.id:
+                parts.append(_normalize_text(current.name))
+                current = by_id.get(current.parent_id)
+            return "/".join(reversed(parts))
+
+        return subtree_ids, {folder_id: relative_path(folder_id) for folder_id in subtree_ids}
+
+    def get_public_folder(self, *, token: str) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        with app_session(database_url) as session:
+            folder = self._public_folder_locked(session, token)
+            subtree_ids, path_by_id = self._public_folder_file_rows_locked(session, folder)
+            files = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.folder_id.in_(subtree_ids),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+                .order_by(AppMyFile.original_file_name.asc())
+            ).all()
+            items = []
+            blob_ids = [
+                _normalize_text(file_row.blob_id)
+                for file_row in files
+                if _normalize_text(file_row.blob_id)
+            ]
+            preview_map = {
+                _normalize_text(preview_row.blob_id): preview_row
+                for preview_row in session.scalars(
+                    select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
+                ).all()
+            } if blob_ids else {}
+            for file_row in files:
+                if not self._security_scan_allows_access(file_row):
+                    continue
+                preview = preview_map.get(_normalize_text(file_row.blob_id))
+                preview_available = bool(
+                    preview is not None
+                    and preview.status == PREVIEW_STATUS_READY
+                    and Path(_normalize_text(preview.preview_path)).is_file()
+                )
+                items.append({
+                    "id": _normalize_text(file_row.id),
+                    "file_name": _normalize_text(file_row.download_file_name) or _normalize_text(file_row.original_file_name),
+                    "relative_path": path_by_id.get(file_row.folder_id, ""),
+                    "size_bytes": int(file_row.original_size_bytes or 0),
+                    "mime_type": _normalize_text(file_row.mime_type) or "application/octet-stream",
+                    "preview_kind": _normalize_text(getattr(preview, "preview_kind", "")) or "unsupported",
+                    "preview_available": preview_available,
+                    "expires_at": _coerce_utc(file_row.expires_at),
+                })
+            return {
+                "folder_name": _normalize_text(folder.name),
+                "share_created_at": _coerce_utc(folder.share_created_at),
+                "items": items,
+            }
+
+    def _public_folder_file_context_locked(self, session, *, token: str, file_id: str) -> tuple[AppMyFile, DownloadPayload]:
+        folder = self._public_folder_locked(session, token)
+        subtree_ids, _paths = self._public_folder_file_rows_locked(session, folder)
+        row = session.get(AppMyFile, _normalize_text(file_id))
+        now = _utc_now()
+        if (
+            row is None
+            or row.folder_id not in subtree_ids
+            or row.deleted_at is not None
+            or row.status != STATUS_READY
+            or (_coerce_utc(row.expires_at) or now) <= now
+            or not self._security_scan_allows_access(row)
+        ):
+            raise MyFilesNotFoundError("File not found")
+        payload = self._download_payload_for_row_locked(session, row)
+        return row, payload
+
+    def get_public_folder_file_preview_meta(self, *, token: str, file_id: str) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        preview_url = f"/api/v1/my-files/public-folders/{_normalize_text(token)}/files/{_normalize_text(file_id)}/preview/content"
+        with app_session(database_url) as session:
+            row, payload = self._public_folder_file_context_locked(session, token=token, file_id=file_id)
+            return self._preview_meta_locked(session, row=row, payload=payload, preview_url=preview_url)
+
+    def get_public_folder_file_preview_content(self, *, token: str, file_id: str, variant: str = "") -> tuple[bytes, str, str]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row, payload = self._public_folder_file_context_locked(session, token=token, file_id=file_id)
+            return self._preview_content_locked(session, row=row, payload=payload, variant=variant)
+
+    def create_public_folder_download_grant(self, *, token: str, file_id: str) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        ttl_seconds = self._download_grant_ttl_seconds()
+        grant_token = secrets.token_urlsafe(32)
+        now = _utc_now()
+        with app_session(database_url) as session:
+            folder = self._public_folder_locked(session, token)
+            subtree_ids, _paths = self._public_folder_file_rows_locked(session, folder)
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if (
+                row is None
+                or row.folder_id not in subtree_ids
+                or row.deleted_at is not None
+                or row.status != STATUS_READY
+                or (_coerce_utc(row.expires_at) or now) <= now
+            ):
+                raise MyFilesNotFoundError("File not found")
+            if not self._security_scan_allows_access(row):
+                raise MyFilesValidationError("File is waiting for security scan")
+            self._purge_stale_download_grants_locked(session)
+            grant = AppMyFileDownloadGrant(
+                token_hash=_hash_token(grant_token),
+                file_id=row.id,
+                owner_user_id=int(row.owner_user_id),
+                expires_at=now + timedelta(seconds=ttl_seconds),
+                used_at=None,
+                created_at=now,
+            )
+            session.add(grant)
+            expires_at = grant.expires_at
+        return {
+            "token": grant_token,
+            "download_path": f"/my-files/download-grant/{grant_token}",
+            "expires_at": expires_at,
+            "expires_in_seconds": ttl_seconds,
+        }
+
+    def create_public_folder_archive_grant(self, *, token: str) -> dict[str, Any]:
+        """Short-lived grant that downloads the whole shared folder as a ZIP."""
+        database_url = self._database_url_or_raise()
+        ttl_seconds = self._download_grant_ttl_seconds()
+        grant_token = secrets.token_urlsafe(32)
+        now = _utc_now()
+        with app_session(database_url) as session:
+            folder = self._public_folder_locked(session, token)
+            subtree_ids, _paths = self._public_folder_file_rows_locked(session, folder)
+            files = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.folder_id.in_(subtree_ids),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+                .limit(2)
+            ).all()
+            if not any(self._security_scan_allows_access(file_row) for file_row in files):
+                raise MyFilesValidationError("Folder is empty")
+            self._purge_stale_download_grants_locked(session)
+            grant = AppMyFileDownloadGrant(
+                token_hash=_hash_token(grant_token),
+                file_id=None,
+                folder_id=folder.id,
+                owner_user_id=int(folder.owner_user_id),
+                expires_at=now + timedelta(seconds=ttl_seconds),
+                used_at=None,
+                created_at=now,
+            )
+            session.add(grant)
+            expires_at = grant.expires_at
+        return {
+            "token": grant_token,
+            "download_path": f"/my-files/download-grant/{grant_token}",
+            "expires_at": expires_at,
+            "expires_in_seconds": ttl_seconds,
+        }
+
+    def migrate_legacy_share_tokens(self, *, limit: int = 100) -> int:
+        if not self.configured:
+            return 0
+        database_url = self._database_url_or_raise()
+        migrated = 0
+        with app_session(database_url) as session:
+            rows = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.share_token.is_not(None),
+                    AppMyFile.share_token != "",
+                    AppMyFile.share_token_hash.is_not(None),
+                )
+                .order_by(AppMyFile.updated_at.asc())
+                .limit(max(1, int(limit or 100)))
+            ).all()
+            for row in rows:
+                legacy_token = _normalize_text(row.share_token)
+                if not legacy_token or _hash_token(legacy_token) != _normalize_text(row.share_token_hash):
+                    self._clear_share(row)
+                    row.updated_at = _utc_now()
+                    continue
+                row.share_token_enc = self._encrypt_share_token(legacy_token)
+                row.share_token = None
+                row.updated_at = _utc_now()
+                migrated += 1
+        return migrated
+
+    def _public_row_locked(self, session, token: str) -> AppMyFile:
+        token_hash = _hash_token(token)
+        row = session.scalars(
+            select(AppMyFile).where(
+                AppMyFile.share_token_hash == token_hash,
+                AppMyFile.status == STATUS_READY,
+                AppMyFile.deleted_at.is_(None),
+                AppMyFile.expires_at > _utc_now(),
+            )
+        ).first()
+        if row is None:
+            raise MyFilesNotFoundError("File not found")
+        if not self._security_scan_allows_access(row):
+            raise MyFilesNotFoundError("File not found")
+        return row
+
+    @staticmethod
+    def _preview_max_bytes() -> int:
+        from backend.services.mail_attachment_preview_service import office_preview_max_bytes
+
+        return int(office_preview_max_bytes())
+
+    @staticmethod
+    def _classify_preview_kind(*, filename: str, mime_type: str) -> str:
+        from backend.services.mail_attachment_preview_service import classify_office_source
+
+        normalized_mime = _normalize_text(mime_type).lower()
+        extension = _extension(filename).lstrip(".")
+        if "pdf" in normalized_mime or extension == "pdf":
+            return "pdf"
+        if normalized_mime.startswith("image/"):
+            return "image"
+        if classify_office_source(filename=filename, content_type=mime_type):
+            return "office_pdf"
+        return "unsupported"
+
+    @staticmethod
+    def _office_preview_runtime_available() -> bool:
+        from backend.services.mail_attachment_preview_service import (
+            is_office_preview_enabled,
+            resolve_soffice_path,
+        )
+
+        if not is_office_preview_enabled():
+            return False
+        try:
+            resolve_soffice_path()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _read_payload_bytes(payload: DownloadPayload) -> bytes:
+        if payload.mode == STORAGE_ZSTD:
+            return b"".join(MyFilesService.iter_zstd_download(payload.path))
+        return payload.path.read_bytes()
+
+    def _public_preview_context_locked(self, session, token: str) -> tuple[AppMyFile, DownloadPayload]:
+        row = self._public_row_locked(session, token)
+        payload = self._download_payload_for_row_locked(session, row)
+        return row, payload
+
+    def _owned_preview_context_locked(self, session, *, file_id: str, user_id: int) -> tuple[AppMyFile, DownloadPayload]:
+        row = session.get(AppMyFile, _normalize_text(file_id))
+        if row is None:
+            raise MyFilesNotFoundError("File not found")
+        if row.owner_user_id != int(user_id) and (
+            row.deleted_at is not None or not self.effective_role_locked(session, row, user_id)
+        ):
+            raise MyFilesNotFoundError("File not found")
+        payload = self._download_payload_for_row_locked(session, row)
+        return row, payload
+
+    def _preview_meta_locked(
+        self,
+        session,
+        *,
+        row: AppMyFile,
+        payload: DownloadPayload,
+        preview_url: str,
+    ) -> dict[str, Any]:
+        preview_kind = self._classify_preview_kind(
+            filename=payload.file_name,
+            mime_type=payload.media_type,
+        )
+        if preview_kind == "unsupported":
+            raise MyFilesValidationError("Preview is not available for this file type.")
+        if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+            raise MyFilesValidationError("File is too large for preview.")
+        preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+        preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+        if preview is None or preview.status != PREVIEW_STATUS_READY or not preview_path.is_file():
+            raise MyFilesValidationError(PREVIEW_UNAVAILABLE_MESSAGE)
+        sheets: list[dict[str, Any]] = []
+        try:
+            parsed_sheets = json.loads(_normalize_text(preview.sheets_json) or "[]")
+            if isinstance(parsed_sheets, list):
+                sheets = [dict(item) for item in parsed_sheets if isinstance(item, dict)]
+        except Exception:
+            sheets = []
+        return {
+            "preview_kind": _normalize_text(preview.preview_kind) or preview_kind,
+            "source_kind": _normalize_text(preview.source_kind),
+            "source_filename": payload.file_name,
+            "pdf_filename": _replace_extension(payload.file_name, ".pdf") if preview_kind == "office_pdf" else payload.file_name,
+            "page_count": int(preview.page_count or 0),
+            "sheets": sheets,
+            "preview_url": preview_url,
+        }
+
+    def _preview_content_locked(self, session, *, row: AppMyFile, payload: DownloadPayload, variant: str = "") -> tuple[bytes, str, str]:
+        preview_kind = self._classify_preview_kind(
+            filename=payload.file_name,
+            mime_type=payload.media_type,
+        )
+        if preview_kind == "unsupported":
+            raise MyFilesValidationError("Preview is not available for this file type.")
+        if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+            raise MyFilesValidationError("File is too large for preview.")
+        preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+        preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+        if preview is None or preview.status != PREVIEW_STATUS_READY or not preview_path.is_file():
+            raise MyFilesValidationError(PREVIEW_UNAVAILABLE_MESSAGE)
+        if _normalize_text(variant).lower() == "thumb" and preview_kind == "image":
+            thumb_path = self._preview_thumb_path(preview_path)
+            if thumb_path.is_file():
+                return thumb_path.read_bytes(), "image/webp", _replace_extension(payload.file_name, ".webp")
+        media_type = _normalize_text(preview.preview_mime_type) or payload.media_type
+        filename = _replace_extension(payload.file_name, ".pdf") if preview_kind == "office_pdf" else payload.file_name
+        return preview_path.read_bytes(), media_type, filename
+
+    def get_file_preview_meta(self, *, file_id: str, user_id: int) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        preview_url = f"/api/v1/my-files/{_normalize_text(file_id)}/preview/content"
+        with app_session(database_url) as session:
+            row, payload = self._owned_preview_context_locked(session, file_id=file_id, user_id=int(user_id))
+            return self._preview_meta_locked(session, row=row, payload=payload, preview_url=preview_url)
+
+    def get_file_preview_content(self, *, file_id: str, user_id: int, variant: str = "") -> tuple[bytes, str, str]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row, payload = self._owned_preview_context_locked(session, file_id=file_id, user_id=int(user_id))
+            return self._preview_content_locked(session, row=row, payload=payload, variant=variant)
+
+    def get_file_preview_source(self, *, file_id: str, user_id: int) -> tuple[bytes, str, str]:
+        from backend.services.mail_attachment_preview_service import classify_office_source
+
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            _row, payload = self._owned_preview_context_locked(session, file_id=file_id, user_id=int(user_id))
+            if classify_office_source(filename=payload.file_name, content_type=payload.media_type) != "excel":
+                raise MyFilesValidationError("Preview source is only available for Excel files.")
+            if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+                raise MyFilesValidationError("File is too large for preview.")
+            return self._read_payload_bytes(payload), payload.media_type, payload.file_name
+
+    def get_public_file(self, *, token: str) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = self._public_row_locked(session, token)
+            payload = self._download_payload_for_row_locked(session, row)
+            download_size = int(payload.download_size_bytes or 0)
+            file_name = payload.file_name
+            mime_type = payload.media_type
+            preview_kind = self._classify_preview_kind(filename=file_name, mime_type=mime_type)
+            preview_max_bytes = self._preview_max_bytes()
+            preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+            preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+            preview_available = bool(
+                preview is not None
+                and preview.status == PREVIEW_STATUS_READY
+                and preview_kind != "unsupported"
+                and download_size > 0
+                and download_size <= preview_max_bytes
+                and preview_path.is_file()
+            )
+            return {
+                "file_name": file_name,
+                "size_bytes": download_size,
+                "mime_type": mime_type,
+                "expires_at": row.expires_at,
+                "preview_kind": preview_kind,
+                "preview_available": preview_available,
+                "preview_max_bytes": preview_max_bytes,
+            }
+
+    def get_public_preview_meta(self, *, token: str) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        preview_url = f"/api/v1/my-files/public/{_normalize_text(token)}/preview/content"
+        with app_session(database_url) as session:
+            row, payload = self._public_preview_context_locked(session, token)
+            preview_kind = self._classify_preview_kind(
+                filename=payload.file_name,
+                mime_type=payload.media_type,
+            )
+            if preview_kind == "unsupported":
+                raise MyFilesValidationError("Preview is not available for this file type.")
+            if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+                raise MyFilesValidationError("File is too large for preview.")
+            preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+            preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+            if preview is None or preview.status != PREVIEW_STATUS_READY or not preview_path.is_file():
+                raise MyFilesValidationError(PREVIEW_UNAVAILABLE_MESSAGE)
+            sheets: list[dict[str, Any]] = []
+            try:
+                parsed_sheets = json.loads(_normalize_text(preview.sheets_json) or "[]")
+                if isinstance(parsed_sheets, list):
+                    sheets = [dict(item) for item in parsed_sheets if isinstance(item, dict)]
+            except Exception:
+                sheets = []
+            return {
+                "preview_kind": _normalize_text(preview.preview_kind) or preview_kind,
+                "source_kind": _normalize_text(preview.source_kind),
+                "source_filename": payload.file_name,
+                "pdf_filename": _replace_extension(payload.file_name, ".pdf") if preview_kind == "office_pdf" else payload.file_name,
+                "page_count": int(preview.page_count or 0),
+                "sheets": sheets,
+                "preview_url": preview_url,
+            }
+
+    def get_public_preview_content(self, *, token: str, variant: str = "") -> tuple[bytes, str, str]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row, payload = self._public_preview_context_locked(session, token)
+            preview_kind = self._classify_preview_kind(
+                filename=payload.file_name,
+                mime_type=payload.media_type,
+            )
+            if preview_kind == "unsupported":
+                raise MyFilesValidationError("Preview is not available for this file type.")
+            if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+                raise MyFilesValidationError("File is too large for preview.")
+            preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+            preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+            if preview is None or preview.status != PREVIEW_STATUS_READY or not preview_path.is_file():
+                raise MyFilesValidationError(PREVIEW_UNAVAILABLE_MESSAGE)
+            if _normalize_text(variant).lower() == "thumb" and preview_kind == "image":
+                thumb_path = self._preview_thumb_path(preview_path)
+                if thumb_path.is_file():
+                    return thumb_path.read_bytes(), "image/webp", _replace_extension(payload.file_name, ".webp")
+            media_type = _normalize_text(preview.preview_mime_type) or payload.media_type
+            filename = _replace_extension(payload.file_name, ".pdf") if preview_kind == "office_pdf" else payload.file_name
+            return preview_path.read_bytes(), media_type, filename
+
+    def _download_payload_for_row_locked(self, session, row: AppMyFile) -> DownloadPayload:
+        if (
+            row.status != STATUS_READY
+            or row.deleted_at is not None
+            or not self._security_scan_allows_access(row)
+            or (_coerce_utc(row.expires_at) or _utc_now()) <= _utc_now()
+        ):
+            raise MyFilesNotFoundError("File not found")
+        blob = session.get(AppMyFileBlob, _normalize_text(row.blob_id))
+        if blob is None:
+            raise MyFilesNotFoundError("File not found")
+        path = self._resolve_stored_path(blob.storage_path)
+        if not path.exists() or not path.is_file():
+            raise MyFilesNotFoundError("File not found")
+        download_size = int(row.original_size_bytes or 0)
+        if blob.storage_mode == STORAGE_OPTIMIZED_MEDIA:
+            download_size = int(blob.stored_size_bytes or 0)
+        return DownloadPayload(
+            path=path,
+            mode=_normalize_text(blob.storage_mode) or STORAGE_STORED,
+            file_name=_normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin",
+            media_type=_normalize_text(row.download_mime_type) or "application/octet-stream",
+            download_size_bytes=download_size,
+            file_id=_normalize_text(row.id),
+        )
+
+    def get_download(self, *, file_id: str, user_id: int) -> DownloadPayload:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None:
+                raise MyFilesNotFoundError("File not found")
+            if row.owner_user_id != int(user_id) and not self.effective_role_locked(session, row, user_id):
+                raise MyFilesNotFoundError("File not found")
+            return self._download_payload_for_row_locked(session, row)
+
+    def _download_grant_ttl_seconds(self) -> int:
+        return max(30, int(config.my_files_download_grant.ttl_seconds or 120))
+
+    def _purge_stale_download_grants_locked(self, session) -> None:
+        now = _utc_now()
+        session.execute(
+            delete(AppMyFileDownloadGrant).where(
+                AppMyFileDownloadGrant.expires_at <= now
+            )
+        )
+
+    def _revoke_pending_download_grants_locked(self, session, *, file_id: str, user_id: int) -> None:
+        session.execute(
+            delete(AppMyFileDownloadGrant).where(
+                AppMyFileDownloadGrant.file_id == _normalize_text(file_id),
+                AppMyFileDownloadGrant.owner_user_id == int(user_id),
+                AppMyFileDownloadGrant.used_at.is_(None),
+            )
+        )
+
+    def create_download_grant(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        normalized_file_id = _normalize_text(file_id)
+        ttl_seconds = self._download_grant_ttl_seconds()
+        token = secrets.token_urlsafe(32)
+        token_hash = _hash_token(token)
+        now = _utc_now()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, normalized_file_id)
+            if row is None or row.deleted_at is not None:
+                raise MyFilesNotFoundError("File not found")
+            if row.owner_user_id != int(user_id) and not self.effective_role_locked(session, row, user_id):
+                raise MyFilesNotFoundError("File not found")
+            if row.status != STATUS_READY:
+                raise MyFilesValidationError("Only ready files can be downloaded")
+            if not self._security_scan_allows_access(row):
+                raise MyFilesValidationError("File is waiting for security scan")
+            if (_coerce_utc(row.expires_at) or now) <= now:
+                raise MyFilesNotFoundError("File not found")
+            self._purge_stale_download_grants_locked(session)
+            self._revoke_pending_download_grants_locked(session, file_id=normalized_file_id, user_id=int(user_id))
+            grant = AppMyFileDownloadGrant(
+                token_hash=token_hash,
+                file_id=normalized_file_id,
+                owner_user_id=int(user_id),
+                expires_at=now + timedelta(seconds=ttl_seconds),
+                used_at=None,
+                created_at=now,
+            )
+            session.add(grant)
+            self._write_audit(session, action="download_grant_created", row=row, actor=actor, meta=meta)
+            expires_at = grant.expires_at
+        return {
+            "token": token,
+            "download_path": f"/my-files/download-grant/{token}",
+            "expires_at": expires_at,
+            "expires_in_seconds": ttl_seconds,
+        }
+
+    def create_folder_archive_grant(
+        self,
+        *,
+        folder_id: str,
+        user_id: int,
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        ttl_seconds = self._download_grant_ttl_seconds()
+        token = secrets.token_urlsafe(32)
+        now = _utc_now()
+        with app_session(database_url) as session:
+            owner = self._read_owner_locked(session, user_id=user_id, folder_id=folder_id)
+            folder = self._folder_row_locked(session, owner_user_id=owner, folder_id=folder_id)
+            self._purge_stale_download_grants_locked(session)
+            grant = AppMyFileDownloadGrant(
+                token_hash=_hash_token(token),
+                file_id=None,
+                folder_id=folder.id,
+                owner_user_id=int(user_id),
+                expires_at=now + timedelta(seconds=ttl_seconds),
+                used_at=None,
+                created_at=now,
+            )
+            session.add(grant)
+            self._write_audit(session, action="folder_archive_grant_created", row=None, actor=actor, meta=meta)
+            expires_at = grant.expires_at
+        return {
+            "token": token,
+            "download_path": f"/my-files/download-grant/{token}",
+            "expires_at": expires_at,
+            "expires_in_seconds": ttl_seconds,
+        }
+
+    def _folder_archive_plan_locked(
+        self,
+        session,
+        *,
+        folder: AppMyFileFolder,
+    ) -> list[tuple[str, Path, str]]:
+        """Resolve archive entries (arcname, blob path, storage mode) under the session."""
+        now = _utc_now()
+        subtree_ids = [
+            folder.id,
+            *self._folder_descendant_ids_locked(
+                session, owner_user_id=folder.owner_user_id, folder_id=folder.id,
+            ),
+        ]
+        folder_rows = session.scalars(
+            select(AppMyFileFolder).where(AppMyFileFolder.id.in_(subtree_ids))
+        ).all()
+        by_id = {folder_row.id: folder_row for folder_row in folder_rows}
+
+        def relative_dir(folder_id: str | None) -> str:
+            parts: list[str] = []
+            current = by_id.get(folder_id)
+            while current is not None and current.id != folder.id:
+                parts.append(_normalize_text(current.name))
+                current = by_id.get(current.parent_id)
+            return "/".join(reversed(parts))
+
+        rows = session.scalars(
+            select(AppMyFile)
+            .where(
+                AppMyFile.owner_user_id == int(folder.owner_user_id),
+                AppMyFile.folder_id.in_(subtree_ids),
+                AppMyFile.deleted_at.is_(None),
+                AppMyFile.status == STATUS_READY,
+                AppMyFile.expires_at > now,
+            )
+            .order_by(AppMyFile.original_file_name.asc())
+        ).all()
+        files = [row for row in rows if self._security_scan_allows_access(row)]
+        if not files:
+            raise MyFilesValidationError("Folder is empty")
+
+        plan: list[tuple[str, Path, str]] = []
+        used_names: set[str] = set()
+        for row in files:
+            base_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin"
+            prefix = relative_dir(row.folder_id)
+            arcname = f"{prefix}/{base_name}" if prefix else base_name
+            while arcname in used_names:
+                stem, dot, ext = base_name.rpartition(".")
+                candidate = f"{stem}_copy.{ext}" if dot else f"{base_name}_copy"
+                arcname = f"{prefix}/{candidate}" if prefix else candidate
+            used_names.add(arcname)
+            payload = self._download_payload_for_row_locked(session, row)
+            plan.append((arcname, payload.path, _normalize_text(payload.mode) or STORAGE_STORED))
+        return plan
+
+    def _write_folder_archive(self, plan: list[tuple[str, Path, str]], archive_path: Path) -> None:
+        """Write the ZIP outside any DB transaction; skipped entries keep the archive valid."""
+        import zipfile
+
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        try:
+            with zipfile.ZipFile(archive_path, "w", compresslevel=6) as archive:
+                for arcname, payload_path, mode in plan:
+                    try:
+                        entry_info = zipfile.ZipInfo(filename=arcname)
+                        entry_info.compress_type = (
+                            zipfile.ZIP_DEFLATED
+                            if _extension(arcname) not in ZSTD_SKIP_EXTENSIONS
+                            else zipfile.ZIP_STORED
+                        )
+                        with archive.open(entry_info, mode="w", force_zip64=True) as entry:
+                            if mode == STORAGE_ZSTD:
+                                for part in self.iter_zstd_download(payload_path):
+                                    entry.write(part)
+                            else:
+                                with payload_path.open("rb") as source:
+                                    while True:
+                                        block = source.read(CHUNK_SIZE)
+                                        if not block:
+                                            break
+                                        entry.write(block)
+                        written += 1
+                    except OSError as exc:
+                        # File vanished between plan and build — keep the archive usable.
+                        logger.warning("Folder archive entry skipped path=%s error=%s", payload_path, exc)
+            if written == 0:
+                raise MyFilesValidationError("Folder is empty")
+        except Exception:
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    def consume_download_grant(self, *, token: str, meta: MyFilesRequestMeta | None = None) -> DownloadPayload:
+        database_url = self._database_url_or_raise()
+        normalized_token = _normalize_text(token)
+        if not normalized_token:
+            raise MyFilesNotFoundError("File not found")
+        token_hash = _hash_token(normalized_token)
+        now = _utc_now()
+        archive_plan: list[tuple[str, Path, str]] | None = None
+        folder_name = ""
+        with app_session(database_url) as session:
+            grant = session.scalars(
+                select(AppMyFileDownloadGrant)
+                .where(
+                    AppMyFileDownloadGrant.token_hash == token_hash,
+                    AppMyFileDownloadGrant.expires_at > now,
+                )
+                .with_for_update()
+            ).first()
+            if grant is None:
+                raise MyFilesNotFoundError("File not found")
+            if grant.used_at is None:
+                grant.used_at = now
+            file_id = _normalize_text(grant.file_id)
+            folder_id = _normalize_text(grant.folder_id)
+            owner_user_id = int(grant.owner_user_id or 0)
+            if folder_id:
+                folder = session.get(AppMyFileFolder, folder_id)
+                if (
+                    folder is None
+                    or folder.deleted_at is not None
+                    or not self.may_act_locked(session, owner_user_id, folder.owner_user_id, "view")
+                ):
+                    raise MyFilesNotFoundError("Folder not found")
+                folder_name = _normalize_text(folder.name) or "folder"
+                # Only the plan is built under the transaction: the multi-GB ZIP
+                # write happens outside, so the grant row lock is held for
+                # milliseconds, not for the whole archive pass.
+                archive_plan = self._folder_archive_plan_locked(session, folder=folder)
+            else:
+                row = session.get(AppMyFile, file_id)
+                if row is None or row.deleted_at is not None:
+                    raise MyFilesNotFoundError("File not found")
+                is_owner = row.owner_user_id == owner_user_id
+                # Access is checked again at redemption, so a revoked collaborator's grant is useless.
+                if not is_owner and not self.effective_role_locked(session, row, owner_user_id):
+                    raise MyFilesNotFoundError("File not found")
+                payload = self._download_payload_for_row_locked(session, row)
+                if is_owner:
+                    self._write_audit(session, action="owner_download_started", row=row, meta=meta)
+                else:
+                    downloader = session.get(AppUser, owner_user_id)
+                    self._write_audit(
+                        session,
+                        action="shared_download_started",
+                        row=row,
+                        meta=meta,
+                        actor_user_id=owner_user_id,
+                        actor_username=_normalize_text(getattr(downloader, "username", "")) or f"user-{owner_user_id}",
+                    )
+                return payload
+
+        # A .zip in the spool is only ever a folder archive: the orphan sweeper
+        # reclaims abandoned archives by age, and cleanup_after removes them
+        # right after a successful response.
+        archive_path = self.new_spool_path(f"{folder_name}.zip")
+        self._write_folder_archive(archive_plan or [], archive_path)
+        try:
+            with app_session(database_url) as session:
+                self._write_audit(
+                    session,
+                    action="folder_archive_download_started",
+                    row=None,
+                    meta=meta,
+                    actor_user_id=owner_user_id,
+                )
+        except Exception:
+            logger.warning("Folder archive audit write failed")
+        return DownloadPayload(
+            path=archive_path,
+            mode=STORAGE_STORED,
+            file_name=f"{folder_name}.zip",
+            media_type="application/zip",
+            download_size_bytes=archive_path.stat().st_size,
+            cleanup_after=True,
+        )
+
+    def get_public_download(self, *, token: str, meta: MyFilesRequestMeta | None = None) -> DownloadPayload:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = self._public_row_locked(session, token)
+            payload = self._download_payload_for_row_locked(session, row)
+            self._write_audit(
+                session,
+                action="public_download_started",
+                row=row,
+                meta=meta,
+                actor_user_id=0,
+                actor_username="",
+            )
+            return payload
+
+    def cleanup_expired(self, *, limit: int = 100) -> int:
+        if not self.configured:
+            return 0
+        database_url = self._database_url_or_raise()
+        count = 0
+        spool_paths: list[Path] = []
+        blob_paths: list[Path] = []
+        with app_session(database_url) as session:
+            rows = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.expires_at <= _utc_now(),
+                    AppMyFile.status != STATUS_DELETED,
+                )
+                .order_by(AppMyFile.expires_at.asc())
+                .limit(max(1, int(limit or 100)))
+            ).all()
+            for row in rows:
+                try:
+                    row_blob_paths: list[Path] = []
+                    with session.begin_nested():
+                        if row.status == STATUS_READY:
+                            self._release_blob_locked(session, row.blob_id, row_blob_paths)
+                        self._release_file_collab_locked(session, row.id, row_blob_paths)
+                        if _normalize_text(row.spool_path):
+                            spool_paths.append(Path(_normalize_text(row.spool_path)))
+                        row.status = STATUS_DELETED
+                        self._clear_share(row)
+                        row.deleted_at = _utc_now()
+                        row.updated_at = _utc_now()
+                        row.spool_path = ""
+                        self._write_audit(session, action="expired", row=row)
+                        count += 1
+                    # savepoint зафиксирован; файлы удаляются только после commit внешней транзакции
+                    blob_paths.extend(row_blob_paths)
+                except Exception:
+                    logger.exception("Failed to expire my-file %s", row.id)
+        self._delete_physical_files(blob_paths)
+        for path in spool_paths:
+            self._delete_spool_payload(path)
+        return count
+
+    @staticmethod
+    def iter_zstd_download(path: Path, *, start: int = 0, end: int | None = None) -> Any:
+        import zstandard as zstd  # type: ignore
+
+        offset = int(start or 0)
+        if offset < 0:
+            raise ValueError("start must be non-negative")
+        stop = None if end is None else int(end)
+        if stop is not None and stop < offset:
+            raise ValueError("end must be greater than or equal to start")
+
+        with path.open("rb") as source:
+            decompressor = zstd.ZstdDecompressor(max_window_size=MAX_ZSTD_WINDOW_SIZE_BYTES)
+            with decompressor.stream_reader(source) as reader:
+                skipped = 0
+                while skipped < offset:
+                    chunk = reader.read(min(CHUNK_SIZE, offset - skipped))
+                    if not chunk:
+                        return
+                    skipped += len(chunk)
+                produced = 0
+                while stop is None or produced < stop - offset:
+                    wanted = CHUNK_SIZE if stop is None else min(CHUNK_SIZE, stop - offset - produced)
+                    chunk = reader.read(wanted)
+                    if not chunk:
+                        break
+                    produced += len(chunk)
+                    yield chunk
+
+
+class MyFilesWorker:
+    def __init__(self, service: MyFilesService) -> None:
+        self.service = service
+        self._task: asyncio.Task | None = None
+        self._stop_event: asyncio.Event | None = None
+
+    async def start(self) -> None:
+        if self._task is not None or not self.service.configured:
+            return
+        self._stop_event = asyncio.Event()
+        self._task = asyncio.create_task(self._run_loop(), name="my-files-worker")
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        assert self._stop_event is not None
+        self._stop_event.set()
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._task = None
+            self._stop_event = None
+
+    async def _run_loop(self) -> None:
+        assert self._stop_event is not None
+        # Каждая «полоса» самостоятельно берёт задачи: claim сериализуется
+        # _reservation_lock + skip_locked, а глобальный лимит параллелизма
+        # проверяется по счётчику scanning/processing внутри claim_next_job.
+        lanes = max(1, int(config.my_files_security.max_processing_global))
+
+        async def _lane() -> None:
+            assert self._stop_event is not None
+            while not self._stop_event.is_set():
+                try:
+                    processed = await asyncio.to_thread(self.service.process_next_job)
+                    if not processed:
+                        processed = await asyncio.to_thread(self.service.process_next_security_backfill)
+                    await asyncio.sleep(1 if processed else 5)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("my-files worker cycle failed: %s", exc)
+                    await asyncio.sleep(10)
+
+        lane_tasks = [
+            asyncio.create_task(_lane(), name=f"my-files-worker-lane-{index}")
+            for index in range(lanes)
+        ]
+        try:
+            await asyncio.gather(*lane_tasks)
+        finally:
+            for lane_task in lane_tasks:
+                lane_task.cancel()
+
+
+my_files_service = MyFilesService()
+my_files_worker = MyFilesWorker(my_files_service)

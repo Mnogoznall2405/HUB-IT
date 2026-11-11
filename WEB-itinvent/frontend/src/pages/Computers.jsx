@@ -1,0 +1,2547 @@
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  Collapse,
+  CircularProgress,
+  Drawer,
+  FormControl,
+  FormControlLabel,
+  Grid,
+  IconButton,
+  InputLabel,
+  LinearProgress,
+  MenuItem,
+  Paper,
+  Select,
+  Skeleton,
+  Stack,
+  Switch,
+  TextField,
+  Tooltip,
+  Typography,
+} from '@mui/material';
+import {
+  ArrowBackRounded as ArrowBackRoundedIcon,
+  ExpandLess as ExpandLessIcon,
+  ExpandMore as ExpandMoreIcon,
+  Refresh as RefreshIcon,
+  Lan as LanIcon,
+  MailOutline as MailOutlineIcon,
+  Storage as StorageIcon,
+  WarningAmber as WarningAmberIcon,
+} from '@mui/icons-material';
+import MainLayout from '../components/layout/MainLayout';
+import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
+import { equipmentAPI } from '../api/client';
+import ComputerSecurityPanel from '../components/computers/ComputerSecurityPanel';
+import ComputerSoftwareList from '../components/computers/ComputerSoftwareList';
+import ComputerUsbList from '../components/computers/ComputerUsbList';
+import SoftwareFleetSearchDialog from '../components/computers/SoftwareFleetSearchDialog';
+import UsbFleetSearchDialog from '../components/computers/UsbFleetSearchDialog';
+import FleetHealthDialog from '../components/computers/FleetHealthDialog';
+import { useAuth } from '../contexts/AuthContext';
+import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
+import { useTheme } from '@mui/material/styles';
+import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
+
+const SEEN_CHANGES_STORAGE_KEY = 'computers_seen_changes_by_pc_v1';
+const USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY = 'computers_hide_system_user_profile_folders_v1';
+const HIDE_VM_172_STORAGE_KEY = 'computers_hide_vm_172';
+const AUTO_REFRESH_BASE_SEC = 120;
+const AUTO_REFRESH_STEP_SEC = 30;
+const AUTO_REFRESH_MAX_SEC = 300;
+// Возврат на вкладку не запускает загрузку, если данные свежее этого порога.
+const VISIBILITY_REFRESH_MIN_GAP_SEC = 30;
+const SEARCH_DEBOUNCE_MS = 500;
+const SEARCH_MIN_QUERY_LEN = 2;
+const COMPUTERS_PAGE_SIZE = 50;
+const BACKGROUND_REFRESH_MAX_ITEMS = 200;
+const SEEN_CHANGES_MAX_ENTRIES = 500;
+const SEEN_CHANGES_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const OUTLOOK_ARCHIVE_LIMIT_BYTES = 50 * 1024 * 1024 * 1024;
+const COMPUTER_SEARCH_FIELD_OPTIONS = [
+  { key: 'identity', label: 'ПК' },
+  { key: 'user', label: 'Пользователь' },
+  { key: 'profiles', label: 'Профили' },
+  { key: 'outlook', label: 'Outlook архивы' },
+  { key: 'network', label: 'Сеть' },
+  { key: 'location', label: 'Филиал' },
+  { key: 'database', label: 'БД' },
+];
+const DEFAULT_COMPUTER_SEARCH_FIELDS = COMPUTER_SEARCH_FIELD_OPTIONS.map((item) => item.key);
+const FAST_SEARCH_PRESET_FIELDS = ['identity', 'user'];
+const SEARCH_FIELD_LABELS = Object.fromEntries(COMPUTER_SEARCH_FIELD_OPTIONS.map((item) => [item.key, item.label]));
+const RECENT_SEARCHES_STORAGE_KEY = 'computers_recent_searches_v1';
+const RECENT_SEARCHES_MAX = 8;
+
+function readRecentSearches() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RECENT_SEARCHES_STORAGE_KEY) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => typeof item === 'string' && item.trim()).slice(0, RECENT_SEARCHES_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function persistRecentSearches(items) {
+  try {
+    localStorage.setItem(RECENT_SEARCHES_STORAGE_KEY, JSON.stringify(items.slice(0, RECENT_SEARCHES_MAX)));
+  } catch { /* localStorage недоступен/переполнен — не блокируем поиск */ }
+}
+
+function normalizeComputersSearchInput(value) {
+  return String(value || '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isRequestAbortedError(err) {
+  const code = String(err?.code || '').toUpperCase();
+  const name = String(err?.name || '');
+  return code === 'ERR_CANCELED' || name === 'CanceledError' || name === 'AbortError';
+}
+
+function StatCard({ title, value, helper, color = 'inherit' }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  return (
+    <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 2, height: '100%' }) }}>
+      <Typography variant="body2" color="text.secondary">{title}</Typography>
+      <Typography variant="h4" sx={{ fontWeight: 700, color, lineHeight: 1.2 }}>{value}</Typography>
+      <Typography variant="caption" color="text.secondary">{helper}</Typography>
+    </Paper>
+  );
+}
+
+function MiniBars({ title, rows, color }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const list = Array.isArray(rows) ? rows.slice(0, 8) : [];
+  const max = list.reduce((acc, row) => Math.max(acc, Number(row.value) || 0), 0) || 1;
+
+  return (
+    <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 2, height: '100%' }) }}>
+      <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1.2 }}>{title}</Typography>
+      {list.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">Нет данных</Typography>
+      ) : (
+        <Stack spacing={1}>
+          {list.map((row) => {
+            const value = Number(row.value) || 0;
+            const width = Math.max(3, Math.round((value / max) * 100));
+            return (
+              <Box key={String(row.label)}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.2 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 600 }}>{row.label}</Typography>
+                  <Typography variant="caption" color="text.secondary">{value}</Typography>
+                </Box>
+                <Box sx={{ height: 7, borderRadius: 4, bgcolor: ui.actionBg, overflow: 'hidden' }}>
+                  <Box sx={{ width: `${width}%`, height: '100%', bgcolor: row.color || color }} />
+                </Box>
+              </Box>
+            );
+          })}
+        </Stack>
+      )}
+    </Paper>
+  );
+}
+
+function formatTs(ts) {
+  if (!ts) return '-';
+  return new Date(Number(ts) * 1000).toLocaleString('ru-RU');
+}
+
+function formatAge(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return '-';
+  if (value < 60) return `${value}с`;
+  const mins = Math.floor(value / 60);
+  if (mins < 60) return `${mins}м`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}ч`;
+  return `${Math.floor(hours / 24)}д`;
+}
+
+function toPercent(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < 0) return 0;
+  if (parsed > 100) return 100;
+  return parsed;
+}
+
+function formatPercent(value) {
+  const parsed = toPercent(value);
+  if (parsed === null) return '-';
+  return `${parsed.toFixed(1)}%`;
+}
+
+function resolveRuntimeMetrics(pc) {
+  const health = pc?.health && typeof pc.health === 'object' ? pc.health : {};
+  const cpu = toPercent(pc?.cpu_load_percent ?? health?.cpu_load_percent);
+  const ram = toPercent(pc?.ram_used_percent ?? health?.ram_used_percent);
+
+  const uptimeRaw = Number(pc?.uptime_seconds ?? health?.uptime_seconds);
+  const uptimeSeconds = Number.isFinite(uptimeRaw) && uptimeRaw >= 0 ? Math.floor(uptimeRaw) : null;
+
+  const rebootRaw = Number(pc?.last_reboot_at ?? health?.last_reboot_at ?? health?.boot_time);
+  const lastRebootAt = Number.isFinite(rebootRaw) && rebootRaw > 0 ? Math.floor(rebootRaw) : null;
+
+  return { cpu, ram, uptimeSeconds, lastRebootAt };
+}
+
+function smartHealthColor(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (!normalized) return 'default';
+  if (normalized.includes('healthy') || normalized.includes('ok') || normalized.includes('good')) return 'success';
+  if (normalized.includes('warning') || normalized.includes('degrad') || normalized.includes('pred')) return 'warning';
+  if (normalized.includes('critical') || normalized.includes('unhealthy') || normalized.includes('fail')) return 'error';
+  return 'default';
+}
+
+function getStorageHealthStats(pc) {
+  const rows = Array.isArray(pc?.storage) ? pc.storage : [];
+  let problemCount = 0;
+  rows.forEach((disk) => {
+    const color = smartHealthColor(disk?.health_status);
+    if (color === 'warning' || color === 'error') {
+      problemCount += 1;
+    }
+  });
+  return { total: rows.length, problemCount };
+}
+
+function statusColor(status) {
+  if (status === 'online') return 'success';
+  if (status === 'stale') return 'warning';
+  if (status === 'offline') return 'error';
+  return 'default';
+}
+
+function statusLabel(status) {
+  if (status === 'online') return 'В сети';
+  if (status === 'stale') return 'Нет свежих';
+  if (status === 'offline') return 'Оффлайн';
+  return 'Неизвестно';
+}
+
+function firstIpv4(value) {
+  const text = String(value || '');
+  const match = text.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
+  return match ? match[0] : '';
+}
+
+function resolvePcIp(pc) {
+  const direct = String(pc?.ip_primary || '').trim();
+  if (direct) return direct;
+  if (Array.isArray(pc?.ip_list) && pc.ip_list.length > 0) {
+    const candidate = firstIpv4(pc.ip_list[0]);
+    if (candidate) return candidate;
+  }
+  return firstIpv4(pc?.network_link?.endpoint_ip_raw);
+}
+
+const NETWORK_DEVICE_TYPE_LABELS = {
+  ethernet: 'Ethernet',
+  wifi: 'Wi-Fi',
+  bluetooth: 'Bluetooth',
+  vpn: 'VPN / туннель',
+  virtual: 'Виртуальный',
+  other: 'Другое',
+};
+
+function resolveNetworkDevices(pc) {
+  const rows = pc?.network?.devices;
+  return Array.isArray(rows) ? rows.filter((item) => item && typeof item === 'object') : [];
+}
+
+function networkDeviceStatusMeta(device) {
+  if (device?.enabled === false) return { label: 'Отключён', color: 'error' };
+  const connectionStatus = String(device?.connection_status || '').trim().toLowerCase();
+  if (device?.enabled === true && connectionStatus === 'up') {
+    return { label: 'Включён · подключён', color: 'success' };
+  }
+  if (device?.enabled === true && connectionStatus === 'disconnected') {
+    return { label: 'Включён · нет подключения', color: 'warning' };
+  }
+  if (device?.enabled === true) return { label: 'Включён', color: 'success' };
+  if (connectionStatus === 'not_present') return { label: 'Не найден', color: 'default' };
+  return { label: 'Состояние неизвестно', color: 'default' };
+}
+
+function networkDeviceDetails(device) {
+  const values = [];
+  const ipv4 = Array.isArray(device?.ipv4) ? device.ipv4.filter(Boolean) : [];
+  if (ipv4.length > 0) values.push(`IP: ${ipv4.join(', ')}`);
+  if (device?.mac_address) values.push(`MAC: ${device.mac_address}`);
+  if (device?.link_speed) values.push(`Скорость: ${device.link_speed}`);
+  return values.join(' · ');
+}
+
+function toIntOrNull(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.floor(parsed);
+}
+
+function formatDiskSizeFromBytes(value) {
+  const sizeBytes = toIntOrNull(value);
+  if (!sizeBytes) return '';
+  const gib = sizeBytes / (1024 ** 3);
+  if (gib >= 1024) return `${(gib / 1024).toFixed(1)} ТБ`;
+  return `${Math.round(gib)} ГБ`;
+}
+
+function resolveDiskSizeLabel(disk) {
+  return formatDiskSizeFromBytes(disk?.size_bytes) || formatDiskSizeFromBytes(disk?.extended_info?.Size);
+}
+
+function resolveDiskTitle(disk) {
+  const title = String(disk?.display_name || disk?.model || disk?.serial_number || 'Без названия').trim();
+  if (title) return title;
+  return 'Без названия';
+}
+
+function formatBytesCompact(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '-';
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  let size = bytes;
+  let idx = 0;
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024;
+    idx += 1;
+  }
+  if (idx === 0) return `${Math.round(size)} ${units[idx]}`;
+  return `${size.toFixed(1)} ${units[idx]}`;
+}
+
+const USER_PROFILE_PARTIAL_HINT = 'Агент остановил обход по лимиту времени или количеству файлов, чтобы не нагружать диск';
+const USER_PROFILE_FOLDER_PREVIEW_LIMIT = 4;
+const USER_PROFILE_FOLDER_LABELS = {
+  Desktop: 'Рабочий стол',
+  Documents: 'Документы',
+  Downloads: 'Загрузки',
+  Pictures: 'Изображения',
+};
+const USER_PROFILE_SYSTEM_FOLDER_NAMES = new Set([
+  'appdata',
+  'application data',
+  'cookies',
+  'intelgraphicsprofiles',
+  'links',
+  'local settings',
+  'nethood',
+  'printhood',
+  'recent',
+  'saved games',
+  'searches',
+  'sendto',
+  'start menu',
+  'templates',
+]);
+
+function formatUserProfileFolderName(name) {
+  const raw = String(name || '').trim();
+  return USER_PROFILE_FOLDER_LABELS[raw] || raw || '-';
+}
+
+function getUserProfileKey(profile, idx) {
+  return String(profile?.profilePath || profile?.userName || `profile-${idx}`).trim() || `profile-${idx}`;
+}
+
+function isUserProfileSystemFolder(folder) {
+  const name = String(folder?.name || '').trim();
+  const normalized = name.toLowerCase();
+  if (!normalized) return false;
+  return normalized.startsWith('.') || USER_PROFILE_SYSTEM_FOLDER_NAMES.has(normalized);
+}
+
+function getUserProfileFolders(profile, hideSystemFolders = false) {
+  const folders = Array.isArray(profile?.topLevelFolders) ? profile.topLevelFolders : [];
+  if (!hideSystemFolders) return folders;
+  return folders.filter((folder) => !isUserProfileSystemFolder(folder));
+}
+
+function formatUserProfileFolderSummary(profile, hideSystemFolders = false) {
+  const folders = getUserProfileFolders(profile, hideSystemFolders);
+  if (folders.length === 0) return '';
+  const visible = folders
+    .slice(0, USER_PROFILE_FOLDER_PREVIEW_LIMIT)
+    .map((folder) => `${formatUserProfileFolderName(folder.name)} ${formatBytesCompact(folder.sizeBytes)}`);
+  const hiddenCount = Math.max(0, folders.length - USER_PROFILE_FOLDER_PREVIEW_LIMIT);
+  return hiddenCount > 0 ? `${visible.join(' · ')} · + еще ${hiddenCount}` : visible.join(' · ');
+}
+
+function getUserProfileFolderShare(folder, profile) {
+  const sizeBytes = Number(folder?.sizeBytes || 0);
+  const totalBytes = Number(profile?.totalSizeBytes || 0);
+  if (!Number.isFinite(sizeBytes) || !Number.isFinite(totalBytes) || sizeBytes <= 0 || totalBytes <= 0) return 0;
+  return Math.max(1, Math.min(100, Math.round((sizeBytes / totalBytes) * 100)));
+}
+
+function outlookStatusColor(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'ok') return 'success';
+  if (normalized === 'warning') return 'warning';
+  if (normalized === 'critical') return 'error';
+  return 'default';
+}
+
+function outlookStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'ok') return 'OK';
+  if (normalized === 'warning') return 'Предупреждение';
+  if (normalized === 'critical') return 'Критично';
+  return 'Неизвестно';
+}
+
+function resolveOutlookMeta(pc) {
+  const raw = pc?.outlook && typeof pc.outlook === 'object' ? pc.outlook : {};
+  const active = raw?.active_store && typeof raw.active_store === 'object' ? raw.active_store : null;
+  const activeStoresRaw = Array.isArray(raw?.active_stores) ? raw.active_stores : [];
+  const activeStores = activeStoresRaw
+    .filter((row) => row && typeof row === 'object' && String(row.path || '').trim())
+    .map((row) => row);
+  if (active && !activeStores.some((row) => String(row.path || '').trim().toLowerCase() === String(active.path || '').trim().toLowerCase())) {
+    activeStores.unshift(active);
+  }
+  const candidate = raw?.active_candidate && typeof raw.active_candidate === 'object' ? raw.active_candidate : null;
+  const archives = Array.isArray(raw?.archives) ? raw.archives : [];
+  const activePrimary = activeStores[0] || active || null;
+  const activeSizeMax = activeStores.length > 0
+    ? Math.max(...activeStores.map((row) => Number(row?.size_bytes || 0)))
+    : Number(activePrimary?.size_bytes || 0);
+  return {
+    status: String(pc?.outlook_status || raw?.status || 'unknown').toLowerCase(),
+    confidence: String(pc?.outlook_confidence || raw?.confidence || 'low').toLowerCase(),
+    source: String(raw?.source || 'none').toLowerCase(),
+    activeSizeBytes: Number(pc?.outlook_active_size_bytes || activeSizeMax || 0),
+    activePath: String(pc?.outlook_active_path || activePrimary?.path || '').trim(),
+    totalSizeBytes: Number(pc?.outlook_total_size_bytes || raw?.total_outlook_size_bytes || 0),
+    archivesCount: Number(pc?.outlook_archives_count || archives.length || 0),
+    activeStoresCount: Number(pc?.outlook_active_stores_count || activeStores.length || 0),
+    activeStore: activePrimary,
+    activeStores,
+    activeCandidate: candidate,
+    archives,
+  };
+}
+
+function toFiniteNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function resolveLogicalDiskUsage(disk) {
+  if (!disk || typeof disk !== 'object') return null;
+  const totalGb = toFiniteNumber(disk.total_gb);
+  const freeGb = toFiniteNumber(disk.free_gb);
+  const percentRaw = toFiniteNumber(disk.percent);
+  const percent = toPercent(percentRaw);
+  let usedPercent = percent;
+  let usedGb = null;
+
+  if (totalGb !== null && freeGb !== null) {
+    const safeTotal = Math.max(0, totalGb);
+    const safeFree = Math.max(0, Math.min(safeTotal, freeGb));
+    usedGb = Math.max(0, safeTotal - safeFree);
+    if (safeTotal > 0 && usedPercent === null) {
+      usedPercent = toPercent((usedGb / safeTotal) * 100);
+    }
+  }
+
+  return {
+    mountpoint: String(disk.mountpoint || disk.device || '').trim() || '-',
+    fstype: String(disk.fstype || '-'),
+    totalGb,
+    freeGb,
+    usedGb,
+    usedPercent,
+  };
+}
+
+function resolveCardDriveUsage(pc) {
+  const disks = Array.isArray(pc?.logical_disks) ? pc.logical_disks : [];
+  if (disks.length === 0) return null;
+  const cDisk = disks.find((disk) => String(disk?.mountpoint || disk?.device || '').trim().toUpperCase().startsWith('C:'));
+  const selected = cDisk || disks[0];
+  const usage = resolveLogicalDiskUsage(selected);
+  if (!usage) return null;
+  return {
+    ...usage,
+    isFallback: !cDisk,
+  };
+}
+
+function resolveOutlookArchiveUsage(outlookMeta) {
+  const usedBytes = Math.max(0, Number(outlookMeta?.activeSizeBytes || 0));
+  const usedGb = usedBytes / (1024 ** 3);
+  const limitGb = OUTLOOK_ARCHIVE_LIMIT_BYTES / (1024 ** 3);
+  const percent = toPercent((usedBytes / OUTLOOK_ARCHIVE_LIMIT_BYTES) * 100) || 0;
+  return {
+    usedBytes,
+    usedGb,
+    limitGb,
+    percent,
+  };
+}
+
+function resolveOutlookFiles(outlookMeta) {
+  const active = Array.isArray(outlookMeta?.activeStores) ? outlookMeta.activeStores : [];
+  const archives = Array.isArray(outlookMeta?.archives) ? outlookMeta.archives : [];
+  const rows = [];
+
+  active.forEach((item) => {
+    rows.push({
+      kind: 'active',
+      path: String(item?.path || '').trim(),
+      sizeBytes: Number(item?.size_bytes || 0),
+      lastModifiedAt: item?.last_modified_at || null,
+      type: String(item?.type || ''),
+    });
+  });
+
+  if (rows.length === 0 && outlookMeta?.activeCandidate?.path) {
+    rows.push({
+      kind: 'active',
+      path: String(outlookMeta.activeCandidate.path || '').trim(),
+      sizeBytes: Number(outlookMeta.activeCandidate.size_bytes || 0),
+      lastModifiedAt: outlookMeta.activeCandidate.last_modified_at || null,
+      type: String(outlookMeta.activeCandidate.type || ''),
+    });
+  }
+
+  archives.forEach((item) => {
+    rows.push({
+      kind: 'archive',
+      path: String(item?.path || '').trim(),
+      sizeBytes: Number(item?.size_bytes || 0),
+      lastModifiedAt: item?.last_modified_at || null,
+      type: String(item?.type || ''),
+    });
+  });
+
+  const unique = [];
+  const seen = new Set();
+  rows.forEach((row) => {
+    if (!row.path) return;
+    const key = `${row.kind}:${row.path.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    unique.push(row);
+  });
+  return unique;
+}
+
+function resolveUserProfileSizes(pc) {
+  const raw = pc?.user_profile_sizes && typeof pc.user_profile_sizes === 'object' ? pc.user_profile_sizes : {};
+  const profiles = Array.isArray(raw?.profiles)
+    ? raw.profiles
+      .filter((row) => row && typeof row === 'object')
+      .map((row) => ({
+        userName: String(row.user_name || '').trim(),
+        profilePath: String(row.profile_path || '').trim(),
+        totalSizeBytes: Number(row.total_size_bytes || 0),
+        filesCount: Number(row.files_count || 0),
+        dirsCount: Number(row.dirs_count || 0),
+        errorsCount: Number(row.errors_count || 0),
+        partial: Boolean(row.partial),
+        partialReasons: Array.isArray(row.partial_reasons) ? row.partial_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
+        topLevelFolders: Array.isArray(row.top_level_folders)
+          ? row.top_level_folders
+            .filter((folder) => folder && typeof folder === 'object')
+            .map((folder) => ({
+              name: String(folder.name || '').trim(),
+              path: String(folder.path || '').trim(),
+              sizeBytes: Number(folder.size_bytes || 0),
+              filesCount: Number(folder.files_count || 0),
+              dirsCount: Number(folder.dirs_count || 0),
+              errorsCount: Number(folder.errors_count || 0),
+              partial: Boolean(folder.partial),
+              partialReasons: Array.isArray(folder.partial_reasons) ? folder.partial_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
+            }))
+          : [],
+      }))
+    : [];
+  profiles.sort((left, right) => right.totalSizeBytes - left.totalSizeBytes);
+  const totalSizeBytes = Number(raw?.total_size_bytes || profiles.reduce((sum, row) => sum + row.totalSizeBytes, 0));
+  return {
+    collectedAt: Number(raw?.collected_at || 0),
+    profilesCount: Number(raw?.profiles_count || profiles.length),
+    totalSizeBytes,
+    profiles,
+    partial: Boolean(raw?.partial) || profiles.some((row) => row.partial),
+    partialReasons: Array.isArray(raw?.partial_reasons) ? raw.partial_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
+  };
+}
+
+function pcChangeKey(pc) {
+  const mac = String(pc?.mac_address || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (mac) return `mac:${mac}`;
+  const host = String(pc?.hostname || '').trim().toLowerCase();
+  return `host:${host}`;
+}
+
+// Сохраняем ссылку на запись, если она не изменилась: мемоизированные карточки не перерисовываются.
+function reuseUnchangedComputers(prevList, nextList) {
+  if (!Array.isArray(prevList) || prevList.length === 0) return nextList;
+  const prevByKey = new Map();
+  prevList.forEach((pc) => prevByKey.set(pcChangeKey(pc), pc));
+  return nextList.map((pc) => {
+    const prevItem = prevByKey.get(pcChangeKey(pc));
+    if (!prevItem) return pc;
+    if (prevItem === pc) return prevItem;
+    try {
+      return JSON.stringify(prevItem) === JSON.stringify(pc) ? prevItem : pc;
+    } catch {
+      return pc;
+    }
+  });
+}
+
+function collectBranchNames(summary, items) {
+  const names = new Set();
+  if (summary?.branches && typeof summary.branches === 'object') {
+    Object.keys(summary.branches).forEach((name) => names.add(name));
+  }
+  (Array.isArray(items) ? items : []).forEach((pc) => {
+    names.add(String(pc?.branch_name || 'Без филиала').trim() || 'Без филиала');
+  });
+  return Array.from(names);
+}
+
+// Метаданные карточки кэшируются по объекту записи: пока запись не заменена, карточка получает тот же объект.
+const cardMetaCache = new WeakMap();
+function getCardMeta(pc) {
+  if (!pc || typeof pc !== 'object') return undefined;
+  let meta = cardMetaCache.get(pc);
+  if (!meta) {
+    const outlookMeta = resolveOutlookMeta(pc);
+    meta = {
+      storageStats: getStorageHealthStats(pc),
+      outlookMeta,
+      driveUsage: resolveCardDriveUsage(pc),
+      outlookUsage: resolveOutlookArchiveUsage(outlookMeta),
+    };
+    cardMetaCache.set(pc, meta);
+  }
+  return meta;
+}
+
+function evictSeenChangesMap(map) {
+  const entries = Object.entries(map || {});
+  if (entries.length === 0) return {};
+  const cutoff = Date.now() - SEEN_CHANGES_TTL_MS;
+  const fresh = entries.filter(([, ts]) => Number(ts) * 1000 >= cutoff);
+  if (fresh.length <= SEEN_CHANGES_MAX_ENTRIES) {
+    return Object.fromEntries(fresh);
+  }
+  fresh.sort((a, b) => Number(b[1]) - Number(a[1]));
+  return Object.fromEntries(fresh.slice(0, SEEN_CHANGES_MAX_ENTRIES));
+}
+
+function readSeenChangesMap() {
+  try {
+    const raw = localStorage.getItem(SEEN_CHANGES_STORAGE_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return {};
+    return evictSeenChangesMap(data);
+  } catch {
+    return {};
+  }
+}
+
+function formatUpdatedAgo(ts) {
+  const diff = Math.max(0, Math.floor((Date.now() - Number(ts)) / 1000));
+  if (diff < 60) return 'только что';
+  const mins = Math.floor(diff / 60);
+  if (mins < 60) return `${mins} мин назад`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} ч назад`;
+  return `${Math.floor(hours / 24)} дн назад`;
+}
+
+function summarizeChangeEvent(event) {
+  const diff = event?.diff && typeof event.diff === 'object' ? event.diff : {};
+  const lines = [];
+
+  if (diff.system && typeof diff.system === 'object') {
+    const before = diff.system.before || {};
+    const after = diff.system.after || {};
+    if ((before.cpu_model || '') !== (after.cpu_model || '')) {
+      lines.push(`CPU: "${before.cpu_model || '-'}" -> "${after.cpu_model || '-'}"`);
+    }
+    if (Number(before.ram_gb || 0) !== Number(after.ram_gb || 0)) {
+      lines.push(`RAM: ${before.ram_gb || '-'} -> ${after.ram_gb || '-'}`);
+    }
+    if ((before.system_serial || '') !== (after.system_serial || '')) {
+      lines.push(`S/N BIOS: "${before.system_serial || '-'}" -> "${after.system_serial || '-'}"`);
+    }
+  }
+
+  const summarizeSet = (name, beforeRaw, afterRaw) => {
+    const before = Array.isArray(beforeRaw) ? beforeRaw : [];
+    const after = Array.isArray(afterRaw) ? afterRaw : [];
+    const added = after.filter((item) => !before.includes(item));
+    const removed = before.filter((item) => !after.includes(item));
+    if (added.length === 0 && removed.length === 0) {
+      if (before.length !== after.length) {
+        lines.push(`${name}: ${before.length} -> ${after.length}`);
+      }
+      return;
+    }
+    if (added.length > 0) lines.push(`${name}: добавлено ${added.length}`);
+    if (removed.length > 0) lines.push(`${name}: убрано ${removed.length}`);
+  };
+
+  if (diff.monitors && typeof diff.monitors === 'object') {
+    summarizeSet('Мониторы', diff.monitors.before, diff.monitors.after);
+  }
+  if (diff.storage && typeof diff.storage === 'object') {
+    summarizeSet('Накопители', diff.storage.before, diff.storage.after);
+  }
+
+  if (lines.length === 0) {
+    const types = Array.isArray(event?.change_types) ? event.change_types.join(', ') : '-';
+    return [`Изменения: ${types}`];
+  }
+  return lines;
+}
+
+const ComputerCard = React.memo(function ComputerCard({ pc, meta, unseen, ui, onOpen }) {
+  const net = pc.network_link || {};
+  const storageStats = meta?.storageStats || { total: 0, problemCount: 0 };
+  const outlookMeta = meta?.outlookMeta || {};
+  const driveUsage = meta?.driveUsage || null;
+  const outlookUsage = meta?.outlookUsage || { usedGb: 0, limitGb: 50, percent: 0 };
+  return (
+    <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+      <Paper
+        variant="outlined"
+        onClick={() => onOpen(pc)}
+        sx={{
+          ...getOfficePanelSx(ui, {
+            p: 1.1,
+            height: '100%',
+            cursor: 'pointer',
+            boxShadow: 'none',
+            '&:hover': {
+              borderColor: ui.borderStrong,
+              bgcolor: ui.panelBg,
+              boxShadow: 'none',
+            },
+          }),
+        }}
+      >
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.7 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, pr: 1, lineHeight: 1.25, wordBreak: 'break-word' }}>
+            {pc.hostname || 'Неизвестный ПК'}
+          </Typography>
+          <Chip size="small" color={statusColor(pc.status)} label={statusLabel(pc.status)} />
+        </Box>
+
+        {pc.is_unassigned && (
+          <Chip size="small" color="warning" variant="outlined" label="Без привязки" sx={{ mb: 0.7 }} />
+        )}
+
+        {Array.isArray(pc.matched_fields) && pc.matched_fields.length > 0 ? (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.7 }}>
+            Совпадение: {pc.matched_fields.map((field) => SEARCH_FIELD_LABELS[field] || field).join(', ')}
+          </Typography>
+        ) : null}
+
+        <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', wordBreak: 'break-word' }}>
+          {pc.user_full_name || 'ФИО не определено'}
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.7, wordBreak: 'break-word' }}>
+          {pc.user_login || pc.current_user || '-'}
+        </Typography>
+
+        <Stack spacing={0.35} sx={{ mb: 0.75 }}>
+          <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>IP: <b>{resolvePcIp(pc) || '-'}</b></Typography>
+          <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>MAC: <b>{pc.mac_address || '-'}</b></Typography>
+          <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>БД: <b>{pc.database_name || pc.database_id || '-'}</b></Typography>
+          {pc.inventory_inv_no ? (
+            <Typography variant="caption" sx={{ display: 'block' }}>Инв. №: <b>{pc.inventory_inv_no}</b></Typography>
+          ) : null}
+          <Typography variant="caption" sx={{ display: 'block' }}>Возраст: <b>{formatAge(pc.age_seconds)}</b></Typography>
+        </Stack>
+
+        {pc.network_link !== undefined ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, mb: 0.7 }}>
+            <LanIcon fontSize="small" color="action" />
+            <Typography variant="caption" color="text.secondary">
+              {net.device_code ? `${net.device_code} / ${net.port_name || 'порт ?'} / ${net.socket_code || 'розетка ?'}` : 'Сетевое подключение не определено'}
+            </Typography>
+          </Box>
+        ) : null}
+
+        {/* Поле отсутствует в урезанной карточке списка — блок скрываем; детали придут по клику. */}
+        {pc.logical_disks !== undefined ? (
+          <Box sx={{ mb: 0.8 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.25 }}>
+              {driveUsage
+                ? `Хранилище ${driveUsage.mountpoint}: ${driveUsage.usedGb !== null ? `${driveUsage.usedGb.toFixed(1)} / ${driveUsage.totalGb?.toFixed(1) || '-'} ГБ` : `${driveUsage.usedPercent ?? 0}%`}${driveUsage.isFallback ? ' (по первому диску)' : ''}`
+                : 'Хранилище C: нет данных'}
+            </Typography>
+            <LinearProgress
+              variant="determinate"
+              value={driveUsage?.usedPercent ?? 0}
+              color={(driveUsage?.usedPercent ?? 0) >= 90 ? 'error' : ((driveUsage?.usedPercent ?? 0) >= 75 ? 'warning' : 'primary')}
+              sx={{ height: 6, borderRadius: 4 }}
+            />
+          </Box>
+        ) : null}
+
+        {storageStats.total > 0 && (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, mb: 0.7 }}>
+            <StorageIcon fontSize="small" color="action" />
+            <Typography variant="caption" color="text.secondary">
+              SMART: дисков {storageStats.total}, проблемных {storageStats.problemCount}
+            </Typography>
+          </Box>
+        )}
+
+        {pc.outlook !== undefined || pc.outlook_status !== undefined ? (
+          <Box sx={{ mb: 0.8 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 0.8, mb: 0.25 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, minWidth: 0 }}>
+                <MailOutlineIcon fontSize="small" color="action" />
+                <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.25 }}>
+                  {`Макс. архив Outlook: ${outlookUsage.usedGb.toFixed(1)} / ${outlookUsage.limitGb.toFixed(0)} ГБ`}
+                </Typography>
+              </Box>
+              <Chip size="small" color={outlookStatusColor(outlookMeta.status)} label={outlookStatusLabel(outlookMeta.status)} />
+            </Box>
+            <LinearProgress
+              variant="determinate"
+              value={outlookUsage.percent}
+              color={outlookUsage.percent >= 100 ? 'error' : (outlookUsage.percent >= 85 ? 'warning' : 'success')}
+              sx={{ height: 6, borderRadius: 4 }}
+            />
+          </Box>
+        ) : null}
+
+        {pc.has_hardware_changes && (
+          <Chip
+            size="small"
+            color={unseen ? 'warning' : 'default'}
+            label={`Изменения: ${pc.changes_count_30d || 0}`}
+          />
+        )}
+      </Paper>
+    </Grid>
+  );
+});
+
+function Computers() {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const { hasPermission } = useAuth();
+  const canViewAllComputers = hasPermission('computers.read_all');
+  const canManageComputers = hasPermission('computers.manage');
+
+  const [computers, setComputers] = useState([]);
+  const [changes, setChanges] = useState({ totals: {}, daily: [] });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [hideActionLoading, setHideActionLoading] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [softwareSearchOpen, setSoftwareSearchOpen] = useState(false);
+  const [usbSearchOpen, setUsbSearchOpen] = useState(false);
+  const [fleetHealthOpen, setFleetHealthOpen] = useState(false);
+
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  // Ссылка из карточки объекта ИТ: ?open=<MAC> сразу открывает карточку ПК, ?back=<путь> даёт кнопку «Назад».
+  const openMacParam = String(searchParams.get('open') || '').trim();
+  const backParam = String(searchParams.get('back') || '');
+  const backTo = backParam.startsWith('/it/objects/') ? backParam : '';
+  const pinnedKeyRef = useRef('');
+  const initialQ = normalizeComputersSearchInput(searchParams.get('q') || '');
+  const [q, setQ] = useState(initialQ);
+  const [debouncedQuery, setDebouncedQuery] = useState(initialQ);
+  const [searchFields, setSearchFields] = useState(DEFAULT_COMPUTER_SEARCH_FIELDS);
+  const [recentSearches, setRecentSearches] = useState(() => readRecentSearches());
+  const [searchMeta, setSearchMeta] = useState({ total: 0, limit: COMPUTERS_PAGE_SIZE, offset: 0, has_more: false, next_offset: null });
+  const [searchSummary, setSearchSummary] = useState(null);
+  const [status, setStatus] = useState('all');
+  const [outlookStatus, setOutlookStatus] = useState('all');
+  const [branch, setBranch] = useState('all');
+  const [changedOnly, setChangedOnly] = useState(false);
+  const [hiddenOnly, setHiddenOnly] = useState(false);
+  const [hideVm172, setHideVm172] = useState(() => localStorage.getItem(HIDE_VM_172_STORAGE_KEY) !== '0');
+  const [showAllComputers, setShowAllComputers] = useState(
+    () => localStorage.getItem('computers_scope_all') !== '0',
+  );
+  const [showDashboard, setShowDashboard] = useState(() => localStorage.getItem('computers_show_dashboard') !== '0');
+  const [showLocation, setShowLocation] = useState(() => localStorage.getItem('computers_show_location') !== '0');
+  const [hideSystemUserProfileFolders, setHideSystemUserProfileFolders] = useState(() => localStorage.getItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY) === '1');
+  const [expandedLocations, setExpandedLocations] = useState({});
+  const [expandedUserProfiles, setExpandedUserProfiles] = useState({});
+  const [seenChangesByPc, setSeenChangesByPc] = useState(() => readSeenChangesMap());
+  // Накопленный набор филиалов: не сужается от других фильтров и сбрасывается при смене БД.
+  const [knownBranches, setKnownBranches] = useState([]);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
+
+  const requestIdRef = useRef(0);
+  const abortControllerRef = useRef(null);
+  const inFlightRef = useRef(false);
+  const loadMoreSentinelRef = useRef(null);
+  const pollTimerRef = useRef(null);
+  const loadedCountRef = useRef(0);
+  const retryDelaySecRef = useRef(AUTO_REFRESH_BASE_SEC);
+  const hasInitializedRef = useRef(false);
+  const qRef = useRef(q);
+  const debouncedQueryRef = useRef(debouncedQuery);
+  const detailRequestIdRef = useRef(0);
+  const detailAbortRef = useRef(null);
+  const loadMorePendingRef = useRef(false);
+  const handleLoadMoreRef = useRef(null);
+  const etagsRef = useRef(new Map());
+  // Актуальный список (синхронно с commitComputers), чтобы фоновое обновление не теряло хвост.
+  const computersRef = useRef([]);
+  // Ключ фильтров, для которого загружен список: хвост сохраняем только при том же запросе.
+  const loadedScopeKeyRef = useRef('');
+  const lastLoadOkAtRef = useRef(0);
+
+  const scope = canViewAllComputers && showAllComputers ? 'all' : 'selected';
+  const searchDebouncePending = normalizeComputersSearchInput(q) !== normalizeComputersSearchInput(debouncedQuery);
+  const isFastSearchPreset = searchFields.length === FAST_SEARCH_PRESET_FIELDS.length
+    && FAST_SEARCH_PRESET_FIELDS.every((key) => searchFields.includes(key));
+
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const searchFilterParams = useMemo(() => ({
+    scope,
+    branch: branch !== 'all' ? branch : undefined,
+    status: status !== 'all' ? status : undefined,
+    outlookStatus: outlookStatus !== 'all' ? outlookStatus : undefined,
+    q: debouncedQuery || undefined,
+    searchFields,
+    changedOnly,
+    hiddenOnly,
+    hideVm172,
+  }), [branch, changedOnly, debouncedQuery, hiddenOnly, hideVm172, outlookStatus, scope, searchFields, status]);
+
+  useEffect(() => {
+    qRef.current = q;
+  }, [q]);
+
+  useEffect(() => {
+    debouncedQueryRef.current = debouncedQuery;
+  }, [debouncedQuery]);
+
+  const loadChangesDeferred = useCallback(() => {
+    equipmentAPI.getAgentComputerChanges(50)
+      .then((changeData) => {
+        if (changeData && typeof changeData === 'object') {
+          setChanges(changeData);
+        }
+      })
+      .catch((err) => {
+        console.error('Computers changes load failed', err);
+      });
+  }, []);
+
+  useEffect(() => {
+    const normalized = normalizeComputersSearchInput(q);
+    if (normalized === normalizeComputersSearchInput(debouncedQueryRef.current)) return undefined;
+    if (normalized.length === 1) return undefined;
+    const timer = setTimeout(() => {
+      setDebouncedQuery(normalized);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [q]);
+
+  useEffect(() => {
+    const normalized = normalizeComputersSearchInput(debouncedQuery);
+    if (!normalized) return;
+    setRecentSearches((prev) => {
+      const next = [normalized, ...prev.filter((item) => item !== normalized)].slice(0, RECENT_SEARCHES_MAX);
+      persistRecentSearches(next);
+      return next;
+    });
+  }, [debouncedQuery]);
+
+  const handleRecentSearchClick = useCallback((queryText) => {
+    setQ(queryText);
+    setDebouncedQuery(queryText);
+  }, []);
+
+  const handleRecentSearchRemove = useCallback((queryText) => {
+    setRecentSearches((prev) => {
+      const next = prev.filter((item) => item !== queryText);
+      persistRecentSearches(next);
+      return next;
+    });
+  }, []);
+
+  const getBackgroundRefreshLimit = useCallback(() => {
+    const loadedCount = Number(loadedCountRef.current || 0);
+    return Math.min(BACKGROUND_REFRESH_MAX_ITEMS, loadedCount || COMPUTERS_PAGE_SIZE);
+  }, []);
+
+  const commitComputers = useCallback((next) => {
+    computersRef.current = next;
+    loadedCountRef.current = next.length;
+    setComputers(next);
+  }, []);
+
+  const dropComputerFromList = useCallback((pc) => {
+    if (!pc) return;
+    const key = pcChangeKey(pc);
+    commitComputers(computersRef.current.filter((item) => pcChangeKey(item) !== key));
+  }, [commitComputers]);
+
+  const load = useCallback(async ({
+    withLoader = false,
+    append = false,
+    offset = 0,
+    limit = COMPUTERS_PAGE_SIZE,
+    silent = false,
+  } = {}) => {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    if (!append && abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    if (!append) {
+      abortControllerRef.current = controller;
+    }
+    inFlightRef.current = true;
+    const showFullLoader = Boolean(withLoader) && !hasInitializedRef.current;
+    const showRefreshOverlay = !append && !showFullLoader && (!silent || Boolean(withLoader));
+    try {
+      if (showFullLoader) setLoading(true);
+      if (showRefreshOverlay) setRefreshing(true);
+      // A replacement load invalidates any older append request and its spinner.
+      setLoadingMore(append);
+      const requestOptions = {
+        ...searchFilterParams,
+        sortBy: 'hostname',
+        sortDir: 'asc',
+        limit,
+        offset,
+        includeSummary: true,
+      };
+      const etagKey = JSON.stringify(requestOptions);
+      const pcPayload = await equipmentAPI.searchAgentComputers({
+        ...requestOptions,
+        etag: etagsRef.current.get(etagKey),
+        requestId: `cmp-${requestId}`,
+        signal: append ? undefined : controller.signal,
+      });
+      if (requestId !== requestIdRef.current) return false;
+      if (pcPayload?.notModified) {
+        const okAt = Date.now();
+        setLastUpdatedAt(okAt);
+        lastLoadOkAtRef.current = okAt;
+        retryDelaySecRef.current = AUTO_REFRESH_BASE_SEC;
+        return true;
+      }
+      if (pcPayload?.etag) {
+        etagsRef.current.set(etagKey, pcPayload.etag);
+        if (etagsRef.current.size > 20) {
+          etagsRef.current.delete(etagsRef.current.keys().next().value);
+        }
+      }
+      const items = Array.isArray(pcPayload?.items) ? pcPayload.items : (Array.isArray(pcPayload) ? pcPayload : []);
+      const prevList = computersRef.current;
+      const scopeKey = JSON.stringify({ ...searchFilterParams, sortBy: 'hostname', sortDir: 'asc' });
+      const total = Number(pcPayload?.total ?? items.length) || 0;
+      // Фоновое/ручное обновление запрашивает только голову списка. Если пользователь уже подгрузил
+      // больше строк того же запроса, заменяем голову и сохраняем загруженный хвост: список не обрезается.
+      const keepTail = !append && Number(offset) === 0 && Boolean(pcPayload?.has_more)
+        && loadedScopeKeyRef.current === scopeKey && prevList.length > limit;
+      let nextList;
+      if (append) {
+        nextList = [...prevList, ...items];
+      } else if (keepTail) {
+        const headKeys = new Set(items.map((pc) => pcChangeKey(pc)));
+        const tail = prevList.slice(limit).filter((pc) => !headKeys.has(pcChangeKey(pc)));
+        nextList = [...reuseUnchangedComputers(prevList, items), ...tail];
+      } else {
+        nextList = reuseUnchangedComputers(prevList, items);
+      }
+      if (!append) {
+        loadedScopeKeyRef.current = scopeKey;
+      }
+      commitComputers(nextList);
+      if (pcPayload && typeof pcPayload.summary === 'object' && pcPayload.summary !== null) {
+        setSearchSummary(pcPayload.summary);
+      }
+      const seenBranches = collectBranchNames(pcPayload?.summary, items);
+      if (seenBranches.length > 0) {
+        setKnownBranches((prev) => {
+          const extra = seenBranches.filter((name) => !prev.includes(name));
+          return extra.length > 0 ? [...prev, ...extra] : prev;
+        });
+      }
+      const okAt = Date.now();
+      setLastUpdatedAt(okAt);
+      lastLoadOkAtRef.current = okAt;
+      const loadedTotal = nextList.length;
+      if (keepTail) {
+        // Список — непрерывный префикс выдачи сервера, поэтому следующая страница начинается с loadedTotal.
+        setSearchMeta({
+          total,
+          limit: Number(pcPayload?.limit ?? limit) || limit,
+          offset: 0,
+          has_more: loadedTotal < total,
+          next_offset: loadedTotal < total ? loadedTotal : null,
+        });
+      } else {
+        setSearchMeta({
+          total,
+          limit: Number(pcPayload?.limit ?? limit) || limit,
+          offset: Number(pcPayload?.offset ?? offset) || 0,
+          has_more: Boolean(pcPayload?.has_more),
+          next_offset: pcPayload?.next_offset ?? null,
+        });
+      }
+      retryDelaySecRef.current = AUTO_REFRESH_BASE_SEC;
+      return true;
+    } catch (err) {
+      if (isRequestAbortedError(err) || requestId !== requestIdRef.current) {
+        return false;
+      }
+      console.error('Computers load failed', err);
+      retryDelaySecRef.current = Math.min(retryDelaySecRef.current + AUTO_REFRESH_STEP_SEC, AUTO_REFRESH_MAX_SEC);
+      return false;
+    } finally {
+      if (requestId === requestIdRef.current) {
+        if (showFullLoader) setLoading(false);
+        if (showRefreshOverlay) setRefreshing(false);
+        if (append) setLoadingMore(false);
+        inFlightRef.current = false;
+        if (loadMorePendingRef.current) {
+          loadMorePendingRef.current = false;
+          setTimeout(() => { void handleLoadMoreRef.current?.(); }, 0);
+        }
+      }
+    }
+  }, [commitComputers, searchFilterParams]);
+
+  const scheduleNextPoll = useCallback((delaySec) => {
+    clearPollTimer();
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    const nextDelaySec = Number.isFinite(Number(delaySec)) ? Number(delaySec) : retryDelaySecRef.current;
+    pollTimerRef.current = setTimeout(async () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        clearPollTimer();
+        return;
+      }
+      const queryPending = normalizeComputersSearchInput(qRef.current) !== normalizeComputersSearchInput(debouncedQueryRef.current);
+      if (queryPending || inFlightRef.current) {
+        scheduleNextPoll(Math.min(5, retryDelaySecRef.current));
+        return;
+      }
+      await load({
+        withLoader: false,
+        silent: true,
+        append: false,
+        offset: 0,
+        limit: getBackgroundRefreshLimit(),
+      });
+      loadChangesDeferred();
+      scheduleNextPoll(retryDelaySecRef.current);
+    }, Math.max(1, nextDelaySec) * 1000);
+  }, [clearPollTimer, getBackgroundRefreshLimit, load, loadChangesDeferred]);
+
+  const handleManualRefresh = useCallback(async () => {
+    await load({ withLoader: true, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+    loadChangesDeferred();
+    scheduleNextPoll(retryDelaySecRef.current);
+  }, [getBackgroundRefreshLimit, load, loadChangesDeferred, scheduleNextPoll]);
+
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore || !searchMeta.has_more) return;
+    if (inFlightRef.current) {
+      loadMorePendingRef.current = true;
+      return;
+    }
+    const nextOffset = Number(searchMeta.next_offset ?? computers.length);
+    if (!Number.isFinite(nextOffset) || nextOffset < 0) return;
+    await load({ withLoader: false, append: true, offset: nextOffset, limit: COMPUTERS_PAGE_SIZE });
+  }, [computers.length, load, loadingMore, searchMeta.has_more, searchMeta.next_offset]);
+
+  useEffect(() => {
+    handleLoadMoreRef.current = handleLoadMore;
+  }, [handleLoadMore]);
+
+  useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel || loading || loadingMore || refreshing || !searchMeta.has_more) return undefined;
+    if (typeof IntersectionObserver !== 'function') return undefined;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void handleLoadMore();
+      }
+    }, {
+      root: null,
+      rootMargin: '480px 0px',
+      threshold: 0.01,
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [handleLoadMore, loading, loadingMore, refreshing, searchMeta.has_more]);
+
+  const openComputerDetail = useCallback(async (pc) => {
+    if (!pc) return;
+    setSelected(pc);
+    setOpen(true);
+    setDetailLoading(true);
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
+    if (detailAbortRef.current) {
+      detailAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
+    try {
+      const macAddress = String(pc.mac_address || '').trim();
+      if (!macAddress) return;
+      const fullPayload = await equipmentAPI.getAgentComputer(macAddress, { scope, signal: controller.signal });
+      if (detailRequestIdRef.current !== requestId) return;
+      if (fullPayload && typeof fullPayload === 'object') {
+        setSelected(fullPayload);
+      }
+    } catch (err) {
+      if (!isRequestAbortedError(err)) {
+        console.error('Computer detail load failed', err);
+      }
+    } finally {
+      if (detailRequestIdRef.current === requestId) {
+        setDetailLoading(false);
+      }
+    }
+  }, [scope]);
+
+  const handleHideSelected = useCallback(async () => {
+    const macAddress = String(selected?.mac_address || '').trim();
+    if (!macAddress || hideActionLoading) return;
+    setHideActionLoading(true);
+    try {
+      await equipmentAPI.hideComputer(macAddress);
+      dropComputerFromList(selected);
+      setOpen(false);
+      setSelected(null);
+      await load({ withLoader: false, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+    } catch (err) {
+      console.error('Computer hide failed', err);
+    } finally {
+      setHideActionLoading(false);
+    }
+  }, [dropComputerFromList, getBackgroundRefreshLimit, hideActionLoading, load, selected]);
+
+  const handleUnhideSelected = useCallback(async () => {
+    const macAddress = String(selected?.mac_address || '').trim();
+    if (!macAddress || hideActionLoading) return;
+    setHideActionLoading(true);
+    try {
+      await equipmentAPI.unhideComputer(macAddress);
+      dropComputerFromList(selected);
+      setOpen(false);
+      setSelected(null);
+      await load({ withLoader: false, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+    } catch (err) {
+      console.error('Computer unhide failed', err);
+    } finally {
+      setHideActionLoading(false);
+    }
+  }, [dropComputerFromList, getBackgroundRefreshLimit, hideActionLoading, load, selected]);
+
+  const handleDeleteSelected = useCallback(async () => {
+    const macAddress = String(selected?.mac_address || '').trim();
+    if (!macAddress || hideActionLoading) return;
+    const hostname = String(selected?.hostname || '').trim() || macAddress;
+    const confirmed = window.confirm(
+      `Удалить хост «${hostname}» из инвентаря?\n\n` +
+      'Запись и история изменений будут удалены безвозвратно. ' +
+      'Если агент продолжает слать отчёты, хост появится снова — тогда используйте «В архив».'
+    );
+    if (!confirmed) return;
+    setHideActionLoading(true);
+    try {
+      await equipmentAPI.deleteComputer(macAddress);
+      dropComputerFromList(selected);
+      setOpen(false);
+      setSelected(null);
+      await load({ withLoader: false, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+    } catch (err) {
+      console.error('Computer delete failed', err);
+    } finally {
+      setHideActionLoading(false);
+    }
+  }, [dropComputerFromList, getBackgroundRefreshLimit, hideActionLoading, load, selected]);
+
+  const toggleSearchField = useCallback((fieldKey) => {
+    setSearchFields((prev) => {
+      const current = Array.isArray(prev) ? prev : DEFAULT_COMPUTER_SEARCH_FIELDS;
+      if (current.includes(fieldKey)) {
+        const next = current.filter((item) => item !== fieldKey);
+        return next.length > 0 ? next : current;
+      }
+      return [...current, fieldKey];
+    });
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+    const init = async () => {
+      loadedCountRef.current = 0;
+      await load({
+        withLoader: !hasInitializedRef.current,
+        silent: false,
+        append: false,
+        offset: 0,
+        limit: COMPUTERS_PAGE_SIZE,
+      });
+      if (!isActive) return;
+      hasInitializedRef.current = true;
+      scheduleNextPoll(AUTO_REFRESH_BASE_SEC);
+      window.setTimeout(() => {
+        if (isActive) loadChangesDeferred();
+      }, 0);
+    };
+    init();
+    return () => {
+      isActive = false;
+      clearPollTimer();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      if (detailAbortRef.current) {
+        detailAbortRef.current.abort();
+      }
+    };
+  }, [clearPollTimer, load, loadChangesDeferred, scheduleNextPoll]);
+
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState !== 'visible') {
+        clearPollTimer();
+        return;
+      }
+      if (normalizeComputersSearchInput(qRef.current) !== normalizeComputersSearchInput(debouncedQueryRef.current)) {
+        scheduleNextPoll(retryDelaySecRef.current);
+        return;
+      }
+      // Не дублируем запрос: если загрузка уже идёт (её завершение перепланирует опрос),
+      // либо данные свежее VISIBILITY_REFRESH_MIN_GAP_SEC — возвращаемся к обычному графику.
+      const sinceLastOkSec = (Date.now() - lastLoadOkAtRef.current) / 1000;
+      if (inFlightRef.current || sinceLastOkSec < VISIBILITY_REFRESH_MIN_GAP_SEC) {
+        scheduleNextPoll(Math.max(1, retryDelaySecRef.current - Math.max(0, sinceLastOkSec)));
+        return;
+      }
+      await load({
+        withLoader: false,
+        silent: true,
+        append: false,
+        offset: 0,
+        limit: getBackgroundRefreshLimit(),
+      });
+      loadChangesDeferred();
+      scheduleNextPoll(retryDelaySecRef.current);
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [clearPollTimer, getBackgroundRefreshLimit, load, loadChangesDeferred, scheduleNextPoll]);
+
+  useEffect(() => {
+    const reloadAfterDbSwitch = async () => {
+      let guard = 0;
+      while (inFlightRef.current && guard < 30) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        guard += 1;
+      }
+      setSelected(null);
+      setOpen(false);
+      loadedCountRef.current = 0;
+      loadedScopeKeyRef.current = '';
+      setKnownBranches([]);
+      await load({ withLoader: true, silent: false, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE });
+      loadChangesDeferred();
+      scheduleNextPoll(AUTO_REFRESH_BASE_SEC);
+    };
+
+    const handleDatabaseChanged = async () => {
+      await reloadAfterDbSwitch();
+    };
+
+    const handleStorage = async (event) => {
+      if (event.key !== 'selected_database') return;
+      await reloadAfterDbSwitch();
+    };
+
+    window.addEventListener('database-changed', handleDatabaseChanged);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('database-changed', handleDatabaseChanged);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [load, loadChangesDeferred, scheduleNextPoll]);
+
+  useEffect(() => {
+    localStorage.setItem('computers_show_dashboard', showDashboard ? '1' : '0');
+  }, [showDashboard]);
+
+  useEffect(() => {
+    localStorage.setItem('computers_show_location', showLocation ? '1' : '0');
+  }, [showLocation]);
+
+  useEffect(() => {
+    localStorage.setItem(HIDE_VM_172_STORAGE_KEY, hideVm172 ? '1' : '0');
+  }, [hideVm172]);
+
+  useEffect(() => {
+    localStorage.setItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY, hideSystemUserProfileFolders ? '1' : '0');
+  }, [hideSystemUserProfileFolders]);
+
+  useEffect(() => {
+    if (canViewAllComputers) return;
+    setShowAllComputers(false);
+  }, [canViewAllComputers]);
+
+  useEffect(() => {
+    if (!canViewAllComputers) return;
+    localStorage.setItem('computers_scope_all', showAllComputers ? '1' : '0');
+  }, [canViewAllComputers, showAllComputers]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const currentKey = pcChangeKey(selected);
+    const listItem = computers.find((pc) => pcChangeKey(pc) === currentKey);
+    if (!listItem) {
+      // ПК, открытый по ссылке из объекта, может не попасть в отфильтрованный список — не закрывать его.
+      if (pinnedKeyRef.current === currentKey) return;
+      setSelected(null);
+      setOpen(false);
+      return;
+    }
+    // Пока drawer открыт, selected заполняется detail-endpoint — не затирать лёгкой карточкой из списка.
+    if (open) return;
+    if (listItem !== selected) {
+      setSelected(listItem);
+    }
+  }, [computers, open, selected]);
+
+  useEffect(() => {
+    if (!open) {
+      setExpandedUserProfiles({});
+    }
+  }, [open]);
+
+  useEffect(() => {
+    localStorage.setItem(SEEN_CHANGES_STORAGE_KEY, JSON.stringify(seenChangesByPc));
+  }, [seenChangesByPc]);
+
+  const hasUnseenChanges = useCallback((pc) => {
+    const lastTs = Number(pc?.last_change_at || 0);
+    if (!lastTs) return false;
+    const seenTs = Number(seenChangesByPc?.[pcChangeKey(pc)] || 0);
+    return lastTs > seenTs;
+  }, [seenChangesByPc]);
+
+  const markPcChangesSeen = useCallback((pc) => {
+    const ts = Number(pc?.last_change_at || 0);
+    if (!ts) return;
+    const key = pcChangeKey(pc);
+    setSeenChangesByPc((prev) => {
+      const current = Number(prev?.[key] || 0);
+      if (current >= ts) return prev;
+      return evictSeenChangesMap({ ...(prev || {}), [key]: ts });
+    });
+  }, []);
+
+  const markAllChangesSeen = useCallback(() => {
+    setSeenChangesByPc((prev) => {
+      const next = { ...(prev || {}) };
+      computers.forEach((pc) => {
+        const ts = Number(pc?.last_change_at || 0);
+        if (!pc?.has_hardware_changes || !ts) return;
+        next[pcChangeKey(pc)] = Math.max(Number(next[pcChangeKey(pc)] || 0), ts);
+      });
+      return evictSeenChangesMap(next);
+    });
+  }, [computers]);
+
+  const handleOpenComputer = useCallback((pc) => {
+    markPcChangesSeen(pc);
+    setExpandedUserProfiles({});
+    void openComputerDetail(pc);
+  }, [markPcChangesSeen, openComputerDetail]);
+
+  const deepLinkOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!openMacParam || deepLinkOpenedRef.current) return;
+    deepLinkOpenedRef.current = true;
+    pinnedKeyRef.current = pcChangeKey({ mac_address: openMacParam });
+    void openComputerDetail({ mac_address: openMacParam, hostname: searchParams.get('q') || '' });
+  }, [openMacParam, openComputerDetail, searchParams]);
+
+  const branches = useMemo(() => {
+    const uniq = new Set(knownBranches);
+    if (branch !== 'all') {
+      uniq.add(branch);
+    }
+    return Array.from(uniq).sort((a, b) => a.localeCompare(b, 'ru'));
+  }, [branch, knownBranches]);
+
+  const pendingQueryLength = normalizeComputersSearchInput(q).length;
+  const searchHelperText = searchDebouncePending && pendingQueryLength === 1
+    ? 'Минимум 2 символа — или Enter'
+    : (searchDebouncePending || refreshing ? 'Обновляем список…' : undefined);
+
+  const filtered = computers;
+
+  const grouped = useMemo(() => {
+    const branchBuckets = {};
+    filtered.forEach((pc) => {
+      const branchName = String(pc.branch_name || 'Без филиала').trim() || 'Без филиала';
+      const locationName = showLocation
+        ? (String(pc.location_name || pc.network_link?.site_name || 'Без местоположения').trim() || 'Без местоположения')
+        : 'Все компьютеры';
+
+      if (!branchBuckets[branchName]) {
+        branchBuckets[branchName] = { branchName, locations: {} };
+      }
+      if (!branchBuckets[branchName].locations[locationName]) {
+        branchBuckets[branchName].locations[locationName] = { locationName, items: [] };
+      }
+      branchBuckets[branchName].locations[locationName].items.push(pc);
+    });
+
+    return Object.values(branchBuckets)
+      .sort((a, b) => a.branchName.localeCompare(b.branchName, 'ru'))
+      .map((branchGroup) => ({
+        ...branchGroup,
+        locations: Object.values(branchGroup.locations).sort((a, b) => a.locationName.localeCompare(b.locationName, 'ru')),
+      }));
+  }, [filtered, showLocation]);
+
+  const statusRows = useMemo(() => {
+    const summaryStatuses = searchSummary?.statuses && typeof searchSummary.statuses === 'object' ? searchSummary.statuses : null;
+    const map = summaryStatuses ? { ...summaryStatuses } : { online: 0, stale: 0, offline: 0, unknown: 0 };
+    if (!summaryStatuses) {
+      filtered.forEach((pc) => {
+        const key = String(pc.status || 'unknown').toLowerCase();
+        map[key] = (map[key] || 0) + 1;
+      });
+    }
+    return [
+      { label: 'В сети', value: map.online || 0, color: '#2e7d32' },
+      { label: 'Нет свежих', value: map.stale || 0, color: '#ed6c02' },
+      { label: 'Оффлайн', value: map.offline || 0, color: '#d32f2f' },
+      { label: 'Неизвестно', value: map.unknown || 0, color: '#757575' },
+    ];
+  }, [filtered, searchSummary]);
+
+  const branchRows = useMemo(() => {
+    const counters = searchSummary?.branches && typeof searchSummary.branches === 'object' ? searchSummary.branches : {};
+    const nextCounters = Object.keys(counters).length > 0 ? { ...counters } : {};
+    if (Object.keys(nextCounters).length === 0) {
+      filtered.forEach((pc) => {
+        const name = String(pc.branch_name || 'Без филиала').trim() || 'Без филиала';
+        nextCounters[name] = (nextCounters[name] || 0) + 1;
+      });
+    }
+    return Object.entries(nextCounters)
+      .sort((a, b) => a[0].localeCompare(b[0], 'ru'))
+      .map(([label, value]) => ({ label, value }));
+  }, [filtered, searchSummary]);
+
+  const changeRows = useMemo(() => {
+    // MiniBars показывает первые 8 строк, а сервер отдаёт 30 дней по возрастанию — берём последние 8.
+    const daily = Array.isArray(changes.daily) ? changes.daily.slice(-8) : [];
+    return daily.map((row) => {
+      const [, month, day] = String(row.date || '').split('-');
+      return { label: month && day ? `${day}.${month}` : String(row.date || ''), value: Number(row.count || 0) };
+    });
+  }, [changes.daily]);
+
+  const totals = changes.totals || {};
+  const unseenChangedPcs = useMemo(() => {
+    return computers.filter((pc) => {
+      if (!pc?.has_hardware_changes) return false;
+      return hasUnseenChanges(pc);
+    });
+  }, [computers, seenChangesByPc]);
+  const selectedRuntime = useMemo(() => resolveRuntimeMetrics(selected), [selected]);
+  const selectedStorageStats = useMemo(() => getStorageHealthStats(selected), [selected]);
+  const selectedOutlook = useMemo(() => resolveOutlookMeta(selected), [selected]);
+  const selectedDriveUsage = useMemo(() => resolveCardDriveUsage(selected), [selected]);
+  const selectedOutlookUsage = useMemo(() => resolveOutlookArchiveUsage(selectedOutlook), [selectedOutlook]);
+  const selectedOutlookFiles = useMemo(() => resolveOutlookFiles(selectedOutlook), [selectedOutlook]);
+  const selectedUserProfileSizes = useMemo(() => resolveUserProfileSizes(selected), [selected]);
+  const selectedNetworkDevices = useMemo(() => resolveNetworkDevices(selected), [selected]);
+  const toggleLocationGroup = useCallback((branchName, locationName) => {
+    const key = `${branchName}__${locationName}`;
+    setExpandedLocations((prev) => ({ ...(prev || {}), [key]: !Boolean(prev?.[key]) }));
+  }, []);
+  const toggleUserProfileFolders = useCallback((profileKey) => {
+    setExpandedUserProfiles((prev) => ({ ...(prev || {}), [profileKey]: !Boolean(prev?.[profileKey]) }));
+  }, []);
+
+  return (
+    <MainLayout headerMode="integrated">
+      <PageShell sx={{ width: '100%', pb: 2 }}>
+        <PageTopBar
+          title="Дашборд компьютеров"
+          sx={{ mb: 2 }}
+          actions={(
+          <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 1, ml: 'auto' }}>
+            {canViewAllComputers && (
+              <FormControlLabel
+                sx={{ m: 0 }}
+                control={<Switch checked={showAllComputers} onChange={(e) => setShowAllComputers(e.target.checked)} />}
+                label={showAllComputers ? 'Показаны все базы' : 'Только текущая база'}
+              />
+            )}
+            <FormControlLabel
+              sx={{ m: 0 }}
+              control={<Switch checked={showLocation} onChange={(e) => setShowLocation(e.target.checked)} />}
+              label="Показывать местоположение"
+            />
+            <FormControlLabel
+              sx={{ m: 0 }}
+              control={<Switch checked={showDashboard} onChange={(e) => setShowDashboard(e.target.checked)} />}
+              label="Показывать дашборд"
+            />
+            {lastUpdatedAt ? (
+              <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                Обновлено: {formatUpdatedAgo(lastUpdatedAt)}
+              </Typography>
+            ) : null}
+            <Button size="small" variant="outlined" onClick={() => setSoftwareSearchOpen(true)}>
+              Поиск ПО
+            </Button>
+            <Button size="small" variant="outlined" onClick={() => setUsbSearchOpen(true)}>
+              Поиск USB
+            </Button>
+            <Button size="small" variant="outlined" onClick={() => setFleetHealthOpen(true)}>
+              Панель парка
+            </Button>
+            <Tooltip title="Обновить данные">
+              <span>
+                <IconButton aria-label="Обновить данные" size="small" onClick={handleManualRefresh} disabled={loading} color="primary">
+                  <RefreshIcon />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
+          )}
+        />
+
+        {!loading && unseenChangedPcs.length > 0 && (
+          <Alert severity="warning" icon={<WarningAmberIcon fontSize="inherit" />} sx={{ mb: 2 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.8 }}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                Новые изменения оборудования на ПК: {unseenChangedPcs.length}
+              </Typography>
+              <Typography variant="body2">
+                {unseenChangedPcs.slice(0, 8).map((pc) => pc.hostname || 'Неизвестный ПК').join(', ')}
+                {unseenChangedPcs.length > 8 ? ` и еще ${unseenChangedPcs.length - 8}` : ''}
+              </Typography>
+              <Box>
+                <Button size="small" variant="outlined" color="warning" onClick={markAllChangesSeen}>
+                  Отметить все как просмотренные
+                </Button>
+              </Box>
+              <Typography variant="caption" color="text.secondary">
+                24ч: {Number(totals.changed_24h || 0)} · 7д: {Number(totals.changed_7d || 0)} · 30д: {Number(totals.changed_30d || 0)}
+              </Typography>
+            </Box>
+          </Alert>
+        )}
+
+        {showDashboard && (
+          <>
+            <Grid container spacing={2} sx={{ mb: 2 }}>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <StatCard title="Всего ПК" value={Number(searchSummary?.total ?? searchMeta.total ?? filtered.length)} helper="по текущим фильтрам" />
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <StatCard title="В сети" value={statusRows[0]?.value || 0} helper="heartbeat до 12 минут" color="success.main" />
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <StatCard title="Оффлайн" value={statusRows[2]?.value || 0} helper="более 60 минут" color="error.main" />
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <StatCard title="Без привязки" value={Number(searchSummary?.unassigned || 0)} helper="агент виден, база не определена" color="warning.main" />
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <StatCard title="С изменениями" value={Number(totals.changed_30d || 0)} helper="уникальные ПК за 30 дней" color="warning.main" />
+              </Grid>
+            </Grid>
+
+            <Grid container spacing={2} sx={{ mb: 2 }}>
+              <Grid item xs={12} md={4}><MiniBars title="Статусы" rows={statusRows} color="#2e7d32" /></Grid>
+              <Grid item xs={12} md={4}><MiniBars title="Филиалы" rows={branchRows} color="#1565c0" /></Grid>
+              <Grid item xs={12} md={4}><MiniBars title="Изменения по дням" rows={changeRows} color="#ed6c02" /></Grid>
+            </Grid>
+          </>
+        )}
+
+        <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={4}>
+              <TextField
+                size="small"
+                fullWidth
+                label="Поиск"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  const normalized = normalizeComputersSearchInput(e.currentTarget.value);
+                  if (!normalized) return;
+                  setDebouncedQuery(normalized);
+                }}
+                onPaste={(e) => {
+                  const pasted = e.clipboardData?.getData('text');
+                  if (pasted == null) return;
+                  e.preventDefault();
+                  setQ(normalizeComputersSearchInput(pasted));
+                }}
+                placeholder="ПК, ФИО, профиль, PST/OST, IP, MAC"
+                helperText={searchHelperText}
+              />
+            </Grid>
+            <Grid item xs={12} md={8}>
+              <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                  Искать в
+                </Typography>
+                {COMPUTER_SEARCH_FIELD_OPTIONS.map((option) => {
+                  const active = searchFields.includes(option.key);
+                  return (
+                    <Chip
+                      key={option.key}
+                      size="small"
+                      clickable
+                      color={active ? 'primary' : 'default'}
+                      variant={active ? 'filled' : 'outlined'}
+                      label={option.label}
+                      onClick={() => toggleSearchField(option.key)}
+                      sx={{ height: 26 }}
+                    />
+                  );
+                })}
+                <Chip
+                  size="small"
+                  clickable
+                  color={isFastSearchPreset ? 'success' : 'default'}
+                  variant={isFastSearchPreset ? 'filled' : 'outlined'}
+                  label="Быстрый: ПК/пользователь"
+                  onClick={() =>
+                    setSearchFields(isFastSearchPreset ? DEFAULT_COMPUTER_SEARCH_FIELDS : FAST_SEARCH_PRESET_FIELDS)
+                  }
+                  sx={{ height: 26 }}
+                />
+              </Stack>
+              {recentSearches.length > 0 ? (
+                <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.8 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Недавние:
+                  </Typography>
+                  {recentSearches.map((queryText) => (
+                    <Chip
+                      key={queryText}
+                      size="small"
+                      variant="outlined"
+                      label={queryText}
+                      onClick={() => handleRecentSearchClick(queryText)}
+                      onDelete={() => handleRecentSearchRemove(queryText)}
+                      sx={{ height: 24 }}
+                    />
+                  ))}
+                </Stack>
+              ) : null}
+            </Grid>
+            <Grid item xs={12} sm={6} md={2}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Статус</InputLabel>
+                <Select value={status} label="Статус" onChange={(e) => setStatus(e.target.value)}>
+                  <MenuItem value="all">Все</MenuItem>
+                  <MenuItem value="online">В сети</MenuItem>
+                  <MenuItem value="stale">Нет свежих</MenuItem>
+                  <MenuItem value="offline">Оффлайн</MenuItem>
+                  <MenuItem value="unknown">Неизвестно</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={6} md={2}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Outlook</InputLabel>
+                <Select value={outlookStatus} label="Outlook" onChange={(e) => setOutlookStatus(e.target.value)}>
+                  <MenuItem value="all">Все</MenuItem>
+                  <MenuItem value="ok">OK</MenuItem>
+                  <MenuItem value="warning">Предупреждение</MenuItem>
+                  <MenuItem value="critical">Критично</MenuItem>
+                  <MenuItem value="unknown">Неизвестно</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Филиал</InputLabel>
+                <Select value={branch} label="Филиал" onChange={(e) => setBranch(e.target.value)}>
+                  <MenuItem value="all">Все</MenuItem>
+                  {branches.map((branchName) => (
+                    <MenuItem key={branchName} value={branchName}>{branchName}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} md={1}>
+              <FormControlLabel
+                control={<Switch checked={changedOnly} onChange={(e) => setChangedOnly(e.target.checked)} />}
+                label="Изменения"
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Chip
+                  size="small"
+                  clickable
+                  color={hideVm172 ? 'primary' : 'default'}
+                  variant={hideVm172 ? 'filled' : 'outlined'}
+                  label="Скрыть 172/VM"
+                  onClick={() => setHideVm172((prev) => !prev)}
+                  sx={{ height: 28 }}
+                />
+                <Chip
+                  size="small"
+                  clickable
+                  color={hiddenOnly ? 'warning' : 'default'}
+                  variant={hiddenOnly ? 'filled' : 'outlined'}
+                  label="Архив"
+                  onClick={() => setHiddenOnly((prev) => !prev)}
+                  sx={{ height: 28 }}
+                />
+              </Stack>
+              {hideVm172 ? (
+                <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.8 }} data-testid="computers-hide-vm-hint">
+                  <Typography variant="caption" color="warning.main" sx={{ fontWeight: 600 }}>
+                    Скрыты VM-хосты 172.*, возможно часть ПК не видна.
+                  </Typography>
+                  <Button size="small" variant="text" onClick={() => setHideVm172(false)} sx={{ minHeight: 24, py: 0 }}>
+                    Показать
+                  </Button>
+                </Stack>
+              ) : null}
+            </Grid>
+          </Grid>
+        </Paper>
+
+        {(refreshing || searchDebouncePending) && !loading ? (
+          <LinearProgress sx={{ mb: 1.5, borderRadius: 1 }} />
+        ) : null}
+
+        {loading ? (
+          <Stack spacing={1.5}>
+            {[0, 1].map((groupIdx) => (
+              <Paper key={groupIdx} variant="outlined" sx={{ p: 1.2 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                  <Skeleton variant="text" width="18%" height={26} />
+                  <Skeleton variant="rounded" width={64} height={24} />
+                </Box>
+                <Grid container spacing={1.2}>
+                  {[0, 1, 2, 3].map((cardIdx) => (
+                    <Grid item xs={12} sm={6} md={4} lg={3} xl={2} key={cardIdx}>
+                      <Skeleton variant="rounded" height={148} />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Paper>
+            ))}
+          </Stack>
+        ) : grouped.length === 0 ? (
+          <Paper variant="outlined" sx={{ p: 4, textAlign: 'center' }}>
+            <Typography color="text.secondary">Нет данных по выбранным фильтрам.</Typography>
+            {hideVm172 ? (
+              <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 1 }}>
+                Возможно, фильтр «Скрыть 172/VM» скрывает нужные ПК.
+              </Typography>
+            ) : null}
+          </Paper>
+        ) : (
+          <Stack spacing={1.5}>
+            {grouped.map((branchGroup) => (
+              <Paper key={branchGroup.branchName} variant="outlined" sx={{ p: 1.2 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>{branchGroup.branchName}</Typography>
+                  <Chip
+                    size="small"
+                    label={`${branchGroup.locations.reduce((acc, location) => acc + location.items.length, 0)} ПК`}
+                  />
+                </Box>
+
+                <Stack spacing={1}>
+                  {branchGroup.locations.map((locationGroup) => {
+                    const locationKey = `${branchGroup.branchName}__${locationGroup.locationName}`;
+                    const isExpanded = Boolean(expandedLocations[locationKey]);
+                    return (
+                      <Paper key={locationKey} variant="outlined" sx={{ p: 1 }}>
+                        <Box
+                          onClick={() => toggleLocationGroup(branchGroup.branchName, locationGroup.locationName)}
+                          sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            cursor: 'pointer',
+                            userSelect: 'none',
+                          }}
+                        >
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {locationGroup.locationName}
+                          </Typography>
+                          <Chip size="small" label={isExpanded ? `Скрыть (${locationGroup.items.length})` : `Показать (${locationGroup.items.length})`} />
+                        </Box>
+
+                        <Collapse in={isExpanded} timeout="auto" unmountOnExit>
+                          <Grid container spacing={1.2} sx={{ mt: 0.5 }}>
+                            {locationGroup.items.map((pc, idx) => {
+                              const cardKey = pcChangeKey(pc);
+                              return (
+                                <ComputerCard
+                                  key={cardKey !== 'host:' ? cardKey : `row-${idx}`}
+                                  pc={pc}
+                                  meta={getCardMeta(pc)}
+                                  unseen={hasUnseenChanges(pc)}
+                                  ui={ui}
+                                  onOpen={handleOpenComputer}
+                                />
+                              );
+                            })}
+                          </Grid>
+                        </Collapse>
+                      </Paper>
+                    );
+                  })}
+                </Stack>
+              </Paper>
+            ))}
+            {searchMeta.has_more ? (
+              <Box
+                ref={loadMoreSentinelRef}
+                data-testid="computers-load-more-sentinel"
+                aria-live="polite"
+                sx={{ minHeight: 52, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.7, py: 1 }}
+              >
+                <Typography variant="caption" color="text.secondary">
+                  Показано {computers.length} из {searchMeta.total}
+                </Typography>
+                <Stack direction="row" spacing={0.8} alignItems="center">
+                  {loadingMore ? <CircularProgress size={16} thickness={5} /> : null}
+                  <Typography variant="caption" color="text.secondary">
+                    {loadingMore ? 'Подгружаем компьютеры в фоне…' : 'Следующие компьютеры подгрузятся автоматически'}
+                  </Typography>
+                </Stack>
+              </Box>
+            ) : searchMeta.total > computers.length ? (
+              <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', py: 1 }}>
+                Показано {computers.length} из {searchMeta.total}
+              </Typography>
+            ) : null}
+          </Stack>
+        )}
+
+        <Drawer
+          anchor="right"
+          open={open}
+          onClose={() => {
+            setOpen(false);
+            setSelected(null);
+            pinnedKeyRef.current = '';
+            if (detailAbortRef.current) {
+              detailAbortRef.current.abort();
+            }
+          }}
+        >
+          <Box sx={{ width: { xs: '100vw', sm: 560 }, maxWidth: '100vw', p: { xs: 2, sm: 2.5 }, bgcolor: 'background.default', height: '100%', overflowY: 'auto' }}>
+            {!selected ? null : (
+              <Stack spacing={1.4}>
+                {backTo ? (
+                  <Box>
+                    <Button size="small" startIcon={<ArrowBackRoundedIcon />} onClick={() => navigate(backTo)}>
+                      Назад
+                    </Button>
+                  </Box>
+                ) : null}
+                {detailLoading ? <LinearProgress sx={{ mb: 0.5 }} /> : null}
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1.5 }}>
+                  <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.6 }}>
+                    {selected.hostname || 'Неизвестный ПК'}
+                  </Typography>
+                  <Stack direction="row" spacing={0.8} flexWrap="wrap" useFlexGap sx={{ mb: 0.7 }}>
+                    <Chip size="small" color={statusColor(selected.status)} label={statusLabel(selected.status)} />
+                    <Chip size="small" color={outlookStatusColor(selectedOutlook.status)} label={`Outlook: ${outlookStatusLabel(selectedOutlook.status)}`} />
+                    {selected.has_hardware_changes && hasUnseenChanges(selected) ? (
+                      <Chip size="small" color="warning" label="Есть изменения" />
+                    ) : null}
+                    {selected.is_hidden || selected.hidden_at ? (
+                      <Chip size="small" color="warning" variant="outlined" label="В архиве" />
+                    ) : null}
+                  </Stack>
+                  {canManageComputers ? <Stack direction="row" spacing={0.8} flexWrap="wrap" useFlexGap sx={{ mb: 0.8 }}>
+                    {selected.is_hidden || selected.hidden_at || hiddenOnly ? (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="success"
+                        disabled={hideActionLoading || detailLoading}
+                        onClick={() => { void handleUnhideSelected(); }}
+                      >
+                        Из архива
+                      </Button>
+                    ) : (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="warning"
+                        disabled={hideActionLoading || detailLoading}
+                        onClick={() => { void handleHideSelected(); }}
+                      >
+                        В архив
+                      </Button>
+                    )}
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      disabled={hideActionLoading || detailLoading}
+                      onClick={() => { void handleDeleteSelected(); }}
+                    >
+                      Удалить
+                    </Button>
+                  </Stack> : null}
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.8 }}>
+                    Последняя активность: {formatTs(selected.last_seen_at || selected.timestamp)} · Возраст: {formatAge(selected.age_seconds)}
+                  </Typography>
+                  <Stack spacing={0.65}>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
+                        {selectedDriveUsage
+                          ? `Хранилище ${selectedDriveUsage.mountpoint}: ${selectedDriveUsage.usedGb !== null ? `${selectedDriveUsage.usedGb.toFixed(1)} / ${selectedDriveUsage.totalGb?.toFixed(1) || '-'} ГБ` : `${selectedDriveUsage.usedPercent ?? 0}%`}${selectedDriveUsage.isFallback ? ' (по первому диску)' : ''}`
+                          : 'Хранилище C: нет данных'}
+                      </Typography>
+                      <LinearProgress
+                        variant="determinate"
+                        value={selectedDriveUsage?.usedPercent ?? 0}
+                        color={(selectedDriveUsage?.usedPercent ?? 0) >= 90 ? 'error' : ((selectedDriveUsage?.usedPercent ?? 0) >= 75 ? 'warning' : 'primary')}
+                        sx={{ height: 6, borderRadius: 3 }}
+                      />
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
+                        {`Макс. архив Outlook: ${selectedOutlookUsage.usedGb.toFixed(1)} / ${selectedOutlookUsage.limitGb.toFixed(0)} ГБ`}
+                      </Typography>
+                      <LinearProgress
+                        variant="determinate"
+                        value={selectedOutlookUsage.percent}
+                        color={selectedOutlookUsage.percent >= 100 ? 'error' : (selectedOutlookUsage.percent >= 85 ? 'warning' : 'success')}
+                        sx={{ height: 6, borderRadius: 3 }}
+                      />
+                    </Box>
+                  </Stack>
+                </Paper>
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Пользователь и сеть</Typography>
+                <Paper variant="outlined" sx={{ p: 1.4 }}>
+                  <Typography variant="body2">ФИО: {selected.user_full_name || '-'}</Typography>
+                  <Typography variant="body2">Логин: {selected.user_login || selected.current_user || '-'}</Typography>
+                  <Typography variant="body2">IP: {resolvePcIp(selected) || '-'}</Typography>
+                  <Typography variant="body2">MAC: {selected.mac_address || '-'}</Typography>
+                  <Typography variant="body2">Филиал: {selected.branch_name || '-'}</Typography>
+                  <Typography variant="body2">Местоположение: {selected.location_name || selected.network_link?.site_name || '-'}</Typography>
+                  <Typography variant="body2">База: {selected.database_name || selected.database_id || '-'}</Typography>
+                  <Typography variant="body2">
+                    Подключение: {selected.network_link?.device_code ? `${selected.network_link.device_code} / ${selected.network_link.port_name || 'порт ?'} / ${selected.network_link.socket_code || 'розетка ?'}` : 'не определено'}
+                  </Typography>
+                  <Box sx={{ borderTop: 1, borderColor: 'divider', mt: 1.1, pt: 1.1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 700, mb: selectedNetworkDevices.length > 0 ? 0.8 : 0 }}>
+                      Сетевые устройства: {selectedNetworkDevices.length || 'нет данных'}
+                    </Typography>
+                    {selectedNetworkDevices.length > 0 ? (
+                      <Stack spacing={0.7}>
+                        {selectedNetworkDevices.map((device, idx) => {
+                          const status = networkDeviceStatusMeta(device);
+                          const details = networkDeviceDetails(device);
+                          return (
+                            <Paper
+                              key={`${device.name || device.description || 'network-device'}-${device.interface_index || idx}`}
+                              variant="outlined"
+                              sx={{ p: 0.8 }}
+                            >
+                              <Stack direction="row" spacing={0.8} justifyContent="space-between" alignItems="flex-start">
+                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                  <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }}>
+                                    {device.name || device.description || 'Без названия'}
+                                  </Typography>
+                                  {device.description && device.description !== device.name ? (
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                      {device.description}
+                                    </Typography>
+                                  ) : null}
+                                </Box>
+                                <Stack direction="row" spacing={0.5} flexWrap="wrap" justifyContent="flex-end" useFlexGap>
+                                  <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    label={NETWORK_DEVICE_TYPE_LABELS[device.device_type] || NETWORK_DEVICE_TYPE_LABELS.other}
+                                  />
+                                  <Chip size="small" color={status.color} label={status.label} />
+                                </Stack>
+                              </Stack>
+                              {details ? (
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.45 }}>
+                                  {details}
+                                </Typography>
+                              ) : null}
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
+                    ) : null}
+                  </Box>
+                </Paper>
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Профили пользователей</Typography>
+                <Paper variant="outlined" sx={{ p: 1.4 }}>
+                  <Stack spacing={0.9}>
+                    <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
+                      <Chip size="small" label={`Всего: ${formatBytesCompact(selectedUserProfileSizes.totalSizeBytes)}`} />
+                      <Chip size="small" variant="outlined" label={`Профилей: ${selectedUserProfileSizes.profilesCount}`} />
+                      {selectedUserProfileSizes.partial && (
+                        <Tooltip title={USER_PROFILE_PARTIAL_HINT}>
+                          <Chip size="small" color="warning" label="Расчет не полный" />
+                        </Tooltip>
+                      )}
+                      <Typography variant="caption" color="text.secondary">
+                        Обновлено: {selectedUserProfileSizes.collectedAt ? formatTs(selectedUserProfileSizes.collectedAt) : '-'}
+                      </Typography>
+                      <FormControlLabel
+                        control={(
+                          <Switch
+                            size="small"
+                            checked={hideSystemUserProfileFolders}
+                            onChange={(event) => setHideSystemUserProfileFolders(event.target.checked)}
+                          />
+                        )}
+                        label={(
+                          <Tooltip describeChild title="Скрывает AppData, dot-папки и служебные каталоги профиля только в интерфейсе">
+                            <Typography variant="caption" component="span">Скрыть системные</Typography>
+                          </Tooltip>
+                        )}
+                        sx={{ ml: 0, mr: 0 }}
+                      />
+                    </Stack>
+                    {detailLoading ? (
+                      <Typography variant="body2" color="text.secondary">Загрузка размеров профилей…</Typography>
+                    ) : selectedUserProfileSizes.profiles.length > 0 ? (
+                      <Stack spacing={0.7}>
+                        {selectedUserProfileSizes.profiles.slice(0, 8).map((profile, idx) => {
+                          const profileKey = getUserProfileKey(profile, idx);
+                          const foldersExpanded = Boolean(expandedUserProfiles[profileKey]);
+                          const visibleFolders = getUserProfileFolders(profile, hideSystemUserProfileFolders);
+                          const folderSummary = formatUserProfileFolderSummary(profile, hideSystemUserProfileFolders);
+                          const allFolderCount = profile.topLevelFolders.length;
+                          const folderCount = visibleFolders.length;
+                          const hiddenSystemFolderCount = Math.max(0, allFolderCount - folderCount);
+                          const folderButtonCount = hiddenSystemFolderCount > 0 ? `${folderCount} из ${allFolderCount}` : String(allFolderCount);
+                          return (
+                            <Paper key={profileKey} variant="outlined" sx={{ p: 0.85 }}>
+                              <Stack spacing={0.8}>
+                                <Stack direction="row" spacing={0.9} justifyContent="space-between" alignItems="flex-start">
+                                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                                    <Tooltip title={profile.profilePath || '-'}>
+                                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }} noWrap>
+                                        {profile.userName || profile.profilePath || '-'}
+                                      </Typography>
+                                    </Tooltip>
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.1 }}>
+                                      {profile.filesCount} файлов · {profile.dirsCount} папок{profile.errorsCount > 0 ? ` · ошибок: ${profile.errorsCount}` : ''}
+                                    </Typography>
+                                    {!!folderSummary && (
+                                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.1 }} noWrap>
+                                        {folderSummary}
+                                      </Typography>
+                                    )}
+                                  </Box>
+                                  <Stack alignItems="flex-end" spacing={0.3} sx={{ flexShrink: 0 }}>
+                                    <Typography variant="caption" sx={{ fontWeight: 700 }}>{formatBytesCompact(profile.totalSizeBytes)}</Typography>
+                                    {profile.partial && (
+                                      <Tooltip title={USER_PROFILE_PARTIAL_HINT}>
+                                        <Chip size="small" color="warning" label="Частично" sx={{ height: 22 }} />
+                                      </Tooltip>
+                                    )}
+                                  </Stack>
+                                </Stack>
+
+                                {allFolderCount > 0 && (
+                                  <Box>
+                                    <Button
+                                      type="button"
+                                      size="small"
+                                      variant="text"
+                                      onClick={() => toggleUserProfileFolders(profileKey)}
+                                      endIcon={foldersExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                                      aria-expanded={foldersExpanded}
+                                      aria-controls={`profile-folders-${idx}`}
+                                      sx={{ px: 0.2, py: 0.1, minHeight: 24, fontSize: '0.75rem' }}
+                                    >
+                                      {foldersExpanded ? 'Скрыть папки' : `${hideSystemUserProfileFolders ? 'Показать папки' : 'Показать все папки'} (${folderButtonCount})`}
+                                    </Button>
+                                    <Collapse in={foldersExpanded} timeout="auto" unmountOnExit>
+                                      <Box id={`profile-folders-${idx}`} sx={{ mt: 0.7, borderTop: 1, borderColor: 'divider' }}>
+                                        {hiddenSystemFolderCount > 0 && (
+                                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', py: 0.7 }}>
+                                            Скрыто системных: {hiddenSystemFolderCount}
+                                          </Typography>
+                                        )}
+                                        {folderCount === 0 ? (
+                                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', py: 0.7 }}>
+                                            Все папки скрыты фильтром.
+                                          </Typography>
+                                        ) : visibleFolders.map((folder, folderIdx) => {
+                                          const share = getUserProfileFolderShare(folder, profile);
+                                          return (
+                                            <Box
+                                              key={`${folder.path || folder.name || folderIdx}`}
+                                              sx={{
+                                                py: 0.75,
+                                                borderBottom: folderIdx === visibleFolders.length - 1 ? 0 : 1,
+                                                borderColor: 'divider',
+                                              }}
+                                            >
+                                              <Stack direction="row" spacing={0.9} justifyContent="space-between" alignItems="flex-start">
+                                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                                  <Tooltip title={folder.path || folder.name || '-'}>
+                                                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }} noWrap>
+                                                      {formatUserProfileFolderName(folder.name)}
+                                                    </Typography>
+                                                  </Tooltip>
+                                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                                    {folder.filesCount || 0} файлов · {folder.dirsCount || 0} папок{folder.errorsCount > 0 ? ` · ошибок: ${folder.errorsCount}` : ''}
+                                                  </Typography>
+                                                </Box>
+                                                <Stack alignItems="flex-end" spacing={0.3} sx={{ flexShrink: 0, minWidth: 86 }}>
+                                                  <Typography variant="caption" sx={{ fontWeight: 700 }}>{formatBytesCompact(folder.sizeBytes)}</Typography>
+                                                  {folder.partial && (
+                                                    <Tooltip title={USER_PROFILE_PARTIAL_HINT}>
+                                                      <Chip size="small" color="warning" label="Частично" sx={{ height: 20 }} />
+                                                    </Tooltip>
+                                                  )}
+                                                </Stack>
+                                              </Stack>
+                                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.7, mt: 0.45 }}>
+                                                <LinearProgress
+                                                  variant="determinate"
+                                                  value={share}
+                                                  sx={{ flex: 1, height: 5, borderRadius: 4 }}
+                                                />
+                                                <Typography variant="caption" color="text.secondary" sx={{ minWidth: 34, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                                  {share}%
+                                                </Typography>
+                                              </Box>
+                                            </Box>
+                                          );
+                                        })}
+                                      </Box>
+                                    </Collapse>
+                                  </Box>
+                                )}
+                              </Stack>
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">Размеры профилей еще не собраны.</Typography>
+                    )}
+                  </Stack>
+                </Paper>
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Система</Typography>
+                <Paper variant="outlined" sx={{ p: 1.4 }}>
+                  <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>Модель ITinvent: {selected.inventory_model_name || '-'}</Typography>
+                  <Typography variant="body2">Инвентарный №: {selected.inventory_inv_no || '-'}</Typography>
+                  {selected.inventory_inv_no ? (
+                    <Button
+                      component={RouterLink}
+                      to={`/database?inv_no=${encodeURIComponent(selected.inventory_inv_no)}${selected.database_id ? `&db_id=${encodeURIComponent(selected.database_id)}` : ''}`}
+                      size="small"
+                      sx={{ mt: 0.4 }}
+                    >
+                      Открыть карточку в базе
+                    </Button>
+                  ) : null}
+                  <Typography variant="body2">CPU: {selected.cpu_model || '-'}</Typography>
+                  <Typography variant="body2">RAM: {selected.ram_gb ? `${selected.ram_gb} ГБ` : '-'}</Typography>
+                  <Typography variant="body2">Серийный номер BIOS: {selected.system_serial || '-'}</Typography>
+                  <Typography variant="body2">Последняя перезагрузка: {selectedRuntime.lastRebootAt ? formatTs(selectedRuntime.lastRebootAt) : '-'}</Typography>
+                  <Typography variant="body2">Время работы: {selectedRuntime.uptimeSeconds !== null ? formatAge(selectedRuntime.uptimeSeconds) : '-'}</Typography>
+                  <Typography variant="body2">Загрузка CPU: {formatPercent(selectedRuntime.cpu)}</Typography>
+                  <Typography variant="body2">Загрузка RAM: {formatPercent(selectedRuntime.ram)}</Typography>
+                </Paper>
+
+                {selected?.ops_health && typeof selected.ops_health === 'object' ? (
+                  <>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Ops health</Typography>
+                    <Paper variant="outlined" sx={{ p: 1.4 }}>
+                      <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap" sx={{ mb: 0.8 }}>
+                        {selected.ops_health.low_disk ? <Chip size="small" color="error" label="Мало места" /> : null}
+                        {selected.ops_health.pending_reboot ? <Chip size="small" color="warning" label="Нужен reboot" /> : null}
+                        {selected.ops_health.legacy_itinvent_present ? (
+                          <Chip size="small" color="warning" variant="outlined" label="Legacy IT-Invent" />
+                        ) : null}
+                      </Stack>
+                      <Typography variant="body2">
+                        Свободно на системном диске:{' '}
+                        {selected.ops_health.system_drive_free_gb != null
+                          ? `${Number(selected.ops_health.system_drive_free_gb).toFixed(1)} ГБ`
+                          : '-'}
+                      </Typography>
+                      <Typography variant="body2">
+                        Pending reboot: {selected.ops_health.pending_reboot ? 'да' : 'нет'}
+                        {Array.isArray(selected.ops_health.pending_reboot_reasons) && selected.ops_health.pending_reboot_reasons.length
+                          ? ` (${selected.ops_health.pending_reboot_reasons.join(', ')})`
+                          : ''}
+                      </Typography>
+                      <Typography variant="body2">
+                        Reminder: {selected.ops_health.last_reboot_reminder_at ? formatTs(selected.ops_health.last_reboot_reminder_at) : '-'}
+                      </Typography>
+                      <Typography variant="body2">
+                        Задача агента: {selected.ops_health.agent_task_name || '-'}
+                      </Typography>
+                    </Paper>
+                  </>
+                ) : null}
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Outlook</Typography>
+                <Paper variant="outlined" sx={{ p: 1.4 }}>
+                  <Stack spacing={0.9}>
+                    <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
+                      <Chip size="small" color={outlookStatusColor(selectedOutlook.status)} label={outlookStatusLabel(selectedOutlook.status)} />
+                      <Typography variant="caption" color="text.secondary">
+                        Всего: {formatBytesCompact(selectedOutlook.totalSizeBytes)} · Активных: {selectedOutlook.activeStoresCount || selectedOutlook.activeStores.length} · Архивов: {selectedOutlook.archivesCount}
+                      </Typography>
+                    </Stack>
+                    {selectedOutlookFiles.length > 0 ? (
+                      <Stack spacing={0.7}>
+                        {selectedOutlookFiles.map((file, idx) => (
+                          <Paper
+                            key={`${file.kind}_${file.path || idx}`}
+                            variant="outlined"
+                            sx={{ p: 0.85, borderColor: file.kind === 'active' ? 'primary.main' : 'divider' }}
+                          >
+                            <Stack direction="row" spacing={0.9} justifyContent="space-between" alignItems="flex-start">
+                              <Box sx={{ minWidth: 0, flex: 1 }}>
+                                <Tooltip title={file.path || '-'}>
+                                  <Typography variant="caption" sx={{ display: 'block', fontWeight: 600 }} noWrap>
+                                    {file.path || '-'}
+                                  </Typography>
+                                </Tooltip>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.1 }}>
+                                  {file.lastModifiedAt ? `Обновлено: ${formatTs(file.lastModifiedAt)}` : 'Дата изменения: -'}
+                                </Typography>
+                              </Box>
+                              <Stack alignItems="flex-end" spacing={0.3} sx={{ flexShrink: 0 }}>
+                                <Chip
+                                  size="small"
+                                  label={file.kind === 'active' ? 'Активный' : 'Архив'}
+                                  color={file.kind === 'active' ? 'primary' : 'default'}
+                                  sx={{ height: 22 }}
+                                />
+                                <Typography variant="caption" color="text.secondary">
+                                  {formatBytesCompact(file.sizeBytes)}
+                                </Typography>
+                              </Stack>
+                            </Stack>
+                          </Paper>
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">Файлы Outlook не обнаружены.</Typography>
+                    )}
+                  </Stack>
+                </Paper>
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Мониторы</Typography>
+                {Array.isArray(selected.monitors) && selected.monitors.length > 0 ? (
+                  selected.monitors.map((mon, i) => (
+                    <Paper key={i} variant="outlined" sx={{ p: 1.2 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {mon.manufacturer || 'Неизвестно'} {mon.product_code || ''}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                        S/N: {mon.serial_number || '-'} {mon.serial_source ? `(${mon.serial_source})` : ''}
+                      </Typography>
+                      {mon.inventory_inv_no ? (
+                        <>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600 }}>
+                            {`Инв. №: ${mon.inventory_inv_no}${mon.inventory_model_name ? ` · ${mon.inventory_model_name}` : ''}`}
+                          </Typography>
+                          <Button
+                            component={RouterLink}
+                            to={`/database?inv_no=${encodeURIComponent(mon.inventory_inv_no)}${(mon.inventory_db_id || selected.database_id) ? `&db_id=${encodeURIComponent(mon.inventory_db_id || selected.database_id)}` : ''}`}
+                            size="small"
+                            sx={{ mt: 0.2 }}
+                          >
+                            Открыть в базе
+                          </Button>
+                        </>
+                      ) : null}
+                    </Paper>
+                  ))
+                ) : (
+                  <Paper variant="outlined" sx={{ p: 1.2 }}>
+                    <Typography variant="body2" color="text.secondary">Мониторы не обнаружены.</Typography>
+                  </Paper>
+                )}
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Диски</Typography>
+                <Paper variant="outlined" sx={{ p: 1.4 }}>
+                  <Stack spacing={1.1}>
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Логические диски</Typography>
+                      {Array.isArray(selected.logical_disks) && selected.logical_disks.length > 0 ? (
+                        <Stack spacing={0.9} sx={{ mt: 0.6 }}>
+                          {selected.logical_disks.map((disk, i) => {
+                            const usage = resolveLogicalDiskUsage(disk);
+                            return (
+                              <Box key={`${disk.mountpoint || 'disk'}_${i}`}>
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.2, gap: 1 }}>
+                                  <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                                    {usage?.mountpoint || '-'} ({usage?.fstype || '-'})
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    {usage?.usedGb !== null ? `${usage.usedGb.toFixed(1)} / ${usage.totalGb?.toFixed(1) || '-'} ГБ` : '-'}
+                                  </Typography>
+                                </Box>
+                                <LinearProgress variant="determinate" value={usage?.usedPercent ?? 0} sx={{ height: 6, borderRadius: 3 }} />
+                              </Box>
+                            );
+                          })}
+                        </Stack>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.6 }}>Логические диски не обнаружены.</Typography>
+                      )}
+                    </Box>
+
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Физические диски (SMART)</Typography>
+                      {Array.isArray(selected.storage) && selected.storage.length > 0 ? (
+                        <Stack spacing={0.8} sx={{ mt: 0.6 }}>
+                          {selected.storage.map((disk, i) => {
+                            const healthStatus = String(disk?.health_status || 'Неизвестно');
+                            const wearRaw = Number(disk?.wear_out_percentage);
+                            const tempRaw = Number(disk?.temperature);
+                            const diskTitle = resolveDiskTitle(disk);
+                            const sizeLabel = resolveDiskSizeLabel(disk) || '-';
+                            return (
+                              <Paper key={`${disk.serial_number || disk.display_name || disk.model || 'disk'}-${i}`} variant="outlined" sx={{ p: 1.1 }}>
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{diskTitle}</Typography>
+                                  <Chip size="small" color={smartHealthColor(healthStatus)} label={healthStatus} />
+                                </Box>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                  S/N: {disk.serial_number || '-'} · Media: {disk.media_type || '-'} · Bus: {disk.bus_type || '-'} · Size: {sizeLabel}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                  Износ: {Number.isFinite(wearRaw) ? `${wearRaw}%` : '-'} · Температура: {Number.isFinite(tempRaw) ? `${tempRaw}C` : '-'}
+                                </Typography>
+                              </Paper>
+                            );
+                          })}
+                          <Typography variant="caption" color="text.secondary">
+                            Дисков: {selectedStorageStats.total} · Проблемных: {selectedStorageStats.problemCount}
+                          </Typography>
+                        </Stack>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.6 }}>
+                          SMART/физические диски не обнаружены.
+                        </Typography>
+                      )}
+                    </Box>
+                  </Stack>
+                </Paper>
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Установленное ПО</Typography>
+                {detailLoading ? null : <ComputerSoftwareList software={selected.software_inventory} />}
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>USB-устройства</Typography>
+                {detailLoading ? null : <ComputerUsbList usb={selected.usb_devices} />}
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Безопасность и агент</Typography>
+                {detailLoading ? null : <ComputerSecurityPanel security={selected.security} agentRuntime={selected.agent_runtime} />}
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Изменения</Typography>
+                {Array.isArray(selected.recent_changes) && selected.recent_changes.length > 0 ? (
+                  selected.recent_changes.map((event, idx) => (
+                    <Paper key={event.event_id || idx} variant="outlined" sx={{ p: 1.2 }}>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, mb: 0.4 }}>
+                        {formatTs(event.detected_at)}
+                      </Typography>
+                      <Stack spacing={0.3}>
+                        {summarizeChangeEvent(event).map((line, lineIdx) => (
+                          <Typography key={`${event.event_id || idx}-${lineIdx}`} variant="caption" color="text.secondary">
+                            {line}
+                          </Typography>
+                        ))}
+                      </Stack>
+                    </Paper>
+                  ))
+                ) : (
+                  <Paper variant="outlined" sx={{ p: 1.2 }}>
+                    <Typography variant="body2" color="text.secondary">Подробных изменений за период нет.</Typography>
+                  </Paper>
+                )}
+              </Stack>
+            )}
+          </Box>
+        </Drawer>
+        <SoftwareFleetSearchDialog
+          open={softwareSearchOpen}
+          onClose={() => setSoftwareSearchOpen(false)}
+          scope={scope}
+        />
+        <UsbFleetSearchDialog
+          open={usbSearchOpen}
+          onClose={() => setUsbSearchOpen(false)}
+          scope={scope}
+        />
+        <FleetHealthDialog
+          open={fleetHealthOpen}
+          onClose={() => setFleetHealthOpen(false)}
+          scope={scope}
+        />
+      </PageShell>
+    </MainLayout>
+  );
+}
+
+export default Computers;

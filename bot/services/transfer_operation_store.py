@@ -1,0 +1,239 @@
+"""Durable bot-side checkpoints for a transfer operation.
+
+The SQL Server mutation and Telegram delivery cannot share one transaction.
+This small journal keeps the operation's immutable item ids, generated artifact
+paths and ledger/delivery checkpoints in the existing local SQLite-backed
+store.  It is deliberately bot-local: it never writes to 1C.
+"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import logging
+import os
+import threading
+from datetime import datetime, timedelta, timezone
+from typing import Any, Mapping
+
+from bot.local_json_store import (
+    delete_json_entries,
+    list_json_entry_keys_by_status,
+    load_json_entry,
+    save_json_entry,
+)
+
+
+TRANSFER_OPERATION_JOURNAL_FILE = "bot_transfer_operations.json"
+
+
+logger = logging.getLogger(__name__)
+
+
+def retention_settings() -> dict[str, Any]:
+    """Journal retention is off unless explicitly enabled; enabled runs start as dry-runs."""
+
+    def _flag(name: str, default: bool) -> bool:
+        raw = str(os.getenv(name, "")).strip().lower()
+        return default if not raw else raw in {"1", "true", "yes", "on"}
+
+    def _int(name: str, default: int, low: int, high: int) -> int:
+        try:
+            return max(low, min(high, int(os.getenv(name, "") or default)))
+        except ValueError:
+            return default
+
+    return {
+        "enabled": _flag("TRANSFER_OPERATIONS_RETENTION_ENABLED", False),
+        "dry_run": _flag("TRANSFER_OPERATIONS_RETENTION_DRY_RUN", True),
+        "retention_days": _int("TRANSFER_OPERATIONS_RETENTION_DAYS", 365, 30, 3650),
+        "batch_size": _int("TRANSFER_OPERATIONS_RETENTION_BATCH", 200, 10, 1000),
+    }
+
+
+class TransferOperationConflict(ValueError):
+    """An idempotency key was reused with a different immutable command."""
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalized_operation_id(operation_id: str) -> str:
+    value = str(operation_id or "").strip()
+    if not value:
+        raise ValueError("operation_id is required")
+    return value
+
+
+def _request_fingerprint(payload: Mapping[str, Any]) -> str:
+    """Hash only identity/target fields which must not change on replay."""
+    source = dict(payload or {})
+    stable = {
+        "db_name": str(source.get("db_name") or "").strip(),
+        "chat_id": int(source.get("chat_id") or 0),
+        "new_employee_id": source.get("new_employee_id"),
+        "new_branch_no": source.get("new_branch_no"),
+        "new_loc_no": source.get("new_loc_no"),
+        "items": sorted(
+            [
+                {
+                    "item_id": int(item.get("item_id")),
+                    "old_employee": str(item.get("old_employee") or "").strip(),
+                }
+                for item in source.get("items", [])
+                if isinstance(item, Mapping) and item.get("item_id") is not None
+            ],
+            key=lambda row: (row["item_id"], row["old_employee"]),
+        ),
+    }
+    raw = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+class BotTransferOperationStore:
+    """Persist/reload one bot transfer operation by its idempotency key.
+
+    Bot callbacks are handled in one process, therefore a process-level lock
+    is sufficient around the local read-modify-write operation.  Every
+    checkpoint itself is committed by ``local_store`` before this method
+    returns, which is what protects restarts between SQL, ledger and Telegram
+    calls.
+    """
+
+    def __init__(self, journal_file: str = TRANSFER_OPERATION_JOURNAL_FILE) -> None:
+        self.journal_file = str(journal_file)
+        self._lock = threading.RLock()
+        self._purge_lock = threading.Lock()
+
+    def _load_one(self, operation_id: str) -> dict[str, Any] | None:
+        # One keyed row: the cost of a checkpoint does not grow with the journal's history.
+        value = load_json_entry(self.journal_file, operation_id)
+        return dict(value) if isinstance(value, Mapping) else None
+
+    def _save_one(self, operation_id: str, record: Mapping[str, Any]) -> None:
+        if not save_json_entry(self.journal_file, operation_id, dict(record)):
+            raise RuntimeError("Не удалось сохранить checkpoint операции перемещения")
+
+    def purge_completed_operations(
+        self,
+        *,
+        retention_days: int,
+        dry_run: bool = True,
+        batch_size: int = 200,
+        max_batches: int = 50,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Delete ``completed`` operations not updated for ``retention_days``.
+
+        Only the terminal ``completed`` status is eligible: every other status is a command a
+        restart may still have to recover.  Bounded batches, one run at a time.
+        """
+        if not self._purge_lock.acquire(blocking=False):
+            return {"status": "busy", "candidates": 0, "deleted": 0, "dry_run": dry_run}
+        try:
+            cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=max(1, int(retention_days)))).isoformat()
+            candidates = deleted = batches = 0
+            while batches < max(1, int(max_batches)):
+                keys = list_json_entry_keys_by_status(
+                    self.journal_file,
+                    status="completed",
+                    updated_before=cutoff,
+                    limit=max(1, int(batch_size)),
+                )
+                if not keys:
+                    break
+                candidates += len(keys)
+                batches += 1
+                if dry_run:
+                    break  # nothing is deleted, the next batch would repeat: report the first one only
+                with self._lock:
+                    deleted += delete_json_entries(self.journal_file, keys)
+                if len(keys) < batch_size:
+                    break
+            result = {
+                "status": "ok",
+                "candidates": candidates,
+                "deleted": deleted,
+                "batches": batches,
+                "dry_run": dry_run,
+                "cutoff": cutoff,
+            }
+            logger.info("bot transfer journal retention: %s", result)
+            return result
+        finally:
+            self._purge_lock.release()
+
+    def get(self, operation_id: str) -> dict[str, Any] | None:
+        normalized_id = _normalized_operation_id(operation_id)
+        with self._lock:
+            record = self._load_one(normalized_id)
+            return copy.deepcopy(record) if record is not None else None
+
+    def create_or_get(self, operation_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Create a resolved command or return its exact durable predecessor."""
+        normalized_id = _normalized_operation_id(operation_id)
+        safe_payload = copy.deepcopy(dict(payload or {}))
+        fingerprint = _request_fingerprint(safe_payload)
+        with self._lock:
+            existing = self._load_one(normalized_id)
+            if existing is not None:
+                if str(existing.get("request_fingerprint") or "") != fingerprint:
+                    raise TransferOperationConflict(
+                        f"operation_id {normalized_id} уже относится к другому перемещению"
+                    )
+                return copy.deepcopy(existing)
+
+            now = _utc_now()
+            record: dict[str, Any] = {
+                "schema_version": 1,
+                "operation_id": normalized_id,
+                "request_fingerprint": fingerprint,
+                "status": "resolved",
+                "version": 1,
+                "created_at": now,
+                "updated_at": now,
+                "payload": safe_payload,
+                "acts": [],
+                "ledger_written": False,
+                "events": [{"at": now, "status": "resolved", "note": "immutable items resolved"}],
+            }
+            self._save_one(normalized_id, record)
+            return copy.deepcopy(record)
+
+    def checkpoint(
+        self,
+        operation_id: str,
+        *,
+        status: str | None = None,
+        note: str = "",
+        **values: Any,
+    ) -> dict[str, Any]:
+        """Atomically persist the next locally observable operation state."""
+        normalized_id = _normalized_operation_id(operation_id)
+        with self._lock:
+            record = self._load_one(normalized_id)
+            if record is None:
+                raise KeyError(f"Операция {normalized_id} не найдена в checkpoint store")
+
+            for key, value in values.items():
+                record[key] = copy.deepcopy(value)
+            if status is not None:
+                record["status"] = str(status)
+
+            now = _utc_now()
+            record["version"] = int(record.get("version") or 0) + 1
+            record["updated_at"] = now
+            events = record.get("events")
+            if not isinstance(events, list):
+                events = []
+            events.append(
+                {
+                    "at": now,
+                    "status": str(record.get("status") or ""),
+                    "note": str(note or ""),
+                }
+            )
+            record["events"] = events
+            self._save_one(normalized_id, record)
+            return copy.deepcopy(record)

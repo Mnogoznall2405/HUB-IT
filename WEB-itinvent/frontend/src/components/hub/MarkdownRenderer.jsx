@@ -1,0 +1,199 @@
+import { Box } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
+import { memo, useMemo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeSanitize from 'rehype-sanitize';
+import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+import { ChatEmojiImage } from '../chat/ChatEmoji';
+import rehypeChatEmoji from '../../lib/chat/rehypeChatEmoji';
+
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeSanitize];
+// R48: chat text shows Apple emoji images (after the sanitizer: the element is ours).
+const CHAT_REHYPE_PLUGINS = [rehypeSanitize, rehypeChatEmoji];
+
+function MarkdownRenderer({ value, compact = false, variant = 'default', linkColor }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const text = String(value || '').trim();
+  const isChat = String(variant || '').trim() === 'chat';
+  const resolvedLinkColor = linkColor || ui.accentText;
+  const showCompactFade = compact && text.length > 180;
+  if (!text) return null;
+
+  const linkRenderer = ({ node: _node, href, children, ...props }) => {
+    void _node;
+    const isExternal = /^https?:\/\//i.test(String(href || ''));
+    return (
+      <a
+        href={href}
+        {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  };
+
+  const markdownComponents = {
+    a: linkRenderer,
+    ...(isChat ? {
+    'chat-emoji': ({ emoji }) => <ChatEmojiImage emoji={String(emoji || '')} />,
+    table({ node: _node, ...props }) {
+      void _node;
+      return (
+        <Box
+          data-testid="markdown-table-scroll"
+          sx={{
+            position: 'relative',
+            maxWidth: '100%',
+            my: 0.8,
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            WebkitOverflowScrolling: 'touch',
+            overscrollBehaviorX: 'contain',
+            scrollbarWidth: 'thin',
+            borderRadius: '12px',
+            border: '1px solid',
+            borderColor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.14 : 0.22),
+            bgcolor: alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.12 : 0.04),
+            '&::after': {
+              content: '""',
+              position: 'sticky',
+              right: 0,
+              top: 0,
+              display: 'block',
+              float: 'right',
+              width: 22,
+              height: '100%',
+              minHeight: 42,
+              mt: '-100%',
+              pointerEvents: 'none',
+              background: `linear-gradient(90deg, ${alpha(theme.palette.background.paper, 0)} 0%, ${alpha(theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.18 : 0.26)} 100%)`,
+            },
+          }}
+        >
+          <Box component="table" {...props} />
+        </Box>
+      );
+    },
+    } : {}),
+  };
+
+  return (
+    <Box
+      data-markdown-variant={isChat ? 'chat' : undefined}
+      sx={{
+        position: 'relative',
+        color: isChat ? 'inherit' : compact ? ui.mutedText : 'text.primary',
+        fontSize: isChat ? '1em' : compact ? '0.84rem' : '0.95rem',
+        lineHeight: isChat ? 1.38 : compact ? 1.55 : 1.68,
+        overflowWrap: isChat ? 'break-word' : 'anywhere',
+        maxHeight: compact ? 188 : 'none',
+        overflow: compact ? 'hidden' : 'visible',
+        pr: compact ? 0.25 : 0,
+        '& > *:first-of-type': { mt: 0 },
+        '& > *:last-child': { mb: 0 },
+        '& p': { my: isChat ? 0.55 : compact ? 0.4 : 1 },
+        // Глобальный сброс списков убирает маркеры — возвращаем их явно, иначе пункты читаются как сдвинутый текст.
+        '& ul, & ol': { pl: compact ? 2.2 : 2.5, my: isChat ? 0.55 : compact ? 0.45 : 1, listStylePosition: 'outside' },
+        '& ul': { listStyleType: 'disc' },
+        '& ol': { listStyleType: 'decimal' },
+        '& ul ul': { listStyleType: 'circle' },
+        '& li': { my: isChat ? 0.25 : compact ? 0.12 : 0.2, display: 'list-item', '&::marker': { opacity: 0.7 } },
+        '& h1, & h2, & h3, & h4': {
+          mt: isChat ? 1.35 : compact ? 0.65 : 1.2,
+          mb: isChat ? 0.4 : compact ? 0.35 : 0.6,
+          lineHeight: compact ? 1.25 : 1.3,
+          // Глобальный сброс делает h* обычным текстом: в ответах ассистента секции должны читаться как заголовки.
+          ...(isChat ? { fontWeight: 700, letterSpacing: '-0.005em' } : {}),
+        },
+        '& h1': { fontSize: isChat ? '1.14em' : compact ? '1rem' : '1.4rem' },
+        '& h2': { fontSize: isChat ? '1.06em' : compact ? '0.95rem' : '1.2rem' },
+        '& h3': { fontSize: isChat ? '1.02em' : compact ? '0.9rem' : '1.05rem' },
+        '& h4': { fontSize: isChat ? '1em' : compact ? '0.86rem' : '1rem' },
+        '& pre': {
+          p: compact ? 0.8 : 1,
+          borderRadius: compact ? '10px' : 1,
+          overflowX: 'auto',
+          bgcolor: ui.panelBg,
+          border: '1px solid',
+          borderColor: ui.borderSoft,
+          fontSize: compact ? '0.74rem' : '0.85rem',
+        },
+        '& code': {
+          px: compact ? 0.3 : 0.4,
+          py: compact ? 0.05 : 0,
+          borderRadius: 0.5,
+          bgcolor: ui.actionBg,
+          fontFamily: 'monospace',
+          fontSize: compact ? '0.78rem' : '0.84rem',
+        },
+        '& pre code': {
+          px: 0,
+          py: 0,
+          bgcolor: 'transparent',
+        },
+        '& table': {
+          // Таблица ответа занимает ширину пузыря и переносит текст; горизонтальный скролл остаётся только для очень широких.
+          width: '100%',
+          minWidth: isChat ? 'min(100%, 420px)' : undefined,
+          maxWidth: isChat ? 'none' : undefined,
+          borderCollapse: 'collapse',
+          my: isChat ? 0 : compact ? 0.7 : 1,
+          fontSize: isChat ? '0.88em' : compact ? '0.78rem' : '0.9rem',
+        },
+        '& th, & td': {
+          border: '1px solid',
+          borderColor: isChat ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.16 : 0.28) : ui.borderSoft,
+          px: isChat ? 1 : compact ? 0.7 : 1,
+          py: isChat ? 0.65 : compact ? 0.35 : 0.5,
+          textAlign: 'left',
+          verticalAlign: 'top',
+          whiteSpace: 'normal',
+          wordBreak: 'normal',
+          overflowWrap: 'break-word',
+          minWidth: isChat ? 72 : undefined,
+          // Строки разделены только горизонтальными линиями: меньше визуального шума, чем полная сетка.
+          ...(isChat ? { borderLeft: 'none', borderRight: 'none' } : {}),
+        },
+        ...(isChat ? { '& tbody tr:last-of-type td': { borderBottom: 'none' } } : {}),
+        '& th': {
+          fontWeight: 800,
+          bgcolor: isChat ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.08 : 0.18) : undefined,
+        },
+        '& blockquote': {
+          m: 0,
+          pl: compact ? 1.1 : 1.5,
+          borderLeft: '3px solid',
+          borderColor: ui.borderSoft,
+          color: ui.mutedText,
+        },
+        '& a': {
+          color: resolvedLinkColor,
+          textDecoration: 'underline',
+          textUnderlineOffset: '0.14em',
+          wordBreak: 'break-word',
+          '&:hover': { opacity: 0.88 },
+        },
+        ...(showCompactFade ? {
+          '&::after': {
+            content: '""',
+            position: 'absolute',
+            inset: 'auto 0 0 0',
+            height: 34,
+            pointerEvents: 'none',
+            background: `linear-gradient(180deg, ${alpha(ui.panelSolid, 0)} 0%, ${alpha(ui.panelSolid, 0.86)} 72%, ${ui.panelSolid} 100%)`,
+          },
+        } : {}),
+      }}
+    >
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={isChat ? CHAT_REHYPE_PLUGINS : REHYPE_PLUGINS} components={markdownComponents}>
+        {text}
+      </ReactMarkdown>
+    </Box>
+  );
+}
+
+export default memo(MarkdownRenderer);

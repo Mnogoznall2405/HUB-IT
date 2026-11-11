@@ -1,0 +1,4139 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  ButtonBase,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
+  IconButton,
+  InputBase,
+  Menu,
+  MenuItem,
+  Paper,
+  Skeleton,
+  Stack,
+  Switch,
+  Tooltip,
+  Typography,
+} from '@mui/material';
+import { alpha } from '@mui/material/styles';
+import { useConfirmDialog } from '../feedback/ConfirmDialogProvider';
+import { useOptionalNotification } from '../../contexts/NotificationContext';
+import useChatPanelHistory from './useChatPanelHistory';
+import useChatPanelMembers from './useChatPanelMembers';
+import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
+import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
+import AudiotrackRoundedIcon from '@mui/icons-material/AudiotrackRounded';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
+import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import HomeWorkRoundedIcon from '@mui/icons-material/HomeWorkRounded';
+import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
+import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded';
+import FiberManualRecordRoundedIcon from '@mui/icons-material/FiberManualRecordRounded';
+import MeetingRoomRoundedIcon from '@mui/icons-material/MeetingRoomRounded';
+import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded';
+import PhoneRoundedIcon from '@mui/icons-material/PhoneRounded';
+import PhotoLibraryOutlinedIcon from '@mui/icons-material/PhotoLibraryOutlined';
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
+import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
+import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
+import VideoLibraryOutlinedIcon from '@mui/icons-material/VideoLibraryOutlined';
+import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
+import EditRoundedIcon from '@mui/icons-material/EditRounded';
+import CakeRoundedIcon from '@mui/icons-material/CakeRounded';
+import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded';
+import LocationOnOutlinedIcon from '@mui/icons-material/LocationOnOutlined';
+import MailOutlineRoundedIcon from '@mui/icons-material/MailOutlineRounded';
+
+import ChatBrokenMediaThumb from './ChatBrokenMediaThumb';
+import ChatRightPanelHeader from './ChatRightPanelHeader';
+import { chatAPI } from '../../api/client';
+import chatConversationDetailsAPI from '../../api/chatConversationDetails';
+import ChatGroupActivityDialog from './ChatGroupActivityDialog';
+import ChatGroupJoinRequestsDialog from './ChatGroupJoinRequestsDialog';
+import ChatGroupReportsDialog from './ChatGroupReportsDialog';
+import ChatGroupRestrictDialog from './ChatGroupRestrictDialog';
+import ChatGroupSlowModeDialog, { describeSlowMode } from './ChatGroupSlowModeDialog';
+import { findAddressBookEntryForChatUser, pickAddressBookWorkplace } from '../../lib/addressBookChat';
+import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
+import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
+import {
+  buildAttachmentUrl,
+  formatFileSize,
+  formatFullDate,
+  formatPresenceText,
+  getPersonContextLine,
+  getPriorityMeta,
+  getStatusMeta,
+  getTaskAssignee,
+  isImageAttachment,
+  isVideoAttachment,
+  normalizeChatAttachmentUrl,
+  sortByName,
+} from './chatHelpers';
+import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
+
+// Вспомогательная функция для получения расширения файла
+const getFileExtension = (fileName) => {
+  const normalized = String(fileName || '').trim();
+  if (!normalized.includes('.')) return '';
+  return normalized.split('.').pop()?.toUpperCase() || '';
+};
+
+const GROUP_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const PANEL_WIDTH = 360;
+const COLLAPSED_WIDTH = 72;
+const ATTACHMENT_PAGE_SIZE = 12;
+const TASK_PAGE_SIZE = 6;
+const PARTICIPANTS_COLLAPSED_COUNT = 8;
+const PARTICIPANTS_EXPANDED_MAX_HEIGHT = 360;
+const GROUP_ROLE_LABELS = {
+  owner: 'Владелец',
+  moderator: 'Модератор',
+  member: 'Участник',
+};
+
+const normalizeGroupRole = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'owner' || normalized === 'moderator' || normalized === 'member') return normalized;
+  return 'member';
+};
+
+const SHEET_COLORS = {
+  bg: 'var(--chat-sheet-bg)',
+  bgStrong: 'var(--chat-sheet-bg-strong)',
+  bgSoft: 'var(--chat-sheet-bg-soft)',
+  bgHover: 'var(--chat-sheet-bg-hover)',
+  text: 'var(--chat-sheet-text)',
+  textSecondary: 'var(--chat-sheet-text-secondary)',
+  border: 'var(--chat-sheet-border)',
+  accent: 'var(--chat-sheet-accent)',
+  accentSoft: 'var(--chat-sheet-accent-soft)',
+  accentBorder: 'var(--chat-sheet-accent-border)',
+  warning: 'var(--chat-sheet-warning)',
+  warningSoft: 'var(--chat-sheet-warning-soft)',
+  neutralSoft: 'var(--chat-sheet-neutral-soft)',
+};
+
+function buildSheetVars(ui, theme) {
+  const isDarkTheme = theme?.palette?.mode === 'dark';
+  const accent = ui.accentText || (isDarkTheme ? '#64b5f6' : '#3390ec');
+  const panelBg = ui.drawerBg || (isDarkTheme ? '#17212b' : '#ffffff');
+  const panelBgStrong = ui.drawerBgStrong || (isDarkTheme ? '#1e2c3a' : '#f7f9fc');
+  const panelCardBg = ui.surfaceMuted || ui.drawerBgSoft || (isDarkTheme ? 'rgba(255,255,255,0.045)' : '#f4f7fb');
+  const panelText = ui.textStrong || (isDarkTheme ? '#ffffff' : '#17212b');
+  const panelMuted = ui.textSecondary || (isDarkTheme ? 'rgba(255,255,255,0.56)' : '#707579');
+  const panelSoft = isDarkTheme ? 'rgba(255,255,255,0.42)' : '#8a96a3';
+  const panelIcon = isDarkTheme ? 'rgba(255,255,255,0.58)' : '#8693a0';
+  const panelDivider = ui.borderSoft || (isDarkTheme ? 'rgba(255,255,255,0.08)' : 'rgba(219,227,235,0.96)');
+  const panelAccentSoft = ui.accentSoft || alpha(accent, isDarkTheme ? 0.18 : 0.12);
+  return {
+    '--chat-sheet-bg': panelBg,
+    '--chat-sheet-bg-strong': panelBgStrong,
+    '--chat-sheet-bg-soft': ui.drawerBgSoft || panelCardBg,
+    '--chat-sheet-bg-card': panelCardBg,
+    '--chat-sheet-bg-hover': ui.drawerHover || ui.sidebarRowHover || 'rgba(255,255,255,0.06)',
+    '--chat-sheet-text': panelText,
+    '--chat-sheet-text-secondary': panelMuted,
+    '--chat-sheet-border': panelDivider,
+    '--chat-sheet-accent': accent,
+    '--chat-sheet-accent-soft': panelAccentSoft,
+    '--chat-sheet-accent-border': alpha(accent, isDarkTheme ? 0.28 : 0.22),
+    '--chat-sheet-warning': '#fbbf24',
+    '--chat-sheet-warning-soft': 'rgba(251,191,36,0.16)',
+    '--chat-sheet-neutral-soft': ui.surfaceMuted || alpha(isDarkTheme ? '#ffffff' : '#78909c', isDarkTheme ? 0.06 : 0.12),
+    '--chat-sheet-panel-bg': panelBg,
+    '--chat-sheet-panel-bg-strong': panelBgStrong,
+    '--chat-sheet-panel-card': panelCardBg,
+    '--chat-sheet-panel-text': panelText,
+    '--chat-sheet-panel-muted': panelMuted,
+    '--chat-sheet-panel-soft': panelSoft,
+    '--chat-sheet-panel-icon': panelIcon,
+    '--chat-sheet-panel-divider': panelDivider,
+    '--chat-sheet-panel-divider-width': isDarkTheme ? '0.5px' : '1px',
+    '--chat-sheet-panel-accent': accent,
+    '--chat-sheet-panel-accent-soft': panelAccentSoft,
+    '--chat-sheet-panel-grid': isDarkTheme ? 'rgba(255,255,255,0.06)' : 'rgba(219,227,235,0.98)',
+    '--chat-sheet-panel-cell': isDarkTheme ? '#1f2c39' : '#edf2f6',
+    '--chat-sheet-panel-overlay': isDarkTheme ? 'rgba(0,0,0,0.55)' : 'rgba(31,43,56,0.62)',
+    '--chat-sheet-panel-menu-bg': ui.drawerBgStrong || (isDarkTheme ? '#1e2c3a' : '#ffffff'),
+    '--chat-sheet-panel-menu-shadow': ui.shadowStrong || (isDarkTheme ? '0 24px 40px rgba(0,0,0,0.34)' : '0 18px 40px rgba(31,43,56,0.12)'),
+    '--chat-sheet-shadow-soft': ui.shadowSoft || (isDarkTheme ? '0 2px 8px rgba(0,0,0,0.14)' : '0 1px 2px rgba(65,88,110,0.12)'),
+    '--chat-sheet-shadow-strong': ui.shadowStrong || (isDarkTheme ? '0 18px 42px rgba(0,0,0,0.34)' : '0 16px 36px rgba(80,104,128,0.16)'),
+    '--chat-sheet-skeleton-base': ui.skeletonBase || alpha(isDarkTheme ? '#ffffff' : '#78909c', isDarkTheme ? 0.07 : 0.14),
+    '--chat-sheet-skeleton-wave': ui.skeletonWave || alpha('#ffffff', isDarkTheme ? 0.12 : 0.52),
+  };
+}
+
+const ASSET_KIND_META = {
+  image: {
+    label: 'Фотографии',
+    shortLabel: 'Фото',
+    icon: <PhotoLibraryOutlinedIcon fontSize="small" />,
+  },
+  video: {
+    label: 'Видео',
+    shortLabel: 'Видео',
+    icon: <VideoLibraryOutlinedIcon fontSize="small" />,
+  },
+  file: {
+    label: 'Файлы',
+    shortLabel: 'Файлы',
+    icon: <InsertDriveFileOutlinedIcon fontSize="small" />,
+  },
+  audio: {
+    label: 'Аудио',
+    shortLabel: 'Аудио',
+    icon: <AudiotrackRoundedIcon fontSize="small" />,
+  },
+  task: {
+    label: 'Задачи',
+    shortLabel: 'Задачи',
+    icon: <TaskAltOutlinedIcon fontSize="small" />,
+  },
+  link: {
+    label: 'Ссылки',
+    shortLabel: 'Ссылки',
+    icon: <OpenInNewRoundedIcon fontSize="small" />,
+  },
+};
+
+const EMPTY_SUMMARY = {
+  photos_count: 0,
+  videos_count: 0,
+  files_count: 0,
+  audio_count: 0,
+  shared_tasks_count: 0,
+  recent_photos: [],
+  recent_videos: [],
+  recent_files: [],
+  recent_audio: [],
+};
+
+const ATTACHMENT_STREAM_KINDS = new Set(['image', 'video', 'file', 'audio']);
+const MEDIA_STREAM_KINDS = ['image', 'video'];
+const EMPTY_ATTACHMENT_STREAM = Object.freeze({
+  items: [],
+  cursor: '',
+  hasMore: false,
+  loading: false,
+  loadingMore: false,
+  error: '',
+  started: false,
+});
+const PANEL_LOAD_MORE_THRESHOLD_PX = 280;
+
+const mergeAttachmentItems = (...lists) => {
+  const unique = new Map();
+  lists.flat().forEach((item) => {
+    if (!item) return;
+    const key = `${item.message_id || item.messageId || ''}:${item.id || ''}`;
+    if (!unique.has(key)) unique.set(key, item);
+  });
+  return [...unique.values()];
+};
+
+const sortAttachmentsDesc = (items) => [...items].sort((left, right) => (
+  new Date(right?.created_at || 0).getTime() - new Date(left?.created_at || 0).getTime()
+));
+
+const formatMediaDuration = (value) => {
+  const totalSeconds = Math.max(0, Math.round(Number(value || 0)));
+  if (!totalSeconds) return '';
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
+const normalizeOfficeValue = (value) => String(value || '').trim();
+const normalizeOfficeRoomValue = (value) => {
+  const text = normalizeOfficeValue(value);
+  return text && text !== '0' ? text : '';
+};
+
+const MESSAGE_LINK_PATTERN = /(https?:\/\/[^\s<>"']+)/gi;
+
+function extractLinksFromText(text) {
+  const source = String(text || '');
+  if (!source) return [];
+
+  const matches = source.match(MESSAGE_LINK_PATTERN) || [];
+  return matches
+    .map((url) => url.replace(/[),.!?]+$/u, ''))
+    .filter(Boolean);
+}
+
+function CompactBadge({ children, tone = 'neutral' }) {
+  const palette = tone === 'accent'
+    ? { color: SHEET_COLORS.accent, bg: SHEET_COLORS.accentSoft }
+    : tone === 'warning'
+      ? { color: SHEET_COLORS.warning, bg: SHEET_COLORS.warningSoft }
+      : { color: SHEET_COLORS.textSecondary, bg: SHEET_COLORS.neutralSoft };
+
+  return (
+    <Box
+      component="span"
+      sx={{
+        px: 1,
+        py: 0.45,
+        borderRadius: 999,
+        bgcolor: palette.bg,
+        color: palette.color,
+        fontSize: '0.72rem',
+        fontWeight: 800,
+        letterSpacing: '0.02em',
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
+
+function SectionLabel({ children }) {
+  return (
+    <Typography
+      variant="overline"
+      sx={{
+        display: 'block',
+        mb: 1,
+        color: SHEET_COLORS.textSecondary,
+        fontWeight: 800,
+        letterSpacing: '0.08em',
+      }}
+    >
+      {children}
+    </Typography>
+  );
+}
+
+function SectionCard({ children, sx }) {
+  return (
+    <Box
+      sx={[
+        {
+          px: 1.35,
+          py: 1.25,
+          borderRadius: 2,
+          border: `1px solid ${SHEET_COLORS.border}`,
+          bgcolor: 'var(--chat-sheet-bg-card)',
+          boxShadow: 'var(--chat-sheet-shadow-soft)',
+        },
+        ...(Array.isArray(sx) ? sx : sx ? [sx] : []),
+      ]}
+    >
+      {children}
+    </Box>
+  );
+}
+
+function SheetSkeleton({ width = '100%', height = 14, radius = 999, sx }) {
+  return (
+    <Skeleton
+      variant="rounded"
+      animation="wave"
+      width={width}
+      height={height}
+      sx={{
+        borderRadius: radius,
+        bgcolor: 'var(--chat-sheet-skeleton-base)',
+        '&::after': {
+          background: 'linear-gradient(90deg, transparent, var(--chat-sheet-skeleton-wave), transparent)',
+        },
+        ...sx,
+      }}
+    />
+  );
+}
+
+function SheetListSkeleton({ rows = 4, dense = false }) {
+  return (
+    <Stack spacing={dense ? 0.85 : 1.1} sx={{ px: dense ? 1 : 2, py: dense ? 1.2 : 2 }}>
+      {Array.from({ length: rows }).map((_, index) => (
+        <Stack key={index} direction="row" spacing={1.25} alignItems="center">
+          <SheetSkeleton width={dense ? 34 : 42} height={dense ? 34 : 42} radius={dense ? 10 : 14} />
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <SheetSkeleton width={index % 2 ? '52%' : '68%'} height={14} radius={7} />
+            <SheetSkeleton width={index % 2 ? '72%' : '48%'} height={11} radius={7} sx={{ mt: 0.8 }} />
+          </Box>
+        </Stack>
+      ))}
+    </Stack>
+  );
+}
+
+function SheetGridSkeleton() {
+  return (
+    <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', bgcolor: 'var(--chat-sheet-panel-grid)' }}>
+      {Array.from({ length: 9 }).map((_, index) => (
+        <SheetSkeleton
+          key={index}
+          width="100%"
+          height="auto"
+          radius={0}
+          sx={{ aspectRatio: '1 / 1', bgcolor: index % 2 ? 'var(--chat-sheet-panel-card)' : 'var(--chat-sheet-skeleton-base)' }}
+        />
+      ))}
+    </Box>
+  );
+}
+
+function ActionTile({ icon, label, onClick }) {
+  return (
+    <ButtonBase
+      onClick={() => void onClick?.()}
+      sx={{
+        minWidth: 0,
+        p: 1.35,
+        borderRadius: 1.75,
+        bgcolor: 'var(--chat-sheet-bg-card)',
+        border: `1px solid ${SHEET_COLORS.border}`,
+        color: SHEET_COLORS.text,
+        transition: 'background-color 140ms ease, transform 120ms ease, border-color 140ms ease, box-shadow 140ms ease, opacity 100ms ease',
+        '&:hover': {
+          bgcolor: SHEET_COLORS.bgHover,
+          borderColor: SHEET_COLORS.accentBorder,
+          transform: 'translateY(-1px)',
+          boxShadow: 'var(--chat-sheet-shadow-soft)',
+        },
+        '&:active': {
+          opacity: 0.82,
+          transform: 'scale(0.985)',
+        },
+        '&:focus-visible': {
+          outline: '2px solid var(--chat-sheet-accent)',
+          outlineOffset: 2,
+        },
+      }}
+    >
+      <Stack spacing={0.65} alignItems="center">
+        <Box
+          sx={{
+            width: 38,
+            height: 38,
+            borderRadius: 1.5,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            bgcolor: SHEET_COLORS.accentSoft,
+            color: SHEET_COLORS.accent,
+          }}
+        >
+          {icon}
+        </Box>
+        <Typography variant="caption" sx={{ fontWeight: 700, color: SHEET_COLORS.text }}>
+          {label}
+        </Typography>
+      </Stack>
+    </ButtonBase>
+  );
+}
+
+function InfoRow({ label, value }) {
+  return (
+    <Stack spacing={0.3}>
+      <Typography variant="body2" sx={{ color: SHEET_COLORS.text, fontWeight: 800, letterSpacing: '-0.01em' }}>
+        {value || '—'}
+      </Typography>
+      <Typography variant="caption" sx={{ color: SHEET_COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        {label}
+      </Typography>
+    </Stack>
+  );
+}
+
+function InfoNavRow({ icon, label, value, onClick }) {
+  return (
+    <Box
+      component="button"
+      type="button"
+      onClick={onClick}
+      sx={{
+        appearance: 'none',
+        WebkitAppearance: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.25,
+        width: '100%',
+        px: 2.5,
+        py: 1.4,
+        border: 0,
+        bgcolor: 'transparent',
+        color: 'inherit',
+        cursor: 'pointer',
+        textAlign: 'left',
+        minHeight: 44,
+        borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+        '&:hover': { bgcolor: 'var(--chat-sheet-panel-accent-soft)' },
+      }}
+    >
+      <Box sx={{ display: 'inline-flex', color: 'var(--chat-sheet-panel-icon)' }}>{icon}</Box>
+      <Typography sx={{ flex: 1, fontWeight: 700, fontSize: '0.95rem' }}>{label}</Typography>
+      <Typography sx={{ color: 'var(--chat-sheet-panel-muted)', fontWeight: 800 }}>{value}</Typography>
+      <KeyboardArrowRightRoundedIcon sx={{ color: 'var(--chat-sheet-panel-muted)' }} />
+    </Box>
+  );
+}
+
+function ConversationMediaThumb({ item, onOpen }) {
+  const src = normalizeChatAttachmentUrl(item?.variant_urls?.thumb || item?.variant_urls?.preview || item?.variant_urls?.poster)
+    || buildAttachmentUrl(item.message_id || item.messageId, item.id, { inline: true });
+  const downloadUrl = buildAttachmentUrl(item.message_id || item.messageId, item.id);
+  const durationLabel = formatMediaDuration(item?.duration_seconds ?? item?.duration ?? item?.video_duration);
+  return (
+    <Box
+      role="button"
+      tabIndex={0}
+      aria-label={`Открыть ${item.file_name || 'медиа'}`}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          onOpen?.(item.message_id || item.messageId, item);
+        }
+      }}
+      onClick={(event) => {
+        if (event.target.closest('button, a')) return;
+        onOpen?.(item.message_id || item.messageId, item);
+      }}
+      sx={{
+        position: 'relative',
+        aspectRatio: '1',
+        overflow: 'hidden',
+        cursor: 'pointer',
+        bgcolor: 'var(--chat-sheet-panel-cell, rgba(148,163,184,0.16))',
+      }}
+    >
+      <ChatBrokenMediaThumb
+        src={src}
+        alt={item.file_name || ''}
+        fileName={item.file_name}
+        fileSize={item.file_size}
+        onOpen={() => onOpen?.(item.message_id || item.messageId, item)}
+        onDownload={() => window.open(downloadUrl, '_blank', 'noopener,noreferrer')}
+      />
+      {isVideoAttachment(item) ? (
+        <Box
+          sx={{
+            position: 'absolute',
+            bottom: 4,
+            right: 4,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 0.25,
+            bgcolor: 'var(--chat-sheet-panel-overlay, rgba(15,23,42,0.72))',
+            px: 0.5,
+            py: 0.25,
+            borderRadius: 0.5,
+          }}
+        >
+          <PlayArrowRoundedIcon sx={{ fontSize: 11, color: '#fff' }} />
+          {durationLabel ? (
+            <Typography sx={{ color: '#fff', fontSize: '0.65rem', fontWeight: 700 }}>
+              {durationLabel}
+            </Typography>
+          ) : null}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+function InfoRowTelegram({ icon, label, value, onClick = null, copied = false }) {
+  const isButton = typeof onClick === 'function';
+  return (
+    <Stack
+      component={isButton ? 'button' : 'div'}
+      type={isButton ? 'button' : undefined}
+      onClick={onClick || undefined}
+      title={isButton ? 'Нажмите, чтобы скопировать' : undefined}
+      direction="row"
+      spacing={2}
+      alignItems="flex-start"
+      sx={{
+        px: 3,
+        py: 2,
+        width: '100%',
+        border: 0,
+        bgcolor: 'transparent',
+        color: 'inherit',
+        font: 'inherit',
+        cursor: isButton ? 'pointer' : 'default',
+        textAlign: 'left',
+        borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+        transition: 'background-color 0.16s ease',
+        ...(isButton ? {
+          '&:hover': { bgcolor: 'var(--chat-sheet-panel-accent-soft)' },
+          '&:focus-visible': { outline: '2px solid var(--chat-sheet-panel-accent)', outlineOffset: -2 },
+        } : {}),
+      }}
+    >
+      <Box sx={{ mt: 0.5 }}>{icon}</Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography component="span" sx={{ display: 'block', color: 'var(--chat-sheet-panel-text)', fontSize: '1rem', wordBreak: 'break-word' }}>
+          {value}
+        </Typography>
+        <Typography
+          component="span"
+          sx={{
+            display: 'block',
+            color: copied ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+            fontSize: '0.85rem',
+            mt: 0.25,
+          }}
+        >
+          {copied ? 'Скопировано' : label}
+        </Typography>
+      </Box>
+    </Stack>
+  );
+}
+
+function MobileProfileActionButton({ children, onClick, disabled = false, ariaLabel }) {
+  return (
+    <IconButton
+      aria-label={ariaLabel}
+      onClick={onClick}
+      disabled={disabled}
+      sx={{
+        width: 42,
+        height: 42,
+        borderRadius: 999,
+        color: 'var(--chat-sheet-panel-text)',
+        bgcolor: 'transparent',
+        '&:hover': {
+          bgcolor: 'var(--chat-sheet-panel-accent-soft)',
+        },
+        '&:active': {
+          opacity: 0.72,
+        },
+        '&.Mui-disabled': {
+          color: 'var(--chat-sheet-panel-soft)',
+        },
+      }}
+    >
+      {children}
+    </IconButton>
+  );
+}
+
+function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = null, copied = false }) {
+  return (
+    <Box
+      component={onClick ? 'button' : 'div'}
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      title={onClick ? 'Нажмите, чтобы скопировать' : undefined}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 2.1,
+        px: 2.8,
+        py: 1.65,
+        width: '100%',
+        border: 0,
+        bgcolor: 'transparent',
+        color: 'inherit',
+        cursor: onClick ? 'pointer' : 'default',
+        textAlign: 'left',
+        minHeight: 44,
+        borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+        '&:active': onClick ? { bgcolor: 'var(--chat-sheet-panel-accent-soft)' } : undefined,
+      }}
+    >
+      <Box
+        sx={{
+          width: 32,
+          minWidth: 32,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--chat-sheet-panel-icon)',
+        }}
+      >
+        {icon}
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography
+          sx={{
+            color: 'var(--chat-sheet-panel-text)',
+            fontSize: '1.03rem',
+            lineHeight: 1.22,
+            wordBreak: 'break-word',
+          }}
+        >
+          {value}
+        </Typography>
+        <Typography
+          sx={{
+            mt: 0.2,
+            color: copied ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+            fontSize: '0.92rem',
+            lineHeight: 1.15,
+          }}
+        >
+          {copied ? 'Скопировано' : label}
+        </Typography>
+      </Box>
+      {trailing ? (
+        <Box sx={{ ml: 1, flexShrink: 0 }}>
+          {trailing}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+const MUTE_DURATION_OPTIONS = [
+  { key: '1h', label: 'На 1 час', hours: 1 },
+  { key: '8h', label: 'На 8 часов', hours: 8 },
+  { key: '1d', label: 'На 1 день', hours: 24 },
+  { key: '7d', label: 'На 7 дней', hours: 24 * 7 },
+  { key: 'forever', label: 'Навсегда', hours: 0 },
+];
+
+const formatMutedUntil = (mutedUntil) => {
+  const parsed = Date.parse(String(mutedUntil || ''));
+  if (!Number.isFinite(parsed) || parsed <= Date.now()) return '';
+  return new Date(parsed).toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+function ConversationNotificationsToggle({ muted, mutedUntil, disabled, onChange }) {
+  const enabled = !muted;
+  const toggleDisabled = Boolean(disabled) || typeof onChange !== 'function';
+  const [durationAnchor, setDurationAnchor] = useState(null);
+  const mutedUntilLabel = muted ? formatMutedUntil(mutedUntil) : '';
+
+  const handleSwitch = (event, checked) => {
+    if (checked) {
+      onChange?.({ is_muted: false });
+      return;
+    }
+    // Turning notifications off asks for how long, like Telegram.
+    setDurationAnchor(event.currentTarget);
+  };
+
+  const handlePickDuration = (option) => {
+    setDurationAnchor(null);
+    if (option.hours <= 0) {
+      onChange?.({ is_muted: true });
+      return;
+    }
+    onChange?.({ muted_until: new Date(Date.now() + option.hours * 3600 * 1000).toISOString() });
+  };
+
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 2.1,
+        width: '100%',
+        minHeight: 56,
+        px: 2.8,
+        py: 0.75,
+        borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+      }}
+    >
+      <Box
+        aria-hidden="true"
+        sx={{
+          width: 32,
+          minWidth: 32,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--chat-sheet-panel-icon)',
+        }}
+      >
+        <NotificationsOutlinedIcon sx={{ fontSize: 22 }} />
+      </Box>
+      <FormControlLabel
+        labelPlacement="start"
+        disabled={toggleDisabled}
+        control={(
+          <Switch
+            checked={enabled}
+            onChange={handleSwitch}
+            inputProps={{ 'aria-label': 'Уведомления для этого чата' }}
+          />
+        )}
+        label={(
+          <Box sx={{ minWidth: 0 }}>
+            <Typography
+              sx={{
+                color: 'var(--chat-sheet-panel-text)',
+                fontSize: '1rem',
+                lineHeight: 1.22,
+                wordBreak: 'break-word',
+              }}
+            >
+              Уведомления для этого чата
+            </Typography>
+            <Typography
+              sx={{
+                mt: 0.2,
+                color: 'var(--chat-sheet-panel-soft)',
+                fontSize: '0.84rem',
+                lineHeight: 1.2,
+              }}
+            >
+              {enabled
+                ? 'Включены'
+                : (mutedUntilLabel ? `Выключены до ${mutedUntilLabel}` : 'Выключены, кроме личных упоминаний')}
+            </Typography>
+          </Box>
+        )}
+        sx={{
+          m: 0,
+          minWidth: 0,
+          minHeight: 44,
+          flex: 1,
+          gap: 1,
+          justifyContent: 'space-between',
+          '& .MuiFormControlLabel-label': {
+            minWidth: 0,
+            flex: 1,
+          },
+          '& .MuiSwitch-root': {
+            flexShrink: 0,
+          },
+        }}
+      />
+      <Menu
+        anchorEl={durationAnchor}
+        open={Boolean(durationAnchor)}
+        onClose={() => setDurationAnchor(null)}
+        MenuListProps={{ 'data-testid': 'chat-mute-duration-menu' }}
+      >
+        {MUTE_DURATION_OPTIONS.map((option) => (
+          <MenuItem key={option.key} onClick={() => handlePickDuration(option)}>
+            {option.label}
+          </MenuItem>
+        ))}
+      </Menu>
+    </Box>
+  );
+}
+
+function PanelTabButton({ label, active, onClick, count = 0 }) {
+  return (
+    <ButtonBase
+      type="button"
+      aria-pressed={Boolean(active)}
+      onClick={onClick}
+      sx={{
+        minWidth: 0,
+        flexShrink: 0,
+        px: 1.6,
+        py: 1.2,
+        color: active ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-muted)',
+        justifyContent: 'center',
+        position: 'relative',
+        borderRadius: 0,
+        fontSize: '0.98rem',
+        fontWeight: active ? 800 : 600,
+        whiteSpace: 'nowrap',
+        '&:hover': {
+          bgcolor: 'var(--chat-sheet-panel-accent-soft)',
+        },
+        '&:focus-visible': {
+          outline: '2px solid var(--chat-sheet-panel-accent)',
+          outlineOffset: -2,
+        },
+        '&:active': {
+          opacity: 0.72,
+        },
+      }}
+    >
+      <Box component="span">
+        {label}
+        {count > 0 ? <Box component="span" sx={{ opacity: 0.55, ml: 0.45 }}>({count})</Box> : null}
+      </Box>
+      {active ? (
+        <Box
+          sx={{
+            position: 'absolute',
+            left: 10,
+            right: 10,
+            bottom: 0,
+            height: 2.5,
+            borderRadius: 999,
+            bgcolor: 'var(--chat-sheet-panel-accent)',
+          }}
+        />
+      ) : null}
+    </ButtonBase>
+  );
+}
+
+function PanelTabsBar({ options, value, onChange, testId, sticky = false }) {
+  return (
+    <Box
+      data-testid={testId}
+      sx={{
+        display: 'flex',
+        alignItems: 'stretch',
+        gap: 0.15,
+        overflowX: 'auto',
+        overflowY: 'hidden',
+        px: 0.75,
+        flexShrink: 0,
+        borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+        bgcolor: 'var(--chat-sheet-panel-bg)',
+        scrollbarWidth: 'none',
+        msOverflowStyle: 'none',
+        '&::-webkit-scrollbar': { display: 'none' },
+        ...(sticky ? { position: 'sticky', top: 0, zIndex: 3 } : {}),
+      }}
+    >
+      {options.map((tab) => (
+        <PanelTabButton
+          key={tab.key}
+          label={tab.label}
+          count={tab.count}
+          active={value === tab.key}
+          onClick={() => onChange(tab.key)}
+        />
+      ))}
+    </Box>
+  );
+}
+
+function PanelFileRow({ item, leading = null, subtitleParts = [] }) {
+  const href = buildAttachmentUrl(item.message_id || item.messageId, item.id, { inline: true });
+  const meta = [
+    ...subtitleParts,
+    formatFileSize(item.file_size),
+  ].filter(Boolean).join(' · ');
+  return (
+    <Box
+      component="a"
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.5,
+        px: 2,
+        py: 1.15,
+        textDecoration: 'none',
+        color: 'var(--chat-sheet-panel-text)',
+        '&:hover': { bgcolor: 'var(--chat-sheet-panel-bg-hover)' },
+        '&:active': { opacity: 0.76 },
+      }}
+    >
+      <Box
+        sx={{
+          width: 42,
+          height: 42,
+          borderRadius: 2.25,
+          bgcolor: 'var(--chat-sheet-panel-card)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--chat-sheet-panel-muted)',
+          fontSize: '0.7rem',
+          fontWeight: 800,
+          flexShrink: 0,
+        }}
+      >
+        {leading || getFileExtension(item.file_name) || 'FILE'}
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ fontWeight: 700, fontSize: '0.88rem' }} noWrap>
+          {item.file_name || 'Файл'}
+        </Typography>
+        {meta ? (
+          <Typography variant="caption" sx={{ color: 'var(--chat-sheet-panel-muted)' }} noWrap>
+            {meta}
+          </Typography>
+        ) : null}
+      </Box>
+    </Box>
+  );
+}
+
+function PanelLinkRow({ item }) {
+  let hostname = '';
+  try {
+    hostname = new URL(item.url).hostname.replace(/^www\./i, '');
+  } catch {
+    hostname = '';
+  }
+  return (
+    <Box
+      component="a"
+      href={item.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.5,
+        px: 2,
+        py: 1.15,
+        textDecoration: 'none',
+        color: 'var(--chat-sheet-panel-text)',
+        '&:hover': { bgcolor: 'var(--chat-sheet-panel-bg-hover)' },
+        '&:active': { opacity: 0.76 },
+      }}
+    >
+      <Box
+        sx={{
+          width: 40,
+          height: 40,
+          borderRadius: '50%',
+          bgcolor: 'var(--chat-sheet-panel-accent-soft)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <OpenInNewRoundedIcon sx={{ color: 'var(--chat-sheet-panel-accent)', fontSize: 20 }} />
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ color: 'var(--chat-sheet-panel-accent)', fontWeight: 600, fontSize: '0.9rem', wordBreak: 'break-all' }} noWrap>
+          {item.title || item.url}
+        </Typography>
+        <Typography variant="caption" sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }} noWrap>
+          {hostname || item.url}{item.created_at ? ` · ${formatFullDate(item.created_at)}` : ''}
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
+
+function PanelTaskRow({ item, onOpenTask }) {
+  const { task } = item;
+  const statusMeta = getStatusMeta(task?.status);
+  return (
+    <Box
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpenTask?.(task?.id)}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          onOpenTask?.(task?.id);
+        }
+      }}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.5,
+        px: 2,
+        py: 1.15,
+        cursor: 'pointer',
+        '&:hover': { bgcolor: 'var(--chat-sheet-panel-bg-hover)' },
+        '&:active': { opacity: 0.76 },
+      }}
+    >
+      <Box
+        sx={{
+          width: 40,
+          height: 40,
+          borderRadius: '50%',
+          bgcolor: 'var(--chat-sheet-panel-accent-soft)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <TaskAltOutlinedIcon sx={{ color: 'var(--chat-sheet-panel-accent)', fontSize: 20 }} />
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ fontWeight: 700, fontSize: '0.88rem', overflowWrap: 'anywhere' }} noWrap>
+          {task?.title || 'Задача'}
+        </Typography>
+        <Typography variant="caption" sx={{ color: 'var(--chat-sheet-panel-muted)' }} noWrap>
+          {getTaskAssignee(task)} · {task?.due_at ? formatFullDate(task.due_at) : 'Без срока'}
+        </Typography>
+      </Box>
+      <Box
+        component="span"
+        sx={{
+          px: 0.7,
+          py: 0.15,
+          borderRadius: 999,
+          bgcolor: 'var(--chat-sheet-panel-card)',
+          color: 'var(--chat-sheet-panel-muted)',
+          fontSize: '0.66rem',
+          fontWeight: 800,
+          flexShrink: 0,
+        }}
+      >
+        {statusMeta[0]}
+      </Box>
+    </Box>
+  );
+}
+
+function MediaRow({ kind, count, active, onClick }) {
+  const meta = ASSET_KIND_META[kind];
+
+  return (
+    <ButtonBase
+      onClick={() => void onClick?.(kind)}
+      sx={{
+        width: '100%',
+        px: 1.25,
+        py: 1.1,
+        borderRadius: 1.5,
+        justifyContent: 'space-between',
+        bgcolor: active ? SHEET_COLORS.accentSoft : 'transparent',
+        color: SHEET_COLORS.text,
+        border: `1px solid ${active ? SHEET_COLORS.accentBorder : 'transparent'}`,
+        transition: 'background-color 140ms ease, border-color 140ms ease',
+        '&:hover': {
+          bgcolor: active ? SHEET_COLORS.accentSoft : SHEET_COLORS.bgHover,
+        },
+      }}
+    >
+      <Stack direction="row" spacing={1.1} alignItems="center">
+        <Box
+          sx={{
+            width: 36,
+            height: 36,
+            borderRadius: 2,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            bgcolor: active ? SHEET_COLORS.accentSoft : SHEET_COLORS.neutralSoft,
+            color: active ? SHEET_COLORS.accent : SHEET_COLORS.text,
+          }}
+        >
+          {meta.icon}
+        </Box>
+        <Box sx={{ textAlign: 'left' }}>
+          <Typography variant="body2" sx={{ fontWeight: 800 }}>
+            {meta.label}
+          </Typography>
+          <Typography variant="caption" sx={{ color: SHEET_COLORS.textSecondary }}>
+            {count}
+          </Typography>
+        </Box>
+      </Stack>
+      <KeyboardArrowRightRoundedIcon sx={{ color: active ? SHEET_COLORS.accent : SHEET_COLORS.textSecondary }} />
+    </ButtonBase>
+  );
+}
+
+function AttachmentListRow({ item, kind, onOpenAttachmentPreview }) {
+  const fileUrl = buildAttachmentUrl(item.message_id, item.id, { inline: true });
+
+  const handleOpen = () => {
+    if (kind === 'image' || isChatDocumentPreviewableAttachment(item)) {
+      onOpenAttachmentPreview?.(item.message_id, item);
+      return;
+    }
+    window.open(fileUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  return (
+    <ButtonBase
+      onClick={handleOpen}
+      sx={{
+        width: '100%',
+        px: 1.1,
+        py: 1,
+        borderRadius: 1.5,
+        justifyContent: 'space-between',
+        border: `1px solid ${SHEET_COLORS.border}`,
+        bgcolor: SHEET_COLORS.neutralSoft,
+        color: SHEET_COLORS.text,
+        '&:hover': {
+          bgcolor: SHEET_COLORS.bgHover,
+        },
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+        <Box
+          sx={{
+            width: 34,
+            height: 34,
+            borderRadius: 2,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            bgcolor: SHEET_COLORS.neutralSoft,
+            color: SHEET_COLORS.text,
+            flexShrink: 0,
+          }}
+        >
+          {ASSET_KIND_META[kind]?.icon || <InsertDriveFileOutlinedIcon fontSize="small" />}
+        </Box>
+        <Box sx={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+          <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+            {item.file_name}
+          </Typography>
+          <Typography variant="caption" sx={{ color: SHEET_COLORS.textSecondary }} noWrap>
+            {formatFileSize(item.file_size)} · {formatFullDate(item.created_at)}
+          </Typography>
+        </Box>
+      </Stack>
+      <OpenInNewRoundedIcon sx={{ fontSize: 18, color: SHEET_COLORS.textSecondary }} />
+    </ButtonBase>
+  );
+}
+
+function LinkRow({ item }) {
+  let hostname = '';
+  try {
+    hostname = new URL(item.url).hostname.replace(/^www\./i, '');
+  } catch {
+    hostname = '';
+  }
+
+  return (
+    <ButtonBase
+      component="a"
+      href={item.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      sx={{
+        width: '100%',
+        px: 1.1,
+        py: 1,
+        borderRadius: 1.5,
+        justifyContent: 'space-between',
+        border: `1px solid ${SHEET_COLORS.border}`,
+        bgcolor: SHEET_COLORS.neutralSoft,
+        color: SHEET_COLORS.text,
+        '&:hover': {
+          bgcolor: SHEET_COLORS.bgHover,
+        },
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+        <Box
+          sx={{
+            width: 34,
+            height: 34,
+            borderRadius: 2,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            bgcolor: SHEET_COLORS.neutralSoft,
+            color: SHEET_COLORS.accent,
+            flexShrink: 0,
+          }}
+        >
+          <OpenInNewRoundedIcon fontSize="small" />
+        </Box>
+        <Box sx={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+          <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+            {item.title}
+          </Typography>
+          <Typography variant="caption" sx={{ color: SHEET_COLORS.textSecondary }} noWrap>
+            {hostname || item.url} · {formatFullDate(item.created_at)}
+          </Typography>
+        </Box>
+      </Stack>
+      <OpenInNewRoundedIcon sx={{ fontSize: 18, color: SHEET_COLORS.textSecondary }} />
+    </ButtonBase>
+  );
+}
+
+function ImageTile({ item, onOpenAttachmentPreview }) {
+  const fileUrl = buildAttachmentUrl(item.message_id, item.id, { inline: true });
+
+  return (
+    <ButtonBase
+      onClick={() => onOpenAttachmentPreview?.(item.message_id, item)}
+      aria-label={`Открыть ${item.file_name}`}
+      sx={{
+        display: 'block',
+        width: '100%',
+        borderRadius: 1.5,
+        overflow: 'hidden',
+        border: `1px solid ${SHEET_COLORS.border}`,
+        bgcolor: SHEET_COLORS.neutralSoft,
+        textAlign: 'left',
+        '&:hover .chat-context-image-overlay': {
+          opacity: 1,
+        },
+      }}
+    >
+      <Box
+        component="img"
+        src={fileUrl}
+        alt={item.file_name}
+        sx={{
+          display: 'block',
+          width: '100%',
+          aspectRatio: '1 / 1',
+          objectFit: 'cover',
+          bgcolor: alpha('#000000', 0.08),
+        }}
+      />
+      <Box
+        className="chat-context-image-overlay"
+        sx={{
+          px: 0.8,
+          py: 0.65,
+          bgcolor: 'rgba(11,18,32,0.82)',
+          color: '#fff',
+          opacity: 0.92,
+          transition: 'opacity 140ms ease',
+        }}
+      >
+        <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }} noWrap>
+          {item.file_name}
+        </Typography>
+      </Box>
+    </ButtonBase>
+  );
+}
+
+function TaskRow({ item, onOpenTask }) {
+  const statusMeta = getStatusMeta(item.task.status);
+  const priorityMeta = getPriorityMeta(item.task.priority);
+
+  return (
+    <ButtonBase
+      onClick={() => void onOpenTask?.(item.task.id)}
+      sx={{
+        width: '100%',
+        px: 1.1,
+        py: 1.05,
+        borderRadius: 1.5,
+        border: `1px solid ${SHEET_COLORS.border}`,
+        bgcolor: SHEET_COLORS.neutralSoft,
+        color: SHEET_COLORS.text,
+        justifyContent: 'space-between',
+        '&:hover': {
+          bgcolor: SHEET_COLORS.bgHover,
+        },
+      }}
+    >
+      <Box sx={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+        <Typography variant="body2" sx={{ fontWeight: 800 }} noWrap>
+          {item.task.title}
+        </Typography>
+        <Typography variant="caption" sx={{ display: 'block', color: SHEET_COLORS.textSecondary }} noWrap>
+          {getTaskAssignee(item.task)} · {item.task.due_at ? formatFullDate(item.task.due_at) : 'Без срока'}
+        </Typography>
+        <Stack direction="row" spacing={0.75} sx={{ mt: 0.8 }}>
+          <CompactBadge tone="accent">{statusMeta[0]}</CompactBadge>
+          <CompactBadge tone="warning">{priorityMeta[0]}</CompactBadge>
+        </Stack>
+      </Box>
+      <KeyboardArrowRightRoundedIcon sx={{ color: SHEET_COLORS.textSecondary }} />
+    </ButtonBase>
+  );
+}
+
+function ParticipantRow({ person }) {
+  return (
+    <Stack
+      direction="row"
+      spacing={1}
+      alignItems="center"
+      sx={{
+        py: 0.85,
+        px: 1,
+        borderRadius: 1.4,
+        transition: 'background-color 140ms ease',
+        '&:hover': {
+          bgcolor: SHEET_COLORS.bgHover,
+        },
+      }}
+    >
+      <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={38} />
+      <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Typography variant="body2" sx={{ color: SHEET_COLORS.text, fontWeight: 700 }} noWrap>
+          {person?.full_name || person?.username || 'Пользователь'}
+        </Typography>
+        <Typography variant="caption" sx={{ color: SHEET_COLORS.textSecondary }} noWrap>
+          {formatPresenceText(person?.presence)}
+        </Typography>
+      </Box>
+    </Stack>
+  );
+}
+
+// Компоненты для диалога добавления участников
+function AddMemberUserRow({ item, ui, checked, onToggle, accentColor }) {
+  const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
+  const statusLine = getPersonContextLine(item) || (item?.role || 'Участник');
+  return (
+    <Paper
+      elevation={0}
+      component="button"
+      type="button"
+      onClick={() => onToggle?.(item)}
+      sx={{
+        width: '100%',
+        px: 1.4,
+        py: 1.2,
+        borderRadius: 0,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.15,
+        textAlign: 'left',
+        color: primaryText,
+        cursor: 'pointer',
+        bgcolor: 'transparent',
+        transition: 'background-color 140ms ease, opacity 100ms ease',
+        '&:active': { opacity: 0.78 },
+        border: 'none',
+      }}
+    >
+      <Box sx={{ position: 'relative', flexShrink: 0 }}>
+        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={44} />
+        {checked ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              borderRadius: '50%',
+              bgcolor: 'rgba(0,0,0,0.35)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <CheckRoundedIcon sx={{ fontSize: 24, color: '#fff' }} />
+          </Box>
+        ) : null}
+      </Box>
+      <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Typography variant="body1" sx={{ fontWeight: 700, color: primaryText }} noWrap>
+          {item?.full_name || item?.username || 'Пользователь'}
+        </Typography>
+        <Typography variant="body2" sx={{ color: ui.textSecondary }} noWrap>
+          {statusLine}
+        </Typography>
+      </Box>
+    </Paper>
+  );
+}
+
+function SelectedUserChip({ item, ui, onRemove }) {
+  const accentColor = ui.accentText || '#3390ec';
+  const bgColor = ui.drawerBg || ui.panelBg || '#17212b';
+  const shortName = String(item?.full_name || item?.username || 'Участник').split(' ')[0];
+  return (
+    <Stack
+      alignItems="center"
+      spacing={0.4}
+      sx={{ flex: '0 0 auto', width: 68, cursor: onRemove ? 'pointer' : 'default', pt: 0.5, pb: 0.25 }}
+      onClick={() => onRemove?.(item)}
+    >
+      <Box sx={{ position: 'relative', p: '3px' }}>
+        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={46} />
+        {onRemove ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 0,
+              right: 0,
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              bgcolor: bgColor,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: `2px solid ${bgColor}`,
+              zIndex: 2,
+            }}
+          >
+            <CloseRoundedIcon sx={{ fontSize: 11, color: accentColor }} />
+          </Box>
+        ) : null}
+      </Box>
+      <Typography
+        variant="caption"
+        sx={{ color: ui.textStrong, fontWeight: 600, fontSize: '0.74rem', lineHeight: 1.2, textAlign: 'center', width: '100%', px: 0.25 }}
+        noWrap
+      >
+        {shortName}
+      </Typography>
+    </Stack>
+  );
+}
+
+function SettingRow({ icon, label, value, active, onClick, disabled }) {
+  return (
+    <ButtonBase
+      onClick={() => void onClick?.()}
+      disabled={disabled}
+      sx={{
+        width: '100%',
+        px: 1.2,
+        py: 1.1,
+        borderRadius: 1.5,
+        justifyContent: 'space-between',
+        color: SHEET_COLORS.text,
+        border: `1px solid ${active ? SHEET_COLORS.accentBorder : SHEET_COLORS.border}`,
+        bgcolor: active ? SHEET_COLORS.accentSoft : SHEET_COLORS.neutralSoft,
+        opacity: disabled ? 0.56 : 1,
+        '&:hover': {
+          bgcolor: active ? SHEET_COLORS.accentSoft : SHEET_COLORS.bgHover,
+        },
+        '&:active': {
+          opacity: 0.82,
+        },
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+        <Box
+          sx={{
+            width: 34,
+            height: 34,
+            borderRadius: 2,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            bgcolor: active ? SHEET_COLORS.accentSoft : SHEET_COLORS.neutralSoft,
+            color: active ? SHEET_COLORS.accent : SHEET_COLORS.text,
+            flexShrink: 0,
+          }}
+        >
+          {icon}
+        </Box>
+        <Box sx={{ minWidth: 0, textAlign: 'left' }}>
+          <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+            {label}
+          </Typography>
+          <Typography variant="caption" sx={{ color: SHEET_COLORS.textSecondary }} noWrap>
+            {value}
+          </Typography>
+        </Box>
+      </Stack>
+      <KeyboardArrowRightRoundedIcon sx={{ color: SHEET_COLORS.textSecondary }} />
+    </ButtonBase>
+  );
+}
+
+function CollapsedRail({ activeConversation, summary, summaryLoading, onToggleOpen, ui, theme }) {
+  const subject = activeConversation?.kind === 'direct'
+    ? (activeConversation?.direct_peer || activeConversation)
+    : activeConversation;
+
+  return (
+    <Box
+      sx={{
+        ...buildSheetVars(ui, theme),
+        width: COLLAPSED_WIDTH,
+        minWidth: COLLAPSED_WIDTH,
+        borderLeft: `1px solid ${SHEET_COLORS.border}`,
+        bgcolor: SHEET_COLORS.bg,
+        color: SHEET_COLORS.text,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 1.2,
+        py: 1.2,
+      }}
+    >
+      <Tooltip title="Открыть контекст чата">
+        <IconButton
+          onClick={onToggleOpen}
+          aria-label="Открыть контекст чата"
+          sx={{
+            color: SHEET_COLORS.text,
+            bgcolor: SHEET_COLORS.neutralSoft,
+            border: `1px solid ${SHEET_COLORS.border}`,
+          }}
+        >
+          <ChevronLeftRoundedIcon />
+        </IconButton>
+      </Tooltip>
+
+      {activeConversation ? (
+        <ConversationAvatar
+          conversation={activeConversation}
+          online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
+          size={44}
+        />
+      ) : null}
+
+      {summaryLoading ? (
+        <Stack spacing={0.9} sx={{ width: '100%', px: 1 }}>
+          {[0, 1, 2, 3].map((index) => (
+            <SheetSkeleton key={index} width="100%" height={48} radius={16} />
+          ))}
+        </Stack>
+      ) : (
+        <Stack spacing={0.9} sx={{ width: '100%', px: 1 }}>
+          {[
+            { key: 'image', count: Number(summary?.photos_count || 0), icon: <PhotoLibraryOutlinedIcon fontSize="small" /> },
+            { key: 'video', count: Number(summary?.videos_count || 0), icon: <VideoLibraryOutlinedIcon fontSize="small" /> },
+            { key: 'file', count: Number(summary?.files_count || 0), icon: <InsertDriveFileOutlinedIcon fontSize="small" /> },
+            { key: 'task', count: Number(summary?.shared_tasks_count || 0), icon: <TaskAltOutlinedIcon fontSize="small" /> },
+          ].map((item) => (
+            <Box
+              key={item.key}
+              sx={{
+                py: 0.8,
+                borderRadius: 2,
+                bgcolor: SHEET_COLORS.neutralSoft,
+                textAlign: 'center',
+                border: `1px solid ${SHEET_COLORS.border}`,
+              }}
+            >
+              <Box sx={{ color: SHEET_COLORS.textSecondary }}>{item.icon}</Box>
+              <Typography variant="caption" sx={{ display: 'block', mt: 0.2, color: SHEET_COLORS.text, fontWeight: 800 }}>
+                {item.count}
+              </Typography>
+            </Box>
+          ))}
+        </Stack>
+      )}
+    </Box>
+  );
+}
+
+export default function ChatContextPanel({
+  theme,
+  ui,
+  activeConversation,
+  conversationHeaderSubtitle,
+  socketStatus,
+  currentUser,
+  messages = [],
+  open,
+  embedded = false,
+  mobileScreen = false,
+  onClose,
+  onToggleOpen,
+  onOpenSearch,
+  onUpdateConversationSettings,
+  onAddGroupMembers,
+  onRemoveGroupMember,
+  onUpdateGroupMemberRole,
+  onSetGroupMemberRestriction,
+  onTransferGroupOwnership,
+  onLeaveGroup,
+  onUpdateGroupProfile,
+  onUploadGroupAvatar,
+  onRemoveGroupAvatar,
+  settingsUpdating,
+  onOpenAttachmentPreview,
+  onOpenTask,
+}) {
+  const summaryRequestSeqRef = useRef(0);
+  const attachmentStreamsRef = useRef({});
+  const attachmentSeqsRef = useRef({});
+  const panelScrollRef = useRef(null);
+  const copiedTimerRef = useRef(0);
+  const [summary, setSummary] = useState(EMPTY_SUMMARY);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState('');
+  const [summaryRetry, setSummaryRetry] = useState(0);
+  const [assetKind, setAssetKind] = useState('media');
+  const [attachmentStreams, setAttachmentStreams] = useState({});
+  const [peerWorkplace, setPeerWorkplace] = useState(null);
+  const [copiedField, setCopiedField] = useState('');
+  const [taskVisibleCount, setTaskVisibleCount] = useState(TASK_PAGE_SIZE);
+  const [participantsExpanded, setParticipantsExpanded] = useState(false);
+  const [participantSearch, setParticipantSearch] = useState('');
+  const [participantProfile, setParticipantProfile] = useState(null);
+  const [infoMenuAnchorEl, setInfoMenuAnchorEl] = useState(null);
+  const [exportMenuAnchorEl, setExportMenuAnchorEl] = useState(null);
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [openReportsCount, setOpenReportsCount] = useState(0);
+  const [joinRequestsOpen, setJoinRequestsOpen] = useState(false);
+  const [joinRequestsInfo, setJoinRequestsInfo] = useState({ count: 0, approvalRequired: false });
+  const [memberActionAnchorEl, setMemberActionAnchorEl] = useState(null);
+  const [memberActionTarget, setMemberActionTarget] = useState(null);
+  const [groupActionBusy, setGroupActionBusy] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [slowModeOpen, setSlowModeOpen] = useState(false);
+  const [restrictTarget, setRestrictTarget] = useState(null);
+  const { confirm: confirmDialog, prompt: promptDialog } = useConfirmDialog();
+  const notifications = useOptionalNotification();
+  const notifyApiError = notifications?.notifyApiError;
+  const notifyWarning = notifications?.notifyWarning;
+  const notifySuccess = notifications?.notifySuccess;
+  const mobileTabTouchStartRef = useRef(null);
+  const conversationId = String(activeConversation?.id || '').trim();
+  const isDirect = activeConversation?.kind === 'direct';
+  const isGroup = activeConversation?.kind === 'group';
+  const isNotes = activeConversation?.kind === 'notes';
+  const isTask = activeConversation?.kind === 'task' || Boolean(String(activeConversation?.task_id || '').trim());
+  const taskId = String(activeConversation?.task_id || '').trim();
+  const subject = isDirect ? (activeConversation?.direct_peer || activeConversation) : activeConversation;
+  const panelVisible = Boolean(open);
+  const memberDetails = useChatPanelMembers(activeConversation, panelVisible);
+  const panelHistory = useChatPanelHistory(conversationId, panelVisible && (assetKind === 'task' || assetKind === 'link'), messages);
+
+  const participantMembers = useMemo(() => {
+    if (!activeConversation) return [];
+    if (isDirect) {
+      return subject ? [{ user: subject, member_role: 'member' }] : [];
+    }
+    const source = Array.isArray(memberDetails.members)
+      ? memberDetails.members
+      : (Array.isArray(activeConversation.member_preview) ? activeConversation.member_preview : []);
+    const normalized = source
+      .map((member) => {
+        const user = member?.user || member;
+        if (!user?.id) return null;
+        return {
+          ...member,
+          user,
+          member_role: normalizeGroupRole(member?.member_role || member?.role),
+        };
+      })
+      .filter(Boolean);
+    const sortedUsers = sortByName(normalized.map((member) => member.user));
+    const orderByUserId = new Map(sortedUsers.map((user, index) => [String(user?.id || ''), index]));
+    return [...new Map(normalized.map((member) => [String(member.user.id), member])).values()].sort((left, right) => {
+      const leftIndex = orderByUserId.get(String(left?.user?.id || '')) ?? 0;
+      const rightIndex = orderByUserId.get(String(right?.user?.id || '')) ?? 0;
+      return leftIndex - rightIndex;
+    });
+  }, [activeConversation, isDirect, subject, memberDetails.members]);
+
+  const participants = useMemo(
+    () => participantMembers.map((member) => member.user).filter(Boolean),
+    [participantMembers],
+  );
+  const currentUserId = Number(currentUser?.id || 0);
+  const currentMember = useMemo(
+    () => participantMembers.find((member) => Number(member?.user?.id || 0) === currentUserId) || null,
+    [currentUserId, participantMembers],
+  );
+  const currentMemberRole = normalizeGroupRole(currentMember?.member_role);
+  const canManageMembers = isGroup && (currentMemberRole === 'owner' || currentMemberRole === 'moderator');
+  const canManageOwners = isGroup && currentMemberRole === 'owner';
+
+  const onlineCount = useMemo(
+    () => (
+      isDirect
+        ? participants.filter((person) => Boolean(person?.presence?.is_online)).length
+        : Number.isFinite(Number(activeConversation?.online_member_count))
+          ? Number(activeConversation?.online_member_count || 0)
+          : participants.filter((person) => Boolean(person?.presence?.is_online)).length
+    ),
+    [activeConversation?.online_member_count, isDirect, participants],
+  );
+  const participantsExpandable = !isDirect && !isNotes && participants.length > PARTICIPANTS_COLLAPSED_COUNT;
+  const visibleParticipantMembers = useMemo(
+    () => (
+      !mobileScreen || participantSearch || participantsExpanded || !participantsExpandable
+        ? participantMembers
+        : participantMembers.slice(0, PARTICIPANTS_COLLAPSED_COUNT)
+    ),
+    [participantMembers, participantsExpandable, participantsExpanded, mobileScreen, participantSearch],
+  );
+  const filteredParticipantMembers = visibleParticipantMembers.filter(({ user }) => !participantSearch.trim()
+    || [user.full_name, user.username, user.department, user.job_title].join(' ').toLocaleLowerCase('ru').includes(participantSearch.trim().toLocaleLowerCase('ru')));
+
+  const taskItems = useMemo(() => (
+    [...panelHistory.items]
+      .filter((message) => message?.kind === 'task_share' && message?.task_preview?.id)
+      .sort((left, right) => new Date(right?.created_at || 0).getTime() - new Date(left?.created_at || 0).getTime())
+      .map((message) => ({
+        messageId: message.id,
+        createdAt: message.created_at,
+        task: message.task_preview,
+      }))
+  ), [panelHistory.items]);
+
+  const visibleTaskItems = useMemo(
+    () => taskItems.slice(0, taskVisibleCount),
+    [taskItems, taskVisibleCount],
+  );
+
+  const linkItems = useMemo(() => {
+    const seen = new Set();
+    return [...panelHistory.items]
+      .sort((left, right) => new Date(right?.created_at || 0).getTime() - new Date(left?.created_at || 0).getTime())
+      .flatMap((message) => extractLinksFromText(message?.body).map((url, index) => ({
+        id: `${message.id || 'message'}-${index}-${url}`,
+        url,
+        title: url.replace(/^https?:\/\//i, ''),
+        created_at: message.created_at,
+      })))
+      .filter((item) => {
+        if (!item.url || seen.has(item.url)) return false;
+        seen.add(item.url);
+        return true;
+      });
+  }, [panelHistory.items]);
+
+  const assetCounts = useMemo(() => ({
+    image: Number(summary?.photos_count || 0),
+    video: Number(summary?.videos_count || 0),
+    file: Number(summary?.files_count || 0),
+    audio: Number(summary?.audio_count || 0),
+    task: Number(summary?.shared_tasks_count || 0),
+    link: linkItems.length,
+    member: Number(activeConversation?.member_count || participants.length || 0),
+  }), [activeConversation?.member_count, linkItems.length, participants.length, summary]);
+
+  const mobileTabOptions = useMemo(() => (
+    (isDirect || isNotes)
+      ? [
+          { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
+          { key: 'file', label: 'Файлы', count: assetCounts.file },
+          { key: 'link', label: 'Ссылки', count: assetCounts.link },
+          { key: 'audio', label: 'Голосовые', count: assetCounts.audio },
+          { key: 'task', label: 'Задачи', count: assetCounts.task },
+        ]
+      : [
+          { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
+          { key: 'file', label: 'Файлы', count: assetCounts.file },
+          { key: 'link', label: 'Ссылки', count: assetCounts.link },
+          { key: 'audio', label: 'Голосовые', count: assetCounts.audio },
+          { key: 'task', label: 'Задачи', count: assetCounts.task },
+          { key: 'member', label: 'Участники', count: assetCounts.member },
+        ]
+  ), [assetCounts.audio, assetCounts.file, assetCounts.image, assetCounts.link, assetCounts.member, assetCounts.task, assetCounts.video, isDirect, isNotes]);
+
+  const attachmentItems = useMemo(() => {
+    if (assetKind === 'media') {
+      return sortAttachmentsDesc(mergeAttachmentItems(
+        attachmentStreams.image?.items || [],
+        attachmentStreams.video?.items || [],
+      ));
+    }
+    if (ATTACHMENT_STREAM_KINDS.has(assetKind)) {
+      return attachmentStreams[assetKind]?.items || [];
+    }
+    return [];
+  }, [assetKind, attachmentStreams]);
+
+  const activeAttachmentKinds = useMemo(() => (
+    assetKind === 'media'
+      ? MEDIA_STREAM_KINDS
+      : (ATTACHMENT_STREAM_KINDS.has(assetKind) ? [assetKind] : [])
+  ), [assetKind]);
+
+  const isAttachmentKind = activeAttachmentKinds.length > 0;
+
+  const attachmentsLoading = activeAttachmentKinds.some((kind) => attachmentStreams[kind]?.loading);
+  const attachmentsLoadingMore = activeAttachmentKinds.some((kind) => attachmentStreams[kind]?.loadingMore);
+  const attachmentsError = activeAttachmentKinds.map((kind) => attachmentStreams[kind]?.error).find(Boolean) || '';
+
+  const mobileTabKeys = useMemo(
+    () => mobileTabOptions.map((tab) => tab.key),
+    [mobileTabOptions],
+  );
+
+  const stepMobileTab = useCallback((direction) => {
+    if (!mobileScreen || mobileTabKeys.length <= 1) return;
+    const currentIndex = mobileTabKeys.indexOf(assetKind);
+    if (currentIndex < 0) return;
+    const nextIndex = direction > 0
+      ? Math.min(mobileTabKeys.length - 1, currentIndex + 1)
+      : Math.max(0, currentIndex - 1);
+    if (nextIndex === currentIndex) return;
+    setAssetKind(mobileTabKeys[nextIndex]);
+  }, [assetKind, mobileScreen, mobileTabKeys]);
+
+  const handleMobileTabTouchStart = useCallback((event) => {
+    const touch = event.changedTouches?.[0];
+    if (!touch) return;
+    mobileTabTouchStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+    };
+  }, []);
+
+  const handleMobileTabTouchEnd = useCallback((event) => {
+    const touch = event.changedTouches?.[0];
+    const start = mobileTabTouchStartRef.current;
+    mobileTabTouchStartRef.current = null;
+    if (!touch || !start) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (Math.abs(deltaX) < 56) return;
+    if (Math.abs(deltaX) <= Math.abs(deltaY) * 1.15) return;
+    if (deltaX < 0) {
+      stepMobileTab(1);
+      return;
+    }
+    stepMobileTab(-1);
+  }, [stepMobileTab]);
+
+  useEffect(() => {
+    if (!conversationId) {
+      setSummary(EMPTY_SUMMARY);
+      setSummaryError('');
+      return;
+    }
+
+    const requestSeq = summaryRequestSeqRef.current + 1;
+    summaryRequestSeqRef.current = requestSeq;
+    setSummaryLoading(true);
+    setSummaryError('');
+
+    chatAPI.getConversationAssetsSummary(conversationId)
+      .then((payload) => {
+        if (requestSeq !== summaryRequestSeqRef.current) return;
+        setSummary({ ...EMPTY_SUMMARY, ...(payload || {}) });
+      })
+      .catch((error) => {
+        if (requestSeq !== summaryRequestSeqRef.current) return;
+        setSummary(EMPTY_SUMMARY);
+        setSummaryError(error?.message || 'Не удалось загрузить данные чата.');
+      })
+      .finally(() => {
+        if (requestSeq === summaryRequestSeqRef.current) {
+          setSummaryLoading(false);
+        }
+      });
+    return () => { summaryRequestSeqRef.current += 1; };
+  }, [conversationId, activeConversation?.last_message_at, summaryRetry]);
+
+  useEffect(() => {
+    if (!conversationId) {
+      setAssetKind('media');
+      return;
+    }
+
+    if (!mobileScreen) {
+      if ((isDirect || isNotes) && assetKind === 'member') setAssetKind('media');
+      return;
+    }
+    if (mobileTabKeys.includes(assetKind)) return;
+    setAssetKind(mobileTabKeys[0] || 'media');
+  }, [assetKind, conversationId, isDirect, isNotes, mobileScreen, mobileTabKeys]);
+
+  useEffect(() => {
+    setTaskVisibleCount(TASK_PAGE_SIZE);
+  }, [conversationId, assetKind]);
+
+  useEffect(() => {
+    setParticipantsExpanded(false);
+    setParticipantSearch('');
+    setParticipantProfile(null);
+  }, [conversationId]);
+
+  const closeMemberActionMenu = useCallback(() => {
+    setMemberActionAnchorEl(null);
+    setMemberActionTarget(null);
+  }, []);
+
+  const runGroupAction = useCallback(async (action) => {
+    if (typeof action !== 'function') return;
+    setGroupActionBusy(true);
+    try {
+      await action();
+    } catch (error) {
+      if (typeof notifyApiError === 'function') {
+        notifyApiError(error, 'Не удалось выполнить действие.');
+      } else {
+        console.error('Chat group action failed', error);
+      }
+    } finally {
+      setGroupActionBusy(false);
+      closeMemberActionMenu();
+    }
+  }, [closeMemberActionMenu, notifyApiError]);
+
+  // Состояния для диалога добавления участников
+  const [addMembersOpen, setAddMembersOpen] = useState(false);
+  const [addMembersSearch, setAddMembersSearch] = useState('');
+  const [addMembersUsers, setAddMembersUsers] = useState([]);
+  const [addMembersLoading, setAddMembersLoading] = useState(false);
+  const [selectedAddMembers, setSelectedAddMembers] = useState([]);
+  const addMembersSearchRef = useRef(null);
+
+  // Загрузка пользователей для диалога добавления
+  const loadAddMembersUsers = useCallback(async (query = '') => {
+    if (!CHAT_FEATURE_ENABLED) return;
+    setAddMembersLoading(true);
+    try {
+      const data = await chatAPI.getUsers({ q: query, limit: 200 });
+      setAddMembersUsers(sortByName(Array.isArray(data?.items) ? data.items : []));
+    } catch {
+      setAddMembersUsers([]);
+    } finally {
+      setAddMembersLoading(false);
+    }
+  }, []);
+
+  // Открыть диалог добавления участников
+  const handleOpenAddMembers = useCallback(() => {
+    if (!canManageMembers) return;
+    setAddMembersOpen(true);
+    setAddMembersSearch('');
+    setSelectedAddMembers([]);
+    void loadAddMembersUsers('');
+  }, [canManageMembers, loadAddMembersUsers]);
+
+  // Закрыть диалог
+  const handleCloseAddMembers = useCallback(() => {
+    setAddMembersOpen(false);
+    setAddMembersSearch('');
+    setSelectedAddMembers([]);
+    setAddMembersUsers([]);
+  }, []);
+
+  // Выбрать/снять выбор пользователя
+  const handleToggleAddMember = useCallback((user) => {
+    const userId = String(user?.id || '');
+    if (!userId) return;
+    setSelectedAddMembers((current) => {
+      const exists = current.some((u) => String(u?.id || '') === userId);
+      if (exists) {
+        return current.filter((u) => String(u?.id || '') !== userId);
+      }
+      return sortByName([...current, user]);
+    });
+  }, []);
+
+  // Удалить из выбранных
+  const handleRemoveSelectedAddMember = useCallback((user) => {
+    const userId = String(user?.id || '');
+    setSelectedAddMembers((current) => current.filter((u) => String(u?.id || '') !== userId));
+  }, []);
+
+  // Подтвердить добавление
+  const handleConfirmAddMembers = useCallback(async () => {
+    const memberUserIds = selectedAddMembers.map((u) => Number(u?.id || 0)).filter((id) => id > 0);
+    if (!memberUserIds.length) return;
+    await runGroupAction(() => onAddGroupMembers?.(memberUserIds));
+    handleCloseAddMembers();
+  }, [selectedAddMembers, onAddGroupMembers, runGroupAction, handleCloseAddMembers]);
+
+  // Поиск с debounce
+  useEffect(() => {
+    if (!addMembersOpen) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      void loadAddMembersUsers(addMembersSearch);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [addMembersOpen, addMembersSearch, loadAddMembersUsers]);
+
+  const handleRenameGroup = useCallback(async () => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    const nextTitle = await promptDialog({
+      title: 'Переименовать группу',
+      label: 'Новое название группы',
+      initialValue: String(activeConversation?.title || '').trim(),
+      confirmLabel: 'Сохранить',
+    });
+    const normalizedTitle = String(nextTitle || '').trim();
+    if (!normalizedTitle) return;
+    void runGroupAction(() => onUpdateGroupProfile?.({ title: normalizedTitle }));
+  }, [activeConversation?.title, canManageOwners, onUpdateGroupProfile, promptDialog, runGroupAction]);
+
+  const avatarInputRef = useRef(null);
+  const handleChangeAvatar = useCallback(() => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    avatarInputRef.current?.click();
+  }, [canManageOwners]);
+
+  const handleAvatarFileChange = useCallback((event) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+    if (!file) return;
+    if (file.type && !file.type.startsWith('image/')) {
+      notifyWarning?.('Выберите изображение: JPG, PNG или WebP.');
+      return;
+    }
+    if (Number(file.size || 0) > GROUP_AVATAR_MAX_BYTES) {
+      notifyWarning?.('Фото группы не должно быть больше 5 МБ.');
+      return;
+    }
+    void runGroupAction(() => onUploadGroupAvatar?.(file));
+  }, [notifyWarning, onUploadGroupAvatar, runGroupAction]);
+
+  const handleRemoveAvatar = useCallback(() => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    void runGroupAction(() => onRemoveGroupAvatar?.());
+  }, [canManageOwners, onRemoveGroupAvatar, runGroupAction]);
+
+  const handleEditDescription = useCallback(async () => {
+    if (!canManageMembers) return;
+    setInfoMenuAnchorEl(null);
+    const nextDescription = await promptDialog({
+      title: 'Описание группы',
+      label: 'Описание (пусто — убрать)',
+      initialValue: String(activeConversation?.description || '').trim(),
+      confirmLabel: 'Сохранить',
+      allowEmpty: true,
+    });
+    if (nextDescription === null || nextDescription === undefined) return;
+    const normalizedDescription = String(nextDescription).trim();
+    if (normalizedDescription === String(activeConversation?.description || '').trim()) return;
+    void runGroupAction(() => onUpdateGroupProfile?.({ description: normalizedDescription }));
+  }, [activeConversation?.description, canManageMembers, onUpdateGroupProfile, promptDialog, runGroupAction]);
+
+  const postingManagersOnly = String(activeConversation?.posting_policy || '').trim() === 'managers';
+  const groupClosed = String(activeConversation?.posting_policy || '').trim() === 'closed';
+  const handleCreateInviteLink = useCallback(async () => {
+    if (!canManageMembers) return;
+    setInfoMenuAnchorEl(null);
+    const confirmed = await confirmDialog({
+      title: 'Создать ссылку-приглашение?',
+      message: 'Прежняя ссылка перестанет работать. Новая действует 7 дней и подходит только сотрудникам портала.',
+      confirmLabel: 'Создать',
+    });
+    if (!confirmed) return;
+    void runGroupAction(async () => {
+      const result = await chatAPI.createGroupInvite(conversationId);
+      const link = `${window.location.origin}/chat?join=${encodeURIComponent(result?.token || '')}`;
+      try {
+        await navigator.clipboard.writeText(link);
+        notifySuccess?.('Ссылка скопирована. Она действует 7 дней.');
+      } catch {
+        // No clipboard access: show the link so it can be copied by hand.
+        await promptDialog({
+          title: 'Ссылка-приглашение',
+          label: 'Скопируйте ссылку',
+          initialValue: link,
+          confirmLabel: 'Готово',
+        });
+      }
+    });
+  }, [canManageMembers, confirmDialog, conversationId, notifySuccess, promptDialog, runGroupAction]);
+
+  const handleToggleGroupClosed = useCallback(async () => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    if (!groupClosed) {
+      const confirmed = await confirmDialog({
+        title: 'Закрыть группу для сообщений?',
+        message: 'Никто, включая вас, не сможет писать. Группу можно открыть снова.',
+        confirmLabel: 'Закрыть',
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    void runGroupAction(() => onUpdateGroupProfile?.({ posting_policy: groupClosed ? 'all' : 'closed' }));
+  }, [canManageOwners, confirmDialog, groupClosed, onUpdateGroupProfile, runGroupAction]);
+  const slowModeSeconds = Number(activeConversation?.slow_mode_seconds || 0);
+  const handleSubmitSlowMode = useCallback((seconds) => {
+    if (!canManageOwners) return;
+    setSlowModeOpen(false);
+    void runGroupAction(() => onUpdateGroupProfile?.({ slow_mode_seconds: Number(seconds) }));
+  }, [canManageOwners, onUpdateGroupProfile, runGroupAction]);
+  const handleSubmitRestriction = useCallback((durationSeconds) => {
+    const targetUserId = Number(restrictTarget?.user?.id || 0);
+    setRestrictTarget(null);
+    if (targetUserId <= 0) return;
+    void runGroupAction(() => onSetGroupMemberRestriction?.(targetUserId, { restricted: true, durationSeconds }));
+  }, [onSetGroupMemberRestriction, restrictTarget, runGroupAction]);
+  // Owner and moderators see how many complaints wait for them; others never ask for the list.
+  useEffect(() => {
+    if (!panelVisible || !conversationId || !isGroup || !canManageMembers) {
+      setOpenReportsCount(0);
+      return undefined;
+    }
+    let cancelled = false;
+    chatConversationDetailsAPI.listMessageReports(conversationId)
+      .then((data) => { if (!cancelled) setOpenReportsCount(Number(data?.open_count || 0)); })
+      .catch(() => { if (!cancelled) setOpenReportsCount(0); });
+    return () => { cancelled = true; };
+  }, [panelVisible, conversationId, isGroup, canManageMembers]);
+  // Owner and moderators also see how many join requests wait for them.
+  useEffect(() => {
+    if (!panelVisible || !conversationId || !isGroup || !canManageMembers) {
+      setJoinRequestsInfo({ count: 0, approvalRequired: false });
+      return undefined;
+    }
+    let cancelled = false;
+    chatConversationDetailsAPI.listJoinRequests(conversationId)
+      .then((data) => {
+        if (!cancelled) {
+          setJoinRequestsInfo({
+            count: Number(data?.open_count || 0),
+            approvalRequired: Boolean(data?.approval_required),
+          });
+        }
+      })
+      .catch(() => { if (!cancelled) setJoinRequestsInfo({ count: 0, approvalRequired: false }); });
+    return () => { cancelled = true; };
+  }, [panelVisible, conversationId, isGroup, canManageMembers]);
+  // Any participant exports a personal chat; the history of a group goes only to owner and moderators.
+  const canExportHistory = Boolean(conversationId) && (!isGroup || canManageMembers);
+  const handleExportHistory = useCallback(async (format) => {
+    setInfoMenuAnchorEl(null);
+    setExportMenuAnchorEl(null);
+    try {
+      const { blob, fileName, truncated } = await chatConversationDetailsAPI.exportConversation(conversationId, { format });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      if (truncated) {
+        notifications?.notifyInfo?.('В файл попали только первые 20 000 сообщений.', { title: 'История выгружена не полностью' });
+      }
+    } catch (error) {
+      if (typeof notifyApiError === 'function') notifyApiError(error, 'Не удалось выгрузить историю.');
+    }
+  }, [conversationId, notifications, notifyApiError]);
+  // Absent means allowed (older servers, or the permissions table is not migrated yet).
+  const membersSendFiles = activeConversation?.members_send_files !== false;
+  const handleToggleMembersFiles = useCallback(() => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    void runGroupAction(() => onUpdateGroupProfile?.({ members_send_files: !membersSendFiles }));
+  }, [canManageOwners, membersSendFiles, onUpdateGroupProfile, runGroupAction]);
+  const handleTogglePostingPolicy = useCallback(() => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    void runGroupAction(() => onUpdateGroupProfile?.({ posting_policy: postingManagersOnly ? 'all' : 'managers' }));
+  }, [canManageOwners, onUpdateGroupProfile, postingManagersOnly, runGroupAction]);
+
+  const handleLeaveGroup = useCallback(async () => {
+    if (!isGroup || currentMemberRole === 'owner') return;
+    setInfoMenuAnchorEl(null);
+    const confirmed = await confirmDialog({
+      title: `Покинуть беседу «${String(activeConversation?.title || 'группу').trim()}»?`,
+      message: 'После выхода вы перестанете получать новые сообщения.',
+      confirmLabel: 'Покинуть',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    void runGroupAction(() => onLeaveGroup?.());
+  }, [activeConversation?.title, confirmDialog, currentMemberRole, isGroup, onLeaveGroup, runGroupAction]);
+
+  const handleOpenMemberActions = useCallback((event, member) => {
+    event?.stopPropagation?.();
+    setMemberActionAnchorEl(event?.currentTarget || null);
+    setMemberActionTarget(member || null);
+  }, []);
+
+  const patchAttachmentStream = useCallback((kind, patch) => {
+    attachmentStreamsRef.current = {
+      ...attachmentStreamsRef.current,
+      [kind]: { ...(attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM), ...patch },
+    };
+    setAttachmentStreams((current) => ({
+      ...current,
+      [kind]: { ...(current[kind] || EMPTY_ATTACHMENT_STREAM), ...patch },
+    }));
+  }, []);
+
+  const loadAttachmentStream = useCallback(async (kind, { append = false } = {}) => {
+    if (!conversationId || !ATTACHMENT_STREAM_KINDS.has(kind)) return;
+    const stream = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+    if (append) {
+      if (!stream.hasMore || !stream.cursor || stream.loading || stream.loadingMore) return;
+    } else if ((stream.loading || stream.started) && !stream.error) {
+      return;
+    }
+
+    const seq = (attachmentSeqsRef.current[kind] || 0) + 1;
+    attachmentSeqsRef.current[kind] = seq;
+    patchAttachmentStream(kind, append ? { loadingMore: true, error: '' } : { loading: true, error: '', started: true });
+
+    try {
+      const payload = await chatAPI.getConversationAttachments(conversationId, {
+        kind,
+        limit: ATTACHMENT_PAGE_SIZE,
+        before_attachment_id: append ? stream.cursor : undefined,
+      });
+      if (seq !== attachmentSeqsRef.current[kind]) return;
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      const nextCursor = String(payload?.next_before_attachment_id || '').trim();
+      const base = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+      patchAttachmentStream(kind, {
+        items: mergeAttachmentItems(base.items, items),
+        hasMore: Boolean(payload?.has_more && nextCursor && nextCursor !== stream.cursor),
+        cursor: nextCursor || stream.cursor,
+      });
+    } catch (error) {
+      if (seq !== attachmentSeqsRef.current[kind]) return;
+      patchAttachmentStream(kind, { error: error?.message || 'Не удалось загрузить вложения.' });
+    } finally {
+      if (seq === attachmentSeqsRef.current[kind]) {
+        patchAttachmentStream(kind, { loading: false, loadingMore: false });
+      }
+    }
+  }, [conversationId, patchAttachmentStream]);
+
+  // Сброс лент вложений и рабочего места при смене разговора или новых сообщениях
+  useEffect(() => {
+    attachmentStreamsRef.current = {};
+    Object.keys(attachmentSeqsRef.current).forEach((kind) => {
+      attachmentSeqsRef.current[kind] += 1;
+    });
+    setAttachmentStreams({});
+    setPeerWorkplace(null);
+  }, [conversationId, activeConversation?.last_message_at]);
+
+  // Ленивая загрузка активных потоков вложений
+  useEffect(() => {
+    if (!panelVisible || !conversationId) return;
+    activeAttachmentKinds.forEach((kind) => {
+      const stream = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+      if (!stream.started && !stream.loading) void loadAttachmentStream(kind);
+    });
+  }, [panelVisible, conversationId, activeAttachmentKinds, attachmentStreams, loadAttachmentStream]);
+
+  const retryFailedAttachmentStreams = useCallback(() => {
+    activeAttachmentKinds.forEach((kind) => {
+      const stream = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+      if (!stream.error || stream.loading || stream.loadingMore) return;
+      void loadAttachmentStream(kind, { append: stream.items.length > 0 });
+    });
+  }, [activeAttachmentKinds, loadAttachmentStream]);
+
+  // Догрузка при приближении к низу панели (вместо кнопки «Показать ещё»)
+  const maybeLoadMorePanelContent = useCallback((container) => {
+    if (!container) return;
+    if (container.scrollHeight - container.scrollTop - container.clientHeight > PANEL_LOAD_MORE_THRESHOLD_PX) return;
+    if (isAttachmentKind) {
+      activeAttachmentKinds.forEach((kind) => {
+        const stream = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+        // После ошибки догрузка возобновляется только явным «Повторить».
+        if (stream.hasMore && !stream.error && !stream.loading && !stream.loadingMore) {
+          void loadAttachmentStream(kind, { append: true });
+        }
+      });
+      return;
+    }
+    if (assetKind === 'task') {
+      if (taskItems.length > taskVisibleCount) {
+        setTaskVisibleCount((count) => count + TASK_PAGE_SIZE);
+      } else if (panelHistory.hasMore && !panelHistory.loading && !panelHistory.error) {
+        panelHistory.loadMore();
+      }
+      return;
+    }
+    if (assetKind === 'link' && panelHistory.hasMore && !panelHistory.loading && !panelHistory.error) {
+      panelHistory.loadMore();
+    }
+  }, [activeAttachmentKinds, assetKind, isAttachmentKind, loadAttachmentStream, panelHistory, taskItems.length, taskVisibleCount]);
+
+  const handlePanelScroll = useCallback((event) => {
+    maybeLoadMorePanelContent(event?.currentTarget);
+  }, [maybeLoadMorePanelContent]);
+
+  // Автодогрузка, пока контент вкладки не заполняет панель и скролл ещё недоступен
+  useEffect(() => {
+    const container = panelScrollRef.current;
+    if (!container || !panelVisible) return;
+    if (!container.scrollHeight || container.scrollHeight > container.clientHeight + 8) return;
+    maybeLoadMorePanelContent(container);
+  }, [attachmentItems.length, linkItems.length, taskVisibleCount, assetKind, panelVisible, maybeLoadMorePanelContent]);
+
+  // Рабочее место сотрудника из адресной книги (office_address/office_room не входят в chat-схему)
+  const subjectUserId = String(subject?.id || '').trim();
+  const subjectLookupEmail = String(subject?.corporate_email || subject?.email || '').trim();
+  const subjectLookupName = String(subject?.full_name || '').trim();
+  useEffect(() => {
+    if (!isDirect || !panelVisible || !subjectUserId) return undefined;
+    if (subject?.office_address || subject?.office_room) return undefined;
+    let cancelled = false;
+    findAddressBookEntryForChatUser(subject)
+      .then((entry) => { if (!cancelled) setPeerWorkplace(pickAddressBookWorkplace(entry)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isDirect, panelVisible, subjectUserId, subjectLookupEmail, subjectLookupName]);
+
+  const handleCopyInfoValue = useCallback((field, value) => {
+    const text = String(value || '').trim();
+    if (!text || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        setCopiedField(field);
+        if (typeof window !== 'undefined') {
+          window.clearTimeout(copiedTimerRef.current);
+          copiedTimerRef.current = window.setTimeout(() => setCopiedField(''), 1600);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => () => {
+    if (typeof window !== 'undefined') window.clearTimeout(copiedTimerRef.current);
+  }, []);
+
+  if (!activeConversation) {
+    return embedded ? null : (
+      <Box
+        sx={{
+          ...buildSheetVars(ui, theme),
+          width: `min(${PANEL_WIDTH}px, 100vw)`,
+          minWidth: `min(${PANEL_WIDTH}px, 100vw)`,
+          borderLeft: `1px solid ${SHEET_COLORS.border}`,
+          bgcolor: SHEET_COLORS.bg,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <Typography sx={{ color: SHEET_COLORS.textSecondary }}>
+          Выберите чат
+        </Typography>
+      </Box>
+    );
+  }
+
+  if (!panelVisible && !embedded) {
+    return (
+      <CollapsedRail
+        activeConversation={activeConversation}
+        summary={summary}
+        summaryLoading={summaryLoading}
+        onToggleOpen={onToggleOpen}
+        ui={ui}
+        theme={theme}
+      />
+    );
+  }
+
+  if (!panelVisible && embedded) {
+    return null;
+  }
+
+  const showPinnedBadge = Boolean(activeConversation?.is_pinned);
+  const showMutedBadge = Boolean(activeConversation?.is_muted);
+  const showArchivedBadge = Boolean(activeConversation?.is_archived);
+  const panelStatus = (
+    <Stack spacing={1} sx={{ px: 1.5, py: 1 }}>
+      {summaryError ? <Alert severity="error" action={<Button onClick={() => setSummaryRetry((value) => value + 1)}>Повторить</Button>}>{summaryError}</Alert> : null}
+      {isAttachmentKind ? (
+        <>
+          {attachmentsError ? (
+            <Alert severity="error" action={<Button size="small" onClick={retryFailedAttachmentStreams}>Повторить</Button>}>{attachmentsError}</Alert>
+          ) : null}
+          {attachmentsLoadingMore ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 0.5 }} role="status">
+              <CircularProgress size={20} sx={{ color: 'var(--chat-sheet-panel-accent)' }} />
+            </Box>
+          ) : null}
+        </>
+      ) : null}
+      {assetKind === 'task' || assetKind === 'link' ? (
+        <>
+          {panelHistory.error ? <Alert severity="error" action={<Button onClick={panelHistory.retry}>Повторить</Button>}>{panelHistory.error}</Alert> : null}
+          {panelHistory.loading && !panelHistory.items.length ? <Typography role="status">Загрузка истории…</Typography> : null}
+          {panelHistory.loading && panelHistory.items.length > 0 ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 0.5 }} role="status">
+              <CircularProgress size={20} sx={{ color: 'var(--chat-sheet-panel-accent)' }} />
+            </Box>
+          ) : null}
+        </>
+      ) : null}
+      {assetKind === 'member' && memberDetails.loading ? <Typography role="status">Загрузка участников…</Typography> : null}
+      {assetKind === 'member' && memberDetails.error ? <Alert severity="error" action={<Button onClick={memberDetails.retry}>Повторить</Button>}>{memberDetails.error}</Alert> : null}
+      {assetKind === 'member' && participantSearch.trim() && filteredParticipantMembers.length === 0 ? <Typography>Участники не найдены</Typography> : null}
+    </Stack>
+  );
+  const participantSearchField = (
+    <InputBase fullWidth placeholder="Найти участника" value={participantSearch} onChange={(event) => setParticipantSearch(event.target.value)}
+      inputProps={{ 'aria-label': 'Найти участника' }} sx={{ px: 1.5, py: 1, mb: 1, borderRadius: 2, bgcolor: 'var(--chat-sheet-panel-card)' }} />
+  );
+  const infoMenuOpen = Boolean(infoMenuAnchorEl);
+  const memberActionMenuOpen = Boolean(memberActionAnchorEl && memberActionTarget?.user?.id);
+  const memberActionUser = memberActionTarget?.user || null;
+  const memberActionRole = normalizeGroupRole(memberActionTarget?.member_role);
+  const memberActionUserId = Number(memberActionUser?.id || 0);
+  const canPromoteSelectedMember = canManageOwners && memberActionRole === 'member';
+  const canDemoteSelectedMember = canManageOwners && memberActionRole === 'moderator';
+  const canTransferSelectedOwnership = canManageOwners && memberActionUserId > 0 && memberActionUserId !== currentUserId;
+  const canRemoveSelectedMember = canManageMembers
+    && memberActionUserId > 0
+    && memberActionUserId !== currentUserId
+    && memberActionRole !== 'owner'
+    && (currentMemberRole === 'owner' || memberActionRole === 'member');
+  // Same hierarchy as removal: the owner restricts anyone but himself, a moderator only plain members.
+  const canRestrictSelectedMember = canRemoveSelectedMember && typeof onSetGroupMemberRestriction === 'function';
+  const selectedMemberRestricted = Boolean(memberActionTarget?.is_restricted);
+  const subjectCorporateEmail = String(subject?.corporate_email || '').trim();
+  const subjectCorporatePhone = String(subject?.corporate_phone || '').trim();
+  const subjectOfficeAddress = normalizeOfficeValue(subject?.office_address) || normalizeOfficeValue(peerWorkplace?.office_address);
+  const subjectOfficeRoom = normalizeOfficeRoomValue(subject?.office_room) || normalizeOfficeRoomValue(peerWorkplace?.office_room);
+  const subjectBirthday = String(subject?.birth_date || subject?.birthday || '').trim();
+  const subjectName = String(subject?.full_name || subject?.username || activeConversation?.title || 'сотрудника').trim();
+  const profileDialogTitle = isGroup ? 'Карточка участника' : 'Карточка сотрудника';
+  const closeProfileLabel = isGroup ? 'Закрыть карточку участника' : 'Закрыть карточку сотрудника';
+  const openDirectProfile = () => {
+    if (isDirect && subject) {
+      setParticipantProfile({ user: subject });
+    }
+  };
+
+  const memberActionsMenu = (
+    <Menu
+      anchorEl={memberActionAnchorEl}
+      open={memberActionMenuOpen}
+      onClose={closeMemberActionMenu}
+      anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      PaperProps={{
+        sx: {
+          mt: 0.5,
+          minWidth: 230,
+          borderRadius: 2.5,
+          bgcolor: 'var(--chat-sheet-panel-menu-bg)',
+          color: 'var(--chat-sheet-panel-text)',
+          border: '1px solid var(--chat-sheet-panel-divider)',
+          boxShadow: 'var(--chat-sheet-panel-menu-shadow)',
+          '& .MuiMenuItem-root': {
+            color: 'var(--chat-sheet-panel-text)',
+          },
+        },
+      }}
+    >
+      {canPromoteSelectedMember ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={() => { void runGroupAction(() => onUpdateGroupMemberRole?.(memberActionUserId, 'moderator')); }}
+        >
+          Назначить модератором
+        </MenuItem>
+      ) : null}
+      {canDemoteSelectedMember ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={() => { void runGroupAction(() => onUpdateGroupMemberRole?.(memberActionUserId, 'member')); }}
+        >
+          Снять модератора
+        </MenuItem>
+      ) : null}
+      {canTransferSelectedOwnership ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={async () => {
+            const targetUserId = memberActionUserId;
+            closeMemberActionMenu();
+            const confirmed = await confirmDialog({
+              title: 'Передать владельца группы этому участнику?',
+              confirmLabel: 'Передать',
+              destructive: true,
+            });
+            if (!confirmed) return;
+            void runGroupAction(() => onTransferGroupOwnership?.(targetUserId));
+          }}
+        >
+          Передать ownership
+        </MenuItem>
+      ) : null}
+      {canTransferSelectedOwnership ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={async () => {
+            const targetUserId = memberActionUserId;
+            closeMemberActionMenu();
+            const confirmed = await confirmDialog({
+              title: `Передать владение и выйти из «${String(activeConversation?.title || 'группы').trim()}»?`,
+              message: 'Выбранный участник станет владельцем, вы перестанете получать новые сообщения.',
+              confirmLabel: 'Передать и выйти',
+              destructive: true,
+            });
+            if (!confirmed) return;
+            void runGroupAction(() => onLeaveGroup?.({ successorUserId: targetUserId }));
+          }}
+        >
+          Передать владение и выйти
+        </MenuItem>
+      ) : null}
+      {canRestrictSelectedMember ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          data-testid={selectedMemberRestricted ? 'chat-member-lift-restriction' : 'chat-member-restrict'}
+          onClick={() => {
+            const target = memberActionTarget;
+            const targetUserId = memberActionUserId;
+            closeMemberActionMenu();
+            if (selectedMemberRestricted) {
+              void runGroupAction(() => onSetGroupMemberRestriction?.(targetUserId, { restricted: false }));
+              return;
+            }
+            setRestrictTarget(target);
+          }}
+        >
+          {selectedMemberRestricted ? 'Снять ограничение' : 'Ограничить отправку'}
+        </MenuItem>
+      ) : null}
+      {canRemoveSelectedMember ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={async () => {
+            const targetUserId = memberActionUserId;
+            closeMemberActionMenu();
+            const confirmed = await confirmDialog({
+              title: 'Исключить участника из группы?',
+              confirmLabel: 'Исключить',
+              destructive: true,
+            });
+            if (!confirmed) return;
+            void runGroupAction(() => onRemoveGroupMember?.(targetUserId));
+          }}
+          sx={{ color: 'var(--chat-sheet-warning, #d64b4b) !important' }}
+        >
+          Исключить из группы
+        </MenuItem>
+      ) : null}
+      {!canPromoteSelectedMember && !canDemoteSelectedMember && !canTransferSelectedOwnership && !canRemoveSelectedMember && !canRestrictSelectedMember ? (
+        <MenuItem disabled>Нет доступных действий</MenuItem>
+      ) : null}
+    </Menu>
+  );
+
+  if (mobileScreen) {
+    return (
+      <Box
+        sx={{
+          ...buildSheetVars(ui, theme),
+          height: '100%',
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          bgcolor: 'var(--chat-sheet-panel-bg)',
+          color: 'var(--chat-sheet-panel-text)',
+        }}
+      >
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            px: 1.35,
+            pt: 'max(env(safe-area-inset-top), 12px)',
+            pb: 1,
+            flexShrink: 0,
+            borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+          }}
+        >
+          <Typography
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              px: 1.2,
+              fontSize: '1.15rem',
+              fontWeight: 800,
+              letterSpacing: '-0.02em',
+            }}
+            noWrap
+          >
+            Информация
+          </Typography>
+
+          <Stack direction="row" spacing={0.25} alignItems="center">
+            <MobileProfileActionButton
+              ariaLabel="Редактировать"
+              onClick={handleRenameGroup}
+              disabled={!canManageOwners || groupActionBusy}
+            >
+              <EditRoundedIcon sx={{ fontSize: 24 }} />
+            </MobileProfileActionButton>
+            <MobileProfileActionButton
+              ariaLabel="Ещё"
+              onClick={(event) => setInfoMenuAnchorEl(event.currentTarget)}
+            >
+              <MoreVertRoundedIcon sx={{ fontSize: 26 }} />
+            </MobileProfileActionButton>
+            <MobileProfileActionButton
+              ariaLabel="Закрыть информацию"
+              onClick={embedded ? onClose : onToggleOpen}
+            >
+              <CloseRoundedIcon sx={{ fontSize: 30 }} />
+            </MobileProfileActionButton>
+          </Stack>
+        </Box>
+
+        <Box
+          ref={panelScrollRef}
+          onScroll={handlePanelScroll}
+          data-testid="chat-info-scroll"
+          className="chat-scroll-hidden"
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            bgcolor: 'var(--chat-sheet-panel-bg)',
+            scrollbarWidth: 'none',
+            msOverflowStyle: 'none',
+            '&::-webkit-scrollbar': {
+              display: 'none',
+            },
+          }}
+        >
+          <Box
+            component={isDirect ? ButtonBase : 'div'}
+            type={isDirect ? 'button' : undefined}
+            aria-label={isDirect ? `Открыть карточку ${subjectName}` : undefined}
+            onClick={isDirect ? openDirectProfile : undefined}
+            sx={{
+              width: '100%',
+              px: 2.5,
+              pt: 2.25,
+              pb: 2,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              textAlign: 'center',
+              borderRadius: 2,
+              '&:focus-visible': {
+                outline: '2px solid var(--chat-sheet-accent)',
+                outlineOffset: -2,
+              },
+            }}
+          >
+            <ConversationAvatar
+              conversation={activeConversation}
+              online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
+              size={110}
+            />
+            <Typography
+              sx={{
+                mt: 2.5,
+                fontSize: '2rem',
+                lineHeight: 1.08,
+                fontWeight: 800,
+                letterSpacing: '-0.03em',
+              }}
+            >
+              {activeConversation?.title || 'Без имени'}
+            </Typography>
+            <Typography
+              sx={{
+                mt: 0.7,
+                color: isDirect && subject?.presence?.is_online
+                  ? 'var(--chat-sheet-panel-accent)'
+                  : 'var(--chat-sheet-panel-muted)',
+                fontSize: '1.02rem',
+                lineHeight: 1.2,
+              }}
+            >
+              {isNotes
+                ? 'Сохраняйте ссылки, файлы и напоминания для себя'
+                : (conversationHeaderSubtitle || (isDirect && subject?.presence?.is_online ? 'в сети' : 'был(а) недавно'))}
+            </Typography>
+          {isGroup && String(activeConversation?.description || '').trim() ? (
+            <Typography
+              data-testid="chat-group-description"
+              sx={{
+                mt: 1,
+                px: 1,
+                fontSize: '0.95rem',
+                lineHeight: 1.35,
+                textAlign: 'center',
+                whiteSpace: 'pre-wrap',
+                color: 'var(--chat-sheet-panel-muted)',
+              }}
+            >
+              {activeConversation.description}
+            </Typography>
+          ) : null}
+          </Box>
+
+          <Box sx={{ pb: 1.2 }}>
+            {isDirect ? (
+              <>
+                {subject?.job_title ? (
+                  <MobileProfileInfoRow
+                    icon={<PersonOutlineRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Должность"
+                    value={subject.job_title}
+                  />
+                ) : null}
+                {subject?.department ? (
+                  <MobileProfileInfoRow
+                    icon={<BusinessRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Подразделение"
+                    value={subject.department}
+                  />
+                ) : null}
+                {subject?.city ? (
+                  <MobileProfileInfoRow
+                    icon={<LocationOnOutlinedIcon sx={{ fontSize: 22 }} />}
+                    label="Город"
+                    value={subject.city}
+                  />
+                ) : null}
+                {subjectOfficeAddress ? (
+                  <MobileProfileInfoRow
+                    icon={<HomeWorkRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Адрес офиса"
+                    value={subjectOfficeAddress}
+                  />
+                ) : null}
+                {subjectOfficeRoom ? (
+                  <MobileProfileInfoRow
+                    icon={<MeetingRoomRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Кабинет"
+                    value={subjectOfficeRoom}
+                  />
+                ) : null}
+                {subjectCorporateEmail ? (
+                  <MobileProfileInfoRow
+                    icon={<MailOutlineRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Корпоративная почта"
+                    value={subjectCorporateEmail}
+                    copied={copiedField === 'email'}
+                    onClick={() => handleCopyInfoValue('email', subjectCorporateEmail)}
+                  />
+                ) : null}
+                {subjectCorporatePhone ? (
+                  <MobileProfileInfoRow
+                    icon={<PhoneRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Корпоративный телефон"
+                    value={subjectCorporatePhone}
+                    copied={copiedField === 'phone'}
+                    onClick={() => handleCopyInfoValue('phone', subjectCorporatePhone)}
+                  />
+                ) : null}
+                {subjectBirthday ? (
+                  <MobileProfileInfoRow
+                    icon={<CakeRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="День рождения"
+                    value={subjectBirthday}
+                  />
+                ) : null}
+              </>
+            ) : isNotes ? (
+              <MobileProfileInfoRow
+                icon={<StickyNote2OutlinedIcon sx={{ fontSize: 22 }} />}
+                label="Назначение"
+                value="Личный чат для заметок, файлов и напоминаний"
+              />
+            ) : (
+              <>
+                <MobileProfileInfoRow
+                  icon={<PersonOutlineRoundedIcon sx={{ fontSize: 22 }} />}
+                  label="Участники"
+                  value={String(Number(activeConversation?.member_count || participants.length || 0))}
+                  onClick={() => setAssetKind('member')}
+                />
+                <MobileProfileInfoRow
+                  icon={<FiberManualRecordRoundedIcon sx={{ fontSize: 14, color: '#22c55e' }} />}
+                  label="Сейчас в сети"
+                  value={String(onlineCount)}
+                  onClick={() => setAssetKind('member')}
+                />
+              </>
+            )}
+
+            <ConversationNotificationsToggle
+              muted={activeConversation?.is_muted}
+              mutedUntil={activeConversation?.muted_until}
+              disabled={settingsUpdating}
+              onChange={onUpdateConversationSettings}
+            />
+          </Box>
+
+          <Box sx={{ mt: 0.4, borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
+            <PanelTabsBar
+              testId="chat-context-mobile-tabs"
+              options={mobileTabOptions}
+              value={assetKind}
+              onChange={setAssetKind}
+            />
+          </Box>
+
+          <Box
+            data-testid="chat-context-mobile-tab-content"
+            onTouchStart={handleMobileTabTouchStart}
+            onTouchEnd={handleMobileTabTouchEnd}
+            sx={{ minHeight: 220, bgcolor: 'var(--chat-sheet-panel-bg)' }}
+          >
+            {attachmentsLoading && !attachmentItems.length && isAttachmentKind ? (
+              assetKind === 'media' ? <SheetGridSkeleton /> : <SheetListSkeleton rows={5} />
+            ) : null}
+
+            {!(attachmentsLoading && !attachmentItems.length) && assetKind === 'media' ? (
+              attachmentItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
+                  Нет медиа
+                </Typography>
+              ) : (
+                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', bgcolor: 'var(--chat-sheet-panel-grid)' }}>
+                  {attachmentItems.map((item) => (
+                    <ConversationMediaThumb
+                      key={item.id}
+                      item={item}
+                      onOpen={onOpenAttachmentPreview}
+                    />
+                  ))}
+                </Box>
+              )
+            ) : null}
+
+            {!(attachmentsLoading && !attachmentItems.length) && (assetKind === 'file' || assetKind === 'audio') ? (
+              attachmentItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
+                  {assetKind === 'audio' ? 'Нет голосовых' : 'Нет файлов'}
+                </Typography>
+              ) : (
+                <Stack spacing={0} sx={{ py: 0.8 }}>
+                  {attachmentItems.map((item) => (
+                    <PanelFileRow
+                      key={item.id}
+                      item={item}
+                      subtitleParts={assetKind === 'audio' ? [formatMediaDuration(item.duration_seconds)] : []}
+                    />
+                  ))}
+                </Stack>
+              )
+            ) : null}
+
+            {assetKind === 'link' ? (
+              linkItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
+                  {panelHistory.loading ? 'Загрузка ссылок…' : panelHistory.hasMore ? 'В загруженной части ссылок нет' : 'Нет ссылок'}
+                </Typography>
+              ) : (
+                <Stack spacing={0} sx={{ py: 0.8 }}>
+                  {linkItems.map((item) => (
+                    <PanelLinkRow key={item.id} item={item} />
+                  ))}
+                </Stack>
+              )
+            ) : null}
+
+            {assetKind === 'task' ? (
+              visibleTaskItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
+                  {panelHistory.loading ? 'Загрузка задач…' : panelHistory.hasMore ? 'В загруженной части задач нет' : 'Нет задач'}
+                </Typography>
+              ) : (
+                <Stack spacing={0} sx={{ py: 0.8 }}>
+                  {visibleTaskItems.map((item) => (
+                    <PanelTaskRow
+                      key={`${item.messageId}-${item.task.id}`}
+                      item={item}
+                      onOpenTask={onOpenTask}
+                    />
+                  ))}
+                </Stack>
+              )
+            ) : null}
+
+            {assetKind === 'member' ? (
+              participants.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
+                  {memberDetails.loading ? 'Загрузка участников…' : memberDetails.error ? 'Список участников недоступен' : 'Нет участников'}
+                </Typography>
+              ) : (
+                <Stack spacing={0} sx={{ py: 0.8 }}>
+                  {canManageMembers ? (
+                    <Box sx={{ px: 2.6, py: 1 }}>
+                      <Button
+                        fullWidth
+                        variant="contained"
+                        onClick={handleOpenAddMembers}
+                        disabled={groupActionBusy}
+                        sx={{
+                          borderRadius: 999,
+                          textTransform: 'none',
+                          bgcolor: 'var(--chat-sheet-panel-accent)',
+                          fontWeight: 800,
+                        }}
+                      >
+                        Добавить участника
+                      </Button>
+                    </Box>
+                  ) : null}
+                  {filteredParticipantMembers.map((member) => {
+                    const person = member?.user || {};
+                    const role = normalizeGroupRole(member?.member_role);
+                    const canOpenActions = isGroup && member?.user?.id && Number(member.user.id) !== currentUserId
+                      && (canManageOwners || (canManageMembers && role === 'member'));
+                    return (
+                      <Box
+                        key={`${conversationId}-person-${person.id}`}
+                        sx={{
+                          px: 2.6,
+                          py: 0.35,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.6,
+                        }}
+                      >
+                        <ButtonBase
+                          aria-label={`Открыть карточку ${person?.full_name || person?.username || 'пользователя'}`}
+                          onClick={() => setParticipantProfile(member)}
+                          sx={{
+                            minWidth: 0,
+                            minHeight: 48,
+                            flex: 1,
+                            gap: 1.35,
+                            justifyContent: 'flex-start',
+                            borderRadius: 1.5,
+                            textAlign: 'left',
+                            '&.Mui-focusVisible': { outline: '2px solid var(--chat-sheet-panel-accent)', outlineOffset: 2 },
+                          }}
+                        >
+                          <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={44} />
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Stack direction="row" alignItems="center" spacing={0.8} sx={{ minWidth: 0 }}>
+                              <Typography sx={{ fontSize: '0.96rem', fontWeight: 600 }} noWrap>
+                                {person?.full_name || person?.username || 'Пользователь'}
+                              </Typography>
+                              {role !== 'member' ? (
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    px: 0.75,
+                                    py: 0.2,
+                                    borderRadius: 999,
+                                    bgcolor: role === 'owner' ? 'var(--chat-sheet-panel-accent-soft)' : 'var(--chat-sheet-panel-card)',
+                                    color: role === 'owner' ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 800,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {GROUP_ROLE_LABELS[role]}
+                                </Box>
+                              ) : null}
+                              {member?.is_restricted ? (
+                                <Box
+                                  component="span"
+                                  data-testid="chat-member-restricted"
+                                  title="Не может писать в группе"
+                                  sx={{
+                                    px: 0.7,
+                                    py: 0.15,
+                                    borderRadius: 999,
+                                    border: '1px solid currentColor',
+                                    color: 'var(--chat-sheet-warning, #d64b4b)',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 800,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  ограничен
+                                </Box>
+                              ) : null}
+                            </Stack>
+                            <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }} noWrap>
+                              {getPersonContextLine(person)}
+                            </Typography>
+                          </Box>
+                        </ButtonBase>
+                        {canOpenActions ? (
+                          <IconButton
+                            size="small"
+                            aria-label={`Действия участника ${person?.full_name || person?.username || ''}`}
+                            onClick={(event) => handleOpenMemberActions(event, member)}
+                            disabled={groupActionBusy}
+                            sx={{ color: 'var(--chat-sheet-panel-soft)' }}
+                          >
+                            <MoreVertRoundedIcon fontSize="small" />
+                          </IconButton>
+                        ) : null}
+                      </Box>
+                    );
+                  })}
+                  {participantsExpandable ? (
+                    <Box sx={{ px: 2.6, py: 1 }}>
+                      <Button
+                        fullWidth
+                        variant="text"
+                        onClick={() => setParticipantsExpanded((current) => !current)}
+                        sx={{
+                          borderRadius: 999,
+                          textTransform: 'none',
+                          color: 'var(--chat-sheet-panel-accent)',
+                          fontWeight: 700,
+                        }}
+                      >
+                        {participantsExpanded ? 'Свернуть' : 'Показать всех'}
+                      </Button>
+                    </Box>
+                  ) : null}
+                </Stack>
+              )
+            ) : null}
+            {panelStatus}
+          </Box>
+        </Box>
+
+        <Menu
+          anchorEl={infoMenuAnchorEl}
+          open={infoMenuOpen}
+          onClose={() => setInfoMenuAnchorEl(null)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+          PaperProps={{
+            sx: {
+              mt: 0.5,
+              minWidth: 220,
+              borderRadius: 2.5,
+              bgcolor: 'var(--chat-sheet-panel-menu-bg)',
+              color: 'var(--chat-sheet-panel-text)',
+              border: '1px solid var(--chat-sheet-panel-divider)',
+              boxShadow: 'var(--chat-sheet-panel-menu-shadow)',
+              '& .MuiMenuItem-root': {
+                color: 'var(--chat-sheet-panel-text)',
+              },
+            },
+          }}
+        >
+          {onOpenSearch ? (
+            <MenuItem onClick={() => { setInfoMenuAnchorEl(null); onOpenSearch?.(); }}>
+              Поиск в чате
+            </MenuItem>
+          ) : null}
+          <MenuItem onClick={() => { setInfoMenuAnchorEl(null); onUpdateConversationSettings?.({ is_pinned: !activeConversation?.is_pinned }); }}>
+            {activeConversation?.is_pinned ? 'Открепить чат' : 'Закрепить чат'}
+          </MenuItem>
+          <MenuItem onClick={() => { setInfoMenuAnchorEl(null); onUpdateConversationSettings?.({ is_archived: !activeConversation?.is_archived }); }}>
+            {activeConversation?.is_archived ? 'Вернуть из архива' : 'Переместить в архив'}
+          </MenuItem>
+          {canManageOwners ? (
+            <MenuItem onClick={handleRenameGroup}>
+              Переименовать группу
+            </MenuItem>
+          ) : null}
+          {canManageOwners ? (
+            <MenuItem onClick={handleChangeAvatar}>
+              Сменить фото группы
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem onClick={handleEditDescription}>
+              Изменить описание
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageOwners && !groupClosed ? (
+            <MenuItem onClick={handleTogglePostingPolicy}>
+              {postingManagersOnly ? 'Разрешить писать всем' : 'Писать могут только админы'}
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageOwners && !groupClosed ? (
+            <MenuItem
+              onClick={() => {
+                setInfoMenuAnchorEl(null);
+                setSlowModeOpen(true);
+              }}
+            >
+              {slowModeSeconds > 0 ? `Медленный режим: ${describeSlowMode(slowModeSeconds)}` : 'Медленный режим'}
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem onClick={handleCreateInviteLink}>
+              Ссылка-приглашение
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem
+              onClick={() => {
+                setInfoMenuAnchorEl(null);
+                setActivityOpen(true);
+              }}
+            >
+              Журнал действий
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem
+              onClick={() => {
+                setInfoMenuAnchorEl(null);
+                setReportsOpen(true);
+              }}
+            >
+              {openReportsCount > 0 ? `Жалобы (${openReportsCount})` : 'Жалобы'}
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem
+              onClick={() => {
+                setInfoMenuAnchorEl(null);
+                setJoinRequestsOpen(true);
+              }}
+            >
+              {joinRequestsInfo.count > 0 ? `Заявки (${joinRequestsInfo.count})` : 'Заявки на вступление'}
+            </MenuItem>
+          ) : null}
+          {canExportHistory ? (
+            <MenuItem onClick={() => void handleExportHistory('txt')} data-testid="chat-export-history-txt">
+              Выгрузить историю (текст)
+            </MenuItem>
+          ) : null}
+          {canExportHistory ? (
+            <MenuItem onClick={() => void handleExportHistory('json')} data-testid="chat-export-history-json">
+              Выгрузить историю (JSON)
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageOwners && !groupClosed ? (
+            <MenuItem onClick={handleToggleMembersFiles}>
+              {membersSendFiles ? 'Запретить файлы участникам' : 'Разрешить файлы участникам'}
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageOwners ? (
+            <MenuItem onClick={handleToggleGroupClosed}>
+              {groupClosed ? 'Открыть группу' : 'Закрыть группу'}
+            </MenuItem>
+          ) : null}
+          {canManageOwners && activeConversation?.avatar_url ? (
+            <MenuItem onClick={handleRemoveAvatar}>
+              Удалить фото группы
+            </MenuItem>
+          ) : null}
+          {isGroup && currentMemberRole !== 'owner' ? (
+            <MenuItem onClick={handleLeaveGroup} sx={{ color: 'var(--chat-sheet-warning, #d64b4b) !important' }}>
+              Покинуть беседу
+            </MenuItem>
+          ) : null}
+        </Menu>
+        {memberActionsMenu}
+        {isGroup && canManageMembers ? (
+          <ChatGroupActivityDialog
+            open={activityOpen}
+            conversationId={activeConversation?.id}
+            onClose={() => setActivityOpen(false)}
+          />
+        ) : null}
+        {isGroup && canManageMembers ? (
+          <ChatGroupReportsDialog
+            open={reportsOpen}
+            conversationId={activeConversation?.id}
+            onClose={() => setReportsOpen(false)}
+            onChanged={setOpenReportsCount}
+          />
+        ) : null}
+        {isGroup && canManageMembers ? (
+          <ChatGroupJoinRequestsDialog
+            open={joinRequestsOpen}
+            conversationId={activeConversation?.id}
+            onClose={() => setJoinRequestsOpen(false)}
+            onChanged={setJoinRequestsInfo}
+          />
+        ) : null}
+        {isGroup && canManageOwners ? (
+          <ChatGroupSlowModeDialog
+            open={slowModeOpen}
+            currentSeconds={slowModeSeconds}
+            busy={groupActionBusy}
+            onClose={() => setSlowModeOpen(false)}
+            onSubmit={handleSubmitSlowMode}
+          />
+        ) : null}
+        {isGroup && canManageMembers ? (
+          <ChatGroupRestrictDialog
+            open={Boolean(restrictTarget)}
+            memberName={String(restrictTarget?.user?.full_name || restrictTarget?.user?.username || '').trim()}
+            busy={groupActionBusy}
+            onClose={() => setRestrictTarget(null)}
+            onSubmit={handleSubmitRestriction}
+          />
+        ) : null}
+        <input
+          ref={avatarInputRef}
+          type="file"
+          accept="image/*"
+          hidden
+          data-testid="group-avatar-input"
+          onChange={handleAvatarFileChange}
+        />
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      sx={{
+        ...buildSheetVars(ui, theme),
+        width: embedded ? '100%' : `min(${PANEL_WIDTH}px, 100vw)`,
+        minWidth: embedded ? 0 : `min(${PANEL_WIDTH}px, 100vw)`,
+        height: '100%',
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        borderLeft: embedded ? 'none' : `1px solid ${SHEET_COLORS.border}`,
+        bgcolor: 'var(--chat-sheet-panel-bg)',
+        color: 'var(--chat-sheet-panel-text)',
+      }}
+    >
+      {/* Шапка */}
+      <ChatRightPanelHeader
+        title="Информация"
+        onClose={embedded ? onClose : onToggleOpen}
+        closeLabel="Закрыть информацию"
+        actions={(
+          <IconButton aria-label="Ещё" onClick={(event) => setInfoMenuAnchorEl(event.currentTarget)} sx={{ width: 44, height: 44 }}>
+            <MoreVertRoundedIcon />
+          </IconButton>
+        )}
+      />
+
+      {/* Профиль */}
+      <Box
+        ref={panelScrollRef}
+        onScroll={handlePanelScroll}
+        data-testid="chat-info-scroll"
+        sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}
+      >
+      <Box
+        component={isDirect ? ButtonBase : 'div'}
+        type={isDirect ? 'button' : undefined}
+        aria-label={isDirect ? `Открыть карточку ${subjectName}` : undefined}
+        onClick={isDirect ? openDirectProfile : undefined}
+        sx={{
+          width: '100%',
+          px: 2,
+          py: 2.5,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 1,
+          borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+          '&:focus-visible': {
+            outline: '2px solid var(--chat-sheet-accent)',
+            outlineOffset: -2,
+          },
+        }}
+      >
+        <ConversationAvatar
+          conversation={activeConversation}
+          online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
+          size={96}
+        />
+        <Typography sx={{ fontWeight: 800, fontSize: '1.3rem', letterSpacing: '-0.015em', textAlign: 'center' }}>
+          {activeConversation?.title || 'Без имени'}
+        </Typography>
+        <Typography
+          sx={{
+            color: isDirect && subject?.presence?.is_online
+              ? 'var(--chat-sheet-panel-accent)'
+              : 'var(--chat-sheet-panel-muted)',
+            textAlign: 'center',
+            px: 1,
+          }}
+        >
+          {isNotes
+            ? 'Сохраняйте ссылки, файлы и напоминания для себя'
+            : isTask
+              ? 'Участники синхронизируются с карточкой задачи'
+              : (conversationHeaderSubtitle || (isGroup ? `${assetCounts.member} участников` : (isDirect && subject?.presence?.is_online ? 'в сети' : 'был(а) недавно')))}
+        </Typography>
+          {isGroup && String(activeConversation?.description || '').trim() ? (
+            <Typography
+              data-testid="chat-group-description"
+              sx={{
+                mt: 1,
+                px: 1,
+                fontSize: '0.95rem',
+                lineHeight: 1.35,
+                textAlign: 'center',
+                whiteSpace: 'pre-wrap',
+                color: 'var(--chat-sheet-panel-muted)',
+              }}
+            >
+              {activeConversation.description}
+            </Typography>
+          ) : null}
+        {isTask && taskId ? (
+          <Button
+            size="small"
+            variant="contained"
+            onClick={() => onOpenTask?.(taskId)}
+            sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700, boxShadow: 'none' }}
+          >
+            Открыть задачу
+          </Button>
+        ) : null}
+        {isGroup && (canManageOwners || currentMemberRole !== 'owner') ? (
+          <Stack direction="row" spacing={1} sx={{ width: '100%', justifyContent: 'center', flexWrap: 'wrap' }}>
+            {canManageOwners ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleRenameGroup}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Переименовать
+              </Button>
+            ) : null}
+            {canManageOwners ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleChangeAvatar}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Фото
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleEditDescription}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Описание
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleCreateInviteLink}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Ссылка
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => setActivityOpen(true)}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Журнал
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                color={openReportsCount > 0 ? 'warning' : 'primary'}
+                onClick={() => setReportsOpen(true)}
+                data-testid="chat-group-reports-button"
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {openReportsCount > 0 ? `Жалобы (${openReportsCount})` : 'Жалобы'}
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                color={joinRequestsInfo.count > 0 ? 'warning' : 'primary'}
+                onClick={() => setJoinRequestsOpen(true)}
+                data-testid="chat-group-join-requests-button"
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {joinRequestsInfo.count > 0 ? `Заявки (${joinRequestsInfo.count})` : 'Заявки'}
+              </Button>
+            ) : null}
+            {canManageOwners && !groupClosed ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleTogglePostingPolicy}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {postingManagersOnly ? 'Писать всем' : 'Только админы'}
+              </Button>
+            ) : null}
+            {canManageOwners && !groupClosed ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => setSlowModeOpen(true)}
+                disabled={groupActionBusy}
+                data-testid="chat-group-slow-mode-button"
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {slowModeSeconds > 0 ? `Медленно: ${describeSlowMode(slowModeSeconds)}` : 'Медленный режим'}
+              </Button>
+            ) : null}
+            {canExportHistory ? (
+              <>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={(event) => setExportMenuAnchorEl(event.currentTarget)}
+                  data-testid="chat-export-history-button"
+                  sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+                >
+                  Выгрузить
+                </Button>
+                <Menu
+                  anchorEl={exportMenuAnchorEl}
+                  open={Boolean(exportMenuAnchorEl)}
+                  onClose={() => setExportMenuAnchorEl(null)}
+                >
+                  <MenuItem onClick={() => void handleExportHistory('txt')} data-testid="chat-export-history-txt">
+                    История в текстовом файле
+                  </MenuItem>
+                  <MenuItem onClick={() => void handleExportHistory('json')} data-testid="chat-export-history-json">
+                    История в JSON
+                  </MenuItem>
+                </Menu>
+              </>
+            ) : null}
+            {canManageOwners && !groupClosed ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleToggleMembersFiles}
+                disabled={groupActionBusy}
+                data-testid="chat-group-files-button"
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {membersSendFiles ? 'Запретить файлы' : 'Разрешить файлы'}
+              </Button>
+            ) : null}
+            {canManageOwners ? (
+              <Button
+                size="small"
+                variant="outlined"
+                color={groupClosed ? 'primary' : 'error'}
+                onClick={handleToggleGroupClosed}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {groupClosed ? 'Открыть группу' : 'Закрыть группу'}
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => setAddMembersOpen(true)}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Добавить
+              </Button>
+            ) : null}
+          </Stack>
+        ) : null}
+      </Box>
+
+      {/* Контент */}
+      <Box sx={{ bgcolor: 'var(--chat-sheet-panel-bg)' }}>
+        {/* Информация о пользователе */}
+        {isDirect ? (
+          <>
+            {String(subject?.job_title || '').trim() ? (
+              <InfoRowTelegram
+                icon={<PersonOutlineRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Должность"
+                value={subject.job_title}
+              />
+            ) : null}
+            {String(subject?.department || '').trim() ? (
+              <InfoRowTelegram
+                icon={<BusinessRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Подразделение"
+                value={subject.department}
+              />
+            ) : null}
+            {String(subject?.city || '').trim() ? (
+              <InfoRowTelegram
+                icon={<LocationOnOutlinedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Город"
+                value={subject.city}
+              />
+            ) : null}
+            {subjectOfficeAddress ? (
+              <InfoRowTelegram
+                icon={<HomeWorkRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Адрес офиса"
+                value={subjectOfficeAddress}
+              />
+            ) : null}
+            {subjectOfficeRoom ? (
+              <InfoRowTelegram
+                icon={<MeetingRoomRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Кабинет"
+                value={subjectOfficeRoom}
+              />
+            ) : null}
+            {subjectCorporateEmail ? (
+              <InfoRowTelegram
+                icon={<MailOutlineRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Корпоративная почта"
+                value={subjectCorporateEmail}
+                copied={copiedField === 'email'}
+                onClick={() => handleCopyInfoValue('email', subjectCorporateEmail)}
+              />
+            ) : null}
+            {subjectCorporatePhone ? (
+              <InfoRowTelegram
+                icon={<PhoneRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Корпоративный телефон"
+                value={subjectCorporatePhone}
+                copied={copiedField === 'phone'}
+                onClick={() => handleCopyInfoValue('phone', subjectCorporatePhone)}
+              />
+            ) : null}
+          </>
+        ) : isNotes ? (
+          <InfoRowTelegram
+            icon={<StickyNote2OutlinedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+            label="Назначение"
+            value="Личный чат для заметок, файлов и напоминаний"
+          />
+        ) : isTask ? (
+          <>
+            <InfoRowTelegram
+              icon={<TaskAltOutlinedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+              label="Статус задачи"
+              value={getStatusMeta(activeConversation?.task_status)[0] || 'Задача'}
+            />
+            <InfoRowTelegram
+              icon={<PersonOutlineRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+              label="Участники"
+              value={String(Number(activeConversation?.member_count || participants.length || 0))}
+            />
+          </>
+        ) : (
+          <>
+            <InfoNavRow
+              icon={<PersonOutlineRoundedIcon sx={{ fontSize: 20 }} />}
+              label="Участники"
+              value={Number(activeConversation?.member_count || participants.length || 0)}
+              onClick={() => setAssetKind('member')}
+            />
+            <InfoNavRow
+              icon={<FiberManualRecordRoundedIcon sx={{ fontSize: 14, color: '#22c55e' }} />}
+              label="Сейчас в сети"
+              value={onlineCount}
+              onClick={() => setAssetKind('member')}
+            />
+          </>
+        )}
+
+        <ConversationNotificationsToggle
+          muted={activeConversation?.is_muted}
+          mutedUntil={activeConversation?.muted_until}
+          disabled={settingsUpdating}
+          onChange={onUpdateConversationSettings}
+        />
+
+        {/* Медиа и содержимое — табы как в Telegram */}
+        <Box sx={{ borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
+          {/* Табы — одна строка с горизонтальной прокруткой */}
+          <PanelTabsBar
+            testId="chat-context-tabs"
+            options={mobileTabOptions}
+            value={assetKind}
+            onChange={setAssetKind}
+            sticky
+          />
+
+          {/* Сетка медиа / список ссылок и задач */}
+          <Box sx={{ minHeight: 120 }}>
+            {attachmentsLoading && !attachmentItems.length && isAttachmentKind ? (
+              assetKind === 'media' ? <SheetGridSkeleton /> : <SheetListSkeleton rows={5} />
+            ) : null}
+            {!(attachmentsLoading && !attachmentItems.length) && assetKind === 'media' ? (
+              attachmentItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
+                  Нет медиа
+                </Typography>
+              ) : (
+                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', bgcolor: 'var(--chat-sheet-panel-grid)' }}>
+                  {attachmentItems.map((item) => (
+                    <ConversationMediaThumb
+                      key={item.id}
+                      item={item}
+                      onOpen={onOpenAttachmentPreview}
+                    />
+                  ))}
+                </Box>
+              )
+            ) : (assetKind === 'file' || assetKind === 'audio') && !(attachmentsLoading && !attachmentItems.length) ? (
+              /* Список файлов */
+              attachmentItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
+                  {assetKind === 'audio' ? 'Нет голосовых' : 'Нет файлов'}
+                </Typography>
+              ) : (
+                <Stack spacing={0} sx={{ py: 0.5 }}>
+                  {attachmentItems.map((item) => (
+                    <PanelFileRow
+                      key={item.id}
+                      item={item}
+                      subtitleParts={assetKind === 'audio' ? [formatMediaDuration(item.duration_seconds)] : []}
+                    />
+                  ))}
+                </Stack>
+              )
+            ) : assetKind === 'link' ? (
+              /* Список ссылок */
+              linkItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
+                  {panelHistory.loading ? 'Загрузка ссылок…' : panelHistory.hasMore ? 'В загруженной части ссылок нет' : 'Нет ссылок'}
+                </Typography>
+              ) : (
+                <Stack spacing={0} sx={{ py: 0.5 }}>
+                  {linkItems.map((item) => (
+                    <PanelLinkRow key={item.id} item={item} />
+                  ))}
+                </Stack>
+              )
+            ) : assetKind === 'task' ? (
+              /* Список задач */
+              visibleTaskItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
+                  {panelHistory.loading ? 'Загрузка задач…' : panelHistory.hasMore ? 'В загруженной части задач нет' : 'Нет задач'}
+                </Typography>
+              ) : (
+                <Stack spacing={0} sx={{ py: 0.5 }}>
+                  {visibleTaskItems.map((item) => (
+                    <PanelTaskRow
+                      key={`${item.messageId}-${item.task.id}`}
+                      item={item}
+                      onOpenTask={onOpenTask}
+                    />
+                  ))}
+                </Stack>
+              )
+            ) : assetKind === 'member' ? (
+              participants.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
+                  {memberDetails.loading ? 'Загрузка участников…' : memberDetails.error ? 'Список участников недоступен' : 'Нет участников'}
+                </Typography>
+              ) : (
+                <Stack spacing={0.5} sx={{ px: 1.5, py: 0.75 }}>
+                  {participantSearchField}
+                  {canManageMembers ? (
+                    <Button
+                      fullWidth
+                      variant="contained"
+                      onClick={handleOpenAddMembers}
+                      disabled={groupActionBusy}
+                      sx={{
+                        mb: 1,
+                        borderRadius: 999,
+                        textTransform: 'none',
+                        bgcolor: 'var(--chat-sheet-panel-accent)',
+                        fontWeight: 800,
+                      }}
+                    >
+                      Добавить участника
+                    </Button>
+                  ) : null}
+                  {filteredParticipantMembers.map((member) => {
+                    const person = member?.user || {};
+                    const role = normalizeGroupRole(member?.member_role);
+                    const canOpenActions = isGroup && member?.user?.id && Number(member.user.id) !== currentUserId
+                      && (canManageOwners || (canManageMembers && role === 'member'));
+                    return (
+                      <Box
+                        key={`${conversationId}-member-${person.id}`}
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.5,
+                          px: 0.65,
+                          py: 0.3,
+                          borderRadius: 1.2,
+                          bgcolor: 'var(--chat-sheet-panel-card)',
+                        }}
+                      >
+                        <ButtonBase
+                          aria-label={`Открыть карточку ${person?.full_name || person?.username || 'пользователя'}`}
+                          onClick={() => setParticipantProfile(member)}
+                          sx={{
+                            minWidth: 0,
+                            minHeight: 48,
+                            flex: 1,
+                            gap: 1.2,
+                            px: 0.8,
+                            justifyContent: 'flex-start',
+                            borderRadius: 1.2,
+                            textAlign: 'left',
+                            '&:hover': { bgcolor: 'var(--chat-sheet-panel-bg-hover)' },
+                            '&.Mui-focusVisible': { outline: '2px solid var(--chat-sheet-panel-accent)', outlineOffset: 1 },
+                          }}
+                        >
+                          <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={40} />
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Stack direction="row" alignItems="center" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ minWidth: 0 }}>
+                              <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 700, overflowWrap: 'anywhere' }}>
+                                {person?.full_name || person?.username || 'Пользователь'}
+                              </Typography>
+                              {role !== 'member' ? (
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    px: 0.7,
+                                    py: 0.15,
+                                    borderRadius: 999,
+                                    bgcolor: role === 'owner' ? 'var(--chat-sheet-panel-accent-soft)' : 'var(--chat-sheet-panel-bg-strong)',
+                                    color: role === 'owner' ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 800,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {GROUP_ROLE_LABELS[role]}
+                                </Box>
+                              ) : null}
+                              {member?.is_restricted ? (
+                                <Box
+                                  component="span"
+                                  data-testid="chat-member-restricted"
+                                  title="Не может писать в группе"
+                                  sx={{
+                                    px: 0.7,
+                                    py: 0.15,
+                                    borderRadius: 999,
+                                    border: '1px solid currentColor',
+                                    color: 'var(--chat-sheet-warning, #d64b4b)',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 800,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  ограничен
+                                </Box>
+                              ) : null}
+                            </Stack>
+                            <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }} noWrap>
+                              {getPersonContextLine(person)}
+                            </Typography>
+                          </Box>
+                        </ButtonBase>
+                        {canOpenActions ? (
+                          <IconButton
+                            size="small"
+                            aria-label={`Действия участника ${person?.full_name || person?.username || ''}`}
+                            onClick={(event) => handleOpenMemberActions(event, member)}
+                            disabled={groupActionBusy}
+                            sx={{ color: 'var(--chat-sheet-panel-icon)' }}
+                          >
+                            <MoreVertRoundedIcon fontSize="small" />
+                          </IconButton>
+                        ) : null}
+                      </Box>
+                    );
+                  })}
+                </Stack>
+              )
+            ) : null}
+            {panelStatus}
+          </Box>
+        </Box>
+      </Box>
+
+      </Box>
+      {isGroup && currentMemberRole !== 'owner' ? (
+        <Box sx={{ px: 1.5, py: 1.25, borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
+          <Button
+            fullWidth
+            color="error"
+            variant="text"
+            onClick={handleLeaveGroup}
+            disabled={groupActionBusy}
+            sx={{ textTransform: 'none', fontWeight: 800, minHeight: 44 }}
+          >
+            Покинуть беседу
+          </Button>
+        </Box>
+      ) : null}
+
+      <Dialog
+        open={Boolean(participantProfile)}
+        onClose={() => setParticipantProfile(null)}
+        fullWidth
+        maxWidth="xs"
+        aria-labelledby="chat-participant-profile-title"
+        PaperProps={{
+          sx: {
+            bgcolor: ui.panelBg || ui.drawerBg,
+            color: ui.textStrong,
+            borderRadius: 2.5,
+          },
+        }}
+      >
+        <DialogTitle
+          id="chat-participant-profile-title"
+          sx={{ px: 2.2, py: 1.6, display: 'flex', alignItems: 'center', gap: 1 }}
+        >
+          <Typography component="span" variant="subtitle1" sx={{ fontWeight: 800, flex: 1 }}>
+            {profileDialogTitle}
+          </Typography>
+          <IconButton
+            aria-label={closeProfileLabel}
+            onClick={() => setParticipantProfile(null)}
+            size="small"
+          >
+            <CloseRoundedIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ px: 2.2, pb: 2.2 }}>
+          <Stack alignItems="center" spacing={1.1} sx={{ pb: 2 }}>
+            <PresenceAvatar
+              item={participantProfile?.user}
+              online={Boolean(participantProfile?.user?.presence?.is_online)}
+              size={72}
+            />
+            <Typography sx={{ fontSize: '1.12rem', fontWeight: 850, textAlign: 'center' }}>
+              {participantProfile?.user?.full_name || participantProfile?.user?.username || 'Пользователь'}
+            </Typography>
+            <Typography sx={{ color: ui.textSecondary, fontSize: '0.84rem', textAlign: 'center' }}>
+              {formatPresenceText(participantProfile?.user?.presence)}
+            </Typography>
+          </Stack>
+          <Stack spacing={1.35}>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Должность</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.job_title || 'Не указана'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Подразделение</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.department || 'Не указано'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Город</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.city || 'Не указан'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Корпоративная почта</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.corporate_email || 'Не указана'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ color: ui.textSecondary }}>Корпоративный телефон</Typography>
+              <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                {participantProfile?.user?.corporate_phone || 'Не указан'}
+              </Typography>
+            </Box>
+            {isGroup ? (
+              <Box>
+                <Typography variant="caption" sx={{ color: ui.textSecondary }}>Роль в группе</Typography>
+                <Typography sx={{ mt: 0.15, fontWeight: 650 }}>
+                  {GROUP_ROLE_LABELS[normalizeGroupRole(participantProfile?.member_role)]}
+                </Typography>
+              </Box>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 2.2, pb: 1.8 }}>
+          <Button onClick={() => setParticipantProfile(null)} sx={{ textTransform: 'none', fontWeight: 750 }}>
+            Закрыть
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {isGroup && canManageMembers ? (
+        <ChatGroupActivityDialog
+          open={activityOpen}
+          conversationId={activeConversation?.id}
+          onClose={() => setActivityOpen(false)}
+        />
+      ) : null}
+      {isGroup && canManageMembers ? (
+        <ChatGroupReportsDialog
+          open={reportsOpen}
+          conversationId={activeConversation?.id}
+          onClose={() => setReportsOpen(false)}
+          onChanged={setOpenReportsCount}
+        />
+      ) : null}
+      {isGroup && canManageMembers ? (
+        <ChatGroupJoinRequestsDialog
+          open={joinRequestsOpen}
+          conversationId={activeConversation?.id}
+          onClose={() => setJoinRequestsOpen(false)}
+          onChanged={setJoinRequestsInfo}
+        />
+      ) : null}
+      {isGroup && canManageMembers ? (
+        <ChatGroupRestrictDialog
+          open={Boolean(restrictTarget)}
+          memberName={String(restrictTarget?.user?.full_name || restrictTarget?.user?.username || '').trim()}
+          busy={groupActionBusy}
+          onClose={() => setRestrictTarget(null)}
+          onSubmit={handleSubmitRestriction}
+        />
+      ) : null}
+      {isGroup && canManageOwners ? (
+        <ChatGroupSlowModeDialog
+          open={slowModeOpen}
+          currentSeconds={slowModeSeconds}
+          busy={groupActionBusy}
+          onClose={() => setSlowModeOpen(false)}
+          onSubmit={handleSubmitSlowMode}
+        />
+      ) : null}
+      {/* Диалог добавления участников */}
+      <Dialog
+        open={addMembersOpen}
+        onClose={handleCloseAddMembers}
+        fullWidth
+        maxWidth="sm"
+        PaperProps={{
+          sx: {
+            bgcolor: ui.panelBg || ui.drawerBg,
+            color: ui.textStrong,
+            borderRadius: 2,
+          },
+        }}
+      >
+        <DialogTitle sx={{ px: 2, py: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 800, flex: 1 }}>
+            Добавить участников
+          </Typography>
+          <IconButton onClick={handleCloseAddMembers} size="small">
+            <CloseRoundedIcon />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ px: 0, py: 0, minHeight: 400, display: 'flex', flexDirection: 'column' }}>
+          {/* Полоска выбранных */}
+          {selectedAddMembers.length > 0 ? (
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: 0.5,
+                overflowX: 'auto',
+                px: 1,
+                pt: 1.25,
+                pb: 1,
+                minHeight: 88,
+                borderBottom: `1px solid ${ui.borderSoft || alpha(ui.accentText || '#3390ec', 0.1)}`,
+                scrollbarWidth: 'none',
+                '&::-webkit-scrollbar': { display: 'none' },
+              }}
+            >
+              {selectedAddMembers.map((item) => (
+                <SelectedUserChip
+                  key={item.id}
+                  item={item}
+                  ui={ui}
+                  onRemove={handleRemoveSelectedAddMember}
+                />
+              ))}
+            </Box>
+          ) : null}
+
+          {/* Поиск */}
+          <Box
+            sx={{
+              px: 1,
+              py: 1,
+              borderBottom: `1px solid ${ui.borderSoft || alpha(ui.accentText || '#3390ec', 0.1)}`,
+            }}
+          >
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                bgcolor: alpha(ui.textSecondary || '#6b7280', 0.12),
+                borderRadius: 3,
+                px: 1.2,
+                py: 0.6,
+              }}
+            >
+              <SearchRoundedIcon sx={{ fontSize: 20, color: ui.textSecondary, flexShrink: 0 }} />
+              <InputBase
+                inputRef={addMembersSearchRef}
+                fullWidth
+                autoFocus={!mobileScreen}
+                value={addMembersSearch}
+                onChange={(event) => setAddMembersSearch(event.target.value)}
+                placeholder="Поиск"
+                inputProps={{ 'aria-label': 'Поиск участников', enterKeyHint: 'search' }}
+                sx={{
+                  fontSize: '0.97rem',
+                  color: ui.textStrong,
+                  '& input::placeholder': { color: ui.textSecondary, opacity: 1 },
+                }}
+              />
+              {addMembersSearch ? (
+                <IconButton size="small" onClick={() => setAddMembersSearch('')} sx={{ p: 0.2 }}>
+                  <CloseRoundedIcon sx={{ fontSize: 16, color: ui.textSecondary }} />
+                </IconButton>
+              ) : null}
+            </Box>
+          </Box>
+
+          {/* Список пользователей */}
+          <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+            {addMembersLoading ? (
+              <Stack spacing={1} sx={{ p: 2 }}>
+                {[...Array(5)].map((_, i) => (
+                  <Skeleton key={i} variant="rectangular" height={56} sx={{ borderRadius: 1 }} />
+                ))}
+              </Stack>
+            ) : addMembersUsers.length === 0 ? (
+              <Stack alignItems="center" justifyContent="center" sx={{ py: 5 }}>
+                <Typography variant="body2" sx={{ color: ui.textSecondary }}>
+                  Никого не найдено
+                </Typography>
+              </Stack>
+            ) : (
+              addMembersUsers.map((item, index) => {
+                // Не показывать уже добавленных участников
+                const isAlreadyMember = participantMembers.some(
+                  (m) => String(m?.user?.id || '') === String(item?.id || '')
+                );
+                if (isAlreadyMember) return null;
+
+                const isSelected = selectedAddMembers.some(
+                  (u) => String(u?.id || '') === String(item?.id || '')
+                );
+                return (
+                  <Box key={item.id}>
+                    {index > 0 ? <Box sx={{ borderTop: `1px solid ${alpha(ui.borderSoft || '#334155', 0.5)}` }} /> : null}
+                    <AddMemberUserRow
+                      item={item}
+                      ui={ui}
+                      checked={isSelected}
+                      onToggle={handleToggleAddMember}
+                      accentColor={ui.accentText || '#3390ec'}
+                    />
+                  </Box>
+                );
+              })
+            )}
+          </Box>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2, py: 1.5, gap: 1 }}>
+          <Button
+            onClick={handleCloseAddMembers}
+            sx={{ textTransform: 'none', fontWeight: 700, color: ui.accentText }}
+          >
+            Отмена
+          </Button>
+          <Button
+            variant="text"
+            onClick={handleConfirmAddMembers}
+            disabled={selectedAddMembers.length === 0 || groupActionBusy}
+            sx={{ textTransform: 'none', fontWeight: 700, color: ui.accentText }}
+          >
+            Добавить {selectedAddMembers.length > 0 ? `(${selectedAddMembers.length})` : ''}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {memberActionsMenu}
+      <input
+        ref={avatarInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        data-testid="group-avatar-input"
+        onChange={handleAvatarFileChange}
+      />
+    </Box>
+  );
+}

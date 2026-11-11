@@ -1,0 +1,160 @@
+import StorageIcon from '@mui/icons-material/Storage';
+import BarChartIcon from '@mui/icons-material/BarChart';
+import LanIcon from '@mui/icons-material/Lan';
+import MonitorHeartOutlinedIcon from '@mui/icons-material/MonitorHeartOutlined';
+import ComputerIcon from '@mui/icons-material/Computer';
+import PrintIcon from '@mui/icons-material/Print';
+import ShieldIcon from '@mui/icons-material/Policy';
+import MenuBookIcon from '@mui/icons-material/MenuBook';
+import DashboardIcon from '@mui/icons-material/Dashboard';
+import DynamicFeedRoundedIcon from '@mui/icons-material/DynamicFeedRounded';
+import TaskAltIcon from '@mui/icons-material/TaskAlt';
+import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
+import MailOutlineIcon from '@mui/icons-material/MailOutline';
+import ContactPhoneIcon from '@mui/icons-material/ContactPhone';
+import VideocamIcon from '@mui/icons-material/Videocam';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
+import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
+import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
+import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
+import ShoppingCartCheckoutOutlinedIcon from '@mui/icons-material/ShoppingCartCheckoutOutlined';
+import DomainOutlinedIcon from '@mui/icons-material/DomainOutlined';
+import ApartmentOutlinedIcon from '@mui/icons-material/ApartmentOutlined';
+import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
+import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
+import ExitToAppOutlinedIcon from '@mui/icons-material/ExitToAppOutlined';
+import HelpOutlineOutlinedIcon from '@mui/icons-material/HelpOutlineOutlined';
+import RecordVoiceOverOutlinedIcon from '@mui/icons-material/RecordVoiceOverOutlined';
+import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
+import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
+import { INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
+import { DEFAULT_MOBILE_BOTTOM_NAV_ITEMS } from '../../lib/mobileNavigationPreferences';
+
+export const navigationItems = [
+  { path: '/dashboard', label: 'Главная', shortLabel: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read', group: 'main' },
+  { path: '/feed', label: 'Лента', shortLabel: 'Лента', icon: <DynamicFeedRoundedIcon />, permission: 'dashboard.read', group: 'main' },
+  { path: '/tasks', label: 'Задачи', shortLabel: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read', group: 'main' },
+  { path: '/tickets', label: 'Билеты', shortLabel: 'Билеты', icon: <ConfirmationNumberIcon />, permission: 'tickets.read', group: 'main' },
+  ...(CHAT_FEATURE_ENABLED ? [{
+    path: '/chat',
+    label: 'Корпоративный чат',
+    shortLabel: 'Чат',
+    icon: <ForumOutlinedIcon />,
+    permission: 'chat.read',
+    group: 'main',
+  }] : []),
+  { path: '/mail', label: 'Почта', shortLabel: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access', group: 'main' },
+  { path: '/docflow', label: 'Документооборот', shortLabel: 'Документы', icon: <DescriptionOutlinedIcon />, permission: 'docflow.read', group: 'main' },
+  { path: '/construction', label: 'Объекты строительства', shortLabel: 'Объекты', icon: <DomainOutlinedIcon />, permission: 'construction.read', group: 'main' },
+  { path: '/it/requests', label: 'Заявки на МПЗ', shortLabel: 'Заявки МПЗ', icon: <ShoppingCartCheckoutOutlinedIcon />, permission: 'warehouse_1c.it_requests.read', group: 'it' },
+  { path: '/it/objects', label: 'Объекты ИТ', shortLabel: 'Объекты ИТ', icon: <ApartmentOutlinedIcon />, permission: 'it_objects.read', group: 'it' },
+  { path: '/address-book', label: 'Адресная книга', shortLabel: 'Адреса', icon: <ContactPhoneIcon />, permission: 'address_book.read', group: 'tools' },
+  { path: '/company-structure', label: 'Структура компании', shortLabel: 'Структура', icon: <AccountTreeOutlinedIcon />, permission: 'company_structure.read', group: 'tools' },
+  { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read', group: 'tools' },
+  { path: '/groups-access', label: 'Доступ к папкам', shortLabel: 'Доступ', icon: <FolderSharedOutlinedIcon />, permission: 'groups_access.read', group: 'tools' },
+  { path: '/my-files', label: 'Мой диск', shortLabel: 'Диск', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools' },
+  { path: '/database', label: INVENTORY_SECTION_LABEL, shortLabel: 'Учёт', icon: <StorageIcon />, permission: 'database.read', group: 'tools' },
+  { path: '/networks', label: 'Сети', shortLabel: 'Сети', icon: <LanIcon />, permission: 'networks.read', group: 'tools' },
+  { path: '/monitoring', label: 'Мониторинг', shortLabel: 'Мониторинг', icon: <MonitorHeartOutlinedIcon />, permission: 'monitoring.read', group: 'tools' },
+  { path: '/vcs', label: 'ВКС терминалы', shortLabel: 'ВКС', icon: <VideocamIcon />, permission: 'vcs.read', group: 'tools' },
+  { path: '/mfu', label: 'МФУ', shortLabel: 'МФУ', icon: <PrintIcon />, permission: 'mfu.read', group: 'tools' },
+  { path: '/computers', label: 'Компьютеры', shortLabel: 'ПК', icon: <ComputerIcon />, permission: 'computers.read', group: 'tools' },
+  { path: '/scan-center', label: 'Scan Center', shortLabel: 'Scan', icon: <ShieldIcon />, permission: 'scan.read', group: 'tools' },
+  { path: '/voice', label: 'Протоколы встреч', shortLabel: 'Протоколы', icon: <RecordVoiceOverOutlinedIcon />, permission: 'voice.read', group: 'tools' },
+  // Temporarily admin-only while DLP probe UX is unfinished.
+  { path: '/dlp', label: 'DLP', shortLabel: 'DLP', icon: <ExitToAppOutlinedIcon />, permission: 'scan.read', adminOnly: true, group: 'tools' },
+  { path: '/statistics', label: 'Статистика', shortLabel: 'Статистика', icon: <BarChartIcon />, permission: 'statistics.read', group: 'tools' },
+  { path: '/kb/manage', label: 'База знаний: управление', shortLabel: 'База знаний', icon: <MenuBookIcon />, permission: 'kb.write', group: 'tools' },
+  { path: '/warehouse-1c', label: 'Склад 1С', shortLabel: 'Склад 1С', icon: <Inventory2OutlinedIcon />, permission: 'warehouse_1c.read', group: 'tools' },
+  { path: '/help', label: 'Справка и база знаний', shortLabel: 'Справка', icon: <HelpOutlineOutlinedIcon />, group: 'tools' },
+];
+
+export const mobileMenuNavigationItem = {
+  path: '/menu',
+  label: 'Меню',
+  shortLabel: 'Меню',
+  icon: <MenuRoundedIcon />,
+};
+
+export function isAdminUser(user) {
+  return String(user?.role || '').trim().toLowerCase() === 'admin';
+}
+
+export function canAccessNavigationItem(item, { user, hasPermission }) {
+  if (!item) return false;
+  if (item.adminOnly) return isAdminUser(user);
+  return !item.permission || hasPermission(item.permission);
+}
+
+export function getVisibleNavigationItems({ user, hasPermission }) {
+  return navigationItems.filter((item) => canAccessNavigationItem(item, { user, hasPermission }));
+}
+
+export function resolveMobileNavigationItems({
+  selectedPaths,
+  user,
+  hasPermission,
+}) {
+  const visibleItems = getVisibleNavigationItems({ user, hasPermission });
+  const visiblePathSet = new Set(visibleItems.map((item) => item.path));
+  const selectedPathSet = new Set();
+
+  const addVisiblePath = (path) => {
+    const normalizedPath = String(path || '').trim();
+    if (
+      selectedPathSet.size < 4
+      && visiblePathSet.has(normalizedPath)
+    ) {
+      selectedPathSet.add(normalizedPath);
+    }
+  };
+
+  (Array.isArray(selectedPaths) ? selectedPaths : DEFAULT_MOBILE_BOTTOM_NAV_ITEMS).forEach(addVisiblePath);
+  DEFAULT_MOBILE_BOTTOM_NAV_ITEMS.forEach(addVisiblePath);
+  visibleItems.forEach((item) => addVisiblePath(item.path));
+
+  return [
+    ...visibleItems.filter((item) => selectedPathSet.has(item.path)).slice(0, 4),
+    mobileMenuNavigationItem,
+  ];
+}
+
+export function isNavigationItemActive(path, candidatePath = '') {
+  const currentPath = String(candidatePath || '').trim() || '/';
+  if (path === '/networks') {
+    return currentPath === '/networks' || currentPath.startsWith('/networks/');
+  }
+  if (path === '/chat') return currentPath === '/chat' || currentPath.startsWith('/chat/');
+  if (path === '/mail') return currentPath === '/mail' || currentPath.startsWith('/mail/');
+  if (path === '/it/requests') return currentPath === '/it/requests' || currentPath.startsWith('/it/requests/');
+  if (path === '/it/objects') return currentPath === '/it/objects' || currentPath.startsWith('/it/objects/');
+  if (path === '/construction') return currentPath === '/construction' || currentPath.startsWith('/construction/');
+  if (path === '/menu') return currentPath === '/menu';
+  return currentPath === path;
+}
+
+export function getNavigationBadgeCount(path, unreadCounts = {}) {
+  if (path === '/tasks') return Number(unreadCounts?.tasks_open || unreadCounts?.tasks_open_total || 0);
+  if (path === '/chat') return Number(unreadCounts?.chat_messages_unread_total || 0);
+  if (path === '/mail') return Number(unreadCounts?.mail_unread || 0);
+  return 0;
+}
+
+/**
+ * Mail nav badge meta from shared unread snapshot state.
+ * ``stale`` still has a last-known count — do not treat it like unknown/error ``?``.
+ */
+export function getMailNavigationBadgeMeta(mailState, badgeCount = 0) {
+  const state = String(mailState || 'unknown');
+  const needsAttention = state === 'unknown' || state === 'error';
+  const count = Math.max(0, Number(badgeCount) || 0);
+  return {
+    state,
+    needsAttention,
+    badgeContent: needsAttention ? (count > 0 ? count : '?') : count,
+    showBadge: count > 0 || needsAttention,
+    color: needsAttention ? 'warning' : 'error',
+    title: needsAttention ? `Почтовый снимок: ${state}` : undefined,
+  };
+}

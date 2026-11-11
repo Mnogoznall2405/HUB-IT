@@ -1,0 +1,94 @@
+import { clearMailQuickReplyDrafts } from '../mail/mailQuickReplyDrafts';
+import { clearMailComposeDrafts } from '../mail/nativeMailComposeDrafts';
+import { clearNativeFormDrafts } from '../drafts/nativeFormDrafts';
+import { clearNativeChatOutbox } from '../chat/nativeChatOutbox';
+import { clearMailComposeTransfers } from '../mail/nativeMailComposeTransfer';
+import * as authApi from '../api/authApi';
+import { clearAllNativeChatDrafts } from '../chat/chatDrafts';
+import { chatSocket } from '../chat/chatSocket';
+import { clearNativeDatabaseFileCache } from '../database/nativeDatabaseFiles';
+import { clearNativeFeedFileCache } from '../feed/nativeFeedFiles';
+import { clearAttachmentCache } from '../files/nativeAttachmentDownloads';
+import { clearNativeImageCache } from '../files/nativeImageCache';
+import { clearOfflineCommandQueue } from '../offline/offlineCommandQueue';
+import { revokeNativePushToken } from '../notifications/nativePush';
+import { clearPendingChatReplies } from '../notifications/pendingNotificationReplies';
+import { unregisterMobileBackgroundSync } from '../lifecycle/mobileBackgroundSync';
+import { clearNativeMailCache } from '../mail/nativeMailFiles';
+import { clearNativeMyFilesCache } from '../myFiles/nativeMyFilesTransfers';
+import { clearNativeDocflowCache } from '../docflow/nativeDocflowFiles';
+import { clearNativeTaskFileCache } from '../tasks/nativeTaskFiles';
+import * as tokenStore from './tokenStore';
+import { disableBiometricLogin } from './biometricAuth';
+
+/**
+ * Ends every authenticated mobile channel in a deterministic order.
+ * Server cleanup is best-effort, but local credentials are always removed.
+ * `contactServer: false` performs the same local wipe without any server
+ * request — used when HUB-IT reports the account as deactivated and the
+ * server-side session is already closed.
+ */
+export async function endMobileSession(options: { contactServer?: boolean } = {}): Promise<void> {
+  const contactServer = options.contactServer !== false;
+  clearMailComposeTransfers();
+  chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
+
+  try {
+    await unregisterMobileBackgroundSync();
+  } catch {
+    // Local credential cleanup must continue if Android rejects task removal.
+  }
+
+  let refreshToken: string | null = null;
+  try {
+    refreshToken = await tokenStore.getRefreshToken();
+  } catch {
+    // SecureStore can be unavailable during device shutdown; logout still continues.
+  }
+
+  try {
+    if (contactServer) {
+      try {
+        await revokeNativePushToken();
+      } catch {
+        // Push cleanup is best-effort; the stored token can be reconciled after login.
+      }
+
+      try {
+        await authApi.revokeMobileBiometricSession();
+      } catch {
+        // The authenticated logout endpoint also revokes this device when reachable.
+      }
+
+      try {
+        await authApi.logout(refreshToken);
+      } catch {
+        // Local logout must not depend on network availability.
+      }
+    }
+  } finally {
+    try {
+      clearAttachmentCache();
+      clearNativeMailCache();
+      clearNativeTaskFileCache();
+      clearNativeMyFilesCache();
+      clearNativeDocflowCache();
+      clearNativeFeedFileCache();
+      clearNativeDatabaseFileCache();
+    } catch {
+      // Cache cleanup must not prevent credential revocation.
+    }
+    await Promise.allSettled([
+      clearNativeImageCache(),
+      tokenStore.clearTokens({ clearOfflineData: true }),
+      disableBiometricLogin(),
+      clearOfflineCommandQueue(),
+      clearPendingChatReplies(),
+      clearAllNativeChatDrafts(),
+      clearNativeChatOutbox(),
+      clearMailQuickReplyDrafts(),
+      clearMailComposeDrafts(),
+      clearNativeFormDrafts(),
+    ]);
+  }
+}

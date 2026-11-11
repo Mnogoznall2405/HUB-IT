@@ -1,0 +1,1216 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Text.Json;
+using Hub.Desktop.Downloads;
+using Hub.Desktop.Lifecycle;
+using Hub.Desktop.Audio;
+using Hub.Desktop.Printing;
+using Hub.Desktop.Shell;
+using Hub.Desktop.Transfers;
+
+namespace Hub.Desktop.Interop;
+
+public enum DesktopInboundMessageType
+{
+    Ready,
+    ShowNotification,
+    SetTheme,
+    OpenDownloadedFile,
+    PrepareDownloadedFile,
+    OpenFileDialog,
+    UpdateShellStatus,
+    UpdateQuickRoutes,
+    PrintCurrentDocument,
+    PrintEquipmentQrBatch,
+    OpenDownloads,
+    OpenDiagnostics,
+    CheckForUpdates,
+    OpenCurrentInBrowser,
+    VncPreflight,
+    OpenMailComposeWindow,
+    MailComposeWindowCloseResult,
+    MailComposeWindowSent,
+    OpenWorkspaceWindow,
+    ClearNotificationGroup,
+    DiagnoseMicrophone,
+    OpenMediaSettings,
+}
+
+public enum DesktopThemeMode
+{
+    Light,
+    Dark,
+    HighContrast,
+}
+
+public sealed record DesktopNotificationRequest(string Id, string Title, string Body, string Route);
+public sealed record DesktopMailComposeWindowCommand(string RequestId, string Route = "", string Status = "");
+public sealed record DesktopWorkspaceWindowCommand(string RequestId, string Route);
+public sealed record DesktopEquipmentQrPrintCommand(
+    string RequestId,
+    DesktopEquipmentQrPrintMode Mode);
+public sealed record DesktopOpenFileDialogCommand(
+    string RequestId,
+    bool Multiple,
+    IReadOnlyList<string> Accept,
+    string? Title);
+
+public sealed record DesktopInboundMessage(
+    DesktopInboundMessageType Type,
+    DesktopNotificationRequest? Notification = null,
+    DesktopThemeMode? ThemeMode = null,
+    DesktopShellStatus? ShellStatus = null,
+    IReadOnlyList<DesktopQuickRoute>? QuickRoutes = null,
+    DesktopDownloadedFileAction DownloadedFileAction = DesktopDownloadedFileAction.None,
+    DesktopMailComposeWindowCommand? MailComposeWindow = null,
+    DesktopWorkspaceWindowCommand? WorkspaceWindow = null,
+    DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null,
+    DesktopOpenFileDialogCommand? OpenFileDialog = null,
+    string? NotificationGroup = null,
+    string? RequestId = null,
+    DesktopMediaSettingsKind? MediaSettings = null);
+
+public static class DesktopBridgeProtocol
+{
+    public const int CurrentVersion = 1;
+    public const int MaximumInboundMessageLength = 4096;
+    public const int MaximumSystemLifecycleMessageLength = 512;
+    public const int MaximumNotificationIdLength = 128;
+    public const int MaximumNotificationTitleLength = 128;
+    public const int MaximumNotificationBodyLength = 512;
+    public const int MaximumRouteLength = 1024;
+    public const int MaximumWindowsUsernameLength = 50;
+    public const int MaximumShellCounter = DesktopShellStatus.MaximumCounter;
+    public const int MaximumQuickRoutes = 12;
+    public const int MaximumQuickRouteIdLength = 32;
+    public const int MaximumQuickRouteLabelLength = 48;
+    public const int MaximumNotificationGroupLength = 64;
+    public const string NotificationClearGroupCapability = "notification-clear-group";
+    public const string MicrophoneDiagnosticsCapability = "microphone-diagnostics";
+    private const string ReadyMessageType = "desktop.ready";
+    private const string ShowNotificationMessageType = "notification.show";
+    private const string ClearNotificationGroupMessageType = "notification.clearGroup";
+    private const string SetThemeMessageType = "appearance.theme";
+    private const string OpenDownloadedFileMessageType = "file.openDownloaded";
+    private const string PrepareDownloadedFileMessageType = "file.prepareDownload";
+    private const string OpenFileDialogMessageType = "file.openDialog";
+    private const string OpenFileDialogResultMessageType = "file.openDialogResult";
+    private const string FileDroppedMessageType = "file.dropped";
+    private const string FileSharedMessageType = "file.shared";
+    private const string ShellStatusMessageType = "shell.status";
+    private const string QuickRoutesMessageType = "shell.quickRoutes";
+    private const string PrintCurrentDocumentMessageType = "document.printCurrent";
+    private const string EquipmentQrPrintMessageType = "equipmentQr.print";
+    private const string EquipmentQrPrintResultMessageType = "equipmentQr.printResult";
+    private const string OpenDownloadsMessageType = "desktop.openDownloads";
+    private const string OpenDiagnosticsMessageType = "desktop.openDiagnostics";
+    private const string CheckForUpdatesMessageType = "desktop.checkForUpdates";
+    private const string OpenCurrentInBrowserMessageType = "desktop.openCurrentInBrowser";
+    private const string VncPreflightMessageType = "remote.vncPreflight";
+    private const string VncPreflightResultMessageType = "remote.vncPreflightResult";
+    private const string OpenDownloadedFileResultMessageType = "file.openDownloadedResult";
+    private const string PrepareDownloadedFileResultMessageType = "file.prepareDownloadResult";
+    private const string HostReadyMessageType = "desktop.hostReady";
+    private const string OpenNavigationMessageType = "navigation.open";
+    private const string WindowStateMessageType = "desktop.windowState";
+    private const string SystemResumeMessageType = "desktop.system.resume";
+    private const string SystemNetworkChangedMessageType = "desktop.network.changed";
+    private const string CapabilitiesMessageType = "desktop.capabilities";
+    private const string OpenCommandPaletteMessageType = "command.openPalette";
+    private const string AccessibilityMessageType = "desktop.accessibility";
+    private const string MailComposeWindowOpenMessageType = "mail.composeWindow.open";
+    private const string MailComposeWindowResultMessageType = "mail.composeWindow.result";
+    private const string MailComposeWindowCloseRequestedMessageType = "mail.composeWindow.closeRequested";
+    private const string MailComposeWindowCloseResultMessageType = "mail.composeWindow.closeResult";
+    private const string MailComposeWindowSentMessageType = "mail.composeWindow.sent";
+    private const string MailComposeWindowCompletedMessageType = "mail.composeWindow.completed";
+    private const string WorkspaceWindowOpenMessageType = "workspace.window.open";
+    private const string WorkspaceWindowResultMessageType = "workspace.window.result";
+    private const string MicrophoneDiagnoseMessageType = "media.microphoneDiagnose";
+    private const string MicrophoneDiagnosisMessageType = "media.microphoneDiagnosis";
+    private const string OpenMediaSettingsMessageType = "media.openSettings";
+
+    public static bool TryParseInbound(string? json, out DesktopInboundMessage message)
+    {
+        message = default!;
+
+        if (string.IsNullOrWhiteSpace(json) || json.Length > MaximumInboundMessageLength)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object || root.GetRawText().Length > MaximumInboundMessageLength)
+            {
+                return false;
+            }
+
+            if (!root.TryGetProperty("type", out var typeElement)
+                || typeElement.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("version", out var versionElement)
+                || !versionElement.TryGetInt32(out var version)
+                || version != CurrentVersion)
+            {
+                return false;
+            }
+
+            return typeElement.GetString() switch
+            {
+                ReadyMessageType => TryParseReady(root, out message),
+                ShowNotificationMessageType => TryParseNotification(root, out message),
+                ClearNotificationGroupMessageType => TryParseClearNotificationGroup(root, out message),
+                SetThemeMessageType => TryParseTheme(root, out message),
+                OpenDownloadedFileMessageType => TryParseOpenDownloadedFile(root, out message),
+                PrepareDownloadedFileMessageType => TryParsePrepareDownloadedFile(root, out message),
+                OpenFileDialogMessageType => TryParseOpenFileDialog(root, out message),
+                ShellStatusMessageType => TryParseShellStatus(root, out message),
+                QuickRoutesMessageType => TryParseQuickRoutes(root, out message),
+                PrintCurrentDocumentMessageType => TryParsePrintCurrentDocument(root, out message),
+                EquipmentQrPrintMessageType => TryParseEquipmentQrPrint(root, out message),
+                OpenDownloadsMessageType => TryParseExactCommand(
+                    root,
+                    DesktopInboundMessageType.OpenDownloads,
+                    out message),
+                OpenDiagnosticsMessageType => TryParseExactCommand(
+                    root,
+                    DesktopInboundMessageType.OpenDiagnostics,
+                    out message),
+                CheckForUpdatesMessageType => TryParseExactCommand(
+                    root,
+                    DesktopInboundMessageType.CheckForUpdates,
+                    out message),
+                OpenCurrentInBrowserMessageType => TryParseExactCommand(
+                    root,
+                    DesktopInboundMessageType.OpenCurrentInBrowser,
+                    out message),
+                VncPreflightMessageType => TryParseExactCommand(
+                    root,
+                    DesktopInboundMessageType.VncPreflight,
+                    out message),
+                MailComposeWindowOpenMessageType => TryParseMailComposeWindowOpen(root, out message),
+                WorkspaceWindowOpenMessageType => TryParseWorkspaceWindowOpen(root, out message),
+                MailComposeWindowCloseResultMessageType => TryParseMailComposeWindowCloseResult(root, out message),
+                MailComposeWindowSentMessageType => TryParseExactCommand(
+                    root,
+                    DesktopInboundMessageType.MailComposeWindowSent,
+                    out message),
+                MicrophoneDiagnoseMessageType => TryParseMicrophoneDiagnose(root, out message),
+                OpenMediaSettingsMessageType => TryParseOpenMediaSettings(root, out message),
+                _ => false,
+            };
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    public static string CreateHostReadyMessage(bool notificationsAvailable, string? windowsUsername)
+    {
+        var normalizedWindowsUsername = NormalizeWindowsUsername(windowsUsername);
+
+        return JsonSerializer.Serialize(new
+        {
+            type = HostReadyMessageType,
+            version = CurrentVersion,
+            capabilities = new
+            {
+                notifications = notificationsAvailable,
+            },
+            windowsUsername = normalizedWindowsUsername,
+        });
+    }
+
+    public static string CreateOpenNavigationMessage(string route)
+    {
+        if (!IsValidInternalRoute(route))
+        {
+            throw new ArgumentException("Route must be a safe internal path.", nameof(route));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = OpenNavigationMessageType,
+            version = CurrentVersion,
+            route,
+        });
+    }
+
+    public static string CreateNotificationResultMessage(string id, bool accepted) =>
+        JsonSerializer.Serialize(new
+        {
+            type = "notification.result",
+            version = CurrentVersion,
+            id,
+            accepted,
+        });
+
+    /// <summary>
+    /// Builds the <c>desktop.capabilities</c> message. <c>notification-clear-group</c> is advertised
+    /// only when notifications are available (same value as <c>notifications</c> in host-ready).
+    /// </summary>
+    public static string CreateCapabilitiesMessage(bool notificationsAvailable)
+    {
+        var capabilities = new List<string>
+        {
+            "command-palette",
+            "desktop-actions",
+            "equipment-qr-print",
+            "file-actions-v2",
+            "mail-compose-window",
+            MicrophoneDiagnosticsCapability,
+        };
+        if (notificationsAvailable)
+        {
+            capabilities.Add(NotificationClearGroupCapability);
+        }
+
+        capabilities.AddRange(new[]
+        {
+            "print",
+            "quick-routes",
+            "shell-status",
+            "vnc-preflight",
+            "workspace-window",
+        });
+
+        return JsonSerializer.Serialize(new
+        {
+            type = CapabilitiesMessageType,
+            version = CurrentVersion,
+            capabilities,
+        });
+    }
+
+    public static string CreateOpenCommandPaletteMessage() =>
+        JsonSerializer.Serialize(new
+        {
+            type = OpenCommandPaletteMessageType,
+            version = CurrentVersion,
+        });
+
+    public static string CreateAccessibilityMessage(bool highContrast, bool reducedMotion, string? scheme)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = AccessibilityMessageType,
+            version = CurrentVersion,
+            highContrast,
+            reducedMotion,
+            scheme = string.IsNullOrWhiteSpace(scheme) ? null : scheme,
+        });
+    }
+
+    public static string CreateWindowStateMessage(bool foreground)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = WindowStateMessageType,
+            version = CurrentVersion,
+            foreground,
+        });
+    }
+
+    public static string CreateSystemLifecycleMessage(DesktopSystemLifecycleMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (message.Generation < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(message), "Generation must be a positive integer.");
+        }
+
+        var occurredUtc = message.OccurredUtc.ToUniversalTime()
+            .ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+        var json = message.Kind switch
+        {
+            DesktopSystemLifecycleKind.Resume => JsonSerializer.Serialize(new
+            {
+                type = SystemResumeMessageType,
+                version = CurrentVersion,
+                generation = message.Generation,
+                occurredUtc,
+            }),
+            DesktopSystemLifecycleKind.NetworkChanged when message.NetworkAvailable is bool available =>
+                JsonSerializer.Serialize(new
+                {
+                    type = SystemNetworkChangedMessageType,
+                    version = CurrentVersion,
+                    generation = message.Generation,
+                    available,
+                    occurredUtc,
+                }),
+            _ => throw new ArgumentOutOfRangeException(nameof(message), "Unsupported system lifecycle message."),
+        };
+
+        if (json.Length > MaximumSystemLifecycleMessageLength)
+        {
+            throw new InvalidOperationException("System lifecycle message exceeds the size limit.");
+        }
+
+        return json;
+    }
+
+    public static string CreateOpenDownloadedFileResultMessage(bool accepted)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = OpenDownloadedFileResultMessageType,
+            version = CurrentVersion,
+            status = accepted ? "accepted" : "busy",
+        });
+    }
+
+    public static string CreatePrepareDownloadedFileResultMessage(
+        DesktopDownloadedFileAction action,
+        bool accepted)
+    {
+        if (action == DesktopDownloadedFileAction.None)
+        {
+            throw new ArgumentOutOfRangeException(nameof(action));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = PrepareDownloadedFileResultMessageType,
+            version = CurrentVersion,
+            action = FormatDownloadedFileAction(action),
+            status = accepted ? "accepted" : "busy",
+        });
+    }
+
+    public static string CreateOpenFileDialogResultMessage(
+        string requestId,
+        IReadOnlyList<string> paths)
+    {
+        if (!IsValidRequestId(requestId))
+        {
+            throw new ArgumentException("Invalid request id.", nameof(requestId));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = OpenFileDialogResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            paths,
+            cancelled = paths.Count == 0,
+        });
+    }
+
+    public static string CreateFileDroppedMessage(IReadOnlyList<DesktopSharedFileDescriptor> files)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = FileDroppedMessageType,
+            version = CurrentVersion,
+            files = files.Take(100).Select(SerializeSharedFile),
+        });
+    }
+
+    public static string CreateFileSharedMessage(IReadOnlyList<DesktopSharedFileDescriptor> files)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = FileSharedMessageType,
+            version = CurrentVersion,
+            files = files.Take(100).Select(SerializeSharedFile),
+        });
+    }
+
+    private static object SerializeSharedFile(DesktopSharedFileDescriptor file)
+    {
+        return new
+        {
+            name = file.Name,
+            size = file.Size,
+            url = file.Url,
+            relativePath = file.RelativePath,
+        };
+    }
+
+    public static string CreateVncPreflightResultMessage(bool available)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            type = VncPreflightResultMessageType,
+            version = CurrentVersion,
+            status = available ? "available" : "missing",
+        });
+    }
+
+    public static string CreateEquipmentQrPrintResultMessage(
+        string requestId,
+        DesktopEquipmentQrPrintStatus status)
+    {
+        if (!IsValidRequestId(requestId))
+        {
+            throw new ArgumentException("Request id is invalid.", nameof(requestId));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = EquipmentQrPrintResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            status = status switch
+            {
+                DesktopEquipmentQrPrintStatus.Succeeded => "succeeded",
+                DesktopEquipmentQrPrintStatus.DialogOpened => "dialog-opened",
+                _ => "failed",
+            },
+        });
+    }
+
+    public static string CreateWorkspaceWindowResultMessage(string requestId, string status)
+    {
+        if (!IsValidRequestId(requestId) || status is not ("opened" or "activated" or "failed"))
+        {
+            throw new ArgumentException("Invalid workspace window result.");
+        }
+        return JsonSerializer.Serialize(new
+        {
+            type = WorkspaceWindowResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            status,
+        });
+    }
+
+    public static string CreateMailComposeWindowResultMessage(string requestId, string status)
+    {
+        if (!IsValidRequestId(requestId)
+            || status is not ("opened" or "activated" or "busy" or "failed"))
+        {
+            throw new ArgumentException("Invalid compose window result.");
+        }
+        return JsonSerializer.Serialize(new
+        {
+            type = MailComposeWindowResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            status,
+        });
+    }
+
+    public static string CreateMailComposeWindowCloseRequestedMessage(string requestId)
+    {
+        if (!IsValidRequestId(requestId))
+        {
+            throw new ArgumentException("Invalid compose close request id.", nameof(requestId));
+        }
+        return JsonSerializer.Serialize(new
+        {
+            type = MailComposeWindowCloseRequestedMessageType,
+            version = CurrentVersion,
+            requestId,
+        });
+    }
+
+    public static string CreateMailComposeWindowCompletedMessage() =>
+        JsonSerializer.Serialize(new
+        {
+            type = MailComposeWindowCompletedMessageType,
+            version = CurrentVersion,
+        });
+
+    /// <summary>
+    /// Builds <c>media.microphoneDiagnosis</c>. A null diagnosis (timeout or COM
+    /// failure) is reported as <c>status: "failed"</c> without details.
+    /// </summary>
+    public static string CreateMicrophoneDiagnosisMessage(
+        string requestId,
+        DesktopMicrophoneDiagnosis? diagnosis)
+    {
+        if (!IsValidRequestId(requestId))
+        {
+            throw new ArgumentException("Invalid request id.", nameof(requestId));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = MicrophoneDiagnosisMessageType,
+            version = CurrentVersion,
+            requestId,
+            status = diagnosis is null ? "failed" : "completed",
+            diagnosis = diagnosis is null ? null : SerializeMicrophoneDiagnosis(diagnosis),
+        });
+    }
+
+    private static object SerializeMicrophoneDiagnosis(DesktopMicrophoneDiagnosis diagnosis)
+    {
+        return new
+        {
+            reason = ToCamelCase(diagnosis.Reason.ToString()),
+            probe = ToCamelCase(diagnosis.Probe.ToString()),
+            probeHresult = diagnosis.ProbeHresult is int hresult
+                ? "0x" + hresult.ToString("X8", CultureInfo.InvariantCulture)
+                : null,
+            devices = diagnosis.Devices
+                .Take(WindowsMicrophoneDiagnostics.MaximumDevices)
+                .Select(SerializeMicrophoneDevice),
+            defaultConsole = diagnosis.DefaultConsole is null
+                ? null
+                : SerializeMicrophoneDevice(diagnosis.DefaultConsole),
+            defaultCommunications = diagnosis.DefaultCommunications is null
+                ? null
+                : SerializeMicrophoneDevice(diagnosis.DefaultCommunications),
+            consent = new
+            {
+                user = diagnosis.Consent.User,
+                userNonPackaged = diagnosis.Consent.UserNonPackaged,
+                machine = diagnosis.Consent.Machine,
+                policy = diagnosis.Consent.Policy,
+            },
+            apps = diagnosis.Apps.Take(4).Select(app => new
+            {
+                name = app.Name,
+                user = app.User,
+                machine = app.Machine,
+            }),
+            site = diagnosis.Site is null
+                ? null
+                : new
+                {
+                    microphone = diagnosis.Site.Microphone,
+                    camera = diagnosis.Site.Camera,
+                    repaired = diagnosis.Site.Repaired,
+                },
+        };
+    }
+
+    private static object SerializeMicrophoneDevice(DesktopMicrophoneDevice device) => new
+    {
+        id = device.Id,
+        name = device.Name,
+        state = device.State,
+    };
+
+    private static string ToCamelCase(string value) =>
+        string.IsNullOrEmpty(value) ? value : char.ToLowerInvariant(value[0]) + value[1..];
+
+    private static bool TryParseMicrophoneDiagnose(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !IsValidRequestId(requestId))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.DiagnoseMicrophone,
+            RequestId: requestId);
+        return true;
+    }
+
+    private static bool TryParseOpenMediaSettings(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "kind")
+            || !TryGetBoundedString(root, "kind", 32, out var rawKind)
+            || !DesktopMediaSettings.TryParseKind(rawKind, out var kind))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.OpenMediaSettings,
+            MediaSettings: kind);
+        return true;
+    }
+
+    private static bool TryParseReady(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version"))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(DesktopInboundMessageType.Ready);
+        return true;
+    }
+
+    private static bool TryParseWorkspaceWindowOpen(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "route")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !TryGetBoundedString(root, "route", MaximumRouteLength, out var route)
+            || !IsValidRequestId(requestId)
+            || !IsValidWorkspaceEditorRoute(route))
+        {
+            return false;
+        }
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.OpenWorkspaceWindow,
+            WorkspaceWindow: new DesktopWorkspaceWindowCommand(requestId, route));
+        return true;
+    }
+
+    private static bool TryParseMailComposeWindowOpen(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "route")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !TryGetBoundedString(root, "route", MaximumRouteLength, out var route)
+            || !IsValidRequestId(requestId)
+            || !IsValidMailComposeRoute(route))
+        {
+            return false;
+        }
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.OpenMailComposeWindow,
+            MailComposeWindow: new DesktopMailComposeWindowCommand(requestId, route));
+        return true;
+    }
+
+    private static bool TryParseMailComposeWindowCloseResult(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "status")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !TryGetBoundedString(root, "status", 8, out var status)
+            || !IsValidRequestId(requestId)
+            || status is not ("saved" or "failed"))
+        {
+            return false;
+        }
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.MailComposeWindowCloseResult,
+            MailComposeWindow: new DesktopMailComposeWindowCommand(requestId, Status: status));
+        return true;
+    }
+
+    private static bool TryParseNotification(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "id", "title", "body", "route")
+            || !TryGetBoundedString(root, "id", MaximumNotificationIdLength, out var id)
+            || !TryGetBoundedString(root, "title", MaximumNotificationTitleLength, out var title)
+            || !TryGetBoundedString(root, "body", MaximumNotificationBodyLength, out var body)
+            || !TryGetBoundedString(root, "route", MaximumRouteLength, out var route)
+            || !IsValidNotificationId(id)
+            || !IsValidInternalRoute(route))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.ShowNotification,
+            new DesktopNotificationRequest(id, title, body, route));
+        return true;
+    }
+
+    private static bool TryParseClearNotificationGroup(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "group")
+            || !TryGetBoundedString(root, "group", MaximumNotificationGroupLength, out var group)
+            || !IsValidNotificationGroup(group))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.ClearNotificationGroup,
+            NotificationGroup: group);
+        return true;
+    }
+
+    /// <summary>
+    /// Accepts <c>chat:&lt;id&gt;</c> / <c>task:&lt;id&gt;</c> with id of 1..59 chars
+    /// <c>[A-Za-z0-9._:-]</c>, so the whole group never exceeds 64 characters.
+    /// </summary>
+    public static bool IsValidNotificationGroup([NotNullWhen(true)] string? value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length > MaximumNotificationGroupLength)
+        {
+            return false;
+        }
+
+        string id;
+        if (value.StartsWith("chat:", StringComparison.Ordinal))
+        {
+            id = value["chat:".Length..];
+        }
+        else if (value.StartsWith("task:", StringComparison.Ordinal))
+        {
+            id = value["task:".Length..];
+        }
+        else
+        {
+            return false;
+        }
+
+        return id.Length is >= 1 and <= 59
+            && id.All(character =>
+                char.IsAsciiLetterOrDigit(character)
+                || character is '.' or '_' or ':' or '-');
+    }
+
+    private static bool TryParseTheme(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "mode")
+            || !TryGetBoundedString(root, "mode", 15, out var mode))
+        {
+            return false;
+        }
+
+        var themeMode = mode switch
+        {
+            "light" => DesktopThemeMode.Light,
+            "dark" => DesktopThemeMode.Dark,
+            "high-contrast" => DesktopThemeMode.HighContrast,
+            _ => (DesktopThemeMode?)null,
+        };
+        if (themeMode is null)
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.SetTheme,
+            ThemeMode: themeMode);
+        return true;
+    }
+
+    private static bool TryParseOpenDownloadedFile(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version"))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(DesktopInboundMessageType.OpenDownloadedFile);
+        return true;
+    }
+
+    private static bool TryParsePrepareDownloadedFile(
+        JsonElement root,
+        out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "action")
+            || !TryGetBoundedString(root, "action", 8, out var actionText))
+        {
+            return false;
+        }
+
+        var action = actionText switch
+        {
+            "open" => DesktopDownloadedFileAction.Open,
+            "print" => DesktopDownloadedFileAction.Print,
+            "copy" => DesktopDownloadedFileAction.Copy,
+            "saveAs" => DesktopDownloadedFileAction.SaveAs,
+            _ => DesktopDownloadedFileAction.None,
+        };
+        if (action == DesktopDownloadedFileAction.None)
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.PrepareDownloadedFile,
+            DownloadedFileAction: action);
+        return true;
+    }
+
+    private static bool TryParseOpenFileDialog(
+        JsonElement root,
+        out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !IsValidRequestId(requestId)
+            || !TryGetOptionalStringArray(root, "accept", 32, 256, out var accept)
+            || !TryGetOptionalString(root, "title", 128, out var title))
+        {
+            return false;
+        }
+
+        var multiple = TryGetBoolean(root, "multiple", out var multipleValue) && multipleValue;
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.OpenFileDialog,
+            OpenFileDialog: new DesktopOpenFileDialogCommand(requestId, multiple, accept, title));
+        return true;
+    }
+
+    private static bool TryParseShellStatus(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(
+                root,
+                "type",
+                "version",
+                "authenticated",
+                "online",
+                "unread_total",
+                "chat_unread",
+                "mail_unread",
+                "tasks_attention")
+            || !TryGetBoolean(root, "authenticated", out var authenticated)
+            || !TryGetBoolean(root, "online", out var online)
+            || !TryGetShellCounter(root, "unread_total", out var unreadTotal)
+            || !TryGetShellCounter(root, "chat_unread", out var chatUnread)
+            || !TryGetShellCounter(root, "mail_unread", out var mailUnread)
+            || !TryGetShellCounter(root, "tasks_attention", out var tasksAttention))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.UpdateShellStatus,
+            ShellStatus: new DesktopShellStatus(
+                authenticated,
+                online,
+                unreadTotal,
+                chatUnread,
+                mailUnread,
+                tasksAttention));
+        return true;
+    }
+
+    private static bool TryParseQuickRoutes(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "routes")
+            || !root.TryGetProperty("routes", out var routesElement)
+            || routesElement.ValueKind != JsonValueKind.Array
+            || routesElement.GetArrayLength() > MaximumQuickRoutes)
+        {
+            return false;
+        }
+
+        var routes = new List<DesktopQuickRoute>(routesElement.GetArrayLength());
+        var routeIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var routeElement in routesElement.EnumerateArray())
+        {
+            if (routeElement.ValueKind != JsonValueKind.Object
+                || !HasExactProperties(routeElement, "id", "label", "route", "badge")
+                || !TryGetBoundedString(routeElement, "id", MaximumQuickRouteIdLength, out var id)
+                || !TryGetBoundedString(routeElement, "label", MaximumQuickRouteLabelLength, out var label)
+                || !TryGetBoundedString(routeElement, "route", MaximumRouteLength, out var route)
+                || !TryGetShellCounter(routeElement, "badge", out var badge)
+                || !IsValidQuickRouteId(id)
+                || !IsValidInternalRoute(route)
+                || !routeIds.Add(id))
+            {
+                return false;
+            }
+
+            routes.Add(new DesktopQuickRoute(id, label, route, badge));
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.UpdateQuickRoutes,
+            QuickRoutes: routes);
+        return true;
+    }
+
+    private static bool TryParsePrintCurrentDocument(
+        JsonElement root,
+        out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version"))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(DesktopInboundMessageType.PrintCurrentDocument);
+        return true;
+    }
+
+    private static bool TryParseEquipmentQrPrint(
+        JsonElement root,
+        out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "mode")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !IsValidRequestId(requestId)
+            || !TryGetBoundedString(root, "mode", 16, out var rawMode))
+        {
+            return false;
+        }
+
+        var mode = rawMode switch
+        {
+            "quick" => DesktopEquipmentQrPrintMode.Quick,
+            "dialog" => DesktopEquipmentQrPrintMode.Dialog,
+            _ => (DesktopEquipmentQrPrintMode?)null,
+        };
+        if (mode is null)
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.PrintEquipmentQrBatch,
+            EquipmentQrPrint: new DesktopEquipmentQrPrintCommand(requestId, mode.Value));
+        return true;
+    }
+
+    private static bool TryParseExactCommand(
+        JsonElement root,
+        DesktopInboundMessageType type,
+        out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version"))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(type);
+        return true;
+    }
+
+    private static bool HasExactProperties(JsonElement root, params string[] expectedNames)
+    {
+        var expected = new HashSet<string>(expectedNames, StringComparer.Ordinal);
+        var propertyCount = 0;
+
+        foreach (var property in root.EnumerateObject())
+        {
+            propertyCount++;
+            if (!expected.Contains(property.Name))
+            {
+                return false;
+            }
+        }
+
+        return propertyCount == expected.Count;
+    }
+
+    private static bool TryGetBoundedString(
+        JsonElement root,
+        string propertyName,
+        int maximumLength,
+        out string value)
+    {
+        value = string.Empty;
+        if (!root.TryGetProperty(propertyName, out var element)
+            || element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = element.GetString() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(value)
+            && value.Length <= maximumLength
+            && !value.Any(char.IsControl);
+    }
+
+    private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)
+    {
+        value = false;
+        if (!root.TryGetProperty(propertyName, out var element)
+            || element.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return false;
+        }
+
+        value = element.GetBoolean();
+        return true;
+    }
+
+    private static bool TryGetShellCounter(JsonElement root, string propertyName, out int value)
+    {
+        value = 0;
+        return root.TryGetProperty(propertyName, out var element)
+            && element.TryGetInt32(out value)
+            && value >= 0
+            && value <= MaximumShellCounter;
+    }
+
+    private static bool TryGetOptionalString(
+        JsonElement root,
+        string propertyName,
+        int maximumLength,
+        out string? value)
+    {
+        value = null;
+        if (!root.TryGetProperty(propertyName, out var element)
+            || element.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var text = element.GetString()!;
+        if (text.Length > maximumLength || text.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        value = text;
+        return true;
+    }
+
+    private static bool TryGetOptionalStringArray(
+        JsonElement root,
+        string propertyName,
+        int maximumCount,
+        int maximumItemLength,
+        out IReadOnlyList<string> value)
+    {
+        value = Array.Empty<string>();
+        if (!root.TryGetProperty(propertyName, out var element)
+            || element.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        var items = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            var text = item.GetString()!;
+            if (string.IsNullOrWhiteSpace(text)
+                || text.Length > maximumItemLength
+                || text.Any(char.IsControl))
+            {
+                return false;
+            }
+
+            items.Add(text);
+        }
+
+        if (items.Count > maximumCount)
+        {
+            return false;
+        }
+
+        value = items;
+        return true;
+    }
+
+    private static bool IsValidNotificationId(string value)
+    {
+        return value.All(character =>
+            char.IsAsciiLetterOrDigit(character)
+            || character is '-' or '_' or ':' or '.');
+    }
+
+    private static bool IsValidQuickRouteId(string value)
+    {
+        return char.IsAsciiLetter(value[0])
+            && value.All(character =>
+                char.IsAsciiLetterOrDigit(character)
+                || character == '-');
+    }
+
+    private static bool IsValidRequestId(string value) =>
+        value.Length is > 0 and <= 64
+        && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+
+    private static string FormatDownloadedFileAction(DesktopDownloadedFileAction action) =>
+        action switch
+        {
+            DesktopDownloadedFileAction.Open => "open",
+            DesktopDownloadedFileAction.Print => "print",
+            DesktopDownloadedFileAction.Copy => "copy",
+            DesktopDownloadedFileAction.SaveAs => "saveAs",
+            _ => throw new ArgumentOutOfRangeException(nameof(action)),
+        };
+
+    private static string? NormalizeWindowsUsername(string? value)
+    {
+        var normalized = value?.Trim();
+        return !string.IsNullOrWhiteSpace(normalized)
+            && normalized.Length <= MaximumWindowsUsernameLength
+            && !normalized.Any(char.IsControl)
+                ? normalized
+                : null;
+    }
+
+    public static bool IsValidInternalRoute([NotNullWhen(true)] string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && value.Length <= MaximumRouteLength
+            && !value.Any(char.IsControl)
+            && value[0] == '/'
+            && !value.StartsWith("//", StringComparison.Ordinal)
+            && !value.Contains('\\')
+            && Uri.TryCreate(value, UriKind.Relative, out _);
+    }
+
+    /// <summary>The only route the page may ask to open in the second window: the online editor of one file.</summary>
+    public static bool IsValidWorkspaceEditorRoute([NotNullWhen(true)] string? value)
+    {
+        const string prefix = "/my-files/edit/";
+        if (!IsValidInternalRoute(value)
+            || !value.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var fileId = value[prefix.Length..];
+        return fileId.Length is > 0 and <= 64
+            && fileId.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+    }
+
+    public static bool IsValidMailComposeRoute([NotNullWhen(true)] string? value)
+    {
+        if (!IsValidInternalRoute(value) || value.Contains('#'))
+        {
+            return false;
+        }
+        var queryIndex = value.IndexOf('?');
+        var path = queryIndex >= 0 ? value[..queryIndex] : value;
+        if (!string.Equals(path, "/mail/compose", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var query = queryIndex >= 0 ? value[(queryIndex + 1)..] : string.Empty;
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var separator = pair.IndexOf('=');
+                if (separator <= 0)
+                {
+                    return false;
+                }
+                var key = Uri.UnescapeDataString(pair[..separator]);
+                var parameterValue = Uri.UnescapeDataString(pair[(separator + 1)..]);
+                if (key is not ("draft_id" or "mailbox_id")
+                    || parameterValue.Any(char.IsControl)
+                    || !parameters.TryAdd(key, parameterValue))
+                {
+                    return false;
+                }
+            }
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+        return parameters.TryGetValue("draft_id", out var draftId)
+            && !string.IsNullOrWhiteSpace(draftId)
+            && draftId.Length <= MaximumRouteLength
+            && (!parameters.TryGetValue("mailbox_id", out var mailboxId) || mailboxId.Length <= 256);
+    }
+}

@@ -1,0 +1,499 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Модульные тесты для хендлеров работ
+
+Тестируют:
+- work_component_serial_input
+- show_component_selection_pc
+- handle_pc_component_selection
+- save_component_replacement_pc
+"""
+import pytest
+from unittest.mock import Mock, AsyncMock, patch, MagicMock
+
+# Настройка пути для импортов
+import sys
+sys.path.insert(0, '.')
+
+from bot.config import States
+
+
+
+
+
+@pytest.fixture(autouse=True)
+def _allow_work_access(monkeypatch):
+    """Access policy has its own tests (test_work_access_gate.py); these exercise the flow itself."""
+    monkeypatch.setattr("bot.handlers.work.check_user_access", AsyncMock(return_value=True))
+
+def test_pc_cleaning_history_prefers_inventory_identity_after_move():
+    from bot.handlers.work import _select_pc_cleaning_records
+
+    equipment = {
+        "ID": 11,
+        "INV_NO": "1001",
+        "SERIAL_NO": "DUPLICATE-SERIAL",
+        "HW_SERIAL_NO": "HW-1001",
+        "BRANCH_NAME": "New branch",
+        "EMPLOYEE_NAME": "New owner",
+    }
+    records = [
+        {
+            "db_name": "main-db",
+            "inv_no": "1001",
+            "serial_no": "DUPLICATE-SERIAL",
+            "branch": "Old branch",
+            "employee": "Old owner",
+            "timestamp": "2026-02-12T10:00:00",
+        },
+        {
+            "db_name": "main-db",
+            "inv_no": "2002",
+            "serial_no": "DUPLICATE-SERIAL",
+            "timestamp": "2026-08-03T10:00:00",
+        },
+        {
+            "db_name": "other-db",
+            "inv_no": "1001",
+            "serial_no": "DUPLICATE-SERIAL",
+            "timestamp": "2026-08-04T10:00:00",
+        },
+    ]
+
+    matches = _select_pc_cleaning_records(records, equipment, db_name="main-db")
+
+    assert [record["timestamp"] for record in matches] == ["2026-02-12T10:00:00"]
+
+
+@pytest.mark.asyncio
+async def test_save_pc_cleaning_persists_equipment_id(context, equipment_mock):
+    from bot.handlers.work import save_pc_cleaning
+
+    equipment_mock["INV_NO"] = "1001"
+    context.user_data = {
+        "pc_cleaning_serial_no": equipment_mock["SERIAL_NO"],
+        "pc_cleaning_equipment": equipment_mock,
+    }
+
+    with patch("bot.handlers.work.database_manager") as mock_db:
+        mock_db.get_user_database.return_value = "main-db"
+        mock_db.get_database_config.return_value = {"db": "main"}
+        with patch("bot.handlers.work.UniversalInventoryDB"),                 patch("bot.handlers.work.append_json_data", return_value=True) as append_mock:
+            assert await save_pc_cleaning(context) is True
+
+    saved_record = append_mock.call_args.args[1]
+    assert saved_record["equipment_id"] == equipment_mock["ID"]
+    assert saved_record["inv_no"] == "1001"
+
+
+# ============================================================================
+# FIXTURES
+# ============================================================================
+
+@pytest.fixture
+def update():
+    """Mock Telegram Update"""
+    update = AsyncMock()
+    update.effective_user = Mock()
+    update.effective_user.id = 123456
+    update.message = AsyncMock()
+    update.message.photo = None
+    update.message.document = None
+    update.message.text = ""
+    return update
+
+
+@pytest.fixture
+def context():
+    """Mock Telegram Context"""
+    context = AsyncMock()
+    context.user_data = {}
+    context._user_id = 123456
+    context.bot = AsyncMock()
+    return context
+
+
+@pytest.fixture
+def equipment_mock():
+    """Мок оборудования"""
+    return {
+        'ID': 123,
+        'SERIAL_NO': 'PF12345',
+        'HW_SERIAL_NO': '',
+        'MODEL_NAME': 'Dell OptiPlex 7090',
+        'BRANCH_NAME': 'Офис Москва',
+        'LOCATION': 'Офис 301',
+        'EMPLOYEE_NAME': 'Иванов И.И.',
+        'DESCRIPTION': 'Test description'
+    }
+
+
+# ============================================================================
+# ТЕСТЫ ДЛЯ work_component_serial_input
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_work_component_serial_input_valid_serial(update, context):
+    """Тест валидного серийного номера"""
+    from bot.handlers.work import work_component_serial_input
+    from bot.services.ocr_service import validate_serial_format
+
+    # Мокаем текстовый ввод
+    update.message.text = "PF12345"
+    update.message.photo = None
+    update.message.document = None
+
+    # Патчим на уровне модуля, где импортируется database_manager
+    with patch('bot.handlers.work.database_manager') as mock_db:
+        mock_db.get_user_database = Mock(return_value='ITINVENT')
+        mock_db.get_database_config = Mock(return_value={'host': 'localhost'})
+
+        mock_equipment = {
+            'ID': 123,
+            'SERIAL_NO': 'PF12345',
+            'MODEL_NAME': 'Dell OptiPlex 7090'
+        }
+
+        with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db:
+            mock_univ_db.return_value.find_by_serial_number = Mock(return_value=[mock_equipment])
+
+            # Результат не важен для этого теста, главное что не падает
+            # Просто проверим что функция вызывается без ошибок
+            try:
+                result = await work_component_serial_input(update, context)
+                # Должна вернуть следующее состояние или ошибку если ПК не найден
+                assert result in [States.WORK_COMPONENT_SERIAL_INPUT, States.WORK_COMPONENT_SELECTION]
+            except Exception as e:
+                pytest.fail(f"Функция упала с ошибкой: {e}")
+
+
+@pytest.mark.asyncio
+async def test_work_component_serial_input_invalid_serial(update, context):
+    """Тест невалидного серийного номера"""
+    from bot.handlers.work import work_component_serial_input
+
+    # Неверный формат (слишком короткий)
+    update.message.text = "ABC"
+    update.message.photo = None
+    update.message.document = None
+
+    with patch('bot.handlers.work.validate_serial_number', return_value=False):
+        result = await work_component_serial_input(update, context)
+
+        # Должна остаться в том же состоянии
+        assert result == States.WORK_COMPONENT_SERIAL_INPUT
+
+
+# ============================================================================
+# ТЕСТЫ ДЛЯ show_component_selection_pc
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_show_component_selection_pc_callback(update, context, equipment_mock):
+    """Тест отображения меню выбора компонентов (callback)"""
+    from bot.handlers.work import show_component_selection_pc
+
+    update.callback_query = AsyncMock()
+    update.callback_query.message = AsyncMock()
+    update.callback_query.message.reply_text = AsyncMock()
+
+    result = await show_component_selection_pc(update, context, equipment_mock)
+
+    # Проверка состояния
+    assert result == States.WORK_COMPONENT_SELECTION
+
+    # Проверка что сообщение было отправлено с правильными параметрами
+    update.callback_query.message.reply_text.assert_called_once()
+
+    # Проверка parse_mode
+    call_args = update.callback_query.message.reply_text.call_args
+    assert 'parse_mode' in call_args.kwargs
+    assert call_args.kwargs['parse_mode'] == 'HTML'
+
+    # Проверка клавиатуры
+    reply_markup = call_args.kwargs.get('reply_markup')
+    assert reply_markup is not None
+    assert hasattr(reply_markup, 'inline_keyboard')
+    # Должно быть 8 кнопок (7 компонентов + отмена)
+    assert len(reply_markup.inline_keyboard) == 8
+
+
+@pytest.mark.asyncio
+async def test_show_component_selection_pc_message(update, context, equipment_mock):
+    """Тест отображения меню выбора компонентов (message)"""
+    from bot.handlers.work import show_component_selection_pc
+
+    update.callback_query = None
+    update.message.reply_text = AsyncMock()
+
+    result = await show_component_selection_pc(update, context, equipment_mock)
+
+    # Проверка состояния
+    assert result == States.WORK_COMPONENT_SELECTION
+
+    # Проверка parse_mode
+    call_args = update.message.reply_text.call_args
+    assert 'parse_mode' in call_args.kwargs
+    assert call_args.kwargs['parse_mode'] == 'HTML'
+
+
+# ============================================================================
+# ТЕСТЫ ДЛЯ save_component_replacement_pc
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_save_component_replacement_pc_new_record(context, equipment_mock):
+    """Тест сохранения новой замены компонента"""
+    from bot.handlers.work import save_component_replacement_pc
+
+    # Настраиваем контекст
+    context.user_data['component_replacement_serial_no'] = 'PF12345'
+    context.user_data['component_replacement_equipment'] = equipment_mock
+    context.user_data['pc_component_type'] = 'hdd_ssd'
+    context.user_data['pc_component_name'] = 'HDD/SSD (Накопитель)'
+
+    # Патчим на уровне модуля
+    with patch('bot.handlers.work.database_manager') as mock_db:
+        mock_db.get_user_database = Mock(return_value='ITINVENT')
+        mock_db.get_database_config = Mock(return_value={'host': 'localhost'})
+
+        # Мокаем подключение к БД
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__ = Mock(return_value=mock_conn)
+        mock_conn.__exit__ = Mock(return_value=None)
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db:
+            mock_univ_db.return_value._get_connection.return_value = mock_conn
+            with patch('bot.handlers.work.append_json_data', return_value=True):
+
+                # Выполняем сохранение
+                result = await save_component_replacement_pc(context)
+
+                assert result is True
+
+
+@pytest.mark.asyncio
+async def test_save_component_replacement_pc_update_existing(context, equipment_mock):
+    """Тест обновления существующей записи в описании"""
+    from bot.handlers.work import save_component_replacement_pc
+
+    # Оборудование с существующим описанием
+    equipment_mock['DESCRIPTION'] = 'Старое описание\r\nЗамена HDD/SSD (Накопитель): 01.01.2024 10:00 (IT-BOT)'
+
+    context.user_data['component_replacement_serial_no'] = 'PF12345'
+    context.user_data['component_replacement_equipment'] = equipment_mock
+    context.user_data['pc_component_type'] = 'hdd_ssd'
+    context.user_data['pc_component_name'] = 'HDD/SSD (Накопитель)'
+
+    with patch('bot.handlers.work.database_manager') as mock_db:
+        mock_db.get_user_database = Mock(return_value='ITINVENT')
+        mock_db.get_database_config = Mock(return_value={'host': 'localhost'})
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__ = Mock(return_value=mock_conn)
+        mock_conn.__exit__ = Mock(return_value=None)
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db:
+            mock_univ_db.return_value._get_connection.return_value = mock_conn
+            with patch('bot.handlers.work.append_json_data', return_value=True):
+
+                result = await save_component_replacement_pc(context)
+
+                assert result is True
+
+
+# ============================================================================
+# ТЕСТЫ ДЛЯ очистки временных файлов
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_temp_file_cleanup_on_photo_processing(update, context):
+    """Тест удаления временного файла после обработки фото"""
+    from bot.handlers.work import work_component_serial_input
+    import os
+
+    update.message.photo = [AsyncMock()]  # Мок фото
+    update.message.photo[-1].file_id = "test_file"
+
+    # Мокаем загрузку файла
+    temp_file = "temp_component_replacement_test_file.jpg"
+
+    incoming_file = AsyncMock()
+    incoming_file.download_to_drive = AsyncMock()
+    context.bot.get_file = AsyncMock(return_value=incoming_file)
+
+    with patch(
+        'bot.handlers.work.detect_identifiers_from_image',
+        new=AsyncMock(return_value={"detector": "ocr", "serial_no": "PF12345", "inv_no": None}),
+    ):
+        with patch('bot.handlers.work.database_manager') as mock_db:
+            mock_db.get_user_database = Mock(return_value='ITINVENT')
+            mock_db.get_database_config = Mock(return_value={'host': 'localhost'})
+            with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db:
+                mock_univ_db.return_value.find_by_serial_number = Mock(return_value=[{'ID': 123, 'SERIAL_NO': 'PF12345'}])
+                with patch('os.path.exists', return_value=True):
+                    with patch('os.remove') as mock_remove:
+                        update.message.reply_text = AsyncMock()
+
+                        # Мокаем удаление статусного сообщения
+                        status_msg = AsyncMock()
+                        update.message.reply_text.return_value = status_msg
+                        status_msg.delete = AsyncMock()
+
+                        await work_component_serial_input(update, context)
+
+                        # Проверяем что временный файл был удален
+                        mock_remove.assert_called_once_with(temp_file)
+
+
+# ============================================================================
+# ПАРАМЕТРИЗИРОВАННЫЕ ТЕСТЫ (примеры)
+# ============================================================================
+
+@pytest.mark.parametrize("serial_number,expected_result", [
+    ("PF12345", True),      # Валидный
+    ("ABC-12345", True),    # Валидный
+    ("12345", True),        # Только цифры (валидно - серийные номера могут быть цифровыми)
+    ("", False),           # Пустая строка
+])
+def test_validate_serial_format(serial_number, expected_result):
+    """Параметризованный тест валидации серийного номера"""
+    from bot.services.ocr_service import validate_serial_format
+    assert validate_serial_format(serial_number) == expected_result
+
+
+# ============================================================================
+# ТЕСТЫ ИНТЕГРАЦИИ (примеры)
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_full_component_replacement_flow(context, equipment_mock):
+    """Тест полного потока замены компонента"""
+    from bot.handlers.work import (
+        work_component_serial_input,
+        show_component_selection_pc,
+        handle_pc_component_selection,
+        save_component_replacement_pc
+    )
+
+    # Шаг 1: Ввод серийного номера
+    update = AsyncMock()
+    update.effective_user = Mock()
+    update.effective_user.id = 123456
+    update.message = AsyncMock()
+    update.message.text = "PF12345"
+    update.message.photo = None
+    update.message.document = None
+
+    with patch('bot.handlers.work.database_manager') as mock_db:
+        mock_db.get_user_database = Mock(return_value='ITINVENT')
+        mock_db.get_database_config = Mock(return_value={'host': 'localhost'})
+
+        with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db:
+            mock_univ_db.return_value.find_by_serial_number = Mock(return_value=[equipment_mock])
+
+            # Шаг 2: Показ меню выбора компонентов
+            result = await show_component_selection_pc(update, context, equipment_mock)
+            assert result == States.WORK_COMPONENT_SELECTION
+
+            # Шаг 3: Выбор компонента
+            update.callback_query = AsyncMock()
+            update.callback_query.data = "pc_component:hdd_ssd"
+            update.callback_query.answer = AsyncMock()
+
+            result = await handle_pc_component_selection(update, context)
+
+            # Проверяем что данные сохранены в контексте
+            assert context.user_data['pc_component_type'] == 'hdd_ssd'
+            assert context.user_data['pc_component_name'] == 'HDD/SSD (Накопитель)'
+
+            # Шаг 4: Сохранение
+            context.user_data['component_replacement_equipment'] = equipment_mock
+
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_conn.__enter__ = Mock(return_value=mock_conn)
+            mock_conn.__exit__ = Mock(return_value=None)
+            mock_conn.cursor.return_value = mock_cursor
+
+            with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db2:
+                mock_univ_db2.return_value._get_connection.return_value = mock_conn
+                with patch('bot.handlers.work.append_json_data', return_value=True):
+
+                    result = await save_component_replacement_pc(context)
+
+                    assert result is True
+
+
+# ============================================================================
+# ЗАПУСК ТЕСТОВ
+# ============================================================================
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])
+
+
+# DBOT-02/03: a failed or mis-scoped DB write must not be reported as success.
+def _db_with_cursor(rowcount=1, error=None):
+    cursor = MagicMock()
+    cursor.rowcount = rowcount
+    if error:
+        cursor.execute.side_effect = error
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    conn.__enter__.return_value = conn
+    db = MagicMock()
+    db._get_connection.return_value = conn
+    return db, cursor
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["sql_error", "no_row", "no_config"])
+async def test_save_battery_failure_is_not_success_and_writes_no_history(kind):
+    from bot.handlers.work import save_battery_replacement
+
+    context = MagicMock()
+    context.user_data = {"battery_equipment": {"ID": 7, "DESCRIPTION": "", "_hubit_db_name": "db-a"}}
+    db, _ = _db_with_cursor(rowcount=0 if kind == "no_row" else 1,
+                            error=RuntimeError("deadlock") if kind == "sql_error" else None)
+    with patch("bot.handlers.work.database_manager") as manager,             patch("bot.handlers.work.UniversalInventoryDB", return_value=db),             patch("bot.handlers.work.append_json_data", return_value=True) as history:
+        manager.get_database_config.return_value = None if kind == "no_config" else {"db": "a"}
+        assert await save_battery_replacement(context) is False
+    history.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_save_battery_uses_database_of_the_lookup_not_current_selection():
+    from bot.handlers.work import save_battery_replacement
+
+    context = MagicMock()
+    context._user_id = 5
+    context.user_data = {"battery_equipment": {"ID": 7, "DESCRIPTION": "", "_hubit_db_name": "db-a"}}
+    db, cursor = _db_with_cursor()
+    with patch("bot.handlers.work.database_manager") as manager,             patch("bot.handlers.work.UniversalInventoryDB", return_value=db),             patch("bot.handlers.work.append_json_data", return_value=True) as history:
+        manager.get_user_database.return_value = "db-b"  # user switched DB after the preview
+        manager.get_database_config.side_effect = lambda name: {"db": name}
+        assert await save_battery_replacement(context) is True
+    manager.get_database_config.assert_called_once_with("db-a")
+    assert cursor.execute.call_args.args[1][1] == 7
+    assert history.call_args.args[1]["db_name"] == "db-a"
+
+
+@pytest.mark.asyncio
+async def test_save_battery_update_is_guarded_by_the_previewed_description():
+    from bot.handlers.work import save_battery_replacement
+
+    context = MagicMock()
+    context.user_data = {"battery_equipment": {"ID": 7, "DESCRIPTION": "old text", "_hubit_db_name": "db-a"}}
+    db, cursor = _db_with_cursor()
+    with patch("bot.handlers.work.database_manager") as manager,             patch("bot.handlers.work.UniversalInventoryDB", return_value=db),             patch("bot.handlers.work.append_json_data", return_value=True):
+        manager.get_database_config.return_value = {"db": "a"}
+        assert await save_battery_replacement(context) is True
+    sql, params = cursor.execute.call_args.args
+    assert "DESCR" in sql and sql.count("?") == 3
+    assert params[1:] == (7, "old text")

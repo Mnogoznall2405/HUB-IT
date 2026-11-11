@@ -1,0 +1,126 @@
+import { useCallback, useRef, useState } from 'react';
+import { toRecipientEmails } from './mailComposeState';
+import { normalizeComposeSubject } from './mailComposeSubject';
+import {
+  buildQuickReplyHtml,
+  buildQuickReplyOutgoingHtml,
+  resolveMailReplyQuoteHtml,
+} from './mailQuickReplyBody';
+import { createMailSendIdempotencyKey } from './mailSendIdempotency';
+import { getMailSendErrorMessage } from './mailSendOutcome';
+
+const getQuickReplyFallbackSender = (message) => {
+  const values = [
+    message?.sender_email,
+    message?.from_email,
+    message?.sender?.email,
+    message?.from?.email,
+    message?.sender,
+  ];
+  for (const value of values) {
+    const recipients = toRecipientEmails([value]);
+    if (recipients.length > 0) return recipients;
+  }
+  return [];
+};
+
+export { buildQuickReplyHtml };
+
+export default function useMailQuickReply({
+  mailAPI,
+  resolveComposeMailboxId,
+  invalidateMailClientCache,
+  refreshList,
+  refreshFolderSummary,
+  handleMailCredentialsRequired,
+  onError,
+  onSendingStart,
+  onSent,
+} = {}) {
+  const [quickReplySending, setQuickReplySending] = useState(false);
+  const [draftEpoch, setDraftEpoch] = useState(0);
+  const sendingLockRef = useRef(false);
+  const idempotencyKeyRef = useRef('');
+  const payloadRef = useRef('');
+
+  const sendQuickReply = useCallback(async (selectedMessage, body, { mode = 'reply' } = {}) => {
+    if (!selectedMessage?.id) return false;
+    if (!body?.trim()) return false;
+    if (sendingLockRef.current) return false;
+    sendingLockRef.current = true;
+    const normalizedBody = String(body).trim();
+
+    setQuickReplySending(true);
+    onSendingStart?.();
+    let sent = false;
+    try {
+      const contextKey = mode === 'reply_all' ? 'reply_all' : 'reply';
+      const context = selectedMessage?.compose_context?.[contextKey]
+        || selectedMessage?.compose_context?.reply
+        || {};
+      const to = toRecipientEmails(context?.to);
+      const payload = {
+        from_mailbox_id: resolveComposeMailboxId(context?.mailbox_id || selectedMessage?.mailbox_id),
+        to: to.length > 0 ? to : getQuickReplyFallbackSender(selectedMessage),
+        cc: toRecipientEmails(context?.cc),
+        bcc: [],
+        subject: normalizeComposeSubject('reply', context?.subject || selectedMessage.subject || ''),
+        body: buildQuickReplyOutgoingHtml(
+          normalizedBody,
+          resolveMailReplyQuoteHtml(selectedMessage, context),
+        ),
+        is_html: true,
+        reply_to_message_id: selectedMessage.id,
+      };
+      const fingerprint = JSON.stringify(payload);
+      if (!idempotencyKeyRef.current || payloadRef.current !== fingerprint) {
+        idempotencyKeyRef.current = createMailSendIdempotencyKey();
+        payloadRef.current = fingerprint;
+      }
+      await mailAPI.sendMessage({ ...payload, idempotencyKey: idempotencyKeyRef.current });
+      sent = true;
+      idempotencyKeyRef.current = '';
+      payloadRef.current = '';
+      setDraftEpoch((value) => value + 1);
+      onSent?.();
+      const refreshResults = await Promise.allSettled([
+        Promise.resolve().then(() => invalidateMailClientCache?.()),
+        Promise.resolve().then(() => refreshList?.({ silent: true, force: true })),
+        Promise.resolve().then(() => refreshFolderSummary?.()),
+      ]);
+      if (refreshResults.some((result) => result.status === 'rejected')) {
+        onError?.('Письмо отправлено, но обновить список писем не удалось. Обновите список.');
+      }
+      return true;
+    } catch (requestError) {
+      if (sent) {
+        onError?.('Письмо отправлено, но обновить список писем не удалось. Обновите список.');
+        return true;
+      }
+      const fallback = 'Не удалось отправить быстрый ответ.';
+      if (!(await handleMailCredentialsRequired?.(requestError, fallback))) {
+        onError?.(getMailSendErrorMessage(requestError, fallback));
+      }
+      return false;
+    } finally {
+      sendingLockRef.current = false;
+      setQuickReplySending(false);
+    }
+  }, [
+    handleMailCredentialsRequired,
+    invalidateMailClientCache,
+    mailAPI,
+    refreshFolderSummary,
+    refreshList,
+    resolveComposeMailboxId,
+    onError,
+    onSendingStart,
+    onSent,
+  ]);
+
+  return {
+    draftEpoch,
+    quickReplySending,
+    sendQuickReply,
+  };
+}

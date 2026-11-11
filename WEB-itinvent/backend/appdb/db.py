@@ -1,0 +1,452 @@
+"""Runtime helpers for unified internal application database."""
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import threading
+import time
+from collections.abc import Callable
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TypeVar
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session, sessionmaker
+
+from backend.appdb.models import APP_SCHEMA, AppBase, SYSTEM_SCHEMA
+from backend.config import config
+from backend.services.sql_observability import attach_slow_sql_logging
+
+
+class AppDatabaseConfigurationError(RuntimeError):
+    """Raised when unified internal database is unavailable or misconfigured."""
+
+
+_engines: dict[str, object] = {}
+_session_factories: dict[str, object] = {}
+# Re-entrant: get_app_session_factory builds the engine while holding it.  Only the cache
+# lookup/creation is serialized, never the transactions themselves (DOPS-03).
+_engine_cache_lock = threading.RLock()
+_initialized_schema_urls: set[str] = set()
+_schema_init_lock = threading.Lock()
+logger = logging.getLogger("backend.appdb.db")
+_TRANSIENT_LOCK_SQLSTATES = {"55P03"}
+_APP_SCHEMA_INIT_LOCK_KEY = 48151623
+_T = TypeVar("_T")
+
+# Compact search tables must be adopted via Alembic (0080/0081/0082), not
+# surprise create_all on shared/prod DBs. Dev/test may opt in explicitly.
+_COMPACT_SEARCH_TABLE_NAMES = frozenset(
+    {
+        "one_c_catalog_search_documents",
+        "one_c_catalog_search_token_stats",
+        "one_c_catalog_search_index_state",
+    }
+)
+
+
+def _postgres_dev_schema_auto_create_enabled() -> bool:
+    """Whether a non-production PostgreSQL runtime may run create_all/DDL.
+
+    Some Windows deployments intentionally keep ``APP_ENV=development`` for
+    legacy configuration compatibility.  They still need an explicit way to
+    prevent every utility/worker process from running development DDL against
+    the live database.
+
+    Fail-closed: DDL runs only when the flag is set explicitly. A host that
+    copied ``.env.example`` or lost the variable gets the Alembic revision check
+    instead of ``create_all`` against a live database.
+    """
+    raw = str(os.getenv("APP_SCHEMA_DEV_AUTO_CREATE", "0") or "0")
+    return raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _compact_create_all_allowed() -> bool:
+    """Fail-closed for unexpected compact DDL via create_all.
+
+    Production never reaches create_all (Alembic path). Non-prod defaults to
+    allow for local/test fixtures unless explicitly disabled.
+    """
+    if config.app.is_production:
+        return False
+    raw = str(os.getenv("WAREHOUSE_1C_CATALOG_COMPACT_ALLOW_CREATE_ALL", "1") or "1")
+    return raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _create_all_app_metadata(connection_or_engine) -> None:
+    """create_all with optional exclusion of 1C compact search tables."""
+    # Sandbox ORM lives in its own module to keep the already-large core model
+    # file stable. Register extension tables before local/dev create_all; in
+    # production Alembic 0100 remains the only schema-change path.
+    from backend.ai_sandbox import models as _ai_sandbox_models  # noqa: F401
+    from backend.appdb import monitoring_models as _monitoring_models  # noqa: F401
+
+    if _compact_create_all_allowed():
+        AppBase.metadata.create_all(bind=connection_or_engine)
+        return
+    tables = [
+        table
+        for table in AppBase.metadata.sorted_tables
+        if str(table.name) not in _COMPACT_SEARCH_TABLE_NAMES
+    ]
+    if tables:
+        AppBase.metadata.create_all(bind=connection_or_engine, tables=tables)
+    logger.info(
+        "app schema init skipped compact search create_all "
+        "(use Alembic 0080/0081/0082 adoption)"
+    )
+
+
+def is_app_database_configured() -> bool:
+    return bool(str(config.app_db.database_url or "").strip())
+
+
+def get_app_database_url(database_url: str | None = None) -> str:
+    return str(database_url or config.app_db.database_url or "").strip()
+
+
+def ensure_app_database_configured(database_url: str | None = None) -> str:
+    database_url = get_app_database_url(database_url)
+    if not database_url:
+        raise AppDatabaseConfigurationError("APP_DATABASE_URL is not configured")
+    return database_url
+
+
+def _build_engine(database_url: str):
+    engine_kwargs = {
+        "pool_pre_ping": True,
+        "future": True,
+        "echo": bool(config.app_db.echo),
+    }
+    if database_url.startswith("sqlite"):
+        engine_kwargs["connect_args"] = {"check_same_thread": False}
+        engine = create_engine(database_url, **engine_kwargs)
+        attach_slow_sql_logging(engine, source="app")
+        return engine.execution_options(
+            schema_translate_map={
+                APP_SCHEMA: None,
+                SYSTEM_SCHEMA: None,
+                "chat": None,
+            }
+        )
+
+    engine_kwargs["pool_size"] = max(1, int(config.app_db.pool_size))
+    engine_kwargs["max_overflow"] = max(0, int(config.app_db.max_overflow))
+    engine_kwargs["pool_timeout"] = max(1, int(os.getenv("APP_DB_POOL_TIMEOUT", "30") or 30))
+    engine_kwargs["pool_recycle"] = max(0, int(os.getenv("APP_DB_POOL_RECYCLE", "1800") or 1800))
+    engine_kwargs["connect_args"] = {
+        "application_name": str(os.getenv("APP_DB_APPLICATION_NAME", "itinvent-backend")).strip() or "itinvent-backend",
+        # A peer that vanishes without FIN/RST leaves recv() blocked for the OS default
+        # (Windows: ~2h). Keepalive probes bound that stall so pool threads unblock.
+        "keepalives": 1,
+        "keepalives_idle": int(os.getenv("APP_DB_KEEPALIVES_IDLE", "30") or 30),
+        "keepalives_interval": int(os.getenv("APP_DB_KEEPALIVES_INTERVAL", "10") or 10),
+        "keepalives_count": int(os.getenv("APP_DB_KEEPALIVES_COUNT", "6") or 6),
+        "connect_timeout": int(os.getenv("APP_DB_CONNECT_TIMEOUT", "10") or 10),
+    }
+    engine = create_engine(database_url, **engine_kwargs)
+    attach_slow_sql_logging(engine, source="app")
+    return engine
+
+
+def get_app_engine(database_url: str | None = None):
+    resolved_url = ensure_app_database_configured(database_url)
+    engine = _engines.get(resolved_url)
+    if engine is None:
+        with _engine_cache_lock:
+            engine = _engines.get(resolved_url)
+            if engine is None:
+                # A failing builder raises before the assignment: no broken cache entry.
+                engine = _build_engine(resolved_url)
+                _engines[resolved_url] = engine
+    return engine
+
+
+def get_app_session_factory(database_url: str | None = None):
+    resolved_url = ensure_app_database_configured(database_url)
+    session_factory = _session_factories.get(resolved_url)
+    if session_factory is None:
+        with _engine_cache_lock:
+            session_factory = _session_factories.get(resolved_url)
+            if session_factory is None:
+                session_factory = sessionmaker(
+                    bind=get_app_engine(resolved_url),
+                    autoflush=False,
+                    autocommit=False,
+                    expire_on_commit=False,
+                )
+                _session_factories[resolved_url] = session_factory
+    return session_factory
+
+
+@contextmanager
+def app_session(database_url: str | None = None) -> Session:
+    session = get_app_session_factory(database_url)()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _run_postgres_app_schema_maintenance(connection) -> None:
+    statements = [
+        'ALTER TABLE IF EXISTS "app"."users" ALTER COLUMN "telegram_id" TYPE BIGINT',
+        'ALTER TABLE IF EXISTS "app"."user_db_selection" ALTER COLUMN "telegram_id" TYPE BIGINT',
+        'ALTER TABLE IF EXISTS "app"."users" ADD COLUMN IF NOT EXISTS "department" VARCHAR(255)',
+        'ALTER TABLE IF EXISTS "app"."users" ADD COLUMN IF NOT EXISTS "job_title" VARCHAR(255)',
+        'ALTER TABLE IF EXISTS "app"."users" ADD COLUMN IF NOT EXISTS "totp_secret_enc" TEXT NOT NULL DEFAULT \'\'',
+        'ALTER TABLE IF EXISTS "app"."users" ADD COLUMN IF NOT EXISTS "is_2fa_enabled" BOOLEAN NOT NULL DEFAULT FALSE',
+        'ALTER TABLE IF EXISTS "app"."users" ADD COLUMN IF NOT EXISTS "twofa_enabled_at" TIMESTAMPTZ NULL',
+        'ALTER TABLE IF EXISTS "app"."trusted_devices" ADD COLUMN IF NOT EXISTS "is_discoverable" BOOLEAN NOT NULL DEFAULT FALSE',
+        'ALTER TABLE IF EXISTS "app"."trusted_devices" ADD COLUMN IF NOT EXISTS "expires_at" TIMESTAMPTZ NULL',
+        'CREATE INDEX IF NOT EXISTS "ix_app_trusted_devices_expires_at" ON "app"."trusted_devices" ("expires_at")',
+        'CREATE INDEX IF NOT EXISTS "ix_system_auth_runtime_items_namespace" ON "system"."auth_runtime_items" ("namespace")',
+        'CREATE INDEX IF NOT EXISTS "ix_system_auth_runtime_items_expires_at" ON "system"."auth_runtime_items" ("expires_at")',
+        'ALTER TABLE IF EXISTS "app"."ai_bots" ADD COLUMN IF NOT EXISTS "allow_kb_document_delivery" BOOLEAN NOT NULL DEFAULT FALSE',
+        'ALTER TABLE IF EXISTS "app"."ai_bots" ADD COLUMN IF NOT EXISTS "enabled_tools_json" TEXT NOT NULL DEFAULT \'[]\'',
+        'ALTER TABLE IF EXISTS "app"."ai_bots" ADD COLUMN IF NOT EXISTS "tool_settings_json" TEXT NOT NULL DEFAULT \'{}\'',
+        'ALTER TABLE IF EXISTS "app"."ai_bot_runs" ADD COLUMN IF NOT EXISTS "stage" VARCHAR(64)',
+        'ALTER TABLE IF EXISTS "app"."ai_bot_runs" ADD COLUMN IF NOT EXISTS "status_text" TEXT',
+        'UPDATE "app"."ai_bot_runs" SET "stage" = "status" WHERE "stage" IS NULL',
+        'UPDATE "app"."ai_bot_runs" SET "status_text" = \'\' WHERE "status_text" IS NULL',
+        'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_message_id" ON "app"."ai_pending_actions" ("message_id")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_run_status" ON "app"."ai_pending_actions" ("run_id", "status")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_status_expires_at" ON "app"."ai_pending_actions" ("status", "expires_at")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_transfer_act_jobs_status_created_at" ON "app"."transfer_act_jobs" ("status", "created_at")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_transfer_act_jobs_user_created_at" ON "app"."transfer_act_jobs" ("user_id", "created_at")',
+        'ALTER TABLE IF EXISTS "app"."inventory_host_sql_contexts" ADD COLUMN IF NOT EXISTS "inventory_inv_no" VARCHAR(64)',
+        'ALTER TABLE IF EXISTS "app"."inventory_host_sql_contexts" ADD COLUMN IF NOT EXISTS "inventory_model_name" VARCHAR(255)',
+        'ALTER TABLE IF EXISTS "app"."browser_probe_media" ADD COLUMN IF NOT EXISTS "storage_path" VARCHAR(1024)',
+        'ALTER TABLE IF EXISTS "app"."telegram_probe_media" ADD COLUMN IF NOT EXISTS "storage_path" VARCHAR(1024)',
+        'ALTER TABLE IF EXISTS "app"."max_probe_media" ADD COLUMN IF NOT EXISTS "storage_path" VARCHAR(1024)',
+        'CREATE INDEX IF NOT EXISTS "ix_app_browser_probe_media_created_at" ON "app"."browser_probe_media" ("created_at")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_telegram_probe_media_created_at" ON "app"."telegram_probe_media" ("created_at")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_max_probe_media_created_at" ON "app"."max_probe_media" ("created_at")',
+    ]
+    for statement in statements:
+        try:
+            connection.execute(text(statement))
+        except Exception as exc:
+            logger.warning("Skipped app schema maintenance statement: %s", exc)
+
+
+def _refresh_pg_schema_docs_after_dev_init(database_url: str) -> None:
+    if not str(database_url or "").startswith("postgresql"):
+        return
+    repo_root = Path(__file__).resolve().parents[3]
+    scripts_dir = repo_root / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        from pg_schema_docs import try_refresh_pg_schema_documentation
+
+        if try_refresh_pg_schema_documentation(
+            database_url=database_url,
+            repo_root=repo_root,
+            quiet=True,
+        ):
+            logger.info("PostgreSQL schema documentation refreshed")
+    except Exception as exc:
+        logger.debug("PostgreSQL schema docs refresh skipped: %s", exc)
+
+
+def _postgres_has_alembic_version(engine) -> bool:
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(text('SELECT version_num FROM "system"."alembic_version" LIMIT 1')).first()
+            return bool(row and str(row[0] or "").strip())
+    except Exception:
+        return False
+
+
+def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
+    # Keep Alembic out of lightweight consumers (for example the isolated
+    # sandbox LLM gateway). Schema-changing code is loaded only by the normal
+    # application initialization path; gateway queries fail closed when 0099
+    # has not been applied.
+    from backend.db_migrations import check_internal_database_revision, upgrade_internal_database
+
+    engine = get_app_engine(database_url)
+    if engine.dialect.name == "postgresql":
+        if config.app.is_production or not _postgres_dev_schema_auto_create_enabled():
+            if not _postgres_has_alembic_version(engine):
+                raise AppDatabaseConfigurationError(
+                    "APP_DATABASE_URL is not Alembic-initialized and startup DDL is disabled; "
+                    "run backend Alembic migrations before startup."
+                )
+            # Honor the explicit no-DDL guard on legacy Windows runtimes that retain
+            # APP_ENV=development, just as initialize_chat_schema does.
+            check_internal_database_revision(engine, ensure_app_database_configured(database_url), scope="app")
+            return
+        with engine.begin() as connection:
+            connection.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": _APP_SCHEMA_INIT_LOCK_KEY},
+            )
+            connection.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            connection.execute(text("SET LOCAL statement_timeout = '3000ms'"))
+            connection.execute(text('CREATE SCHEMA IF NOT EXISTS "app"'))
+            connection.execute(text('CREATE SCHEMA IF NOT EXISTS "system"'))
+            _create_all_app_metadata(connection)
+            _run_postgres_app_schema_maintenance(connection)
+        _refresh_pg_schema_docs_after_dev_init(ensure_app_database_configured(database_url))
+        return
+
+    _create_all_app_metadata(engine)
+
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as connection:
+            trusted_device_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('trusted_devices')"))
+            }
+            if trusted_device_columns and "is_discoverable" not in trusted_device_columns:
+                connection.execute(text('ALTER TABLE trusted_devices ADD COLUMN is_discoverable BOOLEAN NOT NULL DEFAULT 0'))
+            if trusted_device_columns and "expires_at" not in trusted_device_columns:
+                connection.execute(text("ALTER TABLE trusted_devices ADD COLUMN expires_at DATETIME NULL"))
+            if trusted_device_columns:
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_trusted_devices_expires_at ON trusted_devices(expires_at)"))
+            session_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('sessions')"))
+            }
+            if session_columns and "trusted_device_id" not in session_columns:
+                connection.execute(text("ALTER TABLE sessions ADD COLUMN trusted_device_id VARCHAR(64) NULL"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_sessions_trusted_device_id ON sessions(trusted_device_id)"))
+            if session_columns and "login_network_zone" not in session_columns:
+                connection.execute(text("ALTER TABLE sessions ADD COLUMN login_network_zone VARCHAR(16) NULL"))
+            auth_runtime_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('auth_runtime_items')"))
+            }
+            if auth_runtime_columns:
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_system_auth_runtime_items_namespace ON auth_runtime_items(namespace)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_system_auth_runtime_items_expires_at ON auth_runtime_items(expires_at)"))
+            ai_bot_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('ai_bots')"))
+            }
+            if ai_bot_columns and "allow_kb_document_delivery" not in ai_bot_columns:
+                connection.execute(text("ALTER TABLE ai_bots ADD COLUMN allow_kb_document_delivery BOOLEAN NOT NULL DEFAULT 0"))
+            if ai_bot_columns and "enabled_tools_json" not in ai_bot_columns:
+                connection.execute(text("ALTER TABLE ai_bots ADD COLUMN enabled_tools_json TEXT NOT NULL DEFAULT '[]'"))
+            if ai_bot_columns and "tool_settings_json" not in ai_bot_columns:
+                connection.execute(text("ALTER TABLE ai_bots ADD COLUMN tool_settings_json TEXT NOT NULL DEFAULT '{}'"))
+            ai_bot_run_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('ai_bot_runs')"))
+            }
+            if ai_bot_run_columns:
+                if "stage" not in ai_bot_run_columns:
+                    connection.execute(text("ALTER TABLE ai_bot_runs ADD COLUMN stage VARCHAR(64)"))
+                if "status_text" not in ai_bot_run_columns:
+                    connection.execute(text("ALTER TABLE ai_bot_runs ADD COLUMN status_text TEXT"))
+                connection.execute(text("UPDATE ai_bot_runs SET stage = status WHERE stage IS NULL"))
+                connection.execute(text("UPDATE ai_bot_runs SET status_text = '' WHERE status_text IS NULL"))
+            pending_action_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('ai_pending_actions')"))
+            }
+            if pending_action_columns:
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_message_id ON ai_pending_actions(message_id)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_run_status ON ai_pending_actions(run_id, status)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_status_expires_at ON ai_pending_actions(status, expires_at)"))
+            transfer_act_job_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('transfer_act_jobs')"))
+            }
+            if transfer_act_job_columns:
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_transfer_act_jobs_status_created_at ON transfer_act_jobs(status, created_at)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_transfer_act_jobs_user_created_at ON transfer_act_jobs(user_id, created_at)"))
+            inventory_context_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('inventory_host_sql_contexts')"))
+            }
+            if inventory_context_columns:
+                if "inventory_inv_no" not in inventory_context_columns:
+                    connection.execute(text("ALTER TABLE inventory_host_sql_contexts ADD COLUMN inventory_inv_no VARCHAR(64)"))
+                if "inventory_model_name" not in inventory_context_columns:
+                    connection.execute(text("ALTER TABLE inventory_host_sql_contexts ADD COLUMN inventory_model_name VARCHAR(255)"))
+
+
+def initialize_app_schema(database_url: str | None = None, *, force: bool = False) -> None:
+    resolved_url = ensure_app_database_configured(database_url)
+    if not force and resolved_url in _initialized_schema_urls:
+        return
+    with _schema_init_lock:
+        if not force and resolved_url in _initialized_schema_urls:
+            return
+        _initialize_app_schema_uncached(resolved_url)
+        _initialized_schema_urls.add(resolved_url)
+
+
+def ensure_app_schema_initialized(database_url: str | None = None) -> str:
+    resolved_url = ensure_app_database_configured(database_url)
+    initialize_app_schema(resolved_url)
+    return resolved_url
+
+
+def ping_app_database(database_url: str | None = None) -> None:
+    with get_app_engine(database_url).connect() as connection:
+        connection.execute(text("SELECT 1"))
+
+
+def apply_postgres_local_timeouts(
+    session_or_connection,
+    *,
+    lock_timeout_ms: int,
+    statement_timeout_ms: int,
+) -> None:
+    bind = getattr(session_or_connection, "bind", None)
+    if bind is None and hasattr(session_or_connection, "get_bind"):
+        try:
+            bind = session_or_connection.get_bind()
+        except Exception:
+            bind = None
+    dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").strip().lower()
+    if dialect_name != "postgresql":
+        return
+    session_or_connection.execute(text(f"SET LOCAL lock_timeout = '{max(1, int(lock_timeout_ms))}ms'"))
+    session_or_connection.execute(text(f"SET LOCAL statement_timeout = '{max(1, int(statement_timeout_ms))}ms'"))
+
+
+def is_transient_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, OperationalError):
+        return False
+    candidate = getattr(exc, "orig", exc)
+    sqlstate = str(
+        getattr(candidate, "sqlstate", None)
+        or getattr(candidate, "pgcode", None)
+        or ""
+    ).strip()
+    if sqlstate in _TRANSIENT_LOCK_SQLSTATES:
+        return True
+    return candidate.__class__.__name__ == "LockNotAvailable"
+
+
+def run_with_transient_lock_retry(
+    operation: Callable[[], _T],
+    *,
+    attempts: int = 4,
+    initial_delay_sec: float = 0.25,
+    max_delay_sec: float = 1.0,
+) -> _T:
+    normalized_attempts = max(1, int(attempts or 1))
+    for attempt in range(normalized_attempts):
+        try:
+            return operation()
+        except Exception as exc:
+            if not is_transient_lock_error(exc) or attempt >= (normalized_attempts - 1):
+                raise
+            delay_sec = min(
+                max(0.0, float(max_delay_sec or 0.0)),
+                max(0.0, float(initial_delay_sec or 0.0)) * (2 ** attempt),
+            )
+            if delay_sec > 0:
+                time.sleep(delay_sec)

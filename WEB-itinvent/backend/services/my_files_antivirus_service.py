@@ -1,0 +1,271 @@
+"""Fail-closed antivirus scanning for my-files spool payloads."""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+from backend.config import config
+
+
+GIB_BYTES = 1024**3
+MIB_BYTES = 1024**2
+# Soft ceiling so a multi‑GB archive cannot pin a worker forever.
+_MAX_SCAN_TIMEOUT_SEC = 3600
+
+
+ENGINE_SIZE_LIMIT = "size-limit"
+ENGINE_POLICY_ARCHIVE = "policy-archive"
+ENGINE_POLICY_EXE_SIZE = "policy-exe-size"
+# Skips that are a deliberate policy decision: the file stays accessible under fail-closed.
+POLICY_SKIP_ENGINES = frozenset({ENGINE_SIZE_LIMIT, ENGINE_POLICY_ARCHIVE, ENGINE_POLICY_EXE_SIZE})
+ARCHIVE_EXTENSIONS = frozenset(
+    {
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".tbz2",
+        ".xz", ".txz", ".zst", ".lz", ".lzma", ".cab", ".arj", ".iso",
+    }
+)
+
+
+@dataclass(frozen=True)
+class SecurityScanResult:
+    status: str
+    engine: str
+    detail: str = ""
+
+
+def is_policy_skip(status: object, engine: object) -> bool:
+    return (
+        str(status or "").strip().lower() == "skipped"
+        and str(engine or "").strip() in POLICY_SKIP_ENGINES
+    )
+
+
+def scan_policy_skip(file_name: str, size_bytes: int) -> SecurityScanResult | None:
+    """Return a skip result for files the policy does not scan, or None to scan normally.
+
+    Unpacking archives and big self-extracting installers takes minutes to an hour
+    in Kaspersky, so they are excluded by name/size before the scanner is started.
+    """
+    settings = config.my_files_security
+    if not settings.antivirus_enabled:
+        return None
+    extension = Path(str(file_name or "")).suffix.lower()
+    if settings.antivirus_skip_archives and extension in ARCHIVE_EXTENSIONS:
+        return SecurityScanResult(status="skipped", engine=ENGINE_POLICY_ARCHIVE)
+    exe_limit = int(getattr(settings, "antivirus_exe_max_size_bytes", 0) or 0)
+    if extension == ".exe" and exe_limit > 0 and int(size_bytes) > exe_limit:
+        return SecurityScanResult(status="skipped", engine=ENGINE_POLICY_EXE_SIZE)
+    return None
+
+
+class MyFilesAntivirusError(RuntimeError):
+    """Raised when the configured antivirus cannot produce a trustworthy result."""
+
+    def __init__(self, message: str, *, engine: str = "unknown") -> None:
+        super().__init__(message)
+        self.engine = str(engine or "unknown").strip() or "unknown"
+
+
+def _scan_timeout_seconds(path: Path, configured_timeout_sec: int) -> int:
+    """Scale AV timeout with size.
+
+    GiB-only scaling left ~500 MB Telegram archives on the 300 s floor, where
+    Kaspersky often needs longer. Budget ~2 s per MiB (min configured, max 1 h).
+    """
+    base_timeout = max(1, int(configured_timeout_sec))
+    size_bytes = max(0, int(path.stat().st_size))
+    size_gib_units = max(1, (size_bytes + GIB_BYTES - 1) // GIB_BYTES)
+    size_mib = max(1, (size_bytes + MIB_BYTES - 1) // MIB_BYTES)
+    by_gib = base_timeout * size_gib_units
+    by_size = min(_MAX_SCAN_TIMEOUT_SEC, max(base_timeout, size_mib * 2))
+    return int(max(by_gib, by_size))
+
+
+def _resolve_kaspersky_path(explicit_path: str = "") -> Path | None:
+    candidates: list[Path] = []
+    if str(explicit_path or "").strip():
+        candidates.append(Path(str(explicit_path).strip()))
+
+    for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
+        program_files_value = str(os.environ.get(env_name, "") or "").strip()
+        if not program_files_value:
+            continue
+        program_files = Path(program_files_value)
+        vendor_root = program_files / "Kaspersky Lab"
+        if vendor_root.exists():
+            candidates.extend(sorted(vendor_root.glob("*/avp.com"), reverse=True))
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def _resolve_defender_path(explicit_path: str = "") -> Path | None:
+    candidates: list[Path] = []
+    if str(explicit_path or "").strip():
+        candidates.append(Path(str(explicit_path).strip()))
+
+    program_data = Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+    platform_root = program_data / "Microsoft" / "Windows Defender" / "Platform"
+    if platform_root.exists():
+        candidates.extend(
+            sorted(
+                (path / "MpCmdRun.exe" for path in platform_root.iterdir() if path.is_dir()),
+                reverse=True,
+            )
+        )
+
+    program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    candidates.append(program_files / "Windows Defender" / "MpCmdRun.exe")
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def _run_scan_command(
+    args: list[str],
+    *,
+    timeout: int,
+    scanner_name: str,
+    scanner_engine: str,
+) -> subprocess.CompletedProcess[str]:
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1, int(timeout)),
+            check=False,
+            shell=False,
+            creationflags=creation_flags,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise MyFilesAntivirusError(f"{scanner_name} scan timed out", engine=scanner_engine) from exc
+    except OSError as exc:
+        raise MyFilesAntivirusError(f"{scanner_name} scan could not start", engine=scanner_engine) from exc
+
+
+def _scan_with_defender(executable: Path, path: Path, *, timeout: int) -> SecurityScanResult:
+    result = _run_scan_command(
+        [
+            str(executable),
+            "-Scan",
+            "-ScanType",
+            "3",
+            "-File",
+            str(path),
+            "-DisableRemediation",
+        ],
+        timeout=timeout,
+        scanner_name="Microsoft Defender",
+        scanner_engine="microsoft-defender",
+    )
+
+    output = f"{result.stdout}\n{result.stderr}".strip().lower()
+    if result.returncode == 0 and "found no threats" in output:
+        return SecurityScanResult(status="clean", engine="microsoft-defender")
+    if "threat" in output and "found no threats" not in output:
+        return SecurityScanResult(status="blocked", engine="microsoft-defender", detail="Threat detected")
+    raise MyFilesAntivirusError(
+        f"Microsoft Defender scan failed with exit code {result.returncode}",
+        engine="microsoft-defender",
+    )
+
+
+def _kaspersky_stat(output: str, label: str) -> int | None:
+    match = re.search(rf"(?im)^\s*;?\s*{re.escape(label)}\s*:\s*(\d+)\s*$", output)
+    return int(match.group(1)) if match else None
+
+
+def _scan_with_kaspersky(executable: Path, path: Path, *, timeout: int) -> SecurityScanResult:
+    result = _run_scan_command(
+        [str(executable), "SCAN", str(path), "/i0"],
+        timeout=timeout,
+        scanner_name="Kaspersky",
+        scanner_engine="kaspersky-endpoint-security",
+    )
+    output = f"{result.stdout}\n{result.stderr}".strip()
+    detected = _kaspersky_stat(output, "Total detected")
+    processed = _kaspersky_stat(output, "Processed objects")
+    errors = _kaspersky_stat(output, "Errors")
+    skipped = _kaspersky_stat(output, "Skipped")
+    password_protected = _kaspersky_stat(output, "Password protected") or 0
+    corrupted = _kaspersky_stat(output, "Corrupted") or 0
+
+    if detected is not None and detected > 0:
+        return SecurityScanResult(
+            status="blocked",
+            engine="kaspersky-endpoint-security",
+            detail="Threat detected",
+        )
+    if (
+        result.returncode == 0
+        and re.search(r"(?im)^.*\bcompleted\s*$", output)
+        and processed is not None
+        and processed > 0
+        and detected == 0
+    ):
+        partial = ", ".join(
+            f"{name}={value}"
+            for name, value in (("errors", errors), ("skipped", skipped), ("corrupted", corrupted))
+            if value
+        )
+        detail = f"Partial scan coverage: {partial}" if partial else ""
+        if password_protected:
+            note = "Password-protected archive; contents not scanned"
+            detail = f"{detail}; {note}" if detail else note
+        return SecurityScanResult(
+            status="clean",
+            engine="kaspersky-endpoint-security",
+            detail=detail,
+        )
+    raise MyFilesAntivirusError(
+        "Kaspersky scan failed with exit code "
+        f"{result.returncode} (processed={processed} detected={detected} "
+        f"errors={errors} skipped={skipped} corrupted={corrupted} "
+        f"password_protected={password_protected})",
+        engine="kaspersky-endpoint-security",
+    )
+
+
+def scan_my_file(path: Path) -> SecurityScanResult:
+    settings = config.my_files_security
+    if not settings.antivirus_enabled:
+        return SecurityScanResult(status="skipped", engine="disabled")
+    if not path.exists() or not path.is_file():
+        raise MyFilesAntivirusError("Security scan payload is missing")
+
+    max_size = int(getattr(settings, "antivirus_max_size_bytes", 0) or 0)
+    if max_size > 0 and int(path.stat().st_size) > max_size:
+        return SecurityScanResult(status="skipped", engine=ENGINE_SIZE_LIMIT)
+
+    provider = str(settings.antivirus_provider or "auto").strip().lower()
+    if provider not in {"auto", "kaspersky", "defender"}:
+        raise MyFilesAntivirusError(f"Unsupported antivirus provider: {provider}")
+    scan_timeout = _scan_timeout_seconds(path, settings.antivirus_timeout_sec)
+
+    if provider in {"auto", "kaspersky"}:
+        executable = _resolve_kaspersky_path(settings.kaspersky_path)
+        if executable is not None:
+            return _scan_with_kaspersky(executable, path, timeout=scan_timeout)
+        if provider == "kaspersky":
+            raise MyFilesAntivirusError(
+                "Kaspersky scanner is unavailable",
+                engine="kaspersky-endpoint-security",
+            )
+
+    executable = _resolve_defender_path(settings.defender_path)
+    if executable is None:
+        raise MyFilesAntivirusError(
+            "Microsoft Defender scanner is unavailable",
+            engine="microsoft-defender",
+        )
+    return _scan_with_defender(executable, path, timeout=scan_timeout)

@@ -1,0 +1,188 @@
+import { useState } from 'react';
+
+import useChatGroupDialog from '../../components/chat/useChatGroupDialog';
+import useChatMessageSearch from '../../components/chat/useChatMessageSearch';
+import useChatTaskShareDialog from '../../components/chat/useChatTaskShareDialog';
+import { loadChatDialogsModule } from './useChatDialogsController';
+import { CHAT_SEARCH_DEBOUNCE_MS } from './chatPageConstants';
+
+export default function useChatPageOverlayDialogs({
+  isMobile,
+  activeConversationId,
+  activeConversationIdRef,
+  loadConversationsRef,
+  notifyApiError,
+  notifyInfo,
+  onConversationCreated,
+  openMobileThreadViewRef,
+  revealMessageRef,
+  setActiveConversationId,
+}) {
+  const [replyMessage, setReplyMessage] = useState(null);
+  const [editingMessage, setEditingMessage] = useState(null);
+  const {
+    addGroupMember,
+    closeComposeFlow,
+    composeFlow,
+    createGroup,
+    creatingConversation,
+    groupCreateDisabled,
+    groupMaxMembers,
+    groupMemberIds,
+    groupSearch,
+    groupSelectableLimit,
+    groupSelectedUsers,
+    groupStep,
+    groupTitle,
+    groupUsers,
+    groupUsersLoading,
+    openDirectFlow,
+    openGroupDialog,
+    patchGroupPresence,
+    removeGroupMember,
+    selectionLimitReached,
+    setGroupSearch,
+    setGroupStep,
+    setGroupTitle,
+  } = useChatGroupDialog({
+    isMobile,
+    loadConversationsRef,
+    notifyApiError,
+    notifyInfo,
+    onConversationCreated,
+    openMobileThreadViewRef,
+    searchDebounceMs: CHAT_SEARCH_DEBOUNCE_MS,
+    setActiveConversationId,
+  });
+  const [openingPeerId, setOpeningPeerId] = useState('');
+  const [threadMenuAnchor, setThreadMenuAnchor] = useState(null);
+  const [messageMenuAnchor, setMessageMenuAnchor] = useState(null);
+  const [messageMenuMessage, setMessageMenuMessage] = useState(null);
+  const [composerMenuAnchor, setComposerMenuAnchor] = useState(null);
+  const {
+    openShareDialog,
+    resetShareDialog,
+    setSharingTaskId,
+    setTaskSearch,
+    shareOpen,
+    shareableLoading,
+    shareableTasks,
+    sharingTaskId,
+    taskSearch,
+  } = useChatTaskShareDialog({
+    activeConversationId,
+    loadChatDialogsModule,
+    notifyApiError,
+    searchDebounceMs: CHAT_SEARCH_DEBOUNCE_MS,
+    setComposerMenuAnchor,
+    setMessageMenuAnchor,
+    setMessageMenuMessage,
+    setThreadMenuAnchor,
+  });
+  const [selectedMessageIds, setSelectedMessageIds] = useState([]);
+  const [emojiAnchorEl, setEmojiAnchorEl] = useState(null);
+  const [messageReadsOpen, setMessageReadsOpen] = useState(false);
+  const [messageReadsLoading, setMessageReadsLoading] = useState(false);
+  const [messageReadsItems, setMessageReadsItems] = useState([]);
+  const [messageReadsMessage, setMessageReadsMessage] = useState(null);
+  const {
+    closeSearchDialog,
+    loadMoreSearchResults,
+    messageSearch,
+    messageSearchFilters,
+    messageSearchHasMore,
+    messageSearchLoading,
+    messageSearchResults,
+    openSearchDialog,
+    openSearchResult,
+    resetMessageSearch,
+    searchOpen,
+    setMessageSearch,
+    setMessageSearchFilters,
+  } = useChatMessageSearch({
+    activeConversationId,
+    activeConversationIdRef,
+    loadChatDialogsModule,
+    notifyApiError,
+    notifyInfo,
+    revealMessageRef,
+    searchDebounceMs: CHAT_SEARCH_DEBOUNCE_MS,
+    setMessageMenuAnchor,
+    setMessageMenuMessage,
+    setThreadMenuAnchor,
+  });
+
+  return {
+    replyMessage,
+    setReplyMessage,
+    editingMessage,
+    setEditingMessage,
+    addGroupMember,
+    closeComposeFlow,
+    composeFlow,
+    createGroup,
+    creatingConversation,
+    groupCreateDisabled,
+    groupMaxMembers,
+    groupMemberIds,
+    groupSearch,
+    groupSelectableLimit,
+    groupSelectedUsers,
+    groupStep,
+    groupTitle,
+    groupUsers,
+    groupUsersLoading,
+    openDirectFlow,
+    openGroupDialog,
+    patchGroupPresence,
+    removeGroupMember,
+    selectionLimitReached,
+    setGroupSearch,
+    setGroupStep,
+    setGroupTitle,
+    openingPeerId,
+    setOpeningPeerId,
+    threadMenuAnchor,
+    setThreadMenuAnchor,
+    messageMenuAnchor,
+    setMessageMenuAnchor,
+    messageMenuMessage,
+    setMessageMenuMessage,
+    composerMenuAnchor,
+    setComposerMenuAnchor,
+    openShareDialog,
+    resetShareDialog,
+    setSharingTaskId,
+    setTaskSearch,
+    shareOpen,
+    shareableLoading,
+    shareableTasks,
+    sharingTaskId,
+    taskSearch,
+    selectedMessageIds,
+    setSelectedMessageIds,
+    emojiAnchorEl,
+    setEmojiAnchorEl,
+    messageReadsOpen,
+    setMessageReadsOpen,
+    messageReadsLoading,
+    setMessageReadsLoading,
+    messageReadsItems,
+    setMessageReadsItems,
+    messageReadsMessage,
+    setMessageReadsMessage,
+    closeSearchDialog,
+    loadMoreSearchResults,
+    messageSearch,
+    messageSearchFilters,
+    messageSearchHasMore,
+    messageSearchLoading,
+    messageSearchResults,
+    openSearchDialog,
+    openSearchResult,
+    resetMessageSearch,
+    searchOpen,
+    setMessageSearch,
+    setMessageSearchFilters,
+  };
+}

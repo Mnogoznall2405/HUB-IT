@@ -1,0 +1,37 @@
+# Конфиг livekit-server для звонков чата HUB-IT (documentation/technical/CHAT_CALLS_LIVEKIT.md).
+#
+# Этот файл в git и содержит ТОЛЬКО плейсхолдеры. Боевой конфиг scripts/livekit/livekit.yaml
+# (gitignored, НЕ коммитить) создаётся копированием этого файла с подстановкой реальных ключа и секрета:
+#   Copy-Item scripts\livekit\livekit.example.yaml scripts\livekit\livekit.yaml
+# и правкой блока `keys:` — те же значения, что LIVEKIT_API_KEY / LIVEKIT_API_SECRET в боевом .env
+# (секрет не короче 32 символов; ни в чат, ни в git, ни в логи его не выводить).
+# Запуск: tools/livekit/livekit-server.exe --config scripts/livekit/livekit.yaml
+# (под PM2 — scripts/pm2/ecosystem.livekit.config.js, процесс itinvent-livekit; пути относительны корню репозитория).
+
+# Сигнальный канал (HTTP/WS). Только loopback: браузеры ходят через IIS по wss://<host>/livekit
+# (правило Rewrite `^livekit/(.*)` -> http://127.0.0.1:7880/{R:1} в web.config), наружу порт 7880 не открывается.
+port: 7880
+bind_addresses:
+  - "127.0.0.1"
+
+rtc:
+  # TCP-фолбэк медиа (для клиентов, у которых UDP заблокирован).
+  tcp_port: 7881
+  # UDP-диапазон медиа: ~500 портов достаточно для внутренней нагрузки; те же значения — в правиле файрвола.
+  port_range_start: 50000
+  port_range_end: 50500
+  # Адрес, который сервер объявляет клиентам в ICE-кандидатах: LAN-адрес сервера.
+  # use_external_ip: false обязателен — на сервере есть VPN-интерфейс (172.16.0.1), который LiveKit
+  # иначе выберет по ошибке. При смене адреса сервера обновить node_ip.
+  use_external_ip: false
+  node_ip: 10.103.0.217
+
+# Встроенный TURN выключен: клиенты находятся во внутренней сети и достигают сервера напрямую.
+turn:
+  enabled: false
+
+# Пара ключ/секрет API. ПЛЕЙСХОЛДЕРЫ — заменить только в локальном livekit.yaml.
+keys:
+  APIchangeme: change-me-secret-at-least-32-characters
+
+log_level: info

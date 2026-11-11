@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Общие фикстуры для всех тестов IT-invent Bot
+"""
+import pytest
+import sys
+import os
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, MagicMock
+import shutil
+import uuid
+from hypothesis import settings
+
+settings.register_profile("itinvent", deadline=None)
+settings.load_profile("itinvent")
+
+# Добавляем корень проекта и WEB-itinvent в путь
+sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "WEB-itinvent"))
+
+# The code default for APP_ENV is production (fail-safe); tests run as development unless a test says otherwise.
+os.environ.setdefault("APP_ENV", "development")
+
+# MAIL-AUDIT-026: import-time MailService() must not hit live APP_DATABASE_URL.
+# load_dotenv does not override existing keys, so this wins over the root .env.
+# Opt out with PYTEST_USE_LIVE_APP_DATABASE=1 only for explicit live-DB suites.
+_PYTEST_USE_LIVE_APP_DB = str(os.getenv("PYTEST_USE_LIVE_APP_DATABASE") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if not _PYTEST_USE_LIVE_APP_DB:
+    _pytest_runtime = Path(__file__).resolve().parent.parent / ".pytest_runtime"
+    _pytest_runtime.mkdir(parents=True, exist_ok=True)
+    _pytest_app_db = _pytest_runtime / f"pytest_app_{os.getpid()}.sqlite3"
+    os.environ["APP_DATABASE_URL"] = f"sqlite:///{_pytest_app_db.as_posix()}"
+    # Chat has its own URL (CHAT_DATABASE_URL, from the root .env otherwise): any test
+    # that calls initialize_chat_schema() would DDL/DML the live chat database.
+    _pytest_chat_db = _pytest_runtime / f"pytest_chat_{os.getpid()}.sqlite3"
+    os.environ["CHAT_DATABASE_URL"] = f"sqlite:///{_pytest_chat_db.as_posix()}"
+    os.environ.setdefault("CHAT_REALTIME_TRANSPORT", "local")
+    # inventory_server.app creates its queue store while tests are collected.
+    # Never let that import open the live runtime database used by PM2.
+    _pytest_inventory_runtime = _pytest_runtime / f"inventory_server_{os.getpid()}"
+    os.environ["INVENTORY_SERVER_DATA_DIR"] = str(_pytest_inventory_runtime)
+    os.environ["INVENTORY_SERVER_DB_PATH"] = str(_pytest_inventory_runtime / "queue.sqlite3")
+
+
+# Scan runtime URL (from the root .env otherwise) must never reach tests: the PG
+# tests INSERT/DELETE and claim_next_jobs() takes any queued job. Only an explicit
+# SCAN_TEST_DATABASE_URL (guarded in test_scan_pg_compat) is passed through.
+# load_dotenv does not override existing keys, even an empty one.
+os.environ["SCAN_DATABASE_URL"] = str(os.getenv("SCAN_TEST_DATABASE_URL") or "").strip()
+# The test database is disposable: let Scan create its schema there (production only checks the version).
+os.environ["SCAN_SCHEMA_DEV_AUTO_CREATE"] = "1" if os.environ["SCAN_DATABASE_URL"] else "0"
+
+
+@pytest.fixture
+def temp_dir():
+    """Временная директория для тестов"""
+    base_dir = Path(__file__).resolve().parent.parent / ".pytest_runtime"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = base_dir / f"run_{uuid.uuid4().hex}"
+    temp_path.mkdir(parents=True, exist_ok=True)
+    yield str(temp_path)
+    shutil.rmtree(temp_path, ignore_errors=True)
+
+
+_APP_SCHEMA_TEMPLATE_DB: Path | None = None
+
+
+def app_schema_template_db() -> Path:
+    """Schema-initialized sqlite template; copied into tmp_path by tests that want it."""
+    global _APP_SCHEMA_TEMPLATE_DB
+    if _APP_SCHEMA_TEMPLATE_DB is None or not _APP_SCHEMA_TEMPLATE_DB.exists():
+        import tempfile
+
+        from backend.appdb.db import ensure_app_schema_initialized, get_app_engine
+
+        template_dir = Path(tempfile.mkdtemp(prefix="app-schema-template-"))
+        db_path = template_dir / "app.db"
+        url = f"sqlite:///{db_path.as_posix()}"
+        ensure_app_schema_initialized(url)
+        get_app_engine(url).dispose()
+        _APP_SCHEMA_TEMPLATE_DB = db_path
+    return _APP_SCHEMA_TEMPLATE_DB
+
+
+@pytest.fixture
+def prebuilt_app_db(tmp_path):
+    """Copy the schema template into tmp_path/app.db and release file locks after."""
+    db_path = tmp_path / "app.db"
+    shutil.copyfile(app_schema_template_db(), db_path)
+    yield db_path
+    try:
+        from backend.appdb.db import get_app_engine
+
+        get_app_engine(f"sqlite:///{db_path.as_posix()}").dispose()
+    except Exception:
+        pass
+
+
+_CHAT_SCHEMA_TEMPLATE_PATH: Path | None = None
+_APP_METADATA_TEMPLATE_PATH: Path | None = None
+
+
+def chat_schema_template_path() -> Path:
+    """Lazily build the app+chat schema template once per pytest process."""
+    global _CHAT_SCHEMA_TEMPLATE_PATH
+    if _CHAT_SCHEMA_TEMPLATE_PATH is None or not _CHAT_SCHEMA_TEMPLATE_PATH.exists():
+        import tempfile
+
+        template_dir = Path(tempfile.mkdtemp(prefix="chat-schema-template-"))
+        db_path = template_dir / "runtime.db"
+        shutil.copyfile(app_schema_template_db(), db_path)
+        url = f"sqlite:///{db_path.as_posix()}"
+        from backend.chat import db as chat_db_module
+
+        previous_enabled = getattr(chat_db_module.config.chat, "enabled", False)
+        try:
+            chat_db_module.config.chat.enabled = True
+            chat_db_module.initialize_chat_schema(url)
+            chat_db_module.get_chat_engine(url).dispose()
+        finally:
+            chat_db_module.config.chat.enabled = previous_enabled
+        _CHAT_SCHEMA_TEMPLATE_PATH = db_path
+    return _CHAT_SCHEMA_TEMPLATE_PATH
+
+
+def app_metadata_schema_template_path() -> Path:
+    """ORM-metadata (create_all) app schema template, without migration artifacts."""
+    global _APP_METADATA_TEMPLATE_PATH
+    if _APP_METADATA_TEMPLATE_PATH is None or not _APP_METADATA_TEMPLATE_PATH.exists():
+        import tempfile
+
+        from sqlalchemy import create_engine
+
+        from backend.appdb.models import AppBase
+
+        template_dir = Path(tempfile.mkdtemp(prefix="app-metadata-template-"))
+        db_path = template_dir / "app.db"
+        engine = create_engine(
+            f"sqlite:///{db_path.as_posix()}",
+            execution_options={"schema_translate_map": {"app": None, "system": None}},
+        )
+        AppBase.metadata.create_all(engine, checkfirst=True)
+        engine.dispose()
+        _APP_METADATA_TEMPLATE_PATH = db_path
+    return _APP_METADATA_TEMPLATE_PATH
+
+
+def _db_path_from_sqlite_url(database_url: str) -> Path:
+    return Path(database_url.split("///", 1)[-1])
+
+
+def copy_app_schema(db_path: Path, database_url: str) -> str:
+    """Copy the migration-built app schema and mark the url as already initialized."""
+    shutil.copyfile(app_schema_template_db(), db_path)
+    from backend.appdb import db as app_db_module
+
+    app_db_module._initialized_schema_urls.add(database_url)
+    return database_url
+
+
+def copy_app_schema_for_url(database_url: str) -> str:
+    return copy_app_schema(_db_path_from_sqlite_url(database_url), database_url)
+
+
+def copy_app_metadata_schema(db_path: Path) -> Path:
+    """Copy the ORM-metadata schema; callers keep their own engines/sessions."""
+    shutil.copyfile(app_metadata_schema_template_path(), db_path)
+    return db_path
+
+
+def copy_app_metadata_schema_for_url(database_url: str) -> Path:
+    return copy_app_metadata_schema(_db_path_from_sqlite_url(database_url))
+
+
+def copy_chat_schema(db_path: Path, database_url: str) -> str:
+    """Copy the app+chat schema template and mark the app url as initialized."""
+    shutil.copyfile(chat_schema_template_path(), db_path)
+    from backend.appdb import db as app_db_module
+
+    app_db_module._initialized_schema_urls.add(database_url)
+    return database_url
+
+
+def copy_chat_schema_for_url(database_url: str) -> str:
+    return copy_chat_schema(_db_path_from_sqlite_url(database_url), database_url)
+
+
+@pytest.fixture(scope="session")
+def chat_schema_template_db(tmp_path_factory):
+    db_path = tmp_path_factory.mktemp("chat-schema-template") / "runtime.db"
+    shutil.copyfile(chat_schema_template_path(), db_path)
+    return db_path
+
+
+@pytest.fixture
+def prebuilt_chat_db(tmp_path, chat_schema_template_db):
+    db_path = tmp_path / "runtime.db"
+    shutil.copyfile(chat_schema_template_db, db_path)
+    url = f"sqlite:///{db_path.as_posix()}"
+    from backend.appdb import db as app_db_module
+
+    app_db_module._initialized_schema_urls.add(url)
+    try:
+        yield db_path
+    finally:
+        app_db_module._initialized_schema_urls.discard(url)
+
+
+@pytest.fixture(autouse=True)
+def _dispose_app_engines_after_test():
+    """Release sqlite file handles so tmp_path cleanup works on Windows."""
+    yield
+    app_db_module = sys.modules.get("backend.appdb.db")
+    engines = getattr(app_db_module, "_engines", None) if app_db_module is not None else None
+    if isinstance(engines, dict):
+        for engine in list(engines.values()):
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+
+
+@pytest.fixture
+def temp_json_file(temp_dir):
+    """Временный JSON файл"""
+    return Path(temp_dir) / "test_data.json"
+
+
+def _reset_chat_db_test_caches():
+    """Drop cached test engines so read/write sessions never cross DB fixtures."""
+    chat_db = sys.modules.get("backend.chat.db")
+    if chat_db is None:
+        return
+    seen_engines: set[int] = set()
+    for mapping_name in ("_engines", "_read_engines"):
+        mapping = getattr(chat_db, mapping_name, None)
+        if not isinstance(mapping, dict):
+            continue
+        for engine in mapping.values():
+            engine_id = id(engine)
+            if engine_id in seen_engines:
+                continue
+            seen_engines.add(engine_id)
+            dispose = getattr(engine, "dispose", None)
+            if callable(dispose):
+                dispose()
+    for mapping_name in ("_engines", "_session_factories", "_read_engines", "_read_session_factories"):
+        mapping = getattr(chat_db, mapping_name, None)
+        if isinstance(mapping, dict):
+            mapping.clear()
+    for name in ("_engine", "_session_factory", "_read_engine", "_read_session_factory"):
+        if hasattr(chat_db, name):
+            setattr(chat_db, name, None)
+
+
+def _reset_local_store_test_singleton():
+    """Keep JSON fallback stores scoped to the data_dir selected by each test."""
+    local_store = sys.modules.get("local_store")
+    if local_store is not None and hasattr(local_store, "_STORE_SINGLETON"):
+        local_store._STORE_SINGLETON = None
+
+
+@pytest.fixture(autouse=True)
+def isolate_chat_db_engines():
+    _reset_chat_db_test_caches()
+    _reset_local_store_test_singleton()
+    yield
+    _reset_chat_db_test_caches()
+    _reset_local_store_test_singleton()
+
+
+@pytest.fixture(autouse=True)
+def isolate_equipment_payload_cache():
+    """In-process equipment/dict/schema caches must not leak between tests."""
+    modules = (
+        sys.modules.get("backend.database.equipment_db"),
+        sys.modules.get("backend.database.queries"),
+        sys.modules.get("backend.database.equipment_directory_reads"),
+        sys.modules.get("backend.database.equipment_act_history_reads"),
+    )
+    caches = [
+        getattr(module, attr)
+        for module, attr in (
+            (modules[0], "_equipment_payload_cache"),
+            (modules[1], "_table_columns_cache"),
+            (modules[2], "_locations_branch_column_cache"),
+            (modules[3], "_doc_type_map_cache"),
+        )
+        if module is not None and isinstance(getattr(module, attr, None), dict)
+    ]
+    # Per-request resolve memos (services are module-level singletons).
+    for service_name, attr in (
+        ("backend.services.user_db_selection_service", "_assigned_cache"),
+        ("backend.services.settings_service", "_settings_cache"),
+    ):
+        service_module = sys.modules.get(service_name)
+        service = getattr(service_module, service_name.rsplit(".", 1)[-1], None) if service_module else None
+        cache = getattr(service, attr, None)
+        if isinstance(cache, dict):
+            caches.append(cache)
+    for cache in caches:
+        cache.clear()
+    yield
+    for cache in caches:
+        cache.clear()
+
+
+@pytest.fixture
+def mock_update():
+    """Mock Telegram Update"""
+    update = AsyncMock()
+    update.effective_user = Mock()
+    update.effective_user.id = 123456
+    update.effective_user.username = "test_user"
+    update.message = AsyncMock()
+    update.message.photo = None
+    update.message.text = ""
+    update.message.reply_text = AsyncMock()
+    update.callback_query = None
+    return update
+
+
+@pytest.fixture
+def mock_context():
+    """Mock Telegram Context"""
+    context = AsyncMock()
+    context.user_data = {}
+    context._user_id = 123456
+    context.bot = AsyncMock()
+    context.bot.send_message = AsyncMock()
+    context.bot.edit_message_text = AsyncMock()
+    return update
+
+
+@pytest.fixture
+def mock_database():
+    """Mock подключения к базе данных"""
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.__enter__ = Mock(return_value=mock_cursor)
+    mock_conn.__exit__ = Mock(return_value=None)
+    mock_conn.cursor.return_value = mock_conn
+    mock_cursor.fetchone.return_value = None
+    mock_cursor.fetchall.return_value = []
+    mock_cursor.execute.return_value = None
+    return mock_conn, mock_cursor
+
+
+@pytest.fixture
+def sample_equipment():
+    """Образец оборудования для тестов"""
+    return {
+        'ID': 123,
+        'SERIAL_NO': 'PF12345',
+        'HW_SERIAL_NO': '',
+        'MODEL_NAME': 'Dell OptiPlex 7090',
+        'BRANCH_NAME': 'Офис Москва',
+        'LOCATION': 'Офис 301',
+        'EMPLOYEE_NAME': 'Иванов И.И.',
+        'DESCRIPTION': 'Test description',
+        'CI_TYPE_ID': 1,
+        'CI_STATUS_ID': 1
+    }
+
+
+
+# Патчи для общих зависимостей
+@pytest.fixture(autouse=True)
+def mock_config(monkeypatch):
+    """Мок конфигурации для тестов"""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test_token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
+    monkeypatch.setenv("SQL_SERVER_HOST", "localhost")
+    monkeypatch.setenv("SQL_SERVER_DATABASE", "test_db")
+    monkeypatch.setenv("SQL_SERVER_USERNAME", "test_user")
+    monkeypatch.setenv("SQL_SERVER_PASSWORD", "test_pass")
+    monkeypatch.setenv("ALLOWED_USERS", "123456")
+    monkeypatch.setenv("TASK_EMAIL_AUTODISPATCH_ENABLED", "0")
+
+
+@pytest.fixture
+def mock_env_vars(monkeypatch):
+    """Мок переменных окружения"""
+    env_vars = {
+        "TELEGRAM_BOT_TOKEN": "test_token",
+        "OPENROUTER_API_KEY": "test_key",
+        "SQL_SERVER_HOST": "localhost",
+        "SQL_SERVER_DATABASE": "test_db",
+        "SQL_SERVER_USERNAME": "test_user",
+        "SQL_SERVER_PASSWORD": "test_pass",
+        "ALLOWED_USERS": "123456"
+    }
+    for key, value in env_vars.items():
+        monkeypatch.setenv(key, value)
+    return env_vars

@@ -1,0 +1,199 @@
+import { memo } from 'react';
+import {
+  Box,
+  FormControl,
+  IconButton,
+  MenuItem,
+  Select,
+  Tooltip,
+} from '@mui/material';
+import AddIcon from '@mui/icons-material/Add';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
+import PrintIcon from '@mui/icons-material/Print';
+import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
+import TableChartIcon from '@mui/icons-material/TableChart';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
+
+const noop = () => {};
+
+function DatabaseMobileControlStrip({
+  ui = null,
+  isConsumablesMode = false,
+  canDatabaseWrite = false,
+  branches = [],
+  selectedBranch = '',
+  onBranchChange = noop,
+  hasExpandedVisible = false,
+  hasCollapsedVisible = false,
+  onCollapseAll = noop,
+  onExpandAll = noop,
+  onOpenQrScanner = noop,
+  onOpenUploadAct = noop,
+  onOpenAddEquipment = noop,
+  onOpenAddConsumable = noop,
+  onOpenConsumableQrPrint = null,
+  onOpenCartridgeCompatibility = null,
+  onOpenMore = noop,
+}) {
+  const branchLabel = selectedBranch || 'Все филиалы';
+  const borderSoft = ui?.borderSoft || 'divider';
+  const actionBg = ui?.actionBg || 'action.hover';
+  const actionHover = ui?.actionHover || 'action.selected';
+
+  const iconButtonSx = {
+    width: 44,
+    height: 44,
+    borderRadius: '4px',
+    border: 'none',
+    bgcolor: actionBg,
+    flexShrink: 0,
+    '&:hover': { bgcolor: actionHover },
+  };
+
+  return (
+    <Box
+      data-testid="database-mobile-control-strip"
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 0.5,
+        mb: 0.5,
+        position: 'sticky',
+        top: 0,
+        zIndex: 10,
+        bgcolor: 'background.paper',
+        py: 0.15,
+      }}
+    >
+      {branches.length > 0 ? (
+        <FormControl size="small" sx={{ flex: 1, minWidth: 0 }}>
+          <Select
+            id="database-mobile-strip-branch"
+            value={selectedBranch}
+            onChange={(event) => onBranchChange(event.target.value)}
+            displayEmpty
+            renderValue={() => branchLabel}
+            inputProps={{ 'aria-label': 'Филиал' }}
+            sx={{
+              height: 44,
+              borderRadius: '4px',
+              fontSize: '0.78rem',
+              bgcolor: actionBg,
+              '& .MuiOutlinedInput-notchedOutline': {
+                borderColor: borderSoft,
+              },
+              '& .MuiSelect-select': {
+                minHeight: '44px !important',
+                boxSizing: 'border-box',
+                display: 'flex',
+                alignItems: 'center',
+                py: '0 !important',
+                pr: '28px !important',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              },
+            }}
+          >
+            <MenuItem value="">Все филиалы</MenuItem>
+            {branches.map((branch) => (
+              <MenuItem key={branch.BRANCH_NO} value={branch.BRANCH_NAME}>
+                {branch.BRANCH_NAME}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      ) : null}
+
+      <Tooltip title="QR Сканер">
+        <IconButton size="small" aria-label="QR" onClick={onOpenQrScanner} sx={iconButtonSx}>
+          <QrCodeScannerIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+
+      {canDatabaseWrite && !isConsumablesMode && (
+        <>
+          <Tooltip title="Добавить оборудование">
+            <IconButton
+              size="small"
+              aria-label="Добавить"
+              onClick={onOpenAddEquipment}
+              sx={{
+                ...iconButtonSx,
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                '&:hover': { bgcolor: 'primary.dark' },
+              }}
+            >
+              <AddIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Загрузить акт">
+            <IconButton size="small" aria-label="Акт" onClick={onOpenUploadAct} sx={iconButtonSx}>
+              <UploadFileIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+        </>
+      )}
+
+      {isConsumablesMode && onOpenConsumableQrPrint && (
+        <Tooltip title="Печать QR этикеток">
+          <IconButton size="small" aria-label="QR этикетки" onClick={onOpenConsumableQrPrint} sx={iconButtonSx}>
+            <PrintIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+
+      {isConsumablesMode && onOpenCartridgeCompatibility && (
+        <Tooltip title="Совместимость картриджей">
+          <IconButton size="small" aria-label="Совместимость картриджей" onClick={onOpenCartridgeCompatibility} sx={iconButtonSx}>
+            <TableChartIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+
+      {canDatabaseWrite && isConsumablesMode && (
+        <Tooltip title="Добавить расходник">
+          <IconButton
+            size="small"
+            aria-label="Добавить"
+            onClick={onOpenAddConsumable}
+            sx={{
+              ...iconButtonSx,
+              bgcolor: 'primary.main',
+              color: 'primary.contrastText',
+              '&:hover': { bgcolor: 'primary.dark' },
+            }}
+          >
+            <AddIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+
+      {hasCollapsedVisible && (
+        <Tooltip title="Раскрыть разделы">
+          <IconButton size="small" aria-label="Раскрыть разделы" onClick={onExpandAll} sx={iconButtonSx}>
+            <ExpandMoreIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+
+      {hasExpandedVisible && (
+        <Tooltip title="Свернуть разделы">
+          <IconButton size="small" aria-label="Свернуть разделы" onClick={onCollapseAll} sx={iconButtonSx}>
+            <ExpandMoreIcon sx={{ fontSize: 18, transform: 'rotate(180deg)' }} />
+          </IconButton>
+        </Tooltip>
+      )}
+
+      <Tooltip title="Ещё">
+        <IconButton size="small" aria-label="Ещё" onClick={onOpenMore} sx={iconButtonSx}>
+          <MoreHorizIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  );
+}
+
+export default memo(DatabaseMobileControlStrip);

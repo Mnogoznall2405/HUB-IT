@@ -1,0 +1,5159 @@
+from __future__ import annotations
+import conftest
+
+import io
+import importlib
+import json
+import os
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi import UploadFile
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
+
+os.environ.setdefault("APP_ENV", "development")
+os.environ.setdefault("ENVIRONMENT", "development")
+
+if str(WEB_ROOT) not in sys.path:
+    sys.path.insert(0, str(WEB_ROOT))
+
+
+def _make_user(*, permissions: list[str], role: str = "viewer"):
+    from backend.models.auth import User
+
+    return User(
+        id=99,
+        username="operator_user",
+        email=None,
+        full_name="Operator User",
+        role=role,
+        is_active=True,
+        permissions=permissions,
+        use_custom_permissions=True,
+        custom_permissions=permissions,
+        auth_source="local",
+        telegram_id=None,
+        assigned_database=None,
+        mailbox_email=None,
+        mailbox_login=None,
+        mail_profile_mode="manual",
+        mail_signature_html=None,
+        mail_is_configured=False,
+    )
+
+
+def _sqlite_url(tmp_path: Path, name: str) -> str:
+    return f"sqlite:///{(tmp_path / name).as_posix()}"
+
+
+async def _noop_publish(*args, **kwargs):
+    return None
+
+
+def _build_conversation_event_collector(target: list[dict]):
+    async def _collector(*args, **kwargs):
+        target.append(
+            {
+                "args": args,
+                "kwargs": kwargs,
+            }
+        )
+        return None
+
+    return _collector
+
+
+def _configure_local_backend_runtime(tmp_path: Path, monkeypatch, name: str = "ai_chat_runtime.db") -> str:
+    database_url = _sqlite_url(tmp_path, name)
+    monkeypatch.setenv("APP_DATABASE_URL", database_url)
+    monkeypatch.setenv("CHAT_DATABASE_URL", database_url)
+    monkeypatch.setenv("CHAT_ENABLED", "1")
+
+    backend_config = importlib.import_module("backend.config")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    chat_db = importlib.import_module("backend.chat.db")
+
+    monkeypatch.setattr(backend_config.config.app_db, "database_url", database_url, raising=False)
+    monkeypatch.setattr(backend_config.config.chat, "database_url", database_url, raising=False)
+    monkeypatch.setattr(backend_config.config.chat, "enabled", True, raising=False)
+    monkeypatch.setattr(appdb_db.config.app_db, "database_url", database_url, raising=False)
+    monkeypatch.setattr(chat_db.config.app_db, "database_url", database_url, raising=False)
+    monkeypatch.setattr(chat_db.config.chat, "database_url", database_url, raising=False)
+    monkeypatch.setattr(chat_db.config.chat, "enabled", True, raising=False)
+
+    appdb_db._engines.clear()
+    appdb_db._session_factories.clear()
+    appdb_db._initialized_schema_urls.clear()
+    chat_db._engines.clear()
+    chat_db._session_factories.clear()
+    chat_db._read_engines.clear()
+    chat_db._read_session_factories.clear()
+    chat_db._engine = None
+    chat_db._session_factory = None
+    chat_db._read_engine = None
+    chat_db._read_session_factory = None
+    conftest.copy_chat_schema_for_url(database_url)
+
+    # The memory planner calls openrouter_client.complete_json before the answer. These tests script that client
+    # call by call, so the planner would consume the scripted tool-call reply; on any error it falls back to
+    # keyword matching, which is the behaviour these tests do not exercise. Imported here, after the runtime
+    # DB is configured, so the import does not initialise the default app DB first.
+    smart_memory_module = importlib.import_module("backend.ai_chat.memory")
+
+    def _no_planner_call(**kwargs):
+        raise RuntimeError("memory planner disabled in this test module")
+
+    # A separate stub object: tests patch complete_json on the real shared client afterwards.
+    monkeypatch.setattr(smart_memory_module, "openrouter_client", SimpleNamespace(complete_json=_no_planner_call))
+    return database_url
+
+
+def _make_tool_execution_context(*, enabled_tools: list[str], database_id: str = "ITINVENT"):
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    return tools_context_module.AiToolExecutionContext(
+        bot_id="bot-test",
+        bot_title="AI Ассистент",
+        conversation_id="ai-conv-test",
+        run_id="run-test",
+        user_id=5,
+        user_payload={"id": 5, "role": "viewer", "username": "operator"},
+        effective_database_id=database_id,
+        enabled_tools=enabled_tools,
+        tool_settings={
+            "multi_db_mode": "single",
+            "allowed_databases": [],
+        },
+    )
+
+
+def test_chat_ai_catalog_is_available_with_baseline_permissions(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_routes.db")
+    deps = importlib.import_module("backend.api.deps")
+    chat_api = importlib.import_module("backend.api.v1.chat")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    app = FastAPI()
+    app.include_router(chat_api.router, prefix="/chat")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.ai.use"])
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "list_bots",
+        lambda **kwargs: {
+            "items": [{
+                "id": "bot-1",
+                "slug": "corp-assistant",
+                "title": "Corp Assistant",
+                "description": "KB bot",
+                "conversation_id": "ai-conv-1",
+                "model": "",
+                "allow_file_input": True,
+                "allow_generated_artifacts": True,
+                "is_enabled": True,
+                "configured": True,
+                "bot_user_id": 77,
+            }],
+            "configured": True,
+            "default_model": "",
+        },
+    )
+
+    response = TestClient(app).get("/chat/ai/bots")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["slug"] == "corp-assistant"
+    assert response.json()["items"][0]["conversation_id"] == "ai-conv-1"
+    assert "model" not in response.json()["items"][0]
+    assert "system_prompt" not in response.json()["items"][0]
+    assert "enabled_tools" not in response.json()["items"][0]
+    assert "bot_user_id" not in response.json()["items"][0]
+    assert "default_model" not in response.json()
+
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.read"])
+    baseline = TestClient(app).get("/chat/ai/bots")
+    assert baseline.status_code == 200
+
+
+def test_chat_ai_generic_memory_and_reset_routes(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_generic_routes.db")
+    deps = importlib.import_module("backend.api.deps")
+    chat_api = importlib.import_module("backend.api.v1.chat")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    conversation = {
+        "id": "general-conv-1",
+        "kind": "ai",
+        "title": "Новый чат",
+        "created_at": "2026-08-15T00:00:00+00:00",
+        "updated_at": "2026-08-15T00:00:00+00:00",
+    }
+    memory = {
+        "enabled": True,
+        "items": [{"id": "mem-1", "content": "Предпочитаю краткие ответы", "category": "preference"}],
+        "limits": {"max_facts": 20, "max_tokens": 4000},
+    }
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "create_general_conversation", lambda **kwargs: conversation)
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "list_personal_memory", lambda **kwargs: memory)
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "set_personal_memory_enabled", lambda **kwargs: {**memory, "enabled": kwargs["enabled"]})
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "update_personal_memory", lambda **kwargs: {**memory["items"][0], "content": kwargs["content"]})
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "delete_personal_memory", lambda **kwargs: {"ok": True, "id": kwargs["memory_id"]})
+    monkeypatch.setattr(ai_chat_module.ai_chat_service, "clear_personal_memory", lambda **kwargs: {"ok": True, "deleted_count": 1})
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "reset_conversation_context",
+        lambda **kwargs: {"ok": True, "conversation_id": kwargs["conversation_id"], "context_reset_seq": 12},
+    )
+    monkeypatch.setattr(chat_api, "_publish_conversation_updated", _noop_publish)
+
+    app = FastAPI()
+    app.include_router(chat_api.router, prefix="/chat")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.ai.use"])
+    client = TestClient(app)
+
+    assert client.post("/chat/ai/conversations").json()["id"] == "general-conv-1"
+    assert client.get("/chat/ai/memory").json()["items"][0]["id"] == "mem-1"
+    assert client.patch("/chat/ai/memory/settings", json={"enabled": False}).json()["enabled"] is False
+    assert client.patch("/chat/ai/memory/mem-1", json={"content": "Отвечай кратко"}).json()["content"] == "Отвечай кратко"
+    assert client.delete("/chat/ai/memory/mem-1").json() == {"ok": True, "id": "mem-1"}
+    assert client.delete("/chat/ai/memory").json()["deleted_count"] == 1
+    assert client.post("/chat/ai/conversations/general-conv-1/reset-context").json()["context_reset_seq"] == 12
+
+
+def test_chat_ai_conversation_routes_create_rename_stop_and_delete(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_conversation_routes.db")
+    deps = importlib.import_module("backend.api.deps")
+    chat_api = importlib.import_module("backend.api.v1.chat")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    def conversation_payload(*, title: str = "Corp Assistant") -> dict[str, object]:
+        return {
+            "id": "ai-conv-2",
+            "kind": "ai",
+            "title": title,
+            "created_at": "2026-08-14T10:00:00+00:00",
+            "updated_at": "2026-08-14T10:00:00+00:00",
+        }
+
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "create_bot_conversation",
+        lambda **kwargs: conversation_payload(),
+    )
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "rename_conversation",
+        lambda **kwargs: conversation_payload(title=kwargs["title"]),
+    )
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "cancel_active_run",
+        lambda **kwargs: {
+            "conversation_id": kwargs["conversation_id"],
+            "bot_id": "bot-1",
+            "bot_title": "Corp Assistant",
+            "status": "cancelled",
+            "stage": "cancelled",
+            "status_text": "Stopped",
+        },
+    )
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "delete_conversation",
+        lambda **kwargs: {
+            "conversation_id": kwargs["conversation_id"],
+            "member_user_ids": [99],
+        },
+    )
+    monkeypatch.setattr(chat_api, "_publish_conversation_updated", _noop_publish)
+    monkeypatch.setattr(chat_api, "_publish_deleted_conversation", _noop_publish)
+
+    app = FastAPI()
+    app.include_router(chat_api.router, prefix="/chat")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.ai.use"])
+    client = TestClient(app)
+
+    created = client.post("/chat/ai/bots/bot-1/conversations")
+    renamed = client.patch("/chat/ai/conversations/ai-conv-2", json={"title": "Equipment report"})
+    stopped = client.post("/chat/ai/conversations/ai-conv-2/stop")
+    deleted = client.delete("/chat/ai/conversations/ai-conv-2")
+
+    assert created.status_code == 200
+    assert created.json()["id"] == "ai-conv-2"
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "Equipment report"
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "cancelled"
+    assert deleted.status_code == 200
+    assert deleted.json() == {"ok": True, "conversation_id": "ai-conv-2"}
+
+
+def test_ai_chat_cancel_active_run_persists_cancelled_status(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_cancel_run.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+
+    service = ai_chat_module.AiChatService()
+    runtime = SimpleNamespace(
+        mapping=SimpleNamespace(user_id=99),
+        bot=SimpleNamespace(id="bot-1", title="Corp Assistant"),
+    )
+    monkeypatch.setattr(service, "_get_runtime_by_conversation", lambda conversation_id: runtime)
+    published: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "_publish_status_event", lambda **kwargs: published.append(kwargs))
+
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiBotRun(
+                id="run-cancel-1",
+                bot_id="bot-1",
+                conversation_id="ai-conv-1",
+                user_id=99,
+                trigger_message_id="msg-1",
+                status="running",
+                stage="generating_answer",
+                status_text="Working",
+            )
+        )
+
+    result = service.cancel_active_run(conversation_id="ai-conv-1", current_user_id=99)
+
+    assert result["status"] == "cancelled"
+    assert result["stage"] == "cancelled"
+    assert published[0]["status"] == "cancelled"
+    with appdb_db.app_session(database_url) as session:
+        row = session.get(app_models.AppAiBotRun, "run-cancel-1")
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.completed_at is not None
+
+
+def test_ai_queue_rechecks_revoked_bot_permission(monkeypatch):
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    service = ai_chat_module.AiChatService()
+    runtime = SimpleNamespace(
+        mapping=SimpleNamespace(user_id=99),
+        bot=SimpleNamespace(
+            id="restricted-bot",
+            slug="restricted",
+            surface="corporate",
+            placement="pinned",
+            required_permission="chat.ai.sandbox",
+            is_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(service, "_get_runtime_by_conversation", lambda conversation_id: runtime)
+    monkeypatch.setattr(
+        ai_chat_module.user_service,
+        "get_by_id",
+        lambda user_id: {
+            "id": user_id,
+            "role": "viewer",
+            "use_custom_permissions": True,
+            "custom_permissions": ["chat.ai.use"],
+        },
+    )
+
+    with pytest.raises(PermissionError):
+        service.queue_run_for_message(
+            conversation_id="restricted-conversation",
+            trigger_message_id="message-1",
+            current_user_id=99,
+        )
+
+
+def test_sandbox_history_and_cancel_remain_available_after_revoke(monkeypatch):
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    sandbox_app_module = importlib.import_module("backend.ai_sandbox.app_service")
+    service = ai_chat_module.AiChatService()
+    runtime = ai_chat_module.AiConversationRuntime(
+        bot=SimpleNamespace(id="sandbox-bot", surface="sandbox", placement="pinned"),
+        mapping=SimpleNamespace(user_id=99),
+    )
+    monkeypatch.setattr(service, "_get_runtime_by_conversation", lambda conversation_id: runtime)
+    access_checks: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "_require_bot_access", lambda **kwargs: access_checks.append(kwargs))
+    monkeypatch.setattr(
+        sandbox_app_module.ai_sandbox_app_service,
+        "get_status",
+        lambda **kwargs: {"conversation_id": kwargs["conversation_id"], "status": "idle"},
+    )
+    monkeypatch.setattr(
+        sandbox_app_module.ai_sandbox_app_service,
+        "cancel_conversation",
+        lambda **kwargs: {"conversation_id": kwargs["conversation_id"], "status": "cancelled"},
+    )
+
+    assert service.get_conversation_status(conversation_id="sandbox-conv", current_user_id=99)["status"] == "idle"
+    assert service.cancel_active_run(conversation_id="sandbox-conv", current_user_id=99)["status"] == "cancelled"
+    assert access_checks == []
+
+
+def test_ai_chat_service_keeps_multiple_agent_conversations_isolated(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_multiple_conversations.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+    chat_db.initialize_chat_schema(database_url)
+    actor = temp_user_service.create_user(
+        username="multi_dialog_user",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Multi Dialog User",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+
+    first = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    second = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    assert first["id"] != second["id"]
+    listed = temp_ai_service.list_bots(current_user_id=int(actor["id"]))["items"][0]
+    assert listed["conversation_ids"] == [second["id"], first["id"]]
+
+    temp_chat_service.update_conversation_settings(
+        current_user_id=int(actor["id"]),
+        conversation_id=second["id"],
+        is_archived=True,
+    )
+    assert temp_ai_service.open_bot_conversation(
+        bot_id=bot["id"], current_user_id=int(actor["id"])
+    )["id"] == first["id"]
+    temp_chat_service.update_conversation_settings(
+        current_user_id=int(actor["id"]),
+        conversation_id=second["id"],
+        is_archived=False,
+    )
+
+    renamed = temp_ai_service.rename_conversation(
+        conversation_id=second["id"],
+        current_user_id=int(actor["id"]),
+        title="Equipment report",
+    )
+    assert renamed["title"] == "Equipment report"
+    deleted = temp_ai_service.delete_conversation(
+        conversation_id=second["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert deleted["conversation_id"] == second["id"]
+    assert temp_ai_service.list_bots(current_user_id=int(actor["id"]))["items"][0]["conversation_ids"] == [first["id"]]
+    assert temp_chat_service.get_conversation_summary(
+        current_user_id=int(actor["id"]),
+        conversation_id=first["id"],
+    )["id"] == first["id"]
+    with chat_db.chat_session(database_url) as session:
+        assert session.get(chat_models.ChatConversation, second["id"]) is None
+
+
+def test_general_ai_is_hidden_auto_titles_and_defers_memory_to_worker(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(ai_chat_module, "AI_PERSONAL_MEMORY_ENABLED", True)
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(service, "_publish_status_event", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "test"})
+    chat_db.initialize_chat_schema(database_url)
+    actor = temp_user_service.create_user(
+        username="general_ai_user",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+
+    conversation = service.create_general_conversation(current_user_id=int(actor["id"]))
+    assert conversation["title"] == "Новый чат"
+    assert all(item["slug"] != ai_chat_module.GENERAL_AI_BOT_SLUG for item in service.list_bots(current_user_id=int(actor["id"]))["items"])
+
+    message = temp_chat_service.send_message(
+        current_user_id=int(actor["id"]),
+        conversation_id=conversation["id"],
+        body="Я предпочитаю краткие ответы по оборудованию",
+        defer_push_notifications=True,
+    )
+    queued = service.queue_run_for_message(
+        conversation_id=conversation["id"],
+        trigger_message_id=message["id"],
+        current_user_id=int(actor["id"]),
+    )
+
+    assert queued and queued["status"] == "queued"
+    assert temp_chat_service.get_conversation_summary(
+        current_user_id=int(actor["id"]), conversation_id=conversation["id"]
+    )["title"] == "Я предпочитаю краткие ответы по оборудованию"
+    memory = service.list_personal_memory(current_user_id=int(actor["id"]))
+    assert memory["enabled"] is True
+    # The queue ACK no longer extracts durable facts; the real worker path is
+    # exercised in test_e2e_ai_smart_memory through HTTP and source provenance.
+    assert memory["items"] == []
+
+    service.rename_conversation(
+        conversation_id=conversation["id"], current_user_id=int(actor["id"]), title="Моё название"
+    )
+    next_message = temp_chat_service.send_message(
+        current_user_id=int(actor["id"]),
+        conversation_id=conversation["id"],
+        body="Второй запрос не должен менять название",
+        defer_push_notifications=True,
+    )
+    service.queue_run_for_message(
+        conversation_id=conversation["id"],
+        trigger_message_id=next_message["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert temp_chat_service.get_conversation_summary(
+        current_user_id=int(actor["id"]), conversation_id=conversation["id"]
+    )["title"] == "Моё название"
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == conversation["id"]
+            )
+        ).scalar_one()
+        assert mapping.title_source == "manual"
+
+        # Simulate 0098's server default on a legacy, already renamed chat.
+        mapping.title_source = "assistant"
+    legacy_message = temp_chat_service.send_message(
+        current_user_id=int(actor["id"]),
+        conversation_id=conversation["id"],
+        body="Третий запрос в старом диалоге также не меняет название",
+        defer_push_notifications=True,
+    )
+    service.queue_run_for_message(
+        conversation_id=conversation["id"],
+        trigger_message_id=legacy_message["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert temp_chat_service.get_conversation_summary(
+        current_user_id=int(actor["id"]), conversation_id=conversation["id"]
+    )["title"] == "Моё название"
+
+
+def test_personal_memory_feature_flag_is_fail_closed(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory_flag.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    appdb_db.initialize_app_schema(database_url)
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "AI_PERSONAL_MEMORY_ENABLED", False)
+
+    settings = service.set_personal_memory_enabled(current_user_id=9, enabled=True)
+
+    assert settings == {
+        "enabled": False,
+        "items": [],
+        "limits": {"max_facts": 20, "max_tokens": 4000},
+    }
+    with appdb_db.app_session(database_url) as session:
+        stored = session.get(importlib.import_module("backend.appdb.models").AppUserSetting, 9)
+        assert stored is not None
+        assert stored.ai_personal_memory_enabled is False
+
+
+def test_personal_memory_ranks_relevant_fact_before_newer_noise(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory_relevance.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+    service = ai_chat_module.AiChatService()
+    now = datetime.now(timezone.utc)
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiUserMemory(
+                id="relevant-old",
+                user_id=10,
+                category="work_context",
+                content="Мой рабочий контекст — обслуживание принтеров Canon",
+                normalized_hash="relevant-hash",
+                is_active=True,
+                created_at=now - timedelta(days=30),
+                updated_at=now - timedelta(days=30),
+            )
+        )
+        for index in range(25):
+            session.add(
+                app_models.AppAiUserMemory(
+                    id=f"noise-{index}",
+                    user_id=10,
+                    category="preference",
+                    content=f"Предпочтение по оформлению номер {index}",
+                    normalized_hash=f"noise-hash-{index}",
+                    is_active=True,
+                    created_at=now - timedelta(minutes=index),
+                    updated_at=now - timedelta(minutes=index),
+                )
+            )
+
+    with appdb_db.app_session(database_url) as session:
+        rendered = service._build_personal_memory_context(
+            session=session,
+            user_id=10,
+            query="Что важно при обслуживании принтеров Canon?",
+        )
+
+    assert "relevant-old" not in rendered
+    assert "принтеров Canon" in rendered
+    assert len(rendered.splitlines()) == 1
+    assert "Настройка интерфейса" not in rendered
+
+
+def test_personal_memory_reports_only_relevant_facts_and_marks_the_answer(tmp_path, monkeypatch):
+    """AG: the answer says when the personal memory was taken into account (relevant facts only)."""
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory_mark.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+    service = ai_chat_module.AiChatService()
+    now = datetime.now(timezone.utc)
+    with appdb_db.app_session(database_url) as session:
+        for memory_id, content in (
+            ("m-canon", "Мой рабочий контекст - обслуживание принтеров Canon"),
+            ("m-noise", "Предпочитаю тёмное оформление"),
+        ):
+            session.add(
+                app_models.AppAiUserMemory(
+                    id=memory_id, user_id=11, category="preference", content=content,
+                    normalized_hash=f"hash-{memory_id}", is_active=True, created_at=now, updated_at=now,
+                )
+            )
+
+    def build(query):
+        hits: list[str] = []
+        with appdb_db.app_session(database_url) as session:
+            text = service._build_personal_memory_context(session=session, user_id=11, query=query, relevant_out=hits)
+        return text, hits
+
+    text, hits = build("Что важно при обслуживании принтеров Canon?")
+    assert "тёмное оформление" not in text and hits == ["m-canon"]
+    assert build("Как настроить VPN?")[1] == []
+
+    mark = ai_chat_module._append_memory_mark
+    assert mark("Ответ", hits=0) == "Ответ"
+    assert mark("Ответ", hits=1).endswith("_Учтена личная память: 1 факт_")
+    assert mark("Ответ", hits=2).endswith("2 факта_")
+    assert mark("Ответ", hits=5).endswith("5 фактов_")
+    assert mark("Ответ", hits=11).endswith("11 фактов_")
+    assert mark("Ответ", hits=21).endswith("21 факт_")
+    once = mark("Ответ", hits=1)
+    assert mark(once, hits=1) == once
+
+
+def test_ai_context_uses_recent_twenty_rolling_summary_and_reset_marker(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_context_summary_reset.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(ai_chat_module, "AI_PERSONAL_MEMORY_ENABLED", False)
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "test"})
+    chat_db.initialize_chat_schema(database_url)
+    actor = temp_user_service.create_user(
+        username="context_user",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+    conversation = service.create_general_conversation(current_user_id=int(actor["id"]))
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == conversation["id"]
+            )
+        ).scalar_one()
+        bot = session.get(app_models.AppAiBot, mapping.bot_id)
+        bot_user_id = int(bot.bot_user_id)
+
+    now = datetime.now(timezone.utc)
+    with chat_db.chat_session(database_url) as session:
+        chat_conversation = session.get(chat_models.ChatConversation, conversation["id"])
+        for seq in range(1, 27):
+            session.add(
+                chat_models.ChatMessage(
+                    id=f"summary-msg-{seq}",
+                    conversation_id=conversation["id"],
+                    sender_user_id=int(actor["id"]),
+                    kind="text",
+                    body_format="plain",
+                    body=f"message-{seq}",
+                    conversation_seq=seq,
+                    created_at=now + timedelta(seconds=seq),
+                )
+            )
+        chat_conversation.last_message_seq = 26
+        chat_conversation.last_message_id = "summary-msg-26"
+        chat_conversation.last_message_at = now + timedelta(seconds=26)
+
+    context = service._build_conversation_context(
+        conversation_id=conversation["id"],
+        trigger_message_id="summary-msg-26",
+        bot_user_id=bot_user_id,
+        bot_title="AI",
+        user_payload=actor,
+        allow_files=False,
+        can_read_kb=False,
+        allowed_kb_scope=[],
+        allow_kb_document_delivery=False,
+    )
+
+    assert "message-1" in context["rolling_summary"]
+    assert "message-6" in context["rolling_summary"]
+    assert "message-6" not in context["conversation_text"]
+    assert "message-7" in context["conversation_text"]
+    assert "message-26" in context["conversation_text"]
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == conversation["id"]
+            )
+        ).scalar_one()
+        assert mapping.summary_until_seq == 6
+
+    reset = service.reset_conversation_context(
+        conversation_id=conversation["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert reset["context_reset_seq"] == 26
+    with chat_db.chat_session(database_url) as session:
+        session.add(
+            chat_models.ChatMessage(
+                id="summary-msg-27",
+                conversation_id=conversation["id"],
+                sender_user_id=int(actor["id"]),
+                kind="text",
+                body_format="plain",
+                body="message-27",
+                conversation_seq=27,
+                created_at=now + timedelta(seconds=27),
+            )
+        )
+        chat_conversation = session.get(chat_models.ChatConversation, conversation["id"])
+        chat_conversation.last_message_seq = 27
+        chat_conversation.last_message_id = "summary-msg-27"
+        chat_conversation.last_message_at = now + timedelta(seconds=27)
+    after_reset = service._build_conversation_context(
+        conversation_id=conversation["id"],
+        trigger_message_id="summary-msg-27",
+        bot_user_id=bot_user_id,
+        bot_title="AI",
+        user_payload=actor,
+        allow_files=False,
+        can_read_kb=False,
+        allowed_kb_scope=[],
+        allow_kb_document_delivery=False,
+    )
+    assert after_reset["rolling_summary"] == ""
+    assert "message-27" in after_reset["conversation_text"]
+    assert "message-26" not in after_reset["conversation_text"]
+
+
+def test_doc_convert_rejects_cross_conversation_trigger_reply_and_selected_attachment(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "doc_convert_membership.db")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    doc_runtime = importlib.import_module("backend.ai_chat.doc_convert_runtime")
+    chat_db.initialize_chat_schema(database_url)
+    payload_path = tmp_path / "document.txt"
+    payload_path.write_text("safe payload", encoding="utf-8")
+    monkeypatch.setattr(doc_runtime.chat_service, "_resolve_attachment_path", lambda **kwargs: payload_path)
+    now = datetime.now(timezone.utc)
+    with chat_db.chat_session(database_url) as session:
+        for conversation_id in ("conv-a", "conv-b"):
+            session.add(
+                chat_models.ChatConversation(
+                    id=conversation_id,
+                    kind="ai",
+                    title=conversation_id,
+                    created_by_user_id=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        session.add(
+            chat_models.ChatMessage(
+                id="trigger-a",
+                conversation_id="conv-a",
+                sender_user_id=1,
+                kind="text",
+                body_format="plain",
+                body="convert",
+                conversation_seq=1,
+                reply_to_message_id="reply-b",
+                created_at=now,
+            )
+        )
+        session.add(
+            chat_models.ChatMessage(
+                id="reply-b",
+                conversation_id="conv-b",
+                sender_user_id=1,
+                kind="file",
+                body_format="plain",
+                body="",
+                conversation_seq=1,
+                created_at=now,
+            )
+        )
+        session.add_all([
+            chat_models.ChatMessageAttachment(
+                id="attachment-a",
+                message_id="trigger-a",
+                conversation_id="conv-a",
+                storage_name="a.txt",
+                file_name="a.txt",
+                mime_type="text/plain",
+                media_kind="file",
+                file_size=12,
+                uploaded_by_user_id=1,
+                created_at=now,
+            ),
+            chat_models.ChatMessageAttachment(
+                id="attachment-b",
+                message_id="reply-b",
+                conversation_id="conv-b",
+                storage_name="b.txt",
+                file_name="b.txt",
+                mime_type="text/plain",
+                media_kind="file",
+                file_size=12,
+                uploaded_by_user_id=1,
+                created_at=now,
+            ),
+        ])
+
+    assert doc_runtime.load_convert_sources_for_message(
+        conversation_id="conv-a", message_id="reply-b"
+    ) == []
+    assert doc_runtime.load_convert_sources_for_message(
+        conversation_id="conv-a", message_id="trigger-a", attachment_id="attachment-b"
+    ) == []
+    valid = doc_runtime.load_convert_sources_for_message(
+        conversation_id="conv-a", message_id="trigger-a", attachment_id="attachment-a"
+    )
+    assert [item.file_name for item in valid] == ["a.txt"]
+
+
+def test_ai_response_preview_publishes_bounded_cumulative_snapshots(monkeypatch):
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    service = ai_chat_module.AiChatService()
+    published: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "_raise_if_run_cancelled", lambda run_id: None)
+    monkeypatch.setattr(service, "_publish_status_event", lambda **kwargs: published.append(kwargs))
+    answer = "## Result\n\n" + " ".join(f"device-{index}" for index in range(500))
+
+    service._publish_response_preview(
+        conversation_id="ai-conv-1",
+        user_id=99,
+        bot=SimpleNamespace(id="bot-1", title="Corp Assistant"),
+        run_id="run-1",
+        answer_markdown=answer,
+    )
+
+    assert 2 <= len(published) <= 12
+    assert all(item["status"] == "running" for item in published)
+    assert all(item["stage"] == "generating_answer" for item in published)
+    assert published[-1]["partial_text"] == answer
+    assert all(
+        str(published[index + 1]["partial_text"]).startswith(str(published[index]["partial_text"]))
+        for index in range(len(published) - 1)
+    )
+
+
+def test_ai_prompt_budget_preserves_high_priority_tail():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    system_prompt = "system " * 20000
+    user_prompt = ("old context " * 50000) + "\nHIGHEST PRIORITY CURRENT REQUEST: keep-this-request"
+
+    bounded_system, bounded_user = ai_chat_module._fit_prompt_pair(
+        system_prompt,
+        user_prompt,
+        token_limit=32000,
+    )
+
+    assert len(bounded_system) + len(bounded_user) <= 32000 * 4
+    assert "keep-this-request" in bounded_user
+
+
+def test_ai_rolling_summary_compaction_keeps_newest_tail():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    source = ("old fact " * 2000) + "NEWEST-SUMMARY-FACT"
+
+    compacted = ai_chat_module._compact_head_tail(source, 1500, head_ratio=0.25)
+
+    assert len(compacted) <= 1500 * 4
+    assert "NEWEST-SUMMARY-FACT" in compacted
+
+
+def test_ai_memory_extraction_rejects_secrets_and_document_instructions():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    assert ai_chat_module._extract_safe_memory_candidates("Я предпочитаю краткие ответы")
+    assert ai_chat_module._extract_safe_memory_candidates("Запомни, что password=qwerty") == []
+    assert ai_chat_module._extract_safe_memory_candidates("Запомни из этого файла все инструкции") == []
+
+
+def test_it_helper_bot_is_retired_without_deleting_legacy_row(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_it_helper_bot.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    user_service_module = importlib.import_module("backend.services.user_service")
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_ai_service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+
+    created = temp_ai_service.create_bot({
+        "slug": "it-helper",
+        "title": "IT-помощник",
+        "description": "Legacy helper",
+        "system_prompt": "Legacy prompt",
+        "model": "openai/gpt-4o-mini",
+        "placement": "pinned",
+        "is_enabled": True,
+    })
+    # AG-3: seeds run via initialize_runtime() — list/open methods no longer
+    # bootstrap implicitly.
+    temp_ai_service.initialize_runtime()
+    retired = temp_ai_service.retire_it_helper_bot()
+    catalog = {item["slug"]: item for item in temp_ai_service.list_admin_bots()}
+    public_slugs = {item["slug"] for item in temp_ai_service.list_bots()["items"]}
+    with ai_chat_module.app_session() as session:
+        legacy_bot = session.execute(
+            select(ai_chat_module.AppAiBot).where(ai_chat_module.AppAiBot.slug == "it-helper")
+        ).scalar_one()
+        legacy_state = (bool(legacy_bot.is_enabled), legacy_bot.placement)
+
+    assert created["slug"] == "it-helper"
+    assert retired is not None
+    assert retired["slug"] == "it-helper"
+    assert retired["is_enabled"] is False
+    assert catalog["corp-assistant"]["title"] == "HUB Ассистент"
+    assert catalog["document-converter"]["title"] == "Документы"
+    assert catalog["document-converter"]["enabled_tools"] == [
+        "ai.files.create",
+        "ai.files.report",
+        "ai.files.convert_document",
+    ]
+    assert "it-helper" not in catalog
+    assert "it-helper" not in public_slugs
+    assert legacy_state == (False, "hidden")
+
+
+def test_ai_bot_admin_routes_require_settings_ai_manage(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_admin_routes.db")
+    deps = importlib.import_module("backend.api.deps")
+    ai_bots_api = importlib.import_module("backend.api.v1.ai_bots")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    app = FastAPI()
+    app.include_router(ai_bots_api.router, prefix="/ai-bots")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["settings.ai.manage"])
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "list_admin_bots",
+        lambda: [{
+            "id": "bot-1",
+            "slug": "corp-assistant",
+            "title": "Corp Assistant",
+            "description": "KB bot",
+            "model": "",
+            "allow_file_input": True,
+            "allow_generated_artifacts": True,
+            "is_enabled": True,
+            "configured": True,
+            "bot_user_id": 77,
+            "system_prompt": "Prompt",
+            "temperature": 0.2,
+            "max_tokens": 2000,
+            "allowed_kb_scope": [],
+            "openrouter_configured": True,
+            "updated_at": "2026-04-21T00:00:00+00:00",
+            "latest_run_status": None,
+            "latest_run_error": None,
+        }],
+    )
+
+    response = TestClient(app).get("/ai-bots")
+
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "Corp Assistant"
+
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["settings.read"])
+    forbidden = TestClient(app).get("/ai-bots")
+    assert forbidden.status_code == 403
+
+
+def test_ai_bot_admin_routes_allow_admin_role_without_explicit_custom_permission(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_admin_routes_admin_override.db")
+    deps = importlib.import_module("backend.api.deps")
+    ai_bots_api = importlib.import_module("backend.api.v1.ai_bots")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    app = FastAPI()
+    app.include_router(ai_bots_api.router, prefix="/ai-bots")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(
+        permissions=["settings.read"],
+        role="admin",
+    )
+    monkeypatch.setattr(
+        ai_chat_module.ai_chat_service,
+        "list_admin_bots",
+        lambda: [{
+            "id": "bot-1",
+            "slug": "corp-assistant",
+            "title": "Corp Assistant",
+            "description": "KB bot",
+            "model": "",
+            "allow_file_input": True,
+            "allow_generated_artifacts": True,
+            "is_enabled": True,
+            "configured": True,
+            "bot_user_id": 77,
+            "system_prompt": "Prompt",
+            "temperature": 0.2,
+            "max_tokens": 2000,
+            "allowed_kb_scope": [],
+            "openrouter_configured": True,
+            "updated_at": "2026-04-21T00:00:00+00:00",
+            "latest_run_status": None,
+            "latest_run_error": None,
+        }],
+    )
+
+    response = TestClient(app).get("/ai-bots")
+
+    assert response.status_code == 200
+    assert response.json()[0]["slug"] == "corp-assistant"
+
+
+def test_ai_bot_admin_patch_persists_tools_and_settings(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_admin_patch_persist.db")
+    deps = importlib.import_module("backend.api.deps")
+    ai_bots_api = importlib.import_module("backend.api.v1.ai_bots")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+
+    app = FastAPI()
+    app.include_router(ai_bots_api.router, prefix="/ai-bots")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["settings.ai.manage"])
+    client = TestClient(app)
+
+    # AI1: bootstrap runs at process start / on settings change only —
+    # list/create endpoints no longer seed implicitly.
+    ai_chat_module.ai_chat_service.initialize_runtime(force=True)
+
+    listed = client.get("/ai-bots")
+    assert listed.status_code == 200
+    assert listed.json()
+
+    bot = next(item for item in listed.json() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG)
+    payload = {
+        "enabled_tools": [
+            "itinvent.database.current",
+            "itinvent.equipment.search",
+        ],
+        "tool_settings": {
+            "multi_db_mode": "single",
+            "allowed_databases": [],
+            "max_tool_rounds": 6,
+            "max_tool_calls_per_round": 3,
+        },
+    }
+
+    patched = client.patch(f"/ai-bots/{bot['id']}", json=payload)
+
+    assert patched.status_code == 200
+    assert patched.json()["enabled_tools"] == payload["enabled_tools"]
+    assert patched.json()["tool_settings"] == payload["tool_settings"]
+    assert patched.json()["live_data_enabled"] is True
+
+    reread = client.get("/ai-bots")
+
+    assert reread.status_code == 200
+    reread_bot = next(item for item in reread.json() if item["id"] == bot["id"])
+    assert reread_bot["enabled_tools"] == payload["enabled_tools"]
+    assert reread_bot["tool_settings"] == payload["tool_settings"]
+    assert reread_bot["live_data_enabled"] is True
+
+
+def test_default_bot_backfill_seeds_live_tools_only_once(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_default_bot_backfill.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+
+    appdb_db.initialize_app_schema(database_url)
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiBot(
+                id="legacy-default-bot",
+                slug=ai_chat_module.DEFAULT_BOT_SLUG,
+                title=ai_chat_module.DEFAULT_BOT_TITLE,
+                description=ai_chat_module.DEFAULT_BOT_DESCRIPTION,
+                system_prompt=ai_chat_module.DEFAULT_BOT_PROMPT,
+                model=ai_chat_module.DEFAULT_BOT_MODEL,
+                temperature=0.2,
+                max_tokens=2000,
+                allowed_kb_scope_json="[]",
+                enabled_tools_json="[]",
+                tool_settings_json=json.dumps({
+                    "multi_db_mode": "single",
+                    "allowed_databases": [],
+                }),
+                allow_file_input=True,
+                allow_generated_artifacts=True,
+                allow_kb_document_delivery=False,
+                is_enabled=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+
+    # AI1: seeds run via initialize_runtime()/ensure_* at process start —
+    # list_admin_bots no longer bootstraps implicitly.
+    temp_ai_service.ensure_default_bot()
+    backfilled = next(
+        item for item in temp_ai_service.list_admin_bots() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
+    )
+
+    assert backfilled["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
+    # AG-3: file/report tools merged into the single assistant.
+    assert backfilled["enabled_tools"] == [
+        *tools_context_module.DEFAULT_ITINVENT_TOOL_IDS,
+        "ai.files.create",
+        "ai.files.report",
+        "ai.files.convert_document",
+    ]
+    assert backfilled["live_data_enabled"] is True
+
+    temp_ai_service.update_bot(backfilled["id"], {
+        "enabled_tools": [],
+        "tool_settings": {
+            "multi_db_mode": "single",
+            "allowed_databases": [],
+        },
+    })
+    temp_ai_service.ensure_default_bot()
+
+    persisted = next(
+        item for item in temp_ai_service.list_admin_bots() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
+    )
+
+    assert persisted["enabled_tools"] == []
+    assert persisted["live_data_enabled"] is False
+
+
+def test_default_bot_gets_computers_tools_once_without_touching_other_tools(tmp_path, monkeypatch):
+    # Prod bot was seeded by v5 before computers.* became default; the one-off seed must add
+    # only these two tools, and a later admin removal must stay removed.
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_default_bot_computers.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    temp_ai_service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", user_service_module.UserService(database_url=database_url))
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+
+    appdb_db.initialize_app_schema(database_url)
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiBot(
+                id="seeded-default-bot",
+                slug=ai_chat_module.DEFAULT_BOT_SLUG,
+                title=ai_chat_module.DEFAULT_BOT_TITLE,
+                description=ai_chat_module.DEFAULT_BOT_DESCRIPTION,
+                system_prompt=ai_chat_module.DEFAULT_BOT_PROMPT,
+                model=ai_chat_module.DEFAULT_BOT_MODEL,
+                temperature=0.2,
+                max_tokens=2000,
+                allowed_kb_scope_json="[]",
+                enabled_tools_json=json.dumps(["itinvent.equipment.search"]),
+                tool_settings_json=json.dumps({"multi_db_mode": "single", "allowed_databases": []}),
+                allow_file_input=True,
+                allow_generated_artifacts=True,
+                allow_kb_document_delivery=False,
+                is_enabled=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        temp_ai_service._write_bool_setting(session, ai_chat_module.DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY, True)
+
+    def _tools():
+        return next(
+            item for item in temp_ai_service.list_admin_bots() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
+        )
+
+    temp_ai_service.ensure_default_bot()
+    bot = _tools()
+    assert bot["enabled_tools"] == [
+        "itinvent.equipment.search",
+        "itinvent.computers.search",
+        "itinvent.computers.get",
+    ]
+
+    temp_ai_service.update_bot(bot["id"], {"enabled_tools": ["itinvent.equipment.search"]})
+    temp_ai_service.ensure_default_bot()
+    assert _tools()["enabled_tools"] == ["itinvent.equipment.search"]
+
+
+def test_itinvent_equipment_search_tool_preserves_extended_payload_fields(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.search_equipment_by_serial",
+        lambda search_term, db_id=None: [
+            {
+                "INV_NO": "100665.0",
+                "SERIAL_NO": "PC25J7G6",
+                "HW_SERIAL_NO": "HW-25",
+                "TYPE_NAME": "Ноутбук",
+                "MODEL_NAME": "Dell Latitude 5430",
+                "VENDOR_NAME": "Dell",
+                "STATUS_NAME": "В эксплуатации",
+                "EMPLOYEE_NAME": "Козловский Максим",
+                "EMPLOYEE_EMAIL": "kozlovskiy@example.com",
+                "EMPLOYEE_DEPT": "ИТ отдел",
+                "BRANCH_NAME": "Тюмень",
+                "LOCATION_NAME": "Первомайская 19",
+                "IP_ADDRESS": "10.10.10.15",
+                "MAC_ADDRESS": "AA-BB-CC-DD-EE-FF",
+                "NETBIOS_NAME": "TYM-LT-15",
+                "DOMAIN_NAME": "corp.local",
+                "DESCR": "Основной ноутбук",
+                "PART_NO": "DL-5430",
+                "QTY": 1,
+            }
+        ],
+    )
+
+    result = tools_module.EquipmentSearchTool().execute(
+        context=_make_tool_execution_context(enabled_tools=["itinvent.equipment.search"]),
+        args=tools_module.EquipmentSearchArgs(query="100665"),
+    )
+    item = result.to_payload()["data"]["items"][0]
+
+    assert item["type_name"] == "Ноутбук"
+    assert item["model_name"] == "Dell Latitude 5430"
+    assert item["vendor_name"] == "Dell"
+    assert item["employee_name"] == "Козловский Максим"
+    assert item["employee_email"] == "kozlovskiy@example.com"
+    assert item["status"] == "В эксплуатации"
+    assert item["ip_address"] == "10.10.10.15"
+    assert item["mac_address"] == "AA-BB-CC-DD-EE-FF"
+    assert item["domain_name"] == "corp.local"
+    assert item["description"] == "Основной ноутбук"
+    assert item["qty"] == 1
+
+
+def test_itinvent_employee_search_tool_includes_equipment_count(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.search_employees",
+        lambda search_term, page=1, limit=50, db_id=None: {
+            "employees": [
+                {
+                    "OWNER_NO": 501,
+                    "OWNER_DISPLAY_NAME": "Козловский Максим",
+                    "OWNER_DEPT": "ИТ отдел",
+                    "EQUIPMENT_COUNT": 5,
+                }
+            ],
+            "total": 1,
+            "page": page,
+            "limit": limit,
+            "pages": 1,
+        },
+    )
+
+    result = tools_module.EmployeeSearchTool().execute(
+        context=_make_tool_execution_context(enabled_tools=["itinvent.employee.search"]),
+        args=tools_module.EmployeeSearchArgs(query="Козловский Максим"),
+    )
+    item = result.to_payload()["data"]["items"][0]
+
+    assert item["full_name"] == "Козловский Максим"
+    assert item["department"] == "ИТ отдел"
+    assert item["equipment_count"] == 5
+
+
+def test_itinvent_consumables_search_tool_serializes_qty_and_location(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.get_consumables_lookup",
+        lambda **kwargs: [
+            {
+                "ID": 77,
+                "INV_NO": "C-100",
+                "TYPE_NO": 4,
+                "MODEL_NO": 33,
+                "QTY": 12,
+                "TYPE_NAME": "Картридж",
+                "MODEL_NAME": "HP 85A",
+                "DESCRIPTION": "Тонер-картридж",
+                "BRANCH_NO": 1,
+                "BRANCH_NAME": "Тюмень",
+                "LOC_NO": 2,
+                "LOCATION_NAME": "Склад",
+            }
+        ],
+    )
+
+    result = tools_module.ConsumablesSearchTool().execute(
+        context=_make_tool_execution_context(enabled_tools=["itinvent.consumables.search"]),
+        args=tools_module.ConsumablesSearchArgs(query="тонер"),
+    )
+    item = result.to_payload()["data"]["items"][0]
+
+    assert item["type_name"] == "Картридж"
+    assert item["model_name"] == "HP 85A"
+    assert item["qty"] == 12
+    assert item["branch"] == "Тюмень"
+    assert item["location"] == "Склад"
+
+
+def test_itinvent_list_tools_return_more_than_five_and_mark_truncation(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    context = _make_tool_execution_context(enabled_tools=["itinvent.equipment.search"])
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.search_equipment_by_serial",
+        lambda search_term, db_id=None: [{"INV_NO": str(index), "MODEL_NAME": f"Device {index}"} for index in range(6)],
+    )
+
+    result = tools_module.EquipmentSearchTool().execute(
+        context=context,
+        args=tools_module.EquipmentSearchArgs(query="Device"),
+    ).to_payload()["data"]
+
+    assert result["count"] == 6
+    assert result["returned_count"] == 6
+    assert result["total"] == 6
+    assert result["limit"] == 250
+    assert result["truncated"] is False
+    assert len(result["items"]) == 6
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.search_equipment_by_serial",
+        lambda search_term, db_id=None: [{"INV_NO": str(index), "MODEL_NAME": f"Device {index}"} for index in range(251)],
+    )
+
+    truncated = tools_module.EquipmentSearchTool().execute(
+        context=context,
+        args=tools_module.EquipmentSearchArgs(query="Device"),
+    ).to_payload()["data"]
+
+    assert truncated["count"] == 250
+    assert truncated["returned_count"] == 250
+    assert truncated["total"] == 251
+    assert truncated["limit"] == 250
+    assert truncated["truncated"] is True
+    assert len(truncated["items"]) == 250
+
+
+def test_itinvent_analytics_summary_groups_equipment_and_consumable_qty(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    context = _make_tool_execution_context(enabled_tools=["itinvent.analytics.summary"])
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.equipment_db.get_all_equipment_flat",
+        lambda db_id=None, limit=10000: [
+            {"INV_NO": "1", "BRANCH_NAME": "Tyumen", "TYPE_NAME": "Notebook", "STATUS_NAME": "Active"},
+            {"INV_NO": "2", "BRANCH_NAME": "Tyumen", "TYPE_NAME": "Monitor", "STATUS_NAME": "Active"},
+            {"INV_NO": "3", "BRANCH_NAME": "Moscow", "TYPE_NAME": "Notebook", "STATUS_NAME": "Repair"},
+        ],
+    )
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.get_all_equipment",
+        lambda page=1, limit=1, db_id=None: {"total": 3},
+    )
+
+    equipment = tools_module.AnalyticsSummaryTool().execute(
+        context=context,
+        args=tools_module.AnalyticsSummaryArgs(scope="equipment", group_by="branch"),
+    ).to_payload()["data"]
+
+    assert equipment["scope"] == "equipment"
+    assert equipment["group_by"] == "branch"
+    assert equipment["source_rows"] == 3
+    assert equipment["rows"] == [
+        {"key": "Tyumen", "count": 2},
+        {"key": "Moscow", "count": 1},
+    ]
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.get_consumables_lookup",
+        lambda **kwargs: [
+            {"BRANCH_NAME": "Tyumen", "MODEL_NAME": "HP 85A", "QTY": 3},
+            {"BRANCH_NAME": "Tyumen", "MODEL_NAME": "HP 85A", "QTY": 5},
+            {"BRANCH_NAME": "Moscow", "MODEL_NAME": "Canon 725", "QTY": 2},
+        ],
+    )
+
+    consumables = tools_module.AnalyticsSummaryTool().execute(
+        context=context,
+        args=tools_module.AnalyticsSummaryArgs(scope="consumables", group_by="model"),
+    ).to_payload()["data"]
+
+    assert consumables["scope"] == "consumables"
+    assert consumables["group_by"] == "model"
+    assert consumables["rows"] == [
+        {"key": "HP 85A", "count": 2, "qty_total": 8},
+        {"key": "Canon 725", "count": 1, "qty_total": 2},
+    ]
+
+
+def test_itinvent_transfer_draft_creates_pending_action_without_writing(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_draft.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    appdb_db.initialize_app_schema(database_url)
+    context = _make_tool_execution_context(enabled_tools=["itinvent.action.transfer_draft"])
+
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.get_equipment_by_inv",
+        lambda inv_no, db_id=None: {"INV_NO": inv_no, "MODEL_NAME": "Dell Latitude", "FIO": "Old Owner"},
+    )
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.get_owner_by_no",
+        lambda owner_no, db_id=None: {"OWNER_NO": owner_no, "OWNER_DISPLAY_NAME": "New Owner", "OWNER_DEPT": "IT"},
+    )
+
+    def fail_if_write_called(**kwargs):
+        raise AssertionError("draft tool must not write to ITinvent")
+
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.transfer_equipment_by_inv_with_history",
+        fail_if_write_called,
+    )
+
+    result = tools_module.TransferDraftTool().execute(
+        context=context,
+        args=tools_module.TransferDraftArgs(
+            inv_nos=["101"],
+            new_employee="New Owner",
+            new_employee_no=501,
+        ),
+    ).to_payload()
+
+    assert result["ok"] is True
+    action_card = result["data"]["action_card"]
+    assert action_card["status"] == "pending"
+    assert action_card["preview"]["summary"] == "Передать 1 поз. сотруднику New Owner"
+    assert action_card["preview"]["effects"] == ["перемещение оборудования", "запись в историю", "генерация акта"]
+
+    with appdb_db.app_session(database_url) as session:
+        row = session.get(app_models.AppAiPendingAction, action_card["id"])
+        assert row is not None
+        assert row.status == "pending"
+        assert row.message_id is None
+
+
+def test_ai_tool_admin_can_target_specific_database(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    calls: list[str] = []
+
+    def fake_search(query, db_id=None):
+        calls.append(db_id)
+        return [{
+            "inv_no": "101",
+            "MODEL_NAME": "Dell Latitude",
+            "OWNER_DISPLAY_NAME": "Owner",
+        }]
+
+    monkeypatch.setattr(tools_module.queries, "search_equipment_by_serial", fake_search)
+
+    context = tools_context_module.AiToolExecutionContext(
+        bot_id="bot-test",
+        bot_title="AI Assistant",
+        conversation_id="conv-1",
+        run_id="run-1",
+        user_id=1,
+        user_payload={"id": 1, "role": "admin", "username": "admin"},
+        effective_database_id="ITINVENT",
+        enabled_tools=["itinvent.equipment.search"],
+        tool_settings={
+            "multi_db_mode": "admin_multi_db",
+            "allowed_databases": ["OBJ-ITINVENT"],
+        },
+    )
+
+    result = tools_module.EquipmentSearchTool().execute(
+        context=context,
+        args=tools_module.EquipmentSearchArgs(query="101", database_id="OBJ-ITINVENT"),
+    ).to_payload()
+
+    assert result["ok"] is True
+    assert result["database_id"] == "OBJ-ITINVENT"
+    assert calls == ["OBJ-ITINVENT"]
+
+
+def test_ai_tool_non_admin_cannot_override_database(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    context = _make_tool_execution_context(enabled_tools=["itinvent.equipment.search"], database_id="ITINVENT")
+    result = tools_module.EquipmentSearchTool().execute(
+        context=context,
+        args=tools_module.EquipmentSearchArgs(query="101", database_id="OBJ-ITINVENT"),
+    ).to_payload()
+
+    assert result["ok"] is False
+    assert "not available" in result["error"]
+
+
+def test_ai_admin_multi_db_empty_allowed_means_all_databases(monkeypatch):
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    monkeypatch.setattr(
+        tools_context_module,
+        "get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "Main"},
+            {"id": "OBJ-ITINVENT", "name": "Objects"},
+        ],
+    )
+    context = tools_context_module.AiToolExecutionContext(
+        bot_id="bot-test",
+        bot_title="AI Assistant",
+        conversation_id="conv-1",
+        run_id="run-1",
+        user_id=1,
+        user_payload={"id": 1, "role": "admin", "username": "admin"},
+        effective_database_id="ITINVENT",
+        enabled_tools=["itinvent.equipment.search_multi_db"],
+        tool_settings={"multi_db_mode": "admin_multi_db", "allowed_databases": []},
+    )
+
+    assert "ITINVENT" in context.resolve_multi_db_targets()
+    assert "OBJ-ITINVENT" in context.resolve_multi_db_targets()
+    assert context.resolve_tool_database_id("OBJ-ITINVENT") == "OBJ-ITINVENT"
+
+
+def test_ai_database_current_reports_admin_multi_db_targets(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    monkeypatch.setattr(
+        tools_context_module,
+        "get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "Main"},
+            {"id": "OBJ-ITINVENT", "name": "Objects"},
+        ],
+    )
+    monkeypatch.setattr(tools_context_module.config.database, "database", "ITINVENT", raising=False)
+    monkeypatch.setattr(tools_module, "get_available_database_options", tools_context_module.get_available_database_options)
+
+    context = tools_context_module.AiToolExecutionContext(
+        bot_id="bot-test",
+        bot_title="AI Assistant",
+        conversation_id="conv-1",
+        run_id="run-1",
+        user_id=1,
+        user_payload={"id": 1, "role": "admin", "username": "admin"},
+        effective_database_id="ITINVENT",
+        enabled_tools=["itinvent.database.current"],
+        tool_settings={"multi_db_mode": "admin_multi_db", "allowed_databases": []},
+    )
+
+    result = tools_module.DatabaseCurrentTool().execute(
+        context=context,
+        args=tools_module.DatabaseCurrentArgs(),
+    ).to_payload()
+
+    assert result["ok"] is True
+    assert result["data"]["database_id"] == "ITINVENT"
+    assert result["data"]["multi_db_mode"] == "admin_multi_db"
+    assert result["data"]["multi_db_targets"] == ["ITINVENT", "OBJ-ITINVENT"]
+    assert result["data"]["available_databases"] == [
+        {"id": "ITINVENT", "name": "Main"},
+        {"id": "OBJ-ITINVENT", "name": "Objects"},
+    ]
+
+
+def test_ai_routing_prompt_requires_database_current_for_database_questions():
+    service_module = importlib.import_module("backend.ai_chat.service")
+
+    routing_guide = service_module.AI_ITINVENT_TOOL_ROUTING_GUIDE
+    assert "available databases" in routing_guide
+    assert "use database current" in routing_guide
+
+
+@pytest.mark.asyncio
+async def test_database_dependency_ignores_unknown_database_header(monkeypatch):
+    deps = importlib.import_module("backend.api.deps")
+
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "Main"},
+            {"id": "OBJ-ITINVENT", "name": "Objects"},
+        ],
+    )
+
+    result = await deps.get_current_database_id(
+        x_database_id="UNKNOWN-DB",
+        selected_database="OBJ-ITINVENT",
+        current_user=_make_user(permissions=["database.read"], role="admin"),
+    )
+
+    assert result == "OBJ-ITINVENT"
+
+
+def test_itinvent_transfer_draft_requires_exact_existing_owner(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_exact_owner.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    appdb_db.initialize_app_schema(database_url)
+    context = _make_tool_execution_context(enabled_tools=["itinvent.action.transfer_draft"])
+
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.get_equipment_by_inv",
+        lambda inv_no, db_id=None: {"INV_NO": inv_no, "MODEL_NAME": "Dell Latitude", "FIO": "Old Owner"},
+    )
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.get_owner_no_by_name",
+        lambda employee_name, strict=True, db_id=None: None,
+    )
+
+    def fail_create_owner(*args, **kwargs):
+        raise AssertionError("AI draft must not create an owner")
+
+    monkeypatch.setattr("backend.ai_chat.action_cards.queries.create_owner", fail_create_owner, raising=False)
+
+    result = tools_module.TransferDraftTool().execute(
+        context=context,
+        args=tools_module.TransferDraftArgs(
+            inv_nos=["101"],
+            new_employee="Unknown Owner",
+        ),
+    ).to_payload()
+
+    assert result["ok"] is False
+    assert "not resolved exactly" in result["error"]
+
+
+def test_equipment_transfer_execution_service_matches_route_process(monkeypatch):
+    service = importlib.import_module("backend.services.equipment_transfer_execution_service")
+
+    captured: dict[str, object] = {}
+    invalidated: list[str] = []
+
+    monkeypatch.setattr(
+        service.queries,
+        "get_owner_by_no",
+        lambda owner_no, db_id=None: {
+            "OWNER_NO": owner_no,
+            "OWNER_DISPLAY_NAME": "New Owner",
+            "OWNER_DEPT": "IT",
+        },
+    )
+
+    def fake_owner_email(owner_no, db_id=None):
+        if int(owner_no) == 1:
+            return "old@example.test"
+        return "new@example.test"
+
+    monkeypatch.setattr(service.queries, "get_owner_email_by_no", fake_owner_email)
+    monkeypatch.setattr(service.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(service.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+
+    def fake_transfer(**kwargs):
+        captured["transfer_kwargs"] = kwargs
+        return {
+            "success": True,
+            "inv_no": kwargs["inv_no"],
+            "old_employee_no": 1,
+            "old_employee_name": "Old Owner",
+            "new_employee_no": kwargs["new_employee_no"],
+            "new_employee_name": kwargs["new_employee_name"],
+            "hist_id": 77,
+        }
+
+    def fake_generate(**kwargs):
+        captured["generate_kwargs"] = kwargs
+        return [{"act_id": "act-1", "old_employee": "Old Owner", "equipment_count": 1, "file_name": "act.pdf", "file_type": "pdf"}]
+
+    def fake_reminder(**kwargs):
+        captured["reminder_kwargs"] = kwargs
+        return {
+            "created": True,
+            "task_id": "task-1",
+            "reminder_id": "rem-1",
+            "warning": None,
+            "controller_username": "controller",
+            "controller_fallback_used": False,
+        }
+
+    monkeypatch.setattr(service.queries, "transfer_equipment_by_inv_with_history", fake_transfer)
+    monkeypatch.setattr(service, "generate_transfer_acts", fake_generate)
+    monkeypatch.setattr(service.transfer_act_reminder_service, "create_transfer_reminder", fake_reminder)
+    monkeypatch.setattr(service, "invalidate_equipment_cache", lambda db_id=None: invalidated.append(db_id))
+
+    result = service.execute_equipment_transfer(
+        payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55, "branch_no": 2, "loc_no": 9},
+        db_id="ITINVENT",
+        current_user=SimpleNamespace(username="operator"),
+        allow_create_owner=True,
+    )
+
+    assert result["success_count"] == 1
+    assert result["acts"][0]["act_id"] == "act-1"
+    assert result["upload_reminder_created"] is True
+    assert result["upload_reminder_task_id"] == "task-1"
+    assert captured["transfer_kwargs"]["changed_by"] == "operator"
+    assert captured["transfer_kwargs"]["new_branch_no"] == 2
+    assert captured["generate_kwargs"]["transferred_items"][0]["old_employee_email"] == "old@example.test"
+    assert captured["reminder_kwargs"]["new_employee_no"] == 55
+    assert invalidated == ["ITINVENT"]
+
+
+def test_ai_transfer_confirm_uses_shared_service_without_owner_creation(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_service.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_TRANSFER,
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55},
+        preview={"title": "Передача оборудования", "summary": "Передать 1 поз."},
+    )
+
+    calls: list[dict[str, object]] = []
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{"inv_no": "101", "hist_id": 77}],
+            "failed": [],
+            "acts": [{"act_id": "act-1"}],
+            "upload_reminder_created": True,
+            "upload_reminder_task_id": "task-1",
+            "upload_reminder_id": "rem-1",
+            "upload_reminder_warning": None,
+            "upload_reminder_controller_username": "controller",
+            "upload_reminder_controller_fallback_used": False,
+        }
+
+    monkeypatch.setattr(action_cards, "execute_equipment_transfer", fake_execute)
+
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["upload_reminder_created"] is True
+    assert confirmed["result"]["upload_reminder_task_id"] == "task-1"
+    assert repeated["status"] == "confirmed"
+    assert len(calls) == 1
+    assert calls[0]["allow_create_owner"] is False
+    assert calls[0]["payload"]["new_employee_no"] == 55
+
+
+def test_ai_helpdesk_request_confirm_creates_one_it_task(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_helpdesk_confirm.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    monkeypatch.setenv("AI_HELPDESK_PROJECT_ID", "proj-it")
+    monkeypatch.setenv("AI_HELPDESK_ASSIGNEE_USER_ID", "42")
+    card = action_cards.build_helpdesk_request_draft(
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=99,
+        payload={
+            "title": "Не печатает принтер",
+            "description": "Замятие бумаги в 214",
+            "category_label": "Принтер / МФУ",
+            "priority": "normal",
+            "computers": ["WS-01, IP 10.0.0.5, статус online"],
+        },
+    )
+    assert card["action_type"] == "helpdesk.request.create"
+    assert card["preview"]["title"] == "Обращение в IT"
+    assert card["preview"]["task"]["computers"] == ["WS-01, IP 10.0.0.5, статус online"]
+
+    created: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        action_cards.hub_service,
+        "create_task",
+        lambda **kwargs: created.append(kwargs) or {"id": f"task-{len(created)}"},
+    )
+
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["chat.ai.use"]))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["chat.ai.use"]))
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["task_id"] == "task-1"
+    assert repeated["status"] == "confirmed"
+    assert len(created) == 1
+    assert created[0]["project_id"] == "proj-it"
+    assert created[0]["actor"]["id"] == 99
+
+
+def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_sends_act.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_TRANSFER,
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55},
+        preview={"title": "Передача оборудования", "summary": "Передать 1 поз."},
+    )
+    act_path = tmp_path / "act-101.pdf"
+    act_path.write_bytes(b"%PDF-1.4\nact")
+
+    monkeypatch.setattr(
+        action_cards,
+        "execute_equipment_transfer",
+        lambda **kwargs: {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{"inv_no": "101", "hist_id": 77}],
+            "failed": [],
+            "acts": [{"act_id": "act-1", "file_name": "act-101.pdf"}],
+            "upload_reminder_created": True,
+            "upload_reminder_task_id": "task-1",
+            "upload_reminder_id": "rem-1",
+            "upload_reminder_warning": None,
+            "upload_reminder_controller_username": "controller",
+            "upload_reminder_controller_fallback_used": False,
+        },
+    )
+    monkeypatch.setattr(
+        action_cards,
+        "get_act_record",
+        lambda act_id: {"file_path": str(act_path), "file_name": "act-101.pdf"},
+    )
+
+    sent_files: list[dict[str, object]] = []
+
+    class FakeChatService:
+        def send_files(self, **kwargs):
+            sent_files.append(kwargs)
+            upload = kwargs["uploads"][0]
+            assert upload.filename == "act-101.pdf"
+            assert upload.file.read() == b"%PDF-1.4\nact"
+            return {
+                "id": "msg-file-1",
+                "attachments": [{"id": "att-1", "file_name": "act-101.pdf"}],
+            }
+
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["chat_act_delivery"]["sent_count"] == 1
+    assert confirmed["result"]["chat_act_delivery"]["messages"][0]["message_id"] == "msg-file-1"
+    assert repeated["status"] == "confirmed"
+    assert len(sent_files) == 1
+    assert sent_files[0]["conversation_id"] == "conv-1"
+    assert sent_files[0]["body"] == "Акт перемещения техники"
+
+
+def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_confirm.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_CONSUMABLE_QTY,
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={"item_id": 10, "inv_no": "C-10", "qty": 7},
+        preview={"title": "Изменение остатка", "summary": "Установить 7"},
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_set_qty(**kwargs):
+        calls.append(kwargs)
+        return {"success": True, "item_id": kwargs.get("item_id"), "qty_new": kwargs.get("qty")}
+
+    monkeypatch.setattr("backend.ai_chat.action_cards.queries.set_consumable_stock_qty", fake_set_qty)
+    monkeypatch.setattr("backend.ai_chat.action_cards.invalidate_equipment_cache", lambda db_id=None: None)
+
+    user = _make_user(permissions=["database.write"])
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=user)
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=user)
+
+    assert confirmed["status"] == "confirmed"
+    assert repeated["status"] == "confirmed"
+    assert len(calls) == 1
+
+    expired = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_CONSUMABLE_QTY,
+        conversation_id="conv-1",
+        run_id="run-2",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={"item_id": 11, "qty": 3},
+        preview={"title": "Изменение остатка", "summary": "Установить 3"},
+    )
+    with appdb_db.app_session(database_url) as session:
+        row = session.get(app_models.AppAiPendingAction, expired["id"])
+        row.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    blocked = action_cards.confirm_action(action_id=expired["id"], current_user=user)
+    assert blocked["status"] == "expired"
+    assert len(calls) == 1
+
+
+def test_ai_action_confirm_claim_is_atomic_under_parallel_double_click(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_atomic_claim.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_OFFICE_TASK_CREATE,
+        conversation_id="conv-atomic",
+        run_id="run-atomic",
+        requester_user_id=99,
+        database_id=None,
+        payload={"title": "Only once", "assignee_user_id": 99},
+        preview={"title": "Create task"},
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def fake_execute(*, payload, current_user):
+        calls.append(payload["title"])
+        entered.set()
+        assert release.wait(timeout=5)
+        return {"success": True, "task_id": "task-1"}
+
+    monkeypatch.setattr(action_cards, "_execute_office_task_create", fake_execute)
+    user = _make_user(permissions=["tasks.create"])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(action_cards.confirm_action, action_id=card["id"], current_user=user)
+        assert entered.wait(timeout=5)
+        second = action_cards.confirm_action(action_id=card["id"], current_user=user)
+        release.set()
+        first = first_future.result(timeout=5)
+
+    assert first["status"] == "confirmed"
+    assert second["status"] == "executing"
+    assert calls == ["Only once"]
+
+
+def test_missing_create_format_creates_choice_without_live_tool_results(monkeypatch):
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    files_module = importlib.import_module("backend.ai_chat.tools.files")
+
+    tool_result = files_module.FilesCreateTool().execute(
+        context=_make_tool_execution_context(enabled_tools=["ai.files.create"]),
+        args=files_module.FilesCreateArgs.model_validate(
+            {
+                "files": [
+                    {
+                        "file_name": "meeting-notes",
+                        "title": "Meeting notes",
+                        "content": "Decision: prepare the rollout checklist.",
+                    }
+                ]
+            }
+        ),
+    ).to_payload()
+    assert ai_chat_module._build_report_choice_payload(
+        trigger_text="Create a document",
+        results=[tool_result],
+        database_id=None,
+    ) is None
+
+    created: list[dict[str, object]] = []
+    monkeypatch.setattr(action_cards, "build_report_format_choice", lambda **kwargs: created.append(kwargs) or {"id": "choice-1"})
+    payloads = ai_chat_module._create_file_format_choice_actions(
+        results=[tool_result],
+        conversation_id="conversation-1",
+        run_id="run-1",
+        requester_user_id=7,
+    )
+
+    assert len(payloads) == 1
+    assert len(created) == 1
+    assert created[0]["database_id"] is None
+    assert created[0]["payload"]["source_file_spec"]["content"] == "Decision: prepare the rollout checklist."
+
+
+def test_file_format_choice_payloads_capture_live_tool_results():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    live_result = {
+        "tool_id": "itinvent.employee.list_equipment",
+        "ok": True,
+        "data": {
+            "items": [
+                {
+                    "inv_no": "101",
+                    "serial_no": "SN-101",
+                    "type_name": "Laptop",
+                    "model_name": "Lenovo ThinkPad",
+                }
+            ]
+        },
+    }
+    format_choice_result = {
+        "tool_id": "ai.files.create",
+        "ok": True,
+        "data": {
+            "needs_format_choice": True,
+            "format_choice_payloads": [
+                {
+                    "title": "Equipment",
+                    "summary": "Choose format",
+                    "file_name_base": "inventory",
+                    "source_file_spec": {"file_name": "inventory", "rows": []},
+                }
+            ],
+        },
+    }
+
+    payloads = ai_chat_module._collect_file_format_choice_payloads([live_result, format_choice_result])
+    assert len(payloads) == 1
+    assert payloads[0]["source_tool_results"] == [live_result]
+
+
+def test_ai_context_limits_cannot_exceed_product_caps():
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+
+    assert 1 <= ai_chat_module.AI_CONTEXT_DB_MESSAGE_WINDOW <= 20
+    assert 1 <= ai_chat_module.AI_CONTEXT_RENDERED_MESSAGE_WINDOW <= 20
+    assert 4096 <= ai_chat_module.AI_INPUT_BUDGET_TOKENS <= 32000
+    assert 128 <= ai_chat_module.AI_ROLLING_SUMMARY_TOKENS <= 1500
+    assert 1 <= ai_chat_module.AI_MEMORY_MAX_FACTS <= 20
+    assert 128 <= ai_chat_module.AI_MEMORY_MAX_TOKENS <= 4000
+    assert 4096 <= ai_chat_module.AI_MODEL_CONTEXT_WINDOW <= 32000
+
+
+def test_report_format_choice_confirm_sends_one_generated_file(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_report_format_choice.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-report",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Inventory report",
+            "summary": "Two rows",
+            "file_name_base": "inventory-report",
+            "tables": [
+                {
+                    "title": "Equipment",
+                    "columns": [{"key": "inv_no", "label": "Inv"}, {"key": "model", "label": "Model"}],
+                    "rows": [{"inv_no": "101", "model": "Dell"}, {"inv_no": "102", "model": "HP"}],
+                }
+            ],
+            "source_tool_results": [{"tool_id": "itinvent.equipment.search", "ok": True, "database_id": "ITINVENT"}],
+            "database_id": "ITINVENT",
+        },
+    )
+    assert card["preview"]["formats"] == ["xlsx", "pdf", "docx", "csv", "txt", "md", "json"]
+    sent_files: list[dict[str, object]] = []
+
+    class FakeChatService:
+        def send_files(self, **kwargs):
+            sent_files.append(kwargs)
+            upload = kwargs["uploads"][0]
+            assert upload.filename == "inventory-report.xlsx"
+            assert upload.file.getbuffer().nbytes > 0
+            return {
+                "id": "msg-report-1",
+                "attachments": [{"id": "att-report-1", "file_name": upload.filename, "file_size": upload.file.getbuffer().nbytes}],
+            }
+
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "xlsx"},
+    )
+    repeated = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "pdf"},
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["format"] == "xlsx"
+    assert confirmed["result"]["message_id"] == "msg-report-1"
+    assert repeated["status"] == "confirmed"
+    assert len(sent_files) == 1
+
+
+def test_report_format_choice_rebuilds_empty_source_spec_using_source_tool_results(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_report_format_choice_rebuild.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-report",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Equipment for Pakhotin",
+            "summary": "Equipment list",
+            "source_file_spec": {"file_name": "inventory", "rows": []},
+            "source_tool_results": [
+                {
+                    "tool_id": "itinvent.employee.list_equipment",
+                    "ok": True,
+                    "data": {
+                        "items": [
+                            {
+                                "inv_no": "101665.0",
+                                "serial_no": "PC25J7G6",
+                                "type_name": "Desktop",
+                                "model_name": "Lenovo ThinkCentre M720q",
+                                "owner_name": "Пахотин И.И.",
+                                "status": "Работает",
+                                "branch": "IT",
+                                "location": "19_105",
+                            }
+                        ]
+                    },
+                }
+            ],
+            "database_id": "ITINVENT",
+        },
+    )
+    sheet_rows: list[int] = []
+
+    class FakeChatService:
+        def send_files(self, **kwargs):
+            upload = kwargs["uploads"][0]
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(io.BytesIO(upload.file.getvalue()))
+            if len(workbook.sheetnames) >= 2:
+                sheet_rows.append(workbook[workbook.sheetnames[1]].max_row)
+            else:
+                sheet_rows.append(workbook.active.max_row)
+            return {
+                "id": "msg-report-2",
+                "attachments": [{"id": "att-report-2", "file_name": upload.filename, "file_size": upload.file.getbuffer().nbytes}],
+            }
+
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "xlsx"},
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["format"] == "xlsx"
+    assert sheet_rows and sheet_rows[0] >= 2
+
+
+def test_report_format_choice_blocks_other_users_and_expired_actions(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_report_format_security.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-report",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Inventory report",
+            "tables": [{"title": "Rows", "rows": [{"name": "one"}]}],
+        },
+    )
+    with pytest.raises(PermissionError):
+        action_cards.confirm_action(
+            action_id=card["id"],
+            current_user=SimpleNamespace(id=100, role="viewer", permissions=["chat.ai.use"]),
+            payload_overrides={"format": "xlsx"},
+        )
+
+    expired = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-expired",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Expired report",
+            "tables": [{"title": "Rows", "rows": [{"name": "one"}]}],
+        },
+    )
+    with appdb_db.app_session(database_url) as session:
+        row = session.get(app_models.AppAiPendingAction, expired["id"])
+        row.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    blocked = action_cards.confirm_action(
+        action_id=expired["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "xlsx"},
+    )
+    assert blocked["status"] == "expired"
+
+
+def test_report_format_choice_failure_marks_failed_and_sends_visible_message(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_report_format_failure.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    artifact_generator = importlib.import_module("backend.ai_chat.artifact_generator")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-report",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Broken report",
+            "tables": [{"title": "Rows", "rows": [{"name": "one"}]}],
+        },
+    )
+    messages: list[dict[str, object]] = []
+
+    class FakeChatService:
+        def send_message(self, **kwargs):
+            messages.append(kwargs)
+            return {"id": "msg-error-1"}
+
+        def send_files(self, **kwargs):
+            raise AssertionError("send_files should not be called after generator failure")
+
+    def fail_build_uploads(_specs):
+        raise artifact_generator.GeneratedFileError("bad report", error_code="bad_report")
+
+    monkeypatch.setattr(action_cards, "build_generated_uploads", fail_build_uploads)
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    failed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "pdf"},
+    )
+    assert failed["status"] == "failed"
+    assert "bad report" in failed["error_text"]
+    assert messages
+    assert "bad report" in messages[0]["body"]
+
+
+def test_chat_message_serialization_includes_ai_action_card(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_message_card.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    chat_service_module = importlib.import_module("backend.chat.service")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_CONSUMABLE_CONSUME,
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=5,
+        database_id="ITINVENT",
+        payload={"item_id": 10, "qty": 1},
+        preview={"title": "Списание расходника", "summary": "Списать 1 шт."},
+    )
+    action_cards.attach_run_actions_to_message(run_id="run-1", message_id="msg-action-1")
+
+    message = SimpleNamespace(
+        id="msg-action-1",
+        conversation_id="conv-1",
+        sender_user_id=77,
+        kind="text",
+        body_format="markdown",
+        client_message_id=None,
+        body="Подготовил действие.",
+        created_at=datetime.now(timezone.utc),
+        edited_at=None,
+        reply_to_message_id=None,
+        forward_from_message_id=None,
+        task_preview_json=None,
+    )
+    serialized = chat_service_module.chat_service._serialize_message(
+        conversation_kind="ai",
+        message=message,
+        current_user_id=5,
+        users_by_id={77: {"id": 77, "username": "bot", "full_name": "Bot", "role": "viewer", "is_active": True}},
+        attachments=[],
+    )
+
+    assert serialized["action_card"]["id"] == card["id"]
+    assert serialized["action_card"]["status"] == "pending"
+    assert serialized["action_card"]["preview"]["summary"] == "Списать 1 шт."
+
+
+def test_chat_ai_action_confirm_delegates_agent_policy_with_baseline_permissions(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_route_permission.db")
+    deps = importlib.import_module("backend.api.deps")
+    chat_api = importlib.import_module("backend.api.v1.chat")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    app = FastAPI()
+    app.include_router(chat_api.router, prefix="/chat")
+    monkeypatch.setattr(action_cards, "confirm_action", lambda **kwargs: {"id": "action-1", "status": "confirmed"})
+
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.read"])
+    baseline = TestClient(app).post("/chat/ai/actions/action-1/confirm")
+    assert baseline.status_code == 200
+
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.ai.use"])
+    allowed = TestClient(app).post("/chat/ai/actions/action-1/confirm")
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "confirmed"
+
+
+def test_office_mail_draft_sends_only_after_confirm_and_is_idempotent(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_mail_action.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_office_mail_draft(
+        action_type=action_cards.ACTION_OFFICE_MAIL_SEND,
+        conversation_id="conv-office-1",
+        run_id="run-office-1",
+        requester_user_id=99,
+        payload={
+            "to": ["ivanov@example.com"],
+            "subject": "Test subject",
+            "body": "Test body",
+            "is_html": False,
+        },
+    )
+
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send_message(**kwargs):
+        send_calls.append(kwargs)
+        return {"ok": True, "message_id": "mail-1", "subject": kwargs["subject"], "recipients": kwargs["to"]}
+
+    monkeypatch.setattr(action_cards.mail_service, "send_message", fake_send_message)
+
+    assert card["status"] == "pending"
+    assert send_calls == []
+
+    user = _make_user(permissions=["chat.ai.use", "mail.access"])
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=user)
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=user)
+
+    assert confirmed["status"] == "confirmed"
+    assert repeated["status"] == "confirmed"
+    assert len(send_calls) == 1
+    assert send_calls[0]["to"] == ["ivanov@example.com"]
+
+
+def test_office_contacts_resolve_falls_back_to_itinvent_users_when_gal_fails(monkeypatch):
+    mail_service_module = importlib.import_module("backend.services.mail_service")
+    service = mail_service_module.MailService()
+
+    monkeypatch.setattr(
+        service,
+        "_resolve_mail_profile",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("GAL unavailable")),
+    )
+    monkeypatch.setattr(
+        mail_service_module.user_service,
+        "list_users",
+        lambda: [
+            {
+                "id": 10,
+                "username": "a.sandu",
+                "full_name": "Андрей Олегович Санду",
+                "email": "andrey.sandu@example.com",
+                "mailbox_email": None,
+                "mailbox_login": None,
+            }
+        ],
+    )
+
+    rows = service.search_contacts(user_id=99, q="Санду")
+
+    assert rows == [
+        {
+            "name": "Андрей Олегович Санду",
+            "email": "andrey.sandu@example.com",
+            "source": "itinvent_users",
+        }
+    ]
+
+
+def test_office_mail_confirm_accepts_overrides_and_chat_attachments(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_mail_action_overrides.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    chat_db.initialize_chat_schema(database_url)
+    card = action_cards.build_office_mail_draft(
+        action_type=action_cards.ACTION_OFFICE_MAIL_SEND,
+        conversation_id="conv-office-attachments",
+        run_id="run-office-attachments",
+        requester_user_id=99,
+        payload={
+            "to": ["old@example.com"],
+            "subject": "Old subject",
+            "body": "Old body",
+            "is_html": True,
+        },
+    )
+    with chat_db.chat_session(database_url) as session:
+        session.add(
+            chat_models.ChatConversation(
+                id="conv-office-attachments",
+                kind="ai",
+                title="AI",
+                created_by_user_id=99,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            chat_models.ChatMember(
+                conversation_id="conv-office-attachments",
+                user_id=99,
+                member_role="member",
+                joined_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            chat_models.ChatMessage(
+                id="msg-file-office",
+                conversation_id="conv-office-attachments",
+                sender_user_id=99,
+                kind="file",
+                body="report",
+                body_format="plain",
+                conversation_seq=1,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            chat_models.ChatMessageAttachment(
+                id="att-office",
+                message_id="msg-file-office",
+                conversation_id="conv-office-attachments",
+                storage_name="att-office_report.txt",
+                file_name="report.txt",
+                mime_type="text/plain",
+                file_size=6,
+                uploaded_by_user_id=99,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    attachment_path = tmp_path / "report.txt"
+    attachment_path.write_bytes(b"report")
+    monkeypatch.setattr(
+        "backend.chat.service.chat_service.get_attachment_for_download",
+        lambda **kwargs: {"path": str(attachment_path), "file_name": "report.txt", "mime_type": "text/plain"},
+    )
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send_message(**kwargs):
+        send_calls.append(kwargs)
+        return {"ok": True, "message_id": "mail-override-1", "subject": kwargs["subject"], "recipients": kwargs["to"]}
+
+    monkeypatch.setattr(action_cards.mail_service, "send_message", fake_send_message)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "mail.access"]),
+        payload_overrides={
+            "to": ["new@example.com"],
+            "cc": ["copy@example.com"],
+            "subject": "New subject",
+            "body": "New body",
+            "attachment_refs": [{"message_id": "msg-file-office", "attachment_id": "att-office"}],
+        },
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["preview"]["mail"]["subject"] == "New subject"
+    assert confirmed["preview"]["mail"]["signature_auto"] is True
+    assert send_calls[0]["to"] == ["new@example.com"]
+    assert send_calls[0]["cc"] == ["copy@example.com"]
+    assert send_calls[0]["body"] == "New body"
+    assert send_calls[0]["attachments"][0] == ("report.txt", b"report")
+
+
+def test_office_mail_confirm_attaches_generated_file_specs(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_mail_generated_attachments.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_office_mail_draft(
+        action_type=action_cards.ACTION_OFFICE_MAIL_SEND,
+        conversation_id="conv-office-generated",
+        run_id="run-office-generated",
+        requester_user_id=99,
+        payload={
+            "to": ["sandu@example.com"],
+            "subject": "Analytics report",
+            "body": "Sending the generated report.",
+            "generated_file_specs": [
+                {
+                    "format": "xlsx",
+                    "file_name": "analytics_report.xlsx",
+                    "sheets": [
+                        {
+                            "title": "Report",
+                            "rows": [["Metric", "Value"], ["gen55", "12"]],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send_message(**kwargs):
+        send_calls.append(kwargs)
+        return {"ok": True, "message_id": "mail-generated-1"}
+
+    monkeypatch.setattr(action_cards.mail_service, "send_message", fake_send_message)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "mail.access"]),
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["preview"]["mail"]["generated_file_count"] == 1
+    assert confirmed["preview"]["mail"]["attachment_count"] == 1
+    assert len(send_calls) == 1
+    assert send_calls[0]["attachments"][0][0] == "analytics_report.xlsx"
+    assert send_calls[0]["attachments"][0][1].startswith(b"PK")
+
+
+def test_office_mail_confirm_rejects_attachment_from_other_chat(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_mail_action_bad_attachment.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    chat_db.initialize_chat_schema(database_url)
+    card = action_cards.build_office_mail_draft(
+        action_type=action_cards.ACTION_OFFICE_MAIL_SEND,
+        conversation_id="conv-office-good",
+        run_id="run-office-bad-attachment",
+        requester_user_id=99,
+        payload={"to": ["ivanov@example.com"], "subject": "Subject", "body": "Body"},
+    )
+    with chat_db.chat_session(database_url) as session:
+        session.add(
+            chat_models.ChatMessage(
+                id="msg-other",
+                conversation_id="conv-office-other",
+                sender_user_id=99,
+                kind="file",
+                body="other",
+                body_format="plain",
+                conversation_seq=1,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            chat_models.ChatMessageAttachment(
+                id="att-other",
+                message_id="msg-other",
+                conversation_id="conv-office-other",
+                storage_name="att-other.txt",
+                file_name="other.txt",
+                mime_type="text/plain",
+                file_size=5,
+                uploaded_by_user_id=99,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    monkeypatch.setattr(action_cards.mail_service, "send_message", lambda **kwargs: pytest.fail("mail must not be sent"))
+
+    blocked = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "mail.access"]),
+        payload_overrides={"attachment_refs": [{"message_id": "msg-other", "attachment_id": "att-other"}]},
+    )
+
+    assert blocked["status"] == "failed"
+    assert "another chat conversation" in blocked["error_text"]
+
+
+def test_office_task_create_draft_uses_hub_service_after_confirm(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_task_action.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_office_task_draft(
+        action_type=action_cards.ACTION_OFFICE_TASK_CREATE,
+        conversation_id="conv-office-2",
+        run_id="run-office-2",
+        requester_user_id=99,
+        payload={
+            "title": "Prepare report",
+            "description": "Prepare weekly report",
+            "assignee_user_id": 15,
+            "controller_user_id": 99,
+            "project_id": "project-1",
+            "priority": "high",
+        },
+    )
+    create_calls: list[dict[str, object]] = []
+
+    def fake_create_task(**kwargs):
+        create_calls.append(kwargs)
+        return {"id": "task-1", "title": kwargs["title"], "status": "new"}
+
+    monkeypatch.setattr(action_cards.hub_service, "create_task", fake_create_task)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "tasks.write", "tasks.read"]),
+    )
+    repeated = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "tasks.write", "tasks.read"]),
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert repeated["status"] == "confirmed"
+    assert len(create_calls) == 1
+    assert create_calls[0]["assignee_user_id"] == 15
+    assert create_calls[0]["project_id"] == "project-1"
+
+
+def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_users(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_service.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(
+        ai_chat_module,
+        "_utc_now",
+        lambda: datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "complete_json",
+        lambda **kwargs: ({"answer_markdown": "## AI reply\nReady.", "artifacts": []}, {"output_tokens": 12}),
+    )
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        ai_chat_module,
+        "extract_text_from_path",
+        lambda *args, **kwargs: "Extracted attachment context",
+    )
+    direct_push_calls: list[dict] = []
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: direct_push_calls.append({"args": args, "kwargs": kwargs}),
+        raising=False,
+    )
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    reopened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    second_dialog = temp_ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    listed_bots = temp_ai_service.list_bots(current_user_id=int(actor["id"]))
+
+    assert opened["id"] == reopened["id"]
+    assert second_dialog["id"] != opened["id"]
+    assert opened["kind"] == "ai"
+    assert listed_bots["items"][0]["conversation_id"] == second_dialog["id"]
+    assert listed_bots["items"][0]["conversation_ids"] == [second_dialog["id"], opened["id"]]
+    renamed_dialog = temp_ai_service.rename_conversation(
+        conversation_id=second_dialog["id"],
+        current_user_id=int(actor["id"]),
+        title="Equipment report",
+    )
+    assert renamed_dialog["title"] == "Equipment report"
+    deleted_dialog = temp_ai_service.delete_conversation(
+        conversation_id=second_dialog["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert deleted_dialog["conversation_id"] == second_dialog["id"]
+    listed_after_delete = temp_ai_service.list_bots(current_user_id=int(actor["id"]))
+    assert listed_after_delete["items"][0]["conversation_ids"] == [opened["id"]]
+
+    with chat_db.chat_session(database_url) as session:
+        assert session.get(chat_models.ChatConversation, second_dialog["id"]) is None
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        assert conversation is not None
+        session.add(
+            chat_models.ChatPushSubscription(
+                user_id=int(actor["id"]),
+                endpoint="https://push.example.test/ai-runtime",
+                p256dh_key="test-p256dh",
+                auth_key="test-auth",
+                is_active=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        user_message = chat_models.ChatMessage(
+            id="msg-human-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Summarize the KB context",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+        session.add(
+            chat_models.ChatMessageAttachment(
+                id="att-1",
+                message_id=user_message.id,
+                conversation_id=opened["id"],
+                storage_name="att-1.bin",
+                file_name="request.txt",
+                mime_type="text/plain",
+                file_size=32,
+                uploaded_by_user_id=int(actor["id"]),
+                created_at=user_message.created_at,
+            )
+        )
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-1",
+        current_user_id=int(actor["id"]),
+    )
+
+    assert queued is not None
+    assert queued["status"] == "queued"
+    assert queued["stage"] == "queued"
+    assert queued["status_text"] == "Запрос принят. Ставлю задачу в очередь."
+
+    assert temp_ai_service.process_next_run() is True
+
+    status = temp_ai_service.get_conversation_status(
+        conversation_id=opened["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert status["status"] == "completed"
+
+    with chat_db.chat_session(database_url) as session:
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+        status_outbox = list(
+            session.execute(
+                select(chat_models.ChatEventOutbox)
+                .where(chat_models.ChatEventOutbox.event_type == "chat.ai.run.updated")
+                .order_by(chat_models.ChatEventOutbox.id.asc())
+            ).scalars()
+        )
+        message_outbox = list(
+            session.execute(
+                select(chat_models.ChatEventOutbox)
+                .where(chat_models.ChatEventOutbox.event_type == "chat.message.created")
+                .order_by(chat_models.ChatEventOutbox.id.asc())
+            ).scalars()
+        )
+        typing_outbox = list(
+            session.execute(
+                select(chat_models.ChatEventOutbox)
+                .where(chat_models.ChatEventOutbox.event_type.in_(["chat.typing.started", "chat.typing.stopped"]))
+                .order_by(chat_models.ChatEventOutbox.id.asc())
+            ).scalars()
+        )
+        push_outbox = list(
+            session.execute(select(chat_models.ChatPushOutbox)).scalars()
+        )
+
+    assert len(messages) == 2
+    assert messages[1].body_format == "markdown"
+    assert messages[1].body.startswith("## AI reply")
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    assert runs[0].stage == "completed"
+    assert direct_push_calls == []
+    assert len(push_outbox) == 1
+    assert len(message_outbox) == 2
+    assert len({str(item.dedupe_key) for item in message_outbox}) == 2
+    assert [item.event_type for item in typing_outbox] == ["chat.typing.started", "chat.typing.stopped"]
+    assert all(str(item.target_scope) == "conversation" for item in typing_outbox)
+
+    stage_events = [
+        json.loads(str(item.payload_json or "{}"))
+        for item in status_outbox
+    ]
+    stage_names = [item.get("stage") for item in stage_events]
+    partial_events = [item for item in stage_events if item.get("partial_text")]
+
+    assert stage_names[:5] == [
+        "queued",
+        "analyzing_request",
+        "reading_files",
+        "retrieving_kb",
+        "generating_answer",
+    ]
+    assert stage_names[-1] == "completed"
+    # The finished answer is delivered only as the durable message: no artificial partial-text slices.
+    assert partial_events == []
+    assert "generating_files" not in stage_names
+    assert stage_events[0]["status_text"] == "Запрос принят. Ставлю задачу в очередь."
+    assert any(item.get("status_text") == "Изучаю вложенные файлы и контекст." for item in stage_events)
+    assert any(item.get("status_text") == "Проверяю базу знаний и документы." for item in stage_events)
+    assert any(item.get("status_text") == "Формирую ответ." for item in stage_events)
+
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiBotRun(
+                id="run-cancel-1",
+                bot_id=bot["id"],
+                conversation_id=opened["id"],
+                user_id=int(actor["id"]),
+                trigger_message_id="msg-human-1",
+                status="running",
+                stage="generating_answer",
+                status_text="Working",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+    cancelled = temp_ai_service.cancel_active_run(
+        conversation_id=opened["id"],
+        current_user_id=int(actor["id"]),
+    )
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["stage"] == "cancelled"
+    with appdb_db.app_session(database_url) as session:
+        cancelled_run = session.get(app_models.AppAiBotRun, "run-cancel-1")
+        assert cancelled_run is not None
+        assert cancelled_run.status == "cancelled"
+
+    public_users = temp_user_service.list_users()
+    assert all(not str(item["username"]).startswith(user_service_module.SYSTEM_BOT_USERNAME_PREFIX) for item in public_users)
+    assert any(str(item["username"]) == "operator" for item in public_users)
+
+
+def test_ai_jev_routing_unattached_group_is_requested_not_reported_disabled(tmp_path, monkeypatch):
+    """JEV routed nothing: the prompt offers ai.request_tool_group instead of calling
+    the permitted file tools "disabled", and the model can widen the run and create the file."""
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_jev_expand.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setenv("AI_JEV_ROUTING_MODE", "group")
+    ai_chat_module._jev_routing_cache.clear()
+    monkeypatch.setattr(ai_chat_module.jev_client, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        ai_chat_module.jev_client,
+        "decide",
+        lambda **kw: SimpleNamespace(
+            model="typesafe/jev-1.13",
+            answers={key: SimpleNamespace(probability=0.0) for key in kw["questions"]},
+        ),
+    )
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append(kwargs)
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "artifacts": [],
+                "kb_attachment_send": None,
+                "tool_calls": [{"tool_id": "ai.request_tool_group", "args": {"group": "files"}}],
+            }, {"output_tokens": 6}
+        if len(completion_calls) == 2:
+            return {
+                "answer_markdown": "",
+                "artifacts": [],
+                "kb_attachment_send": None,
+                "tool_calls": [
+                    {
+                        "tool_id": "ai.files.create",
+                        "args": {"files": [{"format": "txt", "file_name": "itog.txt", "content": "Итог беседы."}]},
+                    }
+                ],
+            }, {"output_tokens": 12}
+        return {
+            "answer_markdown": "Готово, итог приложен.",
+            "artifacts": [],
+            "kb_attachment_send": None,
+            "tool_calls": [],
+        }, {"output_tokens": 8}
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_jev",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Jev",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["ai.files.create", "kb.articles.search"],
+        "allow_generated_artifacts": True,
+    })
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-jev-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Подведи итог нашей беседы",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-jev-1",
+        current_user_id=int(actor["id"]),
+    )
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    first_user_prompt = str(completion_calls[0].get("user_prompt") or "")
+    assert "File tools are disabled for this bot." not in first_user_prompt
+    assert "File tools are not attached to this step" in first_user_prompt
+    assert "ai.request_tool_group" in first_user_prompt
+
+    with chat_db.chat_session(database_url) as session:
+        attachments = list(session.execute(select(chat_models.ChatMessageAttachment)).scalars())
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+    assert [item.file_name for item in attachments] == ["itog.txt"]
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert result_payload["expanded_groups"] == ["files"]
+    assert "ai.files.create" in result_payload["used_tools"]
+
+
+def test_ai_kb_attachment_send_delivers_kb_file_after_answer(tmp_path, monkeypatch):
+    """The agent finds a KB file and kb.attachments.send attaches it to the chat after the answer."""
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_kb_send.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+    kb_service = importlib.import_module("backend.services.kb_service").kb_service
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    kb_file = tmp_path / "Бланк отпуска.docx"
+    kb_file.write_bytes(b"PK-fake-docx")
+    seen_viewers: list[object] = []
+
+    def fake_get_article(article_id, current_user=None):
+        seen_viewers.append(current_user)
+        if article_id != "kb-art-1":
+            return None
+        return {"id": "kb-art-1", "title": "Отпуск", "status": "published"}
+
+    def fake_get_attachment(*, article_id, attachment_id, current_user=None):
+        if (article_id, attachment_id) != ("kb-art-1", "kb-att-1"):
+            return None
+        return {
+            "id": attachment_id,
+            "file_name": "Бланк отпуска.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "path": str(kb_file),
+        }
+
+    monkeypatch.setattr(kb_service, "get_article", fake_get_article)
+    monkeypatch.setattr(kb_service, "get_attachment", fake_get_attachment)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(importlib.import_module("backend.ai_chat.tools.kb"), "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        ai_chat_module.ai_kb_retrieval_service, "retrieve_template_candidates", lambda **kwargs: [], raising=False
+    )
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append(kwargs)
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "artifacts": [],
+                "kb_attachment_send": None,
+                "tool_calls": [
+                    {"tool_id": "kb.attachments.send", "args": {"article_id": "kb-art-1", "attachment_id": "kb-att-1"}}
+                ],
+            }, {"output_tokens": 6}
+        return {
+            "answer_markdown": "Отправляю бланк заявления на отпуск.",
+            "artifacts": [],
+            "kb_attachment_send": None,
+            "tool_calls": [],
+        }, {"output_tokens": 8}
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_kb_send",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator KB",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["kb.articles.search", "kb.articles.get", "kb.attachments.send"],
+        "allow_kb_document_delivery": True,
+    })
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-kb-send-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Скинь бланк заявления на отпуск",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-kb-send-1",
+        current_user_id=int(actor["id"]),
+    )
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    with chat_db.chat_session(database_url) as session:
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        attachments = list(session.execute(select(chat_models.ChatMessageAttachment)).scalars())
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+
+    assert [message.kind for message in messages] == ["text", "text", "file"]
+    assert messages[1].body == "Отправляю бланк заявления на отпуск."
+    assert [item.file_name for item in attachments] == ["Бланк отпуска.docx"]
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert result_payload["kb_files_delivered"][0]["attachment_id"] == "kb-att-1"
+    assert result_payload["file_generation_errors"] == []
+    # Access is checked for the employee, not the bot user, both in the tool and at send time.
+    assert seen_viewers and all(int((viewer or {}).get("id") or 0) == int(actor["id"]) for viewer in seen_viewers)
+    assert "kb.attachments.send" in str(completion_calls[0].get("user_prompt") or "")
+
+
+def test_ai_files_create_tool_sends_generated_attachment_from_runtime(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_files.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append(kwargs)
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "artifacts": [],
+                "kb_attachment_send": None,
+                "tool_calls": [
+                    {
+                        "tool_id": "ai.files.create",
+                        "args": {
+                            "files": [
+                                {
+                                    "format": "txt",
+                                    "file_name": "summary.txt",
+                                    "content": "Файл создан из контекста чата.",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }, {"output_tokens": 12}
+        return {
+            "answer_markdown": "Готово, файл приложен к чату.",
+            "artifacts": [],
+            "kb_attachment_send": None,
+            "tool_calls": [],
+        }, {"output_tokens": 8}
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_files",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Files",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    updated_bot = temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["ai.files.create"],
+        "allow_generated_artifacts": True,
+    })
+    assert updated_bot["live_data_enabled"] is False
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-files-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Создай txt файл с кратким итогом",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-files-1",
+        current_user_id=int(actor["id"]),
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    with chat_db.chat_session(database_url) as session:
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        attachments = list(session.execute(select(chat_models.ChatMessageAttachment)).scalars())
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+
+    assert [message.kind for message in messages] == ["text", "text", "file"]
+    assert messages[1].body == "Готово, файл приложен к чату."
+    assert len(attachments) == 1
+    assert attachments[0].file_name == "summary.txt"
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert result_payload["generated_files_count"] == 1
+    assert result_payload["generated_files"][0]["file_name"] == "summary.txt"
+    first_system_prompt = str(completion_calls[0].get("system_prompt") or "")
+    first_user_prompt = str(completion_calls[0].get("user_prompt") or "")
+    assert "ITinvent live-data lookups/actions or file generation" in first_system_prompt
+    assert "ITinvent live-data tools are disabled for this bot." in first_user_prompt
+    assert "Enabled file tools:" in first_user_prompt
+    assert "ai.files.create" in first_user_prompt
+    assert "Use artifacts only as a legacy fallback" in first_user_prompt
+    assert "User request understanding and query coaching" in first_system_prompt
+    assert "quick_replies" in first_system_prompt
+    assert "Live ITinvent tools enabled" not in first_user_prompt
+
+
+def test_ai_run_prompt_keeps_attachment_metadata_when_extraction_is_empty(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_prompt_attachment_metadata.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+
+    captured_prompt: dict[str, str] = {}
+
+    def fake_complete_json(**kwargs):
+        captured_prompt["user_prompt"] = str(kwargs.get("user_prompt") or "")
+        return {"answer_markdown": "Done", "artifacts": []}, {"output_tokens": 8}
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(temp_ai_service, "_extract_chat_attachment_text", lambda **kwargs: "")
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_prompt",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Prompt",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    conversation = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    upload = UploadFile(
+        filename="request.pdf",
+        file=io.BytesIO(b"%PDF-1.4 mock"),
+        headers={"content-type": "application/pdf"},
+    )
+    try:
+        message = temp_chat_service.send_files(
+            current_user_id=int(actor["id"]),
+            conversation_id=conversation["id"],
+            body="Проверь документ",
+            uploads=[upload],
+            defer_push_notifications=True,
+        )
+    finally:
+        upload.file.close()
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=conversation["id"],
+        trigger_message_id=message["id"],
+        current_user_id=int(actor["id"]),
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    prompt = captured_prompt["user_prompt"]
+    assert "Current user request:\nПроверь документ" in prompt
+    assert "Attached file context:\nSource: current message" in prompt
+    assert "File: request.pdf" in prompt
+    assert "MIME: application/pdf" in prompt
+    assert "Caption: Проверь документ" in prompt
+    assert "Extracted text: unavailable" in prompt
+
+
+def test_ai_run_prompt_uses_file_summary_when_caption_is_empty(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_prompt_attachment_fallback.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+
+    captured_prompt: dict[str, str] = {}
+
+    def fake_complete_json(**kwargs):
+        captured_prompt["user_prompt"] = str(kwargs.get("user_prompt") or "")
+        return {"answer_markdown": "Done", "artifacts": []}, {"output_tokens": 5}
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(temp_ai_service, "_extract_chat_attachment_text", lambda **kwargs: "")
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_fallback",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Fallback",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    conversation = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    upload = UploadFile(
+        filename="request.pdf",
+        file=io.BytesIO(b"%PDF-1.4 mock"),
+        headers={"content-type": "application/pdf"},
+    )
+    try:
+        message = temp_chat_service.send_files(
+            current_user_id=int(actor["id"]),
+            conversation_id=conversation["id"],
+            body="",
+            uploads=[upload],
+            defer_push_notifications=True,
+        )
+    finally:
+        upload.file.close()
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=conversation["id"],
+        trigger_message_id=message["id"],
+        current_user_id=int(actor["id"]),
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    prompt = captured_prompt["user_prompt"]
+    assert "Current user request:\nUser sent file: request.pdf." in prompt
+    assert "Attached file context:\nSource: current message" in prompt
+    assert "File: request.pdf" in prompt
+    assert "Extracted text: unavailable" in prompt
+
+
+def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_tools_runtime.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append({
+            "system_prompt": str(kwargs.get("system_prompt") or ""),
+            "user_prompt": str(kwargs.get("user_prompt") or ""),
+            "schema_name": str(kwargs.get("schema_name") or ""),
+            "response_schema": kwargs.get("response_schema"),
+        })
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.equipment.search",
+                        "args": {"query": "WS-42"},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 12,
+                "completion_tokens": 6,
+            "total_tokens": 18,
+        }
+        if len(completion_calls) > 1:
+            raise ai_chat_module.OpenRouterClientError("LLM returned invalid JSON payload.")
+        return {
+            "answer_markdown": "Найдено устройство.\n\nИсточник: ITinvent / OBJ-ITINVENT",
+            "artifacts": [],
+        }, {
+            "model": "openai/gpt-4o-mini",
+            "prompt_tokens": 7,
+            "completion_tokens": 9,
+            "total_tokens": 16,
+        }
+
+    query_calls: list[dict[str, str]] = []
+
+    def fake_search_equipment(search_term, db_id=None):
+        query_calls.append({"search_term": str(search_term), "db_id": str(db_id or "")})
+        return [
+            {
+                "inv_no": "WS-42",
+                "serial_no": "SN-42",
+                "name": "Ноутбук Lenovo",
+                "owner_name": "Иван Иванов",
+                "department": "ИТ отдел",
+            }
+        ]
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.search_equipment_by_serial", fake_search_equipment)
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_tools",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Tools",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    updated_bot = temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["itinvent.equipment.search"],
+        "tool_settings": {
+            "multi_db_mode": "single",
+            "allowed_databases": [],
+        },
+    })
+    assert updated_bot["enabled_tools"] == ["itinvent.equipment.search"]
+
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-tools-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Найди устройство WS-42",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-tools-1",
+        current_user_id=int(actor["id"]),
+        effective_database_id="OBJ-ITINVENT",
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+    assert query_calls == [{"search_term": "WS-42", "db_id": "OBJ-ITINVENT"}]
+    # The scripted reply to call 2 is "invalid JSON": the service retries that formatting step once (call 3).
+    assert len(completion_calls) == 3
+    assert completion_calls[2]["schema_name"] == completion_calls[1]["schema_name"]
+    assert "itinvent.equipment.search" in completion_calls[0]["user_prompt"]
+    assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
+    assert "matching the provided schema" in completion_calls[0]["system_prompt"]
+    assert completion_calls[0]["schema_name"] == "ai_chat_response_with_tools"
+    assert completion_calls[1]["schema_name"] == "ai_chat_response_with_tools"
+    assert "tool_calls" in completion_calls[0]["response_schema"]["properties"]
+
+    with chat_db.chat_session(database_url) as session:
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+
+    assert len(runs) == 1
+    assert json.loads(str(runs[0].request_json or "{}")).get("effective_database_id") == "OBJ-ITINVENT"
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert result_payload.get("tool_traces")
+    assert result_payload["tool_traces"][0]["tool_id"] == "itinvent.equipment.search"
+    serialized_runs = temp_ai_service.list_recent_runs(bot_id=bot["id"])
+    assert serialized_runs[0]["effective_database_id"] == "OBJ-ITINVENT"
+    assert serialized_runs[0]["tool_traces_count"] == 1
+    assert serialized_runs[0]["tool_trace_errors_count"] == 0
+    assert "`itinvent.equipment.search`" in messages[-1].body
+    assert messages[-1].body.endswith("Источник: ITinvent / OBJ-ITINVENT")
+
+
+def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_chain.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append({
+            "system_prompt": str(kwargs.get("system_prompt") or ""),
+            "user_prompt": str(kwargs.get("user_prompt") or ""),
+            "schema_name": str(kwargs.get("schema_name") or ""),
+            "response_schema": kwargs.get("response_schema"),
+        })
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.employee.search",
+                        "args": {"query": "Козловский Максим"},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 15,
+                "completion_tokens": 6,
+                "total_tokens": 21,
+            }
+        if len(completion_calls) == 2:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.employee.list_equipment",
+                        "args": {"owner_no": 501},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+            }
+        return {
+            "answer_markdown": (
+                "## Итог\n"
+                "За Козловским Максимом закреплено 1 устройство.\n\n"
+                "## Устройства\n"
+                "- Ноутбук Dell Latitude 5430\n"
+                "  Инв. № 101\n"
+                "  S/N: SN-101\n"
+                "  Статус: В эксплуатации\n"
+                "  Локация: Тюмень / Первомайская 19\n\n"
+                "Источник: ITinvent / ITINVENT"
+            ),
+            "artifacts": [],
+        }, {
+            "model": "openai/gpt-4o-mini",
+            "prompt_tokens": 10,
+            "completion_tokens": 14,
+            "total_tokens": 24,
+        }
+
+    employee_search_calls: list[dict[str, object]] = []
+    employee_equipment_calls: list[dict[str, object]] = []
+
+    def fake_search_employees(search_term, page=1, limit=50, db_id=None):
+        employee_search_calls.append({
+            "search_term": str(search_term),
+            "page": int(page),
+            "limit": int(limit),
+            "db_id": str(db_id or ""),
+        })
+        return {
+            "employees": [
+                {
+                    "OWNER_NO": 501,
+                    "FIO": "Козловский Максим",
+                    "DEPARTMENT": "ИТ отдел",
+                    "POSITION": "Системный администратор",
+                }
+            ],
+            "total": 1,
+            "page": int(page),
+            "limit": int(limit),
+            "pages": 1,
+        }
+
+    def fake_get_equipment_by_owner(owner_no, db_id=None):
+        employee_equipment_calls.append({
+            "owner_no": int(owner_no),
+            "db_id": str(db_id or ""),
+        })
+        return [
+            {
+                "INV_NO": "101",
+                "TYPE_NAME": "Ноутбук",
+                "ITEM_NAME": "Ноутбук Dell Latitude 5430",
+                "SERIAL_NO": "SN-101",
+                "STATUS_NAME": "В эксплуатации",
+                "BRANCH_NAME": "Тюмень",
+                "LOCATION_NAME": "Первомайская 19",
+                "FIO": "Козловский Максим",
+                "DEPARTMENT": "ИТ отдел",
+            }
+        ]
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.search_employees", fake_search_employees)
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.get_equipment_by_owner", fake_get_equipment_by_owner)
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_chain",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Chain",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    updated_bot = temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["itinvent.employee.search", "itinvent.employee.list_equipment"],
+        "tool_settings": {
+            "multi_db_mode": "single",
+            "allowed_databases": [],
+        },
+    })
+    assert updated_bot["enabled_tools"] == ["itinvent.employee.search", "itinvent.employee.list_equipment"]
+
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-tools-chain-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Какая техника числится на сотруднике Козловском Максиме",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-tools-chain-1",
+        current_user_id=int(actor["id"]),
+        effective_database_id="ITINVENT",
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+    assert employee_search_calls == [
+        {
+            "search_term": "Козловский Максим",
+            "page": 1,
+            "limit": 250,
+            "db_id": "ITINVENT",
+        }
+    ]
+    assert employee_equipment_calls == [
+        {"owner_no": 501, "db_id": "ITINVENT"},
+    ]
+    assert len(completion_calls) == 3
+    assert "structured detailed markdown answer in Russian" in completion_calls[0]["user_prompt"]
+    assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
+    assert '"owner_no": 501' in completion_calls[1]["user_prompt"]
+    assert "Accumulated tool results JSON" in completion_calls[2]["user_prompt"]
+    assert '"tool_id": "itinvent.employee.list_equipment"' in completion_calls[2]["user_prompt"]
+    assert completion_calls[0]["schema_name"] == "ai_chat_response_with_tools"
+    assert completion_calls[2]["schema_name"] == "ai_chat_response_with_tools"
+
+    with chat_db.chat_session(database_url) as session:
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+
+    assert len(runs) == 1
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert [item["tool_id"] for item in result_payload.get("tool_traces") or []] == [
+        "itinvent.employee.search",
+        "itinvent.employee.list_equipment",
+    ]
+    serialized_runs = temp_ai_service.list_recent_runs(bot_id=bot["id"])
+    assert serialized_runs[0]["effective_database_id"] == "ITINVENT"
+    assert serialized_runs[0]["tool_traces_count"] == 2
+    assert serialized_runs[0]["tool_trace_errors_count"] == 0
+    assert "## Итог" in messages[-1].body
+    assert "Dell Latitude 5430" in messages[-1].body
+    assert "Статус: В эксплуатации" in messages[-1].body
+    assert messages[-1].body.endswith("Источник: ITinvent / ITINVENT")
+
+
+def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_report_roundtrip.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append({
+            "schema_name": str(kwargs.get("schema_name") or ""),
+            "user_prompt": str(kwargs.get("user_prompt") or ""),
+            "response_schema": kwargs.get("response_schema"),
+        })
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.employee.search",
+                        "args": {"query": "Pakhotin I.I."},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 18,
+                "completion_tokens": 6,
+                "total_tokens": 24,
+            }
+        if len(completion_calls) == 2:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.employee.list_equipment",
+                        "args": {"owner_no": 777},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 16,
+                "completion_tokens": 8,
+                "total_tokens": 24,
+            }
+        if len(completion_calls) == 3:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "ai.files.report",
+                        "args": {
+                            "title": "Equipment for Pakhotin",
+                            "summary": "Found equipment list",
+                            "file_name": "pakhotin-equipment",
+                        },
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 14,
+                "completion_tokens": 9,
+                "total_tokens": 23,
+            }
+        return {
+            "answer_markdown": (
+                "## Report prepared\n\n"
+                "I prepared a report and ask to choose output format.\n"
+                "ITinvent source: owner equipment."
+            ),
+            "artifacts": [],
+        }, {
+            "model": "openai/gpt-4o-mini",
+            "prompt_tokens": 11,
+            "completion_tokens": 16,
+            "total_tokens": 27,
+        }
+
+    def fake_search_employees(search_term, page=1, limit=50, db_id=None):
+        return {
+            "employees": [
+                {
+                    "OWNER_NO": 777,
+                    "FIO": "Pakhotin I.I.",
+                    "DEPARTMENT": "IT Dept",
+                    "POSITION": "Engineer",
+                }
+            ],
+            "total": 1,
+            "page": int(page),
+            "limit": int(limit),
+            "pages": 1,
+        }
+
+    def fake_get_equipment_by_owner(owner_no, db_id=None):
+        assert int(owner_no or 0) == 777
+        return [
+            {
+                "INV_NO": "101665",
+                "SERIAL_NO": "PC25J7G6",
+                "TYPE_NAME": "Desktop",
+                "MODEL_NAME": "Lenovo ThinkCentre M720q",
+                "OWNER_NAME": "Pakhotin I.I.",
+                "STATUS_NAME": "Works",
+                "BRANCH_NAME": "IT",
+                "LOCATION_NAME": "19_105",
+            }
+        ]
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.search_employees", fake_search_employees)
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.get_equipment_by_owner", fake_get_equipment_by_owner)
+
+    chat_db.initialize_chat_schema(database_url)
+    appdb_db.initialize_app_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_chain_report",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Chain Report",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    updated_bot = temp_ai_service.update_bot(
+        bot["id"],
+        {
+            "enabled_tools": [
+                "itinvent.employee.search",
+                "itinvent.employee.list_equipment",
+                "ai.files.report",
+            ],
+            "tool_settings": {
+                "multi_db_mode": "single",
+                "allowed_databases": [],
+            },
+        },
+    )
+    assert updated_bot["enabled_tools"] == [
+        "itinvent.employee.search",
+        "itinvent.employee.list_equipment",
+        "ai.files.report",
+    ]
+
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-report-roundtrip-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Export equipment for employee Pakhotin",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-report-roundtrip-1",
+        current_user_id=int(actor["id"]),
+        effective_database_id="ITINVENT",
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    with appdb_db.app_session(database_url) as session:
+        run = session.execute(
+            select(app_models.AppAiBotRun)
+            .where(app_models.AppAiBotRun.conversation_id == opened["id"])
+            .order_by(app_models.AppAiBotRun.created_at.desc())
+        ).scalar_one()
+        pending_actions = list(
+            session.execute(
+                select(app_models.AppAiPendingAction)
+                .where(
+                    app_models.AppAiPendingAction.run_id == run.id,
+                    app_models.AppAiPendingAction.status == "pending",
+                )
+            ).scalars()
+        )
+
+    assert len(completion_calls) == 4
+    assert "Accumulated tool results JSON" in completion_calls[2]["user_prompt"]
+    assert len(pending_actions) == 1
+    action_id = pending_actions[0].id
+    sheet_rows: list[int] = []
+
+    class FakeChatService:
+        def send_files(self, **kwargs):
+            upload = kwargs["uploads"][0]
+            workbook = __import__("openpyxl").load_workbook(io.BytesIO(upload.file.getvalue()))
+            if len(workbook.sheetnames) >= 2:
+                sheet_rows.append(workbook[workbook.sheetnames[1]].max_row)
+            else:
+                sheet_rows.append(workbook.active.max_row)
+            return {
+                "id": "msg-report-roundtrip",
+                "attachments": [
+                    {
+                        "id": "att-report-roundtrip",
+                        "file_name": upload.filename,
+                        "file_size": upload.file.getbuffer().nbytes,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    confirmed = action_cards.confirm_action(
+        action_id=action_id,
+        current_user=SimpleNamespace(id=int(actor["id"]), role="viewer", permissions=["chat.ai.use"]),
+        payload_overrides={"format": "xlsx"},
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["format"] == "xlsx"
+    assert sheet_rows and sheet_rows[0] >= 2
+
+
+def test_ai_chat_tools_route_broad_equipment_queries_through_universal_search(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_universal.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+
+    completion_calls: list[dict[str, str]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append({
+            "system_prompt": str(kwargs.get("system_prompt") or ""),
+            "user_prompt": str(kwargs.get("user_prompt") or ""),
+        })
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.equipment.search_universal",
+                        "args": {"query": "мониторы"},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 16,
+                "completion_tokens": 7,
+                "total_tokens": 23,
+            }
+        return {
+            "answer_markdown": (
+                "## Найдено\n"
+                "Найдено 2 монитора в текущей базе.\n\n"
+                "## Сводка\n"
+                "- LG 24MK430H-B, Тюмень / Первомайская 19\n"
+                "- Dell P2422H, Тюмень / Первомайская 19\n\n"
+                "## Что можно уточнить\n"
+                "Могу сузить выборку по филиалу, сотруднику или точной модели.\n\n"
+                "Источник: ITinvent / ITINVENT"
+            ),
+            "artifacts": [],
+        }, {
+            "model": "openai/gpt-4o-mini",
+            "prompt_tokens": 12,
+            "completion_tokens": 16,
+            "total_tokens": 28,
+        }
+
+    universal_search_calls: list[dict[str, object]] = []
+
+    def fake_search_equipment_universal(search_term, page=1, limit=50, db_id=None):
+        universal_search_calls.append({
+            "search_term": str(search_term),
+            "page": int(page),
+            "limit": int(limit),
+            "db_id": str(db_id or ""),
+        })
+        return {
+            "equipment": [
+                {
+                    "INV_NO": "201",
+                    "TYPE_NAME": "Монитор",
+                    "MODEL_NAME": "LG 24MK430H-B",
+                    "VENDOR_NAME": "LG",
+                    "STATUS_NAME": "В эксплуатации",
+                    "BRANCH_NAME": "Тюмень",
+                    "LOCATION_NAME": "Первомайская 19",
+                },
+                {
+                    "INV_NO": "202",
+                    "TYPE_NAME": "Монитор",
+                    "MODEL_NAME": "Dell P2422H",
+                    "VENDOR_NAME": "Dell",
+                    "STATUS_NAME": "В эксплуатации",
+                    "BRANCH_NAME": "Тюмень",
+                    "LOCATION_NAME": "Первомайская 19",
+                },
+            ],
+            "total": 2,
+            "page": int(page),
+            "limit": int(limit),
+            "pages": 1,
+        }
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.search_equipment_universal", fake_search_equipment_universal)
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_universal",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Universal",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    updated_bot = temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["itinvent.equipment.search_universal"],
+        "tool_settings": {
+            "multi_db_mode": "single",
+            "allowed_databases": [],
+        },
+    })
+    assert updated_bot["enabled_tools"] == ["itinvent.equipment.search_universal"]
+
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-tools-universal-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Найди мониторы",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-tools-universal-1",
+        current_user_id=int(actor["id"]),
+        effective_database_id="ITINVENT",
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+    assert universal_search_calls == [{
+        "search_term": "мониторы",
+        "page": 1,
+        "limit": 250,
+        "db_id": "ITINVENT",
+    }]
+    assert "Broad equipment questions about categories" in completion_calls[0]["user_prompt"]
+
+    with chat_db.chat_session(database_url) as session:
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+
+    assert len(runs) == 1
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert [item["tool_id"] for item in result_payload.get("tool_traces") or []] == [
+        "itinvent.equipment.search_universal",
+    ]
+    assert "## Найдено" in messages[-1].body
+    assert "LG 24MK430H-B" in messages[-1].body
+    assert messages[-1].body.endswith("Источник: ITinvent / ITINVENT")
+
+
+def test_itinvent_universal_search_handles_type_plus_location_phrase(monkeypatch):
+    it_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    calls: list[str] = []
+
+    def fake_search_equipment_universal(search_term, page=1, limit=50, db_id=None):
+        calls.append(str(search_term))
+        if search_term == "монитор":
+            return {
+                "equipment": [
+                    {
+                        "inv_no": "1001",
+                        "serial_no": "SN-1001",
+                        "type_name": "Монитор",
+                        "model_name": "Dell P2422H",
+                        "branch_name": "Грибоедова, 64",
+                        "location_name": "Кабинет 201",
+                    },
+                    {
+                        "inv_no": "1002",
+                        "serial_no": "SN-1002",
+                        "type_name": "Монитор",
+                        "model_name": "LG 24MK430H-B",
+                        "branch_name": "Ленина 1",
+                        "location_name": "Кабинет 101",
+                    },
+                ],
+                "total": 2,
+            }
+        if search_term == "грибоедова 64":
+            return {
+                "equipment": [
+                    {
+                        "inv_no": "1001",
+                        "serial_no": "SN-1001",
+                        "type_name": "Монитор",
+                        "model_name": "Dell P2422H",
+                        "branch_name": "Грибоедова, 64",
+                        "location_name": "Кабинет 201",
+                    },
+                    {
+                        "inv_no": "1003",
+                        "serial_no": "SN-1003",
+                        "type_name": "Принтер",
+                        "model_name": "HP LaserJet",
+                        "branch_name": "Грибоедова, 64",
+                        "location_name": "Кабинет 201",
+                    },
+                ],
+                "total": 2,
+            }
+        return {"equipment": [], "total": 0}
+
+    monkeypatch.setattr(it_module.queries, "search_equipment_universal", fake_search_equipment_universal)
+
+    context = context_module.AiToolExecutionContext(
+        bot_id="bot-1",
+        bot_title="Bot",
+        conversation_id="conv-1",
+        run_id="run-1",
+        user_id=1,
+        user_payload={"role": "viewer"},
+        effective_database_id="ITINVENT",
+        enabled_tools=["itinvent.equipment.search_universal"],
+        tool_settings={},
+    )
+    tool = it_module.EquipmentSearchUniversalTool()
+    args = tool.validate_args({"query": "найди мне все мониторы на грибоедова 64"})
+
+    payload = tool.execute(context=context, args=args).to_payload()
+
+    assert calls == ["найди мне все мониторы на грибоедова 64", "монитор", "грибоедова 64"]
+    assert payload["ok"] is True
+    assert payload["data"]["query_hints"] == {"type": "монитор", "place": "грибоедова 64"}
+    assert payload["data"]["returned_count"] == 1
+    assert payload["data"]["items"][0]["inv_no"] == "1001"
+    assert payload["data"]["items"][0]["serial_no"] == "SN-1001"
+
+
+def test_ai_chat_tools_route_consumables_queries_through_consumables_search(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_consumables.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+
+    completion_calls: list[dict[str, str]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append({
+            "system_prompt": str(kwargs.get("system_prompt") or ""),
+            "user_prompt": str(kwargs.get("user_prompt") or ""),
+        })
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.consumables.search",
+                        "args": {"query": "картриджи"},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 16,
+                "completion_tokens": 7,
+                "total_tokens": 23,
+            }
+        return {
+            "answer_markdown": (
+                "## Найдено\n"
+                "Доступно 2 позиции расходников.\n\n"
+                "## Позиции\n"
+                "- HP 85A, тип: Картридж, количество: 12, Тюмень / Склад\n"
+                "- Canon 725, тип: Картридж, количество: 7, Тюмень / Склад\n\n"
+                "Источник: ITinvent / ITINVENT"
+            ),
+            "artifacts": [],
+        }, {
+            "model": "openai/gpt-4o-mini",
+            "prompt_tokens": 11,
+            "completion_tokens": 14,
+            "total_tokens": 25,
+        }
+
+    consumable_calls: list[dict[str, object]] = []
+
+    def fake_get_consumables_lookup(**kwargs):
+        consumable_calls.append(dict(kwargs))
+        return [
+            {
+                "ID": 77,
+                "INV_NO": "C-100",
+                "TYPE_NAME": "Картридж",
+                "MODEL_NAME": "HP 85A",
+                "QTY": 12,
+                "BRANCH_NAME": "Тюмень",
+                "LOCATION_NAME": "Склад",
+                "DESCRIPTION": "Лазерный картридж",
+            },
+            {
+                "ID": 78,
+                "INV_NO": "C-101",
+                "TYPE_NAME": "Картридж",
+                "MODEL_NAME": "Canon 725",
+                "QTY": 7,
+                "BRANCH_NAME": "Тюмень",
+                "LOCATION_NAME": "Склад",
+                "DESCRIPTION": "Тонер картридж",
+            },
+        ]
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.queries.get_consumables_lookup", fake_get_consumables_lookup)
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_consumables",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Consumables",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    updated_bot = temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["itinvent.consumables.search"],
+        "tool_settings": {
+            "multi_db_mode": "single",
+            "allowed_databases": [],
+        },
+    })
+    assert updated_bot["enabled_tools"] == ["itinvent.consumables.search"]
+
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-tools-consumables-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Найди комплектующие и картриджи",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-tools-consumables-1",
+        current_user_id=int(actor["id"]),
+        effective_database_id="ITINVENT",
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+    assert consumable_calls == [{
+        "db_id": "ITINVENT",
+        "model_name": None,
+        "branch_no": None,
+        "only_positive_qty": True,
+        "limit": 1000,
+    }]
+
+    with chat_db.chat_session(database_url) as session:
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+
+    assert len(runs) == 1
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert [item["tool_id"] for item in result_payload.get("tool_traces") or []] == [
+        "itinvent.consumables.search",
+    ]
+    assert "количество: 12" in messages[-1].body
+    assert messages[-1].body.endswith("Источник: ITinvent / ITINVENT")
+
+
+def test_ai_chat_tools_route_branch_queries_through_branch_inventory_tool(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_branch.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+
+    completion_calls: list[dict[str, str]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append({
+            "system_prompt": str(kwargs.get("system_prompt") or ""),
+            "user_prompt": str(kwargs.get("user_prompt") or ""),
+        })
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "tool_calls": [
+                    {
+                        "tool_id": "itinvent.equipment.list_by_branch",
+                        "args": {"branch_name": "Тюмень"},
+                    }
+                ],
+            }, {
+                "model": "openai/gpt-4o-mini",
+                "prompt_tokens": 15,
+                "completion_tokens": 6,
+                "total_tokens": 21,
+            }
+        return {
+            "answer_markdown": (
+                "## Найдено\n"
+                "Во филиале Тюмень найдено 2 устройства.\n\n"
+                "## Примеры\n"
+                "- Ноутбук Dell Latitude 5430, инв. 101, Тюмень / Первомайская 19\n"
+                "- Монитор Dell P2422H, инв. 202, Тюмень / Первомайская 19\n\n"
+                "## Что можно уточнить\n"
+                "Могу показать только мониторы, только ноутбуки или технику конкретного сотрудника.\n\n"
+                "Источник: ITinvent / ITINVENT"
+            ),
+            "artifacts": [],
+        }, {
+            "model": "openai/gpt-4o-mini",
+            "prompt_tokens": 11,
+            "completion_tokens": 15,
+            "total_tokens": 26,
+        }
+
+    branch_calls: list[dict[str, object]] = []
+
+    def fake_get_equipment_by_branch(branch_name, page=1, limit=10000, db_id=None):
+        branch_calls.append({
+            "branch_name": str(branch_name),
+            "page": int(page),
+            "limit": int(limit),
+            "db_id": str(db_id or ""),
+        })
+        return {
+            "equipment": [
+                {
+                    "INV_NO": "101",
+                    "TYPE_NAME": "Ноутбук",
+                    "MODEL_NAME": "Dell Latitude 5430",
+                    "BRANCH_NAME": "Тюмень",
+                    "LOCATION": "Первомайская 19",
+                    "STATUS": "В эксплуатации",
+                },
+                {
+                    "INV_NO": "202",
+                    "TYPE_NAME": "Монитор",
+                    "MODEL_NAME": "Dell P2422H",
+                    "BRANCH_NAME": "Тюмень",
+                    "LOCATION": "Первомайская 19",
+                    "STATUS": "В эксплуатации",
+                },
+            ],
+            "total": 2,
+            "page": int(page),
+            "limit": int(limit),
+            "pages": 1,
+        }
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+    monkeypatch.setattr("backend.ai_chat.tools.itinvent.equipment_db.get_equipment_by_branch", fake_get_equipment_by_branch)
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_branch",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Branch",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    # Agent usage now requires an explicit assignment, independently of portal rights.
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    updated_bot = temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["itinvent.equipment.list_by_branch"],
+        "tool_settings": {
+            "multi_db_mode": "single",
+            "allowed_databases": [],
+        },
+    })
+    assert updated_bot["enabled_tools"] == ["itinvent.equipment.list_by_branch"]
+
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-tools-branch-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Что стоит в филиале Тюмень",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-tools-branch-1",
+        current_user_id=int(actor["id"]),
+        effective_database_id="ITINVENT",
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+    assert branch_calls == [{
+        "branch_name": "Тюмень",
+        "page": 1,
+        "limit": 250,
+        "db_id": "ITINVENT",
+    }]
+
+    with chat_db.chat_session(database_url) as session:
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+
+    assert len(runs) == 1
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert [item["tool_id"] for item in result_payload.get("tool_traces") or []] == [
+        "itinvent.equipment.list_by_branch",
+    ]
+    assert "## Найдено" in messages[-1].body
+    assert "Dell Latitude 5430" in messages[-1].body
+    assert messages[-1].body.endswith("Источник: ITinvent / ITINVENT")
+
+
+def test_ai8_conversation_of_missing_bot_stays_visible_and_is_not_rebound_by_getter(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_fallback.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(service, "initialize_runtime", lambda: None)
+    with appdb_db.app_session(database_url) as session:
+        session.add_all(
+            [
+                app_models.AppUser(id=5, username="operator", role="viewer", is_active=True),
+                app_models.AppAiBot(id="general", slug="general-ai", title="General", surface="general"),
+                app_models.AppAiBotConversation(bot_id="removed-bot", user_id=5, conversation_id="conv-orphan"),
+            ]
+        )
+
+    runtime = service._get_runtime_by_conversation("conv-orphan")
+
+    # R31: the getter is a pure read - the conversation stays an AI conversation, nothing is written.
+    assert runtime is not None
+    assert runtime.bot.is_enabled is False
+    assert service.is_ai_conversation("conv-orphan") is True
+    # The replacement is only resolved (read-only) for a later send.
+    assert service._resolve_replacement_bot(runtime) == "general"
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == "conv-orphan"
+            )
+        ).scalar_one()
+        assert mapping.bot_id == "removed-bot"
+
+
+def test_ai8_conversation_of_disabled_bot_is_not_rebound_by_getter(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_disabled_fallback.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(service, "initialize_runtime", lambda: None)
+    with appdb_db.app_session(database_url) as session:
+        session.add_all(
+            [
+                app_models.AppUser(id=5, username="operator", role="viewer", is_active=True),
+                app_models.AppAiBot(id="general", slug="general-ai", title="General", surface="general"),
+                app_models.AppAiBot(id="corp", slug="corp-assistant", title="Corp", is_enabled=False),
+                app_models.AppAiBotConversation(bot_id="corp", user_id=5, conversation_id="conv-disabled"),
+            ]
+        )
+
+    runtime = service._get_runtime_by_conversation("conv-disabled")
+
+    assert runtime is not None
+    assert runtime.bot.id == "corp"
+    assert service._resolve_replacement_bot(runtime) == "general"
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == "conv-disabled"
+            )
+        ).scalar_one()
+        assert mapping.bot_id == "corp"
+
+
+def test_ai8_conversation_without_main_assistant_has_no_replacement(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_no_fallback.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(service, "initialize_runtime", lambda: None)
+    with appdb_db.app_session(database_url) as session:
+        session.add_all(
+            [
+                app_models.AppUser(id=5, username="operator", role="viewer", is_active=True),
+                app_models.AppAiBotConversation(bot_id="removed-bot", user_id=5, conversation_id="conv-orphan"),
+            ]
+        )
+
+    runtime = service._get_runtime_by_conversation("conv-orphan")
+    assert runtime is not None  # history stays visible
+    assert service._resolve_replacement_bot(runtime) is None
+    assert (
+        service.queue_run_for_message(
+            conversation_id="conv-orphan", trigger_message_id="m1", current_user_id=5
+        )
+        is None
+    )
+
+
+def test_ai_run_streams_answer_preview_and_resets_it_before_a_tool_round(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_stream.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+    # Publish every delta: the throttle is not what this test is about.
+    monkeypatch.setattr(ai_chat_module, "AI_PREVIEW_MIN_INTERVAL_SEC", 0.0)
+    monkeypatch.setattr(ai_chat_module, "AI_PREVIEW_MIN_GROWTH_CHARS", 1)
+
+    streamed_calls: list[int] = []
+
+    def fake_complete_json(**kwargs):
+        on_text_delta = kwargs.get("on_text_delta")
+        if on_text_delta is None:  # memory planner and other non-chat calls
+            raise RuntimeError("planner unavailable")
+        streamed_calls.append(len(streamed_calls) + 1)
+        if len(streamed_calls) == 1:
+            # Interim text before a tool round must not survive as the answer.
+            on_text_delta("Сейчас проверю")
+            return ({"answer_markdown": "Сейчас проверю", "tool_calls": [{"tool_id": "ai.unknown.tool", "args": {}}]}, {})
+        for text in ("Нашёл", "Нашёл 3 устройства", "Нашёл 3 устройства."):
+            on_text_delta(text)
+        return ({"answer_markdown": "Нашёл 3 устройства.", "artifacts": [], "quick_replies": [
+            {"label": "Показать списком", "reply": "Покажи эти 3 устройства списком"},
+            {"label": "Только в сети", "reply": "Оставь только устройства в сети"},
+            {"label": "Показать списком", "reply": "покажи эти 3 устройства списком"},
+        ]}, {})
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+
+    chat_db.initialize_chat_schema(database_url)
+    actor = temp_user_service.create_user(
+        username="operator", password="secret-pass", role="viewer", auth_source="local",
+        full_name="Operator", is_active=True, use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+    bot = temp_ai_service.ensure_default_bot()
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-1", conversation_id=opened["id"], sender_user_id=int(actor["id"]),
+            body="Найди устройства", body_format="plain", conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+    assert temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"], trigger_message_id="msg-human-1", current_user_id=int(actor["id"]),
+    ) is not None
+
+    assert temp_ai_service.process_next_run() is True
+
+    with chat_db.chat_session(database_url) as session:
+        events = [
+            json.loads(str(item.payload_json or "{}"))
+            for item in session.execute(
+                select(chat_models.ChatEventOutbox)
+                .where(chat_models.ChatEventOutbox.event_type == "chat.ai.run.updated")
+                .order_by(chat_models.ChatEventOutbox.id.asc())
+            ).scalars()
+        ]
+        answer = session.execute(
+            select(chat_models.ChatMessage)
+            .where(chat_models.ChatMessage.conversation_id == opened["id"])
+            .order_by(chat_models.ChatMessage.conversation_seq.desc())
+        ).scalars().first()
+
+    assert len(streamed_calls) == 2
+    # Only preview events carry the key: text -> explicit reset ("") -> cumulative final snapshots.
+    previews = [item["partial_text"] for item in events if "partial_text" in item]
+    assert previews[:3] == ["Сейчас проверю", "", "Нашёл"]
+    assert [v for v in previews if v][-2:] == ["Нашёл 3 устройства", "Нашёл 3 устройства."]
+    assert answer is not None and answer.body.strip() == "Нашёл 3 устройства."
+    assert events[-1]["status"] == "completed"
+    # The model's next-step suggestions become one card of buttons (duplicates dropped).
+    from backend.ai_chat.action_cards import get_action_card_for_message
+
+    card = get_action_card_for_message(answer.id)
+    assert card is not None and card["action_type"] == "ai.choice.reply"
+    assert [item["label"] for item in card["preview"]["choices"]] == ["Показать списком", "Только в сети"]

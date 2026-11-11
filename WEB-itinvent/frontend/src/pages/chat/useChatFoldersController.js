@@ -1,0 +1,65 @@
+import { useCallback } from 'react';
+
+import chatFoldersAPI from '../../api/chatFolders';
+import {
+  DEFAULT_CHAT_FOLDER_KEY,
+  buildConversationIdsByFolder,
+  readStoredActiveFolderKey,
+  writeStoredActiveFolderKey,
+} from '../../components/chat/chatFolderUtils';
+import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
+
+export default function useChatFoldersController({
+  notifyApiError,
+  setCustomFolders,
+  setConversationIdsByFolder,
+  setFolderUnreadCounts,
+  setFoldersLoading,
+  setConversationFilter,
+}) {
+  const applyFoldersPayload = useCallback((payload) => {
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const idsByFolder = buildConversationIdsByFolder(items, payload?.conversation_ids_by_folder || {});
+    setCustomFolders(items);
+    setConversationIdsByFolder(idsByFolder);
+    const serverCounts = payload?.folder_unread_counts;
+    if (serverCounts && typeof serverCounts === 'object') {
+      setFolderUnreadCounts(Object.fromEntries(
+        Object.entries(serverCounts)
+          .map(([key, value]) => [key, Math.max(0, Math.trunc(Number(value) || 0))]),
+      ));
+    }
+    return items;
+  }, [setConversationIdsByFolder, setCustomFolders, setFolderUnreadCounts]);
+
+  const loadChatFolders = useCallback(async ({ silent = false } = {}) => {
+    if (!CHAT_FEATURE_ENABLED) return [];
+    if (!silent) setFoldersLoading(true);
+    try {
+      const payload = await chatFoldersAPI.listFolders();
+      return applyFoldersPayload(payload);
+    } catch (error) {
+      if (!silent) notifyApiError(error, 'Не удалось загрузить папки чатов.');
+      return [];
+    } finally {
+      if (!silent) setFoldersLoading(false);
+    }
+  }, [applyFoldersPayload, notifyApiError, setFoldersLoading]);
+
+  const handleActiveFolderChange = useCallback((nextFolderKey) => {
+    const normalized = String(nextFolderKey || DEFAULT_CHAT_FOLDER_KEY).trim() || DEFAULT_CHAT_FOLDER_KEY;
+    setConversationFilter(normalized === 'all' ? DEFAULT_CHAT_FOLDER_KEY : normalized);
+    writeStoredActiveFolderKey(normalized);
+  }, [setConversationFilter]);
+
+  const restoreFolderFilter = useCallback(() => {
+    setConversationFilter(readStoredActiveFolderKey());
+  }, [setConversationFilter]);
+
+  return {
+    applyFoldersPayload,
+    handleActiveFolderChange,
+    loadChatFolders,
+    restoreFolderFilter,
+  };
+}

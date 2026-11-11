@@ -1,0 +1,1126 @@
+import React from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const {
+  mockLogin,
+  mockStartTwoFactorSetup,
+  mockVerifyTwoFactorSetup,
+  mockVerifyTwoFactorLogin,
+  mockStartPasskeyLogin,
+  mockVerifyPasskeyLogin,
+  mockRefreshTrustedDeviceAuth,
+  mockVerifyTrustedDeviceAuth,
+  mockGetLoginMode,
+  mockGetTrustedDeviceRegistrationOptions,
+  mockVerifyTrustedDeviceRegistration,
+  mockQrToDataUrl,
+  mockOfferPasswordSaveForAppleKeychain,
+  mockSubmitSafariPasswordSaveFullPage,
+  locationAssignMock,
+  locationReplaceMock,
+  mockGetDesktopWindowsUsername,
+  mockIsDesktopBridgeReady,
+  mockGetAuthorizeUrl,
+} = vi.hoisted(() => ({
+  mockLogin: vi.fn(),
+  mockStartTwoFactorSetup: vi.fn(),
+  mockVerifyTwoFactorSetup: vi.fn(),
+  mockVerifyTwoFactorLogin: vi.fn(),
+  mockStartPasskeyLogin: vi.fn(),
+  mockVerifyPasskeyLogin: vi.fn(),
+  mockRefreshTrustedDeviceAuth: vi.fn(),
+  mockVerifyTrustedDeviceAuth: vi.fn(),
+  mockGetLoginMode: vi.fn(),
+  mockGetTrustedDeviceRegistrationOptions: vi.fn(),
+  mockVerifyTrustedDeviceRegistration: vi.fn(),
+  mockQrToDataUrl: vi.fn(),
+  mockOfferPasswordSaveForAppleKeychain: vi.fn(),
+  mockSubmitSafariPasswordSaveFullPage: vi.fn(),
+  locationAssignMock: vi.fn(),
+  locationReplaceMock: vi.fn(),
+  mockGetDesktopWindowsUsername: vi.fn(),
+  mockIsDesktopBridgeReady: vi.fn(() => false),
+  mockGetAuthorizeUrl: vi.fn(),
+}));
+
+const SSO_AUTHORIZE_URL = 'https://sso.zsgp.ru/adfs/oauth2/authorize?x=1';
+
+vi.mock('../api/windowsSso', () => ({
+  windowsSsoAPI: {
+    getAuthorizeUrl: mockGetAuthorizeUrl,
+  },
+}));
+
+vi.mock('qrcode', () => ({
+  default: {
+    toDataURL: mockQrToDataUrl,
+  },
+}));
+
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({
+    login: mockLogin,
+    startTwoFactorSetup: mockStartTwoFactorSetup,
+    verifyTwoFactorSetup: mockVerifyTwoFactorSetup,
+    verifyTwoFactorLogin: mockVerifyTwoFactorLogin,
+    startPasskeyLogin: mockStartPasskeyLogin,
+    verifyPasskeyLogin: mockVerifyPasskeyLogin,
+    refreshTrustedDeviceAuth: mockRefreshTrustedDeviceAuth,
+    verifyTrustedDeviceAuth: mockVerifyTrustedDeviceAuth,
+  }),
+}));
+
+vi.mock('../api/client', () => ({
+  authAPI: {
+    getLoginMode: mockGetLoginMode,
+    getTrustedDeviceRegistrationOptions: mockGetTrustedDeviceRegistrationOptions,
+    verifyTrustedDeviceRegistration: mockVerifyTrustedDeviceRegistration,
+  },
+}));
+
+vi.mock('../lib/desktopBridge', () => ({
+  getDesktopWindowsUsername: mockGetDesktopWindowsUsername,
+  isDesktopBridgeReady: (...args) => mockIsDesktopBridgeReady(...args),
+}));
+
+vi.mock('../components/desktop/DesktopInstallerDownload', () => ({
+  default: ({ variant }) => (
+    <div data-testid="desktop-installer-download" data-variant={variant}>
+      Скачать HUB Desktop
+    </div>
+  ),
+}));
+
+vi.mock('../components/mobile/MobileInstallerDownload', () => ({
+  default: ({ variant }) => (
+    <div data-testid="mobile-installer-download" data-variant={variant}>
+      Скачать HUB-IT для Android
+    </div>
+  ),
+}));
+
+vi.mock('../lib/passwordCredentialSave', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    offerPasswordSaveForAppleKeychain: (...args) => mockOfferPasswordSaveForAppleKeychain(...args),
+    submitSafariPasswordSaveFullPage: (...args) => mockSubmitSafariPasswordSaveFullPage(...args),
+  };
+});
+
+import Login from './Login';
+import * as loginPagePresentation from '../lib/loginPagePresentation';
+
+function installMatchMedia({ mobile = false } = {}) {
+  window.matchMedia = vi.fn().mockImplementation((query) => ({
+    matches: mobile ? query.includes('max-width: 767px') : false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }));
+}
+
+function makeBuffer(values) {
+  return new Uint8Array(values).buffer;
+}
+
+function makeAuthCredential() {
+  return {
+    id: 'cred-1',
+    rawId: makeBuffer([1, 2, 3]),
+    type: 'public-key',
+    response: {
+      clientDataJSON: makeBuffer([4, 5, 6]),
+      authenticatorData: makeBuffer([7, 8, 9]),
+      signature: makeBuffer([10, 11, 12]),
+      userHandle: null,
+    },
+  };
+}
+
+function makeNotAllowedError(message = 'Cancelled') {
+  const error = new Error(message);
+  error.name = 'NotAllowedError';
+  return error;
+}
+
+function setInputValue(id, value) {
+  const input = document.getElementById(id);
+  if (!input) {
+    throw new Error(`Input not found: ${id}`);
+  }
+  fireEvent.change(input, { target: { value } });
+}
+
+function submitPasswordStep({ username = 'ivanov', password = 'secret' } = {}) {
+  setInputValue('login-username', username);
+  setInputValue('login-password', password);
+  fireEvent.submit(screen.getByTestId('password-auth-form'));
+}
+
+function installIphoneSafari() {
+  installMatchMedia({ mobile: true });
+  Object.defineProperty(window.navigator, 'userAgent', {
+    configurable: true,
+    value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  });
+  Object.defineProperty(window.navigator, 'platform', {
+    configurable: true,
+    value: 'iPhone',
+  });
+  Object.defineProperty(window.navigator, 'maxTouchPoints', {
+    configurable: true,
+    value: 5,
+  });
+}
+
+function primeTotpResumeFromSafariSave({
+  challengeId = 'challenge-setup',
+  username = 'ivanov',
+  nextStep = 'totp_setup',
+} = {}) {
+  sessionStorage.setItem('hubit_totp_resume', JSON.stringify({
+    loginChallengeId: challengeId,
+    username,
+    nextStep,
+  }));
+  window.location.search = `?resume_challenge=${encodeURIComponent(challengeId)}`;
+}
+
+async function ensurePasswordFormVisible() {
+  return screen.findByTestId('password-auth-form');
+}
+
+describe('Login hybrid internal/external flow', () => {
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockLogin.mockReset();
+    mockStartTwoFactorSetup.mockReset();
+    mockVerifyTwoFactorSetup.mockReset();
+    mockVerifyTwoFactorLogin.mockReset();
+    mockStartPasskeyLogin.mockReset();
+    mockVerifyPasskeyLogin.mockReset();
+    mockRefreshTrustedDeviceAuth.mockReset();
+    mockVerifyTrustedDeviceAuth.mockReset();
+    mockGetLoginMode.mockReset();
+    mockGetTrustedDeviceRegistrationOptions.mockReset();
+    mockVerifyTrustedDeviceRegistration.mockReset();
+    mockQrToDataUrl.mockReset();
+    mockSubmitSafariPasswordSaveFullPage.mockReset();
+    locationAssignMock.mockReset();
+    locationReplaceMock.mockReset();
+    mockGetDesktopWindowsUsername.mockReset();
+    mockGetDesktopWindowsUsername.mockReturnValue('');
+    mockIsDesktopBridgeReady.mockReset();
+    mockIsDesktopBridgeReady.mockReturnValue(false);
+
+    mockQrToDataUrl.mockResolvedValue('data:image/png;base64,qr-image');
+    mockOfferPasswordSaveForAppleKeychain.mockResolvedValue({
+      offered: false,
+      saved: false,
+      reason: 'unsupported',
+    });
+    mockSubmitSafariPasswordSaveFullPage.mockReturnValue({ submitted: true, reason: 'full_page_post' });
+    sessionStorage.clear();
+    localStorage.clear();
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+    });
+
+    installMatchMedia({ mobile: false });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36',
+    });
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Win32',
+    });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        ...window.location,
+        assign: locationAssignMock,
+        replace: locationReplaceMock,
+        hostname: 'localhost',
+        protocol: 'http:',
+        pathname: '/login',
+        search: '',
+        hash: '',
+      },
+    });
+    window.location.search = '';
+
+    window.navigator.credentials = {
+      create: vi.fn(),
+      get: vi.fn(),
+    };
+    window.PublicKeyCredential = {
+      isUserVerifyingPlatformAuthenticatorAvailable: vi.fn().mockResolvedValue(false),
+    };
+  });
+
+  it('shows password form immediately for internal network and does not start passkey flow', async () => {
+    render(<Login />);
+
+    expect(await screen.findByTestId('login-desktop-layout')).toBeInTheDocument();
+    expect(await ensurePasswordFormVisible()).toBeInTheDocument();
+    expect(screen.queryByTestId('biometric-hero-button')).not.toBeInTheDocument();
+    expect(mockGetLoginMode).toHaveBeenCalledTimes(1);
+    expect(mockStartPasskeyLogin).not.toHaveBeenCalled();
+  });
+
+  it('shows compact Android and Desktop download entries under the browser login form', async () => {
+    render(<Login />);
+
+    await ensurePasswordFormVisible();
+    expect(screen.getByTestId('mobile-installer-download')).toHaveAttribute('data-variant', 'login');
+    expect(screen.getByTestId('desktop-installer-download')).toHaveAttribute('data-variant', 'login');
+    expect(screen.queryByRole('link', { name: 'О HUB-IT' })).not.toBeInTheDocument();
+  });
+
+  it('opens onboarding after login for a new user and keeps the requested route', async () => {
+    sessionStorage.setItem('hubit.auth.return-to', '/tasks?filter=mine');
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 11,
+        username: 'new.user',
+        role: 'viewer',
+        permissions: [],
+        about_onboarding_completed_at: null,
+      },
+    });
+    render(<Login />);
+    await ensurePasswordFormVisible();
+
+    submitPasswordStep({ username: 'new.user', password: 'secret' });
+
+    await waitFor(() => {
+      expect(locationAssignMock).toHaveBeenCalledWith('/about');
+    });
+    expect(sessionStorage.getItem('hubit.auth.return-to')).toBe('/tasks?filter=mine');
+  });
+
+  it('prefills the last successful username without storing a password', async () => {
+    mockGetDesktopWindowsUsername.mockReturnValue('windows.user');
+    localStorage.setItem('hubit.login.last-username', 'ivanov');
+
+    render(<Login />);
+
+    expect(await screen.findByLabelText('Логин')).toHaveValue('ivanov');
+    expect(localStorage.getItem('hubit.login.password')).toBeNull();
+  });
+
+  it('prefills the Windows username in Desktop when no saved login exists', async () => {
+    mockGetDesktopWindowsUsername.mockReturnValue('petrov');
+
+    render(<Login />);
+
+    expect(await screen.findByLabelText('Логин')).toHaveValue('petrov');
+  });
+
+    it('reads a username inserted directly by the WebView password manager', async () => {
+    mockLogin.mockResolvedValue({ success: false, error: 'invalid_credentials' });
+    render(<Login />);
+    await ensurePasswordFormVisible();
+
+    const usernameField = document.getElementById('login-username');
+    const nativeValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value',
+    )?.set;
+    nativeValueSetter?.call(usernameField, 'autofilled.user');
+    nativeValueSetter?.call(document.getElementById('login-password'), 'secret');
+    fireEvent.submit(screen.getByTestId('password-auth-form'));
+
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledWith('autofilled.user', 'secret');
+    });
+  });
+
+  it('sends only one login request when the form is submitted twice while the first request is in flight', async () => {
+    let resolveLogin;
+    mockLogin.mockImplementation(() => new Promise((resolve) => {
+      resolveLogin = resolve;
+    }));
+    render(<Login />);
+    await ensurePasswordFormVisible();
+
+    submitPasswordStep();
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledTimes(1);
+    });
+    submitPasswordStep();
+    expect(mockLogin).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveLogin({ success: false, error: 'invalid_credentials' });
+    });
+    await waitFor(() => {
+      expect(screen.getByText('invalid_credentials')).toBeInTheDocument();
+    });
+
+    submitPasswordStep();
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('keeps the login form locked for a short cooldown after HTTP 429', async () => {
+    mockLogin.mockResolvedValue({
+      success: false,
+      error: 'Too many failed login attempts, try again later',
+      statusCode: 429,
+    });
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    try {
+      await act(async () => {
+        submitPasswordStep();
+      });
+      expect(mockLogin).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Слишком много попыток входа. Подождите немного и попробуйте снова.')).toBeInTheDocument();
+
+      submitPasswordStep();
+      expect(mockLogin).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+
+      await act(async () => {
+        submitPasswordStep();
+      });
+      expect(mockLogin).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+      });
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows a dismissible VPN hint when login-mode reports outside Russia', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+      client_country_code: 'DE',
+      show_vpn_hint: true,
+    });
+
+    render(<Login />);
+
+    expect(await screen.findByTestId('login-vpn-hint')).toBeInTheDocument();
+    expect(screen.getByText('Похоже, вы не в России')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Скрыть подсказку про VPN' }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('login-vpn-hint')).not.toBeInTheDocument();
+    });
+    expect(sessionStorage.getItem('hubit.login.vpn-hint.dismissed')).toBe('1');
+  });
+
+  it('renders mobile login shell with the primary password action reachable', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(<Login />);
+
+    expect(await screen.findByTestId('login-mobile-layout')).toBeInTheDocument();
+    expect(await ensurePasswordFormVisible()).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Войти' })).toBeInTheDocument();
+  });
+
+  it('auto-confirms mobile 2FA setup after six digits and opens the trusted-device prompt', async () => {
+    installMatchMedia({ mobile: true });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/123.0 Mobile Safari/537.36',
+    });
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Linux armv8l',
+    });
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+    });
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_setup_required',
+      login_challenge_id: 'challenge-setup',
+      trusted_devices_available: false,
+    });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=HUB-IT',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    mockVerifyTwoFactorSetup.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 7,
+        username: 'ivanov',
+        role: 'viewer',
+        permissions: [],
+        network_zone: 'external',
+        discoverable_trusted_devices_count: 0,
+      },
+      backup_codes: ['AAAA-BBBB'],
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    await screen.findByTestId('totp-open-authenticator');
+    expect(screen.queryByRole('button', { name: 'Включить 2FA' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Подтвердить код' })).not.toBeInTheDocument();
+
+    setInputValue('login-totp-setup-code', '123456');
+
+    await waitFor(() => {
+      expect(mockVerifyTwoFactorSetup).toHaveBeenCalledWith('challenge-setup', '123456');
+    });
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+  });
+
+  it('redirects iPhone login through Safari password save bridge', async () => {
+    installIphoneSafari();
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+    });
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_setup_required',
+      login_challenge_id: 'challenge-setup',
+      trusted_devices_available: false,
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    await waitFor(() => {
+      expect(mockSubmitSafariPasswordSaveFullPage).toHaveBeenCalledWith({
+        username: 'ivanov',
+        password: 'secret',
+        loginChallengeId: 'challenge-setup',
+      });
+    });
+    expect(mockStartTwoFactorSetup).not.toHaveBeenCalled();
+  });
+
+  it('uses apple-otpauth button on iPhone during 2FA setup', async () => {
+    installIphoneSafari();
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+    });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=hubit.zsgp.ru',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    primeTotpResumeFromSafariSave();
+
+    render(<Login />);
+
+    await waitFor(() => {
+      expect(mockStartTwoFactorSetup).toHaveBeenCalledWith('challenge-setup');
+    });
+
+    const appleButton = await screen.findByTestId('totp-open-apple-passwords');
+    expect(appleButton).toBeEnabled();
+    expect(screen.getByText(/QR-код и ручной ключ/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('totp-open-authenticator')).not.toBeInTheDocument();
+  });
+
+  it('resumes TOTP setup after the password-save page even when React StrictMode remounts the effect', async () => {
+    mockGetLoginMode.mockResolvedValue({ network_zone: 'external', biometric_login_enabled: false });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=hubit.zsgp.ru',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    primeTotpResumeFromSafariSave();
+    // The real page drops resume_challenge from the URL as soon as it consumes it.
+    const replaceStateSpy = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {
+      window.location.search = '';
+    });
+
+    try {
+      render(<React.StrictMode><Login /></React.StrictMode>);
+
+      expect((await screen.findAllByText(/QR-код и ручной ключ|ABC123/i)).length).toBeGreaterThan(0);
+      expect(mockStartTwoFactorSetup).toHaveBeenCalledWith('challenge-setup');
+    } finally {
+      replaceStateSpy.mockRestore();
+    }
+  });
+
+  it('still auto-starts desktop Windows SSO when sessionStorage throws', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+    mockIsDesktopBridgeReady.mockReturnValue(true);
+    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+
+    try {
+      mockGetAuthorizeUrl.mockResolvedValue(SSO_AUTHORIZE_URL);
+      render(<Login />);
+      await waitFor(() => expect(locationAssignMock).toHaveBeenCalledWith(SSO_AUTHORIZE_URL));
+      expect(locationAssignMock).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('windows-sso-login')).toBeInTheDocument();
+    } finally {
+      getItemSpy.mockRestore();
+      setItemSpy.mockRestore();
+    }
+  });
+
+  it('does not walk the whole DOM for the overlay audit while debug logging is off', async () => {
+    // Vitest runs in DEV mode, where debug logging is always on; emulate a production build.
+    vi.stubEnv('DEV', false);
+    const auditSpy = vi.spyOn(loginPagePresentation, 'auditLoginPageOverlays');
+    try {
+      render(<Login />);
+      await ensurePasswordFormVisible();
+      expect(auditSpy).not.toHaveBeenCalled();
+
+      localStorage.setItem('agentDebugLog', '1');
+      cleanup();
+      render(<Login />);
+      await ensurePasswordFormVisible();
+      await waitFor(() => expect(auditSpy).toHaveBeenCalled());
+    } finally {
+      auditSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('shows compact 2FA setup on iPhone without password-save helpers', async () => {
+    installIphoneSafari();
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+    });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=hubit.zsgp.ru',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    primeTotpResumeFromSafariSave();
+
+    render(<Login />);
+
+    await waitFor(() => {
+      expect(mockStartTwoFactorSetup).toHaveBeenCalledWith('challenge-setup');
+    });
+
+    expect(await screen.findByTestId('totp-open-apple-passwords')).toBeInTheDocument();
+    expect(screen.queryByTestId('totp-save-password-to-keychain')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('totp-confirm-password-saved')).not.toBeInTheDocument();
+    expect(screen.getByText(/QR-код и ручной ключ/i)).toBeInTheDocument();
+  });
+
+  it('does not auto-attempt passkey until WebAuthn API is available', async () => {
+    delete window.PublicKeyCredential;
+
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: false,
+      error: 'Deferred passkey test',
+    });
+
+    render(<Login />);
+
+    await waitFor(() => {
+      expect(mockGetLoginMode).toHaveBeenCalled();
+    });
+    expect(mockStartPasskeyLogin).not.toHaveBeenCalled();
+
+    window.PublicKeyCredential = {
+      isUserVerifyingPlatformAuthenticatorAvailable: vi.fn().mockResolvedValue(false),
+    };
+    act(() => {
+      window.dispatchEvent(new Event('hubit:webauthn-ready'));
+    });
+
+    await waitFor(() => {
+      expect(mockStartPasskeyLogin).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('auto-attempts passkey login for external network and redirects on success', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: true,
+      challenge_id: 'passkey-challenge-1',
+      public_key: {
+        challenge: 'AQID',
+        rpId: 'hubit.zsgp.ru',
+        timeout: 12000,
+        userVerification: 'required',
+      },
+    });
+    window.navigator.credentials.get.mockResolvedValue(makeAuthCredential());
+    mockVerifyPasskeyLogin.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 7,
+        username: 'ivanov',
+        role: 'viewer',
+        permissions: [],
+      },
+    });
+
+    render(<Login />);
+
+    await waitFor(() => {
+      expect(mockStartPasskeyLogin).toHaveBeenCalledTimes(1);
+      expect(mockVerifyPasskeyLogin).toHaveBeenCalledTimes(1);
+      expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
+    });
+    expect(screen.getByTestId('password-auth-form')).toBeInTheDocument();
+  });
+
+  it('reveals password fallback after external biometric cancellation', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: true,
+      challenge_id: 'passkey-challenge-1',
+      public_key: {
+        challenge: 'AQID',
+        rpId: 'hubit.zsgp.ru',
+        timeout: 12000,
+        userVerification: 'required',
+      },
+    });
+    window.navigator.credentials.get.mockRejectedValue(makeNotAllowedError());
+
+    render(<Login />);
+
+    expect(await ensurePasswordFormVisible()).toBeInTheDocument();
+    expect(mockStartPasskeyLogin).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('biometric-hero-button')).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps 2FA verify code-only and opens mandatory enrollment prompt for external user without discoverable device', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: true,
+      challenge_id: 'passkey-challenge-1',
+      public_key: {
+        challenge: 'AQID',
+        rpId: 'hubit.zsgp.ru',
+        timeout: 12000,
+        userVerification: 'required',
+      },
+    });
+    window.navigator.credentials.get.mockRejectedValue(makeNotAllowedError());
+    window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.mockResolvedValue(true);
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_required',
+      login_challenge_id: 'challenge-verify',
+      trusted_devices_available: true,
+    });
+    mockVerifyTwoFactorLogin.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 7,
+        username: 'ivanov',
+        role: 'viewer',
+        permissions: [],
+        network_zone: 'external',
+        discoverable_trusted_devices_count: 0,
+      },
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    expect(await screen.findByTestId('verify-fallback-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('biometric-hero-button')).not.toBeInTheDocument();
+
+    setInputValue('login-totp-verify', '654321');
+    fireEvent.submit(screen.getByTestId('verify-fallback-form'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+  });
+
+  it('allows unsupported external enrollment prompt to continue into the app', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: true,
+      challenge_id: 'passkey-challenge-1',
+      public_key: {
+        challenge: 'AQID',
+        rpId: 'hubit.zsgp.ru',
+        timeout: 12000,
+        userVerification: 'required',
+      },
+    });
+    window.navigator.credentials.get.mockRejectedValue(makeNotAllowedError());
+    window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.mockResolvedValue(false);
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_required',
+      login_challenge_id: 'challenge-verify',
+      trusted_devices_available: false,
+    });
+    mockVerifyTwoFactorLogin.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 7,
+        username: 'ivanov',
+        role: 'viewer',
+        permissions: [],
+        network_zone: 'external',
+        discoverable_trusted_devices_count: 0,
+      },
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    await screen.findByTestId('verify-fallback-form');
+    setInputValue('login-totp-verify', '654321');
+    fireEvent.submit(await screen.findByTestId('verify-fallback-form'));
+
+    const dialog = await screen.findByRole('dialog');
+    const dialogButtons = within(dialog).getAllByRole('button');
+    fireEvent.click(dialogButtons[0]);
+
+    await waitFor(() => {
+      expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
+    });
+    expect(mockGetTrustedDeviceRegistrationOptions).not.toHaveBeenCalled();
+  });
+
+  it('offers optional enrollment prompt after external 2FA when discoverable trusted device already exists', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: true,
+      challenge_id: 'passkey-challenge-1',
+      public_key: {
+        challenge: 'AQID',
+        rpId: 'hubit.zsgp.ru',
+        timeout: 12000,
+        userVerification: 'required',
+      },
+    });
+    window.navigator.credentials.get.mockRejectedValue(makeNotAllowedError());
+    window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.mockResolvedValue(true);
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_required',
+      login_challenge_id: 'challenge-verify',
+      trusted_devices_available: false,
+    });
+    mockVerifyTwoFactorLogin.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 7,
+        username: 'ivanov',
+        role: 'viewer',
+        permissions: [],
+        network_zone: 'external',
+        discoverable_trusted_devices_count: 1,
+      },
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    await screen.findByTestId('verify-fallback-form');
+    setInputValue('login-totp-verify', '654321');
+    fireEvent.submit(await screen.findByTestId('verify-fallback-form'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText(/другом устройстве/i)).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+
+    const dialogButtons = within(dialog).getAllByRole('button');
+    fireEvent.click(dialogButtons[0]);
+
+    await waitFor(() => {
+      expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
+    });
+  });
+
+  it('keeps backup-code completion and opens enrollment prompt before redirect for external first setup', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: true,
+      challenge_id: 'passkey-challenge-1',
+      public_key: {
+        challenge: 'AQID',
+        rpId: 'hubit.zsgp.ru',
+        timeout: 12000,
+        userVerification: 'required',
+      },
+    });
+    window.navigator.credentials.get.mockRejectedValue(makeNotAllowedError());
+    window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.mockResolvedValue(true);
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_setup_required',
+      login_challenge_id: 'challenge-setup',
+      trusted_devices_available: false,
+    });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=HUB-IT',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    mockVerifyTwoFactorSetup.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 7,
+        username: 'ivanov',
+        role: 'viewer',
+        permissions: [],
+        network_zone: 'external',
+        discoverable_trusted_devices_count: 0,
+      },
+      backup_codes: ['AAAA-BBBB'],
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    const otpauthUri = 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=HUB-IT';
+    const openAuthenticatorLink = await screen.findByTestId('totp-open-authenticator');
+    expect(openAuthenticatorLink).toHaveAttribute('href', otpauthUri);
+    const details = screen.getByText('QR-код и ручной ключ').closest('details');
+    expect(details).not.toHaveAttribute('open');
+
+    fireEvent.click(screen.getByText('QR-код и ручной ключ'));
+    expect(details).toHaveAttribute('open');
+    expect(await screen.findByTestId('totp-qr-image')).toBeInTheDocument();
+    expect(screen.getByText('ABC123')).toBeInTheDocument();
+    expect(screen.getByTestId('totp-copy-manual-key')).toBeInTheDocument();
+
+    setInputValue('login-totp-setup-code', '123456');
+    fireEvent.submit(document.getElementById('login-totp-setup-code').closest('form'));
+
+    expect(await screen.findByText('AAAA-BBBB')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('setup-complete-continue'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+  });
+
+  it('auto-redirects to AD FS begin in desktop on internal network', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+    mockIsDesktopBridgeReady.mockReturnValue(true);
+    mockGetAuthorizeUrl.mockResolvedValue(SSO_AUTHORIZE_URL);
+
+    render(<Login />);
+
+    await waitFor(() => expect(locationAssignMock).toHaveBeenCalledWith(SSO_AUTHORIZE_URL));
+  });
+
+  it('does not auto-redirect in browser on internal network, only via the button', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    mockGetAuthorizeUrl.mockResolvedValue(SSO_AUTHORIZE_URL);
+    render(<Login />);
+
+    const button = await screen.findByTestId('windows-sso-login');
+    expect(locationAssignMock).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await waitFor(() => expect(locationAssignMock).toHaveBeenCalledWith(SSO_AUTHORIZE_URL));
+  });
+
+  it('falls back to the server redirect page when the authorize URL request fails', async () => {
+    mockGetAuthorizeUrl.mockRejectedValue(new Error('sso down'));
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    render(<Login />);
+
+    const button = await screen.findByTestId('windows-sso-login');
+    fireEvent.click(button);
+    await waitFor(() => expect(locationAssignMock).toHaveBeenCalledWith('/api/v1/auth/sso/begin'));
+  });
+
+  it('does not auto-redirect again after a failed SSO attempt in the same tab', async () => {
+    sessionStorage.setItem('hubit.sso.auto_attempted', '1');
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    mockGetAuthorizeUrl.mockResolvedValue(SSO_AUTHORIZE_URL);
+    render(<Login />);
+
+    const button = await screen.findByTestId('windows-sso-login');
+    await waitFor(() => expect(locationAssignMock).not.toHaveBeenCalled());
+    fireEvent.click(button);
+    await waitFor(() => expect(locationAssignMock).toHaveBeenCalledWith(SSO_AUTHORIZE_URL));
+  });
+
+  it('shows a mapped notice for sso_error and cleans the URL', async () => {
+    window.location.search = '?sso_error=not_provisioned';
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    render(<Login />);
+
+    expect(
+      await screen.findByText(/нет доступа в HUB-IT/),
+    ).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+  });
+
+  it('hides the password form behind SSO on internal network and reveals it on demand', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    render(<Login />);
+
+    const ssoButton = await screen.findByTestId('windows-sso-login');
+    expect(screen.queryByTestId('password-auth-form')).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByTestId('show-password-login'));
+    expect(await screen.findByTestId('password-auth-form')).toBeInTheDocument();
+    expect(screen.getByTestId('windows-sso-login-secondary')).toBeInTheDocument();
+  });
+
+  it('shows the password form immediately after an SSO error on internal network', async () => {
+    window.location.search = '?sso_error=denied';
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    render(<Login />);
+
+    expect(await screen.findByTestId('password-auth-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('windows-sso-login')).not.toBeInTheDocument();
+  });
+
+  it('does not offer Windows SSO on external network', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: false,
+    });
+    mockIsDesktopBridgeReady.mockReturnValue(true);
+
+    render(<Login />);
+
+    await ensurePasswordFormVisible();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('windows-sso-login')).not.toBeInTheDocument();
+  });
+});

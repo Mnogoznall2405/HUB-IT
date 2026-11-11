@@ -1,0 +1,1112 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../api/client', () => ({
+  API_V1_BASE: '/api/v1',
+}));
+
+vi.mock('./chatFeature', () => ({
+  CHAT_WS_ENABLED: true,
+}));
+
+vi.mock('../api/chatWsAuth', () => ({
+  getWsTicket: vi.fn(() => Promise.resolve('ws-ticket-1')),
+}));
+
+class MockWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+
+  constructor(url) {
+    this.url = url;
+    this.readyState = MockWebSocket.CONNECTING;
+    this.sent = [];
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this.onclose = null;
+    MockWebSocket.instances.push(this);
+  }
+
+  send(payload) {
+    this.sent.push(payload);
+  }
+
+  close() {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.();
+  }
+
+  emitOpen() {
+    this.readyState = MockWebSocket.OPEN;
+    this.onopen?.();
+  }
+
+  emitClose(event = {}) {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.({ code: 1000, ...event });
+  }
+}
+
+MockWebSocket.instances = [];
+
+const loadChatSocket = async () => import('./chatSocket');
+
+describe('chatSocket client lifecycle', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    MockWebSocket.instances = [];
+    window.WebSocket = MockWebSocket;
+    globalThis.WebSocket = MockWebSocket;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('answers chat.auth.required once with a ws_ticket frame (D5/W8)', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const { getWsTicket } = await import('../api/chatWsAuth');
+    chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+
+    socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.required', payload: { retry_after_ms: 30000 } }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.required', payload: { retry_after_ms: 30000 } }) });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getWsTicket).toHaveBeenCalledTimes(1);
+    const authFrames = socket.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'chat.auth');
+    expect(authFrames).toHaveLength(1);
+    expect(authFrames[0].payload.ws_ticket).toBe('ws-ticket-1');
+    chatSocket.close(true);
+  });
+
+  it('does not surface chat.auth.ok/rejected as activity events', async () => {
+    const { chatSocket } = await loadChatSocket();
+    chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    expect(() => {
+      socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.ok' }) });
+      socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.rejected' }) });
+    }).not.toThrow();
+    chatSocket.close(true);
+  });
+
+  it('ignores stale close events from a replaced socket', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+
+    firstSocket.emitOpen();
+    expect(chatSocket.socket).toBe(firstSocket);
+    expect(chatSocket.connectionState).toBe('connected');
+
+    firstSocket.readyState = MockWebSocket.CLOSED;
+    chatSocket.connect();
+
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.emitOpen();
+    firstSocket.emitClose();
+
+    expect(chatSocket.socket).toBe(secondSocket);
+    expect(chatSocket.connectionState).toBe('connected');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('does not create another socket while the current one is closing', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+
+    firstSocket.readyState = MockWebSocket.CLOSING;
+    chatSocket.connect();
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('does not reconnect an OPEN zombie socket through connect()', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitOpen();
+    expect(chatSocket.getConnectionState()).toBe('connected');
+
+    chatSocket.connect();
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(chatSocket.socket).toBe(firstSocket);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('replaces an OPEN zombie socket through recoverAfterSystemResume', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitOpen();
+    chatSocket.wantInbox = true;
+    chatSocket.activeConversationIds.add('conv-7');
+
+    expect(chatSocket.recoverAfterSystemResume()).toBe(true);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(firstSocket.onclose).toBeNull();
+    expect(chatSocket.socket).not.toBe(firstSocket);
+
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.emitOpen();
+    expect(chatSocket.getConnectionState()).toBe('connected');
+    const types = secondSocket.sent.map((payload) => JSON.parse(payload).type);
+    expect(types).toContain('chat.subscribe_inbox');
+    expect(types).toContain('chat.subscribe_conversation');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('skips system resume recovery when the socket is not retained', async () => {
+    const { chatSocket } = await loadChatSocket();
+    expect(chatSocket.recoverAfterSystemResume()).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  it('does not replace a CONNECTING recovery socket on a second resume call', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitOpen();
+
+    expect(chatSocket.recoverAfterSystemResume()).toBe(true);
+    const replacement = MockWebSocket.instances[1];
+    expect(replacement.readyState).toBe(MockWebSocket.CONNECTING);
+    const closed = vi.fn();
+    replacement.close = function closeReplacement() {
+      closed();
+      this.readyState = MockWebSocket.CLOSED;
+    };
+
+    expect(chatSocket.recoverAfterSystemResume()).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(closed).not.toHaveBeenCalled();
+    expect(chatSocket.socket).toBe(replacement);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('clears a stale auth block and replaces an OPEN zombie socket after system resume', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitOpen();
+    chatSocket.authBlocked = true;
+    chatSocket.wantInbox = true;
+
+    expect(chatSocket.recoverAfterSystemResume()).toBe(true);
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(chatSocket.socket).not.toBe(firstSocket);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('resolves sendMessage with the message payload from chat.command.ok', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+
+    const pending = chatSocket.sendMessage('conv-1', 'Hello', {
+      client_message_id: 'client-msg-1',
+      database_id: 'ITINVENT',
+      body_format: 'markdown',
+    });
+    const sentPayload = JSON.parse(socket.sent[socket.sent.length - 1]);
+
+    expect(sentPayload.payload).toEqual(expect.objectContaining({
+      body: 'Hello',
+      body_format: 'markdown',
+      client_message_id: 'client-msg-1',
+      database_id: 'ITINVENT',
+    }));
+    expect(sentPayload.payload.reply_to_message_id).toBeUndefined();
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.command.ok',
+        request_id: sentPayload.request_id,
+        conversation_id: 'conv-1',
+        payload: {
+          message_id: 'msg-1',
+          message: {
+            id: 'msg-1',
+            conversation_id: 'conv-1',
+            kind: 'text',
+            body: 'Hello',
+            client_message_id: 'client-msg-1',
+            created_at: '2026-03-21T10:00:00Z',
+            is_own: true,
+            sender: { id: 1, username: 'author', full_name: 'Task Author' },
+            attachments: [],
+          },
+        },
+      }),
+    });
+
+    await expect(pending).resolves.toEqual({
+      message_id: 'msg-1',
+      message: {
+        id: 'msg-1',
+        conversation_id: 'conv-1',
+        kind: 'text',
+        body: 'Hello',
+        client_message_id: 'client-msg-1',
+        created_at: '2026-03-21T10:00:00Z',
+        is_own: true,
+        sender: { id: 1, username: 'author', full_name: 'Task Author' },
+        attachments: [],
+      },
+    });
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('resolves subscribeInbox when the server answers with chat.snapshot', async () => {
+    const { chatSocket, isChatConversationMuted } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+
+    const pending = chatSocket.subscribeInbox();
+    const sentPayload = JSON.parse(socket.sent[socket.sent.length - 1]);
+
+    expect(sentPayload.type).toBe('chat.subscribe_inbox');
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.snapshot',
+        request_id: sentPayload.request_id,
+        payload: {
+          unread_summary: { conversations_unread: 2 },
+          muted_conversation_ids: ['conv-muted'],
+        },
+      }),
+    });
+
+    await expect(pending).resolves.toEqual({
+      unread_summary: { conversations_unread: 2 },
+      muted_conversation_ids: ['conv-muted'],
+    });
+    expect(isChatConversationMuted('conv-muted')).toBe(true);
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.conversation.updated',
+        conversation_id: 'conv-muted',
+        payload: {
+          conversation: { id: 'conv-muted', is_muted: false },
+          reason: 'settings',
+        },
+      }),
+    });
+    expect(isChatConversationMuted('conv-muted')).toBe(false);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('invalidates cached conversation lists when a new message arrives', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const { peekSWRCache, setSWRCache } = await import('./swrCache');
+    const cacheKey = ['chat', 'conversations', 'u1'];
+    setSWRCache(cacheKey, { items: [{ id: 'conv-1', unread_count: 0 }] });
+
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.message.created',
+        conversation_id: 'conv-1',
+        payload: {
+          id: 'msg-new',
+          conversation_id: 'conv-1',
+          body: 'new message',
+          is_own: false,
+        },
+      }),
+    });
+
+    expect(peekSWRCache(cacheKey)).toBeNull();
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('emits socket activity for inbound websocket messages including heartbeat pongs', async () => {
+    const { chatSocket, CHAT_SOCKET_ACTIVITY_EVENT } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    const activityEvents = [];
+
+    window.addEventListener(CHAT_SOCKET_ACTIVITY_EVENT, (event) => {
+      activityEvents.push(event.detail);
+    });
+
+    socket.emitOpen();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.pong',
+        payload: {},
+      }),
+    });
+
+    expect(activityEvents).toHaveLength(1);
+    expect(activityEvents[0]).toEqual(expect.objectContaining({
+      type: 'chat.pong',
+    }));
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('handles backend rate-limited error envelopes without crashing', async () => {
+    const { chatSocket, CHAT_SOCKET_ACTIVITY_EVENT } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    const activityEvents = [];
+
+    window.addEventListener(CHAT_SOCKET_ACTIVITY_EVENT, (event) => {
+      activityEvents.push(event.detail);
+    });
+
+    socket.emitOpen();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'error',
+        payload: {
+          code: 'rate_limited',
+          retry_after_ms: 1000,
+        },
+      }),
+    });
+
+    expect(activityEvents[activityEvents.length - 1]).toEqual(expect.objectContaining({
+      type: 'error',
+    }));
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('rejects sendMessage immediately when an open socket fails to send', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.send = () => {
+      throw new Error('send failed');
+    };
+
+    await expect(chatSocket.sendMessage('conv-1', 'Hello')).rejects.toThrow('Chat websocket send failed');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('rejects sendMessage immediately while the socket is not open so HTTP fallback can run', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    expect(socket.readyState).toBe(MockWebSocket.CONNECTING);
+    await expect(chatSocket.sendMessage('conv-1', 'Hello')).rejects.toThrow('Chat websocket is not connected');
+    expect(chatSocket.messageQueue).toHaveLength(0);
+    expect(socket.sent).toHaveLength(0);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('does not schedule reconnect after a forbidden websocket close', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 4403 });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(chatSocket.connectionState).toBe('forbidden');
+    expect(chatSocket.authBlocked).toBe(true);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('blocks connect after unauthorized close until resetAuthBlock', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 4401 });
+
+    expect(chatSocket.connectionState).toBe('unauthorized');
+    expect(chatSocket.authBlocked).toBe(true);
+
+    chatSocket.connect();
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    chatSocket.resetAuthBlock();
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('reconnects after a slow consumer close code 1013', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 1013, reason: 'slow consumer' });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('dispatches one session-expired event after three failed handshakes', async () => {
+    const { chatSocket, CHAT_SOCKET_SESSION_EXPIRED_EVENT } = await loadChatSocket();
+    const events = [];
+    const listener = (event) => events.push(event);
+    window.addEventListener(CHAT_SOCKET_SESSION_EXPIRED_EVENT, listener);
+    try {
+      const release = chatSocket.retain();
+      for (let i = 0; i < 3; i += 1) {
+        const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+        socket.emitClose({ code: 1006 });
+        await vi.runOnlyPendingTimersAsync();
+      }
+      expect(events).toHaveLength(1);
+      // An opened socket that later drops must not count as a failed handshake.
+      const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+      socket.emitOpen();
+      socket.emitClose({ code: 1006 });
+      await vi.runOnlyPendingTimersAsync();
+      expect(events).toHaveLength(1);
+      release();
+      chatSocket.close(true);
+    } finally {
+      window.removeEventListener(CHAT_SOCKET_SESSION_EXPIRED_EVENT, listener);
+    }
+  });
+
+  it('does not reconnect after connection limit eviction close code 4000', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 4000 });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('replays watched presence ids after reconnect', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+
+    firstSocket.emitOpen();
+
+    const watchPending = chatSocket.watchPresence([5, 7, 7]);
+    const firstWatchPayload = JSON.parse(firstSocket.sent[firstSocket.sent.length - 1]);
+
+    expect(firstWatchPayload.type).toBe('chat.watch_presence');
+    expect(firstWatchPayload.payload.user_ids).toEqual([5, 7]);
+
+    firstSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.command.ok',
+        request_id: firstWatchPayload.request_id,
+        payload: { user_ids: [5, 7] },
+      }),
+    });
+
+    await expect(watchPending).resolves.toEqual({ user_ids: [5, 7] });
+
+    firstSocket.emitClose({ code: 1006 });
+    await vi.runOnlyPendingTimersAsync();
+
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.emitOpen();
+    const replayPayload = JSON.parse(secondSocket.sent[secondSocket.sent.length - 1]);
+
+    expect(replayPayload).toEqual({
+      type: 'chat.watch_presence',
+      payload: { user_ids: [5, 7] },
+    });
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('does not resend watched presence commands for the same user set', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+
+    const firstPending = chatSocket.watchPresence([7, 5, 7]);
+    const firstPayload = JSON.parse(socket.sent[socket.sent.length - 1]);
+
+    expect(firstPayload.type).toBe('chat.watch_presence');
+    expect(firstPayload.payload.user_ids).toEqual([7, 5]);
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.command.ok',
+        request_id: firstPayload.request_id,
+        payload: { user_ids: [7, 5] },
+      }),
+    });
+
+    await expect(firstPending).resolves.toEqual({ user_ids: [7, 5] });
+
+    const sentCount = socket.sent.length;
+    await expect(chatSocket.watchPresence([5, 7])).resolves.toEqual({ user_ids: [5, 7] });
+
+    expect(socket.sent).toHaveLength(sentCount);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('desktop client state is not queued offline and is replayed with the latest value after reconnect', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+
+    chatSocket.reportClientState({ clientKind: 'desktop', foreground: true });
+    expect(chatSocket.messageQueue).toHaveLength(0);
+
+    firstSocket.emitOpen();
+    const sentOnOpen = firstSocket.sent.map((item) => JSON.parse(item));
+    expect(sentOnOpen).toContainEqual({
+      type: 'chat.client_state',
+      payload: { client_kind: 'desktop', foreground: true },
+    });
+
+    chatSocket.reportClientState({ clientKind: 'desktop', foreground: false });
+    firstSocket.emitClose({ code: 1006 });
+    await vi.runOnlyPendingTimersAsync();
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.emitOpen();
+    const replayed = secondSocket.sent
+      .map((item) => JSON.parse(item))
+      .filter((item) => item.type === 'chat.client_state');
+    expect(replayed).toEqual([{
+      type: 'chat.client_state',
+      payload: { client_kind: 'desktop', foreground: false },
+    }]);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('tracks chat.desktop_presence until it expires or is released', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    const now = Date.now();
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.desktop_presence',
+        payload: { user_id: 9, active: true, expires_in_ms: 120000 },
+      }),
+    });
+    expect(chatSocket.isDesktopActiveElsewhere(now + 1000)).toBe(true);
+    expect(chatSocket.isDesktopActiveElsewhere(now + 121000)).toBe(false);
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.desktop_presence',
+        payload: { user_id: 9, active: false, expires_in_ms: 0 },
+      }),
+    });
+    expect(chatSocket.isDesktopActiveElsewhere(now + 1000)).toBe(false);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('does not queue volatile typing commands while offline', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+
+    chatSocket.sendTyping('conv-1', true);
+
+    expect(chatSocket.messageQueue).toHaveLength(0);
+    expect(chatSocket.pendingConversationSubscriptions.size).toBe(0);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('keeps only the latest offline conversation subscription intent', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+
+    chatSocket.subscribeConversation('conv-1');
+    chatSocket.unsubscribeConversation('conv-1');
+    chatSocket.subscribeConversation('conv-1');
+
+    expect(chatSocket.messageQueue).toHaveLength(0);
+    expect(chatSocket.pendingConversationSubscriptions.size).toBe(1);
+    expect(chatSocket.pendingConversationSubscriptions.get('conv-1').type).toBe('chat.subscribe_conversation');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('dispatches OpenCode sandbox updates to the active UI seam', async () => {
+    const {
+      chatSocket,
+      CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT,
+    } = await loadChatSocket();
+    const handler = vi.fn();
+    window.addEventListener(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, handler);
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.ai.sandbox.updated',
+        conversation_id: 'conv-opencode',
+        payload: { change: 'permission', permission_id: 'permission-1' },
+      }),
+    });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0].detail).toEqual(expect.objectContaining({
+      conversation_id: 'conv-opencode',
+      payload: expect.objectContaining({ permission_id: 'permission-1' }),
+    }));
+
+    window.removeEventListener(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, handler);
+    release();
+    chatSocket.close(true);
+  });
+
+  it('caps the offline message queue and drops the oldest queued message', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+
+    for (let index = 0; index < 105; index += 1) {
+      chatSocket.send({
+        type: 'chat.test_command',
+        payload: { index },
+      });
+    }
+
+    expect(chatSocket.messageQueue).toHaveLength(100);
+    expect(chatSocket.messageQueue[0].payload.index).toBe(5);
+    expect(warnSpy).toHaveBeenCalled();
+
+    release();
+    chatSocket.close(true);
+    warnSpy.mockRestore();
+  });
+
+  it('caps inbox previews at 200 entries and removes expired previews', async () => {
+    const {
+      noteInboxMessagePreview,
+      peekInboxMessagePreview,
+      pruneInboxMessagePreviews,
+    } = await loadChatSocket();
+
+    for (let index = 0; index < 205; index += 1) {
+      noteInboxMessagePreview({
+        conversation_id: `conv-${index}`,
+        payload: { id: `msg-${index}`, body: `Message ${index}` },
+      });
+    }
+
+    expect(peekInboxMessagePreview('conv-4')).toBeNull();
+    expect(peekInboxMessagePreview('conv-5')?.id).toBe('msg-5');
+    expect(peekInboxMessagePreview('conv-204')?.id).toBe('msg-204');
+
+    pruneInboxMessagePreviews({ now: Date.now() + (10 * 60 * 1000) + 1 });
+    expect(peekInboxMessagePreview('conv-204')).toBeNull();
+  });
+
+  it('adds jitter to reconnect delays', async () => {
+    Math.random.mockReturnValue(1);
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 1006 });
+
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 1250);
+
+    release();
+    chatSocket.close(true);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it('reconnects after close code 4429 honoring retry_after without an auth block', async () => {
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 4429, reason: 'chat websocket rate limit exceeded retry_after_ms=1500' });
+
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(chatSocket.connectionState).toBe('disconnected');
+    // jitter is 0 with Math.random() === 0.5, so the retry_after floor wins.
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 1500);
+
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    release();
+    chatSocket.close(true);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it('rejects only the matching command on rate_limited chat.error and keeps retry_after', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+
+    const pendingSend = chatSocket.sendMessage('conv-1', 'Hello');
+    pendingSend.catch(() => {});
+    const pendingOther = chatSocket.sendCommand({
+      type: 'chat.mark_read',
+      conversation_id: 'conv-1',
+      payload: { message_id: 'msg-1' },
+    });
+    pendingOther.catch(() => {});
+    const sendFrame = JSON.parse(socket.sent[socket.sent.length - 2]);
+    const otherFrame = JSON.parse(socket.sent[socket.sent.length - 1]);
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.error',
+        request_id: sendFrame.request_id,
+        payload: { code: 'rate_limited', retry_after_ms: 2500 },
+      }),
+    });
+
+    await expect(pendingSend).rejects.toMatchObject({
+      message: 'rate_limited',
+      chatErrorCode: 'rate_limited',
+      retryAfterMs: 2500,
+    });
+    expect(chatSocket.pendingRequests.has(otherFrame.request_id)).toBe(true);
+    expect(chatSocket.rateLimitRetryAfterMs).toBe(2500);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('reconnectNow drops the socket, rejects pending commands and reconnects at once', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const first = MockWebSocket.instances[0];
+    first.emitOpen();
+
+    const pending = chatSocket.sendMessage('conv-1', 'Hello');
+    pending.catch(() => {});
+
+    chatSocket.reconnectNow();
+
+    await expect(pending).rejects.toThrow('Chat websocket reconnecting');
+    expect(first.onclose).toBeNull();
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(chatSocket.socket).toBe(MockWebSocket.instances[1]);
+    expect(chatSocket.connectionState).toBe('connecting');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('collapses queued chat.mark_read commands to the latest marker per conversation', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    // Socket is still CONNECTING: commands with a request land in the queue.
+    const first = chatSocket.sendCommand({
+      type: 'chat.mark_read',
+      conversation_id: 'conv-1',
+      payload: { message_id: 'msg-10' },
+    });
+    const other = chatSocket.sendCommand({
+      type: 'chat.mark_read',
+      conversation_id: 'conv-2',
+      payload: { message_id: 'msg-20' },
+    });
+    const latest = chatSocket.sendCommand({
+      type: 'chat.mark_read',
+      conversation_id: 'conv-1',
+      payload: { message_id: 'msg-11' },
+    });
+    first.catch(() => {});
+    other.catch(() => {});
+    latest.catch(() => {});
+
+    socket.emitOpen();
+
+    const markReads = socket.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((frame) => frame.type === 'chat.mark_read');
+    expect(markReads).toHaveLength(2);
+    expect(markReads.map((frame) => frame.conversation_id)).toEqual(['conv-2', 'conv-1']);
+    expect(markReads[1].payload.message_id).toBe('msg-11');
+
+    // The superseded marker resolves with the surviving position instead of
+    // falling back to HTTP with an older one.
+    await expect(first).resolves.toEqual(expect.objectContaining({
+      collapsed: true,
+      message_id: 'msg-11',
+    }));
+    expect(chatSocket.pendingRequests.size).toBe(2);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('R7: re-arms a queued request timeout with its original timeoutMs', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    // Socket is still CONNECTING: the command queues with a custom 3s timeout.
+    const pending = chatSocket.sendCommand({
+      type: 'chat.mark_read',
+      conversation_id: 'conv-1',
+      payload: { message_id: 'msg-10' },
+    }, { timeoutMs: 3000 });
+    const assertion = expect(pending).rejects.toThrow('Chat websocket command timed out');
+    pending.catch(() => {});
+
+    socket.emitOpen();
+    expect(socket.sent.some((raw) => JSON.parse(raw).type === 'chat.mark_read')).toBe(true);
+
+    // Before R7 the re-armed timeout was the generic 15s — the flushed request
+    // would hang far past its own budget.
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(chatSocket.pendingRequests.size).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(chatSocket.pendingRequests.size).toBe(0);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('sends an out-of-band heartbeat ping on online and visible transitions', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    const sentBefore = socket.sent.length;
+
+    window.dispatchEvent(new window.Event('online'));
+    const onlinePing = JSON.parse(socket.sent[socket.sent.length - 1]);
+    expect(onlinePing.type).toBe('chat.ping');
+    expect(onlinePing.request_id).toBeTruthy();
+    socket.onmessage?.({
+      data: JSON.stringify({ type: 'chat.pong', request_id: onlinePing.request_id, payload: {} }),
+    });
+
+    Object.defineProperty(document, 'visibilityState', {
+      value: 'visible',
+      configurable: true,
+    });
+    document.dispatchEvent(new window.Event('visibilitychange'));
+    const visiblePing = JSON.parse(socket.sent[socket.sent.length - 1]);
+    expect(visiblePing.type).toBe('chat.ping');
+    expect(visiblePing.request_id).not.toBe(onlinePing.request_id);
+    socket.onmessage?.({
+      data: JSON.stringify({ type: 'chat.pong', request_id: visiblePing.request_id, payload: {} }),
+    });
+
+    expect(socket.sent.length).toBe(sentBefore + 2);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('forces a reconnect when a connectivity probe times out after 5s', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+
+    window.dispatchEvent(new window.Event('online'));
+    expect(JSON.parse(socket.sent[socket.sent.length - 1]).type).toBe('chat.ping');
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await Promise.resolve();
+
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(chatSocket.socket).toBeNull();
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('forces a reconnect after two missed heartbeat pongs', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+
+    await vi.advanceTimersByTimeAsync(25000);
+    expect(chatSocket.missedPongs).toBe(1);
+    await vi.advanceTimersByTimeAsync(25000);
+    expect(chatSocket.missedPongs).toBe(2);
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+
+    await vi.advanceTimersByTimeAsync(25000);
+    await Promise.resolve();
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  // Connect-timeout automaton: a handshake hanging in CONNECTING (TCP accepted,
+  // upgrade never finished) cannot be reproduced reliably through E2E.
+  it('drops a socket stuck in CONNECTING after 10s and reconnects with backoff', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const stuck = MockWebSocket.instances[0];
+
+    // While CONNECTING, connect()/online probes must not open a parallel socket.
+    window.dispatchEvent(new window.Event('online'));
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(stuck.readyState).toBe(MockWebSocket.CONNECTING);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(stuck.readyState).toBe(MockWebSocket.CLOSED);
+    expect(chatSocket.socket).toBeNull();
+    expect(chatSocket.getConnectionState()).toBe('disconnected');
+
+    // First backoff step is 1s (jitter is zeroed by the Math.random mock).
+    await vi.advanceTimersByTimeAsync(999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(chatSocket.socket).toBe(MockWebSocket.instances[1]);
+    expect(chatSocket.getConnectionState()).toBe('reconnecting');
+
+    MockWebSocket.instances[1].emitOpen();
+    expect(chatSocket.getConnectionState()).toBe('connected');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('does not close a socket that opened before the connect timeout', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    await vi.advanceTimersByTimeAsync(9_000);
+    socket.emitOpen();
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+    expect(chatSocket.socket).toBe(socket);
+    expect(chatSocket.getConnectionState()).toBe('connected');
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('ignores a late open of a socket abandoned by the connect timeout', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    chatSocket.subscribeConversation('conv-1');
+    const stuck = MockWebSocket.instances[0];
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chatSocket.getConnectionState()).toBe('disconnected');
+
+    // The abandoned transport finally completes its handshake.
+    stuck.emitOpen();
+    expect(chatSocket.getConnectionState()).toBe('disconnected');
+    expect(chatSocket.socket).toBeNull();
+    expect(stuck.sent).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const replacement = MockWebSocket.instances[1];
+    expect(chatSocket.socket).toBe(replacement);
+    stuck.emitClose({ code: 1006 });
+    expect(chatSocket.socket).toBe(replacement);
+    expect(chatSocket.getConnectionState()).toBe('reconnecting');
+
+    replacement.emitOpen();
+    const subscribed = replacement.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'chat.subscribe_conversation');
+    expect(subscribed.map((message) => message.conversation_id)).toEqual(['conv-1']);
+
+    release();
+    chatSocket.close(true);
+  });
+});

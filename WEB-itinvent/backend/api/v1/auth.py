@@ -1,0 +1,2522 @@
+"""
+Authentication API endpoints.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+import asyncio
+import hashlib
+import html
+import logging
+import secrets
+import urllib.parse
+import uuid
+
+import time
+from pathlib import Path
+
+from fastapi import APIRouter, Body, Depends, File, status, HTTPException, Request, Response, Cookie, UploadFile, Query
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field, ValidationError
+
+from backend.api.deps import ensure_admin_ip_allowed, get_current_active_user, get_current_admin_user, get_current_session_id, get_current_user, require_permission
+from backend.config import config
+from backend.models.auth import (
+    User,
+    UserSearchResponse,
+    LoginRequest,
+    LoginResponse,
+    LoginModeResponse,
+    ChangePasswordRequest,
+    RefreshResponse,
+    MobileRefreshRequest,
+    MobileBiometricEnrollRequest,
+    MobileBiometricEnrollResponse,
+    MobileBiometricSessionRequest,
+    MobileWebSessionRequest,
+    MobileWebSessionResponse,
+    MobileWebSessionConsumeRequest,
+    MobileWebSessionConsumeResponse,
+    LogoutRequest,
+    TwoFactorSetupStartRequest,
+    TwoFactorSetupResponse,
+    TwoFactorSetupVerifyRequest,
+    TwoFactorSetupVerifyResponse,
+    TwoFactorLoginVerifyRequest,
+    BackupCodesResponse,
+    TrustedDeviceInfo,
+    TrustedDeviceRegistrationOptionsRequest,
+    TrustedDeviceRegistrationVerifyRequest,
+    TrustedDeviceAuthOptionsRequest,
+    TrustedDeviceAuthVerifyRequest,
+    PasskeyLoginVerifyRequest,
+    UserCreateRequest,
+    TaskDelegateLink,
+    TaskDelegateLinksBulkResponse,
+    TaskDelegateLinksUpdateRequest,
+    UserUpdateRequest,
+    SessionInfo,
+    SessionLimitNormalizeRequest,
+)
+from backend.utils.security import decode_access_token, token_ttl_seconds
+from backend.services.authorization_service import authorization_service
+from backend.services.session_service import new_client_device_id, normalize_client_device_id, session_service
+from backend.services.session_service import SessionCredentialRevokedError
+from backend.models.user_devices import OwnDeviceInfo, OwnDeviceActionResult
+from backend.services.user_device_service import user_device_service, UserDeviceNotFoundError
+from backend.services.session_auth_context_service import session_auth_context_service
+from backend.services.settings_service import settings_service
+from backend.services.user_db_selection_service import user_db_selection_service
+from backend.services.mail_service import mail_service
+from backend.services.user_service import user_service
+from backend.services.auth_runtime_store_service import auth_runtime_store_service
+from backend.services.auth_security_service import AuthSecurityError, auth_security_service
+from backend.services.mobile_biometric_session_service import (
+    MobileBiometricSessionError,
+    mobile_biometric_session_service,
+)
+from backend.services.adfs_sso_service import WindowsSsoError, adfs_sso_service
+from backend.services.ad_sync_service import run_ad_sync
+from backend.services.authorization_service import (
+    PERM_DATABASE_AD_SYNC,
+    PERM_SETTINGS_SESSIONS_MANAGE,
+    PERM_SETTINGS_USERS_MANAGE,
+)
+from backend.services.trusted_device_service import TrustedDeviceServiceError, trusted_device_service
+from backend.database.connection import set_user_database
+from backend.services.auth_session_metrics import note as note_auth_session_metric
+from backend.utils.client_geo import resolve_client_geo
+from backend.utils.request_network import build_request_network_context, resolve_twofa_policy
+from backend.utils.upload_limits import read_upload_limited
+
+
+router = APIRouter()
+security_optional = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
+
+_MOBILE_WEB_SESSION_NAMESPACE = "mobile_web_session"
+_MOBILE_WEB_SESSION_TTL_SECONDS = 60
+
+
+class SessionTelemetryRequest(BaseModel):
+    event: str = Field(..., min_length=1, max_length=64)
+    detail: Optional[str] = Field(default=None, max_length=200)
+    path: Optional[str] = Field(default=None, max_length=200)
+
+
+_CLIENT_TELEMETRY_EVENTS = {
+    "client_auth_required": "client_auth_required",
+    "client_refresh_failed": "client_refresh_failed",
+}
+
+_LOGIN_FAILURE_LIMIT = 5
+_LOGIN_FAILURE_WINDOW_SECONDS = 600
+_LOGIN_FAILURE_DEDUP_SECONDS = 1
+_LOGIN_BAN_SEQUENCE_SECONDS = [600, 3600, 86400]
+_LOGIN_ESCALATION_RESET_SECONDS = 86400
+_LOGIN_FAILURE_STATE_NAMESPACE = "auth_login_failures"
+_LOGIN_BAN_STATE_NAMESPACE = "auth_login_bans"
+_LOGIN_ESCALATION_STATE_NAMESPACE = "auth_login_escalation"
+
+
+def _request_is_https(request: Request) -> bool:
+    forwarded_proto = str(request.headers.get("x-forwarded-proto", "") or "").strip().lower()
+    if forwarded_proto:
+        return forwarded_proto.split(",")[0].strip() == "https"
+    if str(request.headers.get("x-forwarded-ssl", "") or "").strip().lower() == "on":
+        return True
+    if str(request.headers.get("x-arr-ssl", "") or "").strip():
+        return True
+    if str(request.headers.get("front-end-https", "") or "").strip().lower() == "on":
+        return True
+    if str(request.headers.get("x-url-scheme", "") or "").strip().lower() == "https":
+        return True
+    return str(request.url.scheme or "").lower() == "https"
+
+
+def _is_passkey_login_available() -> bool:
+    rp_id = str(config.security.webauthn_rp_id or "").strip()
+    origin = str(config.security.webauthn_origin or "").strip()
+    return bool(rp_id and origin)
+
+
+def _is_passkey_allowed_for_zone(network_zone: str) -> bool:
+    zone = str(network_zone or "").strip().lower()
+    if zone == "external":
+        return True
+    if zone == "internal" and bool(config.security.passkey_allow_internal):
+        return True
+    return False
+
+
+def _ensure_external_passkey_login(network_zone: str) -> None:
+    if not _is_passkey_allowed_for_zone(network_zone):
+        raise HTTPException(status_code=403, detail="Biometric login is disabled for internal network")
+
+
+def _auth_lockout_now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _normalize_login_username(username: str) -> str:
+    normalizer = getattr(user_service, "_normalize_username", None)
+    if callable(normalizer):
+        normalized = str(normalizer(username) or "").strip().lower()
+    else:
+        normalized = str(username or "").strip().lower()
+    return normalized or "anonymous"
+
+
+def _login_lockout_key(*, client_ip: str, username: str) -> str:
+    normalized_ip = str(client_ip or "").strip() or "unknown"
+    normalized_username = _normalize_login_username(username)
+    return f"{normalized_ip}:{normalized_username}"
+
+
+def _request_user_agent_bucket(request: Request) -> str:
+    user_agent = str(request.headers.get("user-agent", "") or "").strip().lower()
+    if not user_agent:
+        return "unknown"
+    browser = "other"
+    for marker, label in (
+        ("yabrowser", "yandex"),
+        ("edg/", "edge"),
+        ("firefox", "firefox"),
+        ("crios", "chrome"),
+        ("chrome", "chrome"),
+        ("safari", "safari"),
+    ):
+        if marker in user_agent:
+            browser = label
+            break
+    platform = "desktop"
+    if "android" in user_agent:
+        platform = "android"
+    elif "iphone" in user_agent or "ipad" in user_agent:
+        platform = "ios"
+    digest = hashlib.sha256(user_agent.encode("utf-8")).hexdigest()[:10]
+    return f"{browser}:{platform}:{digest}"
+
+
+def _passkey_rate_limit_key(*, client_ip: str, request: Request) -> str:
+    normalized_ip = str(client_ip or "").strip() or "unknown"
+    return f"{normalized_ip}:{_request_user_agent_bucket(request)}"
+
+
+def _refresh_rate_limit_key(*, token_data: Any, client_ip: str) -> str:
+    normalized_ip = str(client_ip or "").strip() or "unknown"
+    user_id = str(getattr(token_data, "user_id", "") or "").strip() or "unknown-user"
+    session_id = str(getattr(token_data, "session_id", "") or "").strip() or "unknown-session"
+    return f"{session_id}:{user_id}:{normalized_ip}"
+
+
+def _auth_store_get_dict(namespace: str, key: str) -> dict[str, Any]:
+    payload = auth_runtime_store_service.get_json(namespace, key)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _auth_store_set_dict(namespace: str, key: str, payload: dict[str, Any], *, ttl_seconds: int) -> None:
+    auth_runtime_store_service.set_json(
+        namespace,
+        key,
+        payload,
+        ttl_seconds=max(1, int(ttl_seconds or 1)),
+    )
+
+
+def _delete_login_failure_state(lockout_key: str) -> None:
+    auth_runtime_store_service.delete(_LOGIN_FAILURE_STATE_NAMESPACE, lockout_key)
+
+
+def _active_login_ban(lockout_key: str) -> dict[str, Any] | None:
+    payload = _auth_store_get_dict(_LOGIN_BAN_STATE_NAMESPACE, lockout_key)
+    if not payload:
+        return None
+    now_ts = int(_auth_lockout_now_utc().timestamp())
+    expires_at = int(payload.get("expires_at", 0) or 0)
+    if expires_at <= now_ts:
+        auth_runtime_store_service.delete(_LOGIN_BAN_STATE_NAMESPACE, lockout_key)
+        return None
+    return {
+        "ban_level": max(0, int(payload.get("ban_level", 0) or 0)),
+        "expires_at": expires_at,
+        "retry_after": max(1, expires_at - now_ts),
+    }
+
+
+def _login_escalation_state(lockout_key: str, *, now_ts: int) -> dict[str, Any] | None:
+    payload = _auth_store_get_dict(_LOGIN_ESCALATION_STATE_NAMESPACE, lockout_key)
+    if not payload:
+        return None
+    last_failed_at = int(payload.get("last_failed_at", 0) or 0)
+    if last_failed_at <= 0 or last_failed_at + _LOGIN_ESCALATION_RESET_SECONDS <= now_ts:
+        auth_runtime_store_service.delete(_LOGIN_ESCALATION_STATE_NAMESPACE, lockout_key)
+        return None
+    max_level = max(0, len(_LOGIN_BAN_SEQUENCE_SECONDS) - 1)
+    return {
+        "ban_level": min(max_level, max(0, int(payload.get("ban_level", 0) or 0))),
+        "last_failed_at": last_failed_at,
+    }
+
+
+def _save_login_escalation_state(lockout_key: str, *, ban_level: int, now_ts: int) -> None:
+    max_level = max(0, len(_LOGIN_BAN_SEQUENCE_SECONDS) - 1)
+    _auth_store_set_dict(
+        _LOGIN_ESCALATION_STATE_NAMESPACE,
+        lockout_key,
+        {
+            "ban_level": min(max_level, max(0, int(ban_level))),
+            "last_failed_at": int(now_ts),
+        },
+        ttl_seconds=_LOGIN_ESCALATION_RESET_SECONDS,
+    )
+
+
+def _record_failed_login_attempt(*, lockout_key: str, client_ip: str, username: str) -> dict[str, Any]:
+    now_ts = int(_auth_lockout_now_utc().timestamp())
+    escalation_state = _login_escalation_state(lockout_key, now_ts=now_ts)
+    if escalation_state is not None:
+        _save_login_escalation_state(
+            lockout_key,
+            ban_level=int(escalation_state.get("ban_level", 0) or 0),
+            now_ts=now_ts,
+        )
+
+    attempts_payload = _auth_store_get_dict(_LOGIN_FAILURE_STATE_NAMESPACE, lockout_key)
+    attempts = [
+        int(item)
+        for item in list(attempts_payload.get("attempts") or [])
+        if int(item or 0) > now_ts - _LOGIN_FAILURE_WINDOW_SECONDS
+    ]
+    last_attempt_at = max(attempts) if attempts else 0
+    if last_attempt_at and (now_ts - last_attempt_at) < _LOGIN_FAILURE_DEDUP_SECONDS:
+        return {"banned": False, "attempts": len(attempts), "deduped": True}
+    attempts.append(now_ts)
+    if len(attempts) < _LOGIN_FAILURE_LIMIT:
+        _auth_store_set_dict(
+            _LOGIN_FAILURE_STATE_NAMESPACE,
+            lockout_key,
+            {"attempts": attempts},
+            ttl_seconds=_LOGIN_FAILURE_WINDOW_SECONDS,
+        )
+        return {"banned": False, "attempts": len(attempts)}
+
+    next_level = 0
+    if escalation_state is not None:
+        next_level = min(
+            int(escalation_state.get("ban_level", 0) or 0) + 1,
+            len(_LOGIN_BAN_SEQUENCE_SECONDS) - 1,
+        )
+    ban_seconds = int(_LOGIN_BAN_SEQUENCE_SECONDS[next_level])
+    expires_at = now_ts + ban_seconds
+    _auth_store_set_dict(
+        _LOGIN_BAN_STATE_NAMESPACE,
+        lockout_key,
+        {"ban_level": next_level, "expires_at": expires_at},
+        ttl_seconds=ban_seconds,
+    )
+    _save_login_escalation_state(lockout_key, ban_level=next_level, now_ts=now_ts)
+    _delete_login_failure_state(lockout_key)
+    logger.warning(
+        "Auth login lockout activated username=%s client_ip=%s ban_level=%s expires_at=%s",
+        _normalize_login_username(username),
+        str(client_ip or "").strip() or "unknown",
+        next_level,
+        datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+    )
+    return {
+        "banned": True,
+        "ban_level": next_level,
+        "expires_at": expires_at,
+        "retry_after": ban_seconds,
+    }
+
+
+def _raise_login_lockout(*, retry_after: int) -> None:
+    raise HTTPException(
+        status_code=429,
+        detail="Too many failed login attempts, try again later",
+        headers={"Retry-After": str(max(1, int(retry_after or 1)))},
+    )
+
+
+def _validate_assigned_database_or_raise(database_id: Optional[str]) -> Optional[str]:
+    normalized = str(database_id or "").strip()
+    if not normalized:
+        return None
+    from backend.api.v1.database import get_all_db_configs
+    allowed = {str(item.get("id")) for item in get_all_db_configs()}
+    if normalized not in allowed:
+        raise HTTPException(status_code=400, detail="Invalid assigned_database")
+    return normalized
+
+
+def _apply_default_database(user: dict) -> None:
+    """
+    Resolve and apply default DB for user after login.
+
+    Priority:
+    1) Bot assignment by Telegram ID (user_db_selection.json)
+    2) Pinned database in web settings
+    """
+    user_id = int(user["id"])
+    username = str(user["username"])
+
+    assigned_db = (str(user.get("assigned_database") or "").strip() or None)
+    if not assigned_db:
+        assigned_db = user_db_selection_service.get_assigned_database(user.get("telegram_id"))
+    if assigned_db:
+        set_user_database(user_id, assigned_db, username)
+        return
+
+    settings = settings_service.get_user_settings(user_id)
+    pinned = (settings.get("pinned_database") or "").strip()
+    if pinned:
+        set_user_database(user_id, pinned, username)
+
+
+def _auth_cookie_samesite() -> str:
+    return str(config.app.auth_cookie_samesite or "strict")
+
+
+def _set_auth_cookies(response: Response, *, access_token: str, refresh_token: str, access_ttl_seconds: int, refresh_ttl_seconds: int) -> None:
+    response.set_cookie(
+        key=config.app.auth_cookie_name,
+        value=access_token,
+        max_age=max(1, int(access_ttl_seconds or 1)),
+        httponly=True,
+        secure=bool(config.app.auth_cookie_secure),
+        samesite=_auth_cookie_samesite(),
+        domain=config.app.auth_cookie_domain,
+        path="/",
+    )
+    response.set_cookie(
+        key=config.app.auth_refresh_cookie_name,
+        value=refresh_token,
+        max_age=max(1, int(refresh_ttl_seconds or 1)),
+        httponly=True,
+        secure=bool(config.app.auth_cookie_secure),
+        samesite=_auth_cookie_samesite(),
+        domain=config.app.auth_cookie_domain,
+        path="/api/v1/auth",
+    )
+
+
+_MOBILE_AUTH_CLIENT_HEADER = "x-auth-client"
+_MOBILE_AUTH_CLIENT_VALUE = "mobile"
+_CLIENT_DEVICE_COOKIE_NAME = "hubit_client_device_id"
+_CLIENT_DEVICE_HEADER_NAME = "x-client-device-id"
+_CLIENT_DEVICE_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
+
+
+def _is_mobile_auth_client(request: Request) -> bool:
+    return str(request.headers.get(_MOBILE_AUTH_CLIENT_HEADER) or "").strip().lower() == _MOBILE_AUTH_CLIENT_VALUE
+
+
+def _resolve_client_device_id(request: Request) -> str:
+    """Resolve a stable browser-profile/app-install identifier.
+
+    IP is deliberately excluded: it changes on normal networks and is not a
+    device identity. Web clients use an HttpOnly cookie; mobile clients send a
+    value persisted in SecureStore.
+    """
+    if _is_mobile_auth_client(request):
+        raw_value = request.headers.get(_CLIENT_DEVICE_HEADER_NAME)
+    else:
+        cookies = getattr(request, "cookies", {}) or {}
+        raw_value = cookies.get(_CLIENT_DEVICE_COOKIE_NAME)
+    return normalize_client_device_id(raw_value) or new_client_device_id()
+
+
+def _require_mobile_client_device_id(request: Request) -> str:
+    if not _is_mobile_auth_client(request):
+        raise HTTPException(status_code=404, detail="Not found")
+    client_device_id = normalize_client_device_id(request.headers.get(_CLIENT_DEVICE_HEADER_NAME))
+    if not client_device_id:
+        raise HTTPException(status_code=400, detail="Mobile device identifier is required")
+    return client_device_id
+
+
+def _deliver_client_device_id(
+    request: Request,
+    response: Response,
+    client_device_id: str | None,
+) -> Optional[str]:
+    normalized = normalize_client_device_id(client_device_id) or _resolve_client_device_id(request)
+    if _is_mobile_auth_client(request):
+        return normalized
+    response.set_cookie(
+        key=_CLIENT_DEVICE_COOKIE_NAME,
+        value=normalized,
+        max_age=_CLIENT_DEVICE_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=bool(config.app.auth_cookie_secure),
+        samesite=_auth_cookie_samesite(),
+        domain=config.app.auth_cookie_domain,
+        path="/",
+    )
+    return None
+
+
+def _apply_auth_delivery(
+    request: Request,
+    response: Response,
+    *,
+    access_token: str,
+    refresh_token: str,
+    access_ttl_seconds: int,
+    refresh_ttl_seconds: int,
+) -> tuple[Optional[str], Optional[str]]:
+    """Issue cookies for web clients; return bearer tokens in JSON for mobile clients."""
+    normalized_access = str(access_token or "").strip()
+    normalized_refresh = str(refresh_token or "").strip()
+    if _is_mobile_auth_client(request):
+        return normalized_access or None, normalized_refresh or None
+    if normalized_access and normalized_refresh:
+        _set_auth_cookies(
+            response,
+            access_token=normalized_access,
+            refresh_token=normalized_refresh,
+            access_ttl_seconds=access_ttl_seconds,
+            refresh_ttl_seconds=refresh_ttl_seconds,
+        )
+    return None, None
+
+
+def _build_login_response(
+    request: Request,
+    response: Response,
+    login_result: dict[str, Any],
+) -> LoginResponse:
+    body_client_device_id = _deliver_client_device_id(
+        request,
+        response,
+        login_result.get("client_device_id"),
+    )
+    body_access: Optional[str] = None
+    body_refresh: Optional[str] = None
+    if str(login_result.get("status") or "") == "authenticated":
+        body_access, body_refresh = _apply_auth_delivery(
+            request,
+            response,
+            access_token=str(login_result.get("access_token") or ""),
+            refresh_token=str(login_result.get("refresh_token") or ""),
+            access_ttl_seconds=int(login_result.get("access_ttl_seconds") or 0),
+            refresh_ttl_seconds=int(login_result.get("refresh_ttl_seconds") or 0),
+        )
+    return LoginResponse(
+        status=login_result["status"],
+        access_token=body_access,
+        refresh_token=body_refresh,
+        token_type="bearer",
+        user=User(**login_result["user"]) if login_result.get("user") else None,
+        session_id=login_result.get("session_id"),
+        login_challenge_id=login_result.get("login_challenge_id"),
+        available_second_factors=list(login_result.get("available_second_factors") or []),
+        trusted_devices_available=bool(login_result.get("trusted_devices_available")),
+        client_device_id=body_client_device_id,
+        biometric_enrollment_code=(
+            str(login_result.get("biometric_enrollment_code") or "").strip() or None
+            if _is_mobile_auth_client(request)
+            else None
+        ),
+    )
+
+
+async def _issue_mobile_biometric_enrollment_code(
+    *,
+    request: Request,
+    user_id: int,
+    client_device_id: str,
+    session_id: str | None,
+) -> str | None:
+    if not _is_mobile_auth_client(request):
+        return None
+    return await run_in_threadpool(
+        mobile_biometric_session_service.issue_enrollment_code,
+        user_id=int(user_id),
+        client_device_id=client_device_id,
+        session_id=session_id,
+    )
+
+
+def _resolve_refresh_token(
+    *,
+    request: Request,
+    refresh_token_cookie: Optional[str],
+    mobile_payload: Optional[MobileRefreshRequest],
+) -> str:
+    cookie_token = str(refresh_token_cookie or "").strip()
+    if cookie_token:
+        return cookie_token
+    if mobile_payload is not None:
+        body_token = str(mobile_payload.refresh_token or "").strip()
+        if body_token:
+            return body_token
+    if _is_mobile_auth_client(request):
+        raise HTTPException(status_code=401, detail="Refresh token is invalid")
+    return ""
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(
+        key=config.app.auth_cookie_name,
+        domain=config.app.auth_cookie_domain,
+        path="/",
+    )
+    response.delete_cookie(
+        key=config.app.auth_refresh_cookie_name,
+        domain=config.app.auth_cookie_domain,
+        path="/api/v1/auth",
+    )
+
+
+def _revoke_token_if_present(token: str | None) -> None:
+    token_data = decode_access_token(token or "")
+    jti = str(getattr(token_data, "jti", "") or "").strip() if token_data else ""
+    if jti:
+        auth_runtime_store_service.revoke_jti(jti, ttl_seconds=token_ttl_seconds(token_data))
+
+
+def _close_sessions_and_contexts(user_id: int) -> int:
+    closed = session_service.close_user_sessions(int(user_id))
+    for item in session_service.list_sessions_by_user_ids({int(user_id)}):
+        session_auth_context_service.delete_session_context(item.get("session_id"))
+    return closed
+
+
+def _build_current_user_payload(current_user: User, request: Request) -> User:
+    raw_user = user_service.get_by_id(int(current_user.id)) or user_service.get_by_username(current_user.username)
+    if not raw_user:
+        return current_user
+    network_context = build_request_network_context(request)
+    effective_policy = resolve_twofa_policy()
+    public_user = auth_security_service._build_public_user(
+        raw_user,
+        network_zone=network_context.network_zone,
+        twofa_policy=effective_policy,
+    )
+    return User(**public_user)
+
+
+def _request_is_internal(request: Optional[Request]) -> bool:
+    if request is None:
+        return False
+    try:
+        return str(build_request_network_context(request).network_zone or "").strip().lower() == "internal"
+    except Exception:
+        return False
+
+
+def _enforce_rate_limit(
+    *,
+    namespace: str,
+    key: str,
+    limit: int,
+    window_seconds: int,
+    request: Optional[Request] = None,
+) -> None:
+    if _request_is_internal(request):
+        return
+    normalized_key = str(key or "").strip().lower()
+    if not normalized_key:
+        normalized_key = "anonymous"
+    network_zone = "unknown"
+    if request is not None:
+        try:
+            network_zone = str(build_request_network_context(request).network_zone or "unknown").strip().lower()
+        except Exception:
+            network_zone = "unknown"
+    storage_key = f"{namespace}:{network_zone}:{normalized_key}"
+    counter = auth_runtime_store_service.increment_counter(
+        "rate_limit",
+        storage_key,
+        window_seconds=max(1, int(window_seconds)),
+    )
+    if int(counter.get("count", 0) or 0) > int(limit):
+        raise HTTPException(status_code=429, detail="Too many requests, try again later")
+
+
+@router.post("/login", response_model=LoginResponse)
+async def login(payload: LoginRequest, request: Request, response: Response):
+    """
+    Login endpoint - authenticate user and return JWT token.
+    """
+    network_context = build_request_network_context(request)
+    client_device_id = _resolve_client_device_id(request)
+    ip_address = network_context.client_ip
+    lockout_key = _login_lockout_key(client_ip=ip_address, username=payload.username)
+    remote_host = str(request.client.host).strip() if request.client and request.client.host else ""
+    forwarded_for = str(request.headers.get("x-forwarded-for") or "").strip()
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").strip()
+    active_ban = await run_in_threadpool(_active_login_ban, lockout_key)
+    if active_ban is not None:
+        _raise_login_lockout(retry_after=int(active_ban.get("retry_after", 1) or 1))
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_login",
+        key=f"{ip_address}:{_normalize_login_username(payload.username)}",
+        limit=5,
+        window_seconds=60,
+        request=request,
+    )
+    user = await run_in_threadpool(user_service.authenticate, payload.username, payload.password)
+    if not user:
+        failed_attempt = await run_in_threadpool(
+            _record_failed_login_attempt,
+            lockout_key=lockout_key,
+            client_ip=ip_address,
+            username=payload.username,
+        )
+        if bool(failed_attempt.get("banned")):
+            _raise_login_lockout(retry_after=int(failed_attempt.get("retry_after", 1) or 1))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    await run_in_threadpool(_delete_login_failure_state, lockout_key)
+
+    if not user.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is inactive",
+        )
+    ensure_admin_ip_allowed(
+        user,
+        client_ip=ip_address,
+        via_forwarded_header=bool(getattr(network_context, "via_forwarded_header", False)),
+        entrypoint="login",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Incorrect username or password",
+    )
+    raw_user = await run_in_threadpool(user_service.get_by_id, int(user.get("id") or 0)) or dict(user)
+    try:
+        login_result = await run_in_threadpool(
+            auth_security_service.start_login,
+            user=raw_user,
+            password=payload.password,
+            request_username=payload.username,
+            ip_address=ip_address,
+            user_agent=request.headers.get("user-agent", ""),
+            network_zone=network_context.network_zone,
+            client_device_id=client_device_id,
+        )
+        if login_result["status"] == "authenticated":
+            login_result = await run_in_threadpool(
+                auth_security_service.complete_password_only_login,
+                user=raw_user,
+                password=payload.password,
+                request_username=payload.username,
+                ip_address=ip_address,
+                user_agent=request.headers.get("user-agent", ""),
+                network_zone=network_context.network_zone,
+                client_device_id=client_device_id,
+            )
+        login_result["client_device_id"] = login_result.get("client_device_id") or client_device_id
+        if login_result["status"] == "authenticated":
+            await run_in_threadpool(_apply_default_database, login_result["user"])
+        logger.info(
+            "Auth login decision username=%s client_ip=%s remote_host=%s xff=%s zone=%s trusted_proxy=%s via_xff=%s https=%s xfp=%s policy=%s status=%s challenge=%s cookies_set=%s",
+            str(payload.username or "").strip(),
+            ip_address,
+            remote_host,
+            forwarded_for,
+            network_context.network_zone,
+            bool(getattr(network_context, "trusted_proxy", False)),
+            bool(getattr(network_context, "via_forwarded_header", False)),
+            _request_is_https(request),
+            forwarded_proto,
+            resolve_twofa_policy(),
+            str(login_result.get("status") or ""),
+            str(login_result.get("login_challenge_id") or ""),
+            bool(login_result.get("status") == "authenticated"),
+        )
+        return _build_login_response(request, response, login_result)
+    except AuthSecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def handle_safari_password_beacon_form(request: Request) -> HTMLResponse:
+    """
+    Accept a same-origin form POST so Safari can offer to save the password.
+    Validates credentials against the active login challenge; does not persist them.
+    """
+    form = await request.form()
+    challenge_id = str(form.get("login_challenge_id") or "").strip()
+    username = str(form.get("username") or "").strip()
+    password = str(form.get("password") or "")
+    if not challenge_id or not username or not password:
+        return HTMLResponse(
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>missing</body></html>",
+            status_code=400,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        await run_in_threadpool(
+            auth_security_service.validate_safari_password_beacon,
+            challenge_id=challenge_id,
+            username=username,
+            password=password,
+        )
+    except AuthSecurityError:
+        return HTMLResponse(
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>denied</body></html>",
+            status_code=403,
+            headers={"Cache-Control": "no-store"},
+        )
+    continue_path = f"/login?resume_challenge={urllib.parse.quote(challenge_id, safe='')}"
+    return RedirectResponse(
+        url=continue_path,
+        status_code=303,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/safari-password-beacon")
+async def safari_password_beacon(request: Request):
+    return await handle_safari_password_beacon_form(request)
+
+
+@router.get("/login-mode", response_model=LoginModeResponse)
+async def get_login_mode(request: Request):
+    network_context = build_request_network_context(request)
+    network_zone = str(network_context.network_zone or "external").strip().lower() or "external"
+    biometric_enabled = (
+        _is_passkey_login_available()
+        and _is_passkey_allowed_for_zone(network_zone)
+    )
+    geo = await run_in_threadpool(
+        resolve_client_geo,
+        request=request,
+        client_ip=str(network_context.client_ip or ""),
+        network_zone=network_zone,
+    )
+    windows_sso_available = bool(
+        network_zone == "internal" and adfs_sso_service.is_configured()
+    )
+    return LoginModeResponse(
+        network_zone=network_zone,
+        biometric_login_enabled=bool(biometric_enabled),
+        client_country_code=geo.country_code,
+        show_vpn_hint=bool(geo.show_vpn_hint),
+        windows_sso_enabled=windows_sso_available,
+    )
+
+
+def _sso_login_redirect(error_code: str) -> RedirectResponse:
+    return RedirectResponse(f"/login?sso_error={error_code}", status_code=302)
+
+
+@router.get("/sso/begin")
+async def sso_begin(request: Request, mode: str = Query("")):
+    """Start the AD FS OIDC authorization-code flow (internal network only).
+
+    The browser/WebView is redirected to AD FS; domain-joined clients get
+    silent Windows Integrated Authentication, everyone else gets the AD FS
+    forms login page. State, nonce and PKCE verifier are stored one-time in
+    the auth runtime store.
+    """
+    if not adfs_sso_service.is_configured():
+        raise HTTPException(status_code=404, detail="Not found")
+    network_context = build_request_network_context(request)
+    if str(network_context.network_zone or "").strip().lower() != "internal":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Windows SSO is only available in the internal network",
+        )
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_windows_sso",
+        key=_passkey_rate_limit_key(client_ip=network_context.client_ip, request=request),
+        limit=20,
+        window_seconds=60,
+        request=request,
+    )
+    try:
+        authorize_url = await run_in_threadpool(adfs_sso_service.begin_flow)
+    except WindowsSsoError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if str(mode or "").strip().lower() == "json":
+        return JSONResponse(
+            {"authorize_url": authorize_url},
+            headers={"Cache-Control": "no-store"},
+        )
+    # A 302 to another host gets its Location rewritten by the IIS ARR reverse proxy,
+    # so the browser is handed a self-redirecting page instead.
+    target = html.escape(authorize_url, quote=True)
+    return HTMLResponse(
+        status_code=200,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        content=(
+            "<!DOCTYPE html><html lang=\"ru\"><head><meta charset=\"utf-8\">"
+            f"<meta http-equiv=\"refresh\" content=\"0;url={target}\">"
+            "<title>Вход через Windows</title></head><body>"
+            f"<p>Перенаправление на сервер входа… <a href=\"{target}\">Продолжить вход через Windows</a></p>"
+            "</body></html>"
+        ),
+    )
+
+
+@router.get("/sso/callback")
+async def sso_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+):
+    """Complete the AD FS flow and redirect home with a regular session."""
+    if not adfs_sso_service.is_configured():
+        raise HTTPException(status_code=404, detail="Not found")
+    network_context = build_request_network_context(request)
+    ip_address = network_context.client_ip
+    if str(network_context.network_zone or "").strip().lower() != "internal":
+        return _sso_login_redirect("unavailable")
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_windows_sso",
+        key=_passkey_rate_limit_key(client_ip=ip_address, request=request),
+        limit=20,
+        window_seconds=60,
+        request=request,
+    )
+
+    if error or not code or not state:
+        logger.warning("Windows SSO callback denied by AD FS client_ip=%s error=%s", ip_address, error)
+        return _sso_login_redirect("denied")
+
+    try:
+        principal = await run_in_threadpool(
+            adfs_sso_service.complete_flow,
+            code=code,
+            state=state,
+        )
+    except WindowsSsoError as exc:
+        logger.warning(
+            "Windows SSO verification failed client_ip=%s reason=%s",
+            ip_address,
+            str(exc),
+        )
+        return _sso_login_redirect("verify")
+
+    username = str(principal.get("username") or "")
+    raw_user = await run_in_threadpool(user_service.get_by_username, username)
+    if not raw_user or str(raw_user.get("auth_source") or "").strip().lower() != "ldap":
+        logger.warning("Windows SSO unknown or non-ldap user client_ip=%s", ip_address)
+        return _sso_login_redirect("not_provisioned")
+    if not raw_user.get("is_active", True):
+        return _sso_login_redirect("inactive")
+    ensure_admin_ip_allowed(
+        raw_user,
+        client_ip=ip_address,
+        via_forwarded_header=bool(getattr(network_context, "via_forwarded_header", False)),
+        entrypoint="windows-sso",
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Access denied from this network",
+    )
+    try:
+        login_result = await run_in_threadpool(
+            auth_security_service.complete_windows_sso_login,
+            user=raw_user,
+            ip_address=ip_address,
+            user_agent=request.headers.get("user-agent", ""),
+            network_zone=network_context.network_zone,
+            client_device_id=_resolve_client_device_id(request),
+        )
+    except AuthSecurityError as exc:
+        logger.warning("Windows SSO session issuance failed client_ip=%s reason=%s", ip_address, exc)
+        return _sso_login_redirect("verify")
+    if str(login_result.get("status") or "") != "authenticated":
+        return _sso_login_redirect("denied")
+
+    await run_in_threadpool(_apply_default_database, login_result["user"])
+    logger.info("Windows SSO login username=%s client_ip=%s", username, ip_address)
+    redirect = RedirectResponse("/", status_code=302)
+    _deliver_client_device_id(
+        request,
+        redirect,
+        login_result.get("client_device_id"),
+    )
+    _apply_auth_delivery(
+        request,
+        redirect,
+        access_token=str(login_result.get("access_token") or ""),
+        refresh_token=str(login_result.get("refresh_token") or ""),
+        access_ttl_seconds=int(login_result.get("access_ttl_seconds") or 0),
+        refresh_ttl_seconds=int(login_result.get("refresh_ttl_seconds") or 0),
+    )
+    return redirect
+
+
+@router.post("/passkey-login/options")
+async def passkey_login_options(request: Request):
+    network_context = build_request_network_context(request)
+    _ensure_external_passkey_login(network_context.network_zone)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_passkey_login_options",
+        key=_passkey_rate_limit_key(client_ip=network_context.client_ip, request=request),
+        limit=30,
+        window_seconds=60,
+        request=request,
+    )
+    rp_id = str(config.security.webauthn_rp_id or "").strip()
+    if not rp_id:
+        raise HTTPException(status_code=503, detail="WebAuthn is not configured")
+    options = await run_in_threadpool(trusted_device_service.build_discoverable_authentication_options, rp_id=rp_id)
+    challenge_id = uuid.uuid4().hex
+    await run_in_threadpool(
+        auth_runtime_store_service.save_webauthn_challenge,
+        challenge_id,
+        {
+            "purpose": "passkey_login",
+            "expected_origin": str(config.security.webauthn_origin or "").strip(),
+            "expected_rp_id": rp_id,
+            "challenge": options["challenge"],
+        },
+        ttl_seconds=max(60, int(config.security.twofa_challenge_ttl_sec or 600)),
+    )
+    return {"challenge_id": challenge_id, "public_key": options}
+
+
+@router.post("/passkey-login/verify", response_model=LoginResponse)
+async def passkey_login_verify(payload: PasskeyLoginVerifyRequest, request: Request, response: Response):
+    network_context = build_request_network_context(request)
+    _ensure_external_passkey_login(network_context.network_zone)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_passkey_login_verify",
+        key=_passkey_rate_limit_key(client_ip=network_context.client_ip, request=request),
+        limit=30,
+        window_seconds=60,
+        request=request,
+    )
+    challenge = await run_in_threadpool(auth_runtime_store_service.pop_webauthn_challenge, payload.challenge_id)
+    if not isinstance(challenge, dict) or challenge.get("purpose") != "passkey_login":
+        raise HTTPException(status_code=400, detail="WebAuthn authentication challenge expired")
+    device = await run_in_threadpool(
+        trusted_device_service.find_device_by_credential,
+        str((payload.credential or {}).get("id") or ""),
+        discoverable_only=True,
+    )
+    if not device:
+        await run_in_threadpool(trusted_device_service.audit_event, "auth_fail", reason="passkey_device_not_found")
+        raise HTTPException(status_code=400, detail="Trusted device not found")
+    try:
+        verification = await run_in_threadpool(
+            trusted_device_service.verify_authentication_response,
+            credential=payload.credential,
+            expected_challenge=str(challenge.get("challenge") or ""),
+            expected_origin=str(challenge.get("expected_origin") or ""),
+            expected_rp_id=str(challenge.get("expected_rp_id") or ""),
+            device=device,
+            require_user_verification=True,
+        )
+    except TrustedDeviceServiceError as exc:
+        await run_in_threadpool(
+            trusted_device_service.audit_event,
+            "auth_fail",
+            user_id=int(device.get("user_id") or 0),
+            device_id=str(device.get("id") or ""),
+            reason="passkey_verify",
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    user = await run_in_threadpool(user_service.get_by_id, int(device.get("user_id") or 0))
+    if not user:
+        raise HTTPException(status_code=400, detail="User not found")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is inactive")
+    try:
+        ensure_admin_ip_allowed(
+            user,
+            client_ip=network_context.client_ip,
+            via_forwarded_header=bool(getattr(network_context, "via_forwarded_header", False)),
+            entrypoint="login",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication failed",
+        )
+    except HTTPException:
+        await run_in_threadpool(
+            trusted_device_service.audit_event,
+            "auth_fail",
+            user_id=int(user.get("id") or 0),
+            device_id=str(device.get("id") or ""),
+            reason="admin_ip",
+        )
+        raise
+    try:
+        await run_in_threadpool(trusted_device_service.update_sign_count, str(device.get("id") or ""), int(verification.get("new_sign_count") or 0))
+        result = await run_in_threadpool(
+            auth_security_service.complete_passkey_login,
+            user=user,
+            device=device,
+            ip_address=network_context.client_ip,
+            user_agent=request.headers.get("user-agent", ""),
+            network_zone=network_context.network_zone,
+            request_username=str(user.get("username") or ""),
+            client_device_id=_resolve_client_device_id(request),
+        )
+    except AuthSecurityError as exc:
+        await run_in_threadpool(
+            trusted_device_service.audit_event,
+            "auth_fail",
+            user_id=int(user.get("id") or 0),
+            device_id=str(device.get("id") or ""),
+            reason="passkey_complete",
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await run_in_threadpool(_apply_default_database, result["user"])
+    return _build_login_response(
+        request,
+        response,
+        {
+            "status": "authenticated",
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "access_ttl_seconds": result.get("access_ttl_seconds"),
+            "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
+            "user": result["user"],
+            "session_id": result.get("session_id"),
+            "client_device_id": result.get("client_device_id"),
+        },
+    )
+
+
+@router.post("/logout")
+async def logout(
+    request: Request,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    access_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_cookie_name),
+    refresh_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_refresh_cookie_name),
+    payload: Optional[LogoutRequest] = Body(None),
+):
+    """
+    Logout endpoint.
+    """
+    token = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+    elif access_token_cookie:
+        token = str(access_token_cookie).strip() or None
+
+    token_data = decode_access_token(token or "")
+    if token_data and token_data.session_id:
+        await run_in_threadpool(session_service.close_session, token_data.session_id)
+        await run_in_threadpool(session_auth_context_service.delete_session_context, token_data.session_id)
+    await run_in_threadpool(_revoke_token_if_present, token)
+    refresh_token_value = str(refresh_token_cookie or "").strip()
+    if not refresh_token_value and payload is not None:
+        refresh_token_value = str(payload.refresh_token or "").strip()
+    await run_in_threadpool(_revoke_token_if_present, refresh_token_value or None)
+    if refresh_token_value:
+        refresh_data = decode_access_token(refresh_token_value, expected_token_type="refresh")
+        if refresh_data and refresh_data.jti:
+            await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, refresh_data.jti)
+    if _is_mobile_auth_client(request):
+        client_device_id = normalize_client_device_id(request.headers.get(_CLIENT_DEVICE_HEADER_NAME))
+        if client_device_id:
+            await run_in_threadpool(
+                mobile_biometric_session_service.revoke_device,
+                user_id=int(current_user.id),
+                client_device_id=client_device_id,
+            )
+    if not _is_mobile_auth_client(request):
+        _clear_auth_cookies(response)
+    return {"message": "Successfully logged out", "username": current_user.username}
+
+
+@router.get("/me", response_model=User)
+async def get_current_user_info(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Get current authenticated user information.
+    """
+    return await run_in_threadpool(_build_current_user_payload, current_user, request)
+
+
+@router.post("/me/about-onboarding/complete", response_model=User)
+async def complete_about_onboarding(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    completed = await run_in_threadpool(user_service.complete_about_onboarding, int(current_user.id))
+    if completed is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return await run_in_threadpool(_build_current_user_payload, current_user, request)
+
+
+@router.post("/change-password")
+async def change_password(
+    request: ChangePasswordRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Change current user's password.
+    """
+    changed = await run_in_threadpool(user_service.change_password, current_user.id, request.old_password, request.new_password)
+    if not changed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect old password",
+        )
+    closed_sessions = await run_in_threadpool(session_service.close_user_sessions, int(current_user.id))
+    revoked_devices = await run_in_threadpool(trusted_device_service.revoke_all_user_devices, int(current_user.id))
+    revoked_biometric_credentials = await run_in_threadpool(mobile_biometric_session_service.revoke_all_user_credentials, int(current_user.id))
+    for item in (await run_in_threadpool(session_service.list_sessions, active_only=False)):
+        if int(item.get("user_id", 0) or 0) == int(current_user.id):
+            await run_in_threadpool(session_auth_context_service.delete_session_context, item.get("session_id"))
+    return {
+        "message": "Password changed successfully",
+        "closed_sessions": closed_sessions,
+        "revoked_devices": revoked_devices,
+        "revoked_biometric_credentials": revoked_biometric_credentials,
+    }
+
+
+@router.post("/enable-2fa", response_model=TwoFactorSetupResponse)
+async def enable_twofa(payload: TwoFactorSetupStartRequest, request: Request):
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_enable_twofa",
+        key=str(payload.login_challenge_id or ""),
+        limit=5,
+        window_seconds=60,
+        request=request,
+    )
+    try:
+        result = await run_in_threadpool(auth_security_service.start_totp_enrollment, payload.login_challenge_id)
+        return TwoFactorSetupResponse(**result)
+    except AuthSecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/verify-2fa", response_model=TwoFactorSetupVerifyResponse)
+async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Request, response: Response):
+    client_device_id = _resolve_client_device_id(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_verify_twofa_setup",
+        key=str(payload.login_challenge_id or ""),
+        limit=3,
+        window_seconds=60,
+        request=request,
+    )
+    try:
+        result = await run_in_threadpool(
+            auth_security_service.finalize_totp_enrollment,
+            payload.login_challenge_id,
+            totp_code=payload.totp_code,
+            client_device_id=client_device_id,
+        )
+    except AuthSecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    biometric_enrollment_code = await _issue_mobile_biometric_enrollment_code(
+        request=request,
+        user_id=int(result["user"].get("id") or 0),
+        client_device_id=str(result.get("client_device_id") or client_device_id),
+        session_id=result.get("session_id"),
+    )
+    login_response = _build_login_response(
+        request,
+        response,
+        {
+            "status": "authenticated",
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "access_ttl_seconds": result.get("access_ttl_seconds"),
+            "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
+            "user": result["user"],
+            "session_id": result.get("session_id"),
+            "client_device_id": result.get("client_device_id") or client_device_id,
+            "biometric_enrollment_code": biometric_enrollment_code,
+        },
+    )
+    await run_in_threadpool(_apply_default_database, result["user"])
+    return TwoFactorSetupVerifyResponse(
+        status=login_response.status,
+        access_token=login_response.access_token,
+        refresh_token=login_response.refresh_token,
+        token_type=login_response.token_type,
+        user=login_response.user,
+        session_id=login_response.session_id,
+        client_device_id=login_response.client_device_id,
+        biometric_enrollment_code=login_response.biometric_enrollment_code,
+        backup_codes=list(result.get("backup_codes") or []),
+    )
+
+
+@router.post("/verify-2fa-login", response_model=LoginResponse)
+async def verify_twofa_login(payload: TwoFactorLoginVerifyRequest, request: Request, response: Response):
+    client_device_id = _resolve_client_device_id(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_verify_twofa_login",
+        key=str(payload.login_challenge_id or ""),
+        limit=3,
+        window_seconds=60,
+        request=request,
+    )
+    try:
+        result = await run_in_threadpool(
+            auth_security_service.verify_login_second_factor,
+            payload.login_challenge_id,
+            totp_code=payload.totp_code,
+            backup_code=payload.backup_code,
+            client_device_id=client_device_id,
+        )
+    except AuthSecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await run_in_threadpool(_apply_default_database, result["user"])
+    biometric_enrollment_code = await _issue_mobile_biometric_enrollment_code(
+        request=request,
+        user_id=int(result["user"].get("id") or 0),
+        client_device_id=str(result.get("client_device_id") or client_device_id),
+        session_id=result.get("session_id"),
+    )
+    return _build_login_response(
+        request,
+        response,
+        {
+            "status": "authenticated",
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "access_ttl_seconds": result.get("access_ttl_seconds"),
+            "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
+            "user": result["user"],
+            "session_id": result.get("session_id"),
+            "client_device_id": result.get("client_device_id") or client_device_id,
+            "biometric_enrollment_code": biometric_enrollment_code,
+        },
+    )
+
+
+@router.post("/mobile-biometric/enroll", response_model=MobileBiometricEnrollResponse)
+async def enroll_mobile_biometric_session(
+    payload: MobileBiometricEnrollRequest,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    client_device_id = _require_mobile_client_device_id(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_mobile_biometric_enroll",
+        key=f"{int(current_user.id)}:{hashlib.sha256(client_device_id.encode('utf-8')).hexdigest()}",
+        limit=5,
+        window_seconds=10 * 60,
+        request=request,
+    )
+    try:
+        renewal_token = await run_in_threadpool(
+            mobile_biometric_session_service.enroll,
+            enrollment_code=payload.enrollment_code,
+            user_id=int(current_user.id),
+            client_device_id=client_device_id,
+        )
+    except MobileBiometricSessionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return MobileBiometricEnrollResponse(renewal_token=renewal_token)
+
+
+@router.post("/mobile-biometric/session", response_model=LoginResponse)
+async def renew_mobile_biometric_session(
+    payload: MobileBiometricSessionRequest,
+    request: Request,
+    response: Response,
+):
+    client_device_id = _require_mobile_client_device_id(request)
+    network_context = build_request_network_context(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_mobile_biometric_session",
+        key=f"{network_context.client_ip}:{hashlib.sha256(client_device_id.encode('utf-8')).hexdigest()}",
+        limit=10,
+        window_seconds=60,
+        request=request,
+    )
+    try:
+        credential = await run_in_threadpool(
+            mobile_biometric_session_service.authenticate,
+            renewal_token=payload.renewal_token,
+            client_device_id=client_device_id,
+        )
+        user = await run_in_threadpool(user_service.get_by_id, int(credential["user_id"]))
+        if not user:
+            raise MobileBiometricSessionError("User not found")
+        result = await run_in_threadpool(
+            auth_security_service.complete_mobile_biometric_login,
+            user=user,
+            credential_id=str(credential["credential_id"]),
+            client_device_id=client_device_id,
+            ip_address=str(network_context.client_ip or ""),
+            user_agent=request.headers.get("user-agent", ""),
+            network_zone=network_context.network_zone,
+        )
+    except (MobileBiometricSessionError, AuthSecurityError, SessionCredentialRevokedError) as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    await run_in_threadpool(_apply_default_database, result["user"])
+    return _build_login_response(request, response, result)
+
+
+@router.delete("/mobile-biometric")
+async def revoke_mobile_biometric_session(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    client_device_id = _require_mobile_client_device_id(request)
+    revoked = await run_in_threadpool(
+        mobile_biometric_session_service.revoke_device,
+        user_id=int(current_user.id),
+        client_device_id=client_device_id,
+    )
+    return {"revoked": int(revoked)}
+
+
+@router.post("/refresh", response_model=RefreshResponse)
+async def refresh_auth_tokens(
+    request: Request,
+    response: Response,
+    refresh_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_refresh_cookie_name),
+    mobile_payload: Optional[MobileRefreshRequest] = Body(None),
+):
+    network_context = build_request_network_context(request)
+    refresh_token_raw = _resolve_refresh_token(
+        request=request,
+        refresh_token_cookie=refresh_token_cookie,
+        mobile_payload=mobile_payload,
+    )
+    token_data = decode_access_token(refresh_token_raw, expected_token_type="refresh")
+    if token_data is None or not token_data.jti or not token_data.session_id or not token_data.user_id:
+        await run_in_threadpool(
+            _enforce_rate_limit,
+            namespace="auth_refresh_invalid",
+            key=str(network_context.client_ip or ""),
+            limit=10,
+            window_seconds=60,
+            request=request,
+        )
+        note_auth_session_metric(
+            "refresh_invalid_token",
+            network_zone=network_context.network_zone,
+        )
+        raise HTTPException(status_code=401, detail="Refresh token is invalid")
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_refresh",
+        key=_refresh_rate_limit_key(token_data=token_data, client_ip=network_context.client_ip),
+        limit=10,
+        window_seconds=60,
+        request=request,
+    )
+    async def _deliver_refresh_payload(payload: dict[str, Any], *, metric_name: str) -> RefreshResponse:
+        # Rotation grace must never restore credentials for a remotely closed session.
+        session_row = await run_in_threadpool(session_service.get_session, str(token_data.session_id))
+        if (not session_row or not session_row.get("is_active")
+                or session_row.get("status") != "active"
+                or int(session_row.get("user_id") or 0) != int(token_data.user_id)):
+            raise HTTPException(status_code=401, detail="Session is not active")
+        body_access, body_refresh = _apply_auth_delivery(
+            request,
+            response,
+            access_token=str(payload.get("access_token") or ""),
+            refresh_token=str(payload.get("refresh_token") or ""),
+            access_ttl_seconds=int(payload.get("access_ttl_seconds") or 0),
+            refresh_ttl_seconds=int(payload.get("refresh_ttl_seconds") or 0),
+        )
+        note_auth_session_metric(
+            metric_name,
+            network_zone=network_context.network_zone,
+        )
+        user_payload = payload.get("user")
+        return RefreshResponse(
+            access_token=body_access,
+            refresh_token=body_refresh,
+            token_type="bearer",
+            user=User(**user_payload) if isinstance(user_payload, dict) else None,
+            session_id=payload.get("session_id"),
+        )
+
+    refresh_state = await run_in_threadpool(auth_runtime_store_service.get_json, "refresh", token_data.jti)
+    if not refresh_state:
+        grace_payload = await run_in_threadpool(
+            auth_runtime_store_service.get_refresh_rotation_grace,
+            token_data.jti,
+        )
+        if grace_payload:
+            return await _deliver_refresh_payload(grace_payload, metric_name="refresh_grace_hit")
+        if await run_in_threadpool(auth_runtime_store_service.is_jti_revoked, token_data.jti):
+            note_auth_session_metric(
+                "refresh_revoked_jti",
+                network_zone=network_context.network_zone,
+            )
+            raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+        note_auth_session_metric(
+            "refresh_expired_or_already_used",
+            network_zone=network_context.network_zone,
+        )
+        raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
+
+    user = await run_in_threadpool(user_service.get_by_id, int(token_data.user_id))
+    if not user:
+        note_auth_session_metric("refresh_other_error", detail="user_not_found")
+        raise HTTPException(status_code=401, detail="User not found")
+    if not bool(user.get("is_active", True)):
+        note_auth_session_metric(
+            "refresh_user_inactive",
+            network_zone=network_context.network_zone,
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="User is not active",
+            headers={
+                "WWW-Authenticate": "Bearer",
+                "X-Hubit-Auth-Reason": "user_inactive",
+            },
+        )
+    try:
+        refreshed = await run_in_threadpool(
+            auth_security_service.refresh_session_tokens,
+            user=user,
+            session_id=str(token_data.session_id),
+            device_id=str(refresh_state.get("device_id") or token_data.device_id or f"session:{token_data.session_id}"),
+            network_zone=network_context.network_zone,
+            twofa_policy=resolve_twofa_policy(),
+            persist_refresh=False,
+        )
+    except AuthSecurityError as exc:
+        detail = str(exc)
+        if "не активна" in detail.lower() or "not active" in detail.lower():
+            note_auth_session_metric(
+                "refresh_session_inactive",
+                network_zone=network_context.network_zone,
+            )
+        else:
+            note_auth_session_metric("refresh_other_error", detail=detail)
+        raise HTTPException(status_code=401, detail=detail) from exc
+
+    grace_ttl = max(1, int(config.session.refresh_rotation_grace_seconds or 15))
+    committed = await run_in_threadpool(
+        auth_runtime_store_service.complete_refresh_rotation,
+        token_data.jti,
+        refreshed,
+        grace_ttl_seconds=grace_ttl,
+        revoke_ttl_seconds=token_ttl_seconds(token_data),
+    )
+    if not committed:
+        note_auth_session_metric("refresh_expired_or_already_used", network_zone=network_context.network_zone)
+        raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
+    metric_name = "refresh_success" if committed["refresh_token"] == refreshed["refresh_token"] else "refresh_grace_hit"
+    return await _deliver_refresh_payload(committed, metric_name=metric_name)
+
+
+def _normalize_mobile_web_next_path(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw or not raw.startswith("/") or raw.startswith("//") or "\\" in raw:
+        return "/dashboard"
+    if any(ord(char) < 32 for char in raw):
+        return "/dashboard"
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return "/dashboard"
+    path = parsed.path or "/dashboard"
+    if path == "/login" or path.startswith("/api/"):
+        return "/dashboard"
+    return urllib.parse.urlunsplit(("", "", path, parsed.query, parsed.fragment))
+
+
+def _mobile_web_exchange_key(code: str) -> str:
+    return hashlib.sha256(str(code or "").encode("utf-8")).hexdigest()
+
+
+def _validate_mobile_web_refresh_proof(
+    *,
+    credentials: Optional[HTTPAuthorizationCredentials],
+    refresh_token: str,
+    current_user: User,
+) -> tuple[Any, dict[str, Any]]:
+    access_raw = str(getattr(credentials, "credentials", "") or "").strip()
+    if not access_raw:
+        raise HTTPException(status_code=401, detail="Mobile bearer token is required")
+    access_data = decode_access_token(access_raw, expected_token_type="access")
+    refresh_data = decode_access_token(str(refresh_token or ""), expected_token_type="refresh")
+    if (
+        access_data is None
+        or refresh_data is None
+        or not refresh_data.jti
+        or not access_data.session_id
+        or not refresh_data.session_id
+    ):
+        raise HTTPException(status_code=401, detail="Mobile session proof is invalid")
+    if (
+        int(access_data.user_id or 0) != int(current_user.id)
+        or int(refresh_data.user_id or 0) != int(current_user.id)
+        or str(access_data.session_id) != str(refresh_data.session_id)
+        or str(access_data.device_id or "") != str(refresh_data.device_id or "")
+    ):
+        raise HTTPException(status_code=401, detail="Mobile session proof does not match")
+    if auth_runtime_store_service.is_jti_revoked(refresh_data.jti):
+        raise HTTPException(status_code=401, detail="Mobile refresh token has been revoked")
+    refresh_state = auth_runtime_store_service.get_json("refresh", refresh_data.jti)
+    if not isinstance(refresh_state, dict):
+        raise HTTPException(status_code=401, detail="Mobile refresh token is expired or already used")
+    if (
+        int(refresh_state.get("user_id") or 0) != int(current_user.id)
+        or str(refresh_state.get("session_id") or "") != str(refresh_data.session_id)
+        or str(refresh_state.get("device_id") or "") != str(refresh_data.device_id or "")
+    ):
+        raise HTTPException(status_code=401, detail="Mobile refresh token state does not match")
+    return access_data, refresh_state
+
+
+@router.post("/mobile-web-session", response_model=MobileWebSessionResponse)
+async def create_mobile_web_session(
+    payload: MobileWebSessionRequest,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+):
+    """Create a short-lived, one-time bridge from native auth to HttpOnly web cookies."""
+    if not _is_mobile_auth_client(request):
+        raise HTTPException(status_code=403, detail="Mobile auth client is required")
+    access_data, _refresh_state = await run_in_threadpool(
+        _validate_mobile_web_refresh_proof,
+        credentials=credentials,
+        refresh_token=payload.refresh_token,
+        current_user=current_user,
+    )
+    session_id = str(access_data.session_id or "").strip()
+    if not session_id or not await run_in_threadpool(session_service.is_session_active, session_id):
+        raise HTTPException(status_code=401, detail="Mobile session is no longer active")
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="mobile_web_session_create",
+        key=f"{int(current_user.id)}:{session_id}",
+        limit=10,
+        window_seconds=60,
+        request=request,
+    )
+
+    code = secrets.token_urlsafe(32)
+    await run_in_threadpool(
+        auth_runtime_store_service.set_json,
+        _MOBILE_WEB_SESSION_NAMESPACE,
+        _mobile_web_exchange_key(code),
+        {
+            "user_id": int(current_user.id),
+            "session_id": session_id,
+            "device_id": str(access_data.device_id or f"session:{session_id}"),
+            "next_path": _normalize_mobile_web_next_path(payload.next_path),
+        },
+        _MOBILE_WEB_SESSION_TTL_SECONDS,
+    )
+    encoded_code = urllib.parse.quote(code, safe="")
+    return MobileWebSessionResponse(
+        bootstrap_path=f"/api/v1/auth/mobile-web-session/bootstrap#code={encoded_code}",
+        expires_in_seconds=_MOBILE_WEB_SESSION_TTL_SECONDS,
+    )
+
+
+@router.get("/mobile-web-session/bootstrap", response_class=HTMLResponse)
+async def mobile_web_session_bootstrap() -> HTMLResponse:
+    nonce = secrets.token_urlsafe(16)
+    html = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>HUB-IT</title>
+  <style nonce="{nonce}">
+    html,body{{height:100%;margin:0;background:#f7f6f4;color:#1f2937;font:16px system-ui,sans-serif}}
+    body{{display:grid;place-items:center}}
+    main{{padding:24px;text-align:center}}
+  </style>
+</head>
+<body>
+  <main><p id="status" role="status">Подключаем HUB-IT…</p></main>
+  <script nonce="{nonce}">
+    (async () => {{
+      const code = new URLSearchParams(location.hash.slice(1)).get('code') || '';
+      history.replaceState(null, '', location.pathname);
+      if (!code) throw new Error('missing_code');
+      const controller = new AbortController();
+      const requestTimeout = setTimeout(() => controller.abort(), 15000);
+      let response;
+      try {{
+        response = await fetch('/api/v1/auth/mobile-web-session/consume', {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{code}}),
+          signal: controller.signal,
+        }});
+      }} finally {{
+        clearTimeout(requestTimeout);
+      }}
+      if (!response.ok) throw new Error('exchange_failed');
+      const result = await response.json();
+      const nextPath = result.next_path || '/dashboard';
+      if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {{
+        window.ReactNativeWebView.postMessage(JSON.stringify({{
+          type: 'hubit-mobile-web-session-ready',
+          next_path: nextPath,
+        }}));
+        setTimeout(() => location.replace(nextPath), 3000);
+        return;
+      }}
+      location.replace(nextPath);
+    }})().catch(() => {{
+      document.getElementById('status').textContent = 'Не удалось открыть HUB-IT. Вернитесь в приложение и повторите попытку.';
+    }});
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": (
+                "default-src 'none'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+                f"style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'"
+            ),
+        },
+    )
+
+
+@router.post("/mobile-web-session/consume", response_model=MobileWebSessionConsumeResponse)
+async def consume_mobile_web_session(
+    payload: MobileWebSessionConsumeRequest,
+    request: Request,
+    response: Response,
+):
+    network_context = build_request_network_context(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="mobile_web_session_consume",
+        key=str(network_context.client_ip or ""),
+        limit=20,
+        window_seconds=60,
+        request=request,
+    )
+    exchange = await run_in_threadpool(
+        auth_runtime_store_service.pop_json,
+        _MOBILE_WEB_SESSION_NAMESPACE,
+        _mobile_web_exchange_key(payload.code),
+    )
+    if not isinstance(exchange, dict):
+        raise HTTPException(status_code=401, detail="Mobile web session code is invalid or expired")
+
+    session_id = str(exchange.get("session_id") or "").strip()
+    user_id = int(exchange.get("user_id") or 0)
+    device_id = str(exchange.get("device_id") or f"session:{session_id}")
+    if not session_id or not user_id or not await run_in_threadpool(session_service.is_session_active, session_id):
+        raise HTTPException(status_code=401, detail="Mobile session is no longer active")
+    user = await run_in_threadpool(user_service.get_by_id, user_id)
+    if not user or not bool(user.get("is_active", True)):
+        raise HTTPException(status_code=401, detail="User is not active")
+    if not await run_in_threadpool(
+        trusted_device_service.is_token_device_valid,
+        user_id=user_id,
+        token_device_id=device_id,
+    ):
+        raise HTTPException(status_code=401, detail="Mobile device is no longer trusted")
+
+    await run_in_threadpool(session_service.touch_session, session_id)
+    issued = await run_in_threadpool(
+        auth_security_service.issue_tokens,
+        user=user,
+        session_id=session_id,
+        device_id=device_id,
+    )
+    _set_auth_cookies(
+        response,
+        access_token=str(issued.get("access_token") or ""),
+        refresh_token=str(issued.get("refresh_token") or ""),
+        access_ttl_seconds=int(issued.get("access_ttl_seconds") or 0),
+        refresh_ttl_seconds=int(issued.get("refresh_ttl_seconds") or 0),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return MobileWebSessionConsumeResponse(
+        next_path=_normalize_mobile_web_next_path(exchange.get("next_path")),
+    )
+
+
+@router.post("/session-telemetry")
+async def report_session_telemetry(
+    request: Request,
+    payload: SessionTelemetryRequest,
+):
+    """Unauthenticated client beacon for logout diagnosis (rate-limited)."""
+    network_context = build_request_network_context(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_session_telemetry",
+        key=str(network_context.client_ip or "unknown"),
+        limit=30,
+        window_seconds=60,
+        request=request,
+    )
+    metric_name = _CLIENT_TELEMETRY_EVENTS.get(str(payload.event or "").strip())
+    if not metric_name:
+        raise HTTPException(status_code=400, detail="Unsupported telemetry event")
+    note_auth_session_metric(
+        metric_name,
+        detail=payload.detail,
+        path=payload.path,
+        network_zone=network_context.network_zone,
+    )
+    return {"ok": True}
+
+
+def _session_info_from_row(item: dict[str, Any]) -> SessionInfo:
+    absolute = item.get("expires_at")
+    payload = dict(item)
+    payload["absolute_expires_at"] = absolute
+    payload["refresh_expires_at"] = absolute
+    payload.pop("client_device_key_hash", None)
+    return SessionInfo(**payload)
+
+
+@router.get("/session-status")
+async def get_current_session_status(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    session_id: Optional[str] = Depends(get_current_session_id),
+):
+    """Diagnostics for the current cookie session (idle/absolute/refresh windows)."""
+    from backend.config import session_policy_snapshot
+
+    diagnostics = (await run_in_threadpool(session_service.build_session_diagnostics, session_id)) or {}
+    network_context = build_request_network_context(request)
+    return {
+        "user_id": int(current_user.id),
+        "username": current_user.username,
+        "request_network_zone": network_context.network_zone,
+        "session": diagnostics or None,
+        "policy": session_policy_snapshot(),
+    }
+
+
+@router.get("/session-policy")
+async def get_session_policy(
+    _: User = Depends(get_current_active_user),
+):
+    from backend.config import session_policy_snapshot
+
+    return session_policy_snapshot()
+
+
+@router.post("/backup-codes/regenerate", response_model=BackupCodesResponse)
+async def regenerate_backup_codes(
+    current_user: User = Depends(get_current_active_user),
+):
+    try:
+        return BackupCodesResponse(
+            backup_codes=(await run_in_threadpool(auth_security_service.regenerate_backup_codes, int(current_user.id)))
+        )
+    except AuthSecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/trusted-devices/register/options")
+async def trusted_device_register_options(
+    payload: TrustedDeviceRegistrationOptionsRequest,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    session_id: Optional[str] = Depends(get_current_session_id),
+):
+    network_context = build_request_network_context(request)
+    await run_in_threadpool(_enforce_rate_limit,
+        namespace="auth_trusted_device_register_options",
+        key=f"{int(current_user.id)}:{str(session_id or network_context.client_ip or '')}",
+        limit=5,
+        window_seconds=60,
+        request=request,
+    )
+    rp_id = str(config.security.webauthn_rp_id or "").strip()
+    if not rp_id:
+        raise HTTPException(status_code=503, detail="WebAuthn is not configured")
+    options = await run_in_threadpool(trusted_device_service.build_registration_options, user_id=int(current_user.id),
+        username=current_user.username,
+        display_name=current_user.full_name or current_user.username,
+        rp_id=rp_id,
+        rp_name=str(config.security.webauthn_rp_name or "HUB-IT").strip() or "HUB-IT",
+        exclude_devices=(await run_in_threadpool(trusted_device_service.list_devices, int(current_user.id), active_only=True)),
+        platform_only=bool(payload.platform_only))
+    challenge_id = uuid.uuid4().hex
+    await run_in_threadpool(auth_runtime_store_service.save_webauthn_challenge, challenge_id,
+        {
+            "purpose": "register",
+            "user_id": int(current_user.id),
+            "session_id": str(session_id or "").strip() or None,
+            "expected_origin": str(config.security.webauthn_origin or "").strip(),
+            "expected_rp_id": rp_id,
+            "challenge": options["challenge"],
+            "label": str(payload.label or "").strip() or None,
+            "platform_only": bool(payload.platform_only),
+        },
+        ttl_seconds=max(60, int(config.security.twofa_challenge_ttl_sec or 600)))
+    return {"challenge_id": challenge_id, "public_key": options}
+
+
+@router.post("/trusted-devices/register/verify", response_model=TrustedDeviceInfo)
+async def trusted_device_register_verify(
+    payload: TrustedDeviceRegistrationVerifyRequest,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    await run_in_threadpool(_enforce_rate_limit,
+        namespace="auth_trusted_device_register_verify",
+        key=f"{int(current_user.id)}:{str(payload.challenge_id or '')}",
+        limit=5,
+        window_seconds=60,
+        request=request,
+    )
+    challenge = await run_in_threadpool(auth_runtime_store_service.pop_webauthn_challenge, payload.challenge_id)
+    if not isinstance(challenge, dict) or challenge.get("purpose") != "register":
+        raise HTTPException(status_code=400, detail="WebAuthn registration challenge expired")
+    if int(challenge.get("user_id") or 0) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="Challenge does not belong to current user")
+    try:
+        verification = await run_in_threadpool(trusted_device_service.verify_registration_response, credential=payload.credential,
+            expected_challenge=str(challenge.get("challenge") or ""),
+            expected_origin=str(challenge.get("expected_origin") or ""),
+            expected_rp_id=str(challenge.get("expected_rp_id") or ""),
+            require_user_verification=True)
+        created = await run_in_threadpool(trusted_device_service.register_device, user_id=int(current_user.id),
+            label=str(payload.label or challenge.get("label") or "").strip() or "Доверенное устройство",
+            credential_id=str(verification.get("credential_id") or ""),
+            public_key_b64=str(verification.get("public_key_b64") or ""),
+            sign_count=int(verification.get("sign_count") or 0),
+            transports=list((payload.credential or {}).get("response", {}).get("transports") or []),
+            aaguid=verification.get("aaguid"),
+            rp_id=str(challenge.get("expected_rp_id") or ""),
+            origin=str(challenge.get("expected_origin") or ""),
+            is_discoverable=True)
+    except TrustedDeviceServiceError as exc:
+        await run_in_threadpool(trusted_device_service.audit_event, "auth_fail",
+            user_id=int(current_user.id),
+            reason="registration_verify")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TrustedDeviceInfo(**created, is_current_device=False)
+
+
+@router.post("/trusted-devices/auth/options")
+async def trusted_device_auth_options(payload: TrustedDeviceAuthOptionsRequest, request: Request):
+    await run_in_threadpool(_enforce_rate_limit,
+        namespace="auth_trusted_device_options",
+        key=str(payload.login_challenge_id or ""),
+        limit=5,
+        window_seconds=60,
+        request=request,
+    )
+    challenge = await run_in_threadpool(auth_security_service.get_login_challenge, payload.login_challenge_id)
+    devices = await run_in_threadpool(trusted_device_service.list_devices, int(challenge.get("user_id") or 0), active_only=True)
+    if not devices:
+        raise HTTPException(status_code=400, detail="У пользователя нет доверенных устройств")
+    rp_id = str(config.security.webauthn_rp_id or "").strip()
+    if not rp_id:
+        raise HTTPException(status_code=503, detail="WebAuthn is not configured")
+    options = await run_in_threadpool(trusted_device_service.build_authentication_options, rp_id=rp_id,
+        devices=devices)
+    challenge_id = uuid.uuid4().hex
+    await run_in_threadpool(auth_runtime_store_service.save_webauthn_challenge, challenge_id,
+        {
+            "purpose": "authenticate",
+            "user_id": int(challenge.get("user_id") or 0),
+            "login_challenge_id": str(payload.login_challenge_id),
+            "expected_origin": str(config.security.webauthn_origin or "").strip(),
+            "expected_rp_id": rp_id,
+            "challenge": options["challenge"],
+        },
+        ttl_seconds=max(60, int(config.security.twofa_challenge_ttl_sec or 600)))
+    return {"challenge_id": challenge_id, "public_key": options}
+
+
+@router.post("/trusted-devices/auth/verify", response_model=LoginResponse)
+async def trusted_device_auth_verify(payload: TrustedDeviceAuthVerifyRequest, request: Request, response: Response):
+    client_device_id = _resolve_client_device_id(request)
+    await run_in_threadpool(_enforce_rate_limit,
+        namespace="auth_trusted_device_verify",
+        key=str(payload.login_challenge_id or ""),
+        limit=5,
+        window_seconds=60,
+        request=request,
+    )
+    challenge = await run_in_threadpool(auth_runtime_store_service.pop_webauthn_challenge, payload.challenge_id)
+    if not isinstance(challenge, dict) or challenge.get("purpose") != "authenticate":
+        raise HTTPException(status_code=400, detail="WebAuthn authentication challenge expired")
+    if str(challenge.get("login_challenge_id") or "") != str(payload.login_challenge_id):
+        raise HTTPException(status_code=400, detail="Challenge does not match login flow")
+    device = await run_in_threadpool(trusted_device_service.find_device_by_credential, str((payload.credential or {}).get("id") or ""),
+        user_id=int(challenge.get("user_id") or 0))
+    if not device:
+        await run_in_threadpool(auth_security_service.delete_login_challenge, payload.login_challenge_id)
+        await run_in_threadpool(trusted_device_service.audit_event, "auth_fail",
+            user_id=int(challenge.get("user_id") or 0),
+            reason="trusted_device_not_found")
+        raise HTTPException(status_code=400, detail="Trusted device not found")
+    try:
+        verification = await run_in_threadpool(trusted_device_service.verify_authentication_response, credential=payload.credential,
+            expected_challenge=str(challenge.get("challenge") or ""),
+            expected_origin=str(challenge.get("expected_origin") or ""),
+            expected_rp_id=str(challenge.get("expected_rp_id") or ""),
+            device=device)
+        await run_in_threadpool(trusted_device_service.update_sign_count, str(device.get("id") or ""), int(verification.get("new_sign_count") or 0))
+        result = await run_in_threadpool(auth_security_service.finalize_trusted_device_login, payload.login_challenge_id,
+            device=device,
+            client_device_id=client_device_id)
+    except (TrustedDeviceServiceError, AuthSecurityError) as exc:
+        await run_in_threadpool(auth_security_service.delete_login_challenge, payload.login_challenge_id)
+        await run_in_threadpool(trusted_device_service.audit_event, "auth_fail",
+            user_id=int(challenge.get("user_id") or 0),
+            device_id=str(device.get("id") or ""),
+            reason="trusted_device_verify")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await run_in_threadpool(_apply_default_database, result["user"])
+    return _build_login_response(
+        request,
+        response,
+        {
+            "status": "authenticated",
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "access_ttl_seconds": result.get("access_ttl_seconds"),
+            "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
+            "user": result["user"],
+            "session_id": result.get("session_id"),
+            "client_device_id": result.get("client_device_id") or client_device_id,
+        },
+    )
+
+
+@router.get("/trusted-devices", response_model=list[TrustedDeviceInfo])
+async def list_trusted_devices(
+    current_user: User = Depends(get_current_active_user),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    access_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_cookie_name),
+):
+    token = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+    elif access_token_cookie:
+        token = str(access_token_cookie).strip() or None
+    token_data = decode_access_token(token or "", expected_token_type="access")
+    current_device_id = str(token_data.device_id or "") if token_data else ""
+    devices = await run_in_threadpool(trusted_device_service.list_devices, int(current_user.id), active_only=False)
+    return [
+        TrustedDeviceInfo(
+            **item,
+            is_current_device=current_device_id == f"trusted:{str(item.get('id') or '')}",
+        )
+        for item in devices
+    ]
+
+
+@router.delete("/trusted-devices/{device_id}")
+async def revoke_trusted_device(
+    device_id: str,
+    current_user: User = Depends(get_current_active_user),
+):
+    device = await run_in_threadpool(trusted_device_service.revoke_device, user_id=int(current_user.id), device_id=device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Trusted device not found")
+    return {"success": True, "device_id": device_id}
+
+
+@router.post("/users/{user_id}/reset-2fa")
+async def admin_reset_twofa(
+    user_id: int,
+    _: User = Depends(get_current_admin_user),
+):
+    try:
+        return await run_in_threadpool(auth_security_service.reset_user_twofa, user_id=int(user_id))
+    except AuthSecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/reset-2fa-self")
+async def reset_own_twofa(
+    response: Response,
+    current_user: User = Depends(get_current_active_user),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    access_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_cookie_name),
+    refresh_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_refresh_cookie_name),
+):
+    try:
+        result = await run_in_threadpool(auth_security_service.reset_user_twofa, user_id=int(current_user.id))
+    except AuthSecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    token = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+    elif access_token_cookie:
+        token = str(access_token_cookie).strip() or None
+    await run_in_threadpool(_revoke_token_if_present, token)
+    await run_in_threadpool(_revoke_token_if_present, refresh_token_cookie)
+    if refresh_token_cookie:
+        refresh_data = decode_access_token(refresh_token_cookie, expected_token_type="refresh")
+        if refresh_data and refresh_data.jti:
+            await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, refresh_data.jti)
+    _clear_auth_cookies(response)
+    return result
+
+
+@router.get("/my-devices", response_model=list[OwnDeviceInfo])
+async def get_my_devices(
+    current_user: User = Depends(get_current_active_user),
+    session_id: str = Depends(get_current_session_id),
+):
+    return await run_in_threadpool(user_device_service.list_devices,
+                                  user_id=int(current_user.id), current_session_id=session_id)
+
+
+async def _manage_own_device(current_user: User, current_session_id: str, **action):
+    try:
+        return await run_in_threadpool(user_device_service.revoke,
+                                      user_id=int(current_user.id), current_session_id=current_session_id, **action)
+    except UserDeviceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/my-devices/terminate-others", response_model=OwnDeviceActionResult)
+async def terminate_my_other_devices(
+    current_user: User = Depends(get_current_active_user),
+    session_id: str = Depends(get_current_session_id),
+):
+    return await _manage_own_device(current_user, session_id, others=True)
+
+
+@router.delete("/my-devices/sessions/{target_session_id}", response_model=OwnDeviceActionResult)
+async def terminate_my_session(
+    target_session_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session_id: str = Depends(get_current_session_id),
+):
+    return await _manage_own_device(current_user, session_id, session_id=target_session_id)
+
+
+@router.delete("/my-devices/{device_id}", response_model=OwnDeviceActionResult)
+async def remove_my_device(
+    device_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session_id: str = Depends(get_current_session_id),
+):
+    return await _manage_own_device(current_user, session_id, device_id=device_id)
+
+
+@router.get("/sessions", response_model=list[SessionInfo])
+async def get_sessions(
+    _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
+):
+    """List web sessions available for admin session management."""
+    sessions = await run_in_threadpool(session_service.list_sessions, active_only=True)
+    return [_session_info_from_row(item) for item in sessions]
+
+
+@router.delete("/sessions/{session_id}")
+async def terminate_session(
+    session_id: str,
+    _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
+):
+    """Terminate a session by id."""
+    closed = await run_in_threadpool(session_service.close_session_by_id, session_id)
+    if not closed:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await run_in_threadpool(session_auth_context_service.delete_session_context, session_id)
+    return {"success": True, "session_id": session_id}
+
+
+@router.post("/sessions/cleanup")
+async def cleanup_sessions(
+    _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
+):
+    """Deactivate expired sessions and purge stale history."""
+    result = await run_in_threadpool(session_service.cleanup_sessions, force=True)
+    active_sessions = await run_in_threadpool(session_service.list_sessions, active_only=True)
+    await run_in_threadpool(session_auth_context_service.prune_active_sessions, [
+        str(item.get("session_id") or "").strip()
+        for item in active_sessions
+    ])
+    return result
+
+
+@router.post("/sessions/normalize-limit")
+async def normalize_session_limit(
+    payload: SessionLimitNormalizeRequest = Body(default_factory=SessionLimitNormalizeRequest),
+    _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
+):
+    """Preview or apply the active-session limit for every user.
+
+    The default is intentionally a dry-run. Existing sessions are not changed
+    until an administrator explicitly sends ``{"apply": true}``.
+    """
+    result = await run_in_threadpool(session_service.normalize_active_session_limits, apply=bool(payload.apply))
+    for closed_session_id in result.pop("_closed_session_ids", []) or []:
+        await run_in_threadpool(session_auth_context_service.delete_session_context, str(closed_session_id))
+    return result
+
+
+@router.post("/sessions/purge-inactive")
+async def purge_inactive_sessions(
+    _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
+):
+    """Delete every inactive or expired session record."""
+    result = await run_in_threadpool(session_service.purge_inactive_sessions)
+    active_sessions = await run_in_threadpool(session_service.list_sessions, active_only=True)
+    await run_in_threadpool(session_auth_context_service.prune_active_sessions, [
+        str(item.get("session_id") or "").strip()
+        for item in active_sessions
+    ])
+    return result
+
+
+def _serialize_user_records(items: list[dict[str, Any]]) -> list[User]:
+    users: list[User] = []
+    for item in items:
+        try:
+            users.append(User(**item))
+        except ValidationError as exc:
+            logger.warning(
+                "Skipping invalid user record id=%s username=%r: %s",
+                item.get("id"),
+                item.get("username"),
+                exc,
+            )
+    return users
+
+
+@router.get("/users", response_model=list[User])
+async def list_users(
+    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    """List all web users."""
+    items = await run_in_threadpool(user_service.list_users)
+    return _serialize_user_records(items)
+
+
+@router.get("/users/search", response_model=UserSearchResponse)
+async def search_users(
+    q: str = Query(default="", max_length=160),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    status_filter: str = Query(default="all", alias="status", pattern="^(all|active|inactive)$"),
+    role: str = Query(default="all", pattern="^(all|admin|operator|viewer)$"),
+    exclude_user_id: int | None = Query(default=None, ge=1),
+    ids: str = Query(default="", max_length=2048),
+    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    """Search a bounded admin user page without returning the whole directory."""
+    user_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for raw_value in str(ids or "").split(","):
+        try:
+            user_id = int(raw_value.strip())
+        except (TypeError, ValueError):
+            continue
+        if user_id <= 0 or user_id in seen_ids:
+            continue
+        seen_ids.add(user_id)
+        user_ids.append(user_id)
+        if len(user_ids) >= 200:
+            break
+
+    result = await run_in_threadpool(
+        user_service.search_users,
+        query=q,
+        limit=limit,
+        offset=offset,
+        status=status_filter,
+        role=role,
+        exclude_user_id=exclude_user_id,
+        user_ids=user_ids if str(ids or "").strip() else None,
+    )
+    return UserSearchResponse(
+        items=_serialize_user_records(list(result.get("items") or [])),
+        total=int(result.get("total") or 0),
+        limit=int(result.get("limit") or limit),
+        offset=int(result.get("offset") or offset),
+        has_more=bool(result.get("has_more", False)),
+    )
+
+
+@router.post("/users", response_model=User, status_code=status.HTTP_201_CREATED)
+async def create_user(
+    payload: UserCreateRequest,
+    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    """Create a web user."""
+    try:
+        assigned_database = _validate_assigned_database_or_raise(payload.assigned_database)
+        created = await run_in_threadpool(user_service.create_user, username=payload.username,
+            password=payload.password,
+            role=payload.role,
+            email=payload.email,
+            full_name=payload.full_name,
+            department=payload.department,
+            job_title=payload.job_title,
+            telegram_id=payload.telegram_id,
+            assigned_database=assigned_database,
+            is_active=payload.is_active,
+            auth_source=payload.auth_source,
+            use_custom_permissions=payload.use_custom_permissions,
+            custom_permissions=payload.custom_permissions,
+            mailbox_email=payload.mailbox_email,
+            mailbox_login=payload.mailbox_login,
+            mailbox_password=payload.mailbox_password,
+            mail_signature_html=payload.mail_signature_html,
+            my_files_quota_bytes=payload.my_files_quota_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return User(**created)
+
+
+@router.patch("/users/{user_id}", response_model=User)
+async def update_user(
+    user_id: int,
+    payload: UserUpdateRequest,
+    current_user: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    """Update web user properties."""
+    if current_user.id == user_id and payload.is_active is False:
+        raise HTTPException(status_code=400, detail="Cannot deactivate current admin user")
+
+    payload_data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
+    if "assigned_database" in payload_data:
+        payload_data["assigned_database"] = _validate_assigned_database_or_raise(payload_data.get("assigned_database"))
+    try:
+        updated = await run_in_threadpool(user_service.update_user, user_id,
+            **payload_data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload_data.get("is_active") is False:
+        await run_in_threadpool(_close_sessions_and_contexts, int(user_id))
+    if payload_data.get("password") is not None or payload_data.get("is_active") is False:
+        await run_in_threadpool(mobile_biometric_session_service.revoke_all_user_credentials, int(user_id))
+    return User(**updated)
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    current_user: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    """Delete a user. Cannot delete the default admin (id=1)."""
+    if str(user_id) == str(current_user.id):
+        raise HTTPException(status_code=400, detail="Cannot delete your own account.")
+
+    await run_in_threadpool(mobile_biometric_session_service.revoke_all_user_credentials, int(user_id))
+    deleted = await run_in_threadpool(user_service.delete_user, user_id)
+    if not deleted:
+        if user_id == 1:
+             raise HTTPException(status_code=403, detail="Cannot delete the default admin account.")
+        raise HTTPException(status_code=404, detail="User not found")
+    await run_in_threadpool(_close_sessions_and_contexts, int(user_id))
+
+    return {"message": "User deleted successfully"}
+
+
+def _parse_task_delegate_owner_ids(owner_ids: str) -> list[int]:
+    parsed: list[int] = []
+    seen: set[int] = set()
+    for part in str(owner_ids or "").split(","):
+        try:
+            owner_id = int(str(part or "").strip())
+        except (TypeError, ValueError):
+            continue
+        if owner_id <= 0 or owner_id in seen:
+            continue
+        seen.add(owner_id)
+        parsed.append(owner_id)
+    return parsed
+
+
+@router.get("/task-delegates", response_model=TaskDelegateLinksBulkResponse)
+async def get_task_delegates_bulk(
+    owner_ids: str = Query("", min_length=0),
+    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    parsed_owner_ids = _parse_task_delegate_owner_ids(owner_ids)
+    if not parsed_owner_ids:
+        return TaskDelegateLinksBulkResponse(items=[])
+    grouped = await run_in_threadpool(user_service.list_task_delegates_bulk, parsed_owner_ids)
+    return TaskDelegateLinksBulkResponse(items=grouped)
+
+
+@router.get("/users/{user_id}/task-delegates", response_model=list[TaskDelegateLink])
+async def get_user_task_delegates(
+    user_id: int,
+    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    user = await run_in_threadpool(user_service.get_by_id, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    items = await run_in_threadpool(user_service.list_task_delegates, user_id)
+    return [TaskDelegateLink(**item) for item in items]
+
+
+@router.put("/users/{user_id}/task-delegates", response_model=list[TaskDelegateLink])
+async def update_user_task_delegates(
+    user_id: int,
+    payload: TaskDelegateLinksUpdateRequest,
+    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    try:
+        updated = await run_in_threadpool(
+            user_service.replace_task_delegates,
+            user_id,
+            [item.model_dump() if hasattr(item, "model_dump") else item.dict() for item in payload.items],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return [TaskDelegateLink(**item) for item in updated]
+
+
+@router.post("/sync-ad")
+async def trigger_ad_sync(
+    current_user: User = Depends(require_permission(PERM_DATABASE_AD_SYNC)),
+):
+    """
+    Manually trigger Active Directory synchronization.
+    Requires database.ad_sync permission.
+    """
+    try:
+        # Run blocking I/O in thread pool
+        result = await asyncio.to_thread(run_ad_sync, True)
+        if result.get("status") == "error":
+            raise HTTPException(status_code=500, detail=result.get("message", "Sync failed"))
+        return result
+    except Exception as e:
+        logger.error(f"AD sync endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_avatars_dir() -> Path:
+    from backend.services.hub_service import hub_service
+    avatars_dir = Path(hub_service.data_dir) / "user_avatars"
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    return avatars_dir
+
+
+@router.post("/me/avatar", response_model=User)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    request: Request = None,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Upload or replace the current user's avatar photo.
+    Accepts image/* files up to 2 MB. Resizes to 256x256 JPEG.
+    """
+    from PIL import Image as PilImage
+    import io
+
+    content_type = str(file.content_type or "").strip().lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are accepted")
+
+    raw = await read_upload_limited(
+        file,
+        2 * 1024 * 1024,
+        too_large=lambda: HTTPException(status_code=400, detail="Image must be smaller than 2 MB"),
+    )
+
+    def _process_and_save() -> str:
+        avatars_dir = _get_avatars_dir()
+        dest_path = avatars_dir / f"{int(current_user.id)}.jpg"
+        logger.info("[avatar] saving to %s", dest_path)
+        with PilImage.open(io.BytesIO(raw)) as img:
+            img = img.convert("RGB")
+            # Center-crop to square then resize to 256x256
+            w, h = img.size
+            min_dim = min(w, h)
+            left = (w - min_dim) // 2
+            top = (h - min_dim) // 2
+            img = img.crop((left, top, left + min_dim, top + min_dim))
+            img = img.resize((256, 256), PilImage.LANCZOS)
+            img.save(str(dest_path), format="JPEG", quality=88, optimize=True)
+        logger.info("[avatar] file saved OK, size=%s", dest_path.stat().st_size)
+        import time
+        avatar_url = f"/api/v1/auth/avatars/{int(current_user.id)}.jpg?v={int(time.time())}"
+        result = user_service.update_avatar_url(int(current_user.id), avatar_url)
+        logger.info("[avatar] update_avatar_url result=%s", result)
+        return avatar_url
+
+    saved_url = await run_in_threadpool(_process_and_save)
+    logger.info("[avatar] upload done for user_id=%s url=%s", current_user.id, saved_url)
+    try:
+        from backend.chat.service import chat_service
+        await run_in_threadpool(chat_service._invalidate_user_cache, user_id=0, bucket="users_map")
+        await run_in_threadpool(chat_service.invalidate_bucket_for_all_users, bucket="conversation_detail")
+        await run_in_threadpool(chat_service.invalidate_bucket_for_all_users, bucket="conversations")
+        logger.info("[avatar] chat caches invalidated")
+    except Exception as e:
+        logger.warning("[avatar] cache invalidate failed: %s", e)
+    payload = await run_in_threadpool(_build_current_user_payload, current_user, request)
+    logger.info("[avatar] payload avatar_url=%s", getattr(payload, 'avatar_url', 'N/A'))
+    return payload
+
+
+@router.delete("/me/avatar", response_model=User)
+async def delete_my_avatar(
+    request: Request = None,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Remove the current user's avatar photo.
+    """
+    def _remove() -> None:
+        avatars_dir = _get_avatars_dir()
+        dest_path = avatars_dir / f"{int(current_user.id)}.jpg"
+        if dest_path.exists():
+            dest_path.unlink(missing_ok=True)
+        user_service.update_avatar_url(int(current_user.id), None)
+
+    await run_in_threadpool(_remove)
+    logger.info("[avatar] deleted for user_id=%s", current_user.id)
+    try:
+        from backend.chat.service import chat_service
+        await run_in_threadpool(chat_service._invalidate_user_cache, user_id=0, bucket="users_map")
+        await run_in_threadpool(chat_service.invalidate_bucket_for_all_users, bucket="conversation_detail")
+        await run_in_threadpool(chat_service.invalidate_bucket_for_all_users, bucket="conversations")
+        logger.info("[avatar] chat caches invalidated")
+    except Exception as e:
+        logger.warning("[avatar] cache invalidate failed: %s", e)
+    return await run_in_threadpool(_build_current_user_payload, current_user, request)
+
+
+@router.get("/avatars/{filename}")
+async def get_user_avatar(filename: str):
+    """
+    Serve a user avatar image. No authentication required.
+    """
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".jpg") or not safe_name[:-4].isdigit():
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    avatars_dir = _get_avatars_dir()
+    avatar_path = avatars_dir / safe_name
+    if not avatar_path.exists():
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    import os
+    stat = os.stat(avatar_path)
+    etag = f"\"{int(stat.st_mtime)}-{stat.st_size}\""
+    return FileResponse(
+        path=str(avatar_path),
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "public, max-age=0, must-revalidate",
+            "ETag": etag,
+        },
+    )

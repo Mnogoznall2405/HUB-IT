@@ -1,0 +1,688 @@
+"""
+Main FastAPI application entry point.
+"""
+import sys
+import os
+
+# CRITICAL: Switch to SelectorEventLoop on Windows BEFORE any asyncio imports
+# ProactorEventLoop crashes with WinError 64 under high connection churn
+if sys.platform == 'win32':
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    print(f"Using SelectorEventLoop (Python {sys.version})")
+
+import logging
+from pathlib import Path
+
+# Add parent directory to path for bot imports
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+import asyncio
+import time
+from contextlib import asynccontextmanager
+from anyio import to_thread
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from backend.config import config
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, construction, docflow, system, passwords, my_files, my_files_office, my_files_libraries, debug_client_log, groups_access, company_structure, desktop_presence, itinvent_references, it_objects
+from backend.api.v1.auth import handle_safari_password_beacon_form
+from backend.runtime_role import chat_routes_enabled, get_runtime_role, heavy_api_routes_enabled
+from backend.services.ad_sync_service import background_ad_sync_loop
+from backend.services.ad_app_user_sync_service import background_ad_app_user_sync_loop
+from backend.services.ad_groups_access_sync_service import background_ad_groups_access_sync_loop
+from backend.services.address_book_service import address_book_service, background_address_book_sync_loop
+from backend.services.warehouse_1c_service import background_warehouse_1c_catalog_sync_loop, warehouse_1c_service
+from backend.services.docflow_service import docflow_service
+from backend.services.docflow_notification_service import docflow_notification_service
+from backend.services.auth_runtime_store_service import auth_runtime_store_service
+from backend.services.app_push_outbox_service import app_push_outbox_service
+from backend.services.mail_notification_service import mail_notification_service
+from backend.services.mfu_monitor_service import mfu_runtime_monitor
+from backend.api.v1 import monitoring
+from backend.api.v1 import feedback
+from backend.services.network_monitor_service import network_monitor_service
+from backend.services import inventory_binding
+from backend.services.my_files_service import my_files_worker
+from backend.services.task_due_notification_worker import (
+    background_enabled as task_due_notification_background_enabled,
+    background_task_due_notification_loop,
+)
+from backend.services.announcement_publish_worker import (
+    background_announcement_publish_loop,
+    background_enabled as announcement_publish_background_enabled,
+)
+from backend.services.request_metrics_service import request_metrics_middleware
+from backend.json_db.manager import validate_json_runtime_storage
+from local_store import get_local_store
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_positive_int(name: str, default: int, minimum: int) -> int:
+    raw = str(os.getenv(name, str(default)) or "").strip()
+    try:
+        return max(int(raw), int(minimum))
+    except Exception:
+        return max(int(default), int(minimum))
+
+
+MAIL_MODULE_ENABLED = _env_flag("MAIL_MODULE_ENABLED", "0")
+MAIL_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("MAIL_NOTIFICATION_BACKGROUND_ENABLED", "1")
+LDAP_SYNC_BACKGROUND_ENABLED = _env_flag("LDAP_SYNC_BACKGROUND_ENABLED", "1")
+LDAP_APP_USER_SYNC_ENABLED = _env_flag("LDAP_APP_USER_SYNC_ENABLED", "1")
+AD_GROUPS_ACCESS_SYNC_ENABLED = _env_flag("AD_GROUPS_ACCESS_SYNC_ENABLED", "1")
+MFU_RUNTIME_MONITOR_ENABLED = _env_flag("MFU_RUNTIME_MONITOR_ENABLED", "1")
+ADDRESS_BOOK_SYNC_ENABLED = _env_flag("ADDRESS_BOOK_SYNC_ENABLED", "0")
+WAREHOUSE_1C_CATALOG_SYNC_ENABLED = _env_flag("WAREHOUSE_1C_CATALOG_SYNC_ENABLED", "1")
+TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED", "1")
+DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED", "1")
+SUPPRESS_NOISY_ACCESS_LOGS = _env_flag("SUPPRESS_NOISY_ACCESS_LOGS", "1")
+EVENT_LOOP_WATCHDOG_ENABLED = _env_flag("EVENT_LOOP_WATCHDOG_ENABLED", "1")
+EVENT_LOOP_WATCHDOG_THRESHOLD_MS = _env_positive_int("EVENT_LOOP_WATCHDOG_THRESHOLD_MS", 1000, 200)
+ANYIO_THREAD_TOKENS = _env_positive_int("ANYIO_THREAD_TOKENS", 200, 40)
+
+
+class _UvicornAccessNoiseFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        if (
+            '"POST /api/v1/inventory HTTP/1.1"' in message
+            and (' 200 ' in message or ' 429 ' in message)
+        ):
+            return False
+        if '"WebSocket /api/v1/chat/ws" 403' in message:
+            return False
+        return True
+
+
+class _UvicornErrorNoiseFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        # Suppress WinError 64 (client disconnected) - normal under high load
+        if 'WinError 64' in message or 'Удаленный узел закрыл подключение' in message:
+            return False
+        if '"WebSocket /api/v1/chat/ws" 403' in message:
+            return False
+        if 'connection rejected (403 Forbidden)' in message:
+            return False
+        return True
+
+
+def _install_uvicorn_access_noise_filter() -> None:
+    if not SUPPRESS_NOISY_ACCESS_LOGS:
+        return
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.setLevel(logging.CRITICAL + 1)
+    access_logger.disabled = True
+    access_logger.propagate = False
+    if not any(isinstance(item, _UvicornAccessNoiseFilter) for item in access_logger.filters):
+        access_logger.addFilter(_UvicornAccessNoiseFilter())
+    for handler in access_logger.handlers:
+        handler.setLevel(logging.CRITICAL + 1)
+        if not any(isinstance(item, _UvicornAccessNoiseFilter) for item in handler.filters):
+            handler.addFilter(_UvicornAccessNoiseFilter())
+    error_logger = logging.getLogger("uvicorn.error")
+    if not any(isinstance(item, _UvicornErrorNoiseFilter) for item in error_logger.filters):
+        error_logger.addFilter(_UvicornErrorNoiseFilter())
+    for handler in error_logger.handlers:
+        if not any(isinstance(item, _UvicornErrorNoiseFilter) for item in handler.filters):
+            handler.addFilter(_UvicornErrorNoiseFilter())
+
+
+def _bridge_loggers(source_handlers: list[logging.Handler], logger_names: tuple[str, ...]) -> None:
+    if not source_handlers:
+        return
+    for logger_name in logger_names:
+        target_logger = logging.getLogger(logger_name)
+        for handler in source_handlers:
+            if handler not in target_logger.handlers:
+                target_logger.addHandler(handler)
+        target_logger.setLevel(min(target_logger.level or logging.INFO, logging.INFO))
+        target_logger.propagate = False
+
+
+def _install_application_logger_bridge() -> None:
+    error_handlers = list(logging.getLogger("uvicorn.error").handlers)
+    _bridge_loggers(error_handlers, (
+        "backend.chat.api",
+        "backend.chat.websocket",
+        "backend.chat.realtime",
+        "backend.chat.service",
+        "backend.chat.push_outbox",
+        "backend.app.push_outbox",
+    ))
+    # uvicorn keeps the stderr handler on "uvicorn" since 0.30; "uvicorn.error" only inherits it.
+    _bridge_loggers(error_handlers or list(logging.getLogger("uvicorn").handlers), (
+        "backend.api.v1.my_files_office",
+        "backend.services.my_files_collab_service",
+    ))
+
+
+_install_uvicorn_access_noise_filter()
+_install_application_logger_bridge()
+
+
+def _configure_anyio_thread_limiter() -> int:
+    limiter = to_thread.current_default_thread_limiter()
+    current_tokens = int(getattr(limiter, "total_tokens", 0) or 0)
+    if current_tokens < ANYIO_THREAD_TOKENS:
+        limiter.total_tokens = ANYIO_THREAD_TOKENS
+    return int(getattr(limiter, "total_tokens", ANYIO_THREAD_TOKENS) or ANYIO_THREAD_TOKENS)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager."""
+    # Startup
+    _install_uvicorn_access_noise_filter()
+    _install_application_logger_bridge()
+    thread_tokens = _configure_anyio_thread_limiter()
+    loop_watchdog = None
+    if EVENT_LOOP_WATCHDOG_ENABLED:
+        from backend.services.event_loop_watchdog import EventLoopWatchdog
+
+        loop_watchdog = EventLoopWatchdog(threshold_ms=EVENT_LOOP_WATCHDOG_THRESHOLD_MS)
+        await loop_watchdog.start()
+    sync_task: asyncio.Task | None = None
+    ad_app_user_sync_task: asyncio.Task | None = None
+    ad_groups_access_sync_task: asyncio.Task | None = None
+    address_book_sync_task: asyncio.Task | None = None
+    warehouse_1c_catalog_sync_task: asyncio.Task | None = None
+    task_due_notification_task: asyncio.Task | None = None
+    announcement_publish_task: asyncio.Task | None = None
+    docflow_notification_started = False
+    hub_realtime_started = False
+    if LDAP_SYNC_BACKGROUND_ENABLED:
+        sync_task = asyncio.create_task(background_ad_sync_loop())
+    if LDAP_APP_USER_SYNC_ENABLED:
+        ad_app_user_sync_task = asyncio.create_task(background_ad_app_user_sync_loop())
+    if AD_GROUPS_ACCESS_SYNC_ENABLED:
+        ad_groups_access_sync_task = asyncio.create_task(background_ad_groups_access_sync_loop())
+    # Parse the address book and build its search index before the first user search (cold ≈ 2.8 s).
+    address_book_warmup_task = asyncio.create_task(asyncio.to_thread(address_book_service.warm_search_index))
+    from backend.chat.latency_profile import start_flags_refresher
+    from backend.services.zup_user_profile_service import zup_user_profile_service
+
+    await asyncio.to_thread(start_flags_refresher)
+    zup_profile_warmup_task = asyncio.create_task(asyncio.to_thread(zup_user_profile_service.warm))
+    if ADDRESS_BOOK_SYNC_ENABLED:
+        address_book_sync_task = asyncio.create_task(background_address_book_sync_loop())
+    if WAREHOUSE_1C_CATALOG_SYNC_ENABLED:
+        warehouse_1c_catalog_sync_task = asyncio.create_task(background_warehouse_1c_catalog_sync_loop())
+    if TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled():
+        task_due_notification_task = asyncio.create_task(background_task_due_notification_loop())
+    if announcement_publish_background_enabled():
+        announcement_publish_task = asyncio.create_task(background_announcement_publish_loop())
+    if MFU_RUNTIME_MONITOR_ENABLED:
+        await mfu_runtime_monitor.start()
+    await network_monitor_service.start()
+    inventory_binding.start_background_worker()
+    inventory.start_list_warmup()
+    # Обзор мониторинга без серверного кэша: раз в минуту греем запрос агрегатов, чтобы первый заход не ждал ~5 с.
+    inventory.register_extra_warmup("monitoring_overview", network_monitor_service.overview, 60.0)
+    if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
+        await mail_notification_service.start()
+    print(f"Starting {config.app.app_name} v{config.app.version}")
+    print(f"Runtime role: {get_runtime_role()}")
+    print(f"Database: {config.database.host} / {config.database.database}")
+    print(f"Debug mode: {config.app.debug}")
+    print(
+        "Background jobs:"
+        f" ldap_sync={LDAP_SYNC_BACKGROUND_ENABLED}"
+        f" ldap_app_user_sync={LDAP_APP_USER_SYNC_ENABLED}"
+        f" ad_groups_access_sync={AD_GROUPS_ACCESS_SYNC_ENABLED}"
+        f" address_book_sync={ADDRESS_BOOK_SYNC_ENABLED}"
+        f" warehouse_1c_catalog_sync={WAREHOUSE_1C_CATALOG_SYNC_ENABLED}"
+        f" mfu_monitor={MFU_RUNTIME_MONITOR_ENABLED}"
+        f" mail_notifications={MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED}"
+        f" task_due_notifications={TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled()}"
+        f" docflow_notifications={DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED}"
+        f" announcement_publish={announcement_publish_background_enabled()}"
+    )
+    if not MAIL_MODULE_ENABLED:
+        print(
+            "MAIL_MODULE_ENABLED=0: mail notification worker is off; "
+            "/api/v1/mail stays mounted (flag is not a full mail kill switch)."
+        )
+    print(f"AnyIO thread tokens: {thread_tokens}")
+    print(
+        "Auth security:"
+        f" 2fa_enforced={config.security.twofa_enforced}"
+        f" 2fa_policy={config.security.twofa_policy or ('all' if config.security.twofa_enforced else 'off')}"
+        f" runtime_store={auth_runtime_store_service.backend_name}"
+    )
+    validate_json_runtime_storage()
+    if str(config.app_db.database_url or "").strip():
+        try:
+            from backend.appdb.db import initialize_app_schema, ping_app_database
+
+            initialize_app_schema()
+            ping_app_database()
+            print("Internal app database: configured and reachable")
+            await app_push_outbox_service.start()
+            print(f"App push outbox: enabled={app_push_outbox_service.enabled}")
+            if DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED:
+                await docflow_notification_service.start()
+                docflow_notification_started = True
+                print("1C DO notification worker: started")
+            expired_runtime_items = auth_runtime_store_service.cleanup_expired()
+            if expired_runtime_items:
+                print(f"Auth runtime cleanup: removed {expired_runtime_items} expired items")
+            try:
+                from backend.config import session_policy_snapshot
+                from backend.services.session_service import session_service as _session_service
+
+                policy = session_policy_snapshot()
+                print(
+                    "Session policy:"
+                    f" internal_idle_days={policy.get('idle_timeout_internal_days')}"
+                    f" trusted_idle_days={policy.get('idle_timeout_trusted_days')}"
+                    f" external_idle_minutes={policy.get('idle_timeout_minutes')}"
+                    f" refresh_days={policy.get('refresh_token_expire_days')}"
+                    f" refresh_grace_sec={policy.get('refresh_rotation_grace_seconds')}"
+                )
+                backfill = _session_service.reapply_idle_policy_for_active_sessions()
+                print(
+                    "Session idle backfill:"
+                    f" inspected={backfill.get('inspected')}"
+                    f" updated={backfill.get('updated')}"
+                )
+            except Exception as session_policy_exc:
+                print(f"Session policy/backfill warning: {session_policy_exc}")
+            if config.my_files_security.inline_worker_enabled:
+                await my_files_worker.start()
+                print("My files worker: started inline")
+            else:
+                print("My files worker: external process")
+        except Exception as exc:
+            print(f"Internal app database init warning: {exc}")
+    else:
+        try:
+            store = get_local_store()
+            print(f"Local SQLite store: {store.db_path}")
+        except Exception as exc:
+            print(f"SQLite init warning: {exc}")
+    if config.chat.enabled and not chat_routes_enabled():
+        try:
+            from backend.realtime.hub import hub_realtime_publisher
+
+            await hub_realtime_publisher.start()
+            hub_realtime_started = True
+            print(f"HUB realtime publisher: mode={hub_realtime_publisher.mode}")
+        except Exception as exc:
+            print(f"HUB realtime publisher warning: {exc}")
+    if config.chat.enabled and chat_routes_enabled():
+        try:
+            from backend.chat.service import chat_service
+            from backend.chat.push_service import chat_push_service
+            from backend.chat.realtime import chat_realtime
+            from backend.realtime.hub import hub_realtime_publisher
+            from backend.ai_chat.service import ai_chat_service
+
+            chat_status = chat_service.initialize_runtime()
+            ai_chat_service.initialize_runtime()
+            await chat_service.start()
+            await chat_realtime.start()
+            await hub_realtime_publisher.start(realtime_manager=chat_realtime)
+            hub_realtime_started = True
+
+            async def _chat_event_loop_lag_probe() -> None:
+                """Measure event-loop scheduling lag while chat is under load."""
+                from backend.chat.send_audit import audit_send_trace
+
+                interval_sec = 0.25
+                while True:
+                    started = time.perf_counter()
+                    await asyncio.sleep(interval_sec)
+                    lag_ms = max(0.0, (time.perf_counter() - started - interval_sec) * 1000.0)
+                    if lag_ms >= 20.0:
+                        audit_send_trace(
+                            trace_id="loop",
+                            stage="event_loop_lag",
+                            elapsed_ms=lag_ms,
+                            process="main",
+                        )
+
+            # Keep a strong reference: the loop holds tasks weakly, so an unreferenced probe can be collected.
+            _lag_probe_task = asyncio.create_task(_chat_event_loop_lag_probe(), name="chat-event-loop-lag-probe")
+            _BACKGROUND_TASKS.add(_lag_probe_task)
+            _lag_probe_task.add_done_callback(_BACKGROUND_TASKS.discard)
+            print(
+                "Chat module:"
+                f" enabled={chat_status.enabled}"
+                f" configured={chat_status.configured}"
+                f" available={chat_status.available}"
+            )
+            push_status = chat_push_service.get_runtime_status()
+            print(
+                "Chat push:"
+                f" enabled={push_status['enabled']}"
+                f" configured={push_status['configured']}"
+                f" dependency_available={push_status['dependency_available']}"
+                f" public_key_present={push_status['public_key_present']}"
+                f" private_key_present={push_status['private_key_present']}"
+                f" subject_present={push_status['subject_present']}"
+            )
+        except Exception as exc:
+            print(f"Chat init warning: {exc}")
+    elif config.chat.enabled and not chat_routes_enabled():
+        print("Chat module: disabled in this process (HUBIT_RUNTIME_ROLE=api); served by Chat API")
+    yield
+    # Shutdown
+    print("Shutting down...")
+    if loop_watchdog is not None:
+        await loop_watchdog.stop()
+    if sync_task is not None:
+        sync_task.cancel()
+    if ad_app_user_sync_task is not None:
+        ad_app_user_sync_task.cancel()
+    if ad_groups_access_sync_task is not None:
+        ad_groups_access_sync_task.cancel()
+    if address_book_sync_task is not None:
+        address_book_sync_task.cancel()
+    if warehouse_1c_catalog_sync_task is not None:
+        warehouse_1c_catalog_sync_task.cancel()
+    if task_due_notification_task is not None:
+        task_due_notification_task.cancel()
+    if announcement_publish_task is not None:
+        announcement_publish_task.cancel()
+    if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
+        await mail_notification_service.stop()
+    if docflow_notification_started:
+        await docflow_notification_service.stop()
+    await app_push_outbox_service.stop()
+    await my_files_worker.stop()
+    if MFU_RUNTIME_MONITOR_ENABLED:
+        await mfu_runtime_monitor.stop()
+    inventory.stop_list_warmup()
+    inventory_binding.stop_background_worker()
+    await network_monitor_service.stop()
+    if hub_realtime_started:
+        try:
+            from backend.realtime.hub import hub_realtime_publisher
+
+            await hub_realtime_publisher.stop()
+        except Exception:
+            pass
+    if config.chat.enabled and chat_routes_enabled():
+        try:
+            from backend.chat.service import chat_service
+            from backend.chat.realtime import chat_realtime
+
+            await chat_realtime.stop()
+            await chat_service.stop()
+        except Exception:
+            pass
+    if sync_task is not None:
+        try:
+            await sync_task
+        except asyncio.CancelledError:
+            pass
+    if ad_app_user_sync_task is not None:
+        try:
+            await ad_app_user_sync_task
+        except asyncio.CancelledError:
+            pass
+    if ad_groups_access_sync_task is not None:
+        try:
+            await ad_groups_access_sync_task
+        except asyncio.CancelledError:
+            pass
+    if address_book_sync_task is not None:
+        try:
+            await address_book_sync_task
+        except asyncio.CancelledError:
+            pass
+    if warehouse_1c_catalog_sync_task is not None:
+        try:
+            await warehouse_1c_catalog_sync_task
+        except asyncio.CancelledError:
+            pass
+    if task_due_notification_task is not None:
+        try:
+            await task_due_notification_task
+        except asyncio.CancelledError:
+            pass
+    if announcement_publish_task is not None:
+        try:
+            await announcement_publish_task
+        except asyncio.CancelledError:
+            pass
+    try:
+        await asyncio.to_thread(warehouse_1c_service.shutdown)
+    except Exception:
+        logging.getLogger(__name__).exception("Warehouse 1C connection pool shutdown failed")
+    try:
+        await docflow_service.aclose()
+    except Exception:
+        logging.getLogger(__name__).exception("Docflow 1C process bridge shutdown failed")
+    try:
+        from backend.services.docflow_absence_service import docflow_absence_service
+
+        await asyncio.to_thread(docflow_absence_service.shutdown)
+    except Exception:
+        logging.getLogger(__name__).exception("Docflow absence process bridge shutdown failed")
+
+
+# Strong references to fire-and-forget background tasks (asyncio keeps only weak ones).
+_BACKGROUND_TASKS: set = set()
+
+# Create FastAPI app
+app = FastAPI(
+    title=config.app.app_name,
+    version=config.app.version,
+    debug=config.app.debug,
+    lifespan=lifespan,
+    docs_url="/docs" if config.app.debug else None,
+    redoc_url="/redoc" if config.app.debug else None,
+)
+# No per-route @limiter.limit exists and nothing reads request.state.skip_rate_limit, so the former
+# InternalIPBypassMiddleware (a BaseHTTPMiddleware on every request) was dead weight and is not installed.
+
+# JSON-only gzip: starlette's GZipMiddleware buffers streams and would break SSE/file downloads.
+from backend.services.json_gzip_middleware import JsonGzipMiddleware
+app.add_middleware(JsonGzipMiddleware, minimum_size=1024)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.app.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+app.middleware("http")(request_metrics_middleware)
+
+# Auth throttling is enforced explicitly in auth.py so internal requests can be skipped reliably.
+
+
+# Health check endpoints
+@app.get("/health")
+async def health_check():
+    """Liveness probe: cheap response without chat/outbox work."""
+    return {
+        "status": "ok",
+        "version": config.app.version,
+        "runtime_role": get_runtime_role(),
+        "process": "main",
+    }
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness probe: includes chat runtime metrics for ops checks."""
+    payload = {
+        "status": "ok",
+        "version": config.app.version,
+        "runtime_role": get_runtime_role(),
+        "process": "main",
+    }
+    if config.chat.enabled and chat_routes_enabled():
+        try:
+            from backend.chat.service import chat_service
+
+            payload["chat"] = await to_thread.run_sync(chat_service.get_health)
+        except Exception:
+            payload["chat"] = {
+                "enabled": True,
+                "available": False,
+                "configured": bool(config.chat.database_url),
+                "realtime_mode": "unknown",
+            }
+    elif config.chat.enabled:
+        payload["chat"] = {
+            "enabled": True,
+            "available": False,
+            "served_by": "chat-api",
+            "realtime_mode": "external",
+        }
+    return payload
+
+
+@app.get("/health/pools")
+async def health_pools():
+    """DB pool utilization for Main API process."""
+    from backend.appdb.db import get_app_engine
+
+    def _snap(engine):
+        pool = getattr(engine, "pool", None)
+        if pool is None:
+            return {"available": False}
+        return {
+            "available": True,
+            "pool_size": int(getattr(pool, "size", lambda: 0)() or 0),
+            "checked_out": int(getattr(pool, "checkedout", lambda: 0)() or 0),
+            "checked_in": int(getattr(pool, "checkedin", lambda: 0)() or 0),
+            "overflow": int(getattr(pool, "overflow", lambda: 0)() or 0),
+            "max_overflow": int(getattr(pool, "_max_overflow", 0) or 0),
+            "timeout": float(getattr(pool, "_timeout", 0) or 0),
+        }
+
+    app_pool = {}
+    chat_pool = {"available": False, "note": "chat engine not owned by main when role=api"}
+    try:
+        app_pool = _snap(get_app_engine())
+    except Exception as exc:
+        app_pool = {"available": False, "error": str(exc)}
+    if chat_routes_enabled():
+        try:
+            from backend.chat.db import get_chat_engine
+
+            chat_pool = _snap(get_chat_engine())
+        except Exception as exc:
+            chat_pool = {"available": False, "error": str(exc)}
+    return {
+        "process": "main",
+        "runtime_role": get_runtime_role(),
+        "app_db": app_pool,
+        "chat_db": chat_pool,
+    }
+
+
+@app.post("/login/save-password")
+async def login_save_password(request: Request):
+    """Same-origin login path so Safari associates saved passwords with hubit.zsgp.ru."""
+    return await handle_safari_password_beacon_form(request)
+
+
+# Exception handlers
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler."""
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc) if config.app.debug else "Internal server error"}
+    )
+
+
+# Include routers
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
+app.include_router(equipment.router, prefix="/api/v1/equipment", tags=["Equipment"])
+app.include_router(database.router, prefix="/api/v1/database", tags=["Database Management"])
+app.include_router(itinvent_references.router, prefix="/api/v1/itinvent-references", tags=["ITINVENT References"])
+app.include_router(json_operations.router, prefix="/api/v1/json", tags=["JSON Operations"])
+app.include_router(settings.router, prefix="/api/v1/settings", tags=["User Settings"])
+app.include_router(desktop_presence.router, prefix="/api/v1/desktop-presence", tags=["Desktop Presence"])
+app.include_router(networks.router, prefix="/api/v1/networks", tags=["Networks"])
+app.include_router(discovery.router, prefix="/api/v1/discovery", tags=["Discovery"])
+app.include_router(inventory.router, prefix="/api/v1/inventory", tags=["Inventory"])
+app.include_router(fs_egress.router, prefix="/api/v1/inventory", tags=["File Egress"])
+app.include_router(kb.router, prefix="/api/v1/kb", tags=["Knowledge Base"])
+app.include_router(mfu.router, prefix="/api/v1/mfu", tags=["MFU"])
+app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["Monitoring"])
+app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["Feedback"])
+app.include_router(hub.router, prefix="/api/v1/hub", tags=["Hub"])
+app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
+app.include_router(ad_users.router, prefix="/api/v1/ad-users", tags=["AD Users"])
+app.include_router(groups_access.router, prefix="/api/v1/groups-access", tags=["Groups Access"])
+app.include_router(mail.router, prefix="/api/v1/mail", tags=["Mail"])
+app.include_router(mailbox_quota.router, prefix="/api/v1/mail", tags=["Mail"])
+app.include_router(vcs.router, prefix="/api/v1/vcs", tags=["VCS"])
+app.include_router(ai_bots.router, prefix="/api/v1/ai-bots", tags=["AI Bots"])
+app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])
+app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Address Book"])
+app.include_router(company_structure.router, prefix="/api/v1/company-structure", tags=["Company Structure"])
+app.include_router(warehouse_1c.router, prefix="/api/v1/warehouse-1c", tags=["Warehouse 1C"])
+app.include_router(construction.router, prefix="/api/v1/construction", tags=["Construction"])
+app.include_router(it_objects.router, prefix="/api/v1/it-objects", tags=["IT objects"])
+app.include_router(docflow.router, prefix="/api/v1/docflow", tags=["1C Document Management"])
+app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
+app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
+app.include_router(my_files_office.router, prefix="/api/v1/my-files", tags=["My Files"])
+app.include_router(my_files_libraries.router, prefix="/api/v1/my-files", tags=["My Files"])
+app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])
+app.include_router(debug_client_log.router, prefix="/api/v1/debug", tags=["Debug"])
+if config.chat.enabled and chat_routes_enabled():
+    try:
+        from backend.api.v1 import chat
+
+        app.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat"])
+    except Exception as exc:
+        print(f"Chat router warning: {exc}")
+elif config.chat.enabled:
+    print("Chat router: not registered (HUBIT_RUNTIME_ROLE=api)")
+
+# Guard: Chat-only process must not load the full HUB surface via this module.
+if not heavy_api_routes_enabled():
+    print(
+        "WARNING: backend.main loaded with non-api runtime role; "
+        "prefer backend.chat_main for the Chat process"
+    )
+
+# Root endpoint
+@app.get("/")
+async def root():
+    """Root endpoint with API information."""
+    return {
+        "name": config.app.app_name,
+        "version": config.app.version,
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    backend_host = os.getenv("BACKEND_HOST", "127.0.0.1")
+    backend_port = int(os.getenv("BACKEND_PORT", "8001"))
+    uvicorn.run(
+        "backend.main:app",
+        host=backend_host,
+        port=backend_port,
+        loop="none",
+        reload=config.app.debug,
+    )

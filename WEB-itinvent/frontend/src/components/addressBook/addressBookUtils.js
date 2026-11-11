@@ -1,0 +1,214 @@
+import { hideScrollbarSx } from '../../lib/hideScrollbarSx';
+
+export { hideScrollbarSx };
+
+// A20: thin but visible scrollbars inside address-book surfaces (desktop).
+// The shared lib/hideScrollbarSx stays untouched; function form keeps the
+// scrollbar color on theme tokens in both light and dark themes (A16).
+export const thinScrollbarSx = (theme) => ({
+  scrollbarWidth: 'thin',
+  scrollbarColor: `${theme.palette.action.disabled} transparent`,
+  '&::-webkit-scrollbar': {
+    width: 6,
+    height: 6,
+  },
+  '&::-webkit-scrollbar-thumb': {
+    backgroundColor: theme.palette.action.disabled,
+    borderRadius: 3,
+  },
+  '&::-webkit-scrollbar-track': {
+    backgroundColor: 'transparent',
+  },
+});
+
+// A20: hidden scrollbars on touch, thin visible scrollbars on sm+ desktop.
+export const addressBookScrollbarSx = (theme) => ({
+  ...hideScrollbarSx,
+  '@media (min-width:600px)': {
+    scrollbarWidth: 'thin',
+    scrollbarColor: `${theme.palette.action.disabled} transparent`,
+    '&::-webkit-scrollbar': {
+      display: 'block',
+      width: 6,
+      height: 6,
+    },
+    '&::-webkit-scrollbar-thumb': {
+      backgroundColor: theme.palette.action.disabled,
+      borderRadius: 3,
+    },
+    '&::-webkit-scrollbar-track': {
+      backgroundColor: 'transparent',
+    },
+  },
+});
+
+export const normalizeText = (value) => String(value || '').trim();
+
+/** Dedupe {name,count} filter options by case-insensitive name (first wins). */
+export const dedupeNamedOptions = (options) => {
+  const seen = new Set();
+  const result = [];
+  (Array.isArray(options) ? options : []).forEach((option) => {
+    const name = normalizeText(option?.name);
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    result.push({ ...option, name });
+  });
+  return result;
+};
+
+export const normalizePhoneDigits = (value) => {
+  const digits = normalizeText(value).replace(/\D+/g, '');
+  if (digits.length === 11 && digits.startsWith('8')) return `7${digits.slice(1)}`;
+  if (digits.length === 10) return `7${digits}`;
+  return digits;
+};
+
+export const escapeRegExp = (value) => normalizeText(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export const formatAge = (value) => {
+  if (value === null || value === undefined || value === '') return '';
+  const age = Number(value);
+  if (!Number.isInteger(age) || age < 0 || age > 120) return '';
+
+  const lastTwoDigits = age % 100;
+  const lastDigit = age % 10;
+  let unit = 'лет';
+  if (lastTwoDigits < 11 || lastTwoDigits > 14) {
+    if (lastDigit === 1) unit = 'год';
+    if (lastDigit >= 2 && lastDigit <= 4) unit = 'года';
+  }
+  return `${age} ${unit}`;
+};
+
+export const formatDate = (value) => {
+  const text = normalizeText(value).slice(0, 10);
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return '';
+  const [, year, month, day] = match;
+  if (Number(year) <= 100) return '';
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (
+    parsed.getUTCFullYear() !== Number(year)
+    || parsed.getUTCMonth() !== Number(month) - 1
+    || parsed.getUTCDate() !== Number(day)
+  ) return '';
+  return `${day}.${month}.${year}`;
+};
+
+export const formatDateTime = (value) => {
+  const text = normalizeText(value);
+  if (!text) return 'нет данных';
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const isMobileKind = (kind) => /мобил|mobile|сотов/i.test(normalizeText(kind));
+
+const pickFromPhones = (phones) => {
+  const items = Array.isArray(phones) ? phones : [];
+  if (items.length === 0) return null;
+  const mobile = items.find((phone) => isMobileKind(phone?.kind));
+  const selected = mobile || items[0];
+  const value = normalizeText(selected?.value);
+  const digits = normalizeText(selected?.normalized) || normalizePhoneDigits(value);
+  const telHref = digits ? `tel:+${digits}` : (value ? `tel:${value}` : '');
+  return { value, digits, telHref, phone: selected };
+};
+
+export const pickPrimaryPhone = (item) => {
+  const work = pickFromPhones(item?.work_phones);
+  if (work) return work;
+  return pickFromPhones(item?.personal_phones);
+};
+
+/** All primary quick actions use the same work-first phone as the details panel. */
+export const pickQuickActionPhone = (item) => pickPrimaryPhone(item);
+
+export const pickPrimaryEmail = (item) => {
+  const emails = Array.isArray(item?.work_emails) ? item.work_emails : [];
+  if (emails.length === 0) return null;
+  const value = normalizeText(emails[0]?.value);
+  return value ? { value, email: emails[0] } : null;
+};
+
+const collectEmailValues = (emails) => {
+  const seen = new Set();
+  const result = [];
+  (Array.isArray(emails) ? emails : []).forEach((email) => {
+    const value = normalizeText(email?.value).toLowerCase();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    result.push(value);
+  });
+  return result;
+};
+
+/** Lookup hints for matching address-book entry to HUB chat user */
+export const collectAddressBookChatLookup = (item) => ({
+  fullName: normalizeText(item?.full_name),
+  emails: [
+    ...collectEmailValues(item?.work_emails),
+    ...collectEmailValues(item?.personal_emails),
+  ],
+});
+
+export const getEntryKey = (item, index = 0) => (
+  `${normalizeText(item?.full_name)}|${normalizeText(item?.department)}|${normalizeText(item?.position)}|${index}`
+);
+
+/** Stable identity of a person across list refreshes (independent of list index). */
+export const getEntryIdentity = (item) => {
+  const employeeCode = normalizeText(item?.employee_code);
+  if (employeeCode) return employeeCode;
+  return `${normalizeText(item?.full_name)}|${normalizeText(item?.department)}|${normalizeText(item?.position)}`;
+};
+
+export const getInitials = (fullName) => {
+  const parts = normalizeText(fullName).split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return '?';
+};
+
+export const buildEmployeeSubtitle = (item) => {
+  const position = normalizeText(item?.position);
+  const department = normalizeText(item?.department);
+  if (position && department) return `${position} · ${department}`;
+  return position || department || '';
+};
+
+const formatAbsenceDay = (value) => {
+  const text = normalizeText(value).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return '';
+  const parsed = new Date(`${text}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+};
+
+/** Chip / subtitle for ZUP absence attached to address-book item. */
+export const formatAbsenceLabel = (absence) => {
+  const label = normalizeText(absence?.label);
+  if (!label) return '';
+  const returns = formatAbsenceDay(absence?.returns_on);
+  if (returns) return `${label} · выйдет ${returns}`;
+  const starts = formatAbsenceDay(absence?.starts_on);
+  if (starts) return `${label} · с ${starts}`;
+  return label;
+};
+
+export const absenceChipColor = (absence) => {
+  const kind = normalizeText(absence?.kind).toLowerCase();
+  if (kind === 'sick') return 'error';
+  if (kind === 'trip') return 'info';
+  if (kind === 'vacation') return 'warning';
+  return 'default';
+};

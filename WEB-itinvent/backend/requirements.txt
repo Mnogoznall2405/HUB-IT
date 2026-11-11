@@ -1,0 +1,29 @@
+# Install with constraints for reproducible backend environments:
+#   python -m pip install -r requirements.txt -c constraints.txt
+fastapi
+uvicorn[standard]
+pyodbc
+python-jose
+pydantic[email]
+python-multipart>=0.0.26
+python-dotenv>=1.2.2
+python-docx
+docx2pdf
+openpyxl
+openai
+pypdf>=6.10.2
+reportlab
+PyMuPDF>=1.26.7
+pysnmp
+cryptography>=46.0.7
+exchangelib
+sqlalchemy
+alembic
+psycopg[binary]
+pywebpush
+pyotp
+qrcode
+Pillow
+redis
+webauthn
+zstandard>=0.25.0

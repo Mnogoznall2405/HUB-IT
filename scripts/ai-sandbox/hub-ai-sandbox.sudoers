@@ -1,0 +1,2 @@
+# Install root-owned mode 0440; validate using visudo -cf before installation.
+hub-ai-sandbox ALL=(root) NOPASSWD: /usr/local/libexec/hub-ai-sandbox-quota-root

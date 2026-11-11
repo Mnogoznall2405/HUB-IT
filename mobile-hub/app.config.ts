@@ -1,0 +1,137 @@
+import type { ExpoConfig } from 'expo/config';
+
+const { buildAndroidHttpsAppLinksConfig } = require('./android-app-links.cjs') as {
+  buildAndroidHttpsAppLinksConfig: (value: string | undefined) => Partial<NonNullable<ExpoConfig['android']>>;
+};
+const { readMobileVersionMetadata } = require('./scripts/mobile-version.cjs') as {
+  readMobileVersionMetadata: () => { version: string; versionCode: number };
+};
+
+const googleServicesFile = String(process.env.EXPO_GOOGLE_SERVICES_FILE || '').trim();
+const easProjectId = String(process.env.EXPO_EAS_PROJECT_ID || '').trim();
+const androidHttpsAppLinks = buildAndroidHttpsAppLinksConfig(
+  process.env.HUBIT_ANDROID_ENABLE_APP_LINKS,
+);
+const mobileVersion = readMobileVersionMetadata();
+
+const config: ExpoConfig = {
+  name: 'HUB-IT',
+  slug: 'mobile-hub',
+  version: mobileVersion.version,
+  orientation: 'portrait',
+  scheme: 'hubit',
+  userInterfaceStyle: 'automatic',
+  icon: './assets/icon.png',
+  android: {
+    package: 'ru.zsgp.hubit.mobile',
+    versionCode: mobileVersion.versionCode,
+    softwareKeyboardLayoutMode: 'resize',
+    ...androidHttpsAppLinks,
+    permissions: [
+    'android.permission.REQUEST_INSTALL_PACKAGES',
+    // F-CONTACT: read-only contact picking; the expo-contacts plugin would
+    // also add WRITE_CONTACTS, which we don't need.
+    'android.permission.READ_CONTACTS',
+  ],
+    blockedPermissions: [
+      'android.permission.SYSTEM_ALERT_WINDOW',
+    ],
+    ...(googleServicesFile ? { googleServicesFile } : {}),
+    adaptiveIcon: {
+      foregroundImage: './assets/adaptive-icon.png',
+      backgroundColor: '#071d30',
+    },
+  },
+  plugins: [
+    'expo-router',
+    './plugins/withHubitAndroidShortcuts',
+    'expo-background-task',
+    'expo-secure-store',
+    [
+      'expo-local-authentication',
+      {
+        faceIDPermission: 'Разрешить HUB-IT использовать биометрию для входа.',
+      },
+    ],
+    'expo-asset',
+    'expo-font',
+    'expo-video',
+    [
+      'expo-camera',
+      {
+        cameraPermission: 'Разрешить HUB-IT использовать камеру для сканирования инвентарных QR-кодов.',
+        recordAudioAndroid: false,
+        barcodeScannerEnabled: true,
+      },
+    ],
+    [
+      'expo-audio',
+      {
+        microphonePermission: 'Разрешить HUB-IT записывать голосовые сообщения.',
+        recordAudioAndroid: true,
+        enableBackgroundRecording: false,
+        enableBackgroundPlayback: false,
+      },
+    ],
+    'expo-sharing',
+    [
+      'expo-media-library',
+      {
+        photosPermission: 'Разрешить HUB-IT показывать и сохранять фото и видео.',
+        savePhotosPermission: 'Разрешить HUB-IT сохранять вложения в галерею.',
+      },
+    ],
+    [
+      'expo-location',
+      {
+        locationWhenInUsePermission: 'Разрешить HUB-IT определять местоположение для отправки геопозиции.',
+      },
+    ],
+    'expo-status-bar',
+    [
+      'expo-navigation-bar',
+      {
+        hidden: true,
+        style: 'dark',
+        enforceContrast: false,
+      },
+    ],
+    [
+      'expo-notifications',
+      {
+        defaultChannel: 'hubit_default',
+      },
+    ],
+    [
+      'expo-splash-screen',
+      {
+        image: './assets/splash.png',
+        imageWidth: 220,
+        resizeMode: 'contain',
+        backgroundColor: '#f5f7fa',
+      },
+    ],
+    [
+      'expo-build-properties',
+      {
+        android: {
+          compileSdkVersion: 36,
+          targetSdkVersion: 36,
+          usesCleartextTraffic: false,
+          buildArchs: ['armeabi-v7a', 'arm64-v8a'],
+          enableMinifyInReleaseBuilds: true,
+          enableShrinkResourcesInReleaseBuilds: true,
+          networkInspector: false,
+        },
+      },
+    ],
+    './plugins/withHubitAndroidSecurity',
+  ],
+  extra: {
+    apiUrl: process.env.EXPO_PUBLIC_API_URL || 'https://hubit.zsgp.ru/api/v1',
+    webUrl: process.env.EXPO_PUBLIC_WEB_URL || 'https://hubit.zsgp.ru',
+    ...(easProjectId ? { eas: { projectId: easProjectId } } : {}),
+  },
+};
+
+export default config;

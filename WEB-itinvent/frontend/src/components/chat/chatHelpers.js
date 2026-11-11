@@ -1,0 +1,944 @@
+import { API_V1_BASE } from '../../api/client';
+import {
+  getChatContactPreviewText,
+  getChatPollPreviewText,
+  parseChatContactBody,
+  resolveChatMessagePoll,
+} from './chatStructuredContent';
+
+export const CHAT_FILE_ACCEPT = '.jpg,.jpeg,.png,.gif,.webp,.bmp,.mp4,.mov,.webm,.m4v,.ogg,.mp3,.wav,.aac,.m4a,.opus,.flac,.pdf,.doc,.docx,.docm,.rtf,.odt,.xls,.xlsx,.xlsm,.ods,.ppt,.pptx,.pptm,.odp,.txt,.csv,.tsv,.log,.md,.json,.xml';
+export const CHAT_MAX_FILE_COUNT = 5;
+export const CHAT_MAX_FILE_BYTES = 1024 * 1024 * 1024;
+export const CHAT_MESSAGE_BODY_MAX_LENGTH = 12000;
+export const CHAT_POLL_MIN_OPTIONS = 2;
+export const CHAT_POLL_MAX_OPTIONS = 10;
+export const CHAT_MESSAGE_COUNTER_THRESHOLD = 500;
+export const CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX = 180;
+export const CHAT_IMAGE_ATTACHMENT_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
+export const CHAT_VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
+export const CHAT_AUDIO_ATTACHMENT_EXTENSIONS = new Set(['ogg', 'mp3', 'wav', 'aac', 'm4a', 'opus', 'flac']);
+export const CHAT_ARCHIVE_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz']);
+export const CHAT_ARCHIVE_MIME_TYPES = new Set([
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/x-rar-compressed',
+  'application/vnd.rar',
+  'application/x-7z-compressed',
+  'application/gzip',
+  'application/x-gzip',
+  'application/x-tar',
+]);
+
+const CP1251_TABLE = [
+  'Ђ', 'Ѓ', '‚', 'ѓ', '„', '…', '†', '‡',
+  '€', '‰', 'Љ', '‹', 'Њ', 'Ќ', 'Ћ', 'Џ',
+  'ђ', '‘', '’', '“', '”', '•', '–', '—',
+  '', '™', 'љ', '›', 'њ', 'ќ', 'ћ', 'џ',
+  '\u00A0', 'Ў', 'ў', 'Ј', '¤', 'Ґ', '¦', '§',
+  'Ё', '©', 'Є', '«', '¬', '\u00AD', '®', 'Ї',
+  '°', '±', 'І', 'і', 'ґ', 'µ', '¶', '·',
+  'ё', '№', 'є', '»', 'ј', 'Ѕ', 'ѕ', 'ї',
+  'А', 'Б', 'В', 'Г', 'Д', 'Е', 'Ж', 'З',
+  'И', 'Й', 'К', 'Л', 'М', 'Н', 'О', 'П',
+  'Р', 'С', 'Т', 'У', 'Ф', 'Х', 'Ц', 'Ч',
+  'Ш', 'Щ', 'Ъ', 'Ы', 'Ь', 'Э', 'Ю', 'Я',
+  'а', 'б', 'в', 'г', 'д', 'е', 'ж', 'з',
+  'и', 'й', 'к', 'л', 'м', 'н', 'о', 'п',
+  'р', 'с', 'т', 'у', 'ф', 'х', 'ц', 'ч',
+  'ш', 'щ', 'ъ', 'ы', 'ь', 'э', 'ю', 'я',
+];
+
+const CP1251_ENCODE_MAP = new Map();
+CP1251_TABLE.forEach((char, index) => {
+  if (char) CP1251_ENCODE_MAP.set(char, 0x80 + index);
+});
+
+const looksLikeUtf8Mojibake = (value) => /(?:Р[\u0400-\u045F]|С[\u0400-\u045F]|вЂ.|Ð.|Ñ.)/.test(String(value || ''));
+
+export const normalizeChatText = (value) => {
+  const raw = String(value ?? '');
+  if (!raw || !looksLikeUtf8Mojibake(raw) || typeof TextDecoder === 'undefined') return raw;
+
+  try {
+    const bytes = [];
+    for (const char of raw) {
+      const code = char.charCodeAt(0);
+      if (code <= 0x7F) {
+        bytes.push(code);
+        continue;
+      }
+      const mapped = CP1251_ENCODE_MAP.get(char);
+      if (typeof mapped !== 'number') return raw;
+      bytes.push(mapped);
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes));
+  } catch {
+    return raw;
+  }
+};
+
+const normalizeTrimmedChatText = (value, fallback = '') => {
+  const normalized = normalizeChatText(value).trim();
+  return normalized || fallback;
+};
+
+const MARKDOWN_TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+
+export const hasChatMarkdownTable = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const lines = text.split(/\r?\n/);
+  return lines.some((line, index) => (
+    /\|/.test(line)
+    && MARKDOWN_TABLE_SEPARATOR_RE.test(lines[index + 1] || '')
+  ));
+};
+
+export const detectChatBodyFormat = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return 'plain';
+  const lines = text.split(/\r?\n/);
+  if (/^\s{0,3}#{1,6}\s+\S/m.test(text)) return 'markdown';
+  if (/^\s{0,3}(?:```|~~~)/m.test(text)) return 'markdown';
+  if (/^\s{0,3}>\s+\S/m.test(text)) return 'markdown';
+  if (/^\s{0,3}- \[[ xX]\]\s+\S/m.test(text)) return 'markdown';
+  if (/^\s{0,3}(?:[-*+]\s+|\d+[.)]\s+)\S/m.test(text)) return 'markdown';
+  if (/(^|\s)(?:\*\*|__)[^\n]+(?:\*\*|__)(?=\s|[.,!?;:]|$)/.test(text)) return 'markdown';
+  if (/(^|\s)`[^`\n]+`(?=\s|[.,!?;:]|$)/.test(text)) return 'markdown';
+  if (/\[[^\]\n]+\]\((?:https?:\/\/|\/|#)[^)]+\)/i.test(text)) return 'markdown';
+  return hasChatMarkdownTable(text) ? 'markdown' : 'plain';
+};
+
+export const stripChatMarkdownPreview = (value) => {
+  const text = normalizeChatText(value).trim();
+  if (!text) return '';
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const cleanedLines = [];
+  let inFence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^(?:```|~~~)/.test(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (MARKDOWN_TABLE_SEPARATOR_RE.test(trimmed)) continue;
+
+    let cleaned = trimmed;
+    if (/^\|.*\|$/.test(cleaned)) {
+      cleaned = cleaned
+        .split('|')
+        .map((cell) => cell.trim())
+        .filter(Boolean)
+        .join(' | ');
+    }
+    cleaned = cleaned
+      .replace(/^\s{0,3}#{1,6}\s+/, '')
+      .replace(/^\s{0,3}>\s?/, '')
+      .replace(/^\s{0,3}- \[[ xX]\]\s+/, '')
+      .replace(/^\s{0,3}(?:[-*+]\s+|\d+[.)]\s+)/, '')
+      .replace(/\[([^\]\n]+)\]\([^)]+\)/g, '$1')
+      .replace(/(\*\*|__)(.*?)\1/g, '$2')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/[*_~]{1,3}/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (cleaned) cleanedLines.push(cleaned);
+    if (!inFence && cleanedLines.length >= 3) break;
+  }
+
+  return cleanedLines.join(' ').trim();
+};
+
+export const getChatFileExtension = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized.includes('.')) return '';
+  return normalized.split('.').pop() || '';
+};
+
+export const isArchiveMimeType = (value) => CHAT_ARCHIVE_MIME_TYPES.has(String(value || '').trim().toLowerCase());
+
+export const isArchiveFile = (file) => {
+  const fileName = String(file?.name || file?.file_name || file?.fileName || '').trim();
+  const mimeType = String(file?.type || file?.mime_type || file?.mimeType || '').trim().toLowerCase();
+  const extension = getChatFileExtension(fileName);
+  if (extension && CHAT_ARCHIVE_EXTENSIONS.has(extension)) {
+    return true;
+  }
+  return isArchiveMimeType(mimeType);
+};
+
+export const formatShortTime = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+};
+
+export const formatSidebarConversationTime = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
+};
+
+// Д2-3: Intl-форматтеры создаются один раз, а готовые подписи кешируются по
+// ISO-строке — toLocaleTimeString/toLocaleString на каждый пузырь и каждый
+// рендер давали заметную долю длинных задач при прокрутке с догрузкой истории.
+const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
+const FULL_DATE_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+const DATE_LABEL_CACHE_LIMIT = 4000;
+const messageTimeCache = new Map();
+const fullDateCache = new Map();
+
+const formatCachedDate = (cache, formatter, value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const cached = cache.get(raw);
+  if (cached !== undefined) return cached;
+  const date = new Date(raw);
+  const label = Number.isNaN(date.getTime()) ? '' : formatter.format(date);
+  if (cache.size >= DATE_LABEL_CACHE_LIMIT) cache.clear();
+  cache.set(raw, label);
+  return label;
+};
+
+export const formatMessageTime = (value) => formatCachedDate(messageTimeCache, MESSAGE_TIME_FORMATTER, value);
+
+export const formatMessageMetaLabel = (message) => {
+  const time = formatMessageTime(message?.created_at);
+  if (!time) return '';
+  if (String(message?.edited_at || '').trim()) {
+    return `${time}, изм.`;
+  }
+  return time;
+};
+
+const CHAT_INLINE_META_TIME_CHARS = 5;
+const CHAT_INLINE_META_TEXT_GAP_REM = 0.55;
+
+/** Reserve width for inline time/receipts at the end of a short single-line bubble. */
+export function getChatInlineMetaReserveWidth({
+  message,
+  compactMobile = false,
+  isOwnDirect = false,
+  isSending = false,
+} = {}) {
+  const metaLabel = formatMessageMetaLabel(message);
+  const labelLen = String(metaLabel || '').length;
+
+  let widthRem = isOwnDirect
+    ? (compactMobile ? 4.65 : 4.45)
+    : (compactMobile ? 3.25 : 2.95);
+
+  widthRem += CHAT_INLINE_META_TEXT_GAP_REM;
+
+  const extraChars = Math.max(0, labelLen - CHAT_INLINE_META_TIME_CHARS);
+  widthRem += extraChars * (compactMobile ? 0.34 : 0.32);
+
+  const uploadProgress = Number(message?.uploadProgress || 0);
+  const showUploadProgress = isSending
+    && Number.isFinite(uploadProgress)
+    && uploadProgress > 0
+    && uploadProgress < 100;
+  if (showUploadProgress) {
+    widthRem += 1.2;
+  }
+
+  return `${widthRem.toFixed(2)}rem`;
+}
+
+export const formatFullDate = (value) => formatCachedDate(fullDateCache, FULL_DATE_FORMATTER, value);
+
+export const getDateDividerLabel = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) return 'Сегодня';
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return 'Вчера';
+  return date.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: 'long',
+    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+  });
+};
+
+export const formatFileSize = (value) => {
+  const size = Number(value || 0);
+  if (!Number.isFinite(size) || size <= 0) return '0 Б';
+  if (size < 1024) return `${size} Б`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} КБ`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} ГБ`;
+};
+
+export const canEditChatMessage = (message) => {
+  if (!message?.id || message?.is_deleted || message?.isOptimistic) return false;
+  if (String(message?.kind || '').trim() !== 'text') return false;
+  if (!message?.is_own) return false;
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  if (attachments.length > 0) return false;
+  return Boolean(String(message?.body || '').trim());
+};
+
+// В группе чужие сообщения удаляют только владелец и модераторы; сервер проверяет то же самое.
+// Если роль неизвестна (устаревший ответ), кнопку не прячем: решение останется за сервером.
+export const isChatGroupManagerRole = (role) => {
+  const normalized = String(role || '').trim();
+  return normalized === 'owner' || normalized === 'moderator';
+};
+
+export const canDeleteChatMessage = (message, { conversationKind, viewerMemberRole } = {}) => {
+  if (!message?.id || message?.is_deleted || message?.isOptimistic) return false;
+  if (String(message?.kind || '').trim() === 'system') return false;
+  if (message?.is_own) return true;
+  if (String(conversationKind || '').trim() !== 'group') return false;
+  const role = String(viewerMemberRole || '').trim();
+  return !role || isChatGroupManagerRole(role);
+};
+
+export const getMessagePreview = (message) => {
+  if (!message) return 'Сообщение';
+  if (message?.is_deleted) return 'Сообщение удалено';
+  if (message.kind === 'system') return normalizeTrimmedChatText(message.body, 'Системное событие');
+  if (message.kind === 'task_share') return 'Поделились задачей';
+  if (message.kind === 'location') return 'Геопозиция';
+  if (message.kind === 'contact') return getChatContactPreviewText(parseChatContactBody(message.body));
+  if (message.kind === 'poll') return getChatPollPreviewText(resolveChatMessagePoll(message));
+  const body = normalizeTrimmedChatText(message.body);
+  if (message.kind === 'file' && body) return body;
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  if (attachments.length > 0) {
+    if (attachments.length === 1) {
+      return `Файл: ${normalizeTrimmedChatText(attachments[0]?.file_name, 'вложение')}`;
+    }
+    return `Файлы: ${attachments.length}`;
+  }
+  return body || 'Сообщение';
+};
+
+export const getEmojiOnlyCount = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return 0;
+  try {
+    if (!/^[\p{Extended_Pictographic}\uFE0F\u200D\s]+$/u.test(text)) return 0;
+    const count = Array.from(text.matchAll(/\p{Extended_Pictographic}/gu)).length;
+    return count >= 1 && count <= 3 ? count : 0;
+  } catch {
+    return 0;
+  }
+};
+
+export const normalizeChatAttachmentUrl = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+  if (/^(?:https?:|blob:|data:|\/\/)/i.test(normalized)) return normalized;
+
+  const apiV1Base = String(API_V1_BASE || '/api/v1').replace(/\/+$/, '') || '/api/v1';
+  const apiBase = apiV1Base.endsWith('/v1') ? apiV1Base.slice(0, -3) : apiV1Base.replace(/\/v1\/?$/, '');
+  if (normalized.startsWith('/api/v1/')) {
+    return `${apiV1Base}${normalized.slice('/api/v1'.length)}`;
+  }
+  if (normalized.startsWith('api/v1/')) {
+    return `${apiV1Base}/${normalized.slice('api/v1/'.length)}`;
+  }
+  if (normalized.startsWith('/api/')) {
+    return `${apiBase || '/api'}${normalized.slice('/api'.length)}`;
+  }
+  if (normalized.startsWith('api/')) {
+    return `${apiBase || '/api'}/${normalized.slice('api/'.length)}`;
+  }
+  // Если URL не начинается с / или api/, добавляем apiV1Base
+  if (!normalized.startsWith('/')) {
+    console.warn(`Attachment URL does not start with /, prepending API base: ${normalized}`);
+    return `${apiV1Base}/${normalized}`;
+  }
+  return normalized;
+};
+
+export const pickBlobAttachmentUrl = (...candidates) => {
+  for (const candidate of candidates) {
+    const normalized = normalizeChatAttachmentUrl(candidate) || String(candidate || '').trim();
+    if (normalized.startsWith('blob:')) return normalized;
+  }
+  return '';
+};
+
+const getAttachmentMimeType = (attachment) => String(
+  attachment?.mime_type
+  || attachment?.mimeType
+  || attachment?.content_type
+  || attachment?.contentType
+  || attachment?.file_mime
+  || attachment?.fileMime
+  || attachment?.type
+  || '',
+).trim().toLowerCase();
+
+const getAttachmentFileName = (attachment) => String(
+  attachment?.file_name
+  || attachment?.fileName
+  || attachment?.name
+  || '',
+).trim().toLowerCase();
+
+export const getAttachmentKind = (attachment) => {
+  const explicitKind = String(
+    attachment?.kind
+    || attachment?.media_kind
+    || attachment?.mediaKind
+    || attachment?.file_type
+    || attachment?.fileType
+    || '',
+  ).trim().toLowerCase();
+  if (['image', 'video', 'audio', 'file', 'sticker'].includes(explicitKind)) return explicitKind;
+
+  const mimeType = getAttachmentMimeType(attachment);
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('video/')) return 'video';
+
+  const fileName = getAttachmentFileName(attachment);
+  const extension = getChatFileExtension(fileName);
+  if (CHAT_IMAGE_ATTACHMENT_EXTENSIONS.has(extension)) return 'image';
+  if (CHAT_AUDIO_ATTACHMENT_EXTENSIONS.has(extension)) return 'audio';
+  if (extension === 'webm' && fileName.startsWith('voice_')) return 'audio';
+  if (CHAT_VIDEO_ATTACHMENT_EXTENSIONS.has(extension)) return 'video';
+  return 'file';
+};
+
+export const isImageAttachment = (attachment) => {
+  return getAttachmentKind(attachment) === 'image';
+};
+export const isVideoAttachment = (attachment) => {
+  return getAttachmentKind(attachment) === 'video';
+};
+export const isAudioAttachment = (attachment) => getAttachmentKind(attachment) === 'audio';
+export const isStickerAttachment = (attachment) => getAttachmentKind(attachment) === 'sticker';
+export const isMediaAttachment = (attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment);
+export const isPdfAttachment = (attachment) => getAttachmentMimeType(attachment) === 'application/pdf';
+
+export const buildAttachmentUrl = (messageId, attachmentId, options = {}) => {
+  const baseUrl = `${API_V1_BASE}/chat/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/file`;
+  const params = new URLSearchParams();
+  if (options?.inline) params.set('inline', '1');
+  if (String(options?.variant || '').trim()) params.set('variant', String(options.variant).trim());
+  const query = params.toString();
+  return query ? `${baseUrl}?${query}` : baseUrl;
+};
+
+export const avatarLabel = (item) => {
+  const title = normalizeTrimmedChatText(item?.title || item?.full_name || item?.username);
+  if (!title) return '#';
+  const parts = title.split(/\s+/).filter(Boolean);
+  return (parts.length >= 2 ? `${parts[0][0] || ''}${parts[1][0] || ''}` : title.slice(0, 2)).toUpperCase();
+};
+
+export const getStatusMeta = (value) => {
+  if (value === 'in_progress') return ['В работе', '#d97706', 'rgba(217,119,6,0.14)'];
+  if (value === 'review') return ['На проверке', '#2563eb', 'rgba(37,99,235,0.14)'];
+  if (value === 'done') return ['Выполнена', '#059669', 'rgba(5,150,105,0.14)'];
+  return ['Новая', '#2563eb', 'rgba(37,99,235,0.14)'];
+};
+
+export const getPriorityMeta = (value) => {
+  if (value === 'urgent') return ['Срочный', '#b91c1c', 'rgba(185,28,28,0.14)'];
+  if (value === 'high') return ['Высокий', '#d97706', 'rgba(217,119,6,0.14)'];
+  if (value === 'low') return ['Низкий', '#64748b', 'rgba(100,116,139,0.14)'];
+  return ['Обычный', '#0f766e', 'rgba(15,118,110,0.14)'];
+};
+
+export const getTaskAssignee = (task) => normalizeTrimmedChatText(task?.assignee_full_name || task?.assignee_username, 'Не назначен');
+
+export const buildChatDraftKey = (userId, conversationId) => {
+  const normalizedUserId = String(userId || '').trim();
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!normalizedUserId || !normalizedConversationId) return '';
+  return `chat:draft:${normalizedUserId}:${normalizedConversationId}`;
+};
+
+export const buildChatPinnedMessageKey = (userId, conversationId) => {
+  const normalizedUserId = String(userId || '').trim();
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!normalizedUserId || !normalizedConversationId) return '';
+  return `chat:pinned-message:${normalizedUserId}:${normalizedConversationId}`;
+};
+
+// Structured kinds: backend emits readable preview body; optimistic previews
+// still carry the canonical JSON body — parse it, but never show raw JSON.
+const readableStructuredPreviewBody = (body, fallback) => {
+  const text = normalizeTrimmedChatText(body);
+  if (!text || text.startsWith('{') || text.startsWith('[')) return fallback;
+  return text;
+};
+
+export const getReplyPreviewText = (replyPreview) => {
+  if (!replyPreview || typeof replyPreview !== 'object') return '';
+  if (replyPreview?.is_deleted) return 'Сообщение удалено';
+  if (replyPreview.kind === 'location') return 'Геопозиция';
+  if (replyPreview.kind === 'contact') {
+    const parsed = parseChatContactBody(replyPreview.body);
+    return parsed ? getChatContactPreviewText(parsed) : readableStructuredPreviewBody(replyPreview.body, 'Контакт');
+  }
+  if (replyPreview.kind === 'poll') {
+    const parsed = resolveChatMessagePoll(replyPreview);
+    return parsed ? getChatPollPreviewText(parsed) : readableStructuredPreviewBody(replyPreview.body, 'Опрос');
+  }
+  if (replyPreview.kind === 'system') return normalizeTrimmedChatText(replyPreview.body, 'Системное событие');
+  const markdownPreview = stripChatMarkdownPreview(replyPreview.task_title || replyPreview.body);
+  if (markdownPreview) return markdownPreview;
+  if (replyPreview.kind === 'task_share') {
+    return normalizeTrimmedChatText(replyPreview.task_title || replyPreview.body, 'Карточка задачи');
+  }
+  if (replyPreview.kind === 'file') {
+    const body = normalizeTrimmedChatText(replyPreview.body);
+    if (body) return body;
+    const attachmentsCount = Number(replyPreview.attachments_count || 0);
+    return attachmentsCount > 1 ? `Файлы: ${attachmentsCount}` : 'Файл';
+  }
+  return normalizeTrimmedChatText(replyPreview.body);
+};
+
+const SYNTHETIC_CHAT_USERNAME_RE = /^user-\d+$/i;
+
+export const isSyntheticChatUsername = (value) => (
+  SYNTHETIC_CHAT_USERNAME_RE.test(String(value || '').trim())
+);
+
+export const resolveChatPreviewSenderName = (preview, fallback = 'Участник') => {
+  const name = String(preview?.sender_name || '').trim();
+  if (name && !isSyntheticChatUsername(name)) return name;
+  return String(fallback || 'Участник').trim() || 'Участник';
+};
+
+export const getSearchResultPreview = (message) => {
+  if (!message) return 'Сообщение';
+  if (message?.is_deleted) return 'Сообщение удалено';
+  if (message.kind === 'system') return normalizeTrimmedChatText(message.body, 'Системное событие');
+  if (message.kind === 'task_share') {
+    return normalizeTrimmedChatText(message?.task_preview?.title, 'Карточка задачи');
+  }
+  if (message.kind === 'location') return 'Геопозиция';
+  if (message.kind === 'contact') return getChatContactPreviewText(parseChatContactBody(message.body));
+  if (message.kind === 'poll') return getChatPollPreviewText(resolveChatMessagePoll(message));
+  const body = normalizeTrimmedChatText(message.body);
+  if (message.kind === 'file' && body) return body;
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  if (attachments.length > 0) {
+    if (attachments.length === 1) {
+      return `Файл: ${normalizeTrimmedChatText(attachments[0]?.file_name, 'вложение')}`;
+    }
+    return `Файлы: ${attachments.length}`;
+  }
+  return body || 'Сообщение';
+};
+
+export const resolvePresenceWithActivity = (presence, { activityAt = '', treatAsOnlineWindowMs = 2 * 60_000 } = {}) => {
+  const base = (presence && typeof presence === 'object') ? { ...presence } : {};
+  const activityRaw = String(activityAt || '').trim();
+  if (!activityRaw) return base;
+  const activityDate = new Date(activityRaw);
+  if (Number.isNaN(activityDate.getTime())) return base;
+  const currentRaw = String(base.last_seen_at || '').trim();
+  const currentDate = currentRaw ? new Date(currentRaw) : null;
+  const currentValid = currentDate && !Number.isNaN(currentDate.getTime());
+  if (currentValid && currentDate.getTime() >= activityDate.getTime()) {
+    return base;
+  }
+  const ageMs = Date.now() - activityDate.getTime();
+  const recentlyActive = Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= treatAsOnlineWindowMs;
+  return {
+    ...base,
+    is_online: Boolean(base.is_online) || recentlyActive,
+    last_seen_at: activityRaw,
+    // Force recomputation from last_seen_at / is_online — cached status_text may be stale.
+    status_text: recentlyActive || base.is_online ? 'В сети' : '',
+  };
+};
+
+export const formatPresenceText = (presence) => {
+  if (!presence || typeof presence !== 'object') return 'Не в сети';
+  if (presence.is_online) return 'В сети';
+  const statusText = normalizeTrimmedChatText(presence.status_text);
+  // Prefer fresh last_seen_at over a stale precomputed status_text from list cache.
+  const raw = String(presence.last_seen_at || '').trim();
+  if (!raw) return statusText || 'Не в сети';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return statusText || 'Не в сети';
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  if (diffMs < 60_000) return 'Был(а) только что';
+  if (diffMs < 60 * 60 * 1000) return `Был(а) ${Math.max(1, Math.floor(diffMs / 60_000))} мин назад`;
+  if (date.toDateString() === now.toDateString()) return `Сегодня в ${formatShortTime(raw)}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) {
+    return `Вчера в ${date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
+  }
+  return formatFullDate(raw);
+};
+
+export const getGroupOnlineCount = (conversation) => {
+  const explicitOnlineCount = Number(conversation?.online_member_count);
+  if (Number.isFinite(explicitOnlineCount) && explicitOnlineCount >= 0) {
+    return explicitOnlineCount;
+  }
+  if (Array.isArray(conversation?.members)) {
+    return conversation.members.filter((member) => Boolean(member?.user?.presence?.is_online)).length;
+  }
+  if (Array.isArray(conversation?.member_preview)) {
+    return conversation.member_preview.filter((member) => Boolean(member?.user?.presence?.is_online)).length;
+  }
+  return 0;
+};
+
+export const isNotesConversation = (conversation) => String(conversation?.kind || '').trim() === 'notes';
+
+export const isTaskConversation = (conversation) => {
+  const kind = String(conversation?.kind || '').trim();
+  return kind === 'task' || Boolean(String(conversation?.task_id || '').trim());
+};
+
+export const isCompletedTaskConversation = (conversation) => (
+  isTaskConversation(conversation) && String(conversation?.task_status || '').trim().toLowerCase() === 'done'
+);
+
+export const getConversationDisplayTitle = (conversation) => {
+  if (!conversation) return '';
+  if (!isTaskConversation(conversation)) {
+    return normalizeTrimmedChatText(conversation?.title);
+  }
+  const taskTitle = normalizeTrimmedChatText(conversation?.task_title);
+  if (taskTitle) return taskTitle;
+  return normalizeTrimmedChatText(conversation?.title).replace(/^Задача:\s*/i, '') || 'Задача';
+};
+
+export const formatTaskConversationDue = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Без срока';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return 'Без срока';
+  const now = new Date();
+  const includeYear = date.getFullYear() !== now.getFullYear();
+  return date.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    ...(includeYear ? { year: 'numeric' } : {}),
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+export const getTaskConversationMetaLine = (conversation) => {
+  const assignee = normalizeTrimmedChatText(
+    conversation?.task_assignee_full_name,
+    'Исполнитель не назначен',
+  );
+  const due = formatTaskConversationDue(conversation?.task_due_at);
+  return `${assignee} • ${due === 'Без срока' ? due : `Срок: ${due}`}`;
+};
+
+const formatTaskStatusLabel = (status) => {
+  const [label] = getStatusMeta(status);
+  return label || 'Задача';
+};
+
+export const resolveDirectConversationId = (peerUserId, sources = {}) => {
+  const normalizedPeerId = Number(peerUserId || 0);
+  if (!Number.isFinite(normalizedPeerId) || normalizedPeerId <= 0) return '';
+
+  const lists = [
+    Array.isArray(sources.conversations) ? sources.conversations : [],
+    Array.isArray(sources.searchChats) ? sources.searchChats : [],
+  ];
+
+  for (const list of lists) {
+    for (const item of list) {
+      if (String(item?.kind || '').trim() !== 'direct') continue;
+      if (Number(item?.direct_peer?.id || 0) === normalizedPeerId) {
+        return String(item?.id || '').trim();
+      }
+    }
+  }
+  return '';
+};
+
+export const HUB_ASSISTANT_TITLE = 'HUB Ассистент';
+
+export const getAiConversationStatusLine = (conversation, aiStatus) => {
+  const status = String(aiStatus?.status || conversation?.ai_status || '').trim().toLowerCase();
+  if (status === 'queued' || status === 'running') return `${HUB_ASSISTANT_TITLE} • выполняет действие`;
+  if (status === 'failed') return `${HUB_ASSISTANT_TITLE} • требуется разрешение`;
+  return `${HUB_ASSISTANT_TITLE} • готов к работе`;
+};
+
+export const getConversationHeaderSubtitle = (conversation, aiStatus) => {
+  if (!conversation) return '';
+  if (conversation.kind === 'ai') {
+    return getAiConversationStatusLine(conversation, aiStatus);
+  }
+  if (conversation.kind === 'notes') {
+    return 'Личные заметки';
+  }
+  if (conversation.kind === 'direct') {
+    const presence = resolvePresenceWithActivity(conversation?.direct_peer?.presence, {
+      activityAt: conversation?.last_message_is_own ? '' : conversation?.last_message_at,
+    });
+    return formatPresenceText(presence);
+  }
+  if (isTaskConversation(conversation)) {
+    return `Статус: ${formatTaskStatusLabel(conversation?.task_status)} • ${Number(conversation?.member_count || 0)} участников`;
+  }
+  return `${Number(conversation?.member_count || 0)} участников • ${getGroupOnlineCount(conversation)} онлайн`;
+};
+
+export const getConversationStatusLine = (conversation) => {
+  const preview = normalizeTrimmedChatText(conversation?.last_message_preview, 'Сообщений пока нет');
+  if (!conversation) return preview;
+  if (conversation.kind === 'notes') {
+    return `Личные заметки • ${preview}`;
+  }
+  if (conversation.kind === 'direct') {
+    const presence = resolvePresenceWithActivity(conversation?.direct_peer?.presence, {
+      activityAt: conversation?.last_message_is_own ? '' : conversation?.last_message_at,
+    });
+    return `${formatPresenceText(presence)} • ${preview}`;
+  }
+  if (isTaskConversation(conversation)) {
+    return `${formatTaskStatusLabel(conversation?.task_status)} • ${preview}`;
+  }
+  return `${getGroupOnlineCount(conversation)} онлайн • ${preview}`;
+};
+
+export const getPersonStatusLine = (person) => {
+  const username = normalizeTrimmedChatText(person?.username);
+  const presenceText = formatPresenceText(person?.presence);
+  return username ? `@${username} • ${presenceText}` : presenceText;
+};
+
+export const getPersonContextLine = (person) => {
+  const workplace = [person?.job_title, person?.department, person?.city]
+    .map((value) => normalizeTrimmedChatText(value))
+    .filter(Boolean)
+    .join(' · ');
+  const status = getPersonStatusLine(person);
+  return workplace ? `${workplace} · ${status}` : status;
+};
+
+// Д2-9: локальный фильтр людей — ФИО, логин, должность, подразделение, город, почта.
+export const matchesPersonQuery = (person, query) => {
+  const needle = normalizeTrimmedChatText(query).toLowerCase();
+  if (!needle) return true;
+  const fields = [
+    person?.full_name,
+    person?.username,
+    person?.job_title,
+    person?.department,
+    person?.city,
+    person?.email,
+    person?.mailbox_login,
+  ];
+  return fields.some((value) => String(value || '').toLowerCase().includes(needle));
+};
+
+export const sortByName = (items) => (
+  [...items].sort((left, right) => {
+    const a = normalizeTrimmedChatText(left?.full_name || left?.username || left?.title).toLowerCase();
+    const b = normalizeTrimmedChatText(right?.full_name || right?.username || right?.title).toLowerCase();
+    return a.localeCompare(b, 'ru');
+  })
+);
+
+export const compareSidebarConversations = (left, right) => {
+  const leftPinned = left?.is_pinned ? 1 : 0;
+  const rightPinned = right?.is_pinned ? 1 : 0;
+  if (leftPinned !== rightPinned) return rightPinned - leftPinned;
+
+  const leftArchived = left?.is_archived ? 1 : 0;
+  const rightArchived = right?.is_archived ? 1 : 0;
+  if (leftArchived !== rightArchived) return leftArchived - rightArchived;
+
+  return String(right?.last_message_at || right?.updated_at || '').localeCompare(
+    String(left?.last_message_at || left?.updated_at || ''),
+  );
+};
+
+export const sortSidebarConversations = (conversations) => (
+  [...(Array.isArray(conversations) ? conversations : [])].sort(compareSidebarConversations)
+);
+
+export const getMessageIndexById = (messages, messageId) => {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (!normalizedMessageId) return -1;
+  const list = Array.isArray(messages) ? messages : [];
+  for (let index = 0; index < list.length; index += 1) {
+    if (String(list[index]?.id || '').trim() === normalizedMessageId) return index;
+  }
+  return -1;
+};
+
+export const resolveLatestMessageIdInOrder = (messages, ...messageIds) => {
+  const list = Array.isArray(messages) ? messages : [];
+  let latestIndex = -1;
+  let latestMessageId = '';
+  const normalizedIds = messageIds
+    .flat()
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  normalizedIds.forEach((candidateId) => {
+    const candidateIndex = getMessageIndexById(list, candidateId);
+    if (candidateIndex > latestIndex) {
+      latestIndex = candidateIndex;
+      latestMessageId = candidateId;
+    }
+  });
+
+  return latestMessageId || normalizedIds[0] || '';
+};
+
+export const isMessageReadByMarker = (messages, message, markerId) => {
+  if (!message || message?.is_own) return true;
+  const markerIndex = getMessageIndexById(messages, markerId);
+  if (markerIndex < 0) return false;
+  const messageIndex = getMessageIndexById(messages, message?.id);
+  return messageIndex > -1 && messageIndex <= markerIndex;
+};
+
+export const countUnreadIncomingAfterMarker = (messages, markerId) => {
+  const list = Array.isArray(messages) ? messages : [];
+  const markerIndex = getMessageIndexById(list, markerId);
+  let total = 0;
+  list.forEach((message, index) => {
+    if (message?.is_own) return;
+    if (markerIndex < 0 || index > markerIndex) total += 1;
+  });
+  return total;
+};
+
+export const applyReadReceiptDeltaToMessages = (messages, payload) => {
+  const list = Array.isArray(messages) ? messages : [];
+  const messageId = String(payload?.message_id || '').trim();
+  if (!messageId) return list;
+  const nextReadByCount = Number(payload?.read_by_count);
+  const nextDeliveryStatus = String(payload?.delivery_status || '').trim();
+  const readIndex = getMessageIndexById(list, messageId);
+  if (readIndex < 0) return list;
+
+  const markAsRead = nextDeliveryStatus === 'read'
+    || (Number.isFinite(nextReadByCount) && nextReadByCount > 0);
+
+  if (!markAsRead) {
+    return list.map((item) => {
+      if (String(item?.id || '').trim() !== messageId) return item;
+      return {
+        ...item,
+        read_by_count: Number.isFinite(nextReadByCount) ? nextReadByCount : item?.read_by_count,
+        delivery_status: nextDeliveryStatus || item?.delivery_status,
+      };
+    });
+  }
+
+  return list.map((item, index) => {
+    if (!item?.is_own || index > readIndex) return item;
+    return {
+      ...item,
+      read_by_count: Number.isFinite(nextReadByCount)
+        ? Math.max(Number(item?.read_by_count || 0), nextReadByCount)
+        : item?.read_by_count,
+      delivery_status: 'read',
+    };
+  });
+};
+
+export const getUnreadAnchorId = (messages, viewerLastReadMessageId) => {
+  const normalizedMarker = String(viewerLastReadMessageId || '').trim();
+  const list = Array.isArray(messages) ? messages : [];
+  const markerIndex = getMessageIndexById(list, normalizedMarker);
+  const startIndex = markerIndex >= 0 ? (markerIndex + 1) : 0;
+
+  for (let index = startIndex; index < list.length; index += 1) {
+    if (!list[index]?.is_own) {
+      return String(list[index]?.id || '').trim();
+    }
+  }
+  return '';
+};
+
+export const buildTimelineItems = (messages, viewerLastReadMessageId, unreadAnchorIdOverride) => {
+  const unreadAnchorId = unreadAnchorIdOverride === undefined
+    ? getUnreadAnchorId(messages, viewerLastReadMessageId)
+    : String(unreadAnchorIdOverride || '').trim();
+  const timeline = [];
+  let lastDateKey = '';
+  let unreadInserted = false;
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const currentDateKey = new Date(message?.created_at || '').toDateString();
+    if (currentDateKey && currentDateKey !== 'Invalid Date' && currentDateKey !== lastDateKey) {
+      timeline.push({
+        type: 'date',
+        key: `date:${currentDateKey}`,
+        label: getDateDividerLabel(message?.created_at),
+      });
+      lastDateKey = currentDateKey;
+    }
+
+    if (!unreadInserted && unreadAnchorId && String(message?.id || '').trim() === unreadAnchorId) {
+      timeline.push({
+        type: 'unread',
+        key: `unread:${unreadAnchorId}`,
+        label: 'Непрочитанные сообщения',
+      });
+      unreadInserted = true;
+    }
+
+    timeline.push({
+      type: 'message',
+      key: `message:${String(message?.renderKey || message?.render_key || message?.id || '').trim()}`,
+      message,
+    });
+  }
+
+  return timeline;
+};
+
+// ADR-0002: shared chat helpers live in components/chat; pages/chat re-export.
+export const resolveActiveAiBotRecord = ({
+  aiBots,
+  activeConversationId,
+  aiStatus,
+}) => {
+  const items = Array.isArray(aiBots) ? aiBots : [];
+  const normalizedConversationId = String(activeConversationId || '').trim();
+  const normalizedBotId = String(aiStatus?.bot_id || '').trim();
+  return items.find((item) => (
+    Array.isArray(item?.conversation_ids)
+    && item.conversation_ids.some((id) => String(id || '').trim() === normalizedConversationId)
+  ))
+    || items.find((item) => String(item?.conversation_id || '').trim() === normalizedConversationId)
+    || items.find((item) => normalizedBotId && String(item?.id || '').trim() === normalizedBotId)
+    || null;
+};

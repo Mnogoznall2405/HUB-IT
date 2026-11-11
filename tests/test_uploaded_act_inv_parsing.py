@@ -1,0 +1,383 @@
+import re
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = ROOT / "WEB-itinvent"
+if str(WEB_ROOT) not in sys.path:
+    sys.path.insert(0, str(WEB_ROOT))
+
+from backend.services import act_upload_service  # noqa: E402
+from backend.database import queries  # noqa: E402
+from backend.utils.person_names import to_short_fio  # noqa: E402
+
+
+class _UploadedActFakeCursor:
+    def __init__(self, template_empl_no=None):
+        self._one = None
+        self._many = []
+        self.inserted_docs_params = None
+        self.template_empl_no = template_empl_no
+
+    def execute(self, query, params=None):
+        text = " ".join(str(query or "").lower().split())
+        self._one = None
+        self._many = []
+
+        if "from docs_list dl inner join docs d" in text and "dl.item_id in" in text:
+            self._many = []
+        elif "select i.id, i.branch_no, i.loc_no" in text:
+            self._many = [(101, 7, 9)]
+        elif "select top 1 d.type_no, d.comp_no" in text:
+            self._one = (99, 0, None, None, self.template_empl_no, None)
+        elif "select top 1 d.type_no" in text and "n'%акт%'" in text:
+            self._one = (10,) if "n'%аннулир%'" in text else (99,)
+        elif "select isnull(max(doc_no), 0) + 1 from docs" in text:
+            self._one = (1464,)
+        elif "insert into docs (" in text:
+            self.inserted_docs_params = tuple(params or ())
+        elif "select i.id, i.descr" in text:
+            self._many = [(101, "")]
+        elif "select top 1 d.type_no" in text and "n'%аннулирован%'" in text:
+            self._one = (99,)
+        elif "select isnull(max(file_no), 0) + 1 from files" in text:
+            self._one = (501,)
+        return self
+
+    def fetchone(self):
+        return self._one
+
+    def fetchall(self):
+        return list(self._many)
+
+
+class _UploadedActFakeConnection:
+    def __init__(self, template_empl_no=None):
+        self.cursor_obj = _UploadedActFakeCursor(template_empl_no=template_empl_no)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def cursor(self):
+        return self.cursor_obj
+
+
+class _UploadedActFakeDB:
+    def __init__(self, template_empl_no=None):
+        self.connection = _UploadedActFakeConnection(template_empl_no=template_empl_no)
+
+    def get_connection(self):
+        return self.connection
+
+
+def test_build_uploaded_act_addinfo_uses_act_line_format():
+    add_info = queries._build_uploaded_act_addinfo(
+        1464,
+        "Санду Андрей Олегович",
+        "Козловский Андрей Михайлович",
+        datetime(2026, 6, 29, 14, 35),
+    )
+
+    assert add_info == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026 14:35"
+
+
+def test_uploaded_act_items_descr_matches_document_addinfo_format():
+    line = queries._build_uploaded_act_addinfo(
+        1464,
+        "Санду Андрей Олегович",
+        "Козловский Андрей Михайлович",
+        datetime(2026, 6, 29, 14, 35),
+    )
+    assert line == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026 14:35"
+    assert line.startswith("Акт 1464 ")
+    assert "->" not in line
+    assert ": акт №" not in line
+
+
+def test_uploaded_act_file_name_uses_act_note_and_original_extension():
+    line = queries._build_uploaded_act_addinfo(
+        1464,
+        "Санду Андрей Олегович",
+        "Козловский Андрей Михайлович",
+        datetime(2026, 6, 29, 14, 35),
+    )
+
+    file_name = queries._build_uploaded_act_file_name(line, "original_scan.PDF")
+
+    assert file_name == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026 14:35.PDF"
+
+
+def test_uploaded_act_file_name_falls_back_to_pdf_extension():
+    assert queries._build_uploaded_act_file_name("Акт 1464", "original") == "Акт 1464.pdf"
+
+
+def test_to_short_fio():
+    assert to_short_fio("Иванов Иван Иванович") == "Иванов И.И."
+    assert to_short_fio("Санду А.О.") == "Санду А.О."
+
+
+def test_legacy_sqlserver_text_preserves_crlf():
+    text = queries._legacy_sqlserver_text("Передача\r\nОт: Ivan")
+    assert "\r\n" in text
+    assert text.splitlines() == ["Передача", "От: Ivan"]
+
+
+def test_legacy_sqlserver_text_normalizes_upload_act_arrows_for_cp1251(monkeypatch):
+    monkeypatch.setenv("SQL_CHAR_ENCODING", "cp1251")
+
+    text = queries._legacy_sqlserver_text("Передача: Иван → Петр; акт №1→№2 ✅")
+
+    assert "→" not in text
+    assert "->" in text
+    text.encode("cp1251")
+
+
+def test_create_uploaded_transfer_act_does_not_copy_annulled_doc_type(monkeypatch):
+    fake_db = _UploadedActFakeDB()
+    monkeypatch.setattr(queries, "get_db", lambda db_id=None: fake_db)
+
+    result = queries.create_uploaded_transfer_act(
+        from_employee="Old Owner",
+        to_employee="",
+        doc_date=datetime(2026, 6, 29),
+        equipment_item_ids=[101],
+        file_name="signed.pdf",
+        file_bytes=b"%PDF-1.4",
+        created_by="tester",
+        db_id="main",
+    )
+
+    assert result["doc_no"] == 1464
+    assert fake_db.connection.cursor_obj.inserted_docs_params is not None
+    assert fake_db.connection.cursor_obj.inserted_docs_params[1] == 10
+
+
+def test_create_uploaded_transfer_act_does_not_copy_template_employee_when_recipient_is_unknown(monkeypatch):
+    fake_db = _UploadedActFakeDB(template_empl_no=777)
+    monkeypatch.setattr(queries, "get_db", lambda db_id=None: fake_db)
+    monkeypatch.setattr(queries, "get_owner_no_by_name", lambda *args, **kwargs: None)
+
+    queries.create_uploaded_transfer_act(
+        from_employee="Old Owner",
+        to_employee="Unresolved Recipient",
+        doc_date=datetime(2026, 9, 4, 12, 0),
+        equipment_item_ids=[101],
+        file_name="signed.pdf",
+        file_bytes=b"%PDF-1.4",
+        created_by="tester",
+        db_id="main",
+    )
+
+    assert fake_db.connection.cursor_obj.inserted_docs_params is not None
+    assert fake_db.connection.cursor_obj.inserted_docs_params[5] is None
+
+
+def test_parse_inv_nos_from_text_ignores_word_garbage_and_dates():
+    pdf_text = (
+        "ID Тип оборудования\n"
+        "Инвентарны\n"
+        "й номер\n"
+        "ent\n"
+        "ентарны\n"
+        "номер\n"
+        "1 Принтер Xerox VersaLink B405DN MFP 3718936461 Отдел технической поддержки 101795\n"
+        "17.03.2026\n"
+        "Акт №123\n"
+    )
+
+    assert act_upload_service._parse_inv_nos_from_text(pdf_text) == ["3718936461", "101795"]
+
+
+def test_create_uploaded_act_draft_keeps_only_confirmed_numeric_inv_nos(monkeypatch):
+    pdf_text = (
+        "ID Тип оборудования\n"
+        "Инвентарны\n"
+        "й номер\n"
+        "1 Принтер Xerox VersaLink B405DN MFP 3718936461 Отдел технической поддержки 101795\n"
+        "17.03.2026\n"
+        "Акт №12345\n"
+    )
+
+    monkeypatch.setattr(act_upload_service, "_extract_pdf_text", lambda _file_bytes: (pdf_text, []))
+    monkeypatch.setattr(
+        act_upload_service,
+        "_call_openrouter_act_parser",
+        lambda **kwargs: (
+            {
+                "document_title": "Акт",
+                "from_employee": "Иванов Иван Иванович",
+                "to_employee": "Петров Петр Петрович",
+                "doc_date": "2026-03-17",
+                "equipment_inv_nos": ["номер", "101795", "1"],
+            },
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        act_upload_service.queries,
+        "get_equipment_items_by_inv_nos",
+        lambda inv_nos, db_id=None: [
+            {"item_id": 55, "inv_no": "101795", "serial_no": "SER-1", "model_name": "Xerox VersaLink B405DN"}
+        ]
+        if "101795" in inv_nos
+        else [],
+    )
+    monkeypatch.setattr(act_upload_service.queries, "get_equipment_items_by_ids", lambda ids, db_id=None: [])
+
+    draft = act_upload_service.create_uploaded_act_draft(
+        file_bytes=b"%PDF",
+        file_name="act.pdf",
+        db_id="main",
+        created_by="tester",
+    )
+
+    assert draft["equipment_inv_nos"] == ["101795"]
+    assert [item["inv_no"] for item in draft["resolved_items"]] == ["101795"]
+    assert any("отброшены нечисловые кандидаты" in warning.lower() for warning in draft["warnings"])
+    # Upload datetime must be used, not the date printed in the act / returned by the model.
+    assert draft["doc_date"].startswith(datetime.now().strftime("%Y-%m-%d "))
+    assert draft["doc_date"] != "2026-03-17"
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", draft["doc_date"])
+
+
+def test_create_uploaded_act_draft_filters_fallback_candidates_by_database(monkeypatch):
+    pdf_text = (
+        "ID Тип оборудования\n"
+        "Инвентарны\n"
+        "й номер\n"
+        "1 Принтер Xerox VersaLink B405DN MFP 3718936461 Отдел технической поддержки 101795\n"
+        "17.03.2026\n"
+    )
+
+    monkeypatch.setattr(act_upload_service, "_extract_pdf_text", lambda _file_bytes: (pdf_text, []))
+    monkeypatch.setattr(act_upload_service, "_call_openrouter_act_parser", lambda **kwargs: ({}, []))
+    monkeypatch.setattr(
+        act_upload_service.queries,
+        "get_equipment_items_by_inv_nos",
+        lambda inv_nos, db_id=None: [
+            {"item_id": 55, "inv_no": "101795", "serial_no": "SER-1", "model_name": "Xerox VersaLink B405DN"}
+        ]
+        if "101795" in inv_nos
+        else [],
+    )
+    monkeypatch.setattr(act_upload_service.queries, "get_equipment_items_by_ids", lambda ids, db_id=None: [])
+
+    draft = act_upload_service.create_uploaded_act_draft(
+        file_bytes=b"%PDF",
+        file_name="act.pdf",
+        db_id="main",
+        created_by="tester",
+    )
+
+    assert draft["equipment_inv_nos"] == ["101795"]
+    assert [item["inv_no"] for item in draft["resolved_items"]] == ["101795"]
+    assert any("fallback-правилам" in warning for warning in draft["warnings"])
+    assert any("подтвержденные в текущей БД" in warning for warning in draft["warnings"])
+
+
+def test_create_uploaded_act_draft_uses_legacy_item_ids_when_model_inv_nos_not_confirmed(monkeypatch):
+    monkeypatch.setattr(act_upload_service, "_extract_pdf_text", lambda _file_bytes: ("", []))
+    monkeypatch.setattr(
+        act_upload_service,
+        "_call_openrouter_act_parser",
+        lambda **kwargs: (
+            {
+                "document_title": "Акт",
+                "from_employee": "",
+                "to_employee": "",
+                "doc_date": "2026-03-17",
+                "equipment_inv_nos": ["555555"],
+                "equipment_item_ids": [77],
+            },
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        act_upload_service.queries,
+        "get_equipment_items_by_ids",
+        lambda ids, db_id=None: [{"item_id": 77, "inv_no": "101795"}] if ids == [77] else [],
+    )
+    monkeypatch.setattr(
+        act_upload_service.queries,
+        "get_equipment_items_by_inv_nos",
+        lambda inv_nos, db_id=None: (
+            [{"item_id": 77, "inv_no": "101795", "serial_no": "SER-1", "model_name": "Xerox VersaLink B405DN"}]
+            if inv_nos == ["101795"]
+            else []
+        ),
+    )
+
+    draft = act_upload_service.create_uploaded_act_draft(
+        file_bytes=b"%PDF",
+        file_name="act.pdf",
+        db_id="main",
+        created_by="tester",
+    )
+
+    assert draft["equipment_inv_nos"] == ["101795"]
+    assert [item["inv_no"] for item in draft["resolved_items"]] == ["101795"]
+    assert any("legacy-конвертацию equipment_item_ids" in warning for warning in draft["warnings"])
+
+
+def test_normalize_inv_no_token_shared_helper_semantics():
+    """D1: one shared helper; queries keep alnum tokens, act upload drops them."""
+    from backend.utils.inv_no import normalize_inv_no_token
+
+    # queries path keeps non-numeric tokens for resilient matching (INV/2).
+    assert queries._normalize_inv_no_token("INV/2") == "INV/2"
+    assert queries._normalize_inv_no_token("  007  ") == "7"
+    assert queries._normalize_inv_no_token("123.0") == "123"
+    # act upload path stays strict: non-numeric candidates go to unmatched list.
+    assert act_upload_service._normalize_inv_no_token("INV/2") is None
+    assert act_upload_service._normalize_inv_no_token("007") == "7"
+    # Shared helper exposes the choice explicitly.
+    assert normalize_inv_no_token("INV/2") == "INV/2"
+    assert normalize_inv_no_token("INV/2", strict_digits=True) is None
+
+
+def test_act_parser_respects_total_llm_timeout_budget(monkeypatch):
+    """Total deadline bounds N models x M modes; per-attempt timeout is passed."""
+    monkeypatch.setenv("ACT_PARSE_LLM_TIMEOUT_SEC", "45")
+    monkeypatch.setenv("ACT_PARSE_LLM_TOTAL_TIMEOUT_SEC", "150")
+    monkeypatch.setattr(
+        act_upload_service, "resolve_model_candidates", lambda _purpose: ["m1", "m2"]
+    )
+    monkeypatch.setattr(
+        act_upload_service.openrouter_client, "is_configured", lambda: True
+    )
+
+    base = time.monotonic()
+    ticks = {"n": 0}
+
+    def fake_monotonic():
+        ticks["n"] += 1
+        return base + ticks["n"] * 100
+
+    monkeypatch.setattr(act_upload_service.time, "monotonic", fake_monotonic)
+
+    captured_timeouts = []
+
+    def fake_complete_json(**kwargs):
+        captured_timeouts.append(kwargs.get("timeout"))
+        return {}, {}
+
+    monkeypatch.setattr(
+        act_upload_service.openrouter_client, "complete_json", fake_complete_json
+    )
+
+    payload, warnings = act_upload_service._call_openrouter_act_parser(
+        file_name="act.pdf",
+        pdf_text="Передаточный акт. Сотрудник Иванов И.И. передал оборудование инв. 100500 датой 01.02.2026.",
+    )
+
+    assert payload is None
+    # One attempt runs with a bounded timeout, then the deadline stops the rest.
+    assert len(captured_timeouts) == 1
+    assert 0 < captured_timeouts[0] <= 45
+    assert any("лимит времени LLM-парсинга" in w for w in warnings)

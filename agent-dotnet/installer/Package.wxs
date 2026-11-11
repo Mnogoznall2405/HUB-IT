@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package
+      Name="HUB-IT Agent (C#)"
+      Manufacturer="HUB-IT"
+      Version="$(AgentMsiVersion)"
+      UpgradeCode="{5C1E5A0E-8D2B-4A6F-9E77-3B8E1B0C6A41}"
+      Scope="perMachine"
+      Language="1049"
+      Codepage="65001">
+
+    <SummaryInformation Description="HUB-IT inventory agent" Manufacturer="HUB-IT" />
+
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of HUB-IT Agent is already installed."
+        Schedule="afterInstallInitialize" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Public installer properties. Values are written to HKLM and used by the
+         agent only when the process environment and .env do not define them. -->
+    <Property Id="ITINV_AGENT_SERVER_URL" Value="https://hubit.zsgp.ru/api/v1/inventory" />
+    <Property Id="ITINV_AGENT_API_KEY" Secure="yes" Hidden="yes" />
+    <Property Id="ITINV_AGENT_INTERVAL_SEC" Value="3600" />
+    <Property Id="ITINV_AGENT_HEARTBEAT_SEC" Value="600" />
+    <Property Id="ITINV_AGENT_HEARTBEAT_JITTER_SEC" Value="120" />
+    <Property Id="ITINV_USB_INVENTORY_ENABLED" Value="1" />
+    <Property Id="ITINV_SECURITY_POSTURE_ENABLED" Value="1" />
+    <Property Id="ITINV_SOFTWARE_STORE_APPS_ENABLED" Value="1" />
+    <Property Id="ITINV_FS_EGRESS_ENABLED" Value="1" />
+    <Property Id="ITINV_TELEGRAM_PROBE_ENABLED" Value="0" />
+    <Property Id="ITINV_BROWSER_HISTORY_ENABLED" Value="0" />
+    <Property Id="ITINV_BROWSER_HISTORY_SEC" Value="180" />
+    <Property Id="ITINV_BROWSER_PROBE_ENABLED" Value="0" />
+    <Property Id="ITINV_BROWSER_PROBE_SYNC_SEC" Value="120" />
+    <Property Id="ITINV_SCAN_ENABLED" Value="1" />
+    <Property Id="SCAN_AGENT_SERVER_BASE" Value="https://hubit.zsgp.ru/api/v1/scan" />
+    <Property Id="SCAN_AGENT_API_KEY" Secure="yes" Hidden="yes" />
+    <Property Id="SCAN_AGENT_POLL_INTERVAL_SEC" Value="600" />
+    <Property Id="ITINV_OUTLOOK_SEARCH_ROOTS" Value="D:\" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CompanyFolder" Name="HUB-IT">
+        <Directory Id="INSTALLFOLDER" Name="Agent (C#)" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="HUB-IT Agent (C#)" Level="1">
+      <ComponentGroupRef Id="AgentFiles" />
+      <ComponentRef Id="AgentRegistry" />
+      <ComponentRef Id="BrowserProbeStartup" />
+    </Feature>
+
+    <ComponentGroup Id="AgentFiles" Directory="INSTALLFOLDER">
+      <Component Id="AgentExecutable" Guid="{6D3F2C11-9A41-4B7E-8C55-0E1D2A3B4C51}" Bitness="always64">
+        <File Id="ITInventAgentExe"
+              Source="..\dist\agent-win-x64\ITInventAgent.exe"
+              KeyPath="yes" />
+      </Component>
+      <Component Id="ScanPatterns" Guid="{B8C5D3E4-2F6A-4B99-8C88-3D4E5F6A7B82}" Bitness="always64">
+        <File Id="PatternsStrictYaml"
+              Source="..\..\patterns_strict.yaml"
+              KeyPath="yes" />
+      </Component>
+      <Component Id="BrowserProbeExecutable" Guid="{C9D6E4F5-3A7B-4CAA-9D99-4E5F6A7B8C93}" Bitness="always64">
+        <File Id="ITInventBrowserProbeExe"
+              Source="..\dist\browser-probe-win-x64\ITInventBrowserProbe.exe"
+              KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="CommonMSDir" Name="Microsoft">
+        <Directory Id="CommonWinDir" Name="Windows">
+          <Directory Id="CommonStartMenuDir" Name="Start Menu">
+            <Directory Id="CommonProgramsDir" Name="Programs">
+              <Directory Id="CommonStartupDir" Name="StartUp">
+                <Component Id="BrowserProbeStartup" Guid="{D0E7F5A6-4B8C-4DBB-AEAA-5F6A7B8C9DA4}"
+                           Bitness="always64"
+                           Condition="ITINV_BROWSER_PROBE_ENABLED=&quot;1&quot;">
+                  <Shortcut Id="BrowserProbeShortcut"
+                            Name="HUB-IT Browser Probe"
+                            Target="[INSTALLFOLDER]ITInventBrowserProbe.exe"
+                            WorkingDirectory="INSTALLFOLDER" />
+                  <RegistryValue Root="HKLM" Key="SOFTWARE\HUB-IT\Agent" Name="BrowserProbeStartup"
+                                 Type="integer" Value="1" KeyPath="yes" />
+                </Component>
+              </Directory>
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Component Id="AgentRegistry" Directory="INSTALLFOLDER" Guid="{A7B4C2D3-1E5F-4A88-9B77-2C3D4E5F6A71}" Bitness="always64">
+      <RegistryKey Root="HKLM" Key="SOFTWARE\HUB-IT\Agent" ForceCreateOnInstall="yes">
+        <RegistryValue Name="ITINV_AGENT_SERVER_URL" Type="string" Value="[ITINV_AGENT_SERVER_URL]" />
+        <RegistryValue Name="ITINV_AGENT_API_KEY" Type="string" Value="[ITINV_AGENT_API_KEY]" />
+        <RegistryValue Name="ITINV_AGENT_INTERVAL_SEC" Type="string" Value="[ITINV_AGENT_INTERVAL_SEC]" />
+        <RegistryValue Name="ITINV_AGENT_HEARTBEAT_SEC" Type="string" Value="[ITINV_AGENT_HEARTBEAT_SEC]" />
+        <RegistryValue Name="ITINV_AGENT_HEARTBEAT_JITTER_SEC" Type="string" Value="[ITINV_AGENT_HEARTBEAT_JITTER_SEC]" />
+        <RegistryValue Name="ITINV_USB_INVENTORY_ENABLED" Type="string" Value="[ITINV_USB_INVENTORY_ENABLED]" />
+        <RegistryValue Name="ITINV_SECURITY_POSTURE_ENABLED" Type="string" Value="[ITINV_SECURITY_POSTURE_ENABLED]" />
+        <RegistryValue Name="ITINV_SOFTWARE_STORE_APPS_ENABLED" Type="string" Value="[ITINV_SOFTWARE_STORE_APPS_ENABLED]" />
+        <RegistryValue Name="ITINV_FS_EGRESS_ENABLED" Type="string" Value="[ITINV_FS_EGRESS_ENABLED]" />
+        <RegistryValue Name="ITINV_TELEGRAM_PROBE_ENABLED" Type="string" Value="[ITINV_TELEGRAM_PROBE_ENABLED]" />
+        <RegistryValue Name="ITINV_BROWSER_HISTORY_ENABLED" Type="string" Value="[ITINV_BROWSER_HISTORY_ENABLED]" />
+        <RegistryValue Name="ITINV_BROWSER_HISTORY_SEC" Type="string" Value="[ITINV_BROWSER_HISTORY_SEC]" />
+        <RegistryValue Name="ITINV_BROWSER_PROBE_ENABLED" Type="string" Value="[ITINV_BROWSER_PROBE_ENABLED]" />
+        <RegistryValue Name="ITINV_BROWSER_PROBE_SYNC_SEC" Type="string" Value="[ITINV_BROWSER_PROBE_SYNC_SEC]" />
+        <RegistryValue Name="ITINV_SCAN_ENABLED" Type="string" Value="[ITINV_SCAN_ENABLED]" />
+        <RegistryValue Name="SCAN_AGENT_SERVER_BASE" Type="string" Value="[SCAN_AGENT_SERVER_BASE]" />
+        <RegistryValue Name="SCAN_AGENT_API_KEY" Type="string" Value="[SCAN_AGENT_API_KEY]" />
+        <RegistryValue Name="SCAN_AGENT_POLL_INTERVAL_SEC" Type="string" Value="[SCAN_AGENT_POLL_INTERVAL_SEC]" />
+        <RegistryValue Name="ITINV_OUTLOOK_SEARCH_ROOTS" Type="string" Value="[ITINV_OUTLOOK_SEARCH_ROOTS]" />
+        <RegistryValue Name="Version" Type="string" Value="$(AgentMsiVersion)" />
+      </RegistryKey>
+    </Component>
+
+    <!-- Scheduled Task: same name as the Python agent, hourly, SYSTEM, highest. -->
+    <CustomAction Id="CreateAgentTask"
+                  Directory="SystemFolder"
+                  ExeCommand="schtasks.exe /Create /TN &quot;HUB-IT Agent (C#)&quot; /TR &quot;\&quot;[INSTALLFOLDER]ITInventAgent.exe\&quot;&quot; /SC MINUTE /MO 60 /RU SYSTEM /RL HIGHEST /F"
+                  Return="check" />
+
+    <CustomAction Id="DeleteAgentTask"
+                  Directory="SystemFolder"
+                  ExeCommand="schtasks.exe /Delete /TN &quot;HUB-IT Agent (C#)&quot; /F"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CreateAgentTask" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="DeleteAgentTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
+  </Package>
+
+</Wix>

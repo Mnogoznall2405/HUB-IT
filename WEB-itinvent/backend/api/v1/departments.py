@@ -1,0 +1,103 @@
+"""Department directory API."""
+from __future__ import annotations
+
+from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
+
+from backend.api.deps import require_any_permission, require_permission
+from backend.models.auth import User
+from backend.services.authorization_service import PERM_DEPARTMENTS_MANAGE, PERM_SETTINGS_READ
+from backend.services.department_service import department_service
+from backend.services.user_service import user_service
+
+
+router = APIRouter()
+
+
+@router.get("")
+async def list_departments(
+    include_inactive: bool = False,
+    current_user: User = Depends(require_any_permission((PERM_SETTINGS_READ, PERM_DEPARTMENTS_MANAGE))),
+):
+    def _build_response() -> dict:
+        manager_department_ids = set(department_service.get_user_department_ids(current_user.model_dump(), roles=["manager"]))
+        return {
+            "items": [
+                {
+                    **item,
+                    "is_current_user_manager": str(item.get("id") or "") in manager_department_ids,
+                }
+                for item in department_service.list_departments(include_inactive=bool(include_inactive))
+            ]
+        }
+
+    return await run_in_threadpool(_build_response)
+
+
+@router.get("/{department_id}/members")
+async def list_department_members(
+    department_id: str,
+    _: User = Depends(require_any_permission((PERM_SETTINGS_READ, PERM_DEPARTMENTS_MANAGE))),
+):
+    department = await run_in_threadpool(department_service.get_department, department_id)
+    if not department:
+        raise HTTPException(status_code=404, detail="Department not found")
+    memberships = await run_in_threadpool(department_service.list_memberships, department_id=department_id)
+    users_by_id = await run_in_threadpool(user_service.get_users_map_by_ids, {item["user_id"] for item in memberships})
+    return {
+        "department": department,
+        "items": [
+            {
+                **item,
+                "user": users_by_id.get(int(item["user_id"])),
+            }
+            for item in memberships
+        ],
+    }
+
+
+@router.put("/{department_id}/managers")
+async def replace_department_managers(
+    department_id: str,
+    payload: dict = Body(...),
+    _: User = Depends(require_permission(PERM_DEPARTMENTS_MANAGE)),
+):
+    try:
+        manager_ids = payload.get("manager_user_ids") if isinstance(payload, dict) else []
+        memberships = await run_in_threadpool(department_service.set_department_managers, department_id, manager_ids or [])
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    users_by_id = await run_in_threadpool(user_service.get_users_map_by_ids, {item["user_id"] for item in memberships})
+    return {
+        "items": [
+            {
+                **item,
+                "user": users_by_id.get(int(item["user_id"])),
+            }
+            for item in memberships
+        ]
+    }
+
+
+@router.post("/sync-from-users")
+async def sync_departments_from_users(
+    _: User = Depends(require_permission(PERM_DEPARTMENTS_MANAGE)),
+):
+    await run_in_threadpool(department_service.sync_departments_from_users, await run_in_threadpool(user_service.list_users))
+    return {"items": (await run_in_threadpool(department_service.list_departments, include_inactive=True))}
+
+
+@router.post("/sync-from-ad")
+async def sync_departments_from_ad(
+    _: User = Depends(require_permission(PERM_DEPARTMENTS_MANAGE)),
+):
+    from backend.services.ad_app_user_import_service import fetch_ad_import_users
+
+    ad_users = fetch_ad_import_users()
+    result = await run_in_threadpool(department_service.sync_departments_from_names, (item.get("department")
+        for item in ad_users))
+    return {
+        **result,
+        "total_ad_users": len(ad_users),
+        "items": (await run_in_threadpool(department_service.list_departments, include_inactive=True)),
+    }

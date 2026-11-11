@@ -1,0 +1,1462 @@
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box, Button, CircularProgress, Menu, MenuItem, ListSubheader } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import PauseRoundedIcon from '@mui/icons-material/PauseRounded';
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
+import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
+import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
+import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import SaveAltRoundedIcon from '@mui/icons-material/SaveAltRounded';
+
+import {
+  avatarLabel,
+  buildAttachmentUrl,
+  formatFileSize,
+  formatFullDate,
+  getPriorityMeta,
+  getStatusMeta,
+  getTaskAssignee,
+  getAttachmentKind,
+  isImageAttachment,
+  isTaskConversation,
+  normalizeChatAttachmentUrl,
+} from './chatHelpers';
+import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
+import { resolveChatTelegramAvatarColor } from '../../theme/chatTelegramTheme';
+import { chatDirectoryAPI } from '../../api/chatDirectory';
+import { formatMyFilesRetentionLabel, myFilesRetentionOptions } from '../../api/myFiles';
+import ChatStickerMedia from './ChatStickerMedia';
+import { buildTaskDetailPath } from '../../lib/taskNavigation';
+import FileActionsContextMenu, {
+  getFileActionsAnchorPosition,
+  isFileActionsKeyboardShortcut,
+} from '../fileActions/FileActionsContextMenu';
+
+const LazyChatStickerPackDialog = lazy(() => import('./ChatStickerPackDialog'));
+
+const FILE_EXTENSION_COLORS = {
+  pdf: '#e53935',
+  xls: '#43a047',
+  xlsx: '#43a047',
+  csv: '#43a047',
+  doc: '#1e88e5',
+  docx: '#1e88e5',
+  zip: '#f9a825',
+  rar: '#f9a825',
+  '7z': '#f9a825',
+};
+
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
+const AUDIO_EXTENSIONS = new Set(['ogg', 'webm', 'mp3', 'wav', 'aac', 'm4a', 'opus', 'flac']);
+const EMPTY_URL_LIST = [];
+// Old messages: sticker-<pack>.webp. Current ones (the server names the copy it stores):
+// sticker-<sticker uuid>--<pack>.webp.
+const STICKER_PACK_FILE_NAME_RE = /^sticker-(?:[0-9a-f-]{36}--)?([A-Za-z0-9_]{1,128})\.(?:webp|webm|tgs)$/i;
+
+export const getStickerPackShortName = (attachment) => {
+  const directValue = String(
+    attachment?.sticker_pack_short_name
+    || attachment?.pack_short_name
+    || '',
+  ).trim();
+  if (directValue) return directValue;
+  const match = STICKER_PACK_FILE_NAME_RE.exec(String(attachment?.file_name || '').trim());
+  return match?.[1] || '';
+};
+
+const clampFileName = (value, maxLength = 28) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return 'Файл';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+};
+
+const getExtensionFromFileName = (fileName) => {
+  const normalized = String(fileName || '').trim();
+  if (!normalized.includes('.')) return '';
+  return normalized.split('.').pop().toLowerCase();
+};
+
+const resolveAttachmentKind = ({ fileName, fileType, mimeType }) => {
+  const normalizedExtension = getExtensionFromFileName(fileName);
+  const normalizedMimeType = String(mimeType || '').trim().toLowerCase();
+  const normalizedFileType = String(fileType || '').trim().toLowerCase();
+  if (['image', 'video', 'audio', 'file', 'sticker'].includes(normalizedFileType)) return normalizedFileType;
+  if (normalizedMimeType.startsWith('image/') || IMAGE_EXTENSIONS.has(normalizedExtension)) return 'image';
+  if (normalizedMimeType.startsWith('audio/') || AUDIO_EXTENSIONS.has(normalizedExtension)) return 'audio';
+  if (normalizedMimeType.startsWith('video/') || VIDEO_EXTENSIONS.has(normalizedExtension) || normalizedFileType === 'video') return 'video';
+  return 'file';
+};
+
+const resolveFileAccent = (extension) => FILE_EXTENSION_COLORS[String(extension || '').toLowerCase()] || '#708fa0';
+
+const getDisplayExtension = (fileName, mimeType) => {
+  const extension = getExtensionFromFileName(fileName);
+  if (extension) return extension.toUpperCase();
+  const normalizedMimeType = String(mimeType || '').trim().toLowerCase();
+  if (normalizedMimeType.startsWith('image/')) return 'IMG';
+  if (normalizedMimeType.startsWith('video/')) return 'VID';
+  if (normalizedMimeType.startsWith('audio/')) return 'AUD';
+  return 'FILE';
+};
+
+const formatVideoDuration = (value) => {
+  const totalSeconds = Math.max(0, Math.floor(Number(value || 0)));
+  if (!totalSeconds) return '';
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
+const buildClickableSurfaceStyle = (isOwn, ui, theme) => ({
+  display: 'block',
+  width: '100%',
+  border: `1px solid ${ui.borderSoft || alpha(theme.palette.common.white, 0.08)}`,
+  borderRadius: 14,
+  backgroundColor: ui.surfaceStrong || ui.composerInputBg || alpha(theme.palette.background.paper, isOwn ? 0.5 : 0.72),
+  color: isOwn ? (ui.bubbleOwnText || theme.palette.text.primary) : (ui.bubbleOtherText || theme.palette.text.primary),
+  textDecoration: 'none',
+  overflow: 'hidden',
+  cursor: 'pointer',
+  boxShadow: 'none',
+  transition: 'transform 100ms ease, opacity 100ms ease, background-color 120ms ease',
+});
+
+const compactUrlList = (...items) => {
+  const urls = [];
+  items.flat().forEach((item) => {
+    const normalized = normalizeChatAttachmentUrl(item);
+    if (normalized && !urls.includes(normalized)) urls.push(normalized);
+  });
+  return urls;
+};
+
+export function PresenceAvatar({ item, online = false, size = 48, sx = {}, colorSeed = null }) {
+  const label = avatarLabel(item);
+  const theme = useTheme();
+  const avatarUrl = item?.avatar_url || null;
+  const [imgFailed, setImgFailed] = useState(false);
+  // Д2: цвет аватара — из палитры Telegram Web A по стабильному id беседы/пользователя.
+  const telegramColor = colorSeed != null ? resolveChatTelegramAvatarColor(colorSeed) : null;
+
+  const handleImgError = useCallback(() => setImgFailed(true), []);
+
+  useEffect(() => { setImgFailed(false); }, [avatarUrl]);
+
+  const showPhoto = Boolean(avatarUrl && !imgFailed);
+
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        flexShrink: 0,
+        ...sx,
+      }}
+    >
+      <Box
+        sx={(muiTheme) => ({
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '100%',
+          height: '100%',
+          borderRadius: '999px',
+          overflow: 'hidden',
+          fontSize: '0.875rem',
+          fontWeight: 700,
+          letterSpacing: '-0.02em',
+          bgcolor: telegramColor
+            || (muiTheme.palette.mode === 'dark' ? '#445161' : alpha(muiTheme.palette.primary.main, 0.14)),
+          color: telegramColor
+            ? '#ffffff'
+            : (muiTheme.palette.mode === 'dark' ? '#ffffff' : muiTheme.palette.primary.main),
+          boxShadow: muiTheme.palette.mode === 'dark'
+            ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
+            : 'inset 0 1px 0 rgba(255,255,255,0.72)',
+        })}
+      >
+        {showPhoto ? (
+          <img
+            src={avatarUrl}
+            alt={label}
+            onError={handleImgError}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+        ) : label}
+      </Box>
+      {online ? (
+        <span
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            right: 0,
+            bottom: 0,
+            width: 14,
+            height: 14,
+            borderRadius: '999px',
+            border: `2px solid ${theme.palette.mode === 'dark' ? '#17212b' : '#ffffff'}`,
+            backgroundColor: '#4ade80',
+            boxShadow: theme.palette.mode === 'dark' ? '0 0 0 2px rgba(15,23,42,0.16)' : '0 0 0 2px rgba(255,255,255,0.65)',
+          }}
+        />
+      ) : null}
+    </Box>
+  );
+}
+
+export function NotesConversationAvatar({ size = 48, sx = {} }) {
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        flexShrink: 0,
+        ...sx,
+      }}
+    >
+      <Box
+        sx={(muiTheme) => ({
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '100%',
+          height: '100%',
+          borderRadius: '999px',
+          overflow: 'hidden',
+          bgcolor: muiTheme.palette.mode === 'dark' ? alpha('#fbbf24', 0.18) : alpha(muiTheme.palette.warning.main, 0.14),
+          color: muiTheme.palette.mode === 'dark' ? '#fcd34d' : muiTheme.palette.warning.dark,
+          boxShadow: muiTheme.palette.mode === 'dark'
+            ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
+            : 'inset 0 1px 0 rgba(255,255,255,0.72)',
+        })}
+      >
+        <StickyNote2OutlinedIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
+      </Box>
+    </Box>
+  );
+}
+
+// Аватар ИИ-ассистента: фирменный знак Хаба в белом круге с мягким кольцом.
+// thinking — пока ассистент работает: кольцо плавно «дышит».
+export function AiConversationAvatar({ size = 48, sx = {}, thinking = false }) {
+  const logoSize = Math.round(size * 0.74);
+  return (
+    <Box
+      data-testid="ai-avatar"
+      sx={(muiTheme) => ({
+        position: 'relative',
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        flexShrink: 0,
+        borderRadius: '50%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        bgcolor: '#ffffff',
+        boxShadow: `0 0 0 ${size >= 40 ? 2 : 1.5}px ${alpha('#29a9e1', muiTheme.palette.mode === 'dark' ? 0.55 : 0.4)}, 0 2px 8px ${alpha('#0b3b5a', 0.18)}`,
+        '@keyframes hubAiAvatarPulse': {
+          '0%': { boxShadow: `0 0 0 2px ${alpha('#29a9e1', 0.55)}, 0 0 0 2px ${alpha('#29a9e1', 0.35)}` },
+          '70%': { boxShadow: `0 0 0 2px ${alpha('#29a9e1', 0.55)}, 0 0 0 9px ${alpha('#29a9e1', 0)}` },
+          '100%': { boxShadow: `0 0 0 2px ${alpha('#29a9e1', 0.55)}, 0 0 0 9px ${alpha('#29a9e1', 0)}` },
+        },
+        ...(thinking ? { animation: 'hubAiAvatarPulse 1.8s ease-out infinite' } : {}),
+        '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
+        ...sx,
+      })}
+    >
+      <Box
+        component="img"
+        src="/favicon.png"
+        alt=""
+        draggable={false}
+        sx={{ width: logoSize, height: logoSize, objectFit: 'contain', userSelect: 'none' }}
+      />
+    </Box>
+  );
+}
+
+export function TaskConversationAvatar({ conversation, size = 48, sx = {} }) {
+  const [, statusColor] = getStatusMeta(conversation?.task_status);
+  const status = String(conversation?.task_status || '').trim().toLowerCase();
+  const completed = status === 'done';
+  const StatusIcon = completed
+    ? TaskAltRoundedIcon
+    : status === 'in_progress'
+      ? ScheduleRoundedIcon
+      : PlayArrowRoundedIcon;
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        flexShrink: 0,
+        ...sx,
+      }}
+    >
+      <Box
+        sx={(muiTheme) => ({
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '100%',
+          height: '100%',
+          borderRadius: '999px',
+          overflow: 'hidden',
+          bgcolor: muiTheme.palette.mode === 'dark'
+            ? alpha(muiTheme.palette.secondary.main, 0.24)
+            : alpha(muiTheme.palette.secondary.main, 0.12),
+          color: muiTheme.palette.mode === 'dark'
+            ? muiTheme.palette.secondary.light
+            : muiTheme.palette.secondary.main,
+          boxShadow: muiTheme.palette.mode === 'dark'
+            ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
+            : 'inset 0 1px 0 rgba(255,255,255,0.72)',
+          border: `2px solid ${alpha(statusColor, muiTheme.palette.mode === 'dark' ? 0.82 : 0.68)}`,
+        })}
+      >
+        <StatusIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
+      </Box>
+      {completed ? (
+        <Box
+          sx={(muiTheme) => ({
+            position: 'absolute',
+            right: -1,
+            bottom: -1,
+            width: Math.max(17, Math.round(size * 0.36)),
+            height: Math.max(17, Math.round(size * 0.36)),
+            borderRadius: '50%',
+            display: 'grid',
+            placeItems: 'center',
+            bgcolor: muiTheme.palette.background.paper,
+            color: '#059669',
+          })}
+        >
+          <CheckCircleRoundedIcon sx={{ fontSize: '100%' }} />
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+export function ConversationAvatar({
+  conversation,
+  online = false,
+  size = 48,
+  sx = {},
+  colorSeed = null,
+}) {
+  const kind = String(conversation?.kind || '').trim();
+  if (kind === 'notes') {
+    return <NotesConversationAvatar size={size} sx={sx} />;
+  }
+  if (kind === 'ai') {
+    return <AiConversationAvatar size={size} sx={sx} />;
+  }
+  if (kind === 'task' || String(conversation?.task_id || '').trim()) {
+    return <TaskConversationAvatar conversation={conversation} size={size} sx={sx} />;
+  }
+
+  const item = conversation?.kind === 'direct'
+    ? (conversation?.direct_peer || conversation)
+    : conversation;
+
+  return (
+    <PresenceAvatar
+      item={item}
+      online={Boolean(conversation?.kind === 'direct' && online)}
+      size={size}
+      sx={sx}
+      colorSeed={colorSeed ?? conversation?.id ?? item?.id}
+    />
+  );
+}
+
+export function TaskShareCard({ task, navigate, ui, theme, isOwn = false }) {
+  const statusMeta = getStatusMeta(task?.status);
+  const priorityMeta = getPriorityMeta(task?.priority);
+  const handleOpenTask = () => {
+    navigate(buildTaskDetailPath(task.id));
+  };
+
+  const handleTaskKeyDown = (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      handleOpenTask();
+    }
+  };
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={handleOpenTask}
+      onKeyDown={handleTaskKeyDown}
+      style={{
+        width: '100%',
+        // Д2-10: карточка задачи — контент карточки цвета стороны, без своей рамки и подложки.
+        padding: 12,
+        textAlign: 'left',
+        backgroundColor: 'transparent',
+        color: isOwn ? (ui.bubbleOwnText || theme.palette.text.primary) : ui.bubbleOtherText,
+        cursor: 'pointer',
+        transition: 'transform 100ms ease, opacity 100ms ease',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <div
+          style={{
+            width: 40,
+            height: 40,
+            flexShrink: 0,
+            borderRadius: 12,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: alpha(theme.palette.primary.main, 0.14),
+            color: theme.palette.primary.main,
+          }}
+        >
+          <TaskAltRoundedIcon fontSize="small" />
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <p style={{ margin: 0, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: ui.textSecondary }}>
+            Поделились задачей
+          </p>
+          <p style={{ margin: '4px 0 0', fontSize: 15, fontWeight: 600, lineHeight: 1.35, color: ui.textStrong || theme.palette.text.primary }}>
+            {task.title}
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+            <span style={{ color: statusMeta[1], backgroundColor: statusMeta[2], borderRadius: 999, padding: '4px 10px', fontSize: 11, fontWeight: 700 }}>{statusMeta[0]}</span>
+            <span style={{ color: priorityMeta[1], backgroundColor: priorityMeta[2], borderRadius: 999, padding: '4px 10px', fontSize: 11, fontWeight: 700 }}>{priorityMeta[0]}</span>
+            {task?.is_overdue ? (
+              <span style={{ color: '#fca5a5', backgroundColor: 'rgba(239,68,68,0.16)', borderRadius: 999, padding: '4px 10px', fontSize: 11, fontWeight: 700 }}>
+                Просрочено
+              </span>
+            ) : null}
+          </div>
+          <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.45, color: ui.textSecondary }}>
+            <div>Исполнитель: {getTaskAssignee(task)}</div>
+            <div>Срок: {task?.due_at ? formatFullDate(task.due_at) : 'Без срока'}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const VOICE_WAVEFORM_BARS = 32;
+const VOICE_FONT_FAMILY = '"SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+function formatAudioDuration(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds || 0)));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+function VoiceMessagePlayer({ fileUrl, openUrl, fileName, fileSize, durationSeconds, theme, ui, isOwn }) {
+  const audioRef = useRef(null);
+  const durationResolvedRef = useRef(false);
+  const maxSeenTimeRef = useRef(0);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [playbackError, setPlaybackError] = useState(false);
+  const [duration, setDuration] = useState(() => {
+    const d = Number(durationSeconds || 0);
+    return Number.isFinite(d) && d > 0 ? d : 0;
+  });
+  const [waveform] = useState(() => Array.from({ length: VOICE_WAVEFORM_BARS }, () => 0.18 + Math.random() * 0.82));
+  const fallbackOpenUrl = String(openUrl || fileUrl || '').trim();
+
+  useEffect(() => {
+    setPlaybackError(false);
+    setPlaying(false);
+    setCurrentTime(0);
+    maxSeenTimeRef.current = 0;
+    durationResolvedRef.current = false;
+  }, [fileUrl]);
+
+  const tryResolveDuration = useCallback((audio) => {
+    if (durationResolvedRef.current) return;
+    if (!audio) return;
+    const d = audio.duration;
+    if (d && Number.isFinite(d) && d > 0 && d < 86400) {
+      durationResolvedRef.current = true;
+      setDuration(d);
+    }
+  }, []);
+
+  const probeDuration = useCallback((audio) => {
+    if (durationResolvedRef.current) return;
+    if (!audio) return;
+    const d = audio.duration;
+    if (!d || !Number.isFinite(d) || d <= 0) {
+      const onSeeked = () => {
+        audio.removeEventListener('seeked', onSeeked);
+        const realDuration = audio.currentTime;
+        if (realDuration > 0 && Number.isFinite(realDuration)) {
+          durationResolvedRef.current = true;
+          setDuration(realDuration);
+          maxSeenTimeRef.current = realDuration;
+        }
+        audio.currentTime = 0;
+      };
+      audio.addEventListener('seeked', onSeeked);
+      audio.currentTime = 1e7;
+    }
+  }, []);
+
+  const accentColor = isOwn
+    ? (ui.bubbleOwnText || '#fff')
+    : (ui.accentText || theme.palette.primary.main);
+  const trackBg = isOwn
+    ? alpha(ui.bubbleOwnText || '#fff', 0.2)
+    : alpha(ui.accentText || theme.palette.primary.main, 0.18);
+  const textColor = isOwn
+    ? alpha(ui.bubbleOwnText || '#fff', 0.7)
+    : (ui.textSecondary || theme.palette.text.secondary);
+
+  const effectiveDuration = duration > 0 ? duration : maxSeenTimeRef.current > 0 ? maxSeenTimeRef.current * 1.15 : 0;
+  const progress = effectiveDuration > 0 ? Math.min(1, currentTime / effectiveDuration) : 0;
+
+  const togglePlay = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      audio.pause();
+    } else {
+      setPlaybackError(false);
+      audio.play().catch(() => {
+        setPlaying(false);
+        setPlaybackError(true);
+      });
+    }
+  }, [playing]);
+
+  const handleSeek = useCallback((event) => {
+    const audio = audioRef.current;
+    if (!audio || !duration || !Number.isFinite(duration)) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = (event.clientX || event.touches?.[0]?.clientX || 0) - rect.left;
+    const ratio = Math.max(0, Math.min(1, x / rect.width));
+    audio.currentTime = ratio * duration;
+    setCurrentTime(audio.currentTime);
+  }, [duration]);
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0, width: '100%', minWidth: 220 }}>
+      <audio
+        ref={audioRef}
+        src={fileUrl}
+        preload="metadata"
+        onError={() => {
+          setPlaying(false);
+          setPlaybackError(true);
+        }}
+        onLoadedMetadata={(e) => {
+          setPlaybackError(false);
+          tryResolveDuration(e.currentTarget);
+          probeDuration(e.currentTarget);
+        }}
+        onDurationChange={(e) => tryResolveDuration(e.currentTarget)}
+        onTimeUpdate={(e) => {
+          const audio = e.currentTarget;
+          setCurrentTime(audio.currentTime);
+          tryResolveDuration(audio);
+          if (audio.currentTime > maxSeenTimeRef.current) {
+            maxSeenTimeRef.current = audio.currentTime;
+          }
+        }}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={(e) => {
+          setPlaying(false);
+          if (!durationResolvedRef.current && e.currentTarget.currentTime > 0) {
+            durationResolvedRef.current = true;
+            setDuration(e.currentTarget.currentTime);
+          }
+          setCurrentTime(0);
+        }}
+      />
+      <button
+        type="button"
+        onClick={togglePlay}
+        aria-label={playing ? 'Пауза' : 'Воспроизвести'}
+        style={{
+          width: 40,
+          height: 40,
+          flexShrink: 0,
+          borderRadius: '50%',
+          border: 'none',
+          cursor: 'pointer',
+          backgroundColor: accentColor,
+          color: isOwn ? (ui.bubbleOwnBg || theme.palette.primary.main) : '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 0,
+        }}
+      >
+        {playing
+          ? <PauseRoundedIcon sx={{ fontSize: 20 }} />
+          : <PlayArrowRoundedIcon sx={{ fontSize: 20 }} />}
+      </button>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          role="slider"
+          tabIndex={0}
+          aria-label="Прогресс воспроизведения"
+          aria-valuenow={Math.round(currentTime)}
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration)}
+          onClick={handleSeek}
+          onTouchStart={handleSeek}
+          style={{
+            display: 'flex',
+            alignItems: 'flex-end',
+            gap: 2,
+            height: 24,
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+        >
+          {waveform.map((h, i) => {
+            const barProgress = progress * VOICE_WAVEFORM_BARS;
+            const filled = i < barProgress;
+            return (
+              <div
+                key={i}
+                style={{
+                  flex: 1,
+                  height: `${Math.round(h * 100)}%`,
+                  minHeight: 2,
+                  borderRadius: 1,
+                  backgroundColor: filled ? accentColor : trackBg,
+                  transition: 'background-color 80ms ease',
+                }}
+              />
+            );
+          })}
+        </div>
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          marginTop: 3,
+          fontFamily: VOICE_FONT_FAMILY,
+          fontSize: 11,
+          fontVariantNumeric: 'tabular-nums',
+          color: textColor,
+          lineHeight: 1,
+          userSelect: 'none',
+        }}>
+          <span>{formatAudioDuration(playing || currentTime > 0 ? currentTime : duration)}</span>
+          {playbackError && fallbackOpenUrl ? (
+            <a
+              href={fallbackOpenUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                color: textColor,
+                fontWeight: 700,
+                textDecoration: 'none',
+              }}
+            >
+              РћС‚РєСЂС‹С‚СЊ С„Р°Р№Р»
+            </a>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const notifyThreadMediaLoaded = (target) => {
+  const scrollRoot = target?.closest?.('[data-testid="chat-thread-scroll"]');
+  if (!scrollRoot) return;
+  scrollRoot.dispatchEvent(new CustomEvent('chat-media-loaded', { bubbles: false }));
+};
+
+export function FileAttachment({
+  fileName,
+  fileSize,
+  fileUrl,
+  downloadUrl,
+  openUrl,
+  posterUrl,
+  fileType,
+  mimeType,
+  theme,
+  ui,
+  isOwn = false,
+  isSending = false,
+  onOpenPreview,
+  onOpenStickerPack,
+  previewWidth,
+  previewHeight,
+  durationSeconds,
+  mediaMaxWidth = 300,
+  mediaMaxHeight = null,
+  mediaMinWidth = 0,
+  forcedAspectRatio = '',
+  fallbackFileUrls = EMPTY_URL_LIST,
+}) {
+  const resolvedOpenUrl = String(openUrl || fileUrl || '').trim();
+  const resolvedDownloadUrl = String(downloadUrl || resolvedOpenUrl).trim();
+  const [resolvedDuration, setResolvedDuration] = useState(() => formatVideoDuration(durationSeconds));
+  // Д2-8: реальные пропорции медиа, если у вложения нет width/height.
+  const [naturalSize, setNaturalSize] = useState(null);
+  // Д2-8: серый плейсхолдер живёт только до загрузки — после onLoad подложка прозрачна.
+  const [mediaLoaded, setMediaLoaded] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const [fileActionsAnchorPosition, setFileActionsAnchorPosition] = useState(null);
+  const attachmentKind = useMemo(
+    () => resolveAttachmentKind({ fileName, fileType, mimeType }),
+    [fileName, fileType, mimeType],
+  );
+  const extension = getExtensionFromFileName(fileName);
+  const extensionLabel = getDisplayExtension(fileName, mimeType);
+  const accentColor = resolveFileAccent(extension);
+  const surfaceStyle = buildClickableSurfaceStyle(isOwn, ui, theme);
+  const titleText = clampFileName(fileName);
+  const subtitleLabel = `${extensionLabel} • ${formatFileSize(fileSize)}`;
+  const declaredAspectRatio = Number(previewWidth || 0) > 0 && Number(previewHeight || 0) > 0
+    ? Number(previewWidth) / Number(previewHeight)
+    : null;
+  const naturalAspectRatio = naturalSize && naturalSize.width > 0 && naturalSize.height > 0
+    ? naturalSize.width / naturalSize.height
+    : null;
+  const numericAspectRatio = declaredAspectRatio || naturalAspectRatio
+    || (attachmentKind === 'video' ? (16 / 9) : (4 / 3));
+  const aspectRatio = String(forcedAspectRatio || '').trim() || (declaredAspectRatio
+    ? `${Number(previewWidth)} / ${Number(previewHeight)}`
+    : naturalSize ? `${naturalSize.width} / ${naturalSize.height}`
+    : (attachmentKind === 'video' ? '16 / 9' : '4 / 3'));
+  const hasNumericMediaMaxWidth = typeof mediaMaxWidth === 'number' && Number.isFinite(mediaMaxWidth);
+  const hasNumericMediaMaxHeight = typeof mediaMaxHeight === 'number' && Number.isFinite(mediaMaxHeight);
+  const hasNumericMediaMinWidth = typeof mediaMinWidth === 'number' && Number.isFinite(mediaMinWidth) && mediaMinWidth > 0;
+  const maxWidthValue = hasNumericMediaMaxWidth ? mediaMaxWidth : Number.POSITIVE_INFINITY;
+  const minWidthValue = hasNumericMediaMinWidth ? mediaMinWidth : 0;
+  const rawConstrainedMediaWidth = hasNumericMediaMaxHeight
+    ? Math.min(maxWidthValue, mediaMaxHeight * numericAspectRatio)
+    : (hasNumericMediaMaxWidth ? mediaMaxWidth : null);
+  const constrainedMediaWidth = rawConstrainedMediaWidth !== null
+    ? Math.min(maxWidthValue, Math.max(minWidthValue, rawConstrainedMediaWidth))
+    : null;
+  // Д2-8: рамка следует пропорциям фото. Если минимальная ширина не умещается
+  // в пропорцию при максимальной высоте — контейнер берёт minWidth × maxHeight,
+  // а края обрезает objectFit: cover (полная картинка — в просмотрщике).
+  const mediaCoverCrop = hasNumericMediaMinWidth
+    && hasNumericMediaMaxHeight
+    && (mediaMaxHeight * numericAspectRatio) < minWidthValue;
+  const mediaBoxStyle = mediaCoverCrop
+    ? { height: `${mediaMaxHeight}px` }
+    : { aspectRatio, maxHeight: hasNumericMediaMaxHeight ? `${mediaMaxHeight}px` : mediaMaxHeight };
+  const mediaSurfaceStyle = {
+    ...surfaceStyle,
+    width: constrainedMediaWidth ? `${Math.round(constrainedMediaWidth)}px` : (hasNumericMediaMaxWidth ? `${mediaMaxWidth}px` : '100%'),
+    maxWidth: hasNumericMediaMaxWidth ? `min(100%, ${mediaMaxWidth}px)` : mediaMaxWidth,
+    minWidth: hasNumericMediaMinWidth ? `min(100%, ${mediaMinWidth}px)` : undefined,
+    padding: 0,
+    border: 'none',
+    backgroundColor: 'transparent',
+    // Д2-8: у медиа нет рамки и тени — только скругление и плейсхолдер до загрузки.
+    boxShadow: 'none',
+  };
+  const handleNaturalSize = (target) => {
+    if (declaredAspectRatio) return;
+    const width = Number(target?.naturalWidth || target?.videoWidth || 0);
+    const height = Number(target?.naturalHeight || target?.videoHeight || 0);
+    if (width > 0 && height > 0) setNaturalSize({ width, height });
+  };
+  const imageSourceCandidates = useMemo(
+    () => compactUrlList(fileUrl, fallbackFileUrls, resolvedOpenUrl),
+    [fallbackFileUrls, fileUrl, resolvedOpenUrl],
+  );
+  const [activeImageUrl, setActiveImageUrl] = useState(() => imageSourceCandidates[0] || String(fileUrl || '').trim());
+  const [failedUrls, setFailedUrls] = useState(new Set());
+
+  const openFileActionsMenu = (event) => {
+    if (event.type === 'keydown' && !isFileActionsKeyboardShortcut(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFileActionsAnchorPosition(getFileActionsAnchorPosition(event));
+  };
+
+  const downloadAttachment = () => {
+    if (!resolvedDownloadUrl) return;
+    const link = document.createElement('a');
+    link.href = resolvedDownloadUrl;
+    link.download = String(fileName || 'attachment.bin');
+    link.rel = 'noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  useEffect(() => {
+    setActiveImageUrl(imageSourceCandidates[0] || String(fileUrl || '').trim());
+    setFailedUrls(new Set());
+    setNaturalSize(null);
+    setMediaLoaded(false);
+  }, [fileUrl, imageSourceCandidates]);
+
+  if (attachmentKind === 'sticker') {
+    const stickerMedia = (
+      <ChatStickerMedia
+        src={fileUrl || resolvedOpenUrl}
+        mimeType={mimeType}
+        posterSrc={posterUrl}
+        alt="Стикер"
+        autoPlay
+        forceAutoPlay
+        size={hasNumericMediaMaxWidth ? Math.min(mediaMaxWidth, 224) : 184}
+      />
+    );
+    if (typeof onOpenStickerPack !== 'function') return stickerMedia;
+    return (
+      <Box
+        component="button"
+        type="button"
+        aria-label="Открыть набор стикеров"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenStickerPack();
+        }}
+        sx={{
+          display: 'block',
+          p: 0,
+          border: 'none',
+          borderRadius: 3,
+          bgcolor: 'transparent',
+          color: 'inherit',
+          cursor: 'pointer',
+          lineHeight: 0,
+          '&:focus-visible': {
+            outline: `2px solid ${ui.accentText || theme.palette.primary.main}`,
+            outlineOffset: 3,
+          },
+        }}
+      >
+        {stickerMedia}
+      </Box>
+    );
+  }
+
+  if (attachmentKind === 'image') {
+    const handleOpenImage = (event) => {
+      if (typeof onOpenPreview !== 'function') return;
+      event.preventDefault();
+      onOpenPreview?.();
+    };
+
+    const handleImageError = () => {
+      const currentUrl = String(activeImageUrl || '').trim();
+      const newFailedUrls = new Set(failedUrls);
+      newFailedUrls.add(currentUrl);
+      setFailedUrls(newFailedUrls);
+
+      // Find next URL that hasn't failed yet
+      const currentIndex = imageSourceCandidates.findIndex((candidate) => candidate === currentUrl);
+      const nextUrl = imageSourceCandidates.find((candidate, index) =>
+        index > currentIndex && !newFailedUrls.has(candidate)
+      );
+
+      if (nextUrl) {
+        console.warn(`Image load failed for ${currentUrl}, trying fallback: ${nextUrl}`);
+        setActiveImageUrl(nextUrl);
+      } else {
+        console.error(`All image URLs failed for attachment. Last attempt: ${currentUrl}`);
+      }
+    };
+
+    const content = (
+      <img
+        src={activeImageUrl || fileUrl}
+        alt={String(fileName || 'image')}
+        loading="lazy"
+        decoding="async"
+        onLoad={(event) => {
+          notifyThreadMediaLoaded(event.currentTarget);
+          handleNaturalSize(event.currentTarget);
+          setMediaLoaded(true);
+        }}
+        onError={handleImageError}
+        style={{
+          display: 'block',
+          width: '100%',
+          height: '100%',
+          // Д2-8: рамка совпадает с пропорциями фото — cover не даёт серых полос.
+          objectFit: 'cover',
+          backgroundColor: mediaLoaded ? 'transparent' : (ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)'),
+        }}
+      />
+    );
+
+    return typeof onOpenPreview === 'function' ? (
+      <button
+        type="button"
+        onClick={handleOpenImage}
+        aria-label={`Открыть изображение ${fileName}`}
+        style={{
+          ...mediaSurfaceStyle,
+          appearance: 'none',
+        }}
+      >
+        <div
+          style={{
+            position: 'relative',
+            width: '100%',
+            ...mediaBoxStyle,
+            overflow: 'hidden',
+            borderRadius: 13,
+            backgroundColor: mediaLoaded ? 'transparent' : (ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)'),
+          }}
+        >
+          {content}
+          {isSending ? (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: 'rgba(0,0,0,0.35)',
+                pointerEvents: 'none',
+              }}
+            >
+              <CircularProgress size={44} thickness={3} sx={{ color: '#fff' }} />
+            </div>
+          ) : null}
+        </div>
+      </button>
+    ) : (
+      <a
+        href={resolvedOpenUrl}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`Открыть изображение ${fileName}`}
+        style={mediaSurfaceStyle}
+      >
+        <div
+          style={{
+            width: '100%',
+            ...mediaBoxStyle,
+            overflow: 'hidden',
+            borderRadius: 13,
+            backgroundColor: mediaLoaded ? 'transparent' : (ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)'),
+          }}
+        >
+          {content}
+        </div>
+      </a>
+    );
+  }
+
+  if (attachmentKind === 'video' && typeof onOpenPreview === 'function') {
+    const handleOpenVideo = (event) => {
+      event.preventDefault();
+      onOpenPreview?.();
+    };
+
+    return (
+      <button
+        type="button"
+        onClick={handleOpenVideo}
+        aria-label={`Открыть видео ${fileName}`}
+        style={{
+          ...mediaSurfaceStyle,
+          appearance: 'none',
+        }}
+      >
+        <div
+          style={{
+            position: 'relative',
+            width: '100%',
+            ...mediaBoxStyle,
+            overflow: 'hidden',
+            borderRadius: 13,
+            backgroundColor: 'rgba(3,8,20,0.72)',
+          }}
+        >
+          {posterUrl ? (
+            <img
+              src={posterUrl}
+              alt={String(fileName || 'video')}
+              loading="lazy"
+              decoding="async"
+              onLoad={(event) => handleNaturalSize(event.currentTarget)}
+              style={{
+                display: 'block',
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                filter: 'brightness(0.84)',
+              }}
+            />
+          ) : (
+            <video
+              src={fileUrl}
+              preload="metadata"
+              muted
+              playsInline
+              onLoadedMetadata={(event) => {
+                if (!resolvedDuration) {
+                  setResolvedDuration(formatVideoDuration(event.currentTarget.duration));
+                }
+                handleNaturalSize(event.currentTarget);
+              }}
+              style={{
+                display: 'block',
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                filter: 'brightness(0.84)',
+              }}
+            />
+          )}
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+            }}
+          >
+            {isSending ? (
+              <CircularProgress size={44} thickness={3} sx={{ color: '#fff' }} />
+            ) : (
+              <div
+                style={{
+                  width: 54,
+                  height: 54,
+                  borderRadius: '999px',
+                  backgroundColor: 'rgba(15,23,42,0.58)',
+                  boxShadow: '0 10px 26px rgba(2,6,23,0.32)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fff',
+                }}
+              >
+                <PlayArrowRoundedIcon sx={{ fontSize: 30 }} />
+              </div>
+            )}
+          </div>
+          {resolvedDuration ? (
+            <div
+              style={{
+                position: 'absolute',
+                right: 10,
+                bottom: 10,
+                borderRadius: 999,
+                backgroundColor: 'rgba(2,6,23,0.72)',
+                color: '#fff',
+                padding: '4px 8px',
+                fontSize: 11,
+                fontWeight: 700,
+                lineHeight: 1,
+              }}
+            >
+              {resolvedDuration}
+            </div>
+          ) : null}
+        </div>
+      </button>
+    );
+  }
+
+  if (attachmentKind === 'video') {
+    return (
+      <a
+        href={resolvedOpenUrl}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`Открыть видео ${fileName}`}
+        style={mediaSurfaceStyle}
+      >
+        <div
+          style={{
+            position: 'relative',
+            width: '100%',
+            ...mediaBoxStyle,
+            overflow: 'hidden',
+            borderRadius: 13,
+            backgroundColor: 'rgba(3,8,20,0.72)',
+          }}
+        >
+          {posterUrl ? (
+            <img
+              src={posterUrl}
+              alt={String(fileName || 'video')}
+              loading="lazy"
+              decoding="async"
+              onLoad={(event) => handleNaturalSize(event.currentTarget)}
+              style={{
+                display: 'block',
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                filter: 'brightness(0.84)',
+              }}
+            />
+          ) : (
+            <video
+              src={fileUrl}
+              preload="metadata"
+              muted
+              playsInline
+              onLoadedMetadata={(event) => {
+                if (!resolvedDuration) {
+                  setResolvedDuration(formatVideoDuration(event.currentTarget.duration));
+                }
+                handleNaturalSize(event.currentTarget);
+              }}
+              style={{
+                display: 'block',
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                filter: 'brightness(0.84)',
+              }}
+            />
+          )}
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+            }}
+          >
+            {isSending ? (
+              <CircularProgress size={44} thickness={3} sx={{ color: '#fff' }} />
+            ) : (
+              <div
+                style={{
+                  width: 54,
+                  height: 54,
+                  borderRadius: '999px',
+                  backgroundColor: 'rgba(15,23,42,0.58)',
+                  boxShadow: '0 10px 26px rgba(2,6,23,0.32)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fff',
+                }}
+              >
+                <PlayArrowRoundedIcon sx={{ fontSize: 30 }} />
+              </div>
+            )}
+          </div>
+          {resolvedDuration ? (
+            <div
+              style={{
+                position: 'absolute',
+                right: 10,
+                bottom: 10,
+                borderRadius: 999,
+                backgroundColor: 'rgba(2,6,23,0.72)',
+                color: '#fff',
+                padding: '4px 8px',
+                fontSize: 11,
+                fontWeight: 700,
+                lineHeight: 1,
+              }}
+            >
+              {resolvedDuration}
+            </div>
+          ) : null}
+        </div>
+      </a>
+    );
+  }
+
+  if (attachmentKind === 'audio') {
+    return (
+      <VoiceMessagePlayer
+        fileUrl={fileUrl || resolvedOpenUrl}
+        openUrl={resolvedOpenUrl}
+        fileName={fileName}
+        fileSize={fileSize}
+        durationSeconds={durationSeconds}
+        theme={theme}
+        ui={ui}
+        isOwn={isOwn}
+      />
+    );
+  }
+
+  return (
+    <>
+      <a
+      href={resolvedOpenUrl}
+      target="_blank"
+      rel="noreferrer"
+      title={String(fileName || 'Файл')}
+      aria-label={`Открыть файл ${fileName}`}
+      onClick={typeof onOpenPreview === 'function'
+        ? (event) => {
+          event.preventDefault();
+          onOpenPreview?.();
+        }
+        : undefined}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      onFocus={() => setIsHovered(true)}
+      onBlur={() => setIsHovered(false)}
+      onContextMenu={openFileActionsMenu}
+      onKeyDown={openFileActionsMenu}
+      style={{
+        ...surfaceStyle,
+        // Д2-10: файл — контент одной карточки/пузыря, без внутренней рамки
+        // и второй подложки; подсветка — только при наведении.
+        border: 'none',
+        borderRadius: 10,
+        padding: 10,
+        position: 'relative',
+        boxShadow: 'none',
+        backgroundColor: isHovered
+          ? (ui.fileHoverBg || alpha(theme.palette.common.white, 0.07))
+          : 'transparent',
+      }}
+    >
+      <div
+        data-testid="chat-file-attachment-overlay"
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          top: 8,
+          right: 8,
+          width: 28,
+          height: 28,
+          borderRadius: '999px',
+          backgroundColor: ui.fileOverlayBg || alpha('#020617', 0.54),
+          border: `1px solid ${ui.mediaBorder || alpha(theme.palette.common.white, 0.08)}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'rgba(255,255,255,0.86)',
+          opacity: isHovered ? 1 : 0,
+          transform: isHovered ? 'scale(1)' : 'scale(0.92)',
+          transition: 'opacity 120ms ease, transform 120ms ease',
+          pointerEvents: 'none',
+        }}
+      >
+        <OpenInNewRoundedIcon sx={{ fontSize: 16 }} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+        <div
+          style={{
+            width: 46,
+            height: 46,
+            flexShrink: 0,
+            borderRadius: '999px',
+            backgroundColor: alpha(accentColor, 0.18),
+            color: accentColor,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 11,
+            fontWeight: 800,
+            letterSpacing: '0.04em',
+            textTransform: 'uppercase',
+            boxShadow: `inset 0 0 0 1px ${alpha(accentColor, 0.22)}`,
+          }}
+        >
+          {extensionLabel}
+        </div>
+
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              lineHeight: 1.35,
+              color: ui.textStrong || theme.palette.text.primary,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {titleText}
+          </div>
+          <div
+            style={{
+              marginTop: 3,
+              fontSize: 12,
+              lineHeight: 1.2,
+              color: ui.textSecondary,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {subtitleLabel}
+          </div>
+        </div>
+      </div>
+      </a>
+      <FileActionsContextMenu
+        open={Boolean(fileActionsAnchorPosition)}
+        anchorPosition={fileActionsAnchorPosition}
+        fileName={fileName}
+        canDownload={Boolean(resolvedDownloadUrl)}
+        onClose={() => setFileActionsAnchorPosition(null)}
+        onDownload={downloadAttachment}
+      />
+    </>
+  );
+}
+
+export function AttachmentCard({
+  messageId,
+  attachment,
+  theme,
+  ui,
+  onOpenPreview,
+  isOwn = false,
+  isSending = false,
+  canSaveToMyFiles = false,
+}) {
+  const [stickerPackDialogOpen, setStickerPackDialogOpen] = useState(false);
+  const [saveState, setSaveState] = useState('idle');
+  const normalizedMessageId = String(messageId || '').trim();
+  const attachmentId = String(attachment?.id || '').trim();
+  const canBuildAttachmentUrl = Boolean(normalizedMessageId && attachmentId);
+  const directOriginalUrl = normalizeChatAttachmentUrl(attachment?.original_url || attachment?.originalUrl || attachment?.fileUrl);
+  const directOpenUrl = normalizeChatAttachmentUrl(attachment?.open_url || attachment?.openUrl);
+  const directPreviewUrl = normalizeChatAttachmentUrl(attachment?.preview_url || attachment?.previewUrl);
+  const directPosterUrl = normalizeChatAttachmentUrl(attachment?.poster_url || attachment?.posterUrl);
+  const inlineOriginalUrl = canBuildAttachmentUrl ? buildAttachmentUrl(normalizedMessageId, attachmentId, { inline: true }) : '';
+  const downloadOriginalUrl = canBuildAttachmentUrl ? buildAttachmentUrl(normalizedMessageId, attachmentId) : '';
+  const originalUrl = directOriginalUrl || downloadOriginalUrl || inlineOriginalUrl;
+  const openUrl = directOpenUrl || directOriginalUrl || inlineOriginalUrl || downloadOriginalUrl;
+  const variantUrls = attachment?.variant_urls || {};
+  const thumbUrl = normalizeChatAttachmentUrl(variantUrls.thumb);
+  const previewUrl = normalizeChatAttachmentUrl(variantUrls.preview);
+  const attachmentKind = getAttachmentKind(attachment);
+  const stickerPackShortName = attachmentKind === 'sticker' ? getStickerPackShortName(attachment) : '';
+  const fileUrl = isImageAttachment(attachment)
+    ? (directPreviewUrl || previewUrl || thumbUrl || openUrl || originalUrl)
+    : (attachmentKind === 'video' ? (directPreviewUrl || previewUrl || openUrl || originalUrl) : openUrl);
+  const posterUrl = attachmentKind === 'video' || attachmentKind === 'sticker'
+    ? (directPosterUrl || normalizeChatAttachmentUrl(variantUrls.poster))
+    : '';
+  const fallbackFileUrls = useMemo(
+    () => compactUrlList(previewUrl, thumbUrl, openUrl, inlineOriginalUrl, originalUrl, downloadOriginalUrl),
+    [downloadOriginalUrl, inlineOriginalUrl, openUrl, originalUrl, previewUrl, thumbUrl],
+  );
+  const previewable = isImageAttachment(attachment)
+    || resolveAttachmentKind({
+      fileName: attachment?.file_name,
+      mimeType: attachment?.mime_type,
+      fileType: attachment?.kind || attachment?.media_kind || attachment?.file_type,
+    }) === 'video'
+    || isChatDocumentPreviewableAttachment(attachment);
+  const [retentionMenuAnchor, setRetentionMenuAnchor] = useState(null);
+  const handleSaveToMyFiles = async (retentionDays) => {
+    if (!canSaveToMyFiles || !normalizedMessageId || !attachmentId || saveState === 'saving') return;
+    setRetentionMenuAnchor(null);
+    setSaveState('saving');
+    try {
+      await chatDirectoryAPI.saveAttachmentToMyFiles(normalizedMessageId, attachmentId, retentionDays);
+      setSaveState('saved');
+    } catch {
+      setSaveState('error');
+    }
+  };
+  return (
+    <>
+      <FileAttachment
+        fileName={attachment?.file_name}
+        fileSize={attachment?.file_size}
+        fileUrl={fileUrl}
+        downloadUrl={downloadOriginalUrl || originalUrl}
+        openUrl={openUrl}
+        posterUrl={posterUrl}
+        mimeType={attachment?.mime_type}
+        fileType={attachment?.kind || attachment?.media_kind || attachment?.file_type}
+        theme={theme}
+        ui={ui}
+        isOwn={isOwn}
+        isSending={isSending}
+        onOpenPreview={previewable && typeof onOpenPreview === 'function'
+          ? () => onOpenPreview(messageId, attachment)
+          : undefined}
+        onOpenStickerPack={stickerPackShortName ? () => setStickerPackDialogOpen(true) : undefined}
+        previewWidth={attachment?.width}
+        previewHeight={attachment?.height}
+        durationSeconds={attachment?.duration_seconds}
+        mediaMaxWidth={attachment?.mediaMaxWidth}
+        mediaMaxHeight={attachment?.mediaMaxHeight}
+        mediaMinWidth={attachment?.mediaMinWidth}
+        forcedAspectRatio={attachment?.forcedAspectRatio}
+        fallbackFileUrls={fallbackFileUrls}
+      />
+      {canSaveToMyFiles && normalizedMessageId && attachmentId ? (
+        <>
+          <Button
+            size="small"
+            startIcon={saveState === 'saving' ? <CircularProgress size={16} color="inherit" /> : <SaveAltRoundedIcon />}
+            disabled={saveState === 'saving' || saveState === 'saved'}
+            color={saveState === 'error' ? 'error' : 'primary'}
+            aria-haspopup="menu"
+            onClick={(event) => setRetentionMenuAnchor(event.currentTarget)}
+            sx={{ minHeight: 44, mt: 0.5, justifyContent: 'flex-start', textTransform: 'none' }}
+          >
+            {saveState === 'saved'
+              ? 'Файл отправлен на проверку и сохранение в Мои файлы'
+              : (saveState === 'error' ? 'Повторить сохранение' : 'Сохранить в Мои файлы')}
+          </Button>
+          <Menu
+            anchorEl={retentionMenuAnchor}
+            open={Boolean(retentionMenuAnchor)}
+            onClose={() => setRetentionMenuAnchor(null)}
+          >
+            <ListSubheader disableSticky sx={{ lineHeight: '32px' }}>Хранить в «Мои файлы»</ListSubheader>
+            {myFilesRetentionOptions.map((days) => (
+              <MenuItem key={days} onClick={() => void handleSaveToMyFiles(days)}>
+                {formatMyFilesRetentionLabel(days)}
+              </MenuItem>
+            ))}
+          </Menu>
+        </>
+      ) : null}
+      {stickerPackDialogOpen ? (
+        <Suspense fallback={null}>
+          <LazyChatStickerPackDialog
+            open
+            shortName={stickerPackShortName}
+            theme={theme}
+            ui={ui}
+            onClose={() => setStickerPackDialogOpen(false)}
+          />
+        </Suspense>
+      ) : null}
+    </>
+  );
+}

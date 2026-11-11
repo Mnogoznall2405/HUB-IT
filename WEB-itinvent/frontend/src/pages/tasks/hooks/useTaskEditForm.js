@@ -1,0 +1,355 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import hubTasksAPI from '../../../api/hubTasks';
+import hubTaskFilesAPI from '../../../api/hubTaskFiles';
+import { getFileIdentity } from '../taskApiHelpers';
+import { formatCreateDueLabel } from '../taskViewModes';
+import {
+  fromApiEmailDeadlineRemindHours,
+  toApiEmailDeadlineRemindHours,
+  applyDueAtChange,
+} from '../taskEmailRemindUtils';
+import {
+  findDepartmentById,
+  findTaskUserById,
+} from '../taskUserUtils';
+import { toDateTimeInput, toDateInput } from '../taskFormatters';
+
+function mapTaskToEditData(task) {
+  const emailRemind = fromApiEmailDeadlineRemindHours(task?.email_deadline_remind_hours);
+  const assigneeId = String(task?.assignee_user_id || '').trim();
+  const assigneeIds = (Array.isArray(task?.assignee_user_ids) ? task.assignee_user_ids : [assigneeId])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  return {
+    id: String(task?.id || ''),
+    title: task?.title || '',
+    description: task?.description || '',
+    due_at: toDateTimeInput(task?.due_at),
+    protocol_date: toDateInput(task?.protocol_date),
+    priority: task?.priority || 'normal',
+    project_id: String(task?.project_id || ''),
+    object_id: String(task?.object_id || ''),
+    assignee_user_ids: [...new Set(assigneeIds)],
+    controller_user_id: String(task?.controller_user_id || ''),
+    observer_user_ids: (Array.isArray(task?.observer_user_ids) ? task.observer_user_ids : [])
+      .map((value) => String(value || ''))
+      .filter(Boolean),
+    department_id: String(task?.department_id || ''),
+    visibility_scope: String(task?.visibility_scope || 'private'),
+    email_deadline_remind_mode: emailRemind.mode,
+    email_deadline_remind_hours: emailRemind.hours,
+  };
+}
+
+export default function useTaskEditForm({
+  setError,
+  refreshTasksAndDetails,
+  applyTaskUpdate,
+  controllers,
+  departments,
+  activeTaskObjects,
+  getAssigneeById,
+  resolveAssigneesByIds,
+  mergeAssigneesIntoCache,
+  clearAssigneeSearchResults,
+  setObserverSearchInput,
+  resetTaskUserSearchInputs,
+  editOpen: controlledEditOpen,
+  setEditOpen: controlledSetEditOpen,
+}) {
+  const [internalEditOpen, setInternalEditOpen] = useState(false);
+  const editOpen = controlledEditOpen ?? internalEditOpen;
+  const setEditOpen = controlledSetEditOpen ?? setInternalEditOpen;
+  const [editSaving, setEditSaving] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editDueCustomOpen, setEditDueCustomOpen] = useState(false);
+  const [editFiles, setEditFiles] = useState([]);
+  const [editData, setEditData] = useState({
+    id: '',
+    title: '',
+    description: '',
+    due_at: '',
+    protocol_date: '',
+    priority: 'normal',
+    project_id: '',
+    object_id: '',
+    assignee_user_ids: [],
+    controller_user_id: '',
+    observer_user_ids: [],
+    department_id: '',
+    visibility_scope: 'private',
+    email_deadline_remind_mode: 'default',
+    email_deadline_remind_hours: 24,
+  });
+
+  const editDescriptionRef = useRef('');
+  const editLoadSeqRef = useRef(0);
+
+  // Выбранные файлы живут только в открытом диалоге: после закрытия (любым способом) очищаем.
+  useEffect(() => {
+    if (!editOpen) setEditFiles([]);
+  }, [editOpen]);
+
+  const editProjectObjects = useMemo(() => (
+    activeTaskObjects.filter((item) => item?.is_active !== false && String(item?.project_id || '') === String(editData.project_id || ''))
+  ), [editData.project_id, activeTaskObjects]);
+
+  const editDueLabel = useMemo(
+    () => formatCreateDueLabel(editData.due_at, new Date()),
+    [editData.due_at],
+  );
+
+  const selectedEditAssignees = useMemo(() => {
+    const ids = Array.isArray(editData.assignee_user_ids) ? editData.assignee_user_ids : [];
+    return ids.map((value) => getAssigneeById(value)).filter(Boolean);
+  }, [getAssigneeById, editData.assignee_user_ids]);
+
+  const selectedEditObservers = useMemo(() => {
+    const ids = Array.isArray(editData.observer_user_ids) ? editData.observer_user_ids : [];
+    return ids
+      .map((value) => getAssigneeById(value))
+      .filter(Boolean);
+  }, [getAssigneeById, editData.observer_user_ids]);
+
+  const selectedEditController = useMemo(
+    () => findTaskUserById(controllers, editData.controller_user_id),
+    [controllers, editData.controller_user_id],
+  );
+
+  const selectedEditDepartment = useMemo(
+    () => findDepartmentById(departments, editData.department_id),
+    [departments, editData.department_id],
+  );
+
+  const handleEditDescriptionDraftChange = useCallback((value) => {
+    editDescriptionRef.current = String(value || '');
+  }, []);
+
+  const handleEditDueAtChange = useCallback((value) => {
+    setEditData((prev) => applyDueAtChange(prev, String(value || '')));
+  }, []);
+
+  const handleSelectEditDuePreset = useCallback((value) => {
+    setEditData((prev) => applyDueAtChange(prev, String(value || '')));
+    setEditDueCustomOpen(false);
+  }, []);
+
+  const applyTaskToEditForm = useCallback((task) => {
+    editDescriptionRef.current = String(task?.description || '');
+    const next = mapTaskToEditData(task);
+    setEditDueCustomOpen(false);
+    setEditData(next);
+    const assigneeIds = next.assignee_user_ids;
+    let assigneeSnapshots = (Array.isArray(task?.assignees) ? task.assignees : [])
+      .map((item) => ({
+        id: String(item?.user_id || ''),
+        full_name: String(item?.full_name || '').trim(),
+        username: String(item?.username || '').trim(),
+      }))
+      .filter((item) => item.id);
+    if (!assigneeSnapshots.length && assigneeIds.length) {
+      assigneeSnapshots = assigneeIds.map((id, index) => ({
+        id,
+        full_name: index === 0 ? String(task?.assignee_full_name || '').trim() : '',
+        username: index === 0 ? String(task?.assignee_username || '').trim() : '',
+      }));
+    }
+    if (assigneeSnapshots.length) {
+      mergeAssigneesIntoCache(assigneeSnapshots);
+      if (resolveAssigneesByIds) void resolveAssigneesByIds(assigneeIds);
+    }
+    resetTaskUserSearchInputs();
+    const observerIds = next.observer_user_ids;
+    let observerSnapshots = (Array.isArray(task?.observers) ? task.observers : [])
+      .map((item) => ({
+        id: String(item?.user_id || ''),
+        full_name: String(item?.full_name || '').trim(),
+        username: String(item?.username || '').trim(),
+      }))
+      .filter((item) => item.id);
+    if (!observerSnapshots.length && observerIds.length) {
+      observerSnapshots = observerIds.map((id) => ({ id, full_name: '', username: '' }));
+    }
+    if (observerSnapshots.length) {
+      mergeAssigneesIntoCache(observerSnapshots);
+      if (resolveAssigneesByIds) {
+        void resolveAssigneesByIds(observerIds);
+      }
+    }
+  }, [mergeAssigneesIntoCache, resetTaskUserSearchInputs, resolveAssigneesByIds]);
+
+  const openEditTask = useCallback((task) => {
+    const taskId = String(task?.id || '').trim();
+    if (!taskId) return;
+    const loadSeq = editLoadSeqRef.current + 1;
+    editLoadSeqRef.current = loadSeq;
+    // Do not hydrate the form from lean list DTO — wait for detail.
+    setEditData({
+      id: taskId,
+      title: String(task?.title || ''),
+      description: '',
+      due_at: '',
+      protocol_date: '',
+      priority: 'normal',
+      project_id: '',
+      object_id: '',
+      assignee_user_ids: [],
+      controller_user_id: '',
+      observer_user_ids: [],
+      department_id: '',
+      visibility_scope: 'private',
+      email_deadline_remind_mode: 'default',
+      email_deadline_remind_hours: 24,
+    });
+    editDescriptionRef.current = '';
+    setEditFiles([]);
+    setEditDueCustomOpen(false);
+    setEditOpen(true);
+    setEditLoading(true);
+    void hubTasksAPI.getTask(taskId)
+      .then((detail) => {
+        if (editLoadSeqRef.current !== loadSeq) return;
+        if (!detail || !detail.id) {
+          throw new Error('Задача не найдена');
+        }
+        applyTaskToEditForm(detail);
+      })
+      .catch((err) => {
+        if (editLoadSeqRef.current !== loadSeq) return;
+        setError(err?.response?.data?.detail || err?.message || 'Не удалось загрузить задачу для редактирования');
+        setEditOpen(false);
+      })
+      .finally(() => {
+        if (editLoadSeqRef.current === loadSeq) {
+          setEditLoading(false);
+        }
+      });
+  }, [applyTaskToEditForm, setEditOpen, setError]);
+
+  const handleAddEditFiles = useCallback((fileList) => {
+    const nextFiles = Array.from(fileList || []).filter(Boolean);
+    if (nextFiles.length === 0) return;
+    setEditFiles((prev) => {
+      const seen = new Set(prev.map(getFileIdentity));
+      const merged = [...prev];
+      nextFiles.forEach((file) => {
+        const identity = getFileIdentity(file);
+        if (!seen.has(identity)) {
+          seen.add(identity);
+          merged.push(file);
+        }
+      });
+      return merged;
+    });
+  }, []);
+
+  const handleRemoveEditFile = useCallback((index) => {
+    setEditFiles((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  }, []);
+
+  const handleEditObserversChange = useCallback((_, value) => {
+    setEditData((prev) => ({
+      ...prev,
+      observer_user_ids: Array.isArray(value)
+        ? value.map((item) => String(item?.id || '')).filter(Boolean)
+        : [],
+    }));
+    setObserverSearchInput('');
+    clearAssigneeSearchResults();
+  }, [clearAssigneeSearchResults, setObserverSearchInput]);
+
+  const handleSaveEdit = async () => {
+    const taskId = String(editData.id || '').trim();
+    if (!taskId || editLoading) return;
+    setEditSaving(true);
+    try {
+      const dueAtValue = String(editData.due_at || '').trim() || null;
+      const updatedTask = await hubTasksAPI.updateTask(taskId, {
+        title: String(editData.title || '').trim(),
+        description: String(editDescriptionRef.current || editData.description || '').trim(),
+        due_at: dueAtValue,
+        ...(dueAtValue ? {
+          email_deadline_remind_hours: toApiEmailDeadlineRemindHours(
+            editData.email_deadline_remind_mode,
+            editData.email_deadline_remind_hours,
+          ),
+        } : {}),
+        protocol_date: String(editData.protocol_date || '').trim() || null,
+        priority: editData.priority || 'normal',
+        project_id: String(editData.project_id || '').trim() || null,
+        object_id: String(editData.object_id || '').trim() || null,
+        assignee_user_ids: (Array.isArray(editData.assignee_user_ids) ? editData.assignee_user_ids : [])
+          .map(Number)
+          .filter((value) => Number.isInteger(value) && value > 0),
+        controller_user_id: Number(editData.controller_user_id || 0) || null,
+        observer_user_ids: (Array.isArray(editData.observer_user_ids) ? editData.observer_user_ids : [])
+          .map(Number)
+          .filter((value) => Number.isInteger(value) && value > 0),
+        department_id: String(editData.department_id || '').trim() || null,
+        visibility_scope: String(editData.visibility_scope || 'private').trim() || 'private',
+      });
+      resetTaskUserSearchInputs();
+      if (typeof applyTaskUpdate === 'function') {
+        applyTaskUpdate(taskId, updatedTask || { id: taskId });
+      } else {
+        await refreshTasksAndDetails(taskId);
+      }
+      window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
+
+      // Поля уже сохранены: ошибка загрузки файла не отменяет сохранение.
+      const failedFileNames = [];
+      const pendingFiles = [];
+      let uploadedCount = 0;
+      for (const file of editFiles.filter(Boolean)) {
+        try {
+          await hubTaskFilesAPI.uploadTaskAttachment({ taskId, file });
+          uploadedCount += 1;
+        } catch {
+          failedFileNames.push(file?.name || 'file');
+          pendingFiles.push(file);
+        }
+      }
+      setEditFiles(pendingFiles);
+      if (uploadedCount > 0) {
+        await refreshTasksAndDetails(taskId);
+      }
+      if (failedFileNames.length > 0) {
+        // Диалог остаётся открытым: неудачные файлы видны и повторная отправка загрузит только их.
+        setError(`Изменения сохранены, но часть файлов не загрузилась: ${failedFileNames.join(', ')}`);
+        return;
+      }
+      setEditOpen(false);
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Ошибка сохранения задачи');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  return {
+    editOpen,
+    setEditOpen,
+    editSaving,
+    editLoading,
+    editData,
+    setEditData,
+    editFiles,
+    handleAddEditFiles,
+    handleRemoveEditFile,
+    editDueCustomOpen,
+    setEditDueCustomOpen,
+    editDescriptionRef,
+    editProjectObjects,
+    editDueLabel,
+    selectedEditAssignees,
+    selectedEditController,
+    selectedEditObservers,
+    selectedEditDepartment,
+    handleEditDescriptionDraftChange,
+    handleEditDueAtChange,
+    handleSelectEditDuePreset,
+    openEditTask,
+    handleEditObserversChange,
+    handleSaveEdit,
+  };
+}

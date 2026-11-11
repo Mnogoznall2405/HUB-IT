@@ -1,0 +1,2497 @@
+"""SQLAlchemy models for unified internal application storage."""
+from __future__ import annotations
+
+from datetime import date, datetime, timezone
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    ForeignKey,
+    LargeBinary,
+    String,
+    Text,
+    TypeDecorator,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class PGTSVector(TypeDecorator):
+    """PostgreSQL ``tsvector`` with Text fallback for SQLite/dev create_all."""
+
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import TSVECTOR
+
+            return dialect.type_descriptor(TSVECTOR())
+        return dialect.type_descriptor(Text())
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+APP_SCHEMA = "app"
+SYSTEM_SCHEMA = "system"
+
+
+def _table_args(*constraints, schema: str | None = None):
+    if schema:
+        if constraints:
+            return (*constraints, {"schema": schema})
+        return {"schema": schema}
+    if constraints:
+        return constraints
+    return ()
+
+
+class AppBase(DeclarativeBase):
+    """Declarative base for app-owned internal tables."""
+
+
+class AppConstructionWeekPlan(AppBase):
+    __tablename__ = "construction_week_plans"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+    object_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    week_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    baseline_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppConstructionDayCrew(AppBase):
+    __tablename__ = "construction_day_crews"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+    object_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    work_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppConstructionPlanningAudit(AppBase):
+    __tablename__ = "construction_planning_audit"
+    __table_args__ = _table_args(Index("ix_construction_planning_audit_scope", "object_id", "period", "id"), schema=APP_SCHEMA)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    period: Mapped[date] = mapped_column(Date, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    before_json: Mapped[str] = mapped_column(Text, nullable=False)
+    after_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppConstructionWorkItem(AppBase):
+    __tablename__ = "construction_work_items"
+    __table_args__ = _table_args(
+        Index("ix_app_construction_work_scope", "object_id", "group_ref"),
+        CheckConstraint("version >= 1", name="ck_app_construction_work_version"),
+        schema=APP_SCHEMA,
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class AppConstructionWorkEntry(AppBase):
+    __tablename__ = "construction_work_entries"
+    __table_args__ = _table_args(
+        UniqueConstraint("work_id", "work_date", name="uq_app_construction_work_day"),
+        CheckConstraint("quantity >= 0", name="ck_app_construction_work_quantity"),
+        schema=APP_SCHEMA,
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("app.construction_work_items.id"), nullable=False)
+    work_date: Mapped[date] = mapped_column(Date, nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppConstructionWorkAudit(AppBase):
+    __tablename__ = "construction_work_audit"
+    __table_args__ = _table_args(
+        Index("ix_app_construction_work_audit", "work_id", "id"), schema=APP_SCHEMA,
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("app.construction_work_items.id"), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    before_json: Mapped[str] = mapped_column(Text, nullable=False)
+    after_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AppUser(AppBase):
+    __tablename__ = "users"
+    __table_args__ = _table_args(
+        UniqueConstraint("username", name="uq_app_users_username"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    username: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    department: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    job_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="viewer")
+    use_custom_permissions: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    custom_permissions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    auth_source: Mapped[str] = mapped_column(String(20), nullable=False, default="local")
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    assigned_database: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    mailbox_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mailbox_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mailbox_password_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    mail_signature_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mail_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    totp_secret_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_2fa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    twofa_enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    password_salt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    about_onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    my_files_quota_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppDepartment(AppBase):
+    __tablename__ = "departments"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppDepartmentMembership(AppBase):
+    __tablename__ = "department_memberships"
+    __table_args__ = _table_args(
+        UniqueConstraint("department_id", "user_id", "role", name="uq_app_department_membership_role"),
+        Index("ix_app_department_memberships_user_active", "user_id", "is_active"),
+        Index("ix_app_department_memberships_department_active", "department_id", "is_active"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    department_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOrgStructureNode(AppBase):
+    """Manual company org-chart node (not Hub task departments)."""
+
+    __tablename__ = "org_structure_nodes"
+    __table_args__ = _table_args(
+        Index("ix_app_org_structure_nodes_parent", "parent_id", "sort_order"),
+        Index("ix_app_org_structure_nodes_active", "is_active"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    parent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    node_type: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    person_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    person_position: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    person_employee_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    person_photo_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    layout_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    layout_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOrgStructureDepartmentLink(AppBase):
+    """ZUP department_code attached to an org-structure node for people lookup."""
+
+    __tablename__ = "org_structure_department_links"
+    __table_args__ = _table_args(
+        UniqueConstraint("node_id", "department_code", name="uq_app_org_structure_department_link"),
+        Index("uq_app_org_structure_department_code", "department_code", unique=True),
+        Index("ix_app_org_structure_dept_links_node", "node_id"),
+        Index("ix_app_org_structure_dept_links_code", "department_code"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    department_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppConstructionObject(AppBase):
+    """HUB-owned passport for one construction object."""
+
+    __tablename__ = "construction_objects"
+    __table_args__ = _table_args(
+        Index("ix_app_construction_objects_active_name", "is_active", "name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppConstructionObject1CGroup(AppBase):
+    """Stable 1C nomenclature-group link assigned to one HUB object."""
+
+    __tablename__ = "construction_object_1c_groups"
+    __table_args__ = _table_args(
+        UniqueConstraint("group_ref", name="uq_app_construction_object_1c_group_ref"),
+        Index("ix_app_construction_object_1c_groups_object", "object_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppConstructionObjectRoleAssignment(AppBase):
+    """Versioned project-role assignment backed by a stable ZUP employee code."""
+
+    __tablename__ = "construction_object_role_assignments"
+    __table_args__ = _table_args(
+        CheckConstraint(
+            "role_key IN ("
+            "'project_lead', 'pto_manager', 'umto_coordinator', 'chief_project_engineer'"
+            ")",
+            name="ck_app_construction_object_role_key_v2",
+        ),
+        Index("ix_app_construction_object_roles_object", "object_id", "role_key"),
+        Index("ix_app_construction_object_roles_employee", "employee_code"),
+        Index(
+            "uq_app_construction_object_active_role",
+            "object_id",
+            "role_key",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    role_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    employee_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    employee_position: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department_location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppConstructionDirectionRoleAssignment(AppBase):
+    """Versioned direction-level role (site manager) for a linked 1C group."""
+
+    __tablename__ = "construction_direction_role_assignments"
+    __table_args__ = _table_args(
+        CheckConstraint(
+            "role_key IN ('site_manager')",
+            name="ck_app_construction_direction_role_key",
+        ),
+        Index(
+            "ix_app_construction_direction_roles_object_group",
+            "object_id",
+            "group_ref",
+            "role_key",
+        ),
+        Index("ix_app_construction_direction_roles_employee", "employee_code"),
+        Index(
+            "uq_app_construction_direction_active_role",
+            "object_id",
+            "group_ref",
+            "role_key",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    role_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    employee_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    employee_position: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department_location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppItObject(AppBase):
+    """Registry entry for an object (e.g. an OBJ-ITINVENT branch) that carries IT access rules."""
+
+    __tablename__ = "it_objects"
+    __table_args__ = _table_args(
+        UniqueConstraint("source_type", "source_ref", name="uq_app_it_objects_source"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # For objects created in HUB-IT: the ITINVENT branch whose inventory and computers they show.
+    linked_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppItObjectOwner(AppBase):
+    """Versioned IT owner of an object: one active row (valid_to IS NULL) per object."""
+
+    __tablename__ = "it_object_owners"
+    __table_args__ = _table_args(
+        Index(
+            "uq_app_it_object_active_owner",
+            "object_id",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        Index("ix_app_it_object_owners_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AppItObjectRoleAssignment(AppBase):
+    """Versioned project role of an IT object backed by a stable ZUP employee code (same roles as construction objects)."""
+
+    __tablename__ = "it_object_role_assignments"
+    __table_args__ = _table_args(
+        CheckConstraint(
+            "role_key IN ('project_lead', 'pto_manager', 'umto_coordinator', 'chief_project_engineer')",
+            name="ck_app_it_object_role_key",
+        ),
+        Index("ix_app_it_object_roles_object", "object_id", "role_key"),
+        Index(
+            "uq_app_it_object_active_role",
+            "object_id",
+            "role_key",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    role_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    employee_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    employee_position: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department_location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppItObjectGrant(AppBase):
+    """Per-section access to an object; revoked rows are kept (revoked_at) for history."""
+
+    __tablename__ = "it_object_grants"
+    __table_args__ = _table_args(
+        CheckConstraint("level IN ('view', 'manage')", name="ck_app_it_object_grants_level"),
+        Index(
+            "uq_app_it_object_active_grant",
+            "object_id",
+            "user_id",
+            "section",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
+        Index("ix_app_it_object_grants_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    section: Mapped[str] = mapped_column(String(32), nullable=False)
+    level: Mapped[str] = mapped_column(String(16), nullable=False)
+    granted_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AppItObjectPasswordLink(AppBase):
+    """Binds a password vault entry to one IT object (kept out of the entries table on purpose)."""
+
+    __tablename__ = "it_object_password_links"
+    __table_args__ = _table_args(
+        Index("ix_app_it_object_password_links_object", "object_ref"),
+        schema=APP_SCHEMA,
+    )
+
+    entry_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    object_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppItObjectAudit(AppBase):
+    __tablename__ = "it_object_audit"
+    __table_args__ = _table_args(
+        Index("ix_app_it_object_audit_object_created", "object_id", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    section: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppItObjectNetmap(AppBase):
+    """The drawio (mxfile) network map of an IT object: one current version per object."""
+
+    __tablename__ = "it_object_netmaps"
+    __table_args__ = _table_args(
+        UniqueConstraint("object_id", name="uq_app_it_object_netmaps_object"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    xml: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Optimistic lock: clients echo this back as expected_version on save.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # PNG thumbnail rendered by the embed editor's export action; None until first edit.
+    preview_png: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_by_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppItObjectNetmapVersion(AppBase):
+    """Snapshot of every saved network map revision (kept to the latest ones per object)."""
+
+    __tablename__ = "it_object_netmap_versions"
+    __table_args__ = _table_args(
+        UniqueConstraint("object_id", "version", name="uq_app_it_object_netmap_versions_obj_ver"),
+        Index("ix_app_it_object_netmap_versions_obj", "object_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    xml: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    saved_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    saved_by_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppUserMailbox(AppBase):
+    __tablename__ = "user_mailboxes"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "mailbox_email", name="uq_app_user_mailboxes_user_email"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    mailbox_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    mailbox_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mailbox_password_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    auth_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="stored_credentials", index=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEmployeeAbsence(AppBase):
+    """Manual (and later ZUP-synced) employee absence registry for Hub dashboard."""
+
+    __tablename__ = "employee_absences"
+    __table_args__ = _table_args(
+        Index("ix_app_employee_absences_range", "starts_on", "ends_on"),
+        Index("ix_app_employee_absences_user_id", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    department: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    starts_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ends_on: Mapped[date] = mapped_column(Date, nullable=False)
+    comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppDocflowCredential(AppBase):
+    """Encrypted personal credentials for the 1C Document Management base."""
+
+    __tablename__ = "docflow_credentials"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", name="uq_app_docflow_credentials_user"),
+        schema=APP_SCHEMA,
+    )
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    login: Mapped[str] = mapped_column(String(128), nullable=False)
+    password_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    credential_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="configured", index=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppDocflowAuditEvent(AppBase):
+    """Secret-free audit trail for personal docflow connection events."""
+
+    __tablename__ = "docflow_audit_events"
+    __table_args__ = _table_args(
+        Index("ix_app_docflow_audit_user_created", "user_id", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppDocflowCommand(AppBase):
+    """Idempotent, secret-free ledger for mutating docflow commands."""
+
+    __tablename__ = "docflow_commands"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "idempotency_key", name="uq_app_docflow_command_user_key"),
+        Index("ix_app_docflow_command_user_created", "user_id", "created_at"),
+        Index("ix_app_docflow_command_status_updated", "status", "updated_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_ref: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    state_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    remote_before_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    remote_after_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppTaskDelegateUserLink(AppBase):
+    __tablename__ = "task_delegate_user_links"
+    __table_args__ = _table_args(
+        UniqueConstraint("owner_user_id", "delegate_user_id", name="uq_app_task_delegate_owner_delegate"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    delegate_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    role_type: Mapped[str] = mapped_column(String(32), nullable=False, default="assistant")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppSessionRecord(AppBase):
+    __tablename__ = "sessions"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="viewer")
+    ip_address: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    user_agent: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    idle_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    trusted_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    client_device_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    login_network_zone: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    device_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class AppDesktopPresence(AppBase):
+    __tablename__ = "desktop_presence"
+    __table_args__ = _table_args(
+        Index("ix_app_desktop_presence_user_expires", "user_id", "expires_at"),
+        schema=APP_SCHEMA,
+    )
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class AppSessionAuthContext(AppBase):
+    __tablename__ = "session_auth_context"
+    __table_args__ = _table_args(schema=SYSTEM_SCHEMA)
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    auth_source: Mapped[str] = mapped_column(String(20), nullable=False, default="local")
+    exchange_login: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppUser2FABackupCode(AppBase):
+    __tablename__ = "user_2fa_backup_codes"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    code_suffix: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppTrustedDevice(AppBase):
+    __tablename__ = "trusted_devices"
+    __table_args__ = _table_args(
+        UniqueConstraint("credential_id", name="uq_app_trusted_devices_credential_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    credential_id: Mapped[str] = mapped_column(Text, nullable=False)
+    public_key_b64: Mapped[str] = mapped_column(Text, nullable=False)
+    sign_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    transports_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    aaguid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rp_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    origin: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    is_discoverable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+
+
+class AppMobileBiometricCredential(AppBase):
+    """Revocable APK-only credential unlocked by Android biometrics."""
+
+    __tablename__ = "mobile_biometric_credentials"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "user_id",
+            "client_device_key_hash",
+            name="uq_app_mobile_biometric_user_device",
+        ),
+        UniqueConstraint("token_hash", name="uq_app_mobile_biometric_token_hash"),
+        Index("ix_app_mobile_biometric_user_active", "user_id", "is_active"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    client_device_key_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppUserSetting(AppBase):
+    __tablename__ = "user_settings"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    pinned_database: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    theme_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="system")
+    font_family: Mapped[str] = mapped_column(String(32), nullable=False, default="Aptos")
+    font_scale: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    dashboard_mobile_sections_json: Mapped[str | None] = mapped_column("dashboard_mobile_sections", Text, nullable=True)
+    mobile_bottom_nav_items_json: Mapped[str | None] = mapped_column("mobile_bottom_nav_items", Text, nullable=True)
+    database_branch_filters_json: Mapped[str | None] = mapped_column("database_branch_filters", Text, nullable=True)
+    ai_personal_memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEquipmentRecentCard(AppBase):
+    __tablename__ = "equipment_recent_cards"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "db_id", "inv_no", name="uq_app_equipment_recent_cards_user_db_inv"),
+        Index("ix_app_equipment_recent_cards_user_db_activity", "user_id", "db_id", "last_activity_at"),
+        Index("ix_app_equipment_recent_cards_user_activity", "user_id", "last_activity_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    inv_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_action: Mapped[str] = mapped_column(String(64), nullable=False, default="view")
+    last_action_label: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    activity_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEquipmentRecentAct(AppBase):
+    __tablename__ = "equipment_recent_acts"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "db_id", "doc_no", name="uq_app_equipment_recent_acts_user_db_doc"),
+        Index("ix_app_equipment_recent_acts_user_db_activity", "user_id", "db_id", "last_activity_at"),
+        Index("ix_app_equipment_recent_acts_user_activity", "user_id", "last_activity_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    doc_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    doc_number: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    last_action: Mapped[str] = mapped_column(String(64), nullable=False, default="view")
+    last_action_label: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    activity_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEquipmentPhotoCheck(AppBase):
+    """Provenance + verification of one equipment photo (FILES row, FILE_TYPE=0).
+
+    FILES lives in the legacy SQL Server database, so the check is stored here,
+    keyed by (db_id, item_id, file_no). ``file_created_at`` is the FILES.CREATE_DATE
+    seen when the row was written: FILE_NO is a MAX+1 counter and can be reused
+    after a delete, so a row only counts while the fingerprint still matches.
+    """
+
+    __tablename__ = "equipment_photo_checks"
+    __table_args__ = _table_args(
+        UniqueConstraint("db_id", "item_id", "file_no", name="uq_app_equipment_photo_checks_db_item_file"),
+        Index("ix_app_equipment_photo_checks_db_item", "db_id", "item_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_created_at: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    uploaded_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    uploaded_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    verified_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verified_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rejected_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEquipmentPhotoOcr(AppBase):
+    """Serial-number candidates read from one equipment photo by the vision model.
+
+    Keyed like ``equipment_photo_checks``: ``file_created_at`` is the FILES.CREATE_DATE seen
+    at analysis time, so a reused FILE_NO never inherits the result of a deleted photo.
+    The verdict against ITEMS.SERIAL_NO is computed on read, never stored.
+    """
+
+    __tablename__ = "equipment_photo_ocr"
+    __table_args__ = _table_args(
+        UniqueConstraint("db_id", "item_id", "file_no", name="uq_app_equipment_photo_ocr_db_item_file"),
+        Index("ix_app_equipment_photo_ocr_db_item", "db_id", "item_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_created_at: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    photo_type: Mapped[str] = mapped_column(String(16), nullable=False, default="general")
+    serials_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    model: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEquipmentOneCMark(AppBase):
+    """Manual «reconciled with 1C» mark on one ITINVENT equipment card.
+
+    Kept apart from the automatic 1C comparison (computed on read, never stored), so a
+    recalculation can neither set nor erase it. Keyed by the database id and INV_NO text.
+    """
+
+    __tablename__ = "equipment_one_c_marks"
+    __table_args__ = _table_args(
+        UniqueConstraint("db_id", "inv_no", name="uq_app_equipment_one_c_marks_db_inv"),
+        schema=APP_SCHEMA,
+    )
+    # No RETURNING of the server-default `kind`: before migration 0140 the column is absent.
+    __mapper_args__ = {"eager_defaults": False}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    inv_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    marked_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    marked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    # 'ok' — reconciled by hand, 'mismatch' — the reviewer says it does not match 1C.
+    # server_default only: code deployed before migration 0140 must still insert.
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default="ok")
+    # PART_NO / model of the card at marking time (migration 0142); NULL - no snapshot recorded.
+    # server_default only (like `kind`): an unset value is left out of the INSERT, so code
+    # deployed before the migration can still insert marks.
+    part_no_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True, server_default=text("NULL"))
+    model_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True, server_default=text("NULL"))
+
+
+class AppPasswordVaultEntry(AppBase):
+    __tablename__ = "password_vault_entries"
+    __table_args__ = _table_args(
+        Index("ix_app_password_vault_entries_group_archived", "group_name", "is_archived"),
+        Index("ix_app_password_vault_entries_login_archived", "login", "is_archived"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    login: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    password_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppPasswordVaultGroup(AppBase):
+    __tablename__ = "password_vault_groups"
+    __table_args__ = _table_args(
+        UniqueConstraint("name", name="uq_app_password_vault_groups_name"),
+        Index("ix_app_password_vault_groups_active_sort", "is_active", "sort_order", "name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppPasswordVaultAudit(AppBase):
+    __tablename__ = "password_vault_audit"
+    __table_args__ = _table_args(
+        Index("ix_app_password_vault_audit_entry_created", "entry_id", "created_at"),
+        Index("ix_app_password_vault_audit_actor_created", "actor_user_id", "created_at"),
+        Index("ix_app_password_vault_audit_action_created", "action", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entry_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    actor_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    entry_group: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    entry_login: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    ip_address: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    user_agent: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileBlob(AppBase):
+    __tablename__ = "my_file_blobs"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "owner_user_id",
+            "original_sha256",
+            name="uq_app_my_file_blobs_owner_original_sha",
+        ),
+        Index("ix_app_my_file_blobs_ref_count", "ref_count"),
+        Index("ix_app_my_file_blobs_owner_user_id", "owner_user_id"),
+        Index("ix_app_my_file_blobs_original_sha256", "original_sha256"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    original_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    storage_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="stored")
+    stored_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    original_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    stored_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    output_mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    output_extension: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    ref_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFilePreview(AppBase):
+    __tablename__ = "my_file_previews"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_previews_status_updated", "status", "updated_at"),
+        Index("ix_app_my_file_previews_kind_status", "preview_kind", "status"),
+        schema=APP_SCHEMA,
+    )
+
+    blob_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    preview_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="unsupported")
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    source_filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    preview_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    preview_mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    preview_filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sheets_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    error_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppDocumentPreviewJob(AppBase):
+    """Durable preview job for file sources that are fetched on demand."""
+
+    __tablename__ = "document_preview_jobs"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "scope",
+            "owner_user_id",
+            "resource_key",
+            name="uq_app_document_preview_jobs_resource",
+        ),
+        Index("ix_app_document_preview_jobs_status_next", "status", "next_attempt_at"),
+        Index("ix_app_document_preview_jobs_lease", "lease_expires_at"),
+        Index("ix_app_document_preview_jobs_expires", "expires_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    resource_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    lease_owner: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    artifact_rel_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    pdf_filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sheets_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AppMyFileFolder(AppBase):
+    __tablename__ = "my_file_folders"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_folders_owner_parent", "owner_user_id", "parent_id"),
+        Index("ix_app_my_file_folders_owner_deleted", "owner_user_id", "deleted_at"),
+        Index("ix_app_my_file_folders_share_token_hash", "share_token_hash"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    parent_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(f"{APP_SCHEMA}.my_file_folders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    share_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    share_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    share_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    share_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppMyFile(AppBase):
+    __tablename__ = "my_files"
+    __table_args__ = _table_args(
+        Index("ix_app_my_files_owner_status_created", "owner_user_id", "status", "created_at"),
+        Index("ix_app_my_files_status_created", "status", "created_at"),
+        Index("ix_app_my_files_expires_status", "expires_at", "status"),
+        Index("ix_app_my_files_share_token_hash", "share_token_hash"),
+        Index("ix_app_my_files_original_sha256", "original_sha256"),
+        Index("ix_app_my_files_folder", "folder_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    owner_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    uploaded_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    original_file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="file.bin")
+    download_file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="file.bin")
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    download_mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    original_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    stored_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    storage_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    original_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    blob_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    folder_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(f"{APP_SCHEMA}.my_file_folders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    spool_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    error_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    security_scan_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    security_scan_engine: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    security_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    share_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    share_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    share_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    share_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Document Server key of the co-editing session currently open on this file; new editors
+    # must reuse it so a mid-session save cannot fork the session into a stale parallel one.
+    office_session_key: Mapped[str] = mapped_column(String(64), nullable=False, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppMyFileAudit(AppBase):
+    __tablename__ = "my_file_audit"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_audit_file_created", "file_id", "created_at"),
+        Index("ix_app_my_file_audit_actor_created", "actor_user_id", "created_at"),
+        Index("ix_app_my_file_audit_action_created", "action", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    actor_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    ip_address: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    user_agent: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileDownloadGrant(AppBase):
+    __tablename__ = "my_file_download_grants"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_download_grants_file_id", "file_id"),
+        Index("ix_app_my_file_download_grants_folder_id", "folder_id"),
+        Index("ix_app_my_file_download_grants_owner_created", "owner_user_id", "created_at"),
+        Index("ix_app_my_file_download_grants_expires_at", "expires_at"),
+        schema=APP_SCHEMA,
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    folder_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileCollaborator(AppBase):
+    """Portal user allowed to co-edit a My Files document (owner is implicit)."""
+
+    __tablename__ = "my_file_collaborators"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_collaborators_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    file_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileFolderCollaborator(AppBase):
+    """Portal user with a role on a whole folder: its files and subfolders, present and future."""
+
+    __tablename__ = "my_file_folder_collaborators"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_folder_collaborators_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    folder_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileLibrary(AppBase):
+    """Shared library: files and folders owned by ``owner_user_id`` (always negative), outside any person's quota.
+
+    ``quota_bytes`` of 0 means no limit.
+    """
+
+    __tablename__ = "my_file_libraries"
+    __table_args__ = _table_args(
+        UniqueConstraint("owner_user_id", name="uq_app_my_file_libraries_owner"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    quota_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppMyFileLibraryMember(AppBase):
+    """Role in a library for one portal user or one whole department (resolved live)."""
+
+    __tablename__ = "my_file_library_members"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_library_members_principal", "principal_type", "principal_id"),
+        schema=APP_SCHEMA,
+    )
+
+    library_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    principal_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    principal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
+    added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileVersion(AppBase):
+    """Content of a My Files document before an editing session changed it; each row owns one blob reference.
+
+    ``created_by_*`` is the editor whose save retired this content and ``session_key`` the
+    Document Server key of the editing session that did it (later saves of that session replace
+    the current content in place instead of adding versions).
+    """
+
+    __tablename__ = "my_file_versions"
+    __table_args__ = _table_args(
+        UniqueConstraint("file_id", "version_no", name="uq_app_my_file_versions_file_no"),
+        Index("ix_app_my_file_versions_file", "file_id", "version_no"),
+        Index("ix_app_my_file_versions_blob", "blob_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    blob_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    original_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    session_key: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    # Editing data belongs to the transition from this retired blob to office_result_blob_id.
+    office_history_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    office_changes_blob_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    office_changes_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    office_result_blob_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+
+class AppGlobalSetting(AppBase):
+    __tablename__ = "app_settings"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value_json: Mapped[str] = mapped_column(Text, nullable=False, default="null")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppNativePushToken(AppBase):
+    __tablename__ = "native_push_tokens"
+    __table_args__ = _table_args(
+        UniqueConstraint("token_hash", name="uq_app_native_push_tokens_token_hash"),
+        Index("ix_app_native_push_tokens_user_active", "user_id", "is_active"),
+        Index("ix_app_native_push_tokens_device_id", "device_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="fcm", index=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False, default="android", index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_text: Mapped[str] = mapped_column(Text, nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    device_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    app_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AppPushOutbox(AppBase):
+    __tablename__ = "push_outbox"
+    __table_args__ = _table_args(
+        UniqueConstraint("dedupe_key", name="uq_app_push_outbox_dedupe_key"),
+        Index("ix_app_push_outbox_status_next_attempt", "status", "next_attempt_at"),
+        Index("ix_app_push_outbox_recipient_status", "recipient_user_id", "status"),
+        Index("ix_app_push_outbox_updated_at", "updated_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dedupe_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    recipient_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, default="system", index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    route: Mapped[str] = mapped_column(String(1024), nullable=False, default="/")
+    tag: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    icon: Mapped[str] = mapped_column(String(255), nullable=False, default="/pwa-192.png")
+    badge: Mapped[str] = mapped_column(String(255), nullable=False, default="/hubit-badge.svg")
+    data_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    ttl_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=86400)
+    app_badge_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppAiBot(AppBase):
+    __tablename__ = "ai_bots"
+    __table_args__ = _table_args(
+        UniqueConstraint("slug", name="uq_app_ai_bots_slug"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    model: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    temperature: Mapped[float] = mapped_column(Float, nullable=False, default=0.2)
+    max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=2000)
+    allowed_kb_scope_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    enabled_tools_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    tool_settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    allow_file_input: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    allow_generated_artifacts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    allow_kb_document_delivery: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    surface: Mapped[str] = mapped_column(String(32), nullable=False, default="corporate", index=True)
+    placement: Mapped[str] = mapped_column(String(24), nullable=False, default="pinned", index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    required_permission: Mapped[str] = mapped_column(String(128), nullable=False, default="chat.ai.use")
+    use_personal_memory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    bot_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiBotAccess(AppBase):
+    __tablename__ = "ai_bot_access"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    bot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_by: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiBotConversation(AppBase):
+    __tablename__ = "ai_bot_conversations"
+    __table_args__ = _table_args(
+        UniqueConstraint("conversation_id", name="uq_app_ai_bot_conversations_conversation"),
+        Index("ix_app_ai_bot_conversations_user_bot_updated", "user_id", "bot_id", "updated_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bot_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    rolling_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    summary_until_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    context_reset_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    use_personal_memory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    title_source: Mapped[str] = mapped_column(String(24), nullable=False, default="assistant")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiUserMemory(AppBase):
+    __tablename__ = "ai_user_memories"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "normalized_hash", name="uq_app_ai_user_memories_user_hash"),
+        Index("ix_app_ai_user_memories_user_active_updated", "user_id", "is_active", "updated_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(48), nullable=False, default="preference", index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiUserMemorySource(AppBase):
+    __tablename__ = "ai_user_memory_sources"
+    __table_args__ = _table_args(
+        UniqueConstraint("memory_id", "message_id", name="uq_app_ai_user_memory_sources_memory_message"),
+        Index("ix_app_ai_user_memory_sources_conversation", "conversation_id", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    memory_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    message_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiMemoryState(AppBase):
+    """Serializes user memory edits, including forget versus an in-flight planner."""
+    __tablename__ = "ai_memory_state"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    write_barrier_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppAiMemoryFact(AppBase):
+    __tablename__ = "ai_memory_facts"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "fact_key", name="uq_app_ai_memory_facts_user_key"),
+        schema=APP_SCHEMA,
+    )
+
+    memory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    fact_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class AppAiMemoryEvent(AppBase):
+    """Replay ledger and source-backed changes; forgetting also erases snapshots."""
+    __tablename__ = "ai_memory_events"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "message_id", name="uq_app_ai_memory_events_user_message"),
+        Index("ix_app_ai_memory_events_user_conversation_seq", "user_id", "conversation_id", "conversation_seq"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    message_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversation_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    changes_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiBotRun(AppBase):
+    __tablename__ = "ai_bot_runs"
+    __table_args__ = _table_args(
+        Index("ix_app_ai_bot_runs_status_created_at", "status", "created_at"),
+        Index("ix_app_ai_bot_runs_bot_conversation_created_at", "bot_id", "conversation_id", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    bot_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    trigger_message_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued", index=True)
+    stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    usage_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppTransferActJob(AppBase):
+    __tablename__ = "transfer_act_jobs"
+    __table_args__ = _table_args(
+        Index("ix_app_transfer_act_jobs_status_created_at", "status", "created_at"),
+        Index("ix_app_transfer_act_jobs_user_created_at", "user_id", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued", index=True)
+    status_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    db_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiPendingAction(AppBase):
+    __tablename__ = "ai_pending_actions"
+    __table_args__ = _table_args(
+        Index("ix_app_ai_pending_actions_run_status", "run_id", "status"),
+        Index("ix_app_ai_pending_actions_status_expires_at", "status", "expires_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    requester_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    database_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    preview_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    executed_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiKbDocument(AppBase):
+    __tablename__ = "ai_kb_documents"
+    __table_args__ = _table_args(
+        UniqueConstraint("kb_article_id", name="uq_app_ai_kb_documents_article"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kb_article_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="published", index=True)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiKbChunk(AppBase):
+    __tablename__ = "ai_kb_chunks"
+    __table_args__ = _table_args(
+        Index("ix_app_ai_kb_chunks_document_id_chunk_index", "document_id", "chunk_index"),
+        Index("ix_app_ai_kb_chunks_kb_article_id", "kb_article_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    kb_article_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppUserDatabaseSelection(AppBase):
+    __tablename__ = "user_db_selection"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    database_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppVcsComputer(AppBase):
+    __tablename__ = "vcs_computers"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    ip_address: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAdUserBranchOverride(AppBase):
+    __tablename__ = "ad_user_branch_overrides"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    login: Mapped[str] = mapped_column(String(255), primary_key=True)
+    branch_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppInventoryHost(AppBase):
+    __tablename__ = "inventory_hosts"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    mac_address: Mapped[str] = mapped_column(String(64), primary_key=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    user_login: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    user_full_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    ip_primary: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    report_type: Mapped[str] = mapped_column(String(32), nullable=False, default="full_snapshot")
+    last_seen_at: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    last_full_snapshot_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    hidden_at: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    hidden_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hidden_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppInventoryUserProfile(AppBase):
+    __tablename__ = "inventory_user_profiles"
+    __table_args__ = _table_args(
+        Index("ix_app_inventory_user_profiles_mac_address", "mac_address"),
+        Index("ix_app_inventory_user_profiles_user_name", "user_name"),
+        Index("ix_app_inventory_user_profiles_profile_path", "profile_path"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mac_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    profile_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    files_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dirs_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    errors_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppInventoryOutlookFile(AppBase):
+    __tablename__ = "inventory_outlook_files"
+    __table_args__ = _table_args(
+        Index("ix_app_inventory_outlook_files_mac_address", "mac_address"),
+        Index("ix_app_inventory_outlook_files_kind", "kind"),
+        Index("ix_app_inventory_outlook_files_file_path", "file_path"),
+        Index("ix_app_inventory_outlook_files_file_type", "file_type"),
+        Index("ix_app_inventory_outlook_files_size_bytes", "size_bytes"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mac_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="archive")
+    file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_modified_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppInventoryHostSqlContext(AppBase):
+    __tablename__ = "inventory_host_sql_contexts"
+    __table_args__ = _table_args(
+        UniqueConstraint("mac_address", "hostname", "db_id", name="uq_app_inventory_host_sql_context"),
+        Index("ix_app_inventory_host_sql_contexts_mac_address", "mac_address"),
+        Index("ix_app_inventory_host_sql_contexts_hostname", "hostname"),
+        Index("ix_app_inventory_host_sql_contexts_db_id", "db_id"),
+        Index("ix_app_inventory_host_sql_contexts_branch_name", "branch_name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mac_address: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    branch_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    location_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    employee_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    inventory_inv_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inventory_model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppInventoryChangeEvent(AppBase):
+    __tablename__ = "inventory_change_events"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    event_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    mac_address: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    detected_at: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    report_type: Mapped[str] = mapped_column(String(32), nullable=False, default="full_snapshot")
+    change_types_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    diff_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    before_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    after_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppJsonDocument(AppBase):
+    __tablename__ = "json_documents"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    file_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="dict")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="null")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppJsonRecord(AppBase):
+    __tablename__ = "json_records"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="null")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class SystemMigrationCheckpoint(AppBase):
+    __tablename__ = "migration_checkpoints"
+    __table_args__ = _table_args(schema=SYSTEM_SCHEMA)
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value_json: Mapped[str] = mapped_column(Text, nullable=False, default="null")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMailboxQuotaSnapshot(AppBase):
+    __tablename__ = "mailbox_quota_snapshots"
+    __table_args__ = _table_args(
+        Index("ix_app_mailbox_quota_snapshots_imported_at", "imported_at"),
+        Index("ix_app_mailbox_quota_snapshots_payload_sha256", "payload_sha256"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    exchange_server: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class AppMailboxQuotaRow(AppBase):
+    __tablename__ = "mailbox_quota_rows"
+    __table_args__ = _table_args(
+        Index("ix_app_mailbox_quota_rows_snapshot_email", "snapshot_id", "email"),
+        Index("ix_app_mailbox_quota_rows_snapshot_used_percent", "snapshot_id", "used_percent"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    display_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    upn: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    mailbox_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    quota_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    free_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    used_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    database_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+
+
+class AppAuthRuntimeItem(AppBase):
+    __tablename__ = "auth_runtime_items"
+    __table_args__ = _table_args(
+        Index("ix_system_auth_runtime_items_namespace", "namespace"),
+        Index("ix_system_auth_runtime_items_expires_at", "expires_at"),
+        schema=SYSTEM_SCHEMA,
+    )
+
+    namespace: Mapped[str] = mapped_column(String(64), primary_key=True)
+    item_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    value_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMailRuntimeSnapshot(AppBase):
+    """Shared, non-secret mail preview/count snapshot for snapshot-first reads."""
+
+    __tablename__ = "mail_runtime_snapshots"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "user_id",
+            "mailbox_id",
+            "snapshot_type",
+            "context_key",
+            name="uq_app_mail_runtime_snapshot_scope",
+        ),
+        Index("ix_app_mail_runtime_snapshots_expires", "expires_at"),
+        Index("ix_app_mail_runtime_snapshots_user_type", "user_id", "snapshot_type"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    mailbox_id: Mapped[str] = mapped_column(String(128), nullable=False, default="aggregate")
+    snapshot_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    context_key: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMailSendIdempotency(AppBase):
+    """Durable mail send ledger. Unique per user, mailbox and client key."""
+
+    __tablename__ = "mail_send_idempotency"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "user_id",
+            "mailbox_id",
+            "idempotency_key",
+            name="uq_app_mail_send_idempotency_scope",
+        ),
+        Index("ix_app_mail_send_idempotency_user_created", "user_id", "created_at"),
+        Index("ix_app_mail_send_idempotency_status_lease", "status", "processing_lease_until"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    mailbox_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="reserved", index=True)
+    internet_message_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    response_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    processing_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppOneCItemLink(AppBase):
+    """Approved (or explicitly excluded) 1C nomenclature link for one HUB item.
+
+    The legacy SQL Server ``ITEMS.PART_NO`` stays a projection during migration;
+    this app-owned row is the auditable source of truth for reconciliation.
+    """
+
+    __tablename__ = "one_c_item_links"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "hub_db_id",
+            "hub_item_id",
+            "source_base",
+            name="uq_app_one_c_item_links_hub_item_source",
+        ),
+        Index("ix_app_one_c_item_links_nomenclature", "source_base", "nomenclature_ref"),
+        Index("ix_app_one_c_item_links_status", "hub_db_id", "status"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hub_db_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    hub_item_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False, default="buh20")
+    nomenclature_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    nomenclature_code_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCWarehouseOwnerLink(AppBase):
+    """Explicit warehouse-to-HUB-owner mapping; FIO matching only suggests it."""
+
+    __tablename__ = "one_c_warehouse_owner_links"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "warehouse_ref",
+            "hub_db_id",
+            "owner_no",
+            name="uq_app_one_c_warehouse_owner_links",
+        ),
+        Index("ix_app_one_c_warehouse_owner_links_warehouse", "source_base", "warehouse_ref"),
+        Index("ix_app_one_c_warehouse_owner_links_owner", "hub_db_id", "owner_no"),
+        Index(
+            "uq_app_one_c_warehouse_owner_links_active_warehouse",
+            "source_base",
+            "warehouse_ref",
+            "hub_db_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False, default="buh20")
+    warehouse_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    hub_db_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCEmployeeOwnerLink(AppBase):
+    """Explicit ZUP employee-code to HUB-owner mapping for status enrichment."""
+
+    __tablename__ = "one_c_employee_owner_links"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "employee_code",
+            "hub_db_id",
+            "owner_no",
+            name="uq_app_one_c_employee_owner_links",
+        ),
+        Index("ix_app_one_c_employee_owner_links_employee", "source_base", "employee_code"),
+        Index("ix_app_one_c_employee_owner_links_owner", "hub_db_id", "owner_no"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False, default="zar31")
+    employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    hub_db_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCReconcileEvent(AppBase):
+    """Append-only audit event for a reconciliation decision or run."""
+
+    __tablename__ = "one_c_reconcile_events"
+    __table_args__ = _table_args(
+        Index("ix_app_one_c_reconcile_events_hub_item", "hub_db_id", "hub_item_id", "created_at"),
+        Index("ix_app_one_c_reconcile_events_correlation", "correlation_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    hub_db_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    hub_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    before_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    after_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCCatalogSnapshot(AppBase):
+    """Current app-owned, read-only snapshot state for a 1C directory source.
+
+    The first ``active_generation`` is committed only after a complete import.
+    Later small diffs are applied in one MVCC transaction, so readers still
+    never observe a partially imported 1C catalogue.
+    """
+
+    __tablename__ = "one_c_catalog_snapshots"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    source_base: Mapped[str] = mapped_column(String(64), primary_key=True)
+    active_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    nomenclature_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warehouses_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    nomenclature_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    warehouses_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    nomenclature_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    warehouses_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCCatalogEntry(AppBase):
+    """One indexed catalogue entry in the atomically maintained snapshot."""
+
+    __tablename__ = "one_c_catalog_entries"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "generation",
+            "catalog_type",
+            "ref",
+            name="uq_app_one_c_catalog_entries_generation_ref",
+        ),
+        Index(
+            "ix_app_one_c_catalog_entries_ref",
+            "source_base",
+            "generation",
+            "catalog_type",
+            "ref",
+        ),
+        Index(
+            "ix_app_one_c_catalog_entries_name",
+            "source_base",
+            "generation",
+            "catalog_type",
+            "name_normalized",
+        ),
+        Index(
+            "ix_app_one_c_catalog_entries_code",
+            "source_base",
+            "generation",
+            "catalog_type",
+            "code_normalized",
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    catalog_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    code: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    code_normalized: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    name_normalized: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCCatalogToken(AppBase):
+    """Token index for directory autocomplete without a Python-wide index."""
+
+    __tablename__ = "one_c_catalog_tokens"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "generation",
+            "catalog_type",
+            "entry_ref",
+            "token",
+            name="uq_app_one_c_catalog_tokens_entry_token",
+        ),
+        Index(
+            "ix_app_one_c_catalog_tokens_lookup",
+            "source_base",
+            "generation",
+            "catalog_type",
+            "token",
+            "entry_ref",
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    catalog_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    entry_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    token: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
+class AppOneCCatalogSearchDocument(AppBase):
+    """Compact derived search document for one catalogue entry (D-lite).
+
+    Built from ``catalog_index_tokens`` plus normalized code/name.  Readers
+    must consult ``one_c_catalog_search_index_state`` before relying on these
+    rows.  Production enablement is feature-flagged and off by default.
+    """
+
+    __tablename__ = "one_c_catalog_search_documents"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "catalog_type",
+            "index_version",
+            "entry_ref",
+            name="uq_app_one_c_catalog_search_documents_ref",
+        ),
+        Index(
+            "ix_app_one_c_catalog_search_documents_code",
+            "source_base",
+            "catalog_type",
+            "index_version",
+            "code_normalized",
+        ),
+        # No separate scope index: code index leading columns cover scope filters.
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    catalog_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    index_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    entry_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    code_normalized: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    name_normalized: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    search_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # PG: tsvector via PGTSVector; SQLite/dev create_all: Text.
+    search_tsv: Mapped[str] = mapped_column(PGTSVector(), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCCatalogSearchTokenStat(AppBase):
+    """Compact token frequency table for suggest + typo candidate lookup."""
+
+    __tablename__ = "one_c_catalog_search_token_stats"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "catalog_type",
+            "index_version",
+            "token",
+            name="uq_app_one_c_catalog_search_token_stats",
+        ),
+        Index(
+            "ix_app_one_c_catalog_search_token_stats_prefix",
+            "source_base",
+            "catalog_type",
+            "index_version",
+            "token",
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    catalog_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    index_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    token: Mapped[str] = mapped_column(String(200), nullable=False)
+    frequency: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCCatalogSearchIndexState(AppBase):
+    """Build readiness for the compact search index (fail-closed until ready)."""
+
+    __tablename__ = "one_c_catalog_search_index_state"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    source_base: Mapped[str] = mapped_column(String(64), primary_key=True)
+    catalog_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="building")
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    indexed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    build_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    checkpoint_ref: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    checkpoint_offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Versioned rebuild pointers (0081). Readers use active_index_version only.
+    active_index_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    building_index_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    previous_index_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    previous_cleanup_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class AppFileLeftEvent(AppBase):
+    """Files that left a PC (USB / network / Telegram) or local deletes."""
+
+    __tablename__ = "file_left_events"
+    __table_args__ = _table_args(
+        Index("ix_app_file_left_events_ts", "ts"),
+        Index("ix_app_file_left_events_computer_ts", "computer_name", "ts"),
+        Index("ix_app_file_left_events_channel_ts", "channel", "ts"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    dest_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    src_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    windows_user: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    computer_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppTelegramProbeChat(AppBase):
+    __tablename__ = "telegram_probe_chats"
+    __table_args__ = _table_args(
+        UniqueConstraint("computer_name", "chat_id", name="uq_app_telegram_probe_chats_host_chat"),
+        Index("ix_app_telegram_probe_chats_updated_at", "updated_at"),
+        Index("ix_app_telegram_probe_chats_computer", "computer_name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    computer_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    windows_user: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    chat_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    chat_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    messages_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppTelegramProbeReport(AppBase):
+    __tablename__ = "telegram_probe_reports"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    computer_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    windows_user: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    html: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppTelegramProbeMedia(AppBase):
+    __tablename__ = "telegram_probe_media"
+    __table_args__ = _table_args(
+        UniqueConstraint("computer_name", "file_name", name="uq_app_telegram_probe_media_host_file"),
+        Index("ix_app_telegram_probe_media_computer", "computer_name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    computer_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False, default="application/octet-stream")
+    storage_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppBrowserProbeVisit(AppBase):
+    __tablename__ = "browser_probe_visits"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "computer_name",
+            "browser",
+            "profile",
+            "visit_id",
+            name="uq_app_browser_probe_visits_host_visit",
+        ),
+        Index("ix_app_browser_probe_visits_computer_visited", "computer_name", "visited_at"),
+        Index("ix_app_browser_probe_visits_category", "category"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    computer_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    windows_user: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    browser: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    profile: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    visit_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    visited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dwell_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    idle_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    screenshot_file: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppBrowserProbeFocusEvent(AppBase):
+    __tablename__ = "browser_probe_focus_events"
+    __table_args__ = {"schema": APP_SCHEMA}
+
+    event_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppDlpActivityBucket(AppBase):
+    """PC activity per 5-minute bucket (agent 1.4.19+, foreground any program)."""
+
+    __tablename__ = "dlp_activity_buckets"
+    __table_args__ = _table_args(
+        Index("ix_app_dlp_activity_buckets_bucket_start", "bucket_start"),
+        Index(
+            "ix_app_dlp_activity_buckets_computer_start",
+            "computer_name",
+            "bucket_start",
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    computer_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    windows_user: Mapped[str] = mapped_column(String(255), primary_key=True)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    active_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    passive_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    away_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    locked_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    apps: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppBrowserProbeMedia(AppBase):
+    __tablename__ = "browser_probe_media"
+    __table_args__ = _table_args(
+        UniqueConstraint("computer_name", "file_name", name="uq_app_browser_probe_media_host_file"),
+        Index("ix_app_browser_probe_media_computer", "computer_name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    computer_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False, default="application/octet-stream")
+    storage_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMaxProbeChat(AppBase):
+    __tablename__ = "max_probe_chats"
+    __table_args__ = _table_args(
+        UniqueConstraint("computer_name", "chat_id", name="uq_app_max_probe_chats_host_chat"),
+        Index("ix_app_max_probe_chats_updated_at", "updated_at"),
+        Index("ix_app_max_probe_chats_computer", "computer_name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    computer_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    windows_user: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    chat_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    chat_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    messages_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppFeedbackSuggestion(AppBase):
+    """Improvement suggestion sent by a portal user; the author sees its status, admins change it."""
+
+    __tablename__ = "feedback_suggestions"
+    __table_args__ = _table_args(
+        Index("ix_app_feedback_suggestions_user_created", "user_id", "created_at"),
+        Index("ix_app_feedback_suggestions_status_created", "status", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    section: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="new")
+    admin_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    handled_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMaxProbeMedia(AppBase):
+    __tablename__ = "max_probe_media"
+    __table_args__ = _table_args(
+        UniqueConstraint("computer_name", "file_name", name="uq_app_max_probe_media_host_file"),
+        Index("ix_app_max_probe_media_computer", "computer_name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    computer_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False, default="application/octet-stream")
+    storage_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEquipmentPhotoUploadLedger(AppBase):
+    """Insert intent of one resumable equipment photo upload (FILES lives in SQL Server, so the
+    upload checkpoint on disk and the legacy row cannot share a transaction)."""
+
+    __tablename__ = "equipment_photo_upload_ledger"
+    __table_args__ = _table_args(
+        Index("ix_app_equipment_photo_upload_ledger_item", "item_id", "state"),
+        schema=APP_SCHEMA,
+    )
+
+    upload_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="inserting")
+    file_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

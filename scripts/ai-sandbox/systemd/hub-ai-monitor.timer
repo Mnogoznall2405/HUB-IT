@@ -1,0 +1,10 @@
+[Unit]
+Description=Run HUB OpenCode sandbox health check every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=hub-ai-monitor.service
+
+[Install]
+WantedBy=timers.target

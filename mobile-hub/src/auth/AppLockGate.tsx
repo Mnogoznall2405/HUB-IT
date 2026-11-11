@@ -1,0 +1,235 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import * as ScreenCapture from 'expo-screen-capture';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  AppState,
+  Image,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type AppStateStatus,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useReducedMotion } from '../accessibility/useReducedMotion';
+import { HubButton } from '../components/ui/HubButton';
+import { type FluentTokens, useAppFluentTokens } from '../theme/fluentTokens';
+import { hapticError, hapticSuccess } from '../native/haptics';
+import { useAuth } from './AuthContext';
+import { setNativeChatDeliveryBlocked } from '../chat/nativeChatDeliveryGate';
+import {
+  BiometricUnavailableError,
+  getAppLockSettings,
+  shouldLockAfterBackground,
+  subscribeAppLockSettings,
+  unlockBiometricAppLock,
+  type AppLockSettings,
+} from './biometricAuth';
+
+import { EXTERNAL_ACTIVITY_GRACE_MS, isExternalActivityActive } from './externalActivity';
+
+const DEFAULT_SETTINGS: AppLockSettings = { enabled: false, timeoutSeconds: 60 };
+const SCREEN_CAPTURE_KEY = 'hubit-app-lock';
+
+export function AppLockGate() {
+  const tokens = useAppFluentTokens();
+  const styles = useMemo(() => createStyles(tokens), [tokens]);
+  const reduceMotion = useReducedMotion();
+  const { appLockPendingUnlock, biometricEnabled, logout, markAppLockUnlocked, user } = useAuth();
+  const [settings, setSettings] = useState<AppLockSettings>(DEFAULT_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [locked, setLocked] = useState(false);
+  // A cold-start lock armed by AuthContext must gate the very first content
+  // frame: the flag lands in the same commit as the cached user, so the modal
+  // mounts together with the shell instead of after it.
+  const gated = locked || Boolean(appLockPendingUnlock && user);
+  useLayoutEffect(() => {
+    setNativeChatDeliveryBlocked(!user || gated);
+    return () => setNativeChatDeliveryBlocked(true);
+  }, [user?.id, gated]);
+  const [unlocking, setUnlocking] = useState(false);
+  const [error, setError] = useState('');
+  const [credentialLost, setCredentialLost] = useState(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const backgroundAtRef = useRef(0);
+  const externalBackgroundAtRef = useRef(0);
+  const automaticAttemptRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    void getAppLockSettings().then((value) => {
+      if (!active) return;
+      setSettings(value);
+      setSettingsLoaded(true);
+    });
+    const unsubscribe = subscribeAppLockSettings((value) => {
+      if (!active) return;
+      setSettings(value);
+      setSettingsLoaded(true);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [biometricEnabled, user]);
+
+  // The pending flag was armed from the stored settings at startup; once the
+  // gate reads them itself, a lock that was meanwhile switched off releases.
+  useEffect(() => {
+    if (settingsLoaded && !settings.enabled && appLockPendingUnlock) markAppLockUnlocked();
+  }, [appLockPendingUnlock, markAppLockUnlocked, settings.enabled, settingsLoaded]);
+
+  useEffect(() => {
+    if (!user || !biometricEnabled || !settings.enabled) {
+      setLocked(false);
+      backgroundAtRef.current = 0;
+      void ScreenCapture.allowScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
+    }
+  }, [biometricEnabled, settings.enabled, user]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const previous = appStateRef.current;
+      appStateRef.current = nextState;
+      if (!user || !biometricEnabled || !settings.enabled) return;
+      if (nextState === 'background' && previous !== 'background') {
+        // Системная камера на секунды уводит приложение в фон: это не повод
+        // требовать отпечаток после каждого снимка. Время всё же запоминается,
+        // чтобы долгое «пребывание в камере» блокировалось как обычный фон.
+        if (isExternalActivityActive()) externalBackgroundAtRef.current = Date.now();
+        else backgroundAtRef.current = Date.now();
+        void ScreenCapture.preventScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
+        return;
+      }
+      if (nextState === 'active' && previous !== 'active' && externalBackgroundAtRef.current > 0) {
+        const leftAt = externalBackgroundAtRef.current;
+        externalBackgroundAtRef.current = 0;
+        if (Date.now() - leftAt > EXTERNAL_ACTIVITY_GRACE_MS && backgroundAtRef.current === 0) {
+          backgroundAtRef.current = leftAt;
+        } else if (backgroundAtRef.current === 0) {
+          void ScreenCapture.allowScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
+          return;
+        }
+      }
+      if (nextState === 'active' && previous !== 'active' && backgroundAtRef.current > 0) {
+        if (shouldLockAfterBackground(backgroundAtRef.current, Date.now(), settings)) {
+          automaticAttemptRef.current = false;
+          setError('');
+          setCredentialLost(false);
+          setNativeChatDeliveryBlocked(true);
+          setLocked(true);
+        } else {
+          backgroundAtRef.current = 0;
+          void ScreenCapture.allowScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
+        }
+      }
+    });
+    return () => {
+      subscription.remove();
+      void ScreenCapture.allowScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
+    };
+  }, [biometricEnabled, settings.enabled, settings.timeoutSeconds, user]);
+
+  const unlock = useCallback(async () => {
+    if (unlocking) return;
+    setUnlocking(true);
+    setError('');
+    try {
+      await unlockBiometricAppLock();
+      backgroundAtRef.current = 0;
+      setCredentialLost(false);
+      setLocked(false);
+      markAppLockUnlocked();
+      await ScreenCapture.allowScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
+      void hapticSuccess();
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось подтвердить отпечаток');
+      setCredentialLost(cause instanceof BiometricUnavailableError);
+      void hapticError();
+    } finally {
+      setUnlocking(false);
+    }
+  }, [markAppLockUnlocked, unlocking]);
+
+  useEffect(() => {
+    if (!gated || automaticAttemptRef.current) return;
+    automaticAttemptRef.current = true;
+    void unlock();
+  }, [gated, unlock]);
+
+  return (
+    <Modal
+      visible={gated}
+      animationType={reduceMotion ? 'none' : 'fade'}
+      presentationStyle="fullScreen"
+      onRequestClose={() => undefined}
+      statusBarTranslucent={false}
+    >
+      <SafeAreaView style={styles.page} accessibilityViewIsModal>
+        <ScrollView
+          testID="app-lock-scroll"
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.card}>
+            <Image
+              source={require('../../assets/icon.png')}
+              style={styles.logo}
+              accessible={false}
+              accessibilityElementsHidden
+              importantForAccessibility="no"
+            />
+            <MaterialCommunityIcons
+              name="fingerprint"
+              size={54}
+              color={tokens.primary}
+              accessibilityElementsHidden
+              importantForAccessibility="no"
+            />
+            <Text style={styles.title} accessibilityRole="header">HUB-IT заблокирован</Text>
+            <Text style={styles.body}>Подтвердите отпечаток, чтобы вернуться к открытой странице.</Text>
+            {error ? (
+              <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+                {error}
+              </Text>
+            ) : null}
+            <HubButton
+              mode="contained"
+              icon="fingerprint"
+              onPress={() => { void unlock(); }}
+              loading={unlocking}
+              disabled={unlocking}
+              accessibilityLabel="Разблокировать HUB-IT отпечатком пальца"
+            >
+              Разблокировать
+            </HubButton>
+            {credentialLost ? (
+              <HubButton mode="text" onPress={() => { void logout(); }}>
+                Войти заново
+              </HubButton>
+            ) : null}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+const createStyles = (tokens: FluentTokens) => StyleSheet.create({
+  page: {
+    flex: 1,
+    backgroundColor: tokens.pageBg,
+  },
+  scroll: {
+    flexGrow: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  card: { width: '100%', maxWidth: 420, alignItems: 'center', gap: 14 },
+  logo: { width: 52, height: 52, borderRadius: 13, marginBottom: 10 },
+  title: { color: tokens.textPrimary, fontSize: 22, lineHeight: 28, fontWeight: '900', textAlign: 'center' },
+  body: { color: tokens.textSecondary, fontSize: 14, lineHeight: 21, textAlign: 'center' },
+  error: { color: tokens.error, fontSize: 13, lineHeight: 19, textAlign: 'center' },
+});

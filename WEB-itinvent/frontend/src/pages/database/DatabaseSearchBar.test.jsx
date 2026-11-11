@@ -1,0 +1,92 @@
+import { fireEvent, render, screen } from '@testing-library/react';
+import { createTheme } from '@mui/material/styles';
+import { describe, expect, it, vi } from 'vitest';
+
+import DatabaseSearchBar from './DatabaseSearchBar';
+
+const theme = createTheme();
+
+describe('DatabaseSearchBar', () => {
+  it('uses the equipment placeholder by default', () => {
+    render(<DatabaseSearchBar value="" theme={theme} />);
+
+    expect(screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...')).toBeInTheDocument();
+  });
+
+  it('shows Карточки / Акты scope labels instead of duplicate Оборудование', () => {
+    const onSearchScopeChange = vi.fn();
+    render(
+      <DatabaseSearchBar
+        value=""
+        theme={theme}
+        onSearchScopeChange={onSearchScopeChange}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'Карточки' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Акты' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Оборудование' })).not.toBeInTheDocument();
+  });
+
+  it('uses 44px touch targets in compact mode', () => {
+    render(
+      <DatabaseSearchBar
+        compact
+        value=""
+        theme={theme}
+        onSearchScopeChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'Карточки' })).toHaveStyle({ minHeight: '44px' });
+    expect(screen.getByRole('button', { name: 'Акты' })).toHaveStyle({ minHeight: '44px' });
+    expect(
+      screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...').closest('.MuiOutlinedInput-root')
+    ).toHaveStyle({ height: '44px' });
+  });
+
+  it('uses the consumables placeholder in consumables mode', () => {
+    render(<DatabaseSearchBar isConsumablesMode value="" theme={theme} />);
+
+    expect(screen.getByPlaceholderText('Поиск по ID, типу, модели...')).toBeInTheDocument();
+  });
+
+  it('passes input changes to the parent', () => {
+    const changes = [];
+    const onChange = vi.fn((event) => {
+      changes.push(event.target.value);
+    });
+
+    render(<DatabaseSearchBar value="" onChange={onChange} theme={theme} />);
+
+    fireEvent.change(screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...'), {
+      target: { value: 'laser' },
+    });
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(changes).toEqual(['laser']);
+  });
+
+  it('shows clear button only for non-empty values and calls onClear', () => {
+    const onClear = vi.fn();
+    const { rerender } = render(<DatabaseSearchBar value="" onClear={onClear} theme={theme} />);
+
+    expect(screen.queryByRole('button', { name: 'Очистить поиск' })).not.toBeInTheDocument();
+
+    rerender(<DatabaseSearchBar value="laser" onClear={onClear} theme={theme} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Очистить поиск' }));
+
+    expect(onClear).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes Enter keydown to the parent handler', () => {
+    const onKeyDown = vi.fn();
+
+    render(<DatabaseSearchBar value="laser" onKeyDown={onKeyDown} theme={theme} />);
+
+    fireEvent.keyDown(screen.getByDisplayValue('laser'), { key: 'Enter', code: 'Enter' });
+
+    expect(onKeyDown).toHaveBeenCalledTimes(1);
+    expect(onKeyDown.mock.calls[0][0].key).toBe('Enter');
+  });
+});

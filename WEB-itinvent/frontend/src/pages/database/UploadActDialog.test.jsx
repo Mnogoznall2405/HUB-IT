@@ -1,0 +1,142 @@
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+
+import UploadActDialog from './UploadActDialog';
+
+const ui = {
+  panelSolid: '#fff',
+  panelBg: '#f8fafc',
+  borderSoft: '#d8dee9',
+  shellShadow: 'none',
+};
+
+const details = {
+  form: {
+    from_employee: '',
+    to_employee: '',
+    doc_date: '',
+    equipment_inv_nos_text: '',
+  },
+  invVerification: {
+    recognizedInvNos: ['1001'],
+    finalInvNos: ['1001'],
+    onlyRecognizedInvNos: [],
+    onlyFinalInvNos: [],
+    severity: 'info',
+    headline: 'Все номера совпадают.',
+  },
+};
+
+describe('UploadActDialog', () => {
+  it('renders parse step and delegates close and commit actions', () => {
+    const onClose = vi.fn();
+    const onCommit = vi.fn();
+
+    render(
+      <UploadActDialog
+        open
+        ui={ui}
+        details={details}
+        onClose={onClose}
+        commit={{ disabled: false, onCommit }}
+      />
+    );
+
+    expect(screen.getByText('Загрузка подписанного акта')).toBeInTheDocument();
+    expect(screen.getByText('1. Выбор и распознавание PDF')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить и записать' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders draft verification and forwards controlled field changes', () => {
+    const onFieldChange = vi.fn();
+    const onInvNosChange = vi.fn();
+    const onInvVerifiedChange = vi.fn();
+
+    render(
+      <UploadActDialog
+        open
+        ui={ui}
+        details={{
+          ...details,
+          onFieldChange,
+          onInvNosChange,
+          onInvVerifiedChange,
+        }}
+        draft={{
+          warnings: ['Проверьте дату'],
+          resolved_items: [{ inv_no: '1001', model_name: 'Notebook' }],
+        }}
+      />
+    );
+
+    expect(screen.getByText('2. Проверка данных акта')).toBeInTheDocument();
+    expect(screen.getByText('Проверьте дату')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('От сотрудника'), {
+      target: { value: 'Иванов И.И.' },
+    });
+    fireEvent.change(screen.getByLabelText('Инв. № (через запятую)'), {
+      target: { value: '1001,1002' },
+    });
+    fireEvent.click(screen.getByLabelText('Я проверил инвентарные номера по PDF перед записью акта'));
+
+    expect(onFieldChange).toHaveBeenCalledWith('from_employee', 'Иванов И.И.');
+    expect(onInvNosChange).toHaveBeenCalledTimes(1);
+    expect(onInvVerifiedChange).toHaveBeenCalledWith(true);
+  });
+
+  it('renders commit result email step and delegates close and send actions', () => {
+    const onClose = vi.fn();
+    const onEmailSend = vi.fn();
+    const onEmailRecipientsChange = vi.fn();
+    const onEmailErrorClear = vi.fn();
+    const onDownload = vi.fn();
+
+    render(
+      <UploadActDialog
+        open
+        ui={ui}
+        details={details}
+        onClose={onClose}
+        commit={{ result: { doc_no: 12, file_no: 34 } }}
+        email={{
+          subject: 'Акт №12',
+          body: 'Во вложении акт.',
+          recipientOptions: [
+            { owner_no: 7, owner_display_name: 'Иванов И.И.', owner_dept: 'ИТ' },
+          ],
+          recipients: [],
+          recipientsInput: '',
+          status: 'Отправлено',
+          error: 'Один получатель без email',
+          lastRecipients: [
+            { owner_no: 7, employee_name: 'Иванов И.И.', email: 'ivanov@example.test', status: 'sent' },
+          ],
+          onSend: onEmailSend,
+          onRecipientsChange: onEmailRecipientsChange,
+          onErrorClear: onEmailErrorClear,
+        }}
+        download={{ onDownload }}
+      />
+    );
+
+    expect(screen.getByText(/DOC_NO 12/)).toBeInTheDocument();
+    expect(screen.getAllByText('Отправлено')).toHaveLength(2);
+    expect(screen.getByText('Один получатель без email')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить выбранным' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Скачать акт' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Готово' }));
+
+    expect(onEmailSend).toHaveBeenCalledTimes(1);
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onEmailRecipientsChange).not.toHaveBeenCalled();
+    expect(onEmailErrorClear).not.toHaveBeenCalled();
+  });
+});

@@ -1,0 +1,824 @@
+"""
+Equipment models for API requests and responses.
+"""
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Literal
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class EquipmentBase(BaseModel):
+    """Base equipment model with common fields."""
+    id: Optional[int] = Field(None, description="Equipment item ID")
+    inv_no: str = Field(..., description="Inventory number")
+    serial_no: Optional[str] = Field(None, description="Serial number")
+    hw_serial_no: Optional[str] = Field(None, description="Hardware serial number")
+    part_no: Optional[str] = Field(None, description="Part number")
+    type_no: Optional[int] = Field(None, description="Equipment type ID")
+    type_name: Optional[str] = Field(None, description="Equipment type name")
+    model_no: Optional[int] = Field(None, description="Model ID")
+    model_name: Optional[str] = Field(None, description="Model name")
+    vendor_no: Optional[int] = Field(None, description="Vendor ID")
+    vendor_name: Optional[str] = Field(None, description="Vendor name")
+    status_no: Optional[int] = Field(None, description="Status ID")
+    status_name: Optional[str] = Field(None, description="Status name")
+    empl_no: Optional[int] = Field(None, description="Employee ID")
+    employee_name: Optional[str] = Field(None, description="Employee name")
+    employee_dept: Optional[str] = Field(None, description="Employee department")
+    employee_email: Optional[str] = Field(None, description="Employee email")
+    branch_no: Optional[int | str] = Field(None, description="Branch ID")
+    branch_name: Optional[str] = Field(None, description="Branch name")
+    loc_no: Optional[int | str] = Field(None, description="Location ID")
+    location_name: Optional[str] = Field(None, description="Location name")
+    date_create: Optional[datetime] = Field(None, description="Creation date")
+    date_last_modify: Optional[datetime] = Field(None, description="Last modification date")
+    description: Optional[str] = Field(None, description="Description")
+    hub_db_id: Optional[str] = Field(None, description="Hub database id when multi-db")
+    hub_db_name: Optional[str] = Field(None, description="Hub database display name")
+    is_current_db: Optional[bool] = Field(None, description="True if row is from current Hub DB")
+    hub_owner_no: Optional[int] = Field(None, description="Resolved OWNER_NO in that Hub DB")
+    current_act_available: Optional[bool] = Field(
+        None,
+        description="True when a current-owner, non-annulled downloadable act exists",
+    )
+    current_act_doc_no: Optional[int] = Field(None, description="Current act DOC_NO")
+    current_act_doc_number: Optional[str] = Field(None, description="Current act display number")
+    current_act_doc_date: Optional[datetime] = Field(None, description="Current act document date")
+    photo_count: Optional[int] = Field(
+        None,
+        description="Photos attached to the card; None when unknown (lookup failed or not requested)",
+    )
+    photo_verified_count: Optional[int] = Field(
+        None,
+        description="Verified photos of the card; None when unknown (check store unavailable)",
+    )
+    photo_rejected_count: Optional[int] = Field(
+        None,
+        description="Rejected photos of the card; None when unknown (check store unavailable)",
+    )
+
+
+class EmployeeSummary(BaseModel):
+    """Summary of an employee with equipment count."""
+    owner_no: int = Field(..., description="Employee ID")
+    name: str = Field(..., description="Employee full name")
+    department: Optional[str] = Field(None, description="Department")
+    email: Optional[str] = Field(None, description="Email address")
+    equipment_count: int = Field(0, description="Number of equipment items")
+
+
+class EquipmentSearchResponse(BaseModel):
+    """Response model for equipment search."""
+    found: bool = Field(..., description="Whether equipment was found")
+    equipment: List[EquipmentBase] = Field(default_factory=list, description="List of equipment")
+    db_errors: List[str] = Field(
+        default_factory=list,
+        description="Hub database names that failed during a cross-database lookup",
+    )
+
+
+class EmployeeSearchResponse(BaseModel):
+    """Response model for employee search."""
+    employees: List[EmployeeSummary] = Field(default_factory=list)
+    total: int = Field(..., description="Total number of results")
+    page: int = Field(..., description="Current page number")
+    pages: int = Field(..., description="Total number of pages")
+
+
+class EquipmentListResponse(BaseModel):
+    """Response model for paginated equipment list."""
+    equipment: List[EquipmentBase] = Field(default_factory=list)
+    total: int = Field(..., description="Total number of equipment")
+    page: int = Field(..., description="Current page number")
+    pages: int = Field(..., description="Total number of pages")
+
+
+class EquipmentListRow(BaseModel):
+    """Slim equipment row for grouped list pages.
+
+    Whitelist of the fields the list UI and the client search index actually
+    consume. Heavy fields (DESCR nvarchar(max), vendor, current-act enrich)
+    are only served by the detail/by-inv-nos endpoints.
+    Values pass through without coercion so the wire format stays identical
+    (e.g. INV_NO is a float column in the legacy schema).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    ID: Optional[Any] = None
+    INV_NO: Optional[Any] = None
+    SERIAL_NO: Optional[Any] = None
+    HW_SERIAL_NO: Optional[Any] = None
+    part_no: Optional[Any] = None
+    type_no: Optional[Any] = None
+    type_name: Optional[Any] = None
+    model_no: Optional[Any] = None
+    model_name: Optional[Any] = None
+    empl_no: Optional[Any] = None
+    employee_name: Optional[Any] = None
+    employee_dept: Optional[Any] = None
+    branch_no: Optional[Any] = None
+    branch_name: Optional[Any] = None
+    loc_no: Optional[Any] = None
+    location: Optional[Any] = None
+    status_no: Optional[Any] = None
+    status: Optional[Any] = None
+    qty: Optional[Any] = None
+    ip_address: Optional[Any] = None
+    mac_address: Optional[Any] = None
+    network_name: Optional[Any] = None
+    domain_name: Optional[Any] = None
+
+
+class EquipmentGroupedListResponse(BaseModel):
+    """Response model for GET /equipment/all-grouped."""
+    grouped: Dict[str, Dict[str, List[EquipmentListRow]]] = Field(default_factory=dict)
+    total: int = Field(0, description="Total number of equipment rows")
+    page: int = Field(1, description="Current page number")
+    limit: int = Field(1000, description="Page size")
+    pages: int = Field(0, description="Total number of pages")
+    data_version: int = Field(0, description="Mutation counter for stale-data detection")
+
+
+class EquipmentCurrentActsRequest(BaseModel):
+    """Batch lookup of current acts by ITEMS.ID for visible list rows."""
+    item_ids: List[int] = Field(default_factory=list, max_length=2000)
+
+
+class EquipmentCurrentActItem(BaseModel):
+    item_id: int
+    available: Optional[bool] = Field(
+        None, description="None when the act lookup itself failed (unknown)"
+    )
+    doc_no: Optional[Any] = None
+    doc_number: Optional[Any] = None
+    doc_date: Optional[Any] = None
+    photo_count: Optional[int] = Field(
+        None,
+        description="Photos attached to the card; None when the photo lookup failed (unknown)",
+    )
+    photo_verified_count: Optional[int] = Field(
+        None,
+        description="Verified photos of the card; None when the check lookup failed (unknown)",
+    )
+    photo_rejected_count: Optional[int] = Field(
+        None,
+        description="Rejected photos of the card; None when the check lookup failed (unknown)",
+    )
+
+
+class EquipmentCurrentActsResponse(BaseModel):
+    items: List[EquipmentCurrentActItem] = Field(default_factory=list)
+
+
+class Branch(BaseModel):
+    """Branch/location information."""
+    id: int | str = Field(..., description="Branch ID")
+    name: str = Field(..., description="Branch name")
+
+
+class Location(BaseModel):
+    """Location information."""
+    loc_no: int | str = Field(..., description="Location ID")
+    loc_name: str = Field(..., description="Location name")
+
+
+class EquipmentType(BaseModel):
+    """Equipment type information."""
+    ci_type: Optional[int] = Field(None, description="Category ID")
+    type_no: int = Field(..., description="Type ID")
+    type_name: str = Field(..., description="Type name")
+
+
+class EquipmentStatus(BaseModel):
+    """Equipment status information."""
+    status_no: int = Field(..., description="Status ID")
+    status_name: str = Field(..., description="Status name")
+
+
+class EquipmentCreateRequest(BaseModel):
+    """Create equipment payload for ITEMS insert."""
+    serial_no: str = Field(..., min_length=1, description="Serial number")
+    employee_name: str = Field(..., min_length=2, description="Employee full name")
+    branch_no: int | str = Field(..., description="Branch ID")
+    loc_no: int | str = Field(..., description="Location ID")
+    type_no: int = Field(..., description="Equipment type ID")
+    status_no: int = Field(..., description="Equipment status ID")
+    model_name: Optional[str] = Field(None, description="Model name (used when model_no is missing)")
+    model_no: Optional[int] = Field(None, description="Model ID")
+    employee_no: Optional[int] = Field(None, description="Employee OWNER_NO")
+    employee_dept: Optional[str] = Field(None, description="Department for creating new employee")
+    hw_serial_no: Optional[str] = Field(None, description="Hardware serial number")
+    part_no: Optional[str] = Field(None, description="Part number")
+    description: Optional[str] = Field(None, description="Description")
+    ip_address: Optional[str] = Field(None, description="IP address")
+    mac_address: Optional[str] = Field(None, description="MAC address (any separators; stored as AA:BB:CC:DD:EE:FF)")
+    network_name: Optional[str] = Field(None, description="Network (NetBIOS) name")
+
+
+class EquipmentCreateResponse(BaseModel):
+    """Create equipment operation result."""
+    success: bool = Field(..., description="Creation status")
+    item_id: Optional[int] = Field(None, description="Created ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Generated inventory number")
+    created_owner: bool = Field(False, description="Whether owner was created")
+    created_model: bool = Field(False, description="Whether model was created")
+    message: str = Field(..., description="Operation message")
+
+
+class ConsumableCreateRequest(BaseModel):
+    """Create consumable payload for ITEMS insert (CI_TYPE=4)."""
+    branch_no: int | str = Field(..., description="Branch ID")
+    loc_no: int | str = Field(..., description="Location ID")
+    type_no: int = Field(..., description="Consumable type ID")
+    qty: int = Field(..., ge=1, description="Quantity to add")
+    model_name: Optional[str] = Field(None, description="Model name when model_no is not provided")
+    model_no: Optional[int] = Field(None, description="Model ID")
+    status_no: Optional[int] = Field(None, description="Status ID; default is resolved automatically")
+    part_no: Optional[str] = Field(None, description="Part number")
+    description: Optional[str] = Field(None, description="Description")
+
+
+class ConsumableCreateResponse(BaseModel):
+    """Create consumable operation result."""
+    success: bool = Field(..., description="Creation status")
+    item_id: Optional[int] = Field(None, description="Created ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Generated inventory number")
+    created_model: bool = Field(False, description="Whether model was created")
+    message: str = Field(..., description="Operation message")
+
+
+class ConsumableLookupItem(BaseModel):
+    """Consumable candidate for work operations."""
+    id: int = Field(..., description="ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Inventory number")
+    type_no: Optional[int] = Field(None, description="TYPE_NO")
+    type_name: Optional[str] = Field(None, description="Type name")
+    model_no: Optional[int] = Field(None, description="MODEL_NO")
+    model_name: Optional[str] = Field(None, description="Model name")
+    qty: int = Field(..., description="Available quantity")
+    branch_no: Optional[int | str] = Field(None, description="Branch number")
+    branch_name: Optional[str] = Field(None, description="Branch name")
+    loc_no: Optional[int | str] = Field(None, description="Location number")
+    location_name: Optional[str] = Field(None, description="Location name")
+    part_no: Optional[str] = Field(None, description="Part number")
+    description: Optional[str] = Field(None, description="Description")
+
+
+class ConsumableWorkPayload(BaseModel):
+    """Optional works record bundled into a durable consume operation."""
+    kind: str = Field(..., description="Work kind: component or cartridge")
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Works record fields")
+
+
+class ConsumableConsumeRequest(BaseModel):
+    """Decrease consumable quantity by qty."""
+    item_id: Optional[int] = Field(None, description="ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Inventory number")
+    qty: int = Field(1, ge=1, description="Quantity to consume")
+    reason: Optional[str] = Field(None, description="Operation reason")
+    operation_id: Optional[str] = Field(
+        None, max_length=64,
+        description="Idempotency key; retries with the same id resume instead of consuming twice",
+    )
+    work: Optional[ConsumableWorkPayload] = Field(
+        None, description="Optional works record written atomically with the consume",
+    )
+
+
+class ConsumableConsumeResponse(BaseModel):
+    """Result of consumable stock decrease."""
+    success: bool = Field(..., description="Operation status")
+    item_id: Optional[int] = Field(None, description="ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Inventory number")
+    qty_old: Optional[int] = Field(None, description="Quantity before update")
+    qty_new: Optional[int] = Field(None, description="Quantity after update")
+    message: str = Field(..., description="Operation message")
+    operation_id: Optional[str] = Field(None, description="Durable operation key used for retries")
+    work_status: Optional[str] = Field(None, description="none|recorded — works record state")
+    work_record: Optional[Dict[str, Any]] = Field(None, description="Written works record, if any")
+
+
+class ConsumableQtyUpdateRequest(BaseModel):
+    """Set exact consumable quantity."""
+    item_id: Optional[int] = Field(None, description="ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Inventory number")
+    qty: int = Field(..., ge=0, description="Target quantity")
+
+
+class ConsumableQtyUpdateResponse(BaseModel):
+    """Result of consumable stock set operation."""
+    success: bool = Field(..., description="Operation status")
+    item_id: Optional[int] = Field(None, description="ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Inventory number")
+    qty_old: Optional[int] = Field(None, description="Quantity before update")
+    qty_new: Optional[int] = Field(None, description="Quantity after update")
+    message: str = Field(..., description="Operation message")
+
+
+class ConsumableDeleteResponse(BaseModel):
+    """Result of consumable hard-delete operation."""
+    success: bool = Field(..., description="Deletion status")
+    item_id: Optional[int] = Field(None, description="Deleted ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Inventory number")
+    message: str = Field(..., description="Operation message")
+
+
+class TransferItemResult(BaseModel):
+    """Result of transfer operation for a single item."""
+    inv_no: str = Field(..., description="Inventory number")
+    serial_no: Optional[str] = Field(None, description="Serial number")
+    old_employee_no: Optional[int] = Field(None, description="Old employee ID")
+    old_employee_name: Optional[str] = Field(None, description="Old employee name")
+    new_employee_no: Optional[int] = Field(None, description="New/current employee ID")
+    new_employee_name: str = Field(..., description="New employee name")
+    branch_no: Optional[int | str] = Field(None, description="Final branch ID")
+    loc_no: Optional[int | str] = Field(None, description="Final location ID")
+    branch_name: Optional[str] = Field(None, description="Final branch name")
+    location_name: Optional[str] = Field(None, description="Final location name")
+    type_name: Optional[str] = Field(None, description="Type name")
+    model_name: Optional[str] = Field(None, description="Model name")
+    part_no: Optional[str] = Field(None, description="Part number")
+    hist_id: Optional[int] = Field(None, description="History record ID")
+
+
+class TransferFailedItem(BaseModel):
+    """Failed transfer item."""
+    inv_no: str = Field(..., description="Inventory number")
+    error: str = Field(..., description="Error reason")
+
+
+class TransferActInfo(BaseModel):
+    """Generated transfer act metadata."""
+    act_id: str = Field(..., description="Act identifier")
+    old_employee: str = Field(..., description="Old employee name")
+    new_employee: Optional[str] = Field(None, description="New/current employee name")
+    equipment_count: int = Field(..., description="Equipment count in act")
+    file_name: str = Field(..., description="Generated file name")
+    file_type: Literal["pdf", "docx"] = Field(..., description="File extension")
+
+
+class EquipmentActSearchItem(BaseModel):
+    """Equipment row linked to a searched act/document."""
+    item_id: Optional[int] = Field(None, description="ITEMS.ID")
+    inv_no: str = Field("", description="Inventory number")
+    serial_no: str = Field("", description="Serial number")
+    model_name: str = Field("", description="Model name")
+
+
+class EquipmentActSearchResult(BaseModel):
+    """One act/document row in inventory act search."""
+    doc_no: int = Field(..., description="Internal document id (DOC_NO)")
+    doc_number: str = Field("", description="Human-readable document number")
+    doc_date: Optional[datetime] = Field(None, description="Document date")
+    type_name: str = Field("", description="Document type name")
+    branch_name: str = Field("", description="Branch name")
+    location_name: str = Field("", description="Location name")
+    employee_name: str = Field("", description="Employee name on document")
+    has_file: bool = Field(False, description="Whether a linked file exists in FILES")
+    items: List[EquipmentActSearchItem] = Field(default_factory=list, description="Linked equipment")
+
+
+class EquipmentActSearchResponse(BaseModel):
+    """Response for global act/document search on inventory page."""
+    query: str = Field("", description="Normalized search query")
+    total: int = Field(0, description="Number of matched documents")
+    truncated: bool = Field(False, description="Whether results were limited")
+    acts: List[EquipmentActSearchResult] = Field(default_factory=list, description="Matched documents")
+
+
+class TransferExecuteRequest(BaseModel):
+    """Transfer request for one or multiple inventory items."""
+    operation_id: Optional[str] = Field(
+        None,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description="Client-generated idempotency key for this inventory transfer",
+    )
+    inv_nos: List[str] = Field(..., min_length=1, max_length=2000, description="Inventory numbers")
+    new_employee: str = Field(..., min_length=2, description="Target employee full name")
+    new_employee_no: Optional[int] = Field(None, description="Optional target employee OWNER_NO")
+    new_employee_dept: Optional[str] = Field(None, description="Optional target employee department when creating new owner")
+    branch_no: Optional[int | str] = Field(None, description="Optional target BRANCH_NO")
+    loc_no: Optional[int | str] = Field(None, description="Optional target LOC_NO")
+    comment: Optional[str] = Field(None, description="Optional transfer comment")
+
+
+class TransferActOnlyRequest(BaseModel):
+    """Generate transfer-like act without changing equipment ownership/location."""
+    operation_id: Optional[str] = Field(
+        None,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description="Client-generated idempotency key for this document-only operation",
+    )
+    inv_nos: List[str] = Field(..., min_length=1, max_length=2000, description="Inventory numbers")
+    issuer_employee: str = Field(..., min_length=1, description="Employee/person who issued equipment")
+    issuer_owner_no: Optional[int] = Field(None, description="Optional OWNER_NO for issuer")
+    comment: Optional[str] = Field(None, description="Optional act comment")
+
+
+class TransferLocationRequest(BaseModel):
+    """Move equipment to another branch/location without changing owner or creating acts."""
+    operation_id: str = Field(
+        ...,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description="Client-generated idempotency key for this location-only transfer",
+    )
+    inv_nos: List[str] = Field(..., min_length=1, max_length=2000, description="Inventory numbers")
+    branch_no: int | str = Field(..., description="Target BRANCH_NO")
+    loc_no: int | str = Field(..., description="Target LOC_NO")
+    comment: Optional[str] = Field(None, description="Optional transfer comment")
+
+
+class TransferToDbRequest(BaseModel):
+    """Move equipment items to another ITINVENT database preserving history."""
+    operation_id: Optional[str] = Field(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9.:-]+$", description="Stable retry key for the cross-database transfer")
+    inv_nos: List[str] = Field(..., min_length=1, max_length=200, description="Inventory numbers in source DB")
+    target_db: str = Field(..., min_length=1, max_length=100, description="Target database id")
+    target_owner_no: Optional[int] = Field(None, description="Existing OWNER_NO in target DB")
+    new_owner_name: Optional[str] = Field(None, description="Create owner with this name in target DB when no target_owner_no")
+    new_owner_dept: Optional[str] = Field(None, description="Department for the owner created in target DB")
+    target_branch_no: Optional[int] = Field(None, description="Target BRANCH_NO")
+    target_loc_no: Optional[int] = Field(None, description="Target LOC_NO")
+    task_assignee_user_ids: Optional[List[int]] = Field(None, description="Hub task assignees for acceptance")
+    task_due_at: Optional[str] = Field(None, description="Hub task due date")
+    comment: Optional[str] = Field(None, description="Optional transfer comment")
+
+
+class TransferExecuteResponse(BaseModel):
+    """Transfer operation response."""
+    success_count: int = Field(..., description="Successfully transferred items")
+    failed_count: int = Field(..., description="Failed transfers")
+    transferred: List[TransferItemResult] = Field(default_factory=list, description="Transferred items")
+    failed: List[TransferFailedItem] = Field(default_factory=list, description="Failed items")
+    retry_inv_nos: List[str] = Field(
+        default_factory=list,
+        description="Only inventory numbers whose transfer failed and may be retried",
+    )
+    acts: List[TransferActInfo] = Field(default_factory=list, description="Generated acts")
+    upload_reminder_created: bool = Field(False, description="Whether upload reminder task was created")
+    upload_reminder_task_id: Optional[str] = Field(None, description="Hub task id for upload reminder")
+    upload_reminder_id: Optional[str] = Field(None, description="Persistent reminder id")
+    upload_reminder_warning: Optional[str] = Field(None, description="Reminder creation warning")
+    upload_reminder_controller_username: Optional[str] = Field(None, description="Resolved reminder controller username")
+    upload_reminder_controller_fallback_used: bool = Field(False, description="Whether controller fallback was used")
+    job_id: Optional[str] = Field(None, description="Background transfer-act job id")
+    operation_id: Optional[str] = Field(None, description="Idempotency key of the requested operation")
+    one_c_sync_state: Optional[Literal["not_requested"]] = Field(
+        None,
+        description="1C outbound state; this read-only integration never submits it automatically",
+    )
+    job_status: Optional[Literal["queued", "processing", "done", "failed"]] = Field(None, description="Background job status")
+    job_status_text: Optional[str] = Field(None, description="Human-readable background job status")
+    job_error: Optional[str] = Field(None, description="Background job error")
+    job_operation: Optional[str] = Field(None, description="Background job operation type")
+    job_request_count: Optional[int] = Field(None, description="Requested inventory count")
+    job_created_at: Optional[str] = Field(None, description="Background job creation time")
+    job_started_at: Optional[str] = Field(None, description="Background job start time")
+    job_completed_at: Optional[str] = Field(None, description="Background job completion time")
+
+
+class TransferEmailRequest(BaseModel):
+    """Request to send generated transfer acts by email."""
+    act_ids: List[str] = Field(..., min_length=1, description="Act IDs to send")
+    mode: Literal["old", "new", "manual", "employee"] = Field(
+        ..., description="Email delivery mode"
+    )
+    manual_email: Optional[str] = Field(None, description="Manual recipient email")
+    owner_no: Optional[int] = Field(None, description="Recipient owner number for employee mode")
+
+
+class TransferEmailResult(BaseModel):
+    """Email sending result."""
+    success_count: int = Field(..., description="Successfully sent emails")
+    failed_count: int = Field(..., description="Failed emails")
+    errors: List[str] = Field(default_factory=list, description="Error list")
+
+
+class UploadedActResolvedItem(BaseModel):
+    """Resolved equipment item from parsed act draft."""
+    item_id: int = Field(..., description="ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Inventory number")
+    serial_no: Optional[str] = Field(None, description="Serial number")
+    model_name: Optional[str] = Field(None, description="Model name")
+    employee_name: Optional[str] = Field(None, description="Current employee")
+    branch_name: Optional[str] = Field(None, description="Branch name")
+    location_name: Optional[str] = Field(None, description="Location name")
+
+
+class UploadedActDraftResponse(BaseModel):
+    """Parsed uploaded act draft."""
+    draft_id: str = Field(..., description="Draft identifier")
+    file_name: str = Field(..., description="Uploaded file name")
+    from_employee: str = Field(default="", description="Detected old employee")
+    to_employee: str = Field(default="", description="Detected new employee")
+    doc_date: Optional[str] = Field(None, description="Upload datetime (YYYY-MM-DD HH:MM:SS)")
+    equipment_inv_nos: List[str] = Field(default_factory=list, description="Detected inventory numbers")
+    resolved_items: List[UploadedActResolvedItem] = Field(default_factory=list, description="Resolved equipment rows")
+    warnings: List[str] = Field(default_factory=list, description="Parsing/validation warnings")
+
+
+class UploadedActCommitRequest(BaseModel):
+    """Commit request for parsed act draft."""
+    draft_id: str = Field(..., min_length=1, description="Draft identifier")
+    from_employee: Optional[str] = Field(None, description="Old employee")
+    to_employee: Optional[str] = Field(None, description="New employee")
+    doc_date: Optional[str] = Field(None, description="Upload datetime YYYY-MM-DD HH:MM:SS")
+    equipment_inv_nos: Optional[List[str]] = Field(None, max_length=1800, description="Final inventory numbers list")
+    source_task_id: Optional[str] = Field(None, description="Optional hub task id for reminder binding")
+    reminder_id: Optional[str] = Field(None, description="Optional reminder id for explicit binding")
+
+
+class UploadedActCommitResponse(BaseModel):
+    """Commit result for uploaded act draft."""
+    success: bool = Field(..., description="Commit status")
+    doc_no: int = Field(..., description="Created DOCS.DOC_NO")
+    doc_number: str = Field(..., description="Created DOCS.DOC_NUMBER")
+    file_no: int = Field(..., description="Created FILES.FILE_NO")
+    linked_item_ids: List[int] = Field(default_factory=list, description="Linked ITEMS.ID list")
+    linked_inv_nos: List[str] = Field(default_factory=list, description="Linked inventory numbers")
+    message: str = Field(..., description="Operation message")
+    reminder_status: Optional[str] = Field(None, description="Reminder resolution status")
+    reminder_task_id: Optional[str] = Field(None, description="Bound reminder task id")
+    reminder_id: Optional[str] = Field(None, description="Bound reminder id")
+    reminder_pending_groups: int = Field(0, description="Remaining pending groups in reminder")
+    reminder_warning: Optional[str] = Field(None, description="Reminder resolution warning")
+
+
+class TransferActReminderGroupResponse(BaseModel):
+    """One pending/completed reminder group."""
+    id: str = Field(..., description="Reminder group id")
+    generated_act_id: Optional[str] = Field(None, description="Generated act id")
+    old_employee_name: str = Field(..., description="Old employee name")
+    inv_nos: List[str] = Field(default_factory=list, description="Exact INV_NO list")
+    equipment_count: int = Field(..., description="Equipment count")
+    matched_doc_no: Optional[int] = Field(None, description="Matched DOC_NO")
+    matched_doc_number: Optional[str] = Field(None, description="Matched DOC_NUMBER")
+    completed_at: Optional[str] = Field(None, description="Completion timestamp")
+
+
+class TransferActReminderResponse(BaseModel):
+    """Persistent transfer act reminder context."""
+    reminder_id: str = Field(..., description="Reminder id")
+    task_id: str = Field(..., description="Hub task id")
+    db_id: Optional[str] = Field(None, description="Database id")
+    assignee_user_id: int = Field(..., description="Assignee user id")
+    controller_user_id: int = Field(..., description="Controller user id")
+    created_by_user_id: int = Field(..., description="Creator user id")
+    new_employee_no: Optional[str] = Field(None, description="Target employee number")
+    new_employee_name: str = Field(..., description="Target employee name")
+    status: str = Field(..., description="Reminder status")
+    created_at: Optional[str] = Field(None, description="Created timestamp")
+    updated_at: Optional[str] = Field(None, description="Updated timestamp")
+    completed_at: Optional[str] = Field(None, description="Completed timestamp")
+    pending_groups_total: int = Field(0, description="Pending groups count")
+    completed_groups_total: int = Field(0, description="Completed groups count")
+    pending_groups: List[TransferActReminderGroupResponse] = Field(default_factory=list, description="Pending groups")
+    completed_groups: List[TransferActReminderGroupResponse] = Field(default_factory=list, description="Completed groups")
+    upload_url: str = Field(..., description="Deep-link to upload act UI")
+
+
+class UploadedActEmailSendRequest(BaseModel):
+    """Send uploaded act by email."""
+    doc_no: int = Field(..., description="DOCS.DOC_NO for attached act")
+    mode: Literal["auto", "selected"] = Field(
+        ..., description="auto - from/to employees; selected - explicit owner_nos"
+    )
+    from_employee: Optional[str] = Field(None, description="Sender employee full name from act")
+    to_employee: Optional[str] = Field(None, description="Recipient employee full name from act")
+    owner_nos: List[int] = Field(default_factory=list, max_length=200, description="Selected OWNER_NO list")
+    subject: Optional[str] = Field(None, max_length=300, description="Email subject")
+    body: Optional[str] = Field(None, max_length=10000, description="Email body")
+
+
+class UploadedActEmailRecipientStatus(BaseModel):
+    """Per-recipient status for uploaded act email send."""
+    owner_no: Optional[int] = Field(None, description="OWNER_NO if resolved")
+    employee_name: str = Field(..., description="Recipient display name")
+    email: Optional[str] = Field(None, description="Resolved email")
+    status: Literal["sent", "missing_email", "not_found", "error"] = Field(
+        ..., description="Recipient delivery status"
+    )
+    detail: Optional[str] = Field(None, description="Status details")
+
+
+class UploadedActEmailSendResponse(BaseModel):
+    """Uploaded act email sending result."""
+    doc_no: int = Field(..., description="DOC_NO")
+    subject: str = Field(..., description="Final email subject")
+    success_count: int = Field(..., description="Successfully sent count")
+    failed_count: int = Field(..., description="Failed count")
+    recipients: List[UploadedActEmailRecipientStatus] = Field(
+        default_factory=list, description="Per-recipient statuses"
+    )
+
+
+class EquipmentPhotoItem(BaseModel):
+    """Photo metadata for one FILES row attached to an equipment card."""
+    file_no: int = Field(..., description="FILES.FILE_NO")
+    file_name: str = Field("", description="Original file name")
+    description: str = Field("", description="Photo description (FILE_DESCR)")
+    size_mb: float = Field(0.0, description="File size in megabytes")
+    has_thumb: bool = Field(False, description="Whether FILE_SMALL_IMAGE_DATA exists")
+    created_at: str = Field("", description="Upload timestamp")
+    created_by: str = Field("", description="Uploader display name")
+    verified: bool = Field(False, description="Photo was checked by someone other than the uploader")
+    verified_by: str = Field("", description="Who verified the photo")
+    verified_at: Optional[str] = Field(None, description="When the photo was verified (ISO)")
+    can_verify: bool = Field(
+        False, description="The current user may verify it (not verified yet and not their own upload)"
+    )
+    can_unverify: bool = Field(
+        False, description="The current user may withdraw the mark (the one who set it or an administrator)"
+    )
+    rejected: bool = Field(False, description="Photo was rejected by someone other than the uploader")
+    rejected_by: str = Field("", description="Who rejected the photo")
+    rejected_at: Optional[str] = Field(None, description="When the photo was rejected (ISO)")
+    reject_reason: str = Field("", description="Why the photo was rejected")
+    can_reject: bool = Field(
+        False, description="The current user may reject it (not rejected yet and not their own upload)"
+    )
+    is_own: bool = Field(False, description="The current user uploaded this photo")
+    ocr_verdict: str = Field(
+        "",
+        description="Serial read from the photo vs the item serial: match | similar | mismatch | "
+        "label_no_serial | unreadable | no_label | '' (not analysed)",
+    )
+    ocr_serials: List[str] = Field(default_factory=list, description="Serial candidates read from the photo")
+
+
+class EquipmentPhotoOcrRun(BaseModel):
+    """State of the (background) photo recognition batch."""
+    running: bool = False
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    planned: int = 0
+    done: int = 0
+    errors: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+
+
+class EquipmentPhotoOcrSummary(BaseModel):
+    enabled: bool = False
+    configured: bool = False
+    store_available: bool = False
+    model: str = ""
+    photos_total: Optional[int] = None
+    analyzed: int = 0
+    pending: Optional[int] = None
+    items_confirmed: int = 0
+    items_similar: int = 0
+    items_mismatch: int = 0
+    run: EquipmentPhotoOcrRun = Field(default_factory=EquipmentPhotoOcrRun)
+
+
+class EquipmentPhotoOcrRunRequest(BaseModel):
+    limit: int = Field(100, ge=1, le=1000, description="How many photos to recognise in this run")
+
+
+class EquipmentPhotoOcrRunResponse(BaseModel):
+    started: bool
+    reason: str = ""
+
+
+class EquipmentPhotoRejectRequest(BaseModel):
+    """Reason is mandatory: the uploader has to know what to fix."""
+    reason: str = Field(..., min_length=1, max_length=500, description="Why the photo is not accepted")
+
+
+class EquipmentPhotoRotateRequest(BaseModel):
+    """Clockwise rotation; 270 is a quarter turn counter-clockwise."""
+    degrees: int = Field(..., description="90, 180 or 270 (clockwise)")
+
+
+class EquipmentPhotoListResponse(BaseModel):
+    """List of photos attached to an equipment card."""
+    item_id: int = Field(..., description="ITEMS.ID")
+    photos: List[EquipmentPhotoItem] = Field(default_factory=list)
+    verification_available: bool = Field(
+        False, description="False until the photo check table exists (migration not applied)"
+    )
+    verify_permitted: bool = Field(
+        False, description="The current user holds database.photo_verify"
+    )
+    serial_confirmed_by_photo: bool = Field(
+        False, description="A label photo of the item reads exactly as the recorded serial"
+    )
+    ocr_available: bool = Field(False, description="Photo recognition results exist / can be read")
+
+
+class EquipmentPhotoReviewItem(BaseModel):
+    """One row of the photo review queue (a rejected or not yet checked photo)."""
+    status: str = Field(..., description="rejected | unchecked")
+    item_id: int
+    file_no: int
+    inv_no: str = ""
+    model_name: str = ""
+    serial_no: str = ""
+    employee_name: str = ""
+    branch_name: str = ""
+    location_name: str = ""
+    created_at: str = ""
+    created_by: str = ""
+    uploaded_by_name: str = ""
+    rejected_by: str = ""
+    rejected_at: Optional[str] = None
+    reject_reason: str = ""
+    is_own: bool = False
+    uploaded_by_me: bool = False
+
+
+class EquipmentPhotoReviewResponse(BaseModel):
+    status: str
+    items: List[EquipmentPhotoReviewItem] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 0
+    reject_supported: bool = True
+    scan_capped: bool = False
+    since_days: int = 30
+
+
+class EquipmentPhotoReviewSummary(BaseModel):
+    rejected: int = 0
+    unchecked: int = 0
+    mine_rejected: int = 0
+    reject_supported: bool = True
+    scan_capped: bool = False
+    since_days: int = 30
+
+
+class EquipmentQualityRule(BaseModel):
+    """One data-quality rule tile; count/pct are null when the rule could not be computed."""
+    rule: str
+    title: str
+    description: str = ""
+    severity: str = "warning"
+    count: Optional[int] = None
+    total: int = 0
+    pct: Optional[float] = None
+    status: str = "ok"
+
+
+class EquipmentQualitySummary(BaseModel):
+    rules: List[EquipmentQualityRule] = Field(default_factory=list)
+    total: int = 0
+    as_of: str = ""
+    cached: bool = False
+
+
+class EquipmentQualityIssue(BaseModel):
+    item_id: int
+    inv_no: str = ""
+    serial_no: str = ""
+    type_name: str = ""
+    model_name: str = ""
+    employee_name: str = ""
+    branch_name: str = ""
+    location_name: str = ""
+    ip_address: str = ""
+    mac_address: str = ""
+    note: str = ""
+
+
+class EquipmentQualityIssuesResponse(BaseModel):
+    rule: str
+    items: List[EquipmentQualityIssue] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 0
+    status: str = "ok"
+
+
+class EquipmentPhotoUploadResponse(BaseModel):
+    """Result of a photo upload into FILES."""
+    file_no: int = Field(..., description="Created FILES.FILE_NO")
+    item_id: int = Field(..., description="ITEMS.ID")
+    file_name: str = Field("", description="Stored file name")
+
+
+class EquipmentPhotoUploadSessionCreate(BaseModel):
+    """Open (or re-open) a resumable photo upload."""
+    client_id: str = Field(..., min_length=8, max_length=128, description="Client-generated idempotency key")
+    file_name: str = Field("", max_length=255)
+    size: int = Field(..., gt=0, description="File size in bytes")
+    mime_type: Optional[str] = Field(None, max_length=100)
+    description: str = Field("", max_length=255)
+    sha256: Optional[str] = Field(None, description="Optional SHA-256 of the whole file (hex)")
+
+
+class EquipmentPhotoUploadSessionState(BaseModel):
+    """State of a resumable photo upload: what the server already has."""
+    upload_id: str
+    status: Literal["uploading", "complete"]
+    item_id: int
+    size: int
+    chunk_size: int
+    total_chunks: int
+    received: List[int] = Field(default_factory=list)
+    file_no: Optional[int] = None

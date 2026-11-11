@@ -1,0 +1,3412 @@
+import useRequestGuard from '../lib/useRequestGuard';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Alert,
+  Autocomplete,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Collapse,
+  Drawer,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  Grid,
+  IconButton,
+  MenuItem,
+  Paper,
+  Stack,
+  Tab,
+  Tabs,
+  TextField,
+  Tooltip,
+  Typography,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  useMediaQuery,
+} from '@mui/material';
+import { useTheme } from '@mui/material/styles';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import DownloadIcon from '@mui/icons-material/Download';
+import EditIcon from '@mui/icons-material/Edit';
+import SaveIcon from '@mui/icons-material/Save';
+import CloseIcon from '@mui/icons-material/Close';
+import AddIcon from '@mui/icons-material/Add';
+import DeleteIcon from '@mui/icons-material/Delete';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import PlaceIcon from '@mui/icons-material/Place';
+import SearchIcon from '@mui/icons-material/Search';
+import LockIcon from '@mui/icons-material/Lock';
+import LockOpenIcon from '@mui/icons-material/LockOpen';
+import MainLayout from '../components/layout/MainLayout';
+import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
+import PageTopBar from '../components/layout/PageTopBar';
+import PageShell from '../components/layout/PageShell';
+import InteractiveMapCanvas from '../components/networks/InteractiveMapCanvas';
+import BranchList from '../components/networks/BranchList';
+import EquipmentTab from '../components/networks/EquipmentTab';
+import SocketsTab from '../components/networks/SocketsTab';
+import AuditTab from '../components/networks/AuditTab';
+import DeviceDialog from '../components/networks/DeviceDialog';
+import MapDialog from '../components/networks/MapDialog';
+import ImportExportIcon from '@mui/icons-material/ImportExport';
+
+import { CreateBranchDialog, EditBranchDialog, DeleteBranchDialog } from '../components/networks/BranchDialogs';
+
+import { networksAPI } from '../api/client';
+import { databaseAPI } from '../api/database';
+import { useAuth } from '../contexts/AuthContext';
+import { useNotification } from '../contexts/NotificationContext';
+import { buildCacheKey, getOrFetchSWR, invalidateSWRCacheByPrefix } from '../lib/swrCache';
+import { POINT_POSITION_PARTS, loadBranchContextParts } from '../lib/networksBranchContext';
+import { createNavigateToastAction } from '../components/feedback/toastActions';
+import {
+  buildMapExportFileName,
+  downloadBlobFile,
+  formatSocketPort,
+  mapPanelSelectMenuProps,
+  normalizeMacField,
+  parseDownloadFilename,
+  socketKey,
+} from '../lib/networksHelpers';
+import {
+  buildPendingManualMeta,
+  buildSelectedPointPortOptions,
+  collectAvailableSites,
+  collectMatchedDeviceIds,
+  countDevicePorts,
+  countMatchedDevicePorts,
+  filterPointsForMap,
+  filterSockets,
+  findExactSocketMatches,
+  findEditingPort,
+  findPortOptionsBySocketInput,
+  findSocketOptionsByInput,
+  isBranchWidePortSearch as isBranchWidePortSearchFor,
+  makePortDraft,
+  resolveDisplayedPorts,
+  resolveFocusPointId,
+  resolveOptionValue,
+  resolvePendingLookupStatus,
+  resolvePortById,
+  resolveSocketForPort,
+  selectFreeSockets,
+  selectPointsForMap,
+  selectPortsWithSocket,
+} from './networks/networkResolution';
+import {
+  buildOfficeUiTokens,
+  getOfficeActionTraySx,
+  getOfficeDialogPaperSx,
+  getOfficeDrawerPaperSx,
+  getOfficePanelSx,
+  getOfficeSubtlePanelSx,
+} from '../theme/officeUiTokens';
+
+const SWR_STALE_MS = 60_000;
+
+function Networks() {
+  const navigate = useNavigate();
+  const { branchId } = useParams();
+  const branchIdNum = Number(branchId || 0) || null;
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission('networks.write');
+
+  // Validate branchId from URL - redirect if invalid
+  useEffect(() => {
+    if (branchId && (!branchIdNum || isNaN(Number(branchId)) || Number(branchId) <= 0)) {
+      console.warn('Invalid branchId in URL:', branchId);
+      navigate('/networks', { replace: true });
+    }
+  }, [branchId, branchIdNum, navigate]);
+
+  const [branches, setBranches] = useState([]);
+  const [activeDbId, setActiveDbId] = useState(() => String(localStorage.getItem('selected_database') || '').trim());
+
+  useEffect(() => {
+    const handleDbChange = (e) => {
+      setActiveDbId(String(e?.detail?.databaseId || localStorage.getItem('selected_database') || '').trim());
+    };
+    const handleStorageChange = (e) => {
+      if (e.key === 'selected_database') {
+        setActiveDbId(String(e.newValue || '').trim());
+      }
+    };
+    window.addEventListener('database-changed', handleDbChange);
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener('database-changed', handleDbChange);
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
+  const [overview, setOverview] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [ports, setPorts] = useState([]);
+  const [allBranchPorts, setAllBranchPorts] = useState([]);
+  const [maps, setMaps] = useState([]);
+  const [audit, setAudit] = useState([]);
+  const [mapPoints, setMapPoints] = useState([]);
+  const [sockets, setSockets] = useState([]);
+  const [socketSearch, setSocketSearch] = useState('');
+  const [socketCreateOpen, setSocketCreateOpen] = useState(false);
+  const [socketCreateSaving, setSocketCreateSaving] = useState(false);
+  const [socketCreateCode, setSocketCreateCode] = useState('');
+  const [socketCreateMac, setSocketCreateMac] = useState('');
+  const [socketDeleteOpen, setSocketDeleteOpen] = useState(false);
+  const [socketDeleteSaving, setSocketDeleteSaving] = useState(false);
+  const [socketDeleteTarget, setSocketDeleteTarget] = useState(null);
+
+  const [tab, setTab] = useState(isMobile ? 'maps' : 'equipment');
+  const [mobileMapEditMode, setMobileMapEditMode] = useState(false);
+  const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(true);
+  const [branchSearch, setBranchSearch] = useState('');
+  const [portSearch, setPortSearch] = useState('');
+  const [branchPortResults, setBranchPortResults] = useState([]);
+  const [branchPortLoading, setBranchPortLoading] = useState(false);
+
+  const [selectedDeviceId, setSelectedDeviceId] = useState(null);
+  const initialDeviceSelected = useRef(false); // tracks if first auto-select was done
+  const [selectedMapId, setSelectedMapId] = useState(null);
+  const [selectedPointId, setSelectedPointId] = useState(null);
+
+  const [mapBlobUrl, setMapBlobUrl] = useState('');
+  const [mapIsPdf, setMapIsPdf] = useState(false);
+  const [mapRenderedFrom, setMapRenderedFrom] = useState('');
+  const [addPointPanelOpen, setAddPointPanelOpen] = useState(false);
+  const [placingMarker, setPlacingMarker] = useState(false);
+  const [pendingPoint, setPendingPoint] = useState(null);
+  const [pendingPortId, setPendingPortId] = useState('');
+  const [pendingSocketId, setPendingSocketId] = useState('');
+  const [pendingSocketInput, setPendingSocketInput] = useState('');
+  const [pendingManualOpen, setPendingManualOpen] = useState(false);
+  const [createPointHint, setCreatePointHint] = useState(null);
+  const [mapPointSearch, setMapPointSearch] = useState('');
+  const [pointDetailsOpen, setPointDetailsOpen] = useState(false);
+  const [pointEditMode, setPointEditMode] = useState(false);
+  const [selectedPointSocketInput, setSelectedPointSocketInput] = useState('');
+  const [mobileMapPanelOpen, setMobileMapPanelOpen] = useState(false);
+  const [mobilePortEditorOpen, setMobilePortEditorOpen] = useState(false);
+
+  const [mapDialogOpen, setMapDialogOpen] = useState(false);
+  const [focusMapPointId, setFocusMapPointId] = useState(null);
+  const [mapEditId, setMapEditId] = useState(null);
+  const [mapFile, setMapFile] = useState(null);
+  const [mapTitle, setMapTitle] = useState('');
+  const [mapFloor, setMapFloor] = useState('');
+  const [mapSiteCode, setMapSiteCode] = useState('p19');
+
+  const [createBranchOpen, setCreateBranchOpen] = useState(false);
+  const [createBranchCode, setCreateBranchCode] = useState('');
+  const [createBranchName, setCreateBranchName] = useState('');
+  const [createBranchCity, setCreateBranchCity] = useState('tmn');
+  const [createBranchDefaultSiteCode, setCreateBranchDefaultSiteCode] = useState('');
+  const [createBranchDbId, setCreateBranchDbId] = useState('');
+  const [availableDatabases, setAvailableDatabases] = useState([]);
+  const [createPanelMode, setCreatePanelMode] = useState('uniform'); // 'uniform' or 'heterogeneous'
+  const [createPanelCount, setCreatePanelCount] = useState('6');
+  const [createPortsPerPanel, setCreatePortsPerPanel] = useState('48');
+  const [createPanels, setCreatePanels] = useState([{ id: 1, panelIndex: 1, portCount: 48 }]);
+  const [createFillMode, setCreateFillMode] = useState('manual');
+  const [createTemplateFile, setCreateTemplateFile] = useState(null);
+  const [createBranchSaving, setCreateBranchSaving] = useState(false);
+  const [fioResolving, setFioResolving] = useState(false);
+  const [fioResolveAttemptKey, setFioResolveAttemptKey] = useState('');
+  const [branchDbId, setBranchDbId] = useState('');
+  const [branchDbInitialId, setBranchDbInitialId] = useState('');
+  const [branchDbLoading, setBranchDbLoading] = useState(false);
+  const [branchDbReady, setBranchDbReady] = useState(false);
+  const [branchDbSaving, setBranchDbSaving] = useState(false);
+  const [equipImportLoading, setEquipImportLoading] = useState(false);
+  const equipImportRef = useRef(null);
+  const desktopMapPanelRef = useRef(null);
+  const addPointPanelRef = useRef(null);
+
+  // Branch edit dialog states
+  const [branchEditId, setBranchEditId] = useState(null);
+  const [branchEditName, setBranchEditName] = useState('');
+  const [branchDefaultSiteCode, setBranchDefaultSiteCode] = useState('');
+  const [branchEditDbId, setBranchEditDbId] = useState('');
+  const [branchEditDialogOpen, setBranchEditDialogOpen] = useState(false);
+  const [branchEditLoading, setBranchEditLoading] = useState(false);
+  const [branchEditSaving, setBranchEditSaving] = useState(false);
+
+  // Branch delete dialog states
+  const [branchDeleteId, setBranchDeleteId] = useState(null);
+  const [branchDeleteName, setBranchDeleteName] = useState('');
+  const [branchDeleteDialogOpen, setBranchDeleteDialogOpen] = useState(false);
+  const [branchDeleteSaving, setBranchDeleteSaving] = useState(false);
+
+  // Device dialog states
+  const [deviceDialogOpen, setDeviceDialogOpen] = useState(false);
+  const [deviceEditId, setDeviceEditId] = useState(null);
+  const [deviceSaving, setDeviceSaving] = useState(false);
+  const [deviceDeleting, setDeviceDeleting] = useState(false);
+
+  // Device form fields
+  const [deviceCode, setDeviceCode] = useState('');
+  const [deviceType, setDeviceType] = useState('switch');
+  const [deviceSiteCode, setDeviceSiteCode] = useState('');
+  const [deviceSiteName, setDeviceSiteName] = useState('');
+  const [deviceVendor, setDeviceVendor] = useState('');
+  const [deviceModel, setDeviceModel] = useState('');
+  const [deviceSheetName, setDeviceSheetName] = useState('');
+  const [deviceMgmtIp, setDeviceMgmtIp] = useState('');
+  const [deviceNotes, setDeviceNotes] = useState('');
+  const [devicePortCount, setDevicePortCount] = useState('');
+
+  // Auto-fill sheet_name based on device_code patterns
+  useEffect(() => {
+    const code = String(deviceCode || '').trim().toUpperCase();
+    if (!code) {
+      setDeviceSheetName('');
+      return;
+    }
+
+    // Skip if editing an existing device with an existing sheet_name
+    // Only auto-fill when creating a new device (deviceEditId is null)
+    if (deviceEditId && deviceSheetName) {
+      return;
+    }
+
+    // Pattern for determining sheet_name:
+    // ASW-P19-1 -> ASW-P19 (for grouping devices)
+    // SW-1 -> SW-1
+    // Take everything before the last hyphen
+    const parts = code.split('-');
+    if (parts.length >= 2) {
+      // Take prefix for grouping sheets (all but last part)
+      setDeviceSheetName(parts.slice(0, -1).join('-'));
+    } else if (parts.length === 1) {
+      // No hyphens - use entire code as sheet_name
+      setDeviceSheetName(code);
+    }
+  }, [deviceCode, deviceEditId]); // Track deviceCode and whether we're editing
+
+  const [loading, setLoading] = useState(false);
+  const [equipmentLoading, setEquipmentLoading] = useState(false);
+  const [socketsLoading, setSocketsLoading] = useState(false);
+  const [mapsLoading, setMapsLoading] = useState(false);
+  const [editingPortId, setEditingPortId] = useState(null);
+  const [portDraft, setPortDraft] = useState(null);
+  const [portSaving, setPortSaving] = useState(false);
+  const [socketAutocompleteOpen, setSocketAutocompleteOpen] = useState(false);
+  const [socketAutocompleteOptions, setSocketAutocompleteOptions] = useState([]);
+  const [selectedSocketId, setSelectedSocketId] = useState(null);
+  const deviceChipRefs = useRef(new Map());
+  const branchContextRequestSeq = useRef(0);
+  const branchPortsRequestSeq = useRef(0);
+  const {
+    notifySuccess: pushSuccessToast,
+    notifyInfo: pushInfoToast,
+    notifyWarning: pushWarningToast,
+    notifyError: pushErrorToast,
+  } = useNotification();
+  const networksToastAction = useMemo(() => createNavigateToastAction('/networks', 'Открыть сети'), []);
+
+  const clearPendingPointDraft = useCallback(() => {
+    setPendingPoint(null);
+    setPendingPortId('');
+    setPendingSocketId('');
+    setPendingSocketInput('');
+    setPendingManualOpen(false);
+  }, []);
+
+  const addPointDisabledReason = useMemo(() => {
+    if (!canEdit) return 'Нет прав на редактирование сети.';
+    if (!selectedMapId) return 'Выберите карту для размещения точки.';
+    if (mapIsPdf) return 'Для размещения точки нужна карта-изображение (PNG/JPG).';
+    return '';
+  }, [canEdit, selectedMapId, mapIsPdf]);
+
+  const togglePlacingMarker = useCallback(() => {
+    if (addPointDisabledReason) return;
+    setAddPointPanelOpen(true);
+    if (placingMarker) {
+      clearPendingPointDraft();
+      setPlacingMarker(false);
+      return;
+    }
+    clearPendingPointDraft();
+    setPlacingMarker(true);
+  }, [addPointDisabledReason, clearPendingPointDraft, placingMarker]);
+
+  useEffect(() => {
+    if (isMobile || !(addPointPanelOpen || placingMarker)) return undefined;
+
+    const panelNode = desktopMapPanelRef.current;
+    const targetNode = addPointPanelRef.current;
+    if (!panelNode || !targetNode) return undefined;
+
+    const syncExpandedPanel = () => {
+      const panelRect = panelNode.getBoundingClientRect();
+      const targetRect = targetNode.getBoundingClientRect();
+      const overflowBottom = targetRect.bottom - panelRect.bottom;
+      const overflowTop = targetRect.top - panelRect.top;
+
+      if (overflowBottom > 0) {
+        panelNode.scrollBy({ top: overflowBottom + 16, behavior: 'smooth' });
+        return;
+      }
+
+      if (overflowTop < 0) {
+        panelNode.scrollBy({ top: overflowTop - 16, behavior: 'smooth' });
+      }
+    };
+
+    const timeoutId = window.setTimeout(syncExpandedPanel, 180);
+    return () => window.clearTimeout(timeoutId);
+  }, [addPointPanelOpen, isMobile, placingMarker]);
+
+  // Helper function to extract error details from API errors
+  const getErrorDetail = useCallback((error) => {
+    if (!error) return 'Неизвестная ошибка';
+    return String(
+      error?.response?.data?.detail ||
+      error?.message ||
+      error?.toString() ||
+      'Неизвестная ошибка'
+    );
+  }, []);
+
+  const notifyError = useCallback((message) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushErrorToast(text, { source: 'networks', action: networksToastAction });
+  }, [networksToastAction, pushErrorToast]);
+
+  const notifySuccess = useCallback((message) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushSuccessToast(text, { source: 'networks', action: networksToastAction });
+  }, [networksToastAction, pushSuccessToast]);
+
+  const notifyInfo = useCallback((message) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushInfoToast(text, { source: 'networks', action: networksToastAction });
+  }, [networksToastAction, pushInfoToast]);
+
+  const notifyWarning = useCallback((message) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushWarningToast(text, { source: 'networks', action: networksToastAction });
+  }, [networksToastAction, pushWarningToast]);
+
+  const selectedBranch = useMemo(
+    () => branches.find((item) => Number(item.id) === Number(branchIdNum)) || null,
+    [branches, branchIdNum]
+  );
+
+  // Determine site code based on branch name
+  const determineSiteCode = useCallback((branchName) => {
+    const name = String(branchName || '').toLowerCase();
+
+    // Special cases for existing sites
+    if (name.includes('21') || name.includes('2324') || name.includes('c9300')) {
+      return 'p21';
+    }
+
+    // Full Cyrillic to Latin mapping for transliteration
+    const cyrillicToLatin = {
+      'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+      'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+      'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+      'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+      'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
+    };
+
+    // Extract street name and number for auto-generation
+    // Pattern: "Street Name Number" → "first_letter + number"
+    // Examples:
+    //   "Герцена 55" → "g55"
+    //   "Ленина 50" → "l50"
+    //   "Первомайская 19" → "p19"
+    //   "Вокзальная 30" → "v30"
+
+    // Find all numbers in the name
+    const numbers = name.match(/\d+/g);
+    const streetNumber = numbers ? numbers[numbers.length - 1] : null;
+
+    // Try to extract street name (word before the number)
+    let streetLetter = 'p'; // default
+    if (streetNumber) {
+      const numberIndex = name.lastIndexOf(streetNumber);
+      let textBeforeNumber = name.substring(0, numberIndex).trim();
+      let lastWordBeforeNumber = textBeforeNumber.split(/\s+/).pop()?.toLowerCase() || '';
+
+      // Transliterate first letter of the word
+      if (lastWordBeforeNumber.length > 0) {
+        const firstLetter = lastWordBeforeNumber[0];
+        streetLetter = cyrillicToLatin[firstLetter] || firstLetter;
+        // Take only first letter for multi-letter transliterations (zh, kh, ts, ch, sh, etc.)
+        if (streetLetter.length > 1) {
+          streetLetter = streetLetter[0];
+        }
+      }
+    }
+
+    return streetLetter + (streetNumber || '19');
+  }, []);
+
+  // Auto-generate default_site_code when branch name changes during creation
+  useEffect(() => {
+    if (createBranchOpen) {
+      const generated = createBranchName ? determineSiteCode(createBranchName) : 'p19';
+      setCreateBranchDefaultSiteCode(generated);
+    }
+  }, [createBranchOpen, createBranchName, determineSiteCode]);
+
+  const selectedDevice = useMemo(
+    () => devices.find((item) => Number(item.id) === Number(selectedDeviceId)) || null,
+    [devices, selectedDeviceId]
+  );
+
+  const selectedMap = useMemo(
+    () => maps.find((item) => Number(item.id) === Number(selectedMapId)) || null,
+    [maps, selectedMapId]
+  );
+
+  const selectedMapIsPdfSource = useMemo(() => {
+    const fileName = String(selectedMap?.file_name || '').toLowerCase();
+    const mimeType = String(selectedMap?.mime_type || '').toLowerCase();
+    return fileName.endsWith('.pdf') || mimeType.includes('application/pdf');
+  }, [selectedMap]);
+
+  const hasBranchDbChanges = useMemo(
+    () => String(branchDbId || '').trim() !== String(branchDbInitialId || '').trim(),
+    [branchDbId, branchDbInitialId]
+  );
+
+  const selectedPoint = useMemo(
+    () => mapPoints.find((item) => Number(item.id) === Number(selectedPointId)) || null,
+    [mapPoints, selectedPointId]
+  );
+
+  const selectedCluster = useMemo(() => {
+    if (!selectedPoint || !selectedMapId || !mapPoints.length) return null;
+    const sameCoords = mapPoints.filter((p) =>
+      Number(p.map_id) === Number(selectedMapId) &&
+      Math.abs(Number(p.x_ratio || 0) - Number(selectedPoint.x_ratio || 0)) < 0.015 &&
+      Math.abs(Number(p.y_ratio || 0) - Number(selectedPoint.y_ratio || 0)) < 0.015
+    ).sort((a, b) => {
+      const aName = String(a.patch_panel_port || a.device_code || a.id);
+      const bName = String(b.patch_panel_port || b.device_code || b.id);
+      return aName.localeCompare(bName, 'ru', { numeric: true });
+    });
+    return sameCoords.length > 1 ? sameCoords : null;
+  }, [selectedMapId, selectedPoint, mapPoints]);
+
+  const filteredBranches = useMemo(() => {
+    let result = branches;
+    if (activeDbId) {
+      result = result.filter((branch) => {
+        const branchDb = String(branch.db_id || '').trim();
+        return !branchDb || branchDb === activeDbId;
+      });
+    }
+
+    const query = String(branchSearch || '').trim().toLowerCase();
+    if (!query) return result;
+    return result.filter((branch) =>
+      [branch.name, branch.branch_code, branch.city_code]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query))
+    );
+  }, [branches, branchSearch, activeDbId]);
+
+  const isBranchWidePortSearch = useMemo(
+    () => isBranchWidePortSearchFor(portSearch),
+    [portSearch]
+  );
+
+  const displayedPorts = useMemo(
+    () => resolveDisplayedPorts({
+      branchWideSearch: isBranchWidePortSearch,
+      branchPortResults,
+      selectedDeviceId,
+      ports,
+      allBranchPorts,
+    }),
+    [isBranchWidePortSearch, branchPortResults, ports, selectedDeviceId, allBranchPorts]
+  );
+  const editingPort = useMemo(
+    () => findEditingPort(displayedPorts, editingPortId),
+    [displayedPorts, editingPortId]
+  );
+  const matchedDeviceIds = useMemo(
+    () => collectMatchedDeviceIds(displayedPorts, isBranchWidePortSearch),
+    [displayedPorts, isBranchWidePortSearch]
+  );
+
+  const matchedDevicePortCount = useMemo(
+    () => countMatchedDevicePorts(displayedPorts, isBranchWidePortSearch),
+    [displayedPorts, isBranchWidePortSearch]
+  );
+
+  const pointsForMap = useMemo(
+    () => selectPointsForMap(mapPoints, selectedMapId),
+    [mapPoints, selectedMapId]
+  );
+
+  const availableSites = useMemo(
+    () => collectAvailableSites(branches, branchIdNum, devices),
+    [branches, branchIdNum, devices]
+  );
+
+  const filteredPointsForMap = useMemo(
+    () => filterPointsForMap(pointsForMap, mapPointSearch),
+    [mapPointSearch, pointsForMap]
+  );
+
+  // All ports with patch_panel_port filled (for backward compatibility)
+  const allPortsWithSocket = useMemo(
+    () => selectPortsWithSocket(allBranchPorts),
+    [allBranchPorts]
+  );
+
+  // Free sockets - sockets without port_id (not assigned to any port)
+  const freeSockets = useMemo(() => selectFreeSockets(sockets), [sockets]);
+
+  const devicePortCounts = useMemo(() => countDevicePorts(allBranchPorts), [allBranchPorts]);
+
+  const filteredSockets = useMemo(
+    () => filterSockets(sockets, socketSearch),
+    [socketSearch, sockets]
+  );
+
+  const pendingPortOptions = useMemo(
+    () => findPortOptionsBySocketInput(allPortsWithSocket, pendingSocketInput),
+    [allPortsWithSocket, pendingSocketInput]
+  );
+
+  const pendingSocketOptions = useMemo(
+    () => findSocketOptionsByInput(sockets, pendingSocketInput),
+    [pendingSocketInput, sockets]
+  );
+
+  const pendingPortValue = useMemo(
+    () => resolveOptionValue(pendingPortId, pendingPortOptions),
+    [pendingPortId, pendingPortOptions]
+  );
+
+  const pendingSocketValue = useMemo(
+    () => resolveOptionValue(pendingSocketId, pendingSocketOptions),
+    [pendingSocketId, pendingSocketOptions]
+  );
+
+  const pendingSocketMatches = useMemo(
+    () => findExactSocketMatches(allPortsWithSocket, pendingSocketInput),
+    [allPortsWithSocket, pendingSocketInput]
+  );
+
+  const autoMatchedPendingPort = useMemo(
+    () => (pendingSocketMatches.length === 1 ? pendingSocketMatches[0] : null),
+    [pendingSocketMatches]
+  );
+
+  const effectivePendingPortId = useMemo(
+    () => Number(pendingPortId || autoMatchedPendingPort?.id || 0) || null,
+    [autoMatchedPendingPort, pendingPortId]
+  );
+
+  const effectivePendingSocketId = useMemo(
+    () => Number(pendingSocketId || 0) || null,
+    [pendingSocketId]
+  );
+
+  const resolvedPendingPort = useMemo(
+    () => resolvePortById(effectivePendingPortId, pendingPortOptions, allPortsWithSocket),
+    [allPortsWithSocket, effectivePendingPortId, pendingPortOptions]
+  );
+
+  const resolvedPendingSocket = useMemo(
+    () => resolveSocketForPort({
+      effectiveSocketId: effectivePendingSocketId,
+      socketOptions: pendingSocketOptions,
+      sockets,
+      resolvedPort: resolvedPendingPort,
+    }),
+    [effectivePendingSocketId, pendingSocketOptions, resolvedPendingPort, sockets]
+  );
+
+  const pendingLookupStatus = useMemo(
+    () => resolvePendingLookupStatus({
+      socketInput: pendingSocketInput,
+      resolvedPort: resolvedPendingPort,
+      resolvedSocket: resolvedPendingSocket,
+      exactMatchesCount: pendingSocketMatches.length,
+      portOptionsCount: pendingPortOptions.length,
+      socketOptionsCount: pendingSocketOptions.length,
+    }),
+    [
+      pendingPortOptions.length,
+      pendingSocketInput,
+      pendingSocketMatches.length,
+      pendingSocketOptions.length,
+      resolvedPendingPort,
+      resolvedPendingSocket,
+    ]
+  );
+
+  const pendingManualMeta = useMemo(
+    () => buildPendingManualMeta({
+      socketInput: pendingSocketInput,
+      portOptionsCount: pendingPortOptions.length,
+      socketOptionsCount: pendingSocketOptions.length,
+      socketsCount: Array.isArray(sockets) ? sockets.length : 0,
+    }),
+    [pendingPortOptions.length, pendingSocketInput, pendingSocketOptions.length, sockets]
+  );
+
+  const pendingCommitDisabled = useMemo(
+    () => !pendingPoint || (!resolvedPendingPort && !resolvedPendingSocket),
+    [pendingPoint, resolvedPendingPort, resolvedPendingSocket]
+  );
+
+  const pendingStatusSx = useMemo(() => {
+    const tones = {
+      default: {
+        borderColor: ui.borderSoft,
+        bgcolor: ui.panelInset,
+        color: 'text.secondary',
+      },
+      info: {
+        borderColor: ui.selectedBorder,
+        bgcolor: ui.selectedBg,
+        color: 'primary.main',
+      },
+      success: {
+        borderColor: 'success.main',
+        bgcolor: theme.palette.mode === 'dark' ? 'rgba(76,175,80,0.16)' : 'rgba(76,175,80,0.10)',
+        color: 'success.main',
+      },
+      warning: {
+        borderColor: 'warning.main',
+        bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,152,0,0.16)' : 'rgba(255,152,0,0.10)',
+        color: 'warning.main',
+      },
+      error: {
+        borderColor: 'error.main',
+        bgcolor: theme.palette.mode === 'dark' ? 'rgba(244,67,54,0.16)' : 'rgba(244,67,54,0.10)',
+        color: 'error.main',
+      },
+    };
+    return tones[pendingLookupStatus.tone] || tones.default;
+  }, [pendingLookupStatus.tone, theme.palette.mode, ui.borderSoft, ui.panelInset, ui.selectedBg, ui.selectedBorder]);
+
+  const selectedPointPortOptions = useMemo(
+    () => buildSelectedPointPortOptions({
+      allPortsWithSocket,
+      selectedPoint,
+      socketInput: selectedPointSocketInput,
+    }),
+    [allPortsWithSocket, selectedPoint, selectedPointSocketInput]
+  );
+
+  const selectedPointPortValue = useMemo(
+    () => (selectedPoint ? resolveOptionValue(selectedPoint.port_id, selectedPointPortOptions) : ''),
+    [selectedPoint, selectedPointPortOptions]
+  );
+
+  const selectedPointSocketMatches = useMemo(
+    () => findExactSocketMatches(allPortsWithSocket, selectedPointSocketInput),
+    [allPortsWithSocket, selectedPointSocketInput]
+  );
+
+  const focusPointId = useMemo(
+    () => resolveFocusPointId({
+      selectedPointId,
+      pointsForMap,
+      filteredPointsForMap,
+      mapPointSearch,
+      selectedDeviceId,
+      selectedMapId,
+    }),
+    [filteredPointsForMap, mapPointSearch, pointsForMap, selectedDeviceId, selectedMapId, selectedPointId]
+  );
+
+  const loadBranches = useCallback(async () => {
+    const { data } = await getOrFetchSWR(
+      buildCacheKey('networks', 'branches', 'tmn'),
+      async () => (await networksAPI.getBranches('tmn')).branches || [],
+      { staleTimeMs: SWR_STALE_MS }
+    );
+    setBranches(Array.isArray(data) ? data : []);
+  }, []);
+
+  const loadBranchContext = useCallback(async (id, force = false) => {
+    if (!id) return;
+    const requestSeq = ++branchContextRequestSeq.current;
+    const { data } = await getOrFetchSWR(
+      buildCacheKey('networks', 'branch-context', id),
+      async () => {
+        const results = await Promise.allSettled([
+          networksAPI.getBranchOverview(id),
+          networksAPI.getDevices(id),
+          networksAPI.getMaps(id),
+          networksAPI.getMapPoints(id),
+          networksAPI.getAudit({ branch_id: id, limit: 100 }),
+          networksAPI.getBranchSockets(id, { limit: 10000 }),
+        ]);
+
+        const [ovResult, dvResult, mpResult, ptResult, auResult, skResult] = results;
+
+        // Log errors for debugging
+        if (ovResult.status === 'rejected') console.error('Failed to load branch overview:', ovResult.reason);
+        if (dvResult.status === 'rejected') console.error('Failed to load devices:', dvResult.reason);
+        if (mpResult.status === 'rejected') console.error('Failed to load maps:', mpResult.reason);
+        if (ptResult.status === 'rejected') console.error('Failed to load map points:', ptResult.reason);
+        if (auResult.status === 'rejected') console.error('Failed to load audit:', auResult.reason);
+        if (skResult.status === 'rejected') console.error('Failed to load sockets:', skResult.reason);
+
+        return {
+          overview: ovResult.status === 'fulfilled' ? (ovResult.value || null) : null,
+          devices: Array.isArray(dvResult.value?.devices) ? dvResult.value.devices : [],
+          maps: Array.isArray(mpResult.value?.maps) ? mpResult.value.maps : [],
+          points: Array.isArray(ptResult.value?.points) ? ptResult.value.points : [],
+          audit: Array.isArray(auResult.value?.items) ? auResult.value.items : [],
+          sockets: Array.isArray(skResult.value?.sockets) ? skResult.value.sockets : [],
+          errors: {
+            overview: ovResult.status === 'rejected' ? String(ovResult.reason?.response?.data?.detail || ovResult.reason?.message || 'Unknown error') : null,
+            devices: dvResult.status === 'rejected' ? String(dvResult.reason?.response?.data?.detail || dvResult.reason?.message || 'Unknown error') : null,
+            maps: mpResult.status === 'rejected' ? String(mpResult.reason?.response?.data?.detail || mpResult.reason?.message || 'Unknown error') : null,
+            points: ptResult.status === 'rejected' ? String(ptResult.reason?.response?.data?.detail || ptResult.reason?.message || 'Unknown error') : null,
+            audit: auResult.status === 'rejected' ? String(auResult.reason?.response?.data?.detail || auResult.reason?.message || 'Unknown error') : null,
+            sockets: skResult.status === 'rejected' ? String(skResult.reason?.response?.data?.detail || skResult.reason?.message || 'Unknown error') : null,
+          },
+        };
+      },
+      { staleTimeMs: SWR_STALE_MS, force }
+    );
+    if (requestSeq !== branchContextRequestSeq.current) {
+      return;
+    }
+    setOverview(data?.overview || null);
+    setDevices(data?.devices || []);
+    setMaps(data?.maps || []);
+    setMapPoints(data?.points || []);
+    setAudit(data?.audit || []);
+    setSockets(data?.sockets || []);
+
+    // Store errors for user notification
+    if (data?.errors) {
+      const criticalErrors = Object.entries(data.errors)
+        .filter(([_, error]) => error !== null)
+        .map(([key, error]) => `${key}: ${error}`);
+
+      if (criticalErrors.length > 0) {
+        console.error('Branch context loading errors:', criticalErrors);
+        // Notify user about critical errors (overview/devices are critical)
+        if (data.errors.overview || data.errors.devices) {
+          notifyError(`Критическая ошибка: ${data.errors.overview || data.errors.devices}`);
+        }
+      }
+    }
+
+    // Set selected device/map only if data exists
+    // After initial auto-select, preserve user's choice (including null = "Все устройства")
+    if (data?.devices && data.devices.length > 0) {
+      setSelectedDeviceId((prev) => {
+        if (initialDeviceSelected.current && prev === null) return null; // user chose "Все устройства"
+        if (!initialDeviceSelected.current || !data.devices.some((d) => Number(d.id) === Number(prev))) {
+          initialDeviceSelected.current = true;
+          return data.devices[0].id;
+        }
+        return prev;
+      });
+    } else {
+      setSelectedDeviceId(null);
+    }
+
+    if (data?.maps && data.maps.length > 0) {
+      setSelectedMapId((prev) =>
+        data.maps.some((m) => Number(m.id) === Number(prev)) ? prev : data.maps[0].id
+      );
+    } else {
+      setSelectedMapId(null);
+    }
+  }, [notifyError]);
+
+  const beginPorts = useRequestGuard(JSON.stringify([branchIdNum, selectedDeviceId]));
+
+  const loadPorts = useCallback(async (deviceId, force = false) => {
+    const isCurrent = beginPorts();
+    if (!deviceId) {
+      setPorts([]);
+      return;
+    }
+    const { data } = await getOrFetchSWR(
+      buildCacheKey('networks', 'ports', deviceId),
+      async () => (await networksAPI.getPorts(deviceId)).ports || [],
+      { staleTimeMs: SWR_STALE_MS, force }
+    );
+    if (!isCurrent()) return;
+    setPorts(Array.isArray(data) ? data : []);
+  }, [beginPorts]);
+
+  const loadAllBranchPorts = useCallback(async (id, force = false) => {
+    if (!id) {
+      setAllBranchPorts([]);
+      return;
+    }
+    const requestSeq = ++branchPortsRequestSeq.current;
+    const { data } = await getOrFetchSWR(
+      buildCacheKey('networks', 'branch-ports-all', id),
+      async () => (await networksAPI.getBranchPorts(id, { limit: 10000 })).ports || [],
+      { staleTimeMs: SWR_STALE_MS, force }
+    );
+    if (requestSeq !== branchPortsRequestSeq.current) {
+      return;
+    }
+    setAllBranchPorts(Array.isArray(data) ? data : []);
+  }, []);
+
+  const partialRefreshSeq = useRef(0);
+
+  // Re-read only the parts a mutation can change (see networksBranchContext). The cached full context
+  // is dropped so the next full read is fresh; a full load that started meanwhile wins over this one.
+  const refreshBranchContextParts = useCallback(async (parts) => {
+    if (!branchIdNum) return;
+    invalidateSWRCacheByPrefix('networks', 'branch-context', branchIdNum);
+    const contextSeq = branchContextRequestSeq.current;
+    const partialSeq = ++partialRefreshSeq.current;
+    const { patch, errors } = await loadBranchContextParts(networksAPI, branchIdNum, parts);
+    Object.entries(errors).forEach(([part, reason]) => console.error(`Failed to refresh ${part}:`, reason));
+    if (contextSeq !== branchContextRequestSeq.current || partialSeq !== partialRefreshSeq.current) return;
+    if ('points' in patch) setMapPoints(patch.points);
+    if ('audit' in patch) setAudit(patch.audit);
+    if ('overview' in patch) setOverview(patch.overview);
+    if ('sockets' in patch) setSockets(patch.sockets);
+  }, [branchIdNum]);
+
+  const refreshBranchContext = useCallback(async () => {
+    if (!branchIdNum) return;
+    invalidateSWRCacheByPrefix('networks', 'branch-context', branchIdNum);
+    invalidateSWRCacheByPrefix('networks', 'branch-ports-all', branchIdNum);
+    await Promise.all([
+      loadBranchContext(branchIdNum, true),
+      loadAllBranchPorts(branchIdNum, true),
+    ]);
+  }, [branchIdNum, loadAllBranchPorts, loadBranchContext]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setLoading(true);
+        await loadBranches();
+      } catch (requestError) {
+        console.error('Failed to load branches:', requestError);
+        notifyError(`Не удалось загрузить филиалы: ${getErrorDetail(requestError)}`);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [loadBranches, notifyError, getErrorDetail]);
+
+  useEffect(() => {
+    const fetchDatabases = async () => {
+      try {
+        const data = await databaseAPI.getAvailableDatabases();
+        setAvailableDatabases(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error('Failed to fetch databases:', err);
+        setAvailableDatabases([]);
+      }
+    };
+    fetchDatabases();
+  }, []);
+
+  useEffect(() => {
+    if (!branchIdNum) {
+      setBranchDbId('');
+      setBranchDbInitialId('');
+      setBranchDbLoading(false);
+      setBranchDbReady(false);
+      setFioResolveAttemptKey('');
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        setBranchDbLoading(true);
+        setBranchDbReady(false);
+        const mapping = await networksAPI.getBranchDbMapping(branchIdNum);
+        if (cancelled) return;
+        const nextDbId = String(mapping?.db_id || '').trim();
+        setBranchDbId(nextDbId);
+        setBranchDbInitialId(nextDbId);
+        setBranchDbReady(true);
+        setFioResolveAttemptKey('');
+      } catch (requestError) {
+        if (cancelled) return;
+        console.error('Failed to load branch DB mapping:', requestError);
+        setBranchDbId('');
+        setBranchDbInitialId('');
+        setBranchDbReady(true);
+        setFioResolveAttemptKey('');
+      } finally {
+        if (!cancelled) setBranchDbLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [branchIdNum]);
+
+  useEffect(() => {
+    if (!branchIdNum) return;
+    let aborted = false;
+
+    void (async () => {
+      try {
+        setLoading(true);
+        await loadBranchContext(branchIdNum);
+      } catch (requestError) {
+        if (!aborted) {
+          console.error('Failed to load branch context:', requestError);
+          notifyError(`Не удалось загрузить данные филиала: ${getErrorDetail(requestError)}`);
+        }
+      } finally {
+        if (!aborted) setLoading(false);
+      }
+    })();
+
+    return () => {
+      aborted = true;
+    };
+  }, [branchIdNum, loadBranchContext, notifyError, getErrorDetail]);
+
+  useEffect(() => {
+    if (!branchIdNum) {
+      setAllBranchPorts([]);
+      return;
+    }
+    let aborted = false;
+
+    void (async () => {
+      try {
+        await loadAllBranchPorts(branchIdNum);
+      } catch (requestError) {
+        if (!aborted) {
+          console.error('Failed to load all branch ports:', requestError);
+          notifyError(`Не удалось загрузить порты филиала: ${getErrorDetail(requestError)}`);
+        }
+      }
+    })();
+
+    return () => {
+      aborted = true;
+    };
+  }, [branchIdNum, loadAllBranchPorts, notifyError, getErrorDetail]);
+
+  useEffect(() => {
+    if (!selectedDeviceId || !branchIdNum) {
+      setPorts([]);
+      return;
+    }
+    void loadPorts(selectedDeviceId);
+  }, [branchIdNum, selectedDeviceId, loadPorts]);
+
+  useEffect(() => {
+    if (!isBranchWidePortSearch || displayedPorts.length === 0) return;
+    const currentId = Number(selectedDeviceId || 0);
+    if (currentId && matchedDeviceIds.has(currentId)) return;
+    const firstDeviceId = Number(displayedPorts.find((item) => Number(item?.device_id || 0))?.device_id || 0);
+    if (firstDeviceId) {
+      setSelectedDeviceId(firstDeviceId);
+    }
+  }, [displayedPorts, isBranchWidePortSearch, matchedDeviceIds, selectedDeviceId]);
+
+  useEffect(() => {
+    const selectedId = Number(selectedDeviceId || 0);
+    if (!selectedId) return;
+    const node = deviceChipRefs.current.get(selectedId);
+    if (node && typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    const branchId = Number(branchIdNum || 0);
+    const searchValue = String(portSearch || '').trim();
+    if (!branchId || !searchValue) {
+      setBranchPortResults([]);
+      setBranchPortLoading(false);
+      return undefined;
+    }
+
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          setBranchPortLoading(true);
+          const response = await networksAPI.getBranchPorts(branchId, { search: searchValue, limit: 5000 });
+          if (!active) return;
+          setBranchPortResults(Array.isArray(response?.ports) ? response.ports : []);
+        } catch (requestError) {
+          if (!active) return;
+          console.error('Failed to search branch ports:', requestError);
+          setBranchPortResults([]);
+          notifyError(`Не удалось выполнить поиск портов: ${getErrorDetail(requestError)}`);
+        } finally {
+          if (active) setBranchPortLoading(false);
+        }
+      })();
+    }, 250);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [branchIdNum, notifyError, portSearch, getErrorDetail]);
+
+  useEffect(() => {
+    let currentUrl = '';
+    let aborted = false;
+
+    if (!selectedMapId) {
+      setMapBlobUrl('');
+      setMapIsPdf(false);
+      setMapRenderedFrom('');
+      return undefined;
+    }
+    void (async () => {
+      try {
+        const response = await networksAPI.downloadMapFile(selectedMapId, { render: 'auto' });
+        if (aborted) return;
+
+        const contentType = response?.headers?.['content-type'] || 'application/octet-stream';
+        const renderedFrom = String(response?.headers?.['x-map-rendered-from'] || '').toLowerCase();
+        const url = URL.createObjectURL(new Blob([response.data], { type: contentType }));
+        currentUrl = url;
+        setMapBlobUrl(url);
+        setMapIsPdf(String(contentType).toLowerCase().includes('pdf'));
+        setMapRenderedFrom(renderedFrom);
+      } catch (requestError) {
+        if (!aborted) {
+          console.error('Failed to download map file:', requestError);
+          notifyError(`Не удалось открыть карту: ${getErrorDetail(requestError)}`);
+        }
+      }
+    })();
+    return () => {
+      aborted = true;
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+    };
+  }, [selectedMapId, notifyError, getErrorDetail]);
+
+  useEffect(() => {
+    clearPendingPointDraft();
+    setPlacingMarker(false);
+    setAddPointPanelOpen(false);
+  }, [selectedMapId, clearPendingPointDraft]);
+
+  useEffect(() => {
+    if (!placingMarker) return;
+    const normalized = socketKey(pendingSocketInput);
+    if (!normalized) return;
+    if (pendingSocketMatches.length !== 1) return;
+    const nextPortId = String(pendingSocketMatches[0].id || '');
+    if (nextPortId && String(pendingPortId) !== nextPortId) {
+      setPendingPortId(nextPortId);
+    }
+  }, [pendingPortId, pendingSocketInput, pendingSocketMatches, placingMarker]);
+
+  useEffect(() => {
+    if (!placingMarker) return;
+    const normalized = socketKey(pendingSocketInput);
+    if (!normalized) return;
+    if (pendingSocketMatches.length !== 1 && !resolvedPendingPort && !resolvedPendingSocket) {
+      setPendingManualOpen(true);
+      return;
+    }
+    if (resolvedPendingPort || resolvedPendingSocket) {
+      setPendingManualOpen(false);
+    }
+  }, [
+    pendingSocketInput,
+    pendingSocketMatches.length,
+    placingMarker,
+    resolvedPendingPort,
+    resolvedPendingSocket,
+  ]);
+
+  useEffect(() => {
+    if (!pointEditMode || !selectedPoint) return;
+    setSelectedPointSocketInput(String(selectedPoint.patch_panel_port || ''));
+  }, [pointEditMode, selectedPointId]);
+
+  useEffect(() => {
+    if (!pointEditMode || !selectedPoint) return;
+    const normalized = socketKey(selectedPointSocketInput);
+    if (!normalized) return;
+    if (selectedPointSocketMatches.length !== 1) return;
+    const matchedPort = selectedPointSocketMatches[0];
+    if (Number(selectedPoint.port_id || 0) === Number(matchedPort.id || 0)) return;
+    setMapPoints((prev) =>
+      prev.map((point) => (point.id === selectedPoint.id
+        ? {
+          ...point,
+          port_id: matchedPort.id,
+          port_name: matchedPort.port_name || '',
+          patch_panel_port: matchedPort.patch_panel_port || '',
+          port_location_code: matchedPort.location_code || '',
+          endpoint_ip_raw: matchedPort.endpoint_ip_raw || '',
+          endpoint_mac_raw: matchedPort.endpoint_mac_raw || '',
+        }
+        : point))
+    );
+  }, [pointEditMode, selectedPoint, selectedPointSocketInput, selectedPointSocketMatches]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileMapPanelOpen(false);
+      setMobilePortEditorOpen(false);
+      return;
+    }
+    if (tab !== 'maps') {
+      setMobileMapPanelOpen(false);
+    }
+    if (tab !== 'equipment') {
+      setMobilePortEditorOpen(false);
+    }
+  }, [isMobile, tab]);
+
+  useEffect(() => {
+    if (!String(mapPointSearch || '').trim()) return;
+    if (filteredPointsForMap.length === 0) return;
+    const nextId = Number(filteredPointsForMap[0]?.id || 0) || null;
+    if (nextId && Number(selectedPointId) !== nextId) {
+      setSelectedPointId(nextId);
+    }
+  }, [filteredPointsForMap, mapPointSearch, selectedPointId]);
+
+  useEffect(() => {
+    if (!mapPointSearch) {
+      setFocusMapPointId(null);
+      return;
+    }
+    if (filteredPointsForMap.length === 1) {
+      setFocusMapPointId(filteredPointsForMap[0].id);
+    } else if (filteredPointsForMap.length > 1) {
+      setFocusMapPointId(null);
+    }
+  }, [filteredPointsForMap, mapPointSearch]);
+
+  const openMapDialogCreate = () => {
+    setMapEditId(null);
+    setMapFile(null);
+    setMapTitle('');
+    setMapFloor('');
+    setMapSiteCode('p19');
+    setMapDialogOpen(true);
+  };
+
+  const openMapDialogEdit = (map) => {
+    setMapEditId(map.id);
+    setMapFile(null);
+    setMapTitle(String(map.title || map.file_name || ''));
+    setMapFloor(String(map.floor_label || ''));
+    setMapSiteCode(String(map.site_code || 'p19'));
+    setMapDialogOpen(true);
+  };
+
+  const openOriginalMapFile = async () => {
+    if (!selectedMapId) return;
+    try {
+      const response = await networksAPI.downloadMapFile(selectedMapId, { render: 'original' });
+      const contentType = response?.headers?.['content-type'] || 'application/octet-stream';
+      const url = URL.createObjectURL(new Blob([response.data], { type: contentType }));
+      window.open(url, '_blank', 'noopener,noreferrer');
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError('Не удалось открыть оригинальный файл карты.');
+    }
+  };
+
+  const exportSelectedMapPdf = async () => {
+    if (!selectedMapId) return;
+    try {
+      const response = await networksAPI.exportMapPdf(selectedMapId);
+      const contentType = response?.headers?.['content-type'] || 'application/pdf';
+      const fallbackName = buildMapExportFileName(selectedMap);
+      const fileName = parseDownloadFilename(response?.headers?.['content-disposition'], fallbackName);
+      downloadBlobFile(new Blob([response.data], { type: contentType }), fileName);
+      notifySuccess('PDF-карта с точками экспортирована.');
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Не удалось экспортировать PDF-карту.');
+    }
+  };
+
+  const saveMap = async () => {
+    if (!branchIdNum) return;
+    try {
+      if (mapEditId) {
+        await networksAPI.updateMap(mapEditId, {
+          title: mapTitle.trim() || null,
+          floor_label: mapFloor.trim() || null,
+          site_code: mapSiteCode,
+          site_name: mapSiteCode === 'p21' ? 'Первомайская 21' : 'Первомайская 19',
+        });
+      } else {
+        if (!mapFile) {
+          notifyError('Выберите файл карты.');
+          return;
+        }
+        const formData = new FormData();
+        formData.append('branch_id', String(branchIdNum));
+        formData.append('file', mapFile);
+        formData.append('site_code', mapSiteCode);
+        formData.append('site_name', mapSiteCode === 'p21' ? 'Первомайская 21' : 'Первомайская 19');
+        if (mapTitle.trim()) formData.append('title', mapTitle.trim());
+        if (mapFloor.trim()) formData.append('floor_label', mapFloor.trim());
+        await networksAPI.uploadMap(formData);
+      }
+      setMapDialogOpen(false);
+      await refreshBranchContext();
+      notifySuccess(mapEditId ? 'Карта обновлена.' : 'Карта добавлена.');
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка сохранения карты.');
+    }
+  };
+
+  const removeMap = async (map) => {
+    const mapId = Number(map?.id || 0);
+    if (!mapId) return;
+    const mapTitle = String(map?.title || map?.file_name || `#${mapId}`).trim();
+    const confirmed = window.confirm(`Удалить карту "${mapTitle}"? Это действие нельзя отменить.`);
+    if (!confirmed) return;
+    try {
+      await networksAPI.deleteMap(mapId);
+      await refreshBranchContext();
+      notifySuccess('Карта удалена.');
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка удаления карты.');
+    }
+  };
+
+  const onMapClickAddPoint = ({ xRatio, yRatio }) => {
+    if (!placingMarker || !selectedMapId || !branchIdNum) {
+      setSelectedPointId(null);
+      setFocusMapPointId(null);
+      return;
+    }
+    setPendingPoint({ xRatio, yRatio });
+    notifyInfo('Позиция на карте выбрана. Выберите розетку или PORT P/P и сохраните.');
+  };
+
+  const onMapPointDrop = useCallback(async (pointIdOrIds, newX, newY) => {
+    const pointIds = Array.isArray(pointIdOrIds) ? pointIdOrIds : [pointIdOrIds];
+    // allSettled: part of a group may already be saved on the server when one point is rejected.
+    const results = await Promise.allSettled(
+      pointIds.map((id) => networksAPI.updateMapPoint(id, { x_ratio: newX, y_ratio: newY })),
+    );
+    const failed = results.filter((item) => item.status === 'rejected').length;
+    try {
+      // Always re-read so the screen shows what the server actually stored; a drag changes only points.
+      await refreshBranchContextParts(POINT_POSITION_PARTS);
+    } catch {
+      // The save result below is still reported.
+    }
+    if (failed === 0) {
+      notifySuccess('Позиция маркера сохранена.');
+    } else if (failed < pointIds.length) {
+      notifyError(`Часть маркеров не перемещена (${failed} из ${pointIds.length}). Показано актуальное положение.`);
+    } else {
+      notifyError('Ошибка перемещения маркера.');
+    }
+  }, [notifyError, notifySuccess, refreshBranchContextParts]);
+
+  const applySocketPointDraft = useCallback((socketLike) => {
+    const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
+    clearPendingPointDraft();
+    setPlacingMarker(true);
+    setPendingPortId(String(socketLike?.port_id || ''));
+    setPendingSocketId(String(socketLike?.socket_id || socketLike?.id || ''));
+    setPendingSocketInput(socketCode);
+    setAddPointPanelOpen(true);
+    setPointDetailsOpen(false);
+    if (isMobile) {
+      setMobileMapPanelOpen(true);
+    }
+  }, [clearPendingPointDraft, isMobile]);
+
+  const commitPendingPoint = async () => {
+    if (!pendingPoint || !selectedMapId || !branchIdNum) {
+      notifyError('Сначала выберите позицию на карте.');
+      return;
+    }
+    if (!resolvedPendingPort && !resolvedPendingSocket) {
+      notifyError('Выберите розетку или порт с заполненным PORT P/P.');
+      return;
+    }
+    const resolvedPortId = Number(resolvedPendingPort?.id || resolvedPendingSocket?.port_id || 0) || null;
+    const resolvedSocketId = Number(resolvedPendingSocket?.id || resolvedPendingPort?.socket_id || 0) || null;
+    const resolvedDeviceId = Number(resolvedPendingPort?.device_id || resolvedPendingSocket?.device_id || 0) || undefined;
+    if (!resolvedPortId && !resolvedSocketId) {
+      notifyError('Не удалось определить порт или розетку для привязки.');
+      return;
+    }
+    try {
+      await networksAPI.createMapPoint({
+        branch_id: branchIdNum,
+        map_id: selectedMapId,
+        device_id: resolvedDeviceId,
+        port_id: resolvedPortId || undefined,
+        socket_id: resolvedSocketId || undefined,
+        x_ratio: pendingPoint.xRatio,
+        y_ratio: pendingPoint.yRatio,
+        label: null,
+      });
+      clearPendingPointDraft();
+      setPlacingMarker(false);
+      setCreatePointHint(null);
+      await refreshBranchContext();
+      notifySuccess('Розетка привязана к карте.');
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка привязки розетки.');
+    }
+  };
+
+  const selectPoint = (point) => {
+    setSelectedPointId(point.id);
+    setPointEditMode(false);
+    setCreatePointHint(null);
+    if (point.device_id) {
+      setSelectedDeviceId(point.device_id);
+    }
+  };
+
+  const onMapPointSelect = (point) => {
+    selectPoint(point);
+    if (isMobile) {
+      setMobileMapPanelOpen(false);
+    }
+    setPointDetailsOpen(true);
+  };
+
+  const onPointRowSelect = (point) => {
+    selectPoint(point);
+  };
+
+  const saveSelectedPoint = async () => {
+    if (!selectedPoint) return;
+    const nextPortId = Number(selectedPoint.port_id || 0);
+    if (!nextPortId) {
+      notifyError('Для точки необходимо выбрать порт с заполненным PORT P/P.');
+      return;
+    }
+    try {
+      await networksAPI.updateMapPoint(selectedPoint.id, {
+        port_id: nextPortId,
+        label: selectedPoint.label || null,
+        note: selectedPoint.note || null,
+        color: selectedPoint.color || null,
+      });
+      await refreshBranchContext();
+      setPointEditMode(false);
+      notifySuccess('Точка обновлена.');
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка обновления точки.');
+    }
+  };
+
+  const removeSelectedPoint = async () => {
+    if (!selectedPoint) return;
+    try {
+      await networksAPI.deleteMapPoint(selectedPoint.id);
+      setSelectedPointId(null);
+      setPointEditMode(false);
+      await refreshBranchContext();
+      notifySuccess('Точка удалена.');
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка удаления точки.');
+    }
+  };
+
+  const startSocketPointCreation = (socketLike) => {
+    const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
+    const mapIdCandidate = Number(socketLike?.map_id || selectedMapId || maps?.[0]?.id || 0) || null;
+    setTab('maps');
+    if (!mapIdCandidate) {
+      setCreatePointHint(null);
+      notifyError('Для филиала не добавлена карта. Сначала загрузите карту.');
+      return;
+    }
+    const socketDraft = {
+      map_id: mapIdCandidate,
+      socket_code: socketCode,
+      socket_id: socketLike?.socket_id || socketLike?.id || '',
+      port_id: socketLike?.port_id || '',
+    };
+    setCreatePointHint(socketDraft);
+    setSelectedMapId(mapIdCandidate);
+    if (Number(selectedMapId || 0) !== Number(mapIdCandidate || 0)) {
+      window.setTimeout(() => applySocketPointDraft(socketDraft), 0);
+    } else {
+      applySocketPointDraft(socketDraft);
+    }
+    notifyWarning(
+      `Для розетки ${socketCode || '-'} точка не найдена. Нажмите на карту, чтобы создать точку и привязать розетку.`,
+    );
+  };
+
+  const handleSocketRowClick = (socketItem, event) => {
+    const target = event?.target;
+    if (target instanceof Element && target.closest('button, input, textarea, [role="button"], .MuiInputBase-root, .MuiIconButton-root, a, svg')) {
+      return;
+    }
+    if (!socketItem?.map_point_id) {
+      startSocketPointCreation(socketItem);
+      return;
+    }
+    setTab('maps');
+    if (socketItem?.map_id) setSelectedMapId(Number(socketItem.map_id));
+    if (socketItem?.device_id) setSelectedDeviceId(Number(socketItem.device_id));
+    setSelectedPointId(Number(socketItem.map_point_id));
+    setFocusMapPointId(Number(socketItem.map_point_id));
+    setPointDetailsOpen(false);
+  };
+
+  const openCreateSocketDialog = useCallback(() => {
+    setSocketCreateCode('');
+    setSocketCreateMac('');
+    setSocketCreateOpen(true);
+  }, []);
+
+  const closeCreateSocketDialog = useCallback(() => {
+    if (socketCreateSaving) return;
+    setSocketCreateOpen(false);
+  }, [socketCreateSaving]);
+
+  const createSocket = useCallback(async () => {
+    if (!branchIdNum) {
+      notifyError('Филиал не выбран.');
+      return;
+    }
+    const socketCode = String(socketCreateCode || '').trim();
+    if (!socketCode) {
+      notifyError('Укажите код розетки.');
+      return;
+    }
+    try {
+      setSocketCreateSaving(true);
+      await networksAPI.createSocket(branchIdNum, {
+        socket_code: socketCode,
+        mac_address: String(socketCreateMac || '').trim() || null,
+      });
+      setSocketCreateOpen(false);
+      await refreshBranchContext();
+      notifySuccess(`Розетка ${socketCode} добавлена.`);
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка добавления розетки.');
+    } finally {
+      setSocketCreateSaving(false);
+    }
+  }, [branchIdNum, socketCreateCode, socketCreateMac, notifyError, refreshBranchContext, notifySuccess]);
+
+  const requestDeleteSocket = useCallback((socketItem, event) => {
+    event?.stopPropagation?.();
+    if (!socketItem?.id) return;
+    setSocketDeleteTarget(socketItem);
+    setSocketDeleteOpen(true);
+  }, []);
+
+  const closeDeleteSocketDialog = useCallback(() => {
+    if (socketDeleteSaving) return;
+    setSocketDeleteOpen(false);
+    setSocketDeleteTarget(null);
+  }, [socketDeleteSaving]);
+
+  const confirmDeleteSocket = useCallback(async () => {
+    if (!socketDeleteTarget?.id) return;
+    try {
+      setSocketDeleteSaving(true);
+      await networksAPI.deleteSocket(socketDeleteTarget.id);
+      setSocketDeleteOpen(false);
+      setSocketDeleteTarget(null);
+      await refreshBranchContext();
+      notifySuccess(`Розетка ${socketDeleteTarget.socket_code || '-'} удалена.`);
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка удаления розетки.');
+    } finally {
+      setSocketDeleteSaving(false);
+    }
+  }, [socketDeleteTarget, refreshBranchContext, notifySuccess, notifyError]);
+
+  useEffect(() => {
+    const normalizedBranchId = Number(branchIdNum || 0);
+    if (!normalizedBranchId || fioResolving || branchDbLoading || !branchDbReady) return;
+    const normalizedDbId = String(branchDbId || '').trim();
+    const attemptKey = `${normalizedBranchId}:${normalizedDbId || '-'}`;
+    if (attemptKey === fioResolveAttemptKey) return;
+    setFioResolveAttemptKey(attemptKey);
+
+    const resolveSilently = async () => {
+      if (!normalizedDbId) {
+        notifyWarning('Для филиала не настроена БД для синхронизации по MAC. Выберите БД и сохраните.');
+        return;
+      }
+      try {
+        setFioResolving(true);
+        const res = await networksAPI.syncSocketHostContext(normalizedBranchId);
+        if (Number(res?.updated || res?.resolved || 0) > 0) {
+          notifySuccess(`Синхронизированы IP/MAC/ФИО по MAC для ${Number(res?.updated || res?.resolved || 0)} розеток/портов.`);
+          await refreshBranchContext();
+        }
+      } catch (err) {
+        console.error('Silent MAC sync error:', err);
+        notifyWarning(err?.response?.data?.detail || 'Ошибка синхронизации по MAC.');
+      } finally {
+        setFioResolving(false);
+      }
+    };
+    resolveSilently();
+  }, [branchIdNum, branchDbId, branchDbLoading, branchDbReady, fioResolveAttemptKey, fioResolving, notifySuccess, notifyWarning, refreshBranchContext]);
+
+  const handleEquipImport = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !branchIdNum) return;
+    e.target.value = '';
+    try {
+      setEquipImportLoading(true);
+      const form = new FormData();
+      form.append('excel_file', file);
+      const result = await networksAPI.importEquipment(branchIdNum, form);
+      const s = result?.summary || {};
+      const sheetsTotal = Number(s.sheets_total || 0);
+      const sheetsImported = Number(s.sheets_imported || 0);
+      const sheetsSkipped = Number(s.sheets_skipped || 0);
+      notifySuccess(
+        `Импорт завершён: листов ${sheetsImported}${sheetsTotal ? `/${sheetsTotal}` : ''}, устройств создано ${s.devices_created || 0}, обновлено ${s.devices_updated || 0}; портов ${s.ports_created || 0}`,
+      );
+      if (sheetsSkipped > 0) {
+        notifyWarning(`Пропущено листов без колонки Port: ${sheetsSkipped}`);
+      }
+      // Invalidate all caches so fresh data is loaded
+      invalidateSWRCacheByPrefix('networks', 'branch-context', branchIdNum);
+      invalidateSWRCacheByPrefix('networks', 'branch-ports-all', branchIdNum);
+      // Also invalidate per-device port caches (all devices in this branch)
+      invalidateSWRCacheByPrefix('networks', 'ports');
+      // Reset the current ports list so table shows correct state
+      setPorts([]);
+      setSelectedDeviceId(null);
+      // Reload branch context and all ports
+      await Promise.all([loadBranchContext(branchIdNum, true), loadAllBranchPorts(branchIdNum, true)]);
+    } catch (err) {
+      console.error(err);
+      notifyError(err?.response?.data?.detail || 'Ошибка импорта оборудования.');
+    } finally {
+      setEquipImportLoading(false);
+    }
+  };
+
+  const createBranchWithProfile = async () => {
+    const branchName = String(createBranchName || '').trim();
+    if (!branchName) {
+      notifyError('Заполните название филиала.');
+      return;
+    }
+
+    let payload = {
+      city_code: createBranchCity || 'tmn',
+      branch_name: branchName,
+      default_site_code: createBranchDefaultSiteCode || null,
+      db_id: createBranchDbId || null,
+    };
+
+    if (createFillMode !== 'template') {
+      if (createPanelMode === 'uniform') {
+        const panelCount = Number(createPanelCount || 0);
+        const portsPerPanel = Number(createPortsPerPanel || 0);
+        if (!panelCount || !portsPerPanel) {
+          notifyError('Укажите профиль патч-панелей.');
+          return;
+        }
+        payload.panel_count = panelCount;
+        payload.ports_per_panel = portsPerPanel;
+      } else {
+        // heterogeneous mode
+        if (!createPanels || createPanels.length === 0) {
+          notifyError('Добавьте хотя бы одну патч-панель.');
+          return;
+        }
+        payload.panels = createPanels.map(p => ({
+          panel_index: Number(p.panelIndex),
+          port_count: Number(p.portCount),
+        }));
+      }
+    }
+
+    if (createFillMode === 'template' && !createTemplateFile) {
+      notifyError('Выберите файл шаблона.');
+      return;
+    }
+
+    try {
+      setCreateBranchSaving(true);
+      const created = await networksAPI.createBranch(payload);
+      const createdBranchId = Number(created?.branch?.id || 0) || null;
+      const normalizedCreateDbId = String(createBranchDbId || '').trim();
+      if (createdBranchId && normalizedCreateDbId) {
+        try {
+          await networksAPI.updateBranchDbMapping(createdBranchId, { db_id: normalizedCreateDbId });
+        } catch (mappingError) {
+          console.error('Failed to save branch DB mapping after create:', mappingError);
+          notifyError(
+            mappingError?.response?.data?.detail
+            || 'Филиал создан, но БД для синхронизации по MAC не сохранена. Сохраните ее в параметрах филиала.',
+          );
+        }
+      }
+      if (createdBranchId && createFillMode === 'template' && createTemplateFile) {
+        const form = new FormData();
+        form.append('excel_file', createTemplateFile);
+        await networksAPI.importEquipment(createdBranchId, form);
+      }
+      setCreateBranchOpen(false);
+      setCreateBranchName('');
+      setCreateBranchDefaultSiteCode('');
+      setCreateBranchDbId('');
+      setCreatePanelMode('uniform');
+      setCreatePanelCount('6');
+      setCreatePortsPerPanel('48');
+      setCreatePanels([{ id: 1, panelIndex: 1, portCount: 48 }]);
+      setCreateFillMode('manual');
+      setCreateTemplateFile(null);
+      invalidateSWRCacheByPrefix('networks', 'branches', 'tmn');
+      await loadBranches();
+      notifySuccess('Филиал создан.');
+      if (createdBranchId) navigate(`/networks/${createdBranchId}`);
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка создания филиала.');
+    } finally {
+      setCreateBranchSaving(false);
+    }
+  };
+
+  const saveBranchDbMapping = async () => {
+    const normalizedBranchId = Number(branchIdNum || 0);
+    const normalizedDbId = String(branchDbId || '').trim();
+    if (!normalizedBranchId) return;
+    if (!normalizedDbId) {
+      notifyError('Выберите базу для синхронизации по MAC.');
+      return;
+    }
+    try {
+      setBranchDbSaving(true);
+      await networksAPI.updateBranchDbMapping(normalizedBranchId, { db_id: normalizedDbId });
+      setBranchDbInitialId(normalizedDbId);
+      setFioResolveAttemptKey('');
+      await loadBranches();
+      notifySuccess('База для синхронизации по MAC сохранена.');
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка сохранения базы для синхронизации по MAC.');
+    } finally {
+      setBranchDbSaving(false);
+    }
+  };
+
+  const openEditBranchDialog = async (branch) => {
+    setBranchEditId(branch.id);
+    setBranchEditName(String(branch.name || ''));
+    setBranchDefaultSiteCode(branch.default_site_code || '');
+    setBranchEditDbId('');
+    setBranchEditDialogOpen(true);
+    try {
+      setBranchEditLoading(true);
+      const mapping = await networksAPI.getBranchDbMapping(branch.id);
+      setBranchEditDbId(String(mapping?.db_id || ''));
+    } catch (err) {
+      console.error('Failed to load branch DB mapping for edit:', err);
+      setBranchEditDbId('');
+    } finally {
+      setBranchEditLoading(false);
+    }
+  };
+
+  const saveBranchEdit = async () => {
+    if (!branchEditId) return;
+    const normalizedName = String(branchEditName || '').trim();
+    if (!normalizedName) {
+      notifyError('Название филиала не может быть пустым.');
+      return;
+    }
+    try {
+      setBranchEditSaving(true);
+      await networksAPI.updateBranch(branchEditId, {
+        branch_name: normalizedName,
+        default_site_code: String(branchDefaultSiteCode || '').trim(),
+        db_id: String(branchEditDbId || '').trim(),
+      });
+      notifySuccess('Филиал обновлён');
+      if (Number(branchIdNum || 0) === Number(branchEditId || 0)) {
+        const currentDb = String(branchEditDbId || '').trim();
+        setBranchDbId(currentDb);
+        setBranchDbInitialId(currentDb);
+        setFioResolveAttemptKey('');
+        await refreshBranchContext();
+      }
+      invalidateSWRCacheByPrefix('networks', 'branches', 'tmn');
+      await loadBranches();
+      setBranchEditDialogOpen(false);
+    } catch (err) {
+      console.error(err);
+      notifyError(err?.response?.data?.detail || 'Ошибка обновления филиала.');
+    } finally {
+      setBranchEditSaving(false);
+    }
+  };
+
+  const openDeleteBranchDialog = (branch) => {
+    setBranchDeleteId(branch.id);
+    setBranchDeleteName(branch.name);
+    setBranchDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteBranch = async () => {
+    if (!branchDeleteId) return;
+    try {
+      setBranchDeleteSaving(true);
+      await networksAPI.deleteBranch(branchDeleteId);
+      notifySuccess('Филиал удалён');
+      invalidateSWRCacheByPrefix('networks', 'branches', 'tmn');
+      await loadBranches();
+      setBranchDeleteDialogOpen(false);
+      // Navigate away if we deleted the current branch
+      if (branchIdNum === branchDeleteId) {
+        navigate('/networks');
+      }
+    } catch (err) {
+      console.error(err);
+      notifyError(err?.response?.data?.detail || 'Ошибка удаления филиала.');
+    } finally {
+      setBranchDeleteSaving(false);
+    }
+  };
+
+  const addPanel = () => {
+    const nextIndex = createPanels.length > 0
+      ? Math.max(...createPanels.map(p => Number(p.panelIndex) || 0)) + 1
+      : 1;
+    setCreatePanels([...createPanels, { id: Date.now(), panelIndex: nextIndex, portCount: 48 }]);
+  };
+
+  const removePanel = (id) => {
+    setCreatePanels(createPanels.filter(p => p.id !== id));
+  };
+
+  const updatePanel = (id, field, value) => {
+    setCreatePanels(createPanels.map(p =>
+      p.id === id ? { ...p, [field]: value } : p
+    ));
+  };
+
+  const updatePanelPortCount = (id, value) => {
+    updatePanel(id, 'portCount', value);
+  };
+
+  const updatePanelIndex = (id, value) => {
+    updatePanel(id, 'panelIndex', value);
+  };
+
+  const startEditPort = (port, event) => {
+    event?.stopPropagation?.();
+    setEditingPortId(port.id);
+    setPortDraft(makePortDraft(port));
+    setSelectedSocketId(null); // Reset selected socket
+
+    // Load FREE socket options for autocomplete when editing starts
+    const currentSocketValue = String(port.patch_panel_port || '').trim();
+    const filteredFreeSockets = freeSockets.filter((socketItem) => {
+      if (!currentSocketValue) return true;
+      const socketKeyValue = socketKey(socketItem.socket_code);
+      const currentSocketKeyValue = socketKey(currentSocketValue);
+      return socketKeyValue.includes(currentSocketKeyValue) || currentSocketKeyValue.includes(socketKeyValue);
+    });
+
+    setSocketAutocompleteOptions(filteredFreeSockets);
+
+    if (isMobile) {
+      setMobilePortEditorOpen(true);
+    }
+  };
+
+  const cancelEditPort = (event) => {
+    event?.stopPropagation?.();
+    setEditingPortId(null);
+    setPortDraft(null);
+    setSelectedSocketId(null);
+    setSocketAutocompleteOpen(false);
+    setMobilePortEditorOpen(false);
+  };
+
+  const updatePortDraftField = (field, value) => {
+    setPortDraft((prev) => ({
+      ...(prev || {}),
+      [field]: value,
+    }));
+
+    // Update socket autocomplete options when patch_panel_port changes
+    if (field === 'patch_panel_port') {
+      const searchValue = String(value || '').trim();
+      if (!searchValue) {
+        setSocketAutocompleteOptions(freeSockets);
+      } else {
+        const filteredFreeSockets = freeSockets.filter((socketItem) => {
+          const socketKeyValue = socketKey(socketItem.socket_code);
+          const searchKeyValue = socketKey(searchValue);
+          return socketKeyValue.includes(searchKeyValue) || searchKeyValue.includes(socketKeyValue);
+        });
+        setSocketAutocompleteOptions(filteredFreeSockets);
+      }
+    }
+  };
+
+  // Device dialog handlers
+  const openCreateDeviceDialog = () => {
+    const defaultSiteCode = selectedBranch?.default_site_code || determineSiteCode(selectedBranch?.name);
+    setDeviceEditId(null);
+    setDeviceCode('');
+    setDeviceType('switch');           // Default: switch
+    setDeviceSiteCode(defaultSiteCode); // Smart default from branch name
+    setDeviceSiteName('');             // Not used - auto on backend
+    setDeviceVendor('');
+    setDeviceModel('');
+    setDeviceSheetName('');            // Will be auto from device_code
+    setDeviceMgmtIp('');
+    setDeviceNotes('');
+    setDevicePortCount('');            // Port count - only for new devices
+    setDeviceDialogOpen(true);
+  };
+
+  const openEditDeviceDialog = (device) => {
+    setDeviceEditId(device.id);
+    setDeviceCode(device.device_code || '');
+    setDeviceType(device.device_type || 'switch');
+    setDeviceSiteCode(device.site_code || '');
+    setDeviceSiteName(device.site_name || '');
+    setDeviceVendor(device.vendor || '');
+    setDeviceModel(device.model || '');
+    setDeviceSheetName(device.sheet_name || '');
+    setDeviceMgmtIp(device.mgmt_ip || '');
+    setDeviceNotes(device.notes || '');
+    setDevicePortCount('');          // Not used when editing
+    setDeviceDialogOpen(true);
+  };
+
+  const saveDevice = async () => {
+    const code = String(deviceCode || '').trim();
+    if (!code) {
+      notifyError('Код устройства обязателен.');
+      return;
+    }
+    if (!branchIdNum) {
+      notifyError('Филиал не выбран.');
+      return;
+    }
+    try {
+      setDeviceSaving(true);
+      const payload = {
+        branch_id: branchIdNum,
+        device_code: code,
+        device_type: deviceType || 'switch',
+        site_code: String(deviceSiteCode || '').trim() || null,
+        // site_name is auto-generated on backend via _ensure_site
+        vendor: String(deviceVendor || '').trim() || null,
+        model: String(deviceModel || '').trim() || null,
+        sheet_name: String(deviceSheetName || '').trim() || null,
+        mgmt_ip: String(deviceMgmtIp || '').trim() || null,
+        notes: String(deviceNotes || '').trim() || null,
+      };
+
+      if (deviceEditId) {
+        await networksAPI.updateDevice(deviceEditId, payload);
+        notifySuccess(`Устройство ${code} обновлено.`);
+        await refreshBranchContext();
+      } else {
+        const created = await networksAPI.createDevice(payload);
+        const deviceId = created?.id;
+        notifySuccess(`Устройство ${code} создано.`);
+
+        // Bootstrap ports if port count is specified
+        const portCount = Number(devicePortCount || 0);
+        if (deviceId && portCount > 0) {
+          try {
+            await networksAPI.bootstrapDevicePorts(deviceId, { port_count: portCount });
+            notifySuccess(`Создано ${portCount} портов.`);
+          } catch (portError) {
+            console.error('Failed to bootstrap ports:', portError);
+            notifyError('Не удалось создать порты.');
+          }
+        }
+
+        // Refresh branch context FIRST to update devices list
+        await refreshBranchContext();
+
+        // THEN select the newly created device so ports are loaded
+        if (deviceId) {
+          setSelectedDeviceId(deviceId);
+        }
+      }
+
+      setDeviceDialogOpen(false);
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка сохранения устройства.');
+    } finally {
+      setDeviceSaving(false);
+    }
+  };
+
+  const deleteDevice = async () => {
+    if (!deviceEditId) {
+      notifyError('Устройство не выбрано.');
+      return;
+    }
+    try {
+      setDeviceDeleting(true);
+      await networksAPI.deleteDevice(deviceEditId);
+      notifySuccess('Устройство удалено.');
+      if (Number(selectedDeviceId) === Number(deviceEditId)) {
+        setSelectedDeviceId(null);
+      }
+      await refreshBranchContext();
+      setDeviceDialogOpen(false);
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка удаления устройства.');
+    } finally {
+      setDeviceDeleting(false);
+    }
+  };
+
+  const savePortEdit = async (port, event) => {
+    event?.stopPropagation?.();
+    if (!editingPortId || !portDraft) return;
+    try {
+      setPortSaving(true);
+
+      // If a socket was selected, add socket_id to the payload
+      const payload = { ...portDraft };
+      payload.endpoint_mac_raw = normalizeMacField(payload.endpoint_mac_raw);
+      if (selectedSocketId) {
+        payload.socket_id = selectedSocketId;
+      }
+
+      const updatedPort = await networksAPI.updatePort(port.id, payload);
+      if (selectedDeviceId) {
+        invalidateSWRCacheByPrefix('networks', 'ports', selectedDeviceId);
+        await loadPorts(selectedDeviceId, true);
+      }
+      if (isBranchWidePortSearch && branchIdNum) {
+        const response = await networksAPI.getBranchPorts(branchIdNum, { search: String(portSearch || '').trim(), limit: 5000 });
+        setBranchPortResults(Array.isArray(response?.ports) ? response.ports : []);
+      }
+      await refreshBranchContext();
+      notifySuccess(`Порт ${portDraft.port_name || port.port_name} обновлён.`);
+      setEditingPortId(null);
+      setPortDraft(null);
+      setSelectedSocketId(null);
+      setMobilePortEditorOpen(false);
+      if (updatedPort?.requires_point_creation) {
+        startSocketPointCreation({
+          socket_id: updatedPort.socket_id,
+          socket_code: updatedPort.socket_code || updatedPort.patch_panel_port || portDraft.patch_panel_port,
+          port_id: updatedPort.id || port.id,
+          map_id: updatedPort.map_id || selectedMapId,
+        });
+      }
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Ошибка сохранения порта.');
+    } finally {
+      setPortSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Escape key
+      if (e.key === 'Escape') {
+        if (editingPortId) cancelEditPort(e);
+      }
+
+      // Ctrl + S or Meta + S
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        if (editingPortId) {
+          e.preventDefault();
+          const portObj = displayedPorts.find(p => Number(p.id) === Number(editingPortId)) || { id: editingPortId };
+          savePortEdit(portObj, e);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [editingPortId, displayedPorts, cancelEditPort, savePortEdit]);
+
+  const setDeviceChipRef = useCallback((deviceId, node) => {
+    const key = Number(deviceId || 0);
+    if (!key) return;
+    if (node) {
+      deviceChipRefs.current.set(key, node);
+    } else {
+      deviceChipRefs.current.delete(key);
+    }
+  }, []);
+
+  const handlePortRowClick = (port, event) => {
+    const target = event?.target;
+    if (target instanceof Element) {
+      if (target.closest('button, input, textarea, [role="button"], .MuiInputBase-root, .MuiIconButton-root, a, svg')) {
+        return;
+      }
+    }
+    if (!port?.id) return;
+    if (port.device_id) setSelectedDeviceId(Number(port.device_id));
+
+    const linkedPoint = mapPoints.find((point) => Number(point.socket_id) === Number(port.socket_id))
+      || mapPoints.find((point) => Number(point.port_id) === Number(port.id));
+    if (!linkedPoint) {
+      startSocketPointCreation({
+        socket_id: port.socket_id,
+        socket_code: port.socket_code || port.patch_panel_port,
+        port_id: port.id,
+        map_id: selectedMapId,
+      });
+      return;
+    }
+
+    setTab('maps');
+    if (linkedPoint.map_id) setSelectedMapId(Number(linkedPoint.map_id));
+    if (linkedPoint.device_id) setSelectedDeviceId(Number(linkedPoint.device_id));
+    setSelectedPointId(Number(linkedPoint.id));
+    setFocusMapPointId(Number(linkedPoint.id));
+    setPointDetailsOpen(false);
+  };
+
+  const mapSidePanelContent = (
+    <Stack
+      spacing={0.8}
+      sx={{
+        minWidth: 0,
+        minHeight: 0,
+        ...(!isMobile && placingMarker
+          ? {
+            height: '100%',
+          }
+          : {}),
+      }}
+    >
+      {isMobile && (
+        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.4 }}>
+          <Typography variant="subtitle2">Панель карты</Typography>
+          <IconButton size="small" onClick={() => setMobileMapPanelOpen(false)}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </Stack>
+      )}
+
+      {/* ═══ Выбор карты ═══ */}
+      <Paper elevation={0} sx={getOfficeActionTraySx(ui, { p: 1.2 })}>
+        <TextField select size="small" fullWidth label="Карта" value={selectedMapId || ''} onChange={(event) => setSelectedMapId(Number(event.target.value) || null)}>
+          {maps.map((map) => (
+            <MenuItem key={map.id} value={map.id}>{map.title || map.file_name}</MenuItem>
+          ))}
+        </TextField>
+        {canEdit && (
+          <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+            <Button size="small" onClick={() => selectedMap && openMapDialogEdit(selectedMap)} disabled={!selectedMap}>Правка</Button>
+            <Button size="small" color="error" onClick={() => selectedMap && void removeMap(selectedMap)} disabled={!selectedMap}>Удалить</Button>
+          </Stack>
+        )}
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 0.8 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => void exportSelectedMapPdf()}
+            disabled={!selectedMap}
+          >
+            Экспорт PDF
+          </Button>
+          {selectedMapIsPdfSource && (
+            <Button size="small" startIcon={<DownloadIcon />} onClick={() => void openOriginalMapFile()}>
+              Открыть оригинал PDF
+            </Button>
+          )}
+        </Stack>
+      </Paper>
+
+      {/* ═══ 1. Поиск и обзор ═══ */}
+      <Accordion
+        defaultExpanded
+        disableGutters
+        elevation={0}
+        sx={{
+          ...getOfficePanelSx(ui, {
+            borderColor: ui.borderSoft,
+            boxShadow: 'none',
+          }),
+          borderRadius: '8px !important',
+          '&:before': { display: 'none' },
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}
+      >
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+          <Stack direction="row" spacing={0.8} alignItems="center">
+            <SearchIcon sx={{ fontSize: 18, color: 'primary.main' }} />
+            <Typography variant="subtitle2">Поиск и обзор</Typography>
+            <Chip size="small" label={filteredPointsForMap.length} sx={{ height: 20, fontSize: '0.7rem' }} />
+          </Stack>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0, px: 1.2, pb: 1.2 }}>
+          <Stack spacing={1}>
+            <TextField
+              size="small"
+              label="Поиск на карте"
+              placeholder="PORT, розетка, IP, MAC"
+              value={mapPointSearch}
+              onChange={(event) => setMapPointSearch(event.target.value)}
+              InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 16, mr: 0.5, color: 'text.disabled' }} /> }}
+            />
+            {createPointHint && (
+              <Alert
+                severity="warning"
+                action={(
+                  <Stack direction="row" spacing={0.5}>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      onClick={() => startSocketPointCreation(createPointHint)}
+                    >
+                      Создать точку
+                    </Button>
+                    <IconButton size="small" onClick={() => setCreatePointHint(null)}>
+                      <CloseIcon fontSize="inherit" />
+                    </IconButton>
+                  </Stack>
+                )}
+              >
+                Точка для розетки {createPointHint.socket_code || '-'} не найдена.
+              </Alert>
+            )}
+            <TableContainer
+              sx={{
+                height: isMobile ? 200 : (placingMarker ? 140 : 260),
+                maxHeight: isMobile ? 200 : (placingMarker ? 140 : 260),
+                minHeight: isMobile ? 200 : (placingMarker ? 140 : 260),
+                overflowY: 'scroll',
+                overflowX: 'hidden',
+                scrollbarGutter: 'stable both-edges',
+                width: '100%',
+              }}
+            >
+              <Table size="small" stickyHeader sx={{ tableLayout: 'fixed' }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ width: '44%', py: 0.3, fontSize: '0.72rem', fontWeight: 700 }}>PORT P/P</TableCell>
+                    <TableCell sx={{ width: '56%', py: 0.3, fontSize: '0.72rem', fontWeight: 700 }}>PORT</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {filteredPointsForMap.map((point) => (
+                    <TableRow
+                      key={point.id}
+                      hover
+                      selected={Number(point.id) === Number(selectedPointId)}
+                      onClick={() => onPointRowSelect(point)}
+                      sx={{
+                        cursor: 'pointer',
+                        '& td': {
+                          py: 0.3,
+                          fontSize: '0.75rem',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        },
+                      }}
+                    >
+                      <TableCell>{point.patch_panel_port || '-'}</TableCell>
+                      <TableCell>{point.port_name || '-'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Stack>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* ═══ 2. Добавление точки ═══ */}
+      <Accordion
+        ref={addPointPanelRef}
+        disableGutters
+        elevation={0}
+        expanded={addPointPanelOpen}
+        onChange={(_, expanded) => setAddPointPanelOpen(Boolean(expanded))}
+        sx={{
+          ...getOfficePanelSx(ui, {
+            borderColor: placingMarker ? ui.selectedBorder : ui.borderSoft,
+            boxShadow: 'none',
+          }),
+          borderRadius: '8px !important',
+          '&:before': { display: 'none' },
+          overflow: 'hidden',
+          transition: 'border-color 0.2s',
+          ...(!isMobile && placingMarker
+            ? {
+              display: 'flex',
+              flexDirection: 'column',
+              flex: 1,
+              minHeight: 0,
+            }
+            : {}),
+        }}
+      >
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ width: '100%' }}>
+            <Stack direction="row" spacing={0.8} alignItems="center">
+              <PlaceIcon sx={{ fontSize: 18, color: placingMarker ? 'warning.main' : 'text.secondary' }} />
+              <Typography variant="subtitle2" color={placingMarker ? 'warning.main' : 'text.primary'}>
+                {placingMarker ? 'Размещение точки…' : 'Добавить точку'}
+              </Typography>
+            </Stack>
+            <Button
+              variant={placingMarker ? 'outlined' : 'contained'}
+              color={placingMarker ? 'warning' : 'primary'}
+              size="small"
+              disabled={Boolean(addPointDisabledReason)}
+              startIcon={placingMarker ? <CloseIcon /> : <PlaceIcon />}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                togglePlacingMarker();
+              }}
+            >
+              {placingMarker ? 'Отменить размещение' : 'Выбрать место на карте'}
+            </Button>
+          </Stack>
+        </AccordionSummary>
+        <AccordionDetails
+          sx={{
+            pt: 0,
+            px: 1.2,
+            pb: 1.2,
+            ...(!isMobile && placingMarker
+              ? {
+                display: 'flex',
+                flexDirection: 'column',
+                flex: 1,
+                minHeight: 0,
+                overflow: 'hidden',
+              }
+              : {}),
+          }}
+        >
+          <Stack spacing={1}>
+            {addPointDisabledReason ? (
+              <Alert severity={!canEdit ? 'warning' : 'info'}>
+                {addPointDisabledReason}
+              </Alert>
+            ) : null}
+
+            {placingMarker && (
+              <Paper
+                elevation={0}
+                sx={getOfficeSubtlePanelSx(ui, {
+                  p: 0.9,
+                  bgcolor: ui.actionBg,
+                  flex: !isMobile ? 1 : undefined,
+                  minHeight: !isMobile ? 0 : undefined,
+                  maxHeight: isMobile ? 'none' : 'none',
+                  overflowY: isMobile ? 'visible' : 'auto',
+                  overscrollBehavior: 'contain',
+                  scrollbarGutter: 'stable both-edges',
+                })}
+              >
+                <Stack spacing={0.85} sx={{ pb: 0.2 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.25 }}>
+                    {pendingPoint
+                      ? 'Позиция выбрана. Укажите PORT P/P или откройте ручное уточнение.'
+                      : 'Кликните по карте, затем укажите PORT P/P.'}
+                  </Typography>
+                  {pendingPoint ? (
+                    <Chip
+                      size="small"
+                      color="success"
+                      icon={<PlaceIcon />}
+                      label={`Координаты: X ${pendingPoint.xRatio.toFixed(3)} · Y ${pendingPoint.yRatio.toFixed(3)}`}
+                    />
+                  ) : (
+                    <Chip size="small" color="warning" variant="outlined" label="Координаты: не выбраны" />
+                  )}
+                  <TextField
+                    size="small"
+                    label="PORT P/P"
+                    placeholder="Напр. 6/46"
+                    value={pendingSocketInput}
+                    onChange={(event) => {
+                      setPendingSocketInput(event.target.value);
+                      setPendingPortId('');
+                      setPendingSocketId('');
+                    }}
+                  />
+                  <Box
+                    sx={{
+                      px: 1,
+                      py: 0.75,
+                      borderRadius: 1.5,
+                      border: '1px solid',
+                      borderColor: pendingStatusSx.borderColor,
+                      bgcolor: pendingStatusSx.bgcolor,
+                    }}
+                  >
+                    <Typography variant="caption" sx={{ color: pendingStatusSx.color, lineHeight: 1.25, fontWeight: 600 }}>
+                      {pendingLookupStatus.text}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ minWidth: 0 }}>
+                    <Button
+                      size="small"
+                      variant={pendingManualOpen ? 'outlined' : 'text'}
+                      onClick={() => setPendingManualOpen((prev) => !prev)}
+                      sx={{ flexShrink: 0 }}
+                    >
+                      {pendingManualOpen ? 'Скрыть уточнение' : 'Уточнить вручную'}
+                    </Button>
+                    <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, textAlign: 'right' }}>
+                      {pendingManualMeta}
+                    </Typography>
+                  </Stack>
+                  <Collapse in={pendingManualOpen} timeout="auto" unmountOnExit>
+                    <Stack spacing={0.85} sx={{ pt: 0.25 }}>
+                      <TextField
+                        select
+                        size="small"
+                        label="Розетка для привязки"
+                        value={pendingSocketValue}
+                        SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
+                        onChange={(event) => {
+                          const nextSocketId = String(event.target.value || '');
+                          const nextSocket = pendingSocketOptions.find((socketItem) => String(socketItem.id) === nextSocketId) || null;
+                          setPendingSocketId(nextSocketId);
+                          setPendingPortId(String(nextSocket?.port_id || ''));
+                          if (nextSocket?.socket_code) {
+                            setPendingSocketInput(String(nextSocket.socket_code));
+                          }
+                        }}
+                        helperText={pendingSocketOptions.length ? `${pendingSocketOptions.length} доступных розеток` : 'Розетки по фильтру не найдены'}
+                      >
+                        {pendingSocketOptions.map((socketItem) => (
+                          <MenuItem key={socketItem.id} value={String(socketItem.id)}>
+                            {socketItem.socket_code || '-'}{socketItem.device_code ? ` · ${socketItem.device_code}` : ''}{socketItem.port_name ? ` · PORT ${socketItem.port_name}` : ''}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      <TextField
+                        select
+                        size="small"
+                        label="PORT P/P для привязки"
+                        value={pendingPortValue}
+                        SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
+                        onChange={(event) => {
+                          const nextPortId = String(event.target.value || '');
+                          const nextPort = pendingPortOptions.find((port) => String(port.id) === nextPortId) || null;
+                          setPendingPortId(nextPortId);
+                          setPendingSocketId(String(nextPort?.socket_id || ''));
+                          if (nextPort?.patch_panel_port) {
+                            setPendingSocketInput(String(nextPort.patch_panel_port));
+                          }
+                        }}
+                        helperText={pendingPortOptions.length ? `${pendingPortOptions.length} доступных портов` : 'По вашему PORT P/P порты не найдены'}
+                      >
+                        {pendingPortOptions.map((port) => (
+                          <MenuItem key={port.id} value={String(port.id)}>
+                            {formatSocketPort(port)}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      {resolvedPendingPort && (
+                        <Typography variant="caption" color="text.secondary">
+                          {resolvedPendingPort.location_code ? `Локация: ${resolvedPendingPort.location_code} · ` : ''}
+                          {resolvedPendingPort.endpoint_ip_raw ? `IP: ${resolvedPendingPort.endpoint_ip_raw}` : 'IP не указан'}
+                        </Typography>
+                      )}
+                    </Stack>
+                  </Collapse>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={<PlaceIcon />}
+                    onClick={() => void commitPendingPoint()}
+                    disabled={pendingCommitDisabled}
+                  >
+                    Привязать розетку
+                  </Button>
+                </Stack>
+              </Paper>
+            )}
+          </Stack>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* ═══ 3. Детали точки ═══ */}
+      {selectedPoint && (
+        <Accordion
+          defaultExpanded
+          disableGutters
+          elevation={0}
+          sx={{
+            border: '1px solid',
+            borderColor: 'primary.main',
+            borderRadius: '8px !important',
+            '&:before': { display: 'none' },
+            overflow: 'hidden',
+          }}
+        >
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Stack direction="row" spacing={0.8} alignItems="center">
+              <PlaceIcon sx={{ fontSize: 18, color: 'primary.main' }} />
+              <Typography variant="subtitle2">Детали точки</Typography>
+            </Stack>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0, px: 1.2, pb: 1.2 }}>
+            <Stack spacing={0.8}>
+              {selectedCluster && selectedCluster.length > 1 && (
+                <Stack direction="row" spacing={0.5} sx={{ mb: 0.5, flexWrap: 'wrap', gap: 0.5 }}>
+                  {selectedCluster.map((p) => {
+                    const isSelf = Number(p.id) === Number(selectedPoint.id);
+                    const label = String(p.patch_panel_port || p.device_code || p.id);
+                    return (
+                      <Chip
+                        key={p.id}
+                        label={label}
+                        size="small"
+                        color={isSelf ? 'primary' : 'default'}
+                        onClick={() => setSelectedPointId(Number(p.id))}
+                        sx={{ cursor: 'pointer', height: 24, fontSize: '0.75rem' }}
+                      />
+                    );
+                  })}
+                </Stack>
+              )}
+              <Typography variant="caption" color="text.secondary">
+                {formatSocketPort(selectedPoint)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                📡 {selectedPoint.device_code || '-'}{selectedPoint.device_model ? ` · ${selectedPoint.device_model}` : ''}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                📍 {selectedPoint.port_location_code || '-'} · 🌐 {selectedPoint.endpoint_ip_raw || '-'} · 💻 {selectedPoint.endpoint_mac_raw || '-'}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem', lineHeight: 1.2 }}>
+                👤 {(() => {
+                  const pId = Number(selectedPoint.port_id || 0);
+                  const sId = Number(selectedPoint.socket_id || 0);
+                  let foundFio = selectedPoint.fio;
+                  if (!foundFio && pId) {
+                    const port = allPortsWithSocket?.find(p => Number(p.id) === pId);
+                    if (port?.fio) foundFio = port.fio;
+                  }
+                  if (!foundFio && sId) {
+                    const sock = sockets?.find(s => Number(s.id) === sId);
+                    if (sock?.fio) foundFio = sock.fio;
+                  }
+                  return foundFio || '-';
+                })()}
+              </Typography>
+
+              <Divider sx={{ my: 0.5 }} />
+
+              {pointEditMode ? (
+                <>
+                  <TextField
+                    size="small"
+                    label="PORT P/P"
+                    placeholder="Введите розетку, чтобы найти PORT"
+                    value={selectedPointSocketInput}
+                    onChange={(event) => setSelectedPointSocketInput(event.target.value)}
+                    helperText={selectedPointSocketInput
+                      ? (selectedPointSocketMatches.length === 1
+                        ? 'Найден 1 PORT и подставлен автоматически'
+                        : selectedPointSocketMatches.length > 1
+                          ? `Найдено ${selectedPointSocketMatches.length} портов, выберите нужный PORT`
+                          : 'Совпадений не найдено')
+                      : 'Идентичность точки определяется PORT P/P'}
+                  />
+                  <TextField
+                    select
+                    size="small"
+                    label="PORT для точки"
+                    value={selectedPointPortValue}
+                    SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
+                    onChange={(event) => {
+                      const nextPortId = Number(event.target.value) || null;
+                      const nextPort = selectedPointPortOptions.find((port) => Number(port.id) === Number(nextPortId)) || null;
+                      setMapPoints((prev) =>
+                        prev.map((p) => (p.id === selectedPoint.id
+                          ? {
+                            ...p,
+                            port_id: nextPortId,
+                            port_name: nextPort?.port_name || '',
+                            patch_panel_port: nextPort?.patch_panel_port || '',
+                            port_location_code: nextPort?.location_code || '',
+                            endpoint_ip_raw: nextPort?.endpoint_ip_raw || '',
+                            endpoint_mac_raw: nextPort?.endpoint_mac_raw || '',
+                          }
+                          : p))
+                      );
+                      if (nextPort?.patch_panel_port) {
+                        setSelectedPointSocketInput(String(nextPort.patch_panel_port));
+                      }
+                    }}
+                    helperText="Идентичность точки задается PORT P/P выбранного порта"
+                  >
+                    {selectedPointPortOptions.map((port) => (
+                      <MenuItem key={port.id} value={String(port.id)}>
+                        {formatSocketPort(port)}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                  <TextField size="small" label="Название точки" value={selectedPoint.label || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, label: event.target.value } : p)))} />
+                  <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
+                  <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
+                  <Stack direction="row" spacing={1}>
+                    <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()}>Сохранить</Button>
+                    <Button size="small" onClick={() => setPointEditMode(false)}>Отмена</Button>
+                    <Button size="small" color="error" onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                  </Stack>
+                </>
+              ) : (
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
+                  <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                </Stack>
+              )}
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
+      )}
+    </Stack>
+  );
+
+  // Вкладка «Карта»: без fullHeight, иначе overflow:hidden обрезает панель и убирает scroll страницы.
+  const mapsPageScroll = tab === 'maps';
+
+  return (
+    <MainLayout showDatabaseSelector headerMode="integrated">
+      <PageShell
+        fullHeight={!isMobile && !mapsPageScroll}
+        sx={isMobile
+          ? { pb: 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' }
+          : mapsPageScroll
+            ? { pb: 3 }
+            : { display: 'flex', flexDirection: 'column' }}
+      >
+        {isMobile ? <MobileShellPageHeader title="Сети" showDatabaseSelector /> : null}
+        {!isMobile && (
+          <PageTopBar
+            title="Сети"
+            sx={{ flexShrink: 0 }}
+            actions={canEdit ? (
+              <>
+                {!branchIdNum && (
+                  <Button size="small" variant="contained" onClick={() => { setCreateBranchDefaultSiteCode(''); setCreateBranchOpen(true); }}>
+                    Создать филиал
+                  </Button>
+                )}
+                {branchIdNum && <Button size="small" variant="contained" onClick={openMapDialogCreate}>Добавить карту</Button>}
+              </>
+            ) : null}
+          />
+        )}
+        {isMobile && canEdit && !branchIdNum && (
+          <Box sx={{ mb: 1 }}>
+            <Button fullWidth variant="contained" onClick={() => { setCreateBranchDefaultSiteCode(''); setCreateBranchOpen(true); }}>
+              Создать филиал
+            </Button>
+          </Box>
+        )}
+        {isMobile && canEdit && branchIdNum && (
+          <Box sx={{ mb: 1 }}>
+            <Button fullWidth variant="outlined" size="small" onClick={openMapDialogCreate}>Добавить карту</Button>
+          </Box>
+        )}
+
+        {!branchIdNum && (
+          <>
+            <Paper elevation={0} sx={getOfficeActionTraySx(ui, { p: 1.5, mb: 2 })}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Поиск филиала"
+                value={branchSearch}
+                onChange={(event) => setBranchSearch(event.target.value)}
+              />
+            </Paper>
+
+            <BranchList
+              branches={filteredBranches}
+              emptyHint={
+                branches.length > 0 && activeDbId && !String(branchSearch || '').trim()
+                  ? `Для базы ${activeDbId} нет привязанных филиалов. Выберите другую базу в переключателе вверху страницы.`
+                  : ''
+              }
+              canEdit={canEdit}
+              onBranchClick={(branch) => navigate(`/networks/${branch.id}`)}
+              onEditClick={openEditBranchDialog}
+              onDeleteClick={openDeleteBranchDialog}
+            />
+          </>
+        )}
+
+        {branchIdNum && (
+          <Paper elevation={0} sx={getOfficePanelSx(ui, isMobile
+            ? { p: 1 }
+            : mapsPageScroll
+              ? { p: 2 }
+              : { p: 2, display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }
+          )}>
+            {isMobile ? (
+              <Box sx={{ mb: 1, flexShrink: 0 }}>
+                {/* Компактная строка: назад + название + кнопка разворота */}
+                <Stack direction="row" alignItems="center" spacing={0.5}>
+                  <IconButton size="small" onClick={() => navigate('/networks')} sx={{ flexShrink: 0 }}>
+                    <ArrowBackIcon fontSize="small" />
+                  </IconButton>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="subtitle1" fontWeight={700} noWrap>
+                      {selectedBranch?.name || overview?.branch?.name || 'Филиал'}
+                    </Typography>
+                  </Box>
+                  <IconButton
+                    size="small"
+                    onClick={() => setMobileHeaderCollapsed((v) => !v)}
+                    sx={{ flexShrink: 0, transition: 'transform 0.2s', transform: mobileHeaderCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }}
+                  >
+                    <ExpandMoreIcon fontSize="small" />
+                  </IconButton>
+                </Stack>
+                {/* Схлопываемый блок с метриками */}
+                <Collapse in={!mobileHeaderCollapsed}>
+                  <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" alignItems="center" sx={{ mt: 0.8 }}>
+                    <Chip size="small" label={`Уст: ${overview?.metrics?.devices_count || 0}`} />
+                    <Chip size="small" label={`Порты: ${overview?.metrics?.ports_count || 0}`} />
+                    <Chip size="small" label={`Роз: ${overview?.metrics?.sockets_count || 0}`} />
+                    <Chip size="small" label={`Занято: ${overview?.metrics?.occupied_ports || 0}`} />
+                    <Chip size="small" label={`Карты: ${overview?.metrics?.maps_count || 0}`} />
+                    {canEdit && (
+                      <>
+                        <input hidden type="file" accept=".xlsx,.xlsm" ref={equipImportRef} onChange={handleEquipImport} />
+                        <Tooltip title={equipImportLoading ? 'Импорт...' : 'Импорт xlsx'}>
+                          <span>
+                            <Button size="small" variant="outlined" disabled={equipImportLoading}
+                              onClick={() => setTimeout(() => equipImportRef.current?.click(), 0)}
+                              startIcon={<ImportExportIcon />} sx={{ minWidth: 40 }}>
+                              xlsx
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      </>
+                    )}
+                  </Stack>
+                </Collapse>
+              </Box>
+            ) : (
+              <Stack direction="row" justifyContent="space-between" spacing={1.2} sx={{ mb: 1.5, flexShrink: 0 }}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <IconButton onClick={() => navigate('/networks')}><ArrowBackIcon /></IconButton>
+                  <Box>
+                    <Typography variant="h6">{selectedBranch?.name || overview?.branch?.name || 'Филиал'}</Typography>
+                    <Typography variant="body2" color="text.secondary">{selectedBranch?.branch_code || overview?.branch?.branch_code || '-'}</Typography>
+                  </Box>
+                </Stack>
+                <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" alignItems="center">
+                  <Chip size="small" label={`Уст: ${overview?.metrics?.devices_count || 0}`} />
+                  <Chip size="small" label={`Порты: ${overview?.metrics?.ports_count || 0}`} />
+                  <Chip size="small" label={`Розетки: ${overview?.metrics?.sockets_count || 0}`} />
+                  <Chip size="small" label={`Занято: ${overview?.metrics?.occupied_ports || 0}`} />
+                  <Chip size="small" label={`Карты: ${overview?.metrics?.maps_count || 0}`} />
+                  {canEdit && (
+                    <>
+                      <input hidden type="file" accept=".xlsx,.xlsm" ref={equipImportRef} onChange={handleEquipImport} />
+                      <Tooltip title={equipImportLoading ? 'Импорт...' : 'Импорт xlsx'}>
+                        <span>
+                          <Button size="small" variant="outlined" disabled={equipImportLoading}
+                            onClick={() => setTimeout(() => equipImportRef.current?.click(), 0)}
+                            startIcon={<ImportExportIcon />} sx={{ minWidth: { xs: 40, sm: 'auto' } }}>
+                            <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>
+                              {equipImportLoading ? 'Импорт...' : 'xlsx'}
+                            </Box>
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    </>
+                  )}
+                </Stack>
+              </Stack>
+            )}
+
+            <Tabs
+              value={tab}
+              onChange={(_, value) => setTab(value)}
+              sx={{ mb: 1.5, flexShrink: 0 }}
+              variant={isMobile ? 'scrollable' : 'standard'}
+              allowScrollButtonsMobile
+            >
+              {isMobile && <Tab value="maps" label="Карта" />}
+              <Tab value="equipment" label="Оборудование" />
+              <Tab value="sockets" label="Розетки" />
+              {!isMobile && <Tab value="maps" label="Карта" />}
+              <Tab value="history" label="История" />
+            </Tabs>
+
+            {tab === 'equipment' && (
+              <Box sx={isMobile ? {} : { display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }}>
+                <EquipmentTab
+                  isMobile={isMobile}
+                  canEdit={canEdit}
+                  isBranchWidePortSearch={isBranchWidePortSearch}
+                  selectedBranch={selectedBranch}
+                  devices={devices}
+                  devicePortCounts={devicePortCounts}
+                  selectedDeviceId={selectedDeviceId}
+                  selectedDevice={selectedDevice}
+                  matchedDeviceIds={matchedDeviceIds}
+                  matchedDevicePortCount={matchedDevicePortCount}
+                  portSearch={portSearch}
+                  setPortSearch={setPortSearch}
+                  displayedPorts={displayedPorts}
+                  branchPortLoading={branchPortLoading}
+                  editingPortId={editingPortId}
+                  portDraft={portDraft}
+                  portSaving={portSaving}
+                  socketAutocompleteOpen={socketAutocompleteOpen}
+                  setSocketAutocompleteOpen={setSocketAutocompleteOpen}
+                  socketAutocompleteOptions={socketAutocompleteOptions}
+                  socketKey={socketKey}
+                  openCreateDeviceDialog={openCreateDeviceDialog}
+                  openEditDeviceDialog={openEditDeviceDialog}
+                  setSelectedDeviceId={setSelectedDeviceId}
+                  setDeviceChipRef={setDeviceChipRef}
+                  handlePortRowClick={handlePortRowClick}
+                  startEditPort={startEditPort}
+                  cancelEditPort={cancelEditPort}
+                  updatePortDraftField={updatePortDraftField}
+                  savePortEdit={savePortEdit}
+                  setSelectedSocketId={setSelectedSocketId}
+                />
+              </Box>
+            )}
+
+            {tab === 'sockets' && (
+              <Box sx={isMobile ? {} : { display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }}>
+                <SocketsTab
+                  canEdit={canEdit}
+                  socketSearch={socketSearch}
+                  setSocketSearch={setSocketSearch}
+                  filteredSockets={filteredSockets}
+                  handleSocketRowClick={handleSocketRowClick}
+                  onCreateSocket={openCreateSocketDialog}
+                  onDeleteSocket={requestDeleteSocket}
+                  deletingSocketId={socketDeleteSaving ? Number(socketDeleteTarget?.id || 0) : null}
+                  pointEditMode={pointEditMode}
+                />
+              </Box>
+            )}
+
+            {tab === 'maps' && (
+              <>
+                <Grid container spacing={1.5}>
+                  <Grid item xs={12} lg={9}>
+                    {mapIsPdf ? (
+                      <Paper elevation={0} sx={getOfficePanelSx(ui, { p: 2, minHeight: 360 })}>
+                        <Typography variant="subtitle1" sx={{ mb: 0.6 }}>Выбрана PDF карта</Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.2 }}>
+                          Для интерактивной работы выберите карту-изображение (PNG/JPG).
+                        </Typography>
+                        <Button variant="contained" startIcon={<DownloadIcon />} component="a" href={mapBlobUrl || undefined} download="network-map.pdf">
+                          Скачать PDF
+                        </Button>
+                      </Paper>
+                    ) : (
+                      <Stack spacing={1}>
+                        {isMobile ? (
+                          <Box sx={{ mx: -1, mt: -0.5 }}>
+                            <InteractiveMapCanvas
+                              imageUrl={mapBlobUrl}
+                              points={pointsForMap}
+                              selectedPointId={selectedPointId}
+                              focusPointId={focusMapPointId}
+                              onPointSelect={onMapPointSelect}
+                              onPointDrop={mobileMapEditMode ? onMapPointDrop : undefined}
+                              onCanvasClick={mobileMapEditMode ? onMapClickAddPoint : undefined}
+                              disabled={!selectedMapId}
+                              mobile={true}
+                              height={{ xs: 'calc(100dvh - 148px)' }}
+                            />
+                          </Box>
+                        ) : (
+                          <InteractiveMapCanvas
+                            imageUrl={mapBlobUrl}
+                            points={pointsForMap}
+                            selectedPointId={selectedPointId}
+                            focusPointId={focusMapPointId}
+                            onPointSelect={onMapPointSelect}
+                            onPointDrop={onMapPointDrop}
+                            onCanvasClick={onMapClickAddPoint}
+                            disabled={!selectedMapId}
+                            mobile={false}
+                            height={{ xs: 500, md: 780, lg: 860 }}
+                          />
+                        )}
+                      </Stack>
+                    )}
+                    {isMobile && (
+                      <Stack direction="row" spacing={0.8} sx={{ mt: 1, px: 0 }}>
+                        <Button
+                          variant="contained"
+                          onClick={() => setMobileMapPanelOpen(true)}
+                          sx={{ flex: 2, minHeight: 44 }}
+                        >
+                          Панель карты
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          onClick={() => setPointDetailsOpen(true)}
+                          disabled={!selectedPoint}
+                          sx={{ flex: 2, minHeight: 44 }}
+                        >
+                          {selectedPoint
+                            ? String(selectedPoint.patch_panel_port || selectedPoint.port_name || '…').slice(0, 10)
+                            : 'Точка'}
+                        </Button>
+                        {canEdit && (
+                          <Tooltip title={mobileMapEditMode ? 'Режим просмотра (редактирование вкл.)' : 'Включить редактирование карты'}>
+                            <Button
+                              variant={mobileMapEditMode ? 'contained' : 'outlined'}
+                              color={mobileMapEditMode ? 'warning' : 'inherit'}
+                              onClick={() => setMobileMapEditMode((v) => !v)}
+                              sx={{ flex: 1, minHeight: 44, minWidth: 44, px: 1 }}
+                            >
+                              {mobileMapEditMode ? <LockOpenIcon /> : <LockIcon />}
+                            </Button>
+                          </Tooltip>
+                        )}
+                      </Stack>
+                    )}
+                  </Grid>
+
+                  {!isMobile && (
+                    <Grid item xs={12} lg={3}>
+                      <Box
+                        ref={desktopMapPanelRef}
+                        sx={{
+                          position: 'sticky',
+                          top: 12,
+                          maxHeight: 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 96px)',
+                          overflowY: 'auto',
+                          overflowX: 'hidden',
+                          scrollbarGutter: 'stable both-edges',
+                          scrollPaddingBottom: 24,
+                          pb: 1,
+                          pr: 0.25,
+                        }}
+                      >
+                        {mapSidePanelContent}
+                      </Box>
+                    </Grid>
+                  )}
+                </Grid>
+                {isMobile && (
+                  <Drawer
+                    anchor="bottom"
+                    open={mobileMapPanelOpen}
+                    onClose={() => setMobileMapPanelOpen(false)}
+                    PaperProps={{
+                      sx: getOfficeDrawerPaperSx(ui, {
+                        borderLeft: 'none',
+                        borderTop: '1px solid',
+                        borderTopLeftRadius: 20,
+                        borderTopRightRadius: 20,
+                        maxHeight: '90vh',
+                        p: 0,
+                        overflowY: 'auto',
+                      }),
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', justifyContent: 'center', pt: 1, pb: 0.5, flexShrink: 0 }}>
+                      <Box sx={{ width: 36, height: 4, borderRadius: 2, bgcolor: 'divider' }} />
+                    </Box>
+                    <Box sx={{ px: 1.5, pb: 1.5, overflowY: 'auto' }}>
+                      {mapSidePanelContent}
+                    </Box>
+                  </Drawer>
+                )}
+              </>
+            )}
+
+            {tab === 'history' && (
+              <AuditTab audit={audit} />
+            )}
+          </Paper>
+        )}
+
+        {isMobile && (
+          <Drawer
+            anchor="bottom"
+            open={pointDetailsOpen}
+            onClose={() => { setPointDetailsOpen(false); setPointEditMode(false); }}
+            PaperProps={{
+              sx: getOfficeDrawerPaperSx(ui, {
+                borderLeft: 'none',
+                borderTop: '1px solid',
+                borderTopLeftRadius: 20,
+                borderTopRightRadius: 20,
+                maxHeight: '88vh',
+                p: 0,
+              }),
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'center', pt: 1, pb: 0.5, flexShrink: 0 }}>
+              <Box sx={{ width: 36, height: 4, borderRadius: 2, bgcolor: 'divider' }} />
+            </Box>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 2, pb: 1, flexShrink: 0 }}>
+              <Typography variant="subtitle1" fontWeight={700}>Детали точки</Typography>
+              <IconButton size="small" onClick={() => { setPointDetailsOpen(false); setPointEditMode(false); }}>
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+            <Box sx={{ overflowY: 'auto', px: 2, pb: 2 }}>
+              {selectedPoint ? (
+                <Stack spacing={1} sx={{ mt: 0.5 }}>
+                  {selectedCluster && selectedCluster.length > 1 && (
+                    <Stack direction="row" spacing={0.5} sx={{ mb: 1, flexWrap: 'wrap', gap: 0.5 }}>
+                      {selectedCluster.map((p) => {
+                        const isSelf = Number(p.id) === Number(selectedPoint.id);
+                        const label = String(p.patch_panel_port || p.device_code || p.id);
+                        return (
+                          <Chip
+                            key={p.id}
+                            label={label}
+                            size="small"
+                            color={isSelf ? 'primary' : 'default'}
+                            onClick={() => setSelectedPointId(Number(p.id))}
+                            sx={{ cursor: 'pointer', height: 24, fontSize: '0.75rem' }}
+                          />
+                        );
+                      })}
+                    </Stack>
+                  )}
+                  <Typography variant="body2" fontWeight={600} color="primary.main">
+                    {formatSocketPort(selectedPoint)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    📡 {selectedPoint.device_code || '-'}{selectedPoint.device_model ? ` · ${selectedPoint.device_model}` : ''}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    📍 {selectedPoint.port_location_code || '-'} · 🌐 {selectedPoint.endpoint_ip_raw || '-'}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    💻 {selectedPoint.endpoint_mac_raw || '-'}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    👤 {(() => {
+                      const pId = Number(selectedPoint.port_id || 0);
+                      const sId = Number(selectedPoint.socket_id || 0);
+                      let foundFio = selectedPoint.fio;
+                      if (!foundFio && pId) { const port = allPortsWithSocket?.find(p => Number(p.id) === pId); if (port?.fio) foundFio = port.fio; }
+                      if (!foundFio && sId) { const sock = sockets?.find(s => Number(s.id) === sId); if (sock?.fio) foundFio = sock.fio; }
+                      return foundFio || '-';
+                    })()}
+                  </Typography>
+
+                  <Divider sx={{ my: 0.5 }} />
+
+                  {pointEditMode ? (
+                    <>
+                      <TextField
+                        size="small"
+                        label="PORT P/P"
+                        placeholder="Введите розетку, чтобы найти PORT"
+                        value={selectedPointSocketInput}
+                        onChange={(event) => setSelectedPointSocketInput(event.target.value)}
+                        helperText={selectedPointSocketInput
+                          ? (selectedPointSocketMatches.length === 1
+                            ? 'Найден 1 PORT и подставлен автоматически'
+                            : selectedPointSocketMatches.length > 1
+                              ? `Найдено ${selectedPointSocketMatches.length} портов, выберите нужный PORT`
+                              : 'Совпадений не найдено')
+                          : 'Идентичность точки определяется PORT P/P'}
+                      />
+                      <TextField
+                        select
+                        size="small"
+                        label="PORT для точки"
+                        value={selectedPointPortValue}
+                        SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
+                        onChange={(event) => {
+                          const nextPortId = Number(event.target.value) || null;
+                          const nextPort = selectedPointPortOptions.find((port) => Number(port.id) === Number(nextPortId)) || null;
+                          setMapPoints((prev) =>
+                            prev.map((p) => (p.id === selectedPoint.id
+                              ? {
+                                ...p,
+                                port_id: nextPortId,
+                                port_name: nextPort?.port_name || '',
+                                patch_panel_port: nextPort?.patch_panel_port || '',
+                                port_location_code: nextPort?.location_code || '',
+                                endpoint_ip_raw: nextPort?.endpoint_ip_raw || '',
+                                endpoint_mac_raw: nextPort?.endpoint_mac_raw || '',
+                              }
+                              : p))
+                          );
+                          if (nextPort?.patch_panel_port) {
+                            setSelectedPointSocketInput(String(nextPort.patch_panel_port));
+                          }
+                        }}
+                        helperText="Идентичность точки задается PORT P/P выбранного порта"
+                      >
+                        {selectedPointPortOptions.map((port) => (
+                          <MenuItem key={port.id} value={String(port.id)}>
+                            {formatSocketPort(port)}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      <TextField size="small" label="Название точки" value={selectedPoint.label || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, label: event.target.value } : p)))} />
+                      <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
+                      <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
+                      <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                        <Button size="large" variant="contained" fullWidth onClick={() => void saveSelectedPoint()}>Сохранить</Button>
+                        <Button size="large" variant="outlined" fullWidth onClick={() => setPointEditMode(false)}>Отмена</Button>
+                      </Stack>
+                      <Button size="large" color="error" variant="outlined" fullWidth onClick={() => void removeSelectedPoint()}>Удалить точку</Button>
+                    </>
+                  ) : (
+                    <Stack spacing={1} sx={{ mt: 0.5 }}>
+                      <Button size="large" variant="outlined" fullWidth startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
+                      <Button size="large" color="error" variant="outlined" fullWidth startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                    </Stack>
+                  )}
+                </Stack>
+              ) : (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Выберите точку на карте, чтобы увидеть информацию.
+                </Typography>
+              )}
+            </Box>
+          </Drawer>
+        )}
+        {!isMobile && (
+          <Dialog open={pointDetailsOpen} onClose={() => setPointDetailsOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
+          <DialogTitle>Детали точки карты</DialogTitle>
+          <DialogContent>
+            {selectedPoint ? (
+              <Stack spacing={1} sx={{ mt: 0.5 }}>
+                {selectedCluster && selectedCluster.length > 1 && (
+                  <Stack direction="row" spacing={0.5} sx={{ mb: 1, flexWrap: 'wrap', gap: 0.5 }}>
+                    {selectedCluster.map((p) => {
+                      const isSelf = Number(p.id) === Number(selectedPoint.id);
+                      const label = String(p.patch_panel_port || p.device_code || p.id);
+                      return (
+                        <Chip
+                          key={p.id}
+                          label={label}
+                          size="small"
+                          color={isSelf ? 'primary' : 'default'}
+                          onClick={() => setSelectedPointId(Number(p.id))}
+                          sx={{ cursor: 'pointer', height: 24, fontSize: '0.75rem' }}
+                        />
+                      );
+                    })}
+                  </Stack>
+                )}
+                <Typography variant="caption" color="text.secondary">
+                  {formatSocketPort(selectedPoint)}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  📡 {selectedPoint.device_code || '-'}{selectedPoint.device_model ? ` · ${selectedPoint.device_model}` : ''}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  📍 {selectedPoint.port_location_code || '-'} · 🌐 {selectedPoint.endpoint_ip_raw || '-'} · 💻 {selectedPoint.endpoint_mac_raw || '-'}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem', lineHeight: 1.2 }}>
+                  👤 {(() => {
+                    const pId = Number(selectedPoint.port_id || 0);
+                    const sId = Number(selectedPoint.socket_id || 0);
+                    let foundFio = selectedPoint.fio;
+                    if (!foundFio && pId) { const port = allPortsWithSocket?.find(p => Number(p.id) === pId); if (port?.fio) foundFio = port.fio; }
+                    if (!foundFio && sId) { const sock = sockets?.find(s => Number(s.id) === sId); if (sock?.fio) foundFio = sock.fio; }
+                    return foundFio || '-';
+                  })()}
+                </Typography>
+
+                <Divider sx={{ my: 0.5 }} />
+
+                {pointEditMode ? (
+                  <>
+                    <TextField
+                      size="small"
+                      label="PORT P/P"
+                      placeholder="Введите розетку, чтобы найти PORT"
+                      value={selectedPointSocketInput}
+                      onChange={(event) => setSelectedPointSocketInput(event.target.value)}
+                      helperText={selectedPointSocketInput
+                        ? (selectedPointSocketMatches.length === 1
+                          ? 'Найден 1 PORT и подставлен автоматически'
+                          : selectedPointSocketMatches.length > 1
+                            ? `Найдено ${selectedPointSocketMatches.length} портов, выберите нужный PORT`
+                            : 'Совпадений не найдено')
+                        : 'Идентичность точки определяется PORT P/P'}
+                    />
+                    <TextField
+                      select
+                      size="small"
+                      label="PORT для точки"
+                      value={selectedPointPortValue}
+                      SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
+                      onChange={(event) => {
+                        const nextPortId = Number(event.target.value) || null;
+                        const nextPort = selectedPointPortOptions.find((port) => Number(port.id) === Number(nextPortId)) || null;
+                        setMapPoints((prev) =>
+                          prev.map((p) => (p.id === selectedPoint.id
+                            ? {
+                              ...p,
+                              port_id: nextPortId,
+                              port_name: nextPort?.port_name || '',
+                              patch_panel_port: nextPort?.patch_panel_port || '',
+                              port_location_code: nextPort?.location_code || '',
+                              endpoint_ip_raw: nextPort?.endpoint_ip_raw || '',
+                              endpoint_mac_raw: nextPort?.endpoint_mac_raw || '',
+                            }
+                            : p))
+                        );
+                        if (nextPort?.patch_panel_port) {
+                          setSelectedPointSocketInput(String(nextPort.patch_panel_port));
+                        }
+                      }}
+                      helperText="Идентичность точки задается PORT P/P выбранного порта"
+                    >
+                      {selectedPointPortOptions.map((port) => (
+                        <MenuItem key={port.id} value={String(port.id)}>
+                          {formatSocketPort(port)}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                    <TextField size="small" label="Название точки" value={selectedPoint.label || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, label: event.target.value } : p)))} />
+                    <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
+                    <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
+                    <Stack direction="row" spacing={1}>
+                      <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()}>Сохранить</Button>
+                      <Button size="small" onClick={() => setPointEditMode(false)}>Отмена</Button>
+                      <Button size="small" color="error" onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                    </Stack>
+                  </>
+                ) : (
+                  <Stack direction="row" spacing={1}>
+                    <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
+                    <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                  </Stack>
+                )}
+              </Stack>
+            ) : (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                Выберите точку на карте, чтобы увидеть информацию.
+              </Typography>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setPointDetailsOpen(false)}>Закрыть</Button>
+          </DialogActions>
+        </Dialog>
+        )}
+
+        <Dialog open={socketCreateOpen} onClose={closeCreateSocketDialog} maxWidth="sm" fullWidth PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
+          <DialogTitle>Добавить розетку</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={1.2} sx={{ mt: 0.5 }}>
+              <TextField
+                size="small"
+                label="Код розетки (PORT P/P)"
+                placeholder="Например: 4-204"
+                required
+                value={socketCreateCode}
+                onChange={(event) => setSocketCreateCode(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    if (!socketCreateSaving) void createSocket();
+                  }
+                }}
+              />
+              <TextField
+                size="small"
+                label="MAC (опционально)"
+                value={socketCreateMac}
+                onChange={(event) => setSocketCreateMac(event.target.value)}
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={closeCreateSocketDialog} disabled={socketCreateSaving}>Отмена</Button>
+            <Button
+              variant="contained"
+              onClick={() => void createSocket()}
+              disabled={socketCreateSaving || !String(socketCreateCode || '').trim()}
+            >
+              Добавить
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog open={socketDeleteOpen} onClose={closeDeleteSocketDialog} maxWidth="xs" fullWidth PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
+          <DialogTitle>Удалить розетку</DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2">
+              Удалить розетку <strong>{socketDeleteTarget?.socket_code || '-'}</strong>?
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.7, display: 'block' }}>
+              Связи с портом и точкой карты будут сняты автоматически.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={closeDeleteSocketDialog} disabled={socketDeleteSaving}>Отмена</Button>
+            <Button color="error" variant="contained" onClick={() => void confirmDeleteSocket()} disabled={socketDeleteSaving}>
+              Удалить
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <DeviceDialog
+          open={deviceDialogOpen}
+          onClose={() => setDeviceDialogOpen(false)}
+          deviceEditId={deviceEditId}
+          deviceCode={deviceCode}
+          setDeviceCode={setDeviceCode}
+          deviceType={deviceType}
+          setDeviceType={setDeviceType}
+          deviceSiteCode={deviceSiteCode}
+          setDeviceSiteCode={setDeviceSiteCode}
+          deviceVendor={deviceVendor}
+          setDeviceVendor={setDeviceVendor}
+          deviceModel={deviceModel}
+          setDeviceModel={setDeviceModel}
+          deviceMgmtIp={deviceMgmtIp}
+          setDeviceMgmtIp={setDeviceMgmtIp}
+          deviceSheetName={deviceSheetName}
+          setDeviceSheetName={setDeviceSheetName}
+          deviceNotes={deviceNotes}
+          setDeviceNotes={setDeviceNotes}
+          devicePortCount={devicePortCount}
+          setDevicePortCount={setDevicePortCount}
+          deviceSaving={deviceSaving}
+          saveDevice={saveDevice}
+          deviceDeleting={deviceDeleting}
+          deleteDevice={deleteDevice}
+        />
+
+        <CreateBranchDialog
+          open={createBranchOpen}
+          onClose={() => setCreateBranchOpen(false)}
+          createBranchDbId={createBranchDbId}
+          setCreateBranchDbId={setCreateBranchDbId}
+          availableDatabases={availableDatabases}
+          createBranchName={createBranchName}
+          setCreateBranchName={setCreateBranchName}
+          createBranchDefaultSiteCode={createBranchDefaultSiteCode}
+          createPanelMode={createPanelMode}
+          setCreatePanelMode={setCreatePanelMode}
+          createPanelCount={createPanelCount}
+          setCreatePanelCount={setCreatePanelCount}
+          createPortsPerPanel={createPortsPerPanel}
+          setCreatePortsPerPanel={setCreatePortsPerPanel}
+          createPanels={createPanels}
+          addPanel={addPanel}
+          removePanel={removePanel}
+          updatePanelIndex={updatePanelIndex}
+          updatePanelPortCount={updatePanelPortCount}
+          createFillMode={createFillMode}
+          setCreateFillMode={setCreateFillMode}
+          createTemplateFile={createTemplateFile}
+          setCreateTemplateFile={setCreateTemplateFile}
+          createBranchSaving={createBranchSaving}
+          createBranchWithProfile={createBranchWithProfile}
+        />
+
+        <EditBranchDialog
+          open={branchEditDialogOpen}
+          onClose={() => setBranchEditDialogOpen(false)}
+          branchEditName={branchEditName}
+          setBranchEditName={setBranchEditName}
+          branchDefaultSiteCode={branchDefaultSiteCode}
+          setBranchDefaultSiteCode={setBranchDefaultSiteCode}
+          branchEditDbId={branchEditDbId}
+          setBranchEditDbId={setBranchEditDbId}
+          branchEditLoading={branchEditLoading}
+          availableDatabases={availableDatabases}
+          branchEditSaving={branchEditSaving}
+          saveBranchEdit={saveBranchEdit}
+        />
+
+        <DeleteBranchDialog
+          open={branchDeleteDialogOpen}
+          onClose={() => setBranchDeleteDialogOpen(false)}
+          branchDeleteName={branchDeleteName}
+          branchDeleteSaving={branchDeleteSaving}
+          confirmDeleteBranch={confirmDeleteBranch}
+        />
+
+        <MapDialog
+          open={mapDialogOpen}
+          onClose={() => setMapDialogOpen(false)}
+          mapEditId={mapEditId}
+          mapFile={mapFile}
+          setMapFile={setMapFile}
+          mapTitle={mapTitle}
+          setMapTitle={setMapTitle}
+          mapFloor={mapFloor}
+          setMapFloor={setMapFloor}
+          mapSiteCode={mapSiteCode}
+          setMapSiteCode={setMapSiteCode}
+          saveMap={saveMap}
+          sites={availableSites}
+        />
+
+        {loading && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Загрузка...</Typography>}
+
+      </PageShell>
+    </MainLayout>
+  );
+}
+
+export default Networks;

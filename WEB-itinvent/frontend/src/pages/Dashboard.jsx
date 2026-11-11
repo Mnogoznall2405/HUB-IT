@@ -1,0 +1,1525 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import DocflowAbsencesPanel from '../components/docflow/DocflowAbsencesPanel';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import {
+  Alert,
+  Box,
+  Button,
+  ButtonBase,
+  Chip,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  IconButton,
+  Paper,
+  Skeleton,
+  Stack,
+  Tooltip,
+  Typography,
+} from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
+import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
+import FactCheckOutlinedIcon from '@mui/icons-material/FactCheckOutlined';
+import ModeCommentOutlinedIcon from '@mui/icons-material/ModeCommentOutlined';
+import CampaignOutlinedIcon from '@mui/icons-material/CampaignOutlined';
+import MailOutlineRoundedIcon from '@mui/icons-material/MailOutlineRounded';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import NotificationsNoneRoundedIcon from '@mui/icons-material/NotificationsNoneRounded';
+import AddTaskRoundedIcon from '@mui/icons-material/AddTaskRounded';
+import SendRoundedIcon from '@mui/icons-material/SendRounded';
+import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
+import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import AssignmentTurnedInOutlinedIcon from '@mui/icons-material/AssignmentTurnedInOutlined';
+import LightbulbOutlinedIcon from '@mui/icons-material/LightbulbOutlined';
+import MainLayout from '../components/layout/MainLayout';
+import FeedbackDialog from '../components/feedback/FeedbackDialog';
+import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
+import AboutHubPromoCard from '../components/about/AboutHubPromoCard';
+import { hubAPI } from '../api/client';
+import { chatNotificationsAPI } from '../api/chatNotifications';
+import { mailNotificationsAPI } from '../api/mailNotifications';
+import { docflowAPI } from '../api/docflow';
+import { useAuth } from '../contexts/AuthContext';
+import {
+  DEFAULT_DASHBOARD_SECTIONS,
+  normalizeDashboardSections,
+  usePreferences,
+} from '../contexts/PreferencesContext';
+import { CHAT_FEATURE_ENABLED } from '../lib/chatFeature';
+import { CHAT_SOCKET_UNREAD_SUMMARY_EVENT } from '../lib/chatSocket';
+import {
+  hubRealtimeSocket,
+  HUB_REALTIME_CONNECTED_EVENT,
+  HUB_REALTIME_DASHBOARD_EVENT,
+  HUB_REALTIME_DOCFLOW_EVENT,
+  HUB_REALTIME_MAIL_EVENT,
+  HUB_REALTIME_NOTIFICATION_EVENT,
+  HUB_REALTIME_TASK_EVENT,
+} from '../lib/hubRealtimeSocket';
+import {
+  buildOfficeUiTokens,
+  getOfficeEmptyStateSx,
+  getOfficePanelSx,
+} from '../theme/officeUiTokens';
+
+const DASHBOARD_ANNOUNCEMENTS_LIMIT = 12;
+const DASHBOARD_TASKS_LIMIT = 40;
+const OPTIONAL_SECTION_KEYS = ['tasks', 'absences', 'communication', 'news'];
+const normalizeDashboardLayoutSections = (value, legacyValue) => {
+  const normalized = normalizeDashboardSections(value, legacyValue);
+  return [
+    'attention',
+    ...(normalized.includes('tasks') ? ['tasks'] : []),
+    ...normalized.filter((key) => ['absences', 'communication', 'news'].includes(key)),
+  ];
+};
+
+const SECTION_META = {
+  attention: {
+    title: 'Требует внимания',
+    description: 'То, где нужна ваша реакция сейчас.',
+  },
+  tasks: {
+    title: 'Ближайшие задачи',
+    description: 'До пяти открытых задач с ближайшими сроками.',
+  },
+  absences: {
+    title: 'Отсутствуют сегодня',
+    description: 'Кто в отпуске, на больничном или в командировке.',
+  },
+  communication: {
+    title: 'Связь',
+    description: 'Непрочитанные сообщения и уведомления.',
+  },
+  news: {
+    title: 'Последние новости',
+    description: 'Новые и важные сообщения компании.',
+  },
+};
+
+const EMPTY_DASHBOARD = {
+  announcements: { items: [], total: 0 },
+  my_tasks: { items: [], total: 0 },
+  unread_counts: {},
+  summary: {},
+  absences_today: { count: 0, items: [] },
+};
+
+const formatAbsenceRange = (item) => {
+  const start = String(item?.starts_on || '').slice(0, 10);
+  const end = String(item?.ends_on || '').slice(0, 10);
+  if (!start) return '';
+  if (!end || end === start) {
+    return new Date(`${start}T00:00:00`).toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+  }
+  const startLabel = new Date(`${start}T00:00:00`).toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+  const endLabel = new Date(`${end}T00:00:00`).toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+  return `${startLabel} — ${endLabel}`;
+};
+
+const absenceInitials = (name) => {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  return parts.slice(0, 2).map((part) => part[0]?.toLocaleUpperCase('ru-RU') || '').join('') || '?';
+};
+
+const formatShortDateTime = (value) => {
+  const parsed = new Date(value || '');
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const formatDueLabel = (value) => {
+  const parsed = new Date(value || '');
+  if (Number.isNaN(parsed.getTime())) return 'Без срока';
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  const diffDays = Math.round((target.getTime() - today.getTime()) / 86_400_000);
+  const time = parsed.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  if (diffDays < 0) return `Просрочено · ${parsed.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' })}`;
+  if (diffDays === 0) return `Сегодня · ${time}`;
+  if (diffDays === 1) return `Завтра · ${time}`;
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+export const getGreeting = (date = new Date()) => {
+  const hour = date.getHours();
+  if (hour < 6) return 'Доброй ночи';
+  if (hour < 12) return 'Доброе утро';
+  if (hour < 18) return 'Добрый день';
+  return 'Добрый вечер';
+};
+
+export const getFirstName = (user) => {
+  const explicitFirstName = String(user?.first_name || '').trim();
+  if (explicitFirstName) return explicitFirstName;
+  const value = String(user?.full_name || user?.display_name || user?.username || '').trim();
+  const parts = value.split(/\s+/).filter(Boolean);
+  if (parts.length >= 3) return parts[1];
+  return parts[0] || 'коллега';
+};
+
+function SectionSurface({ sectionKey, children, action, emphasis = false }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const meta = SECTION_META[sectionKey];
+  return (
+    <Paper
+      data-testid={`dashboard-section-${sectionKey}`}
+      sx={getOfficePanelSx(ui, {
+        position: 'relative',
+        borderRadius: { xs: 0, sm: '18px' },
+        borderWidth: { xs: 0, sm: 1 },
+        bgcolor: { xs: 'transparent', sm: ui.panelSolid },
+        boxShadow: 'none',
+        overflow: 'hidden',
+        minWidth: 0,
+        ...(emphasis ? {
+          '&::before': {
+            content: '""',
+            position: 'absolute',
+            top: 0,
+            left: { xs: 0, sm: 18 },
+            right: { xs: 0, sm: 18 },
+            height: 3,
+            borderRadius: '0 0 999px 999px',
+            bgcolor: 'primary.main',
+          },
+        } : {}),
+      })}
+    >
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        spacing={1}
+        sx={{
+          minHeight: { xs: 44, sm: 56 },
+          px: { xs: 0.25, sm: 1.6 },
+          pt: emphasis ? { xs: 0.65, sm: 1.45 } : { xs: 0.4, sm: 1.25 },
+          pb: { xs: 0.65, sm: 1 },
+        }}
+      >
+        <Typography
+          sx={{
+            minWidth: 0,
+            fontWeight: 900,
+            lineHeight: 1.15,
+            letterSpacing: '-0.015em',
+            fontSize: emphasis ? { xs: '1.08rem', sm: '1.24rem' } : { xs: '1rem', sm: '1.08rem' },
+          }}
+        >
+          {meta.title}
+        </Typography>
+        {action}
+      </Stack>
+      <Box sx={{ px: { xs: 0, sm: 1.25 }, pb: { xs: 0.35, sm: 1.2 } }}>{children}</Box>
+    </Paper>
+  );
+}
+
+function AttentionRow({
+  icon,
+  title,
+  secondary,
+  tone = 'default',
+  onClick,
+  returnFocusId = '',
+}) {
+  const theme = useTheme();
+  const toneColor = tone === 'error'
+    ? theme.palette.error.main
+    : tone === 'warning'
+      ? theme.palette.warning.main
+      : theme.palette.primary.main;
+  return (
+    <ButtonBase
+      data-testid="dashboard-task-row"
+      data-task-return-focus={returnFocusId || undefined}
+      onClick={onClick}
+      sx={{
+        width: '100%',
+        minHeight: 58,
+        px: 1,
+        py: 0.75,
+        borderRadius: '12px',
+        justifyContent: 'flex-start',
+        textAlign: 'left',
+        bgcolor: alpha(toneColor, theme.palette.mode === 'dark' ? 0.09 : 0.045),
+        border: '1px solid',
+        borderColor: alpha(toneColor, theme.palette.mode === 'dark' ? 0.18 : 0.12),
+        '&:hover': { bgcolor: alpha(toneColor, theme.palette.mode === 'dark' ? 0.14 : 0.08) },
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ width: '100%', minWidth: 0 }}>
+        <Box
+          sx={{
+            width: 34,
+            height: 34,
+            borderRadius: '50%',
+            display: 'grid',
+            placeItems: 'center',
+            flexShrink: 0,
+            color: toneColor,
+            bgcolor: alpha(toneColor, theme.palette.mode === 'dark' ? 0.18 : 0.1),
+            '& .MuiSvgIcon-root': { fontSize: 19 },
+          }}
+        >
+          {icon}
+        </Box>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Typography
+            variant="body2"
+            sx={{ fontWeight: 750, lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            noWrap
+          >
+            {title}
+          </Typography>
+          {secondary ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.15 }} noWrap>
+              {secondary}
+            </Typography>
+          ) : null}
+        </Box>
+        <ChevronRightRoundedIcon sx={{ color: alpha(toneColor, 0.7), flexShrink: 0 }} />
+      </Stack>
+    </ButtonBase>
+  );
+}
+
+function TaskQueueRow({ task, onClick, returnFocusId = '' }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const overdue = Boolean(task?.is_overdue);
+  const inReview = String(task?.status || '').toLowerCase() === 'review';
+  const hasDueDate = !Number.isNaN(Date.parse(task?.due_at || ''));
+  const dueColor = overdue
+    ? theme.palette.error.main
+    : inReview
+      ? theme.palette.warning.main
+      : hasDueDate
+        ? theme.palette.primary.main
+        : ui.iconMuted;
+  return (
+    <ButtonBase
+      data-task-return-focus={returnFocusId || undefined}
+      onClick={onClick}
+      sx={{
+        width: '100%',
+        minHeight: { xs: 64, sm: 72 },
+        px: { xs: 0.25, sm: 0.65 },
+        py: 0.65,
+        borderRadius: '12px',
+        justifyContent: 'flex-start',
+        textAlign: 'left',
+        '&:hover': { bgcolor: ui.actionHover },
+      }}
+    >
+      <Stack direction="row" spacing={{ xs: 0.8, sm: 1 }} alignItems="center" sx={{ width: '100%', minWidth: 0 }}>
+        <Box sx={{ width: 18, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+          <Box
+            data-testid="dashboard-task-status-dot"
+            sx={{
+              width: 9,
+              height: 9,
+              borderRadius: '50%',
+              bgcolor: dueColor,
+              boxShadow: `0 0 0 4px ${alpha(dueColor, theme.palette.mode === 'dark' ? 0.16 : 0.1)}`,
+            }}
+          />
+        </Box>
+        <Stack
+          direction="row"
+          spacing={1}
+          justifyContent="space-between"
+          alignItems="center"
+          sx={{ flex: 1, minWidth: 0 }}
+        >
+          <Box sx={{ minWidth: 0 }}>
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 800, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis' }}
+              noWrap
+            >
+              {task?.title || 'Задача'}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {inReview ? 'Ожидает проверки' : 'Открытая задача'}
+            </Typography>
+          </Box>
+          <Typography
+            variant="caption"
+            sx={{
+              color: dueColor,
+              fontWeight: 850,
+              flexShrink: 0,
+              px: { xs: 0.35, sm: 1 },
+              py: { xs: 0.2, sm: 0.4 },
+              borderRadius: '999px',
+              bgcolor: alpha(dueColor, theme.palette.mode === 'dark' ? 0.12 : 0.07),
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {formatDueLabel(task?.due_at)}
+          </Typography>
+        </Stack>
+      </Stack>
+    </ButtonBase>
+  );
+}
+
+function CommunicationRow({ icon, title, secondary, count, onClick }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const hasUnread = Number(count || 0) > 0;
+  return (
+    <ButtonBase
+      onClick={onClick}
+      sx={{
+        width: '100%',
+        minHeight: 56,
+        px: { xs: 0.35, sm: 0.65 },
+        py: 0.55,
+        borderRadius: '12px',
+        justifyContent: 'flex-start',
+        textAlign: 'left',
+        '&:hover': { bgcolor: ui.actionHover },
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ width: '100%', minWidth: 0 }}>
+        <Box sx={{ color: hasUnread ? 'primary.main' : ui.iconMuted, display: 'grid', placeItems: 'center' }}>
+          {icon}
+        </Box>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Typography variant="body2" sx={{ fontWeight: 800 }}>{title}</Typography>
+          <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+            {secondary}
+          </Typography>
+        </Box>
+        <Typography
+          aria-label={`${title}: ${Number(count || 0)}`}
+          sx={{
+            minWidth: 34,
+            textAlign: 'right',
+            fontWeight: 900,
+            fontSize: hasUnread ? '1.15rem' : '0.9rem',
+            color: hasUnread ? 'primary.main' : 'text.disabled',
+          }}
+        >
+          {hasUnread ? count : '—'}
+        </Typography>
+      </Stack>
+    </ButtonBase>
+  );
+}
+
+function NewsRow({ item, onClick }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  return (
+    <ButtonBase
+      onClick={onClick}
+      sx={{
+        width: '100%',
+        minHeight: 68,
+        px: { xs: 0.35, sm: 0.65 },
+        py: 0.75,
+        borderRadius: '12px',
+        justifyContent: 'flex-start',
+        textAlign: 'left',
+        '&:hover': { bgcolor: ui.actionHover },
+      }}
+    >
+      <Box sx={{ width: '100%', minWidth: 0 }}>
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 0.25 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+            {formatShortDateTime(item?.updated_at || item?.published_at || item?.created_at)}
+          </Typography>
+          {item?.is_ack_pending ? (
+            <Chip
+              size="small"
+              label="Важно"
+              color="warning"
+              variant="outlined"
+              sx={{ height: 22, fontWeight: 800 }}
+            />
+          ) : null}
+        </Stack>
+        <Typography variant="body2" sx={{ fontWeight: 850, lineHeight: 1.25 }} noWrap>
+          {item?.title || 'Объявление'}
+        </Typography>
+        {item?.preview ? (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{
+              display: '-webkit-box',
+              mt: 0.2,
+              overflow: 'hidden',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              lineHeight: 1.35,
+            }}
+          >
+            {item.preview}
+          </Typography>
+        ) : null}
+      </Box>
+    </ButtonBase>
+  );
+}
+
+function EmptySection({ title, text }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  return (
+    <Box sx={getOfficeEmptyStateSx(ui, {
+      p: { xs: 1, sm: 1.25 },
+      borderRadius: { xs: '10px', sm: '12px' },
+      borderWidth: { xs: 0, sm: 1 },
+      bgcolor: { xs: 'transparent', sm: ui.emptyStateBg },
+    })}
+    >
+      <Typography variant="body2" sx={{ fontWeight: 750 }}>{title}</Typography>
+      {text ? <Typography variant="caption" color="text.secondary">{text}</Typography> : null}
+    </Box>
+  );
+}
+
+function DashboardCustomizeDialog({ open, sections, saving, onClose, onSave }) {
+  const [draft, setDraft] = useState(() => normalizeDashboardLayoutSections(sections));
+
+  useEffect(() => {
+    if (open) setDraft(normalizeDashboardLayoutSections(sections));
+  }, [open, sections]);
+
+  const tasksVisible = draft.includes('tasks');
+  const visibleSecondary = draft.filter((item) => ['absences', 'communication', 'news'].includes(item));
+  const hiddenOptional = OPTIONAL_SECTION_KEYS.filter((item) => !draft.includes(item));
+
+  const move = (key, direction) => {
+    setDraft((current) => {
+      const next = [...current];
+      const index = next.indexOf(key);
+      const secondaryIndexes = next
+        .map((item, itemIndex) => (['absences', 'communication', 'news'].includes(item) ? itemIndex : -1))
+        .filter((itemIndex) => itemIndex >= 0);
+      const secondaryPosition = secondaryIndexes.indexOf(index);
+      const targetPosition = secondaryPosition + direction;
+      if (secondaryPosition < 0 || targetPosition < 0 || targetPosition >= secondaryIndexes.length) return current;
+      const target = secondaryIndexes[targetPosition];
+      const [moved] = next.splice(index, 1);
+      next.splice(target, 0, moved);
+      return next;
+    });
+  };
+
+  const toggle = (key) => {
+    setDraft((current) => {
+      if (current.includes(key)) return current.filter((item) => item !== key);
+      if (key === 'tasks') return ['attention', 'tasks', ...current.filter((item) => item !== 'attention')];
+      return [...current, key];
+    });
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle>Настроить главную</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={1}>
+          <Paper variant="outlined" sx={{ p: 1, borderRadius: '12px' }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Box>
+                <Typography sx={{ fontWeight: 800 }}>Требует внимания</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Всегда показывается первым.
+                </Typography>
+              </Box>
+              <Chip size="small" color="primary" label="Всегда" />
+            </Stack>
+          </Paper>
+
+          {tasksVisible ? (
+            <Paper variant="outlined" sx={{ p: 1, borderRadius: '12px' }}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography sx={{ fontWeight: 800 }}>{SECTION_META.tasks.title}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Основная рабочая область, всегда располагается первой.
+                  </Typography>
+                </Box>
+                <Chip size="small" label="Основной" variant="outlined" />
+                <IconButton aria-label={`Скрыть ${SECTION_META.tasks.title}`} onClick={() => toggle('tasks')}>
+                  <VisibilityOffOutlinedIcon />
+                </IconButton>
+              </Stack>
+            </Paper>
+          ) : null}
+
+          {visibleSecondary.map((key, index) => (
+            <Paper key={key} variant="outlined" sx={{ p: 1, borderRadius: '12px' }}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography sx={{ fontWeight: 800 }}>{SECTION_META[key].title}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {SECTION_META[key].description}
+                  </Typography>
+                </Box>
+                <IconButton
+                  aria-label={`Поднять ${SECTION_META[key].title}`}
+                  disabled={index === 0}
+                  onClick={() => move(key, -1)}
+                >
+                  <KeyboardArrowUpRoundedIcon />
+                </IconButton>
+                <IconButton
+                  aria-label={`Опустить ${SECTION_META[key].title}`}
+                  disabled={index === visibleSecondary.length - 1}
+                  onClick={() => move(key, 1)}
+                >
+                  <KeyboardArrowDownRoundedIcon />
+                </IconButton>
+                <IconButton aria-label={`Скрыть ${SECTION_META[key].title}`} onClick={() => toggle(key)}>
+                  <VisibilityOffOutlinedIcon />
+                </IconButton>
+              </Stack>
+            </Paper>
+          ))}
+
+          {hiddenOptional.length ? (
+            <Box>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                Скрытые блоки
+              </Typography>
+              <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap">
+                {hiddenOptional.map((key) => (
+                  <Button
+                    key={key}
+                    size="small"
+                    variant="outlined"
+                    startIcon={<VisibilityOutlinedIcon />}
+                    onClick={() => toggle(key)}
+                  >
+                    {SECTION_META[key].title}
+                  </Button>
+                ))}
+              </Stack>
+            </Box>
+          ) : null}
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 2, py: 1.2 }}>
+        <Button
+          startIcon={<RestartAltRoundedIcon />}
+          onClick={() => setDraft([...DEFAULT_DASHBOARD_SECTIONS])}
+        >
+          По умолчанию
+        </Button>
+        <Box sx={{ flex: 1 }} />
+        <Button onClick={onClose}>Отмена</Button>
+        <Button
+          data-testid="dashboard-customize-save"
+          variant="contained"
+          disabled={saving}
+          onClick={() => onSave(normalizeDashboardLayoutSections(draft))}
+        >
+          {saving ? 'Сохраняю…' : 'Сохранить'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+export default function Dashboard() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user, hasPermission } = useAuth();
+  const { preferences, savePreferences } = usePreferences();
+  const [payload, setPayload] = useState(EMPTY_DASHBOARD);
+  const [communicationCounts, setCommunicationCounts] = useState({ chat: 0, mail: 0 });
+  const [docflowSummary, setDocflowSummary] = useState({ status: 'loading', count: null, truncated: false });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [customizeSaving, setCustomizeSaving] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+
+  const announcementId = useMemo(
+    () => String(new URLSearchParams(location.search || '').get('announcement') || '').trim(),
+    [location.search],
+  );
+
+  const canReadTasks = hasPermission('tasks.read');
+  const canCreateTasks = hasPermission('tasks.create') || hasPermission('tasks.write');
+  const canReadMail = hasPermission('mail.access');
+  const canReadChat = CHAT_FEATURE_ENABLED && hasPermission('chat.read');
+  const canReadNews = hasPermission('dashboard.read');
+  const canReadDocflow = hasPermission('docflow.read');
+
+  const sections = useMemo(() => {
+    const normalized = normalizeDashboardLayoutSections(
+      preferences?.dashboard_sections,
+      preferences?.dashboard_mobile_sections,
+    );
+    return normalized.filter((key) => {
+      if (key === 'tasks') return canReadTasks;
+      if (key === 'absences') return canReadNews;
+      if (key === 'communication') return canReadMail || canReadChat || hasPermission('notifications.read');
+      if (key === 'news') return canReadNews;
+      return true;
+    });
+  }, [
+    canReadChat,
+    canReadMail,
+    canReadNews,
+    canReadTasks,
+    hasPermission,
+    preferences?.dashboard_mobile_sections,
+    preferences?.dashboard_sections,
+  ]);
+
+  const dashboardRequestRef = useRef(0);
+  const docflowSummaryRequestRef = useRef(0);
+
+  const loadDashboard = useCallback(async (silent = false) => {
+    const requestId = dashboardRequestRef.current + 1;
+    dashboardRequestRef.current = requestId;
+    if (!silent) setLoading(true);
+    if (!silent) setError('');
+    const [dashboardResult, chatResult, mailResult] = await Promise.allSettled([
+      hubAPI.getDashboard({
+        announcements_limit: DASHBOARD_ANNOUNCEMENTS_LIMIT,
+        tasks_limit: DASHBOARD_TASKS_LIMIT,
+      }),
+      canReadChat ? chatNotificationsAPI.getUnreadSummary() : Promise.resolve(null),
+      canReadMail ? mailNotificationsAPI.getUnreadCount({ force: true }) : Promise.resolve(null),
+    ]);
+
+    // A newer load superseded this one: its result must not overwrite fresher data.
+    if (requestId !== dashboardRequestRef.current) return;
+
+    if (dashboardResult.status === 'fulfilled') {
+      setPayload(dashboardResult.value || EMPTY_DASHBOARD);
+    } else {
+      if (!silent) {
+        setPayload(EMPTY_DASHBOARD);
+        setError(
+          dashboardResult.reason?.response?.data?.detail
+          || dashboardResult.reason?.message
+          || 'Не удалось загрузить главную страницу.',
+        );
+      }
+    }
+    setCommunicationCounts((current) => ({
+      chat: chatResult.status === 'fulfilled'
+        ? Number(chatResult.value?.messages_unread_total || chatResult.value?.unread_total || 0)
+        : (silent ? current.chat : 0),
+      mail: mailResult.status === 'fulfilled'
+        ? Number(mailResult.value?.unread_count || mailResult.value?.total_unread || 0)
+        : (silent ? current.mail : 0),
+    }));
+    // The latest load always clears the spinner, even if it was a silent one that superseded a visible load.
+    setLoading(false);
+  }, [canReadChat, canReadMail]);
+
+  const loadDocflowSummary = useCallback(async (showLoading = false) => {
+    if (!canReadDocflow) return;
+    const requestId = docflowSummaryRequestRef.current + 1;
+    docflowSummaryRequestRef.current = requestId;
+    if (showLoading) setDocflowSummary({ status: 'loading', count: null, truncated: false });
+    try {
+      const result = await docflowAPI.getInboxSummary();
+      if (requestId !== docflowSummaryRequestRef.current) return;
+      setDocflowSummary(result || { status: 'unavailable', count: null, truncated: false });
+    } catch {
+      if (requestId !== docflowSummaryRequestRef.current) return;
+      setDocflowSummary({ status: 'unavailable', count: null, truncated: false });
+    }
+  }, [canReadDocflow]);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    let timer = null;
+    // Events coalesced into one window must all be honoured, not just the first one.
+    let refreshDocflowSummary = false;
+    const refresh = (event) => {
+      if (event?.type === HUB_REALTIME_DOCFLOW_EVENT || event?.type === HUB_REALTIME_CONNECTED_EVENT) {
+        refreshDocflowSummary = true;
+      }
+      if (timer) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        const withDocflow = refreshDocflowSummary;
+        refreshDocflowSummary = false;
+        void loadDashboard(true);
+        if (withDocflow) void loadDocflowSummary(false);
+      }, 180);
+    };
+    const eventNames = [
+      HUB_REALTIME_CONNECTED_EVENT,
+      HUB_REALTIME_DASHBOARD_EVENT,
+      HUB_REALTIME_DOCFLOW_EVENT,
+      HUB_REALTIME_MAIL_EVENT,
+      HUB_REALTIME_NOTIFICATION_EVENT,
+      HUB_REALTIME_TASK_EVENT,
+      CHAT_SOCKET_UNREAD_SUMMARY_EVENT,
+    ];
+    eventNames.forEach((eventName) => window.addEventListener(eventName, refresh));
+    const release = hubRealtimeSocket.retain();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      eventNames.forEach((eventName) => window.removeEventListener(eventName, refresh));
+      release();
+    };
+  }, [loadDashboard, loadDocflowSummary]);
+
+  useEffect(() => {
+    const focusId = String(location.state?.taskRestoreFocusId || '').trim();
+    if (!focusId || loading || typeof window === 'undefined') return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const scrollY = Number(location.state?.taskRestoreScrollY || 0);
+      if (Number.isFinite(scrollY) && scrollY >= 0) {
+        window.scrollTo({ top: scrollY, behavior: 'auto' });
+      }
+      const focusTarget = Array.from(document.querySelectorAll('[data-task-return-focus]'))
+        .find((element) => element.dataset?.taskReturnFocus === focusId);
+      focusTarget?.focus?.();
+      const nextState = { ...(location.state || {}) };
+      delete nextState.taskRestoreFocusId;
+      delete nextState.taskRestoreScrollY;
+      navigate(`${location.pathname}${location.search || ''}`, {
+        replace: true,
+        state: nextState,
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [loading, location.pathname, location.search, location.state, navigate]);
+
+  useEffect(() => {
+    if (!canReadDocflow) return undefined;
+    void loadDocflowSummary(true);
+    return undefined;
+  }, [canReadDocflow, loadDocflowSummary]);
+
+  const taskItems = useMemo(
+    () => (Array.isArray(payload?.my_tasks?.items) ? payload.my_tasks.items : []),
+    [payload?.my_tasks?.items],
+  );
+  const announcementItems = useMemo(
+    () => (Array.isArray(payload?.announcements?.items) ? payload.announcements.items : []),
+    [payload?.announcements?.items],
+  );
+  const unreadCounts = payload?.unread_counts || {};
+
+  const reviewTasks = useMemo(() => taskItems.filter((task) => (
+    String(task?.status || '').toLowerCase() === 'review'
+    && (
+      String(user?.role || '').toLowerCase() === 'admin'
+      || Number(task?.created_by_user_id) === Number(user?.id)
+      || Number(task?.controller_user_id) === Number(user?.id)
+    )
+  )), [taskItems, user?.id, user?.role]);
+
+  const attentionItems = useMemo(() => {
+    const result = [];
+    const seen = new Set();
+    const addTask = (task, kind) => {
+      const id = String(task?.id || '');
+      if (!id || seen.has(`task:${id}`)) return;
+      seen.add(`task:${id}`);
+      result.push({ type: 'task', kind, id, item: task });
+    };
+    taskItems.filter((task) => task?.is_overdue).forEach((task) => addTask(task, 'overdue'));
+    reviewTasks.forEach((task) => addTask(task, 'review'));
+    taskItems.filter((task) => task?.has_unread_comments).forEach((task) => addTask(task, 'comments'));
+    announcementItems
+      .filter((item) => item?.is_ack_pending)
+      .forEach((item) => {
+        const id = String(item?.id || '');
+        if (!id || seen.has(`announcement:${id}`)) return;
+        seen.add(`announcement:${id}`);
+        result.push({ type: 'announcement', kind: 'ack', id, item });
+      });
+    return result.slice(0, 6);
+  }, [announcementItems, reviewTasks, taskItems]);
+
+  const nearestTasks = useMemo(() => (
+    taskItems
+      .filter((task) => !['done', 'cancelled', 'canceled'].includes(String(task?.status || '').toLowerCase()))
+      .sort((left, right) => {
+        const leftDue = Date.parse(left?.due_at || '') || Number.MAX_SAFE_INTEGER;
+        const rightDue = Date.parse(right?.due_at || '') || Number.MAX_SAFE_INTEGER;
+        return leftDue - rightDue;
+      })
+      .slice(0, 5)
+  ), [taskItems]);
+
+  const latestNews = useMemo(() => (
+    [...announcementItems]
+      .sort((left, right) => (
+        (Date.parse(right?.updated_at || right?.published_at || right?.created_at || '') || 0)
+        - (Date.parse(left?.updated_at || left?.published_at || left?.created_at || '') || 0)
+      ))
+      .slice(0, 3)
+  ), [announcementItems]);
+
+  const communicationRows = useMemo(() => {
+    const rows = [];
+    if (canReadMail) {
+      rows.push({
+        key: 'mail',
+        title: 'Почта',
+        secondary: communicationCounts.mail > 0 ? 'Есть непрочитанные письма' : 'Новых писем нет',
+        count: communicationCounts.mail,
+        icon: <MailOutlineRoundedIcon />,
+        path: '/mail',
+      });
+    }
+    if (canReadChat) {
+      rows.push({
+        key: 'chat',
+        title: 'Чат',
+        secondary: communicationCounts.chat > 0 ? 'Есть новые сообщения' : 'Новых сообщений нет',
+        count: communicationCounts.chat,
+        icon: <ForumOutlinedIcon />,
+        path: '/chat',
+      });
+    }
+    rows.push({
+      key: 'notifications',
+      title: 'Уведомления',
+      secondary: Number(unreadCounts?.notifications_unread_total || 0) > 0
+        ? 'Есть события, которые вы ещё не открыли'
+        : 'Новых уведомлений нет',
+      count: Number(unreadCounts?.notifications_unread_total || 0),
+      icon: <NotificationsNoneRoundedIcon />,
+      onClick: () => window.dispatchEvent(new CustomEvent('hub-open-notifications')),
+    });
+    return rows;
+  }, [canReadChat, canReadMail, communicationCounts.chat, communicationCounts.mail, unreadCounts?.notifications_unread_total]);
+
+  const quickActions = useMemo(() => [
+    canCreateTasks ? {
+      key: 'task',
+      label: 'Создать задачу',
+      icon: <AddTaskRoundedIcon />,
+      path: '/tasks?create=1',
+    } : null,
+    canReadChat ? {
+      key: 'chat',
+      label: 'Открыть чат',
+      icon: <ForumOutlinedIcon />,
+      path: '/chat',
+    } : null,
+    canReadMail ? {
+      key: 'mail',
+      label: 'Написать письмо',
+      icon: <SendRoundedIcon />,
+      path: '/mail?compose=new',
+    } : null,
+  ].filter(Boolean), [canCreateTasks, canReadChat, canReadMail]);
+  const primaryQuickAction = quickActions.find((item) => item.key === 'task');
+  const secondaryQuickActions = quickActions.filter((item) => item.key !== 'task');
+
+  const handleSaveSections = async (nextSections) => {
+    setCustomizeSaving(true);
+    try {
+      await savePreferences({ dashboard_sections: nextSections });
+      setCustomizeOpen(false);
+    } catch (saveError) {
+      setError(saveError?.message || 'Не удалось сохранить настройку главной страницы.');
+    } finally {
+      setCustomizeSaving(false);
+    }
+  };
+
+  if (announcementId) {
+    const params = new URLSearchParams(location.search || '');
+    params.set('post', announcementId);
+    params.delete('announcement');
+    return <Navigate to={`/feed?${params.toString()}`} replace />;
+  }
+
+  const todayLabel = new Date().toLocaleDateString('ru-RU', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  });
+
+  const renderAttention = () => {
+    if (loading) {
+      return (
+        <Paper
+          data-testid="dashboard-section-attention"
+          sx={getOfficePanelSx(ui, {
+            p: 1,
+            borderRadius: { xs: '13px', sm: '16px' },
+            boxShadow: 'none',
+          })}
+        >
+          <Skeleton height={42} />
+        </Paper>
+      );
+    }
+
+    if (!attentionItems.length) {
+      return (
+        <Paper
+          data-testid="dashboard-section-attention"
+          data-state="calm"
+          sx={{
+            minHeight: 48,
+            px: { xs: 1, sm: 1.35 },
+            py: 0.65,
+            borderRadius: { xs: '13px', sm: '16px' },
+            border: '1px solid',
+            borderColor: alpha(theme.palette.success.main, theme.palette.mode === 'dark' ? 0.28 : 0.2),
+            bgcolor: alpha(theme.palette.success.main, theme.palette.mode === 'dark' ? 0.09 : 0.055),
+            boxShadow: 'none',
+            display: 'flex',
+            alignItems: 'center',
+          }}
+        >
+          <Stack direction="row" spacing={0.9} alignItems="center" sx={{ minWidth: 0 }}>
+            <CheckCircleRoundedIcon sx={{ color: 'success.main', fontSize: 21 }} />
+            <Typography variant="body2" sx={{ fontWeight: 850, color: 'success.main' }}>
+              Всё спокойно
+            </Typography>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: { xs: 'none', sm: 'block' } }}
+            >
+              Нет просроченных задач и обязательных подтверждений.
+            </Typography>
+          </Stack>
+        </Paper>
+      );
+    }
+
+    const hasOverdue = attentionItems.some((item) => item.kind === 'overdue');
+    const attentionColor = hasOverdue ? theme.palette.error.main : theme.palette.warning.main;
+    return (
+      <Paper
+        data-testid="dashboard-section-attention"
+        data-state="active"
+        sx={{
+          position: 'relative',
+          p: { xs: 1, sm: 1.25 },
+          pl: { xs: 1.25, sm: 1.6 },
+          borderRadius: { xs: '15px', sm: '18px' },
+          border: '1px solid',
+          borderColor: alpha(attentionColor, theme.palette.mode === 'dark' ? 0.32 : 0.22),
+          bgcolor: alpha(attentionColor, theme.palette.mode === 'dark' ? 0.055 : 0.025),
+          boxShadow: 'none',
+          overflow: 'hidden',
+          '&::before': {
+            content: '""',
+            position: 'absolute',
+            inset: '0 auto 0 0',
+            width: 4,
+            bgcolor: attentionColor,
+          },
+        }}
+      >
+        <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: 0.85 }}>
+          <Stack direction="row" spacing={0.75} alignItems="center">
+            <WarningAmberRoundedIcon sx={{ color: attentionColor, fontSize: 21 }} />
+            <Typography sx={{ fontWeight: 900, fontSize: { xs: '1rem', sm: '1.08rem' } }}>
+              Требует внимания
+            </Typography>
+          </Stack>
+          <Chip
+            size="small"
+            label={attentionItems.length}
+            sx={{
+              height: 24,
+              minWidth: 30,
+              fontWeight: 900,
+              color: attentionColor,
+              bgcolor: alpha(attentionColor, theme.palette.mode === 'dark' ? 0.14 : 0.09),
+            }}
+          />
+        </Stack>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'repeat(2, minmax(0, 1fr))' },
+            gap: 0.7,
+          }}
+        >
+          {attentionItems.map((entry) => {
+            const task = entry.item;
+            if (entry.type === 'announcement') {
+              return (
+                <AttentionRow
+                  key={`announcement-${entry.id}`}
+                  icon={<CampaignOutlinedIcon />}
+                  title={entry.item?.title || 'Обязательное объявление'}
+                  secondary="Нужно прочитать и подтвердить"
+                  tone="warning"
+                  onClick={() => navigate(`/feed?post=${encodeURIComponent(entry.id)}`)}
+                />
+              );
+            }
+            const meta = entry.kind === 'overdue'
+              ? { icon: <WarningAmberRoundedIcon />, secondary: formatDueLabel(task?.due_at), tone: 'error' }
+              : entry.kind === 'review'
+                ? { icon: <FactCheckOutlinedIcon />, secondary: 'Ожидает вашей проверки', tone: 'warning' }
+                : { icon: <ModeCommentOutlinedIcon />, secondary: 'Есть новый комментарий', tone: 'default' };
+            return (
+              <AttentionRow
+                key={`task-${entry.id}`}
+                returnFocusId={`dashboard-attention-task-${entry.id}`}
+                icon={meta.icon}
+                title={task?.title || 'Задача'}
+                secondary={meta.secondary}
+                tone={meta.tone}
+                onClick={() => navigate(`/tasks?task=${encodeURIComponent(entry.id)}`, {
+                  state: {
+                    taskReturnTo: '/dashboard',
+                    taskReturnLabel: 'Назад на главную',
+                    taskReturnFocusId: `dashboard-attention-task-${entry.id}`,
+                    taskReturnScrollY: window.scrollY,
+                  },
+                })}
+              />
+            );
+          })}
+        </Box>
+      </Paper>
+    );
+  };
+
+  const sectionNodes = {
+    tasks: (
+      <SectionSurface
+        key="tasks"
+        sectionKey="tasks"
+        emphasis
+        action={(
+          <Button size="small" onClick={() => navigate('/tasks')} endIcon={<ChevronRightRoundedIcon />}>
+            Все задачи
+          </Button>
+        )}
+      >
+        {canReadDocflow ? (
+          <>
+            <ButtonBase
+              onClick={() => navigate('/docflow')}
+              sx={{
+                width: '100%',
+                minHeight: 54,
+                px: 1,
+                py: 0.75,
+                borderRadius: 2,
+                justifyContent: 'flex-start',
+                textAlign: 'left',
+              }}
+            >
+              <AssignmentTurnedInOutlinedIcon color="primary" sx={{ mr: 1.1 }} />
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="body2" fontWeight={800}>Задания 1С</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {docflowSummary.status === 'loading'
+                    ? 'Подключаем документооборот…'
+                    : docflowSummary.status === 'available'
+                      ? 'Персональные согласования и поручения'
+                      : docflowSummary.status === 'not_configured'
+                        ? 'Требуется подключить учётную запись 1С'
+                        : 'Данные 1С временно недоступны'}
+                </Typography>
+              </Box>
+              {docflowSummary.status === 'loading' ? <CircularProgress size={20} /> : (
+                <Chip
+                  size="small"
+                  color={docflowSummary.status === 'available' ? 'primary' : 'default'}
+                  label={docflowSummary.status === 'available'
+                    ? `${docflowSummary.truncated ? '100+' : Number(docflowSummary.count || 0)}`
+                    : '—'}
+                />
+              )}
+            </ButtonBase>
+            <Divider sx={{ my: 0.5, borderColor: ui.borderSoft }} />
+          </>
+        ) : null}
+        {loading ? (
+          <Stack spacing={0.5}>{[0, 1, 2].map((item) => <Skeleton key={item} height={56} />)}</Stack>
+        ) : nearestTasks.length ? (
+          <Stack divider={<Divider sx={{ ml: 3.2, borderColor: ui.borderSoft }} />}>
+            {nearestTasks.map((task) => (
+              <TaskQueueRow
+                key={String(task.id)}
+                task={task}
+                returnFocusId={`dashboard-queue-task-${task.id}`}
+                onClick={() => navigate(`/tasks?task=${encodeURIComponent(String(task.id))}`, {
+                  state: {
+                    taskReturnTo: '/dashboard',
+                    taskReturnLabel: 'Назад на главную',
+                    taskReturnFocusId: `dashboard-queue-task-${task.id}`,
+                    taskReturnScrollY: window.scrollY,
+                  },
+                })}
+              />
+            ))}
+          </Stack>
+        ) : (
+          <EmptySection title="Открытых задач нет" text="Новые задачи появятся здесь автоматически." />
+        )}
+      </SectionSurface>
+    ),
+    absences: (() => {
+      const absences = payload?.absences_today || EMPTY_DASHBOARD.absences_today;
+      const items = Array.isArray(absences.items) ? absences.items : [];
+      const count = Number(absences.count || items.length || 0);
+      return (
+        <SectionSurface
+          key="absences"
+          sectionKey="absences"
+        >
+          {loading ? (
+            <Stack spacing={0.5}>{[0, 1].map((item) => <Skeleton key={item} height={48} />)}</Stack>
+          ) : items.length ? (
+            isMobile ? (
+              <Box
+                data-testid="dashboard-absences-mobile-strip"
+                sx={{
+                  display: 'flex',
+                  gap: 1,
+                  overflowX: 'auto',
+                  pb: 0.5,
+                  mx: -0.5,
+                  px: 0.5,
+                }}
+              >
+                <Chip
+                  color="primary"
+                  label={`${count} отсутствуют`}
+                  sx={{ fontWeight: 800 }}
+                />
+                {items.map((item) => (
+                  <Chip
+                    key={String(item.id)}
+                    avatar={(
+                      <Box
+                        sx={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: '50%',
+                          display: 'grid',
+                          placeItems: 'center',
+                          bgcolor: 'action.selected',
+                          fontSize: 11,
+                          fontWeight: 800,
+                        }}
+                      >
+                        {absenceInitials(item.display_name)}
+                      </Box>
+                    )}
+                    label={`${item.source === 'zup' ? 'ЗУП' : 'HUB'} · ${item.display_name} · ${item.kind_label || item.kind}`}
+                    variant="outlined"
+                    sx={{ maxWidth: 260 }}
+                  />
+                ))}
+              </Box>
+            ) : (
+              <Stack
+                data-testid="dashboard-absences-list"
+                divider={<Divider sx={{ borderColor: ui.borderSoft }} />}
+              >
+                {items.map((item) => (
+                  <Stack
+                    key={String(item.id)}
+                    direction="row"
+                    spacing={1.1}
+                    alignItems="center"
+                    sx={{ py: 0.85, minHeight: 52 }}
+                  >
+                    <Box
+                      sx={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: '50%',
+                        display: 'grid',
+                        placeItems: 'center',
+                        bgcolor: alpha(theme.palette.primary.main, 0.1),
+                        color: 'primary.main',
+                        fontWeight: 800,
+                        fontSize: 12,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {absenceInitials(item.display_name)}
+                    </Box>
+                    <Box sx={{ minWidth: 0, flex: 1 }}>
+                      <Typography variant="body2" fontWeight={800} noWrap>{item.display_name}</Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap>
+                        {[item.source === 'zup' ? 'ЗУП' : 'HUB', item.department, formatAbsenceRange(item)].filter(Boolean).join(' · ')}
+                      </Typography>
+                    </Box>
+                    <Chip size="small" label={item.kind_label || item.kind} variant="outlined" />
+                  </Stack>
+                ))}
+              </Stack>
+            )
+          ) : (
+            <EmptySection title="Нет записей ЗУП и HUB" text="Записи об отпусках и неявках появятся здесь." />
+          )}
+          <DocflowAbsencesPanel />
+        </SectionSurface>
+      );
+    })(),
+    communication: (
+      <SectionSurface key="communication" sectionKey="communication">
+        <Stack divider={<Divider sx={{ borderColor: ui.borderSoft }} />}>
+          {communicationRows.map((item) => (
+            <CommunicationRow
+              key={item.key}
+              icon={item.icon}
+              title={item.title}
+              secondary={item.secondary}
+              count={item.count}
+              onClick={item.onClick || (() => navigate(item.path))}
+            />
+          ))}
+        </Stack>
+      </SectionSurface>
+    ),
+    news: (
+      <SectionSurface
+        key="news"
+        sectionKey="news"
+        action={(
+          <Button size="small" onClick={() => navigate('/feed')} endIcon={<ChevronRightRoundedIcon />}>
+            Открыть ленту
+          </Button>
+        )}
+      >
+        {loading ? (
+          <Stack spacing={0.5}>{[0, 1, 2].map((item) => <Skeleton key={item} height={56} />)}</Stack>
+        ) : latestNews.length ? (
+          <Stack divider={<Divider sx={{ borderColor: ui.borderSoft }} />}>
+            {latestNews.map((item) => (
+              <NewsRow
+                key={String(item.id)}
+                item={item}
+                onClick={() => navigate(`/feed?post=${encodeURIComponent(String(item.id))}`)}
+              />
+            ))}
+          </Stack>
+        ) : (
+          <EmptySection title="Новых объявлений нет" text="Последние сообщения компании появятся здесь." />
+        )}
+      </SectionSurface>
+    ),
+  };
+
+  const tasksVisible = sections.includes('tasks');
+  const secondarySectionKeys = sections.filter((key) => ['absences', 'communication', 'news'].includes(key));
+  const renderedSectionOrder = [
+    'attention',
+    ...(tasksVisible ? ['tasks'] : []),
+    ...secondarySectionKeys,
+  ];
+  const hasSecondarySections = secondarySectionKeys.length > 0;
+
+  return (
+    <MainLayout headerMode="integrated">
+      <PageShell sx={{ pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : undefined }}>
+        {isMobile ? null : <PageTopBar title="Главная" sx={{ maxWidth: 1320, mx: 'auto', width: '100%' }} />}
+        <Stack spacing={{ xs: 1, sm: 1.25 }} sx={{ maxWidth: 1320, mx: 'auto', width: '100%' }}>
+          <AboutHubPromoCard userId={user?.id} />
+          <Paper
+            data-testid="dashboard-today-header"
+            sx={{
+              p: { xs: 1.1, sm: 1.3 },
+              borderRadius: { xs: '16px', sm: '19px' },
+              border: '1px solid',
+              borderColor: alpha(theme.palette.divider, 0.6),
+              bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.76 : 0.86),
+              backgroundImage: `linear-gradient(115deg, ${alpha(theme.palette.primary.main, 0.12)}, transparent 54%)`,
+              boxShadow: 'none',
+            }}
+          >
+            <Stack spacing={0.9}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      fontSize: { xs: '1.28rem', sm: '1.55rem' },
+                      lineHeight: 1.12,
+                      fontWeight: 900,
+                      letterSpacing: '-0.025em',
+                    }}
+                  >
+                    {getGreeting()}, {getFirstName(user)}
+                  </Typography>
+                  <Typography
+                    color="text.secondary"
+                    sx={{ mt: 0.35, textTransform: 'capitalize', fontSize: { xs: '0.86rem', sm: '0.95rem' } }}
+                  >
+                    {todayLabel}
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={0.5} alignItems="center">
+                  {isMobile ? (
+                    <Tooltip title="Предложить улучшение HUB">
+                      <IconButton
+                        aria-label="Предложить улучшение HUB"
+                        onClick={() => setFeedbackOpen(true)}
+                        sx={{ width: 48, height: 48 }}
+                      >
+                        <LightbulbOutlinedIcon />
+                      </IconButton>
+                    </Tooltip>
+                  ) : (
+                    <Button
+                      variant="outlined"
+                      startIcon={<LightbulbOutlinedIcon />}
+                      onClick={() => setFeedbackOpen(true)}
+                      sx={{ minHeight: 48, px: 1.5, borderRadius: '12px', fontWeight: 700, whiteSpace: 'nowrap' }}
+                    >
+                      Предложить улучшение HUB
+                    </Button>
+                  )}
+                  <IconButton
+                    aria-label="Обновить главную"
+                    onClick={() => void loadDashboard()}
+                    disabled={loading}
+                    sx={{ width: 48, height: 48 }}
+                  >
+                    {loading ? <CircularProgress size={20} /> : <RefreshRoundedIcon />}
+                  </IconButton>
+                  <IconButton
+                    aria-label="Настроить главную"
+                    onClick={() => setCustomizeOpen(true)}
+                    sx={{ width: 48, height: 48 }}
+                  >
+                    <TuneRoundedIcon />
+                  </IconButton>
+                </Stack>
+              </Stack>
+
+              {quickActions.length ? (
+                <Stack direction="row" spacing={0.7} alignItems="center">
+                  {primaryQuickAction ? (
+                    <Button
+                      data-testid="dashboard-primary-action"
+                      variant="contained"
+                      startIcon={primaryQuickAction.icon}
+                      onClick={() => navigate('/tasks?create=1', { state: { openCreate: true } })}
+                      sx={{
+                        minHeight: 48,
+                        px: 1.5,
+                        borderRadius: '12px',
+                        fontWeight: 850,
+                        flex: { xs: 1, sm: '0 0 auto' },
+                        boxShadow: 'none',
+                      }}
+                    >
+                      {primaryQuickAction.label}
+                    </Button>
+                  ) : null}
+                  <Stack direction="row" spacing={0.6}>
+                    {secondaryQuickActions.map((item) => (
+                      <Tooltip key={item.key} title={item.label}>
+                        <IconButton
+                          aria-label={item.label}
+                          onClick={() => navigate(item.path)}
+                          sx={{
+                            width: 48,
+                            height: 48,
+                            border: '1px solid',
+                            borderColor: ui.actionBorder,
+                            borderRadius: '12px',
+                            color: 'primary.main',
+                            bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.45 : 0.7),
+                            '&:hover': { bgcolor: ui.actionHover },
+                          }}
+                        >
+                          {item.icon}
+                        </IconButton>
+                      </Tooltip>
+                    ))}
+                  </Stack>
+                </Stack>
+              ) : null}
+            </Stack>
+          </Paper>
+
+          {error ? <Alert severity="error">{error}</Alert> : null}
+
+          {renderAttention()}
+
+          <Box
+            data-testid="dashboard-sections"
+            data-dashboard-order={renderedSectionOrder.join(',')}
+            data-layout={isMobile ? 'mobile-feed' : (tasksVisible && hasSecondarySections ? 'desktop-focus' : 'desktop-full')}
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: {
+                xs: 'minmax(0, 1fr)',
+                md: tasksVisible && hasSecondarySections
+                  ? 'minmax(0, 7fr) minmax(320px, 5fr)'
+                  : 'minmax(0, 1fr)',
+              },
+              gap: { xs: 1.1, sm: 1.25 },
+              alignItems: 'start',
+            }}
+          >
+            {tasksVisible ? sectionNodes.tasks : null}
+            {hasSecondarySections ? (
+              <Stack
+                data-testid="dashboard-secondary-column"
+                spacing={{ xs: 1.1, sm: 1.25 }}
+                sx={{ minWidth: 0 }}
+              >
+                {secondarySectionKeys.map((key) => sectionNodes[key]).filter(Boolean)}
+              </Stack>
+            ) : null}
+          </Box>
+        </Stack>
+
+        <DashboardCustomizeDialog
+          open={customizeOpen}
+          sections={normalizeDashboardLayoutSections(
+            preferences?.dashboard_sections,
+            preferences?.dashboard_mobile_sections,
+          )}
+          saving={customizeSaving}
+          onClose={() => setCustomizeOpen(false)}
+          onSave={(next) => { void handleSaveSections(next); }}
+        />
+        <FeedbackDialog open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+      </PageShell>
+    </MainLayout>
+  );
+}

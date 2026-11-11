@@ -1,0 +1,846 @@
+"""SQLAlchemy models for the chat domain."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def conversation_state_is_muted(state: object, *, now: datetime | None = None) -> bool:
+    """Effective mute flag: `muted_until` lifts the mute once it expires."""
+    if not bool(getattr(state, "is_muted", False)):
+        return False
+    muted_until = getattr(state, "muted_until", None)
+    if muted_until is None:
+        return True
+    if muted_until.tzinfo is None:
+        muted_until = muted_until.replace(tzinfo=timezone.utc)
+    return muted_until > (now or utcnow())
+
+
+class Base(DeclarativeBase):
+    """Declarative base for chat tables."""
+
+
+CHAT_SCHEMA = "chat"
+
+
+def _table_args(*constraints, schema: str | None = None):
+    if schema:
+        if constraints:
+            return (*constraints, {"schema": schema})
+        return {"schema": schema}
+    if constraints:
+        return constraints
+    return ()
+
+
+def _chat_fk(table_name: str, column_name: str = "id") -> str:
+    if CHAT_SCHEMA:
+        return f"{CHAT_SCHEMA}.{table_name}.{column_name}"
+    return f"{table_name}.{column_name}"
+
+
+class ChatConversation(Base):
+    __tablename__ = "chat_conversations"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    direct_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    last_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    last_message_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pinned_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pinned_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ChatGroupSettings(Base):
+    """Extra settings of a group conversation (kept apart from chat_conversations)."""
+
+    __tablename__ = "chat_group_settings"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posting_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="all")
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ChatGroupLimits(Base):
+    """Limits of a group conversation (slow mode); a row exists only once a limit was set."""
+
+    __tablename__ = "chat_group_limits"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    slow_mode_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ChatGroupPermissions(Base):
+    """Permission flags of a group conversation; a row exists only once a flag was changed."""
+
+    __tablename__ = "chat_group_permissions"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    members_send_files: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ChatMessagePin(Base):
+    """A pinned message of a conversation; the newest ``pinned_at`` is shown first."""
+
+    __tablename__ = "chat_message_pins"
+    __table_args__ = _table_args(
+        Index("ix_chat_message_pins_conversation_id_pinned_at", "conversation_id", "pinned_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    pinned_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pinned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatGroupRestriction(Base):
+    """A member barred from writing in a group; ``restricted_until`` NULL means until lifted."""
+
+    __tablename__ = "chat_group_restrictions"
+    __table_args__ = _table_args(
+        Index("ix_chat_group_restrictions_user_id", "user_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    restricted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    restricted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatMessageReport(Base):
+    """A member's complaint about a message of a group; one per (message, reporter)."""
+
+    __tablename__ = "chat_message_reports"
+    __table_args__ = _table_args(
+        UniqueConstraint("message_id", "reporter_user_id", name="uq_chat_message_reports_message_reporter"),
+        Index("ix_chat_message_reports_conversation_id_status", "conversation_id", "status"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    reporter_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    resolved_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatGroupInvite(Base):
+    """Invite link of a group; only the SHA-256 of the token is stored."""
+
+    __tablename__ = "chat_group_invites"
+    __table_args__ = _table_args(
+        Index("ix_chat_group_invites_conversation_id_revoked_at", "conversation_id", "revoked_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class ChatGroupJoinSettings(Base):
+    """Per-group switch: people who come through the invite link wait for a manager's approval."""
+
+    __tablename__ = "chat_group_join_settings"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatGroupJoinRequest(Base):
+    """A request to join a group through its invite link; one row per (group, person)."""
+
+    __tablename__ = "chat_group_join_requests"
+    __table_args__ = _table_args(
+        UniqueConstraint("conversation_id", "user_id", name="uq_chat_group_join_requests_conversation_user"),
+        Index("ix_chat_group_join_requests_conversation_id_status", "conversation_id", "status"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    resolved_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatGroupAdminAudit(Base):
+    """Journal of portal-admin actions on groups (no FK: the record outlives the conversation)."""
+
+    __tablename__ = "chat_group_admin_audit"
+    __table_args__ = _table_args(
+        Index("ix_chat_group_admin_audit_conversation_id_created_at", "conversation_id", "created_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatMember(Base):
+    __tablename__ = "chat_members"
+    __table_args__ = _table_args(
+        UniqueConstraint("conversation_id", "user_id", name="uq_chat_members_conversation_user"),
+        Index("ix_chat_members_user_id_left_at_conversation_id", "user_id", "left_at", "conversation_id"),
+        Index("ix_chat_members_conversation_id_left_at_user_id", "conversation_id", "left_at", "user_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    member_role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = _table_args(
+        Index("ix_chat_messages_conversation_id_created_at_id", "conversation_id", "created_at", "id"),
+        Index("ix_chat_messages_conversation_id_conversation_seq", "conversation_id", "conversation_seq"),
+        UniqueConstraint(
+            "conversation_id",
+            "sender_user_id",
+            "client_message_id",
+            name="uq_chat_messages_conversation_sender_client_message",
+        ),
+        UniqueConstraint(
+            "conversation_id",
+            "conversation_seq",
+            name="uq_chat_messages_conversation_seq",
+        ),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sender_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="text", index=True)
+    body_format: Mapped[str] = mapped_column(String(16), nullable=False, default="plain", index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    conversation_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    client_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    reply_to_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    forward_from_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    task_preview_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    deleted_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ChatMessageAttachment(Base):
+    __tablename__ = "chat_message_attachments"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    storage_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    media_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    uploaded_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+
+
+class ChatPollVote(Base):
+    """One user's choice in a single-choice poll message (kind='poll')."""
+
+    __tablename__ = "chat_poll_votes"
+    __table_args__ = _table_args(
+        UniqueConstraint("message_id", "user_id", name="uq_chat_poll_votes_message_user"),
+        Index("ix_chat_poll_votes_conversation", "conversation_id", "message_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    option_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatStickerPack(Base):
+    """Telegram sticker pack cached once and shared by users who add it."""
+
+    __tablename__ = "chat_sticker_packs"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    short_name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    sticker_type: Mapped[str] = mapped_column(String(32), nullable=False, default="regular")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatSticker(Base):
+    """One locally cached sticker from a Telegram pack."""
+
+    __tablename__ = "chat_stickers"
+    __table_args__ = _table_args(
+        UniqueConstraint("pack_id", "telegram_file_unique_id", name="uq_chat_stickers_pack_file_unique"),
+        Index("ix_chat_stickers_pack_sort", "pack_id", "sort_order"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    pack_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_sticker_packs"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    telegram_file_id: Mapped[str] = mapped_column(Text, nullable=False)
+    telegram_file_unique_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    emoji: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    format: Mapped[str] = mapped_column(String(20), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatUserStickerPack(Base):
+    """A sticker pack installed into one HUB-IT user's picker."""
+
+    __tablename__ = "chat_user_sticker_packs"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "pack_id", name="uq_chat_user_sticker_packs_user_pack"),
+        Index("ix_chat_user_sticker_packs_user_added", "user_id", "added_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    pack_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_sticker_packs"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatAttachmentPreview(Base):
+    """Durable Chat file-preview job and its published artifact metadata."""
+
+    __tablename__ = "chat_attachment_previews"
+    __table_args__ = _table_args(
+        Index("ix_chat_attachment_previews_status_next_attempt", "status", "next_attempt_at"),
+        Index("ix_chat_attachment_previews_lease_expires", "lease_expires_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    attachment_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_message_attachments"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    artifact_rel_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    pdf_filename: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sheets_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatMessageRead(Base):
+    __tablename__ = "chat_message_reads"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "conversation_id",
+            "user_id",
+            "message_id",
+            name="uq_chat_message_reads_conversation_user_message",
+        ),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatConversationUserState(Base):
+    __tablename__ = "chat_conversation_user_state"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "conversation_id",
+            "user_id",
+            name="uq_chat_conversation_user_state_conversation_user",
+        ),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    last_read_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_read_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    unread_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unread_mention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_muted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # F-MUTE-TIMER: NULL = muted indefinitely; expired timestamps lift the mute lazily.
+    muted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatPushSubscription(Base):
+    __tablename__ = "chat_push_subscriptions"
+    __table_args__ = _table_args(
+        UniqueConstraint("endpoint", name="uq_chat_push_subscriptions_endpoint"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String(2048), nullable=False)
+    p256dh_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    auth_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    expiration_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    platform: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    browser_family: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    install_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ChatPushOutbox(Base):
+    __tablename__ = "chat_push_outbox"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "message_id",
+            "recipient_user_id",
+            "channel",
+            name="uq_chat_push_outbox_message_recipient_channel",
+        ),
+        Index("ix_chat_push_outbox_status_next_attempt_at", "status", "next_attempt_at"),
+        Index("ix_chat_push_outbox_recipient_user_id_status", "recipient_user_id", "status"),
+        Index("ix_chat_push_outbox_updated_at", "updated_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    recipient_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, default="chat")
+    is_mention: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatMessageReaction(Base):
+    __tablename__ = "chat_message_reactions"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "message_id",
+            "user_id",
+            "emoji",
+            name="uq_chat_message_reactions_message_user_emoji",
+        ),
+        Index("ix_chat_message_reactions_message_id", "message_id"),
+        Index("ix_chat_message_reactions_user_id", "user_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    emoji: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatMessageMention(Base):
+    """One resolved @mention of a member inside a message (drives unread mention badges)."""
+
+    __tablename__ = "chat_message_mentions"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "message_id",
+            "user_id",
+            name="uq_chat_message_mentions_message_user",
+        ),
+        Index("ix_chat_message_mentions_conversation_user", "conversation_id", "user_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatScheduledMessage(Base):
+    """A text message the sender asked to deliver later ("Send later"). The dispatcher of
+    chat.scheduled_messages sends it at ``scheduled_for`` as an ordinary message of the sender."""
+
+    __tablename__ = "chat_scheduled_messages"
+    __table_args__ = _table_args(
+        Index("ix_chat_scheduled_messages_status_scheduled_for", "status", "scheduled_for"),
+        Index(
+            "ix_chat_scheduled_messages_conversation_sender_status",
+            "conversation_id",
+            "sender_user_id",
+            "status",
+        ),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    sender_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    body_format: Mapped[str] = mapped_column(String(16), nullable=False, default="plain")
+    reply_to_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # scheduled -> sending -> sent | failed ; scheduled -> cancelled
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="scheduled")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sent_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    error_text: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatCall(Base):
+    """A voice/video call of a conversation (LiveKit room name == ``id``). See backend/chat/calls.py.
+
+    At most one not-ended call per conversation: enforced by the partial unique index, so two parallel
+    "start call" requests cannot both succeed."""
+
+    __tablename__ = "chat_calls"
+    __table_args__ = _table_args(
+        Index(
+            "uq_chat_calls_one_open_per_conversation",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text("status <> 'ended'"),
+            sqlite_where=text("status <> 'ended'"),
+        ),
+        Index("ix_chat_calls_status_started_at", "status", "started_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="direct")
+    media: Mapped[str] = mapped_column(String(8), nullable=False, default="audio")
+    # ringing -> active -> ended ; ringing -> ended
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ringing")
+    initiator_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # completed | declined | missed | cancelled
+    end_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatCallParticipant(Base):
+    __tablename__ = "chat_call_participants"
+    __table_args__ = _table_args(
+        UniqueConstraint("call_id", "user_id", name="uq_chat_call_participants_call_user"),
+        Index("ix_chat_call_participants_user_state", "user_id", "state"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    call_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_calls"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    # invited | joined | declined | left
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="invited")
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatEventOutbox(Base):
+    __tablename__ = "chat_event_outbox"
+    __table_args__ = _table_args(
+        UniqueConstraint("dedupe_key", name="uq_chat_event_outbox_dedupe_key"),
+        Index("ix_chat_event_outbox_status_next_attempt_at", "status", "next_attempt_at"),
+        Index("ix_chat_event_outbox_target_user_id_status", "target_user_id", "status"),
+        Index("ix_chat_event_outbox_updated_at", "updated_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_scope: Mapped[str] = mapped_column(String(16), nullable=False, default="inbox")
+    target_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatFolder(Base):
+    __tablename__ = "chat_folders"
+    __table_args__ = _table_args(
+        Index("ix_chat_folders_user_id_sort_order", "user_id", "sort_order"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatFolderConversation(Base):
+    __tablename__ = "chat_folder_conversations"
+    __table_args__ = _table_args(
+        UniqueConstraint("folder_id", "conversation_id", name="uq_chat_folder_conversations_folder_conversation"),
+        Index("ix_chat_folder_conversations_user_id_folder_id", "user_id", "folder_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    folder_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_folders"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

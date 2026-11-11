@@ -1,0 +1,207 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { memo } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { MailConversationPreview, MailMessagePreview } from '../../api/mailApi';
+import { mailCorrespondent, mailDateLabel, mailPersonDisplay, mailSubject, type NativeMailSwipeAction, type NativeMailSwipeSetting } from '../../mail/nativeMailModel';
+import type { FluentTokens } from '../../theme/fluentTokens';
+import { NativeMailSwipeRow } from './NativeMailSwipeRow';
+
+type MessageRowProps = {
+  item: MailMessagePreview;
+  selected: boolean;
+  selectionMode: boolean;
+  tokens: FluentTokens;
+  showPreview: boolean;
+  compact: boolean;
+  canDelete: boolean;
+  canArchive: boolean;
+  canDeleteForever: boolean;
+  swipeRight?: NativeMailSwipeSetting;
+  swipeLeft?: NativeMailSwipeSetting;
+  actionsDisabled: boolean;
+  /** Well-known folder key ('sent', 'drafts', 'trash', …) or raw folder id. */
+  folder?: string;
+  isSearch?: boolean;
+  mailboxEmails?: string[];
+  busy?: boolean;
+  onOpen: (item: MailMessagePreview) => void;
+  onToggleSelected: (messageId: string) => void;
+  onAction: (item: MailMessagePreview, action: Exclude<NativeMailSwipeAction, null>) => void | Promise<void>;
+};
+
+export const NativeMailInboxMessageRow = memo(function NativeMailInboxMessageRow({
+  item,
+  selected,
+  selectionMode,
+  tokens,
+  showPreview,
+  compact,
+  canDelete,
+  canArchive,
+  canDeleteForever,
+  swipeRight,
+  swipeLeft,
+  actionsDisabled,
+  folder,
+  isSearch = false,
+  mailboxEmails,
+  busy = false,
+  onOpen,
+  onToggleSelected,
+  onAction,
+}: MessageRowProps) {
+  const correspondent = mailCorrespondent(item, { folder, isSearch, mailboxEmails });
+  const sender = correspondent.label;
+  const subject = mailSubject(item);
+  const unread = item.is_read === false;
+  const activate = () => selectionMode ? onToggleSelected(item.id) : onOpen(item);
+  return (
+    <NativeMailSwipeRow
+      isRead={!unread}
+      canArchive={canArchive}
+      canDelete={canDelete}
+      canDeleteForever={canDeleteForever}
+      swipeRight={swipeRight}
+      swipeLeft={swipeLeft}
+      disabled={actionsDisabled || selectionMode}
+      tokens={tokens}
+      onAction={(action) => onAction(item, action)}
+    >
+      <Pressable
+        testID={`native-mail-message-${item.id}`}
+        onPress={activate}
+        onLongPress={() => onToggleSelected(item.id)}
+        delayLongPress={350}
+        accessibilityRole="button"
+        disabled={busy}
+        accessibilityState={{ selected, busy }}
+        accessibilityLabel={`${unread ? 'Непрочитанное. ' : ''}${item.importance === 'high' ? 'Важное письмо. ' : ''}${sender}. ${subject}. ${mailDateLabel(item.received_at)}`}
+        accessibilityHint={selectionMode ? 'Нажмите, чтобы изменить выбор' : 'Удерживайте, чтобы выбрать письмо'}
+        accessibilityActions={[
+          { name: 'longpress', label: selected ? 'Снять выбор письма' : 'Выбрать письмо' },
+          { name: 'toggleRead', label: unread ? 'Отметить прочитанным' : 'Отметить непрочитанным' },
+          ...(canArchive ? [{ name: 'archive', label: 'Переместить в архив' }] : []),
+          ...(canDelete ? [{ name: 'delete', label: 'Удалить письмо' }] : []),
+          ...(canDeleteForever ? [{ name: 'delete-forever', label: 'Удалить навсегда' }] : []),
+        ]}
+        onAccessibilityAction={(event) => {
+          if (event.nativeEvent.actionName === 'longpress') onToggleSelected(item.id);
+          if (actionsDisabled || selectionMode) return;
+          if (event.nativeEvent.actionName === 'toggleRead') onAction(item, 'toggle-read');
+          if (event.nativeEvent.actionName === 'archive') onAction(item, 'archive');
+          if (event.nativeEvent.actionName === 'delete') onAction(item, 'delete');
+          if (event.nativeEvent.actionName === 'delete-forever') onAction(item, 'delete-forever');
+        }}
+        android_ripple={{ color: tokens.actionHover }}
+        style={() => [
+          styles.row,
+          compact && styles.rowCompact,
+          { backgroundColor: tokens.panelSolid },
+        ]}
+      >
+        {selected || unread ? (
+          <View
+            pointerEvents="none"
+            style={[StyleSheet.absoluteFill, { backgroundColor: selected ? tokens.selected : tokens.accentSoft }]}
+          />
+        ) : null}
+        <View testID={`native-mail-avatar-${item.id}`} style={[styles.avatar, { backgroundColor: selected || unread ? tokens.primary : tokens.panelInset }]}>
+          {busy ? <ActivityIndicator testID={`native-mail-busy-${item.id}`} color={selected || unread ? '#fff' : tokens.primary} /> : selected ? (
+            <MaterialCommunityIcons name="check" size={21} color="#fff" />
+          ) : (
+            <Text maxFontSizeMultiplier={2} style={[styles.avatarText, { color: unread ? '#fff' : tokens.textSecondary }]}>
+              {(mailPersonDisplay(correspondent.person) || sender).slice(0, 1).toUpperCase() || 'П'}
+            </Text>
+          )}
+        </View>
+        <View style={styles.body}>
+          <View style={styles.topLine}>
+            <View style={styles.senderLine}>
+              {unread ? <View accessibilityLabel="Непрочитанное" style={[styles.unreadDot, { backgroundColor: tokens.primary }]} /> : null}
+              <Text numberOfLines={1} maxFontSizeMultiplier={2} style={[styles.sender, { color: tokens.textPrimary, fontWeight: unread ? '700' : '600' }]}>{sender}</Text>
+            </View>
+            <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82} style={[styles.date, { color: unread ? tokens.primary : tokens.textSecondary }]}>{mailDateLabel(item.received_at)}</Text>
+          </View>
+          <View style={styles.subjectLine}>
+            {item.importance === 'high' ? <MaterialCommunityIcons accessible={false} importantForAccessibility="no" name="alert-circle" size={14} color={tokens.error} /> : null}
+            <Text numberOfLines={1} maxFontSizeMultiplier={2} style={[styles.subject, { color: tokens.textPrimary, fontWeight: unread ? '600' : '500' }]}>{subject}</Text>
+            {item.has_attachments ? <MaterialCommunityIcons accessibilityLabel="Есть вложения" name="paperclip" size={15} color={tokens.iconMuted} /> : null}
+          </View>
+          {busy ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>Изменяем письмо…</Text> : showPreview ? <Text numberOfLines={compact ? 1 : 2} maxFontSizeMultiplier={2} style={[styles.preview, { color: tokens.textSecondary }]}>{String(item.body_preview || 'Без текста')}</Text> : null}
+        </View>
+      </Pressable>
+    </NativeMailSwipeRow>
+  );
+});
+
+export const NativeMailInboxConversationRow = memo(function NativeMailInboxConversationRow({
+  item,
+  tokens,
+  showPreview,
+  compact,
+  onOpen,
+  selected = false, selectionMode = false, onToggleSelected,
+}: {
+  item: MailConversationPreview;
+  tokens: FluentTokens;
+  showPreview: boolean;
+  compact: boolean;
+  selected?: boolean; selectionMode?: boolean; onToggleSelected?: (id: string) => void;
+  onOpen: (item: MailConversationPreview) => void;
+}) {
+  const unread = Number(item.unread_count || 0);
+  const participants = (item.participant_people || []).map((person) => person.display || person.name || person.email).filter(Boolean);
+  const people = [...participants, ...(item.participants || []).filter(Boolean)].slice(0, 3).join(', ') || 'Переписка';
+  return (
+    <Pressable
+      testID={`native-mail-conversation-${item.conversation_id}`}
+      onPress={() => selectionMode ? onToggleSelected?.(item.conversation_id) : onOpen(item)}
+      onLongPress={() => onToggleSelected?.(item.conversation_id)}
+      accessibilityState={{ selected }}
+      accessibilityRole="button"
+      accessibilityLabel={`${unread ? `Непрочитанных: ${unread}. ` : ''}${mailSubject(item)}. Сообщений: ${item.messages_count || 0}`}
+      style={({ pressed }) => [styles.row, compact && styles.rowCompact, { backgroundColor: selected ? tokens.selected : unread ? tokens.accentSoft : tokens.panelSolid, opacity: pressed ? 0.78 : 1 }]}
+    >
+      <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`Выбрать цепочку: ${mailSubject(item)}`} onPress={(event) => { event.stopPropagation(); onToggleSelected?.(item.conversation_id); }} style={[styles.avatar, { backgroundColor: unread ? tokens.primary : tokens.panelInset }]}>
+        <MaterialCommunityIcons name={selected ? "check" : "email-multiple-outline"} size={20} color={unread ? '#fff' : tokens.iconMuted} />
+      </Pressable>
+      <View style={styles.body}>
+        <View style={styles.topLine}>
+          <View style={styles.senderLine}>
+            {unread ? <View accessibilityLabel="Есть непрочитанные" style={[styles.unreadDot, { backgroundColor: tokens.primary }]} /> : null}
+            <Text numberOfLines={1} maxFontSizeMultiplier={2} style={[styles.sender, { color: tokens.textPrimary, fontWeight: unread ? '700' : '600' }]}>{people}</Text>
+          </View>
+          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82} style={[styles.date, { color: unread ? tokens.primary : tokens.textSecondary }]}>{mailDateLabel(item.last_received_at)}</Text>
+        </View>
+        <View style={styles.subjectLine}>
+          <Text numberOfLines={1} maxFontSizeMultiplier={2} style={[styles.subject, { color: tokens.textPrimary, fontWeight: unread ? '600' : '500' }]}>{mailSubject(item)}</Text>
+          <Text style={[styles.count, { color: tokens.textSecondary }]}>{item.messages_count || 0}</Text>
+          {item.has_attachments ? <MaterialCommunityIcons accessibilityLabel="Есть вложения" name="paperclip" size={15} color={tokens.iconMuted} /> : null}
+        </View>
+        {showPreview ? <Text numberOfLines={compact ? 1 : 2} maxFontSizeMultiplier={2} style={[styles.preview, { color: tokens.textSecondary }]}>{String(item.preview || 'Без текста')}</Text> : null}
+      </View>
+    </Pressable>
+  );
+});
+
+export function NativeMailInboxDivider({ tokens }: { tokens: FluentTokens }) {
+  return <View style={[styles.divider, { backgroundColor: tokens.borderSoft }]} />;
+}
+
+const styles = StyleSheet.create({
+  row: { minHeight: 92, paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  rowCompact: { minHeight: 84, paddingVertical: 8 },
+  avatar: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  avatarText: { fontSize: 16, fontWeight: '800' },
+  body: { flex: 1, minWidth: 0 },
+  topLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  senderLine: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  unreadDot: { width: 6, height: 6, borderRadius: 3, flexShrink: 0 },
+  sender: { flex: 1, minWidth: 0, fontSize: 15, lineHeight: 20 },
+  date: { flexShrink: 0, textAlign: 'right', fontSize: 12, lineHeight: 18, fontWeight: '700' },
+  subjectLine: { marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 5 },
+  subject: { flex: 1, minWidth: 0, fontSize: 14, lineHeight: 19 },
+  preview: { marginTop: 2, fontSize: 13, lineHeight: 18 },
+  count: { fontSize: 11, lineHeight: 16, fontWeight: '800' },
+  divider: { height: StyleSheet.hairlineWidth, marginLeft: 70 },
+});

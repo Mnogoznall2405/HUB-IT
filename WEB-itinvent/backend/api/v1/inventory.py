@@ -1,0 +1,4238 @@
+﻿import logging
+import ipaddress
+import random
+import re
+import sqlite3
+import threading
+import time
+import os
+import hashlib
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, Field
+
+from backend.api.deps import ensure_user_permission, get_current_database_id, require_permission
+from backend.api.v1.database import get_all_db_configs
+from backend.appdb.db import ensure_app_schema_initialized, get_app_database_url, get_app_engine, is_app_database_configured
+from backend.appdb.inventory_store import AppInventoryStore
+from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.config import config
+from backend.db_schema import schema_name
+from backend import inventory_runtime
+from backend.models.auth import User
+from backend.services.user_db_selection_service import user_db_selection_service
+from backend.services import inventory_binding
+from backend.services import it_object_branch_scope
+from backend.services import inventory_read
+from backend.services.inventory_binding import EMPTY_BRANCH_LABEL, UNASSIGNED_BRANCH_LABEL
+from backend.utils.network_scope import (
+    DEFAULT_INVENTORY_NETWORK_SCOPE_MAP,
+    INVENTORY_NETWORK_SCOPE_RULES,
+    parse_network_scope_map as _parse_inventory_network_scope_map,
+    resolve_network_scope,
+)
+from backend.services.authorization_service import (
+    PERM_COMPUTERS_MANAGE,
+    PERM_COMPUTERS_READ,
+    PERM_COMPUTERS_READ_ALL,
+)
+from local_store import get_local_store
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _env_positive_int(name: str, default: int, minimum: int) -> int:
+    raw = str(os.getenv(name, str(default)) or "").strip()
+    try:
+        return max(int(raw), int(minimum))
+    except Exception:
+        return max(int(default), int(minimum))
+
+INVENTORY_FILE = inventory_read.INVENTORY_FILE
+CHANGES_FILE = "agent_inventory_changes.json"
+HISTORY_RETENTION_DAYS = 90
+CHANGES_WINDOW_DAYS = 30
+
+ONLINE_MAX_AGE_SECONDS = inventory_read.ONLINE_MAX_AGE_SECONDS
+STALE_MAX_AGE_SECONDS = inventory_read.STALE_MAX_AGE_SECONDS
+OUTLOOK_ALLOWED_STATUS = {"ok", "warning", "critical", "unknown"}
+OUTLOOK_ALLOWED_CONFIDENCE = {"high", "medium", "low"}
+OUTLOOK_ALLOWED_SOURCE = {"user_helper_com", "system_scan", "none"}
+COMPUTER_SEARCH_FIELDS = {"identity", "user", "profiles", "outlook", "network", "location", "database"}
+COMPUTER_SEARCH_DEFAULT_FIELDS = set(COMPUTER_SEARCH_FIELDS)
+
+# Кеш обогащённых записей _collect_scoped_computer_records: повторные запросы
+# (poll, пагинация, summary) переиспользуют коллекцию, пока отпечаток содержимого
+# (content_version_probe) не изменился. Запись: (monotonic момента сборки, версия, записи).
+# Свежая (возраст <= TTL) отдаётся как есть; устаревшая до STALE_MAX отдаётся сразу,
+# а пересборка уходит в фон (stale-while-revalidate). Статусы online/stale/offline
+# пересчитываются от now при каждой выдаче, поэтому устаревание last_seen не даёт ложный online.
+COMPUTERS_RECORDS_CACHE_TTL_SEC = 60.0
+COMPUTERS_RECORDS_CACHE_MAX_ENTRIES = 6
+COMPUTERS_RECORDS_CACHE_STALE_MAX_SEC = 600.0
+COMPUTERS_RECORDS_FLIGHT_WAIT_SEC = 20.0
+COMPUTERS_RECORDS_REBUILD_WORKERS = 2
+COMPUTERS_LIST_HOT_MAX_KEYS = 8
+COMPUTERS_LIST_HOT_IDLE_SEC = 1800.0  # после последнего обращения ключ греется ещё 30 мин (перерыв ≤ 30 мин не даёт холодного старта)
+_computers_records_cache: "OrderedDict[tuple, Tuple[float, Any, tuple]]" = OrderedDict()
+_computers_records_cache_lock = threading.Lock()
+# Single-flight: один активный пересчёт на ключ; остальные запросы ждут его результат.
+_computers_flights: Dict[tuple, Tuple[Any, Future]] = {}
+_computers_flights_lock = threading.Lock()
+_computers_rebuild_executor = ThreadPoolExecutor(
+    max_workers=COMPUTERS_RECORDS_REBUILD_WORKERS,
+    thread_name_prefix="inventory-list-rebuild",
+)
+# Горячие ключи списка (последний запрос и рецепт вызова) для фонового прогрева.
+_computers_hot_keys: "OrderedDict[tuple, Tuple[float, Dict[str, Any]]]" = OrderedDict()
+_computers_hot_lock = threading.Lock()
+_computers_list_counters: Dict[str, float] = {
+    "hit": 0,
+    "stale": 0,
+    "miss": 0,
+    "wait": 0,
+    "rebuild_ok": 0,
+    "rebuild_error": 0,
+    "rebuild_ms_total": 0.0,
+    "rebuild_ms_last": 0.0,
+    "warmup_runs": 0,
+}
+_computers_list_counters_lock = threading.Lock()
+# Производные кэши (TTL + версия данных): индекс изменений за 30 дней и сетевой индекс.
+# Без них каждый запрос списка заново читал 90 дней событий и весь сетевой индекс.
+_derived_cache_lock = threading.Lock()
+_changes_index_cache: Optional[Tuple[float, tuple, Dict[str, Dict[str, Any]]]] = None
+# Ответ /changes (сводка за окно хранения): строится сканом всех событий, поэтому кэш по версии данных и TTL.
+_changes_summary_cache: Optional[Tuple[float, tuple, Dict[str, Any]]] = None
+_changes_last_request: Optional[float] = None  # monotonic последнего запроса /changes: прогрев только для «горячей» сводки
+_network_lookup_index_cache: Optional[Tuple[float, tuple, Dict[str, Dict[str, Dict[str, Any]]]]] = None
+
+# Native clients intentionally receive only the fields rendered by the native
+# Computers UI.  Full agent/profile/change payloads remain available to the
+# protected web endpoint, but must not cross the mobile transport boundary.
+_MOBILE_COMPUTER_LIST_FIELDS = (
+    "mac_address",
+    "hostname",
+    "status",
+    "age_seconds",
+    "current_user",
+    "user_login",
+    "user_full_name",
+    "branch_name",
+    "location_name",
+    "is_unassigned",
+    "ip_primary",
+    "has_hardware_changes",
+    "changes_count_30d",
+)
+_MOBILE_COMPUTER_DETAIL_FIELDS = _MOBILE_COMPUTER_LIST_FIELDS + (
+    "last_seen_at",
+    "database_name",
+    "inventory_inv_no",
+    "inventory_model_name",
+    "ip_list",
+    "cpu_load_percent",
+    "ram_used_percent",
+    "uptime_seconds",
+    "last_reboot_at",
+    "cpu_model",
+    "ram_gb",
+    "system_serial",
+    "outlook_status",
+    "outlook_total_size_bytes",
+    "outlook_archives_count",
+)
+_MOBILE_DISK_FIELDS = (
+    "name",
+    "display_name",
+    "mountpoint",
+    "device",
+    "total_gb",
+    "free_gb",
+    "size_gb",
+    "health_status",
+    "media_type",
+)
+_MOBILE_NETWORK_DEVICE_FIELDS = (
+    "name",
+    "connection_status",
+    "link_speed",
+    "ipv4",
+)
+INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS = _env_positive_int(
+    "ITINV_INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",
+    default=_env_positive_int(
+        "ITINV_INVENTORY_HEARTBEAT_WRITE_INTERVAL_SECONDS",
+        default=600,
+        minimum=15,
+    ),
+    minimum=15,
+)
+_NETWORK_LOOKUP_TABLES = {
+    "network_branches",
+    "network_sites",
+    "network_devices",
+    "network_ports",
+    "network_sockets",
+}
+
+
+
+
+def _query_bool(value: Any, default: bool = False) -> bool:
+    """Resolve FastAPI Query() placeholders when endpoint functions are called directly in tests."""
+    if isinstance(value, bool):
+        return value
+    default_value = getattr(value, "default", default)
+    if isinstance(default_value, bool):
+        return default_value
+    return bool(default)
+
+
+def _inventory_database_url() -> Optional[str]:
+    if not is_app_database_configured():
+        return None
+    database_url = get_app_database_url()
+    if not database_url:
+        return None
+    return ensure_app_schema_initialized(database_url)
+
+
+def _get_inventory_app_store() -> Optional[AppInventoryStore]:
+    database_url = _inventory_database_url()
+    if not database_url:
+        return None
+    return AppInventoryStore(database_url=database_url)
+
+
+def _inventory_record_key(record: Dict[str, Any]) -> str:
+    mac_address = _normalize_text(record.get("mac_address"))
+    if mac_address:
+        return mac_address
+    return _normalize_text(record.get("hostname")).lower()
+
+
+def _load_inventory_snapshot(
+    host_keys: Optional[set[str]] = None,
+    *,
+    include_hidden: bool = False,
+    hidden_only: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    app_store = _get_inventory_app_store()
+    if app_store is not None:
+        snapshot: Dict[str, Dict[str, Any]] = {}
+        for row in app_store.list_hosts(
+            host_keys=host_keys,
+            include_hidden=include_hidden or hidden_only,
+            hidden_only=hidden_only,
+        ):
+            if isinstance(row, dict):
+                snapshot[_inventory_record_key(row)] = row
+        return snapshot
+
+    store = get_local_store()
+    payload = store.load_json(INVENTORY_FILE, default_content={})
+    if not isinstance(payload, dict):
+        return {}
+    if host_keys is None:
+        filtered = payload
+    else:
+        normalized_keys = {_normalize_mac(item) or _normalize_text(item).lower() for item in host_keys if _normalize_text(item)}
+        if not normalized_keys:
+            return {}
+        filtered = {
+            key: value
+            for key, value in payload.items()
+            if isinstance(value, dict)
+            and ((_normalize_mac(value.get("mac_address")) in normalized_keys) or (_normalize_text(value.get("hostname")).lower() in normalized_keys))
+        }
+    # JSON fallback has no hidden_* columns; include_hidden/hidden_only only apply to app-db.
+    if hidden_only:
+        return {
+            key: value
+            for key, value in filtered.items()
+            if isinstance(value, dict) and value.get("hidden_at") not in (None, "", 0)
+        }
+    if not include_hidden:
+        return {
+            key: value
+            for key, value in filtered.items()
+            if not (isinstance(value, dict) and value.get("hidden_at") not in (None, "", 0))
+        }
+    return filtered
+
+
+def _get_inventory_host(mac_address: str) -> Optional[Dict[str, Any]]:
+    app_store = _get_inventory_app_store()
+    if app_store is not None:
+        return app_store.get_host(mac_address)
+
+    store = get_local_store()
+    payload = store.load_json(INVENTORY_FILE, default_content={})
+    if not isinstance(payload, dict):
+        return None
+    return payload.get(_normalize_text(mac_address))
+
+
+def _save_inventory_host(record: Dict[str, Any], current_data: Optional[Dict[str, Dict[str, Any]]] = None) -> bool:
+    app_store = _get_inventory_app_store()
+    if app_store is not None:
+        app_store.upsert_host(record)
+        return True
+
+    store = get_local_store()
+    payload = current_data if isinstance(current_data, dict) else store.load_json(INVENTORY_FILE, default_content={})
+    if not isinstance(payload, dict):
+        payload = {}
+    payload[_normalize_text(record.get("mac_address"))] = record
+    return bool(store.save_json(INVENTORY_FILE, payload))
+
+
+def _touch_inventory_host_presence(
+    *,
+    mac_address: str,
+    last_seen_at: int,
+    report_type: str,
+    hostname: str = "",
+    user_login: str = "",
+    user_full_name: str = "",
+    ip_primary: str = "",
+) -> bool:
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        return False
+    return bool(
+        app_store.touch_host_presence(
+            mac_address,
+            last_seen_at=int(last_seen_at),
+            report_type=str(report_type or "heartbeat").strip() or "heartbeat",
+            hostname=_normalize_text(hostname),
+            user_login=_normalize_text(user_login),
+            user_full_name=_normalize_text(user_full_name),
+            ip_primary=_normalize_text(ip_primary),
+        )
+    )
+
+
+def _save_change_events(changes: List[Dict[str, Any]]) -> bool:
+    app_store = _get_inventory_app_store()
+    if app_store is not None:
+        cutoff = int(time.time()) - HISTORY_RETENTION_DAYS * 24 * 60 * 60
+        app_store.prune_change_events(cutoff)
+        for event in sorted(changes, key=lambda item: _to_int(item.get("detected_at"), 0)):
+            if isinstance(event, dict):
+                app_store.append_change_event(event)
+        return True
+
+    store = get_local_store()
+    return bool(store.save_json(CHANGES_FILE, changes))
+
+
+def _append_change_events(changes: List[Dict[str, Any]]) -> bool:
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        return False
+    cutoff = int(time.time()) - HISTORY_RETENTION_DAYS * 24 * 60 * 60
+    app_store.prune_change_events(cutoff)
+    for event in sorted(changes, key=lambda item: _to_int(item.get("detected_at"), 0)):
+        if isinstance(event, dict):
+            app_store.append_change_event(event)
+    return True
+
+
+def _open_network_lookup_connection():
+    database_url = _inventory_database_url()
+    if database_url:
+        return SqlAlchemyCompatConnection(
+            get_app_engine(database_url),
+            table_names=_NETWORK_LOOKUP_TABLES,
+            schema=schema_name("app", database_url),
+        )
+
+    store = get_local_store()
+    conn = sqlite3.connect(str(store.db_path), timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _api_key_fingerprint(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "none"
+    digest = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+    return digest[:12]
+
+
+def _load_agent_api_keys() -> List[str]:
+    keys: List[str] = []
+    ring_raw = str(os.getenv("ITINV_AGENT_API_KEYS", "") or "").strip()
+    if ring_raw:
+        for row in ring_raw.split(","):
+            key = str(row or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+
+    legacy_key = str(os.getenv("ITINV_AGENT_API_KEY", "") or "").strip()
+    if legacy_key and legacy_key not in keys:
+        keys.append(legacy_key)
+    return keys
+
+
+def _is_valid_agent_api_key(candidate: Optional[str]) -> bool:
+    token = str(candidate or "").strip()
+    if not token:
+        return False
+    keys = _load_agent_api_keys()
+    return token in keys
+
+
+class InventoryPayload(BaseModel):
+    hostname: str
+    system_serial: Optional[str] = "Unknown"
+    mac_address: str
+    current_user: Optional[str] = ""
+    user_login: Optional[str] = ""
+    user_full_name: Optional[str] = ""
+    ip_primary: Optional[str] = ""
+    ip_list: Optional[List[str]] = None
+    cpu_model: Optional[str] = "Unknown"
+    ram_gb: Optional[float] = None
+    monitors: Optional[List[Dict[str, Any]]] = None
+    logical_disks: Optional[List[Dict[str, Any]]] = None
+    storage: Optional[List[Dict[str, Any]]] = None
+    report_type: Optional[str] = "full_snapshot"
+    last_seen_at: Optional[int] = None
+    last_full_snapshot_at: Optional[int] = None
+    os_info: Optional[Dict[str, Any]] = None
+    network: Optional[Dict[str, Any]] = None
+    health: Optional[Dict[str, Any]] = None
+    uptime_seconds: Optional[int] = None
+    cpu_load_percent: Optional[float] = None
+    ram_used_percent: Optional[float] = None
+    last_reboot_at: Optional[int] = None
+    security: Optional[Dict[str, Any]] = None
+    updates: Optional[Dict[str, Any]] = None
+    outlook: Optional[Dict[str, Any]] = None
+    user_profile_sizes: Optional[Dict[str, Any]] = None
+    agent_runtime: Optional[Dict[str, Any]] = None
+    ops_health: Optional[Dict[str, Any]] = None
+    software_inventory: Optional[Dict[str, Any]] = None
+    usb_devices: Optional[Dict[str, Any]] = None
+    timestamp: int
+
+
+def _normalize_report_type(value: Optional[str]) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "heartbeat":
+        return "heartbeat"
+    return "full_snapshot"
+
+
+def _model_dump(payload: InventoryPayload) -> Dict[str, Any]:
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(exclude_unset=True)
+    return payload.dict(exclude_unset=True)
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _to_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+_normalize_text = inventory_read.normalize_text
+
+
+def _cyrillic_score(value: str) -> int:
+    text = _normalize_text(value)
+    cyr_count = len(re.findall(r"[А-Яа-яЁё]", text))
+    mojibake_count = len(re.findall(r"[ЉЊЋЌЍЎџ®§«»ўЄЁ©…†‡‰™‹›№]", text))
+    return cyr_count - (mojibake_count * 2)
+
+
+def _repair_cp866_mojibake(value: Any) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    if not re.search(r"[ЉЊЋЌЍЎџ®§«»ўЄЁ©…†‡‰™‹›№]", text):
+        return text
+    try:
+        candidate = text.encode("cp1251").decode("cp866")
+    except Exception:
+        return text
+    if _cyrillic_score(candidate) >= _cyrillic_score(text) + 3:
+        return candidate
+    return text
+
+
+def _normalize_person_name(value: Any) -> str:
+    return _repair_cp866_mojibake(value)
+
+
+_normalize_mac = inventory_read.normalize_mac
+
+
+def _normalize_serial_token(value: Any) -> str:
+    return re.sub(r"[^0-9A-Za-z]", "", _normalize_text(value)).upper()
+
+
+def _normalize_login(value: Any) -> str:
+    return _normalize_text(value)
+
+
+def _extract_mac_candidates(value: Any) -> List[str]:
+    text = _normalize_text(value)
+    if not text:
+        return []
+    matches = re.findall(
+        r"(?:[0-9A-Fa-f]{2}(?:[:-])){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}|[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}",
+        text,
+    )
+    out: List[str] = []
+    for raw in matches:
+        normalized = _normalize_mac(raw)
+        if len(normalized) != 12:
+            continue
+        if normalized not in out:
+            out.append(normalized)
+    return out
+
+
+def _extract_first_ipv4(value: Any) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    match = re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text)
+    return match.group(0) if match else ""
+
+
+def _extract_ipv4_candidates(value: Any) -> List[str]:
+    text = _normalize_text(value)
+    if not text:
+        return []
+    out: List[str] = []
+    for raw in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text):
+        if raw not in out:
+            out.append(raw)
+    return out
+
+
+def _dedupe_strings(values: List[Any]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for raw in values or []:
+        value = _normalize_text(raw)
+        if not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _project_mobile_computer(record: Dict[str, Any], *, detail: bool) -> Dict[str, Any]:
+    """Return the bounded, path-free Computers contract used by native clients."""
+    source = record if isinstance(record, dict) else {}
+    allowed_fields = _MOBILE_COMPUTER_DETAIL_FIELDS if detail else _MOBILE_COMPUTER_LIST_FIELDS
+    projected = {field: source.get(field) for field in allowed_fields if field in source}
+
+    for collection_name in ("logical_disks", "storage"):
+        rows = source.get(collection_name) if isinstance(source.get(collection_name), list) else []
+        projected[collection_name] = [
+            {field: row.get(field) for field in _MOBILE_DISK_FIELDS if field in row}
+            for row in rows[:32]
+            if isinstance(row, dict)
+        ]
+
+    if detail:
+        projected["ip_list"] = _dedupe_strings(
+            source.get("ip_list") if isinstance(source.get("ip_list"), list) else []
+        )[:16]
+        network = source.get("network") if isinstance(source.get("network"), dict) else {}
+        devices = network.get("devices") if isinstance(network.get("devices"), list) else []
+        projected_devices = []
+        for row in devices[:32]:
+            if not isinstance(row, dict):
+                continue
+            projected_devices.append(
+                {
+                    "name": _normalize_text(row.get("name") or row.get("description")),
+                    "connection_status": row.get("connection_status"),
+                    "link_speed": row.get("link_speed"),
+                    "ipv4": _dedupe_strings(row.get("ipv4") if isinstance(row.get("ipv4"), list) else [])[:8],
+                }
+            )
+        projected["network"] = {"devices": projected_devices}
+
+    return projected
+
+
+# Поля, которые десктопная карточка списка (Computers.jsx ComputerCard) не читает.
+_CARD_LIST_DROP_FIELDS = (
+    "timestamp",
+    "last_seen_at",
+    "cpu_model",
+    "cpu_load_percent",
+    "ram_gb",
+    "ram_used_percent",
+    "uptime_seconds",
+    "last_reboot_at",
+    "assignment_source",
+    "branch_source",
+    "network",
+    "user_profile_sizes",
+    "outlook",
+)
+
+
+def _project_card_computer(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Строка списка для карточки: _trim_computer_list_record без полей, которые карточка не выводит.
+
+    Карточка по-прежнему получает network_link, logical_disks и storage (SMART-счётчик, drive usage)
+    и outlook_* поля; тяжёлое обогащение не вызывается, полные данные остаются в детали.
+    """
+    return {key: value for key, value in record.items() if key not in _CARD_LIST_DROP_FIELDS}
+
+
+def _extract_ip_fields(record: Dict[str, Any]) -> Tuple[str, List[str]]:
+    candidate_list = record.get("ip_list")
+    if not isinstance(candidate_list, list):
+        candidate_list = []
+
+    if not candidate_list:
+        network = record.get("network") if isinstance(record.get("network"), dict) else {}
+        network_ipv4 = network.get("active_ipv4") if isinstance(network.get("active_ipv4"), list) else []
+        candidate_list = list(network_ipv4)
+
+    ip_list = _dedupe_strings(candidate_list)
+    ip_primary = _normalize_text(record.get("ip_primary"))
+    if not ip_primary and ip_list:
+        ip_primary = ip_list[0]
+    if ip_primary and ip_primary not in ip_list:
+        ip_list.insert(0, ip_primary)
+    return ip_primary, ip_list
+
+
+def _resolve_inventory_network_scope(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ip_primary, ip_list = _extract_ip_fields(record)
+    return resolve_network_scope(_dedupe_strings([ip_primary, *ip_list]))
+
+
+def _network_link_payload(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "branch_id": row["branch_id"],
+        "branch_name": row["branch_name"],
+        "site_name": row["site_name"],
+        "device_code": row["device_code"],
+        "device_model": row["device_model"],
+        "port_name": row["port_name"],
+        "socket_code": row["socket_code"],
+        "endpoint_ip_raw": row["endpoint_ip_raw"],
+        "endpoint_mac_raw": row["endpoint_mac_raw"],
+    }
+
+
+def _ensure_identity_fields(record: Dict[str, Any]) -> None:
+    user_login = _normalize_login(record.get("user_login") or record.get("current_user"))
+    user_full_name = _normalize_person_name(record.get("user_full_name"))
+    record["user_login"] = user_login
+    record["current_user"] = user_login
+    record["user_full_name"] = user_full_name
+
+    ip_primary, ip_list = _extract_ip_fields(record)
+    record["ip_primary"] = ip_primary
+    record["ip_list"] = ip_list
+
+
+def _ensure_runtime_fields(record: Dict[str, Any]) -> None:
+    health = record.get("health") if isinstance(record.get("health"), dict) else {}
+
+    cpu_value = _to_float(record.get("cpu_load_percent"), default=None)
+    if cpu_value is None:
+        cpu_value = _to_float(health.get("cpu_load_percent"), default=None)
+    if cpu_value is not None:
+        cpu_value = round(cpu_value, 1)
+        record["cpu_load_percent"] = cpu_value
+        health["cpu_load_percent"] = cpu_value
+
+    ram_value = _to_float(record.get("ram_used_percent"), default=None)
+    if ram_value is None:
+        ram_value = _to_float(health.get("ram_used_percent"), default=None)
+    if ram_value is not None:
+        ram_value = round(ram_value, 1)
+        record["ram_used_percent"] = ram_value
+        health["ram_used_percent"] = ram_value
+
+    uptime_value = _to_int(record.get("uptime_seconds"), default=-1)
+    if uptime_value < 0:
+        uptime_value = _to_int(health.get("uptime_seconds"), default=-1)
+    if uptime_value >= 0:
+        record["uptime_seconds"] = uptime_value
+        health["uptime_seconds"] = uptime_value
+
+    last_reboot_at = _to_int(
+        record.get("last_reboot_at") or health.get("last_reboot_at") or health.get("boot_time"),
+        default=0,
+    )
+    if last_reboot_at > 0:
+        record["last_reboot_at"] = last_reboot_at
+        health["boot_time"] = last_reboot_at
+        health["last_reboot_at"] = last_reboot_at
+        if not _normalize_text(health.get("last_reboot_iso")):
+            health["last_reboot_iso"] = datetime.fromtimestamp(last_reboot_at).isoformat()
+
+    record["health"] = health
+
+
+def _normalize_outlook_store(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    path = _normalize_text(raw.get("path"))
+    if not path:
+        return None
+    store_type = _normalize_text(raw.get("type")).lower()
+    if not store_type:
+        suffix = os.path.splitext(path)[1].lower()
+        if suffix == ".ost":
+            store_type = "ost"
+        elif suffix == ".pst":
+            store_type = "pst"
+        else:
+            store_type = suffix.lstrip(".")
+    return {
+        "path": path,
+        "type": store_type,
+        "size_bytes": max(0, _to_int(raw.get("size_bytes"), 0)),
+        "last_modified_at": max(0, _to_int(raw.get("last_modified_at"), 0)),
+    }
+
+
+def _normalize_outlook_payload(raw: Any) -> Dict[str, Any]:
+    base: Dict[str, Any] = {
+        "collected_at": _to_int(time.time(), 0),
+        "source": "none",
+        "confidence": "low",
+        "status": "unknown",
+        "threshold_warning_bytes": 45 * (1024 ** 3),
+        "threshold_critical_bytes": 49 * (1024 ** 3),
+        "active_store": None,
+        "active_stores": [],
+        "active_candidate": None,
+        "archives": [],
+        "largest_file_path": "",
+        "largest_file_size_bytes": 0,
+        "total_outlook_size_bytes": 0,
+    }
+    if not isinstance(raw, dict):
+        return base
+
+    source = _normalize_text(raw.get("source")).lower()
+    confidence = _normalize_text(raw.get("confidence")).lower()
+    status = _normalize_text(raw.get("status")).lower()
+    if source not in OUTLOOK_ALLOWED_SOURCE:
+        source = "none"
+    if confidence not in OUTLOOK_ALLOWED_CONFIDENCE:
+        confidence = "low"
+    if status not in OUTLOOK_ALLOWED_STATUS:
+        status = "unknown"
+
+    warning_bytes = max(1, _to_int(raw.get("threshold_warning_bytes"), base["threshold_warning_bytes"]))
+    critical_bytes = max(warning_bytes, _to_int(raw.get("threshold_critical_bytes"), base["threshold_critical_bytes"]))
+
+    active_store = _normalize_outlook_store(raw.get("active_store"))
+    active_stores: List[Dict[str, Any]] = []
+    active_stores_raw = raw.get("active_stores")
+    if isinstance(active_stores_raw, list):
+        for row in active_stores_raw:
+            normalized = _normalize_outlook_store(row)
+            if normalized:
+                active_stores.append(normalized)
+    if active_store:
+        active_stores.insert(0, active_store)
+    if active_stores:
+        deduped_active_stores: List[Dict[str, Any]] = []
+        seen_paths = set()
+        for row in active_stores:
+            row_path = _normalize_text(row.get("path")).lower()
+            if not row_path or row_path in seen_paths:
+                continue
+            seen_paths.add(row_path)
+            deduped_active_stores.append(row)
+        active_stores = deduped_active_stores
+    active_store = active_stores[0] if active_stores else None
+    active_candidate = _normalize_outlook_store(raw.get("active_candidate"))
+
+    archives: List[Dict[str, Any]] = []
+    archives_raw = raw.get("archives")
+    if isinstance(archives_raw, list):
+        for row in archives_raw:
+            normalized = _normalize_outlook_store(row)
+            if normalized:
+                archives.append(normalized)
+
+    active_size = 0
+    if active_stores:
+        active_size = max(max(0, _to_int(row.get("size_bytes"), 0)) for row in active_stores)
+    if confidence in {"high", "medium"} and active_size > 0:
+        if active_size >= critical_bytes:
+            status = "critical"
+        elif active_size >= warning_bytes:
+            status = "warning"
+        else:
+            status = "ok"
+    else:
+        status = "unknown"
+
+    return {
+        "collected_at": max(0, _to_int(raw.get("collected_at"), base["collected_at"])),
+        "source": source,
+        "confidence": confidence,
+        "status": status,
+        "threshold_warning_bytes": warning_bytes,
+        "threshold_critical_bytes": critical_bytes,
+        "active_store": active_store,
+        "active_stores": active_stores,
+        "active_candidate": active_candidate,
+        "archives": archives,
+        "largest_file_path": _normalize_text(raw.get("largest_file_path")),
+        "largest_file_size_bytes": max(0, _to_int(raw.get("largest_file_size_bytes"), 0)),
+        "total_outlook_size_bytes": max(0, _to_int(raw.get("total_outlook_size_bytes"), 0)),
+    }
+
+
+def _enrich_outlook_fields(record: Dict[str, Any]) -> None:
+    outlook = _normalize_outlook_payload(record.get("outlook"))
+    active_stores = outlook.get("active_stores") if isinstance(outlook.get("active_stores"), list) else []
+    active_store = outlook.get("active_store") if isinstance(outlook.get("active_store"), dict) else None
+    if not active_store and active_stores:
+        first_active = active_stores[0]
+        if isinstance(first_active, dict):
+            active_store = first_active
+    archives = outlook.get("archives") if isinstance(outlook.get("archives"), list) else []
+    active_size_bytes = max(0, _to_int((active_store or {}).get("size_bytes"), 0))
+    if active_stores:
+        active_size_bytes = max(active_size_bytes, max(max(0, _to_int(row.get("size_bytes"), 0)) for row in active_stores if isinstance(row, dict)))
+    record["outlook"] = outlook
+    record["outlook_status"] = _normalize_text(outlook.get("status")).lower() or "unknown"
+    record["outlook_confidence"] = _normalize_text(outlook.get("confidence")).lower() or "low"
+    record["outlook_active_size_bytes"] = active_size_bytes
+    record["outlook_active_path"] = _normalize_text((active_store or {}).get("path"))
+    record["outlook_active_stores_count"] = len([row for row in active_stores if isinstance(row, dict)])
+    record["outlook_total_size_bytes"] = max(0, _to_int(outlook.get("total_outlook_size_bytes"), 0))
+    record["outlook_archives_count"] = len([row for row in archives if isinstance(row, dict)])
+
+
+def _normalize_user_profile_folder(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    name = _normalize_text(raw.get("name"))
+    path = _normalize_text(raw.get("path"))
+    if not name and not path:
+        return None
+    return {
+        "name": name,
+        "path": path,
+        "size_bytes": max(0, _to_int(raw.get("size_bytes"), 0)),
+        "files_count": max(0, _to_int(raw.get("files_count"), 0)),
+        "dirs_count": max(0, _to_int(raw.get("dirs_count"), 0)),
+        "errors_count": max(0, _to_int(raw.get("errors_count"), 0)),
+        "partial": bool(raw.get("partial")),
+        "partial_reason": _normalize_text(raw.get("partial_reason")),
+        "partial_reasons": _normalize_user_profile_partial_reasons(raw.get("partial_reasons")),
+    }
+
+
+def _normalize_user_profile_partial_reasons(raw: Any) -> List[str]:
+    values = raw if isinstance(raw, list) else [raw]
+    result: List[str] = []
+    for value in values:
+        reason = _normalize_text(value).lower()
+        if reason in {"timeout", "entry_limit", "total_timeout"} and reason not in result:
+            result.append(reason)
+    return result
+
+
+def _normalize_user_profile_size(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    user_name = _normalize_text(raw.get("user_name"))
+    profile_path = _normalize_text(raw.get("profile_path"))
+    if not user_name and not profile_path:
+        return None
+    folders = []
+    for row in raw.get("top_level_folders") if isinstance(raw.get("top_level_folders"), list) else []:
+        normalized = _normalize_user_profile_folder(row)
+        if normalized:
+            folders.append(normalized)
+    return {
+        "user_name": user_name,
+        "profile_path": profile_path,
+        "total_size_bytes": max(0, _to_int(raw.get("total_size_bytes"), 0)),
+        "top_level_folders": folders,
+        "files_count": max(0, _to_int(raw.get("files_count"), 0)),
+        "dirs_count": max(0, _to_int(raw.get("dirs_count"), 0)),
+        "errors_count": max(0, _to_int(raw.get("errors_count"), 0)),
+        "duration_ms": max(0, _to_int(raw.get("duration_ms"), 0)),
+        "partial": bool(raw.get("partial")),
+        "partial_reason": _normalize_text(raw.get("partial_reason")),
+        "partial_reasons": _normalize_user_profile_partial_reasons(raw.get("partial_reasons")),
+    }
+
+
+def _normalize_user_profile_sizes(raw: Any) -> Dict[str, Any]:
+    raw_dict = raw if isinstance(raw, dict) else {}
+    profiles = []
+    if isinstance(raw_dict.get("profiles"), list):
+        for row in raw_dict.get("profiles") or []:
+            normalized = _normalize_user_profile_size(row)
+            if normalized:
+                profiles.append(normalized)
+    total_size = sum(max(0, _to_int(row.get("total_size_bytes"), 0)) for row in profiles)
+    partial_reasons = _normalize_user_profile_partial_reasons(raw_dict.get("partial_reasons"))
+    for row in profiles:
+        for reason in _normalize_user_profile_partial_reasons(row.get("partial_reasons")):
+            if reason not in partial_reasons:
+                partial_reasons.append(reason)
+    raw_limits = raw_dict.get("limits") if isinstance(raw_dict.get("limits"), dict) else {}
+    return {
+        "cache_version": max(0, _to_int(raw_dict.get("cache_version"), 0)),
+        "collected_at": max(0, _to_int(raw_dict.get("collected_at"), 0)),
+        "profiles_count": len(profiles),
+        "total_size_bytes": total_size,
+        "profiles": profiles,
+        "partial": bool(raw_dict.get("partial")) or any(bool(row.get("partial")) for row in profiles),
+        "partial_reasons": partial_reasons,
+        "duration_ms": max(0, _to_int(raw_dict.get("duration_ms"), 0)),
+        "limits": {
+            "profile_budget_sec": max(0, _to_int(raw_limits.get("profile_budget_sec"), 0)),
+            "total_budget_sec": max(0, _to_int(raw_limits.get("total_budget_sec"), 0)),
+            "max_entries_per_profile": max(0, _to_int(raw_limits.get("max_entries_per_profile"), 0)),
+            "max_profiles": max(0, _to_int(raw_limits.get("max_profiles"), 0)),
+        },
+    }
+
+
+def _enrich_user_profile_size_fields(record: Dict[str, Any]) -> None:
+    user_profile_sizes = _normalize_user_profile_sizes(record.get("user_profile_sizes"))
+    record["user_profile_sizes"] = user_profile_sizes
+    record["user_profile_sizes_total_bytes"] = max(0, _to_int(user_profile_sizes.get("total_size_bytes"), 0))
+    record["user_profile_sizes_profiles_count"] = max(0, _to_int(user_profile_sizes.get("profiles_count"), 0))
+    record["user_profile_sizes_partial"] = bool(user_profile_sizes.get("partial"))
+
+
+def _merge_payload(previous: Any, incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(previous) if isinstance(previous, dict) else {}
+    for key, value in incoming.items():
+        if value is not None:
+            merged[key] = value
+    if "outlook" in incoming:
+        merged["outlook"] = _normalize_outlook_payload(incoming.get("outlook"))
+    if "user_profile_sizes" in incoming:
+        merged["user_profile_sizes"] = _normalize_user_profile_sizes(incoming.get("user_profile_sizes"))
+    _ensure_identity_fields(merged)
+    _ensure_runtime_fields(merged)
+    _enrich_outlook_fields(merged)
+    _enrich_user_profile_size_fields(merged)
+    return merged
+
+
+def _enrich_status(record: Dict[str, Any], now_ts: int) -> Dict[str, Any]:
+    result = dict(record)
+    last_seen_raw = result.get("last_seen_at") or result.get("timestamp")
+    last_seen_at = _to_int(last_seen_raw, default=0)
+
+    if last_seen_at <= 0:
+        result["status"] = "unknown"
+        result["age_seconds"] = None
+        result["last_seen_at"] = None
+        return result
+
+    age_seconds = max(0, now_ts - last_seen_at)
+    if age_seconds <= ONLINE_MAX_AGE_SECONDS:
+        status_value = "online"
+    elif age_seconds <= STALE_MAX_AGE_SECONDS:
+        status_value = "stale"
+    else:
+        status_value = "offline"
+
+    result["status"] = status_value
+    result["age_seconds"] = age_seconds
+    result["last_seen_at"] = last_seen_at
+    return result
+
+
+def _enrich_monitors_with_inventory(
+    monitors: Any,
+    db_id: Optional[str],
+    db_candidates: Optional[List[str]] = None,
+) -> Any:
+    """Attach ITINVENT inv_no/model/owner to agent monitor entries by serial."""
+    if not isinstance(monitors, list) or not monitors:
+        return monitors
+    normalized_db_id = _normalize_text(db_id)
+    if normalized_db_id:
+        candidate_db_ids = [normalized_db_id]
+    else:
+        candidate_db_ids = [
+            item for item in (db_candidates or []) if _normalize_text(item)
+        ]
+    if not candidate_db_ids:
+        return monitors
+    serials = [
+        _normalize_serial_token(row.get("serial_number"))
+        for row in monitors
+        if isinstance(row, dict)
+    ]
+    serials = [token for token in serials if token]
+    if not serials:
+        return monitors
+    try:
+        from backend.database import queries
+
+        rows: List[Dict[str, Any]] = []
+        for candidate_db_id in candidate_db_ids:
+            for row in queries.get_equipment_items_by_serials(
+                serials,
+                candidate_db_id,
+                include_suffix=True,
+            ) or []:
+                if isinstance(row, dict):
+                    row["_inventory_db_id"] = candidate_db_id
+                rows.append(row)
+    except Exception as exc:
+        logger.debug("Monitor inventory lookup skipped: %s", exc)
+        return monitors
+
+    serial_inv_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row in rows or []:
+        inv_no = _normalize_text(row.get("inv_no"))
+        if not inv_no:
+            continue
+        for key in ("serial_no", "hw_serial_no"):
+            token = _normalize_serial_token(row.get(key))
+            if token:
+                serial_inv_map.setdefault(token, {}).setdefault(inv_no, row)
+
+    def _match_monitor_serial(token: str) -> Tuple[Optional[Dict[str, Any]], str]:
+        exact = serial_inv_map.get(token) or {}
+        if len(exact) == 1:
+            return next(iter(exact.values())), "serial"
+        if len(exact) > 1 or len(token) < 4:
+            return None, ""
+        inv_hits: Dict[str, Dict[str, Any]] = {}
+        for serial, inv_rows in serial_inv_map.items():
+            if len(serial) >= len(token) + 2 and serial.endswith(token):
+                inv_hits.update(inv_rows)
+        if len(inv_hits) == 1:
+            return next(iter(inv_hits.values())), "serial_suffix"
+        digits = re.sub(r"\D", "", token)
+        if len(digits) >= 6:
+            inv_hits = {}
+            for serial, inv_rows in serial_inv_map.items():
+                if serial != token and re.sub(r"\D", "", serial) == digits:
+                    inv_hits.update(inv_rows)
+            if len(inv_hits) == 1:
+                return next(iter(inv_hits.values())), "serial_tail"
+        return None, ""
+
+    enriched: List[Any] = []
+    for row in monitors:
+        if not isinstance(row, dict):
+            enriched.append(row)
+            continue
+        item = dict(row)
+        match, match_kind = _match_monitor_serial(
+            _normalize_serial_token(row.get("serial_number"))
+        )
+        if isinstance(match, dict):
+            item["inventory_inv_no"] = _normalize_text(match.get("inv_no"))
+            item["inventory_model_name"] = _normalize_text(match.get("model_name"))
+            item["inventory_employee_name"] = _normalize_person_name(match.get("employee_name"))
+            item["inventory_match"] = match_kind
+            match_db_id = _normalize_text(match.get("_inventory_db_id"))
+            if match_db_id:
+                item["inventory_db_id"] = match_db_id
+        enriched.append(item)
+    return enriched
+
+
+def _signature_monitors(record: Dict[str, Any]) -> List[str]:
+    values: List[str] = []
+    rows = record.get("monitors") if isinstance(record.get("monitors"), list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        serial = _normalize_text(row.get("serial_number"))
+        manufacturer = _normalize_text(row.get("manufacturer")).lower()
+        product = _normalize_text(row.get("product_code")).lower()
+        token = f"{serial.lower()}|{manufacturer}|{product}"
+        if token.strip("|"):
+            values.append(token)
+    return sorted(set(values))
+
+
+def _signature_storage(record: Dict[str, Any]) -> List[str]:
+    values: List[str] = []
+    rows = record.get("storage") if isinstance(record.get("storage"), list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        serial = _normalize_text(row.get("serial_number"))
+        model = _normalize_text(row.get("model")).lower()
+        bus = _normalize_text(row.get("bus_type")).lower()
+        token = f"{serial.lower()}|{model}|{bus}"
+        if token.strip("|"):
+            values.append(token)
+    return sorted(set(values))
+
+
+def _signature_system(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "system_serial": _normalize_text(record.get("system_serial")),
+        "cpu_model": _normalize_text(record.get("cpu_model")),
+        "ram_gb": float(record.get("ram_gb") or 0),
+    }
+
+
+def _build_hardware_signature(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "system": _signature_system(record),
+        "monitors": _signature_monitors(record),
+        "storage": _signature_storage(record),
+    }
+
+
+def _build_signature_diff(before_sig: Dict[str, Any], after_sig: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    diff: Dict[str, Dict[str, Any]] = {}
+    for key in ("system", "monitors", "storage"):
+        before_value = before_sig.get(key)
+        after_value = after_sig.get(key)
+        if before_value != after_value:
+            diff[key] = {"before": before_value, "after": after_value}
+    return diff
+
+
+def _load_changes(
+    store: Any = None,
+    since_ts: Optional[int] = None,
+    *,
+    host_mac: Optional[str] = None,
+    host_hostname: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """События изменений; host_mac/host_hostname — только события одного хоста (детали карточки)."""
+    host_filter = host_mac is not None or host_hostname is not None
+    host_key = _event_host_key(host_mac or "", host_hostname or "") if host_filter else None
+    app_store = _get_inventory_app_store() if store is None else None
+    if app_store is not None:
+        if host_filter:
+            payload = app_store.list_change_events(
+                since_ts=since_ts,
+                host_mac=_normalize_mac(host_mac or ""),
+                host_hostname=_normalize_text(host_hostname).lower(),
+            )
+        else:
+            payload = app_store.list_change_events(since_ts=since_ts)
+        rows = [row for row in payload if isinstance(row, dict)]
+        if host_key is not None:
+            # SQL отбирает по нормализованному MAC; точную проверку ключом делаем здесь же.
+            rows = [row for row in rows if _event_host_key(row.get("mac_address"), row.get("hostname")) == host_key]
+        return rows
+
+    if store is None:
+        store = get_local_store()
+    payload = store.load_json(CHANGES_FILE, default_content=[])
+    if not isinstance(payload, list):
+        return []
+    rows = [row for row in payload if isinstance(row, dict)]
+    if since_ts is not None:
+        rows = [row for row in rows if _to_int(row.get("detected_at"), 0) >= int(since_ts)]
+    if host_key is not None:
+        rows = [row for row in rows if _event_host_key(row.get("mac_address"), row.get("hostname")) == host_key]
+    return rows
+
+
+def _get_changes_index(now_ts: int, content_version: Optional[tuple]) -> Dict[str, Dict[str, Any]]:
+    """Индекс изменений по хостам за окно 30 дней; кэш по версии данных и TTL (только app-db)."""
+    global _changes_index_cache
+    cacheable = content_version is not None and _get_inventory_app_store() is not None
+    if cacheable:
+        with _derived_cache_lock:
+            cached = _changes_index_cache
+        if (
+            cached is not None
+            and cached[1] == content_version
+            and time.monotonic() - cached[0] <= COMPUTERS_RECORDS_CACHE_TTL_SEC
+        ):
+            return cached[2]
+    changes = _prune_old_changes(
+        _load_changes(since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60),
+        now_ts,
+    )
+    index = _build_changes_index(changes, now_ts)
+    if cacheable:
+        with _derived_cache_lock:
+            _changes_index_cache = (time.monotonic(), content_version, index)
+    return index
+
+
+def _prune_old_changes(rows: List[Dict[str, Any]], now_ts: int) -> List[Dict[str, Any]]:
+    cutoff = now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60
+    out = []
+    for row in rows:
+        ts = _to_int(row.get("detected_at"), default=0)
+        if ts <= 0:
+            continue
+        if ts >= cutoff:
+            out.append(row)
+    return out
+
+
+def _event_host_key(mac_address: str, hostname: str) -> str:
+    normalized_mac = _normalize_mac(mac_address)
+    if normalized_mac:
+        return f"mac:{normalized_mac}"
+    normalized_host = _normalize_text(hostname).lower()
+    return f"host:{normalized_host}"
+
+
+def _add_hardware_change_event(
+    changes: List[Dict[str, Any]],
+    previous_record: Optional[Dict[str, Any]],
+    merged_record: Dict[str, Any],
+    current_ts: int,
+) -> None:
+    if not isinstance(previous_record, dict):
+        merged_record["_hardware_signature"] = _build_hardware_signature(merged_record)
+        return
+
+    previous_sig = previous_record.get("_hardware_signature")
+    if not isinstance(previous_sig, dict):
+        previous_sig = _build_hardware_signature(previous_record)
+
+    current_sig = _build_hardware_signature(merged_record)
+    merged_record["_hardware_signature"] = current_sig
+
+    diff = _build_signature_diff(previous_sig, current_sig)
+    if not diff:
+        return
+
+    mac_address = _normalize_text(merged_record.get("mac_address"))
+    hostname = _normalize_text(merged_record.get("hostname"))
+    change_types = sorted(diff.keys())
+
+    event = {
+        "event_id": f"{_event_host_key(mac_address, hostname)}:{current_ts}",
+        "detected_at": current_ts,
+        "mac_address": mac_address,
+        "hostname": hostname,
+        "change_types": change_types,
+        "diff": diff,
+        "before_signature": previous_sig,
+        "after_signature": current_sig,
+        "report_type": _normalize_text(merged_record.get("report_type")) or "full_snapshot",
+    }
+    changes.append(event)
+
+
+def _build_changes_index(changes: List[Dict[str, Any]], now_ts: int) -> Dict[str, Dict[str, Any]]:
+    since_30d = now_ts - CHANGES_WINDOW_DAYS * 24 * 60 * 60
+    index: Dict[str, Dict[str, Any]] = {}
+
+    sorted_changes = sorted(changes, key=lambda item: _to_int(item.get("detected_at"), 0), reverse=True)
+    for event in sorted_changes:
+        ts = _to_int(event.get("detected_at"), 0)
+        if ts <= 0:
+            continue
+        key = _event_host_key(_normalize_text(event.get("mac_address")), _normalize_text(event.get("hostname")))
+        entry = index.setdefault(
+            key,
+            {
+                "last_change_at": None,
+                "changes_count_30d": 0,
+                "recent_changes": [],
+            },
+        )
+        if entry["last_change_at"] is None:
+            entry["last_change_at"] = ts
+        if ts >= since_30d:
+            entry["changes_count_30d"] += 1
+        if len(entry["recent_changes"]) < 5:
+            entry["recent_changes"].append(event)
+
+    return index
+
+
+def _resolve_sql_context(mac_address: str, hostname: str, db_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    try:
+        from backend.database import queries
+
+        return queries.resolve_pc_context_by_mac_or_hostname(
+            mac_address=mac_address,
+            hostname=hostname,
+            db_id=db_id,
+        )
+    except Exception as exc:
+        logger.debug("SQL context resolution skipped: %s", exc)
+        return None
+
+
+def _resolve_sql_context_cached(
+    app_store: Optional[AppInventoryStore],
+    mac_address: str,
+    hostname: str,
+    db_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    normalized_db_id = _normalize_text(db_id)
+    if not normalized_db_id:
+        return None
+    cached: Optional[Dict[str, Any]] = None
+    if app_store is not None:
+        try:
+            cached = app_store.get_sql_context(mac_address=mac_address, hostname=hostname, db_id=normalized_db_id)
+            if isinstance(cached, dict) and (_normalize_text(cached.get("inv_no")) or _normalize_text(cached.get("model_name"))):
+                return cached
+        except Exception as exc:
+            logger.debug("Inventory SQL context cache read skipped: %s", exc)
+            cached = None
+
+    resolved = _resolve_sql_context(mac_address, hostname, normalized_db_id)
+    if not isinstance(resolved, dict) and isinstance(cached, dict):
+        return cached
+    if app_store is not None and isinstance(resolved, dict):
+        try:
+            app_store.upsert_sql_context(
+                mac_address=mac_address,
+                hostname=hostname,
+                db_id=normalized_db_id,
+                context=resolved,
+            )
+        except Exception as exc:
+            logger.debug("Inventory SQL context cache write skipped: %s", exc)
+    return resolved
+
+
+def _normalize_scope(value: Any) -> Literal["selected", "all"]:
+    scope = _normalize_text(value).lower()
+    if scope == "all":
+        return "all"
+    return "selected"
+
+
+def _get_available_db_ids() -> List[str]:
+    ids: List[str] = []
+    try:
+        for item in get_all_db_configs():
+            db_id = _normalize_text(item.get("id"))
+            if db_id and db_id not in ids:
+                ids.append(db_id)
+    except Exception:
+        pass
+    default_db_id = _normalize_text(config.database.database)
+    if default_db_id and default_db_id not in ids:
+        ids.append(default_db_id)
+    return ids
+
+
+def _get_database_name_map() -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    try:
+        for item in get_all_db_configs():
+            db_id = _normalize_text(item.get("id"))
+            if not db_id:
+                continue
+            mapping[db_id] = _normalize_text(item.get("name")) or db_id
+    except Exception:
+        pass
+    default_db_id = _normalize_text(config.database.database)
+    if default_db_id and default_db_id not in mapping:
+        mapping[default_db_id] = default_db_id
+    return mapping
+
+
+def _get_accessible_db_ids(current_user: User) -> List[str]:
+    all_db_ids = _get_available_db_ids()
+    assigned_database = _normalize_text(getattr(current_user, "assigned_database", ""))
+    if not assigned_database:
+        assigned_database = _normalize_text(
+            user_db_selection_service.get_assigned_database(getattr(current_user, "telegram_id", None))
+        )
+    is_admin = _normalize_text(getattr(current_user, "role", "")).lower() == "admin"
+    if assigned_database and not is_admin:
+        return [assigned_database]
+    return all_db_ids
+
+
+def _can_read_all_databases(current_user: User) -> bool:
+    """Чужие базы видны в scope=selected только при computers.read_all (или admin)."""
+    try:
+        ensure_user_permission(current_user, PERM_COMPUTERS_READ_ALL)
+    except HTTPException:
+        return False
+    return True
+
+
+inventory_binding.configure(
+    store_factory=lambda: _get_inventory_app_store(),
+    db_ids_provider=lambda: _get_available_db_ids(),
+)
+
+
+def _resolve_network_link(
+    conn: Optional[sqlite3.Connection],
+    mac_address: str,
+    ip_list: List[str],
+) -> Optional[Dict[str, Any]]:
+    if conn is None:
+        return None
+
+    normalized_mac = _normalize_mac(mac_address)
+    normalized_ips = _dedupe_strings(ip_list)
+    conditions: List[str] = []
+    params: List[Any] = []
+
+    if normalized_mac:
+        conditions.append(
+            "UPPER(REPLACE(REPLACE(COALESCE(ns.mac_address, p.endpoint_mac_raw, ''), ':', ''), '-', '')) = ?"
+        )
+        params.append(normalized_mac)
+
+    for ip in normalized_ips:
+        conditions.append("COALESCE(p.endpoint_ip_raw, '') LIKE ?")
+        params.append(f"%{ip}%")
+
+    if not conditions:
+        return None
+
+    mac_case_expr = "1"
+    if normalized_mac:
+        mac_case_expr = (
+            "CASE WHEN UPPER(REPLACE(REPLACE(COALESCE(ns.mac_address, p.endpoint_mac_raw, ''), ':', ''), '-', '')) = ? "
+            "THEN 0 ELSE 1 END"
+        )
+        params.append(normalized_mac)
+
+    query = f"""
+        SELECT
+            b.id as branch_id,
+            b.name as branch_name,
+            s.name as site_name,
+            d.device_code,
+            d.model as device_model,
+            p.port_name,
+            COALESCE(ns.socket_code, p.patch_panel_port) as socket_code,
+            p.endpoint_ip_raw,
+            COALESCE(ns.mac_address, p.endpoint_mac_raw) as endpoint_mac_raw
+        FROM network_ports p
+        JOIN network_devices d ON d.id = p.device_id
+        LEFT JOIN network_branches b ON b.id = d.branch_id
+        LEFT JOIN network_sites s ON s.id = d.site_id
+        LEFT JOIN network_sockets ns ON ns.port_id = p.id
+        WHERE {' OR '.join(conditions)}
+        ORDER BY {mac_case_expr}, p.is_occupied DESC, p.updated_at DESC
+        LIMIT 1
+    """
+
+    try:
+        row = conn.execute(query, params).fetchone()
+    except Exception:
+        return None
+
+    if row is not None:
+        return _network_link_payload(row)
+
+    # Fallback for rows where multiple MAC addresses are stored in one endpoint_mac_raw cell.
+    if normalized_mac:
+        try:
+            fallback_rows = conn.execute(
+                """
+                SELECT
+                    b.id as branch_id,
+                    b.name as branch_name,
+                    s.name as site_name,
+                    d.device_code,
+                    d.model as device_model,
+                    p.port_name,
+                    COALESCE(ns.socket_code, p.patch_panel_port) as socket_code,
+                    p.endpoint_ip_raw,
+                    COALESCE(ns.mac_address, p.endpoint_mac_raw) as endpoint_mac_raw,
+                    ns.mac_address as socket_mac_raw,
+                    p.endpoint_mac_raw as port_mac_raw
+                FROM network_ports p
+                JOIN network_devices d ON d.id = p.device_id
+                LEFT JOIN network_branches b ON b.id = d.branch_id
+                LEFT JOIN network_sites s ON s.id = d.site_id
+                LEFT JOIN network_sockets ns ON ns.port_id = p.id
+                WHERE COALESCE(ns.mac_address, '') <> '' OR COALESCE(p.endpoint_mac_raw, '') <> ''
+                ORDER BY p.is_occupied DESC, p.updated_at DESC
+                LIMIT 4000
+                """
+            ).fetchall()
+        except Exception:
+            fallback_rows = []
+
+        for candidate in fallback_rows:
+            mac_tokens = _extract_mac_candidates(candidate["socket_mac_raw"]) + _extract_mac_candidates(candidate["port_mac_raw"])
+            if normalized_mac in mac_tokens:
+                return _network_link_payload(candidate)
+
+    return None
+
+
+def _load_network_lookup_index(conn: Optional[Any]) -> Optional[Dict[str, Dict[str, Dict[str, Any]]]]:
+    if conn is None:
+        return None
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                b.id as branch_id,
+                b.name as branch_name,
+                s.name as site_name,
+                d.device_code,
+                d.model as device_model,
+                p.port_name,
+                COALESCE(ns.socket_code, p.patch_panel_port) as socket_code,
+                p.endpoint_ip_raw,
+                COALESCE(ns.mac_address, p.endpoint_mac_raw) as endpoint_mac_raw,
+                ns.mac_address as socket_mac_raw,
+                p.endpoint_mac_raw as port_mac_raw
+            FROM network_ports p
+            JOIN network_devices d ON d.id = p.device_id
+            LEFT JOIN network_branches b ON b.id = d.branch_id
+            LEFT JOIN network_sites s ON s.id = d.site_id
+            LEFT JOIN network_sockets ns ON ns.port_id = p.id
+            WHERE COALESCE(ns.mac_address, '') <> ''
+               OR COALESCE(p.endpoint_mac_raw, '') <> ''
+               OR COALESCE(p.endpoint_ip_raw, '') <> ''
+            ORDER BY p.is_occupied DESC, p.updated_at DESC
+            LIMIT 4000
+            """
+        ).fetchall()
+    except Exception:
+        return None
+
+    by_mac: Dict[str, Dict[str, Any]] = {}
+    by_ip: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        payload = _network_link_payload(row)
+        mac_values = (
+            _extract_mac_candidates(row["socket_mac_raw"])
+            + _extract_mac_candidates(row["port_mac_raw"])
+            + _extract_mac_candidates(row["endpoint_mac_raw"])
+        )
+        for mac in mac_values:
+            by_mac.setdefault(mac, payload)
+        for ip in _extract_ipv4_candidates(row["endpoint_ip_raw"]):
+            by_ip.setdefault(ip, payload)
+    return {"mac": by_mac, "ip": by_ip}
+
+
+def _load_network_lookup_index_cached(conn: Optional[Any]) -> Optional[Dict[str, Dict[str, Dict[str, Any]]]]:
+    """Сетевой индекс с TTL и версией network_ports (count, max updated_at); None не кэшируем."""
+    global _network_lookup_index_cache
+    if conn is None:
+        return None
+    try:
+        version_row = conn.execute(
+            "SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM network_ports"
+        ).fetchone()
+        version = (str(version_row["n"]), str(version_row["u"] or ""))
+    except Exception:
+        return _load_network_lookup_index(conn)
+    with _derived_cache_lock:
+        cached = _network_lookup_index_cache
+    if (
+        cached is not None
+        and cached[1] == version
+        and time.monotonic() - cached[0] <= COMPUTERS_RECORDS_CACHE_TTL_SEC
+    ):
+        return cached[2]
+    index = _load_network_lookup_index(conn)
+    if index is not None:
+        with _derived_cache_lock:
+            _network_lookup_index_cache = (time.monotonic(), version, index)
+    return index
+
+
+def _resolve_network_link_from_index(
+    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    *,
+    mac_address: str,
+    ip_list: List[str],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(network_index, dict):
+        return None
+    normalized_mac = _normalize_mac(mac_address)
+    if normalized_mac:
+        match = (network_index.get("mac") or {}).get(normalized_mac)
+        if isinstance(match, dict):
+            return match
+    for ip in _dedupe_strings(ip_list):
+        match = (network_index.get("ip") or {}).get(ip)
+        if isinstance(match, dict):
+            return match
+    return None
+
+
+def _parse_computer_search_fields(raw: Any) -> set[str]:
+    if raw is None:
+        return set(COMPUTER_SEARCH_DEFAULT_FIELDS)
+    if isinstance(raw, (list, tuple, set)):
+        tokens = []
+        for item in raw:
+            tokens.extend(str(item or "").split(","))
+    else:
+        tokens = str(raw or "").split(",")
+    fields = {item.strip().lower() for item in tokens if item and item.strip()}
+    fields = {item for item in fields if item in COMPUTER_SEARCH_FIELDS}
+    return fields or set(COMPUTER_SEARCH_DEFAULT_FIELDS)
+
+
+def _profile_search_text(item: Dict[str, Any]) -> str:
+    raw_sizes = item.get("user_profile_sizes") if isinstance(item.get("user_profile_sizes"), dict) else {}
+    raw_profiles = raw_sizes.get("profiles") if isinstance(raw_sizes.get("profiles"), list) else []
+    parts: list[str] = []
+    for profile in raw_profiles:
+        if not isinstance(profile, dict):
+            continue
+        parts.extend(
+            [
+                _normalize_text(profile.get("user_name") or profile.get("userName")),
+                _normalize_text(profile.get("profile_path") or profile.get("profilePath")),
+            ]
+        )
+        folders = profile.get("top_level_folders") or profile.get("topLevelFolders")
+        if isinstance(folders, list):
+            for folder in folders:
+                if isinstance(folder, dict):
+                    parts.append(_normalize_text(folder.get("name")))
+                    parts.append(_normalize_text(folder.get("path")))
+    return " ".join(parts)
+
+
+def _outlook_search_text(item: Dict[str, Any]) -> str:
+    outlook = item.get("outlook") if isinstance(item.get("outlook"), dict) else {}
+    parts = [
+        _normalize_text(item.get("outlook_active_path")),
+        _normalize_text(item.get("outlook_status")),
+        _normalize_text(outlook.get("largest_file_path")),
+    ]
+    for key in ("active_store", "active_candidate"):
+        row = outlook.get(key) if isinstance(outlook.get(key), dict) else {}
+        parts.append(_normalize_text(row.get("path")))
+        parts.append(_normalize_text(row.get("type")))
+    for key in ("active_stores", "archives"):
+        rows = outlook.get(key) if isinstance(outlook.get(key), list) else []
+        for row in rows:
+            if isinstance(row, dict):
+                parts.append(_normalize_text(row.get("path")))
+                parts.append(_normalize_text(row.get("type")))
+    return " ".join(parts)
+
+
+def _fold_search_text(value: Any) -> str:
+    """Casefold + ё→е для поисковых сравнений (Python-сторона, Unicode-aware)."""
+    return _normalize_text(value).lower().replace("ё", "е")
+
+
+def _search_tokens(query_text: Optional[str]) -> List[str]:
+    """Разбивает запрос на AND-токены по пробелам после folding."""
+    return [token for token in re.split(r"\s+", _fold_search_text(query_text)) if token]
+
+
+def _record_search_field_texts(item: Dict[str, Any], search_fields: set[str]) -> Dict[str, str]:
+    """Folded haystack per search field — для matched_fields и общего текста."""
+    network_link = item.get("network_link") if isinstance(item.get("network_link"), dict) else {}
+    field_texts: Dict[str, str] = {}
+    if "identity" in search_fields:
+        field_texts["identity"] = " ".join(
+            [
+                _normalize_text(item.get("hostname")),
+                _normalize_text(item.get("mac_address")),
+                _normalize_mac(item.get("mac_address")),
+                _normalize_text(item.get("ip_primary")),
+                " ".join(_dedupe_strings(item.get("ip_list") if isinstance(item.get("ip_list"), list) else [])),
+            ]
+        )
+    if "user" in search_fields:
+        field_texts["user"] = " ".join(
+            [
+                _normalize_text(item.get("user_full_name")),
+                _normalize_text(item.get("user_login")),
+                _normalize_text(item.get("current_user")),
+            ]
+        )
+    if "profiles" in search_fields:
+        field_texts["profiles"] = _profile_search_text(item)
+    if "outlook" in search_fields:
+        field_texts["outlook"] = _outlook_search_text(item)
+    if "network" in search_fields:
+        field_texts["network"] = " ".join(
+            [
+                _normalize_text(network_link.get("device_code")),
+                _normalize_text(network_link.get("port_name")),
+                _normalize_text(network_link.get("socket_code")),
+                _normalize_text(network_link.get("site_name")),
+                _normalize_text(network_link.get("endpoint_ip_raw")),
+                _normalize_text(network_link.get("endpoint_mac_raw")),
+                _normalize_mac(network_link.get("endpoint_mac_raw")),
+            ]
+        )
+    if "location" in search_fields:
+        field_texts["location"] = " ".join(
+            [
+                _normalize_text(item.get("branch_name")),
+                _normalize_text(item.get("location_name")),
+            ]
+        )
+    if "database" in search_fields:
+        field_texts["database"] = " ".join(
+            [
+                _normalize_text(item.get("database_name")),
+                _normalize_text(item.get("database_id")),
+            ]
+        )
+    return {key: _fold_search_text(value) for key, value in field_texts.items()}
+
+
+def _record_search_text(item: Dict[str, Any], search_fields: set[str]) -> str:
+    return " ".join(_record_search_field_texts(item, search_fields).values())
+
+
+def _apply_search_filter(records: List[Dict[str, Any]], query_text: str, search_fields: Optional[set[str]] = None) -> List[Dict[str, Any]]:
+    tokens = _search_tokens(query_text)
+    if not tokens:
+        return records
+    fields = search_fields or set(COMPUTER_SEARCH_DEFAULT_FIELDS)
+    return [
+        item for item in records
+        if all(token in _record_search_text(item, fields) for token in tokens)
+    ]
+
+
+def _resolve_computer_db_candidates(
+    *,
+    current_user: User,
+    db_id_selected: Optional[str],
+    scope: str,
+) -> List[str]:
+    requested_scope = _normalize_scope(scope)
+    if requested_scope == "all":
+        ensure_user_permission(current_user, PERM_COMPUTERS_READ_ALL)
+
+    accessible_db_ids = _get_accessible_db_ids(current_user)
+    if requested_scope == "all":
+        db_candidates = list(accessible_db_ids)
+    else:
+        selected_db = _normalize_text(db_id_selected) or _normalize_text(config.database.database)
+        db_candidates = [selected_db]
+
+    db_candidates = [_normalize_text(item) for item in db_candidates if _normalize_text(item)]
+    if not db_candidates:
+        fallback_db = _normalize_text(config.database.database)
+        if fallback_db:
+            db_candidates = [fallback_db]
+    return db_candidates
+
+
+def _enrich_outlook_fields_light(record: Dict[str, Any]) -> None:
+    outlook = _normalize_outlook_payload(record.get("outlook"))
+    active_store = outlook.get("active_store") if isinstance(outlook.get("active_store"), dict) else None
+    active_stores = outlook.get("active_stores") if isinstance(outlook.get("active_stores"), list) else []
+    archives = outlook.get("archives") if isinstance(outlook.get("archives"), list) else []
+    active_size_bytes = max(0, _to_int((active_store or {}).get("size_bytes"), 0))
+    if active_stores:
+        active_size_bytes = max(
+            active_size_bytes,
+            max(max(0, _to_int(row.get("size_bytes"), 0)) for row in active_stores if isinstance(row, dict)),
+        )
+    record["outlook_status"] = _normalize_text(outlook.get("status")).lower() or "unknown"
+    record["outlook_confidence"] = _normalize_text(outlook.get("confidence")).lower() or "low"
+    record["outlook_active_size_bytes"] = max(0, _to_int(record.get("outlook_active_size_bytes"), active_size_bytes))
+    record["outlook_active_path"] = _normalize_text(record.get("outlook_active_path") or (active_store or {}).get("path"))
+    record["outlook_active_stores_count"] = len([row for row in active_stores if isinstance(row, dict)])
+    record["outlook_total_size_bytes"] = max(0, _to_int(record.get("outlook_total_size_bytes") or outlook.get("total_outlook_size_bytes"), 0))
+    record["outlook_archives_count"] = len([row for row in archives if isinstance(row, dict)])
+
+
+def _trim_computer_list_record(
+    record: Dict[str, Any],
+    *,
+    include_profile_rows: bool = False,
+) -> Dict[str, Any]:
+    outlook_raw = record.get("outlook") if isinstance(record.get("outlook"), dict) else {}
+    profile_sizes = record.get("user_profile_sizes") if isinstance(record.get("user_profile_sizes"), dict) else {}
+    storage_rows = record.get("storage") if isinstance(record.get("storage"), list) else []
+    logical_disks = record.get("logical_disks") if isinstance(record.get("logical_disks"), list) else []
+    network_raw = record.get("network") if isinstance(record.get("network"), dict) else {}
+    problem_storage = 0
+    slim_storage: List[Dict[str, Any]] = []
+    for disk in storage_rows:
+        if not isinstance(disk, dict):
+            continue
+        status_text = _normalize_text(disk.get("health_status")).lower()
+        if any(token in status_text for token in ("warning", "critical", "fail", "degrad", "unhealthy")):
+            problem_storage += 1
+        slim_storage.append(
+            {
+                "name": disk.get("name") or disk.get("model") or disk.get("device"),
+                "health_status": disk.get("health_status"),
+                "size_gb": disk.get("size_gb"),
+                "media_type": disk.get("media_type"),
+            }
+        )
+    slim_logical: List[Dict[str, Any]] = []
+    for disk in logical_disks:
+        if not isinstance(disk, dict):
+            continue
+        slim_logical.append(
+            {
+                "mountpoint": disk.get("mountpoint") or disk.get("device"),
+                "device": disk.get("device"),
+                "fstype": disk.get("fstype"),
+                "total_gb": disk.get("total_gb") or disk.get("size_gb"),
+                "free_gb": disk.get("free_gb"),
+                "used_percent": disk.get("used_percent") or disk.get("percent"),
+                "percent": disk.get("percent") or disk.get("used_percent"),
+            }
+        )
+    network_link = record.get("network_link") if isinstance(record.get("network_link"), dict) else None
+    active_store = outlook_raw.get("active_store") if isinstance(outlook_raw.get("active_store"), dict) else None
+    trimmed = {
+        "mac_address": record.get("mac_address"),
+        "hostname": record.get("hostname"),
+        "status": record.get("status"),
+        "age_seconds": record.get("age_seconds"),
+        "last_seen_at": record.get("last_seen_at"),
+        "timestamp": record.get("timestamp"),
+        "ip_primary": record.get("ip_primary"),
+        "ip_list": record.get("ip_list") if isinstance(record.get("ip_list"), list) else [],
+        "user_login": record.get("user_login"),
+        "user_full_name": record.get("user_full_name"),
+        "current_user": record.get("current_user"),
+        "branch_name": record.get("branch_name"),
+        "location_name": record.get("location_name"),
+        "database_id": record.get("database_id"),
+        "database_name": record.get("database_name"),
+        "inventory_inv_no": record.get("inventory_inv_no"),
+        "inventory_model_name": record.get("inventory_model_name"),
+        "is_unassigned": record.get("is_unassigned"),
+        "assignment_source": record.get("assignment_source"),
+        "branch_source": record.get("branch_source"),
+        "has_hardware_changes": record.get("has_hardware_changes"),
+        "changes_count_30d": record.get("changes_count_30d"),
+        "last_change_at": record.get("last_change_at"),
+        "cpu_model": record.get("cpu_model"),
+        "cpu_load_percent": record.get("cpu_load_percent"),
+        "ram_gb": record.get("ram_gb"),
+        "ram_used_percent": record.get("ram_used_percent"),
+        "uptime_seconds": record.get("uptime_seconds"),
+        "last_reboot_at": record.get("last_reboot_at"),
+        "outlook_status": record.get("outlook_status"),
+        "outlook_confidence": record.get("outlook_confidence"),
+        "outlook_active_size_bytes": record.get("outlook_active_size_bytes"),
+        "outlook_active_path": record.get("outlook_active_path"),
+        "outlook_active_stores_count": record.get("outlook_active_stores_count"),
+        "outlook_total_size_bytes": record.get("outlook_total_size_bytes"),
+        "outlook_archives_count": record.get("outlook_archives_count"),
+        "storage_problem_count": problem_storage,
+        "storage": slim_storage,
+        "logical_disks": slim_logical,
+        "network_link": network_link,
+        "network": {"active_ipv4": network_raw.get("active_ipv4")},
+        "outlook": {
+            "status": record.get("outlook_status"),
+            "confidence": record.get("outlook_confidence"),
+            "active_store": active_store,
+            "total_outlook_size_bytes": record.get("outlook_total_size_bytes"),
+        },
+        "is_hidden": bool(record.get("is_hidden") or record.get("hidden_at")),
+        "hidden_at": record.get("hidden_at"),
+        "hidden_by": record.get("hidden_by"),
+        "hidden_reason": record.get("hidden_reason"),
+    }
+    if include_profile_rows:
+        trimmed["user_profile_sizes"] = profile_sizes
+    else:
+        trimmed["user_profile_sizes"] = {
+            "collected_at": profile_sizes.get("collected_at"),
+            "profiles_count": profile_sizes.get("profiles_count") or record.get("user_profile_sizes_profiles_count"),
+            "total_size_bytes": profile_sizes.get("total_size_bytes") or record.get("user_profile_sizes_total_bytes"),
+            "partial": profile_sizes.get("partial") or record.get("user_profile_sizes_partial"),
+        }
+    return trimmed
+
+
+def _is_rfc1918_172(ip_text: str) -> bool:
+    text = _normalize_text(ip_text)
+    if not text or ":" in text:
+        return False
+    parts = text.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(part) for part in parts]
+    except Exception:
+        return False
+    if any(octet < 0 or octet > 255 for octet in octets):
+        return False
+    # 172.16.0.0/12
+    return octets[0] == 172 and 16 <= octets[1] <= 31
+
+
+def _is_vm_only_172_host(record: Dict[str, Any]) -> bool:
+    """True when host has IPv4 and every address is in 172.16.0.0/12 (typical Hyper-V guest)."""
+    ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
+    candidates = [_normalize_text(item) for item in ip_list if _normalize_text(item)]
+    if not candidates:
+        primary = _normalize_text(record.get("ip_primary"))
+        if primary:
+            candidates = [primary]
+    ipv4 = [item for item in candidates if item and ":" not in item and item != "127.0.0.1"]
+    if not ipv4:
+        return False
+    return all(_is_rfc1918_172(item) for item in ipv4)
+
+
+def _heavy_enrich_computer_records(
+    records: List[Dict[str, Any]],
+    *,
+    changes_index: Dict[str, Dict[str, Any]],
+    attach_network: Any,
+    include_profile_rows: bool = False,
+) -> None:
+    for record in records:
+        _enrich_outlook_fields(record)
+        _enrich_user_profile_size_fields(record)
+        change_key = _event_host_key(_normalize_text(record.get("mac_address")), _normalize_text(record.get("hostname")))
+        change_meta = changes_index.get(change_key, {})
+        record["recent_changes"] = change_meta.get("recent_changes") or []
+    attach_network(records)
+    for index, record in enumerate(records):
+        records[index] = _trim_computer_list_record(
+            record,
+            include_profile_rows=include_profile_rows,
+        )
+
+
+def _search_network_mac_key_sets(
+    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    tokens: List[str],
+) -> Dict[str, set[str]]:
+    """Потокенные множества mac-ключей: token -> macs, где token в network-haystack."""
+    out: Dict[str, set[str]] = {token: set() for token in tokens}
+    if not tokens or not isinstance(network_index, dict):
+        return out
+    for mac_key, payload in (network_index.get("mac") or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        haystack = _fold_search_text(
+            " ".join(
+                [
+                    _normalize_text(payload.get("device_code")),
+                    _normalize_text(payload.get("port_name")),
+                    _normalize_text(payload.get("socket_code")),
+                    _normalize_text(payload.get("site_name")),
+                    _normalize_text(payload.get("endpoint_ip_raw")),
+                    _normalize_text(payload.get("endpoint_mac_raw")),
+                    _normalize_mac(payload.get("endpoint_mac_raw")),
+                ]
+            )
+        )
+        normalized = _normalize_mac(mac_key) or _normalize_text(mac_key)
+        if not normalized:
+            continue
+        for token in tokens:
+            if token in haystack:
+                out[token].add(normalized)
+    return out
+
+
+def _computer_sort_key(item: Dict[str, Any], normalized_sort_by: str) -> Any:
+    if normalized_sort_by in {
+        "age",
+        "age_seconds",
+        "last_seen_at",
+        "last_change_at",
+        "changes_count_30d",
+        "outlook_active_size_bytes",
+        "outlook_total_size_bytes",
+        "outlook_archives_count",
+    }:
+        return _to_int(item.get(normalized_sort_by), default=0)
+    if normalized_sort_by == "status":
+        order = {"online": 0, "stale": 1, "offline": 2, "unknown": 3}
+        return order.get(_normalize_text(item.get("status")).lower(), 9)
+    if normalized_sort_by == "outlook_status":
+        order = {"critical": 0, "warning": 1, "unknown": 2, "ok": 3}
+        return order.get(_normalize_text(item.get("outlook_status")).lower(), 9)
+    if normalized_sort_by == "branch":
+        return _normalize_text(item.get("branch_name")).lower()
+    if normalized_sort_by == "user":
+        return (
+            _normalize_text(item.get("user_full_name")).lower(),
+            _normalize_text(item.get("user_login")).lower(),
+        )
+    return _normalize_text(item.get(normalized_sort_by)).lower()
+
+
+def _resolve_scoped_host_keys(
+    *,
+    app_store: Optional[AppInventoryStore],
+    q: Optional[str],
+    fields: set[str],
+    scope: str,
+    db_candidates: List[str],
+    context_db_ids: List[str],
+    network_lookup: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    database_name_map: Optional[Dict[str, str]] = None,
+    restrict_to_context_dbs: bool = False,
+) -> Optional[set[str]]:
+    tokens = _search_tokens(q)
+    if not tokens or app_store is None:
+        return None
+    # outlook_status — вычисляемое значение, в индексах его нет: редкий запрос уходит в полный скан
+    if "outlook" in fields and any(
+        token in status_word for token in tokens for status_word in OUTLOOK_ALLOWED_STATUS
+    ):
+        return None
+    static_fields = fields - {"network"}
+    try:
+        needs_unassigned = bool(fields & {"location", "database"})
+        unassigned_keys: set[str] = set()
+        if needs_unassigned or restrict_to_context_dbs:
+            unassigned_keys = app_store.list_unassigned_host_keys(context_db_ids)
+        network_keys_by_token: Dict[str, set[str]] = {}
+        if "network" in fields:
+            if not isinstance(network_lookup, dict):
+                return None
+            network_keys_by_token = _search_network_mac_key_sets(network_lookup, tokens)
+        result: Optional[set[str]] = None
+        for token in tokens:
+            keys = (
+                app_store.search_host_keys(token, static_fields, db_ids=None, include_payload=True)
+                if static_fields
+                else set()
+            )
+            if keys is None:
+                return None
+            token_keys = set(keys)
+            if "database" in fields and isinstance(database_name_map, dict):
+                matched_db_ids = [
+                    db_id
+                    for db_id, db_name in database_name_map.items()
+                    if token in _fold_search_text(db_name) or token in _fold_search_text(db_id)
+                ]
+                if matched_db_ids:
+                    token_keys |= app_store.list_mac_addresses_for_db_ids(list(matched_db_ids))
+            token_keys |= network_keys_by_token.get(token, set())
+            if needs_unassigned:
+                token_keys |= unassigned_keys
+            result = token_keys if result is None else (result & token_keys)
+            if not result:
+                return set()
+        result = result or set()
+        if restrict_to_context_dbs:
+            result &= unassigned_keys | app_store.list_mac_addresses_for_db_ids(db_candidates)
+        return result
+    except Exception as exc:
+        logger.debug("Inventory indexed host search skipped: %s", exc)
+        return None
+
+
+def _resolve_filter_host_keys(
+    *,
+    app_store: Optional[AppInventoryStore],
+    branch: Optional[str],
+    status_filter: Optional[str],
+    changed_only: bool,
+    scope: str,
+    db_candidates: List[str],
+    context_db_ids: List[str],
+    now_ts: int,
+) -> Optional[set[str]]:
+    """SQL-кандидаты по фильтрам; каждый набор — надмножество, сужает Python-фильтр."""
+    if app_store is None:
+        return None
+    try:
+        result: Optional[set[str]] = None
+        branch_value = _normalize_text(branch).lower()
+        # «Без филиала» не индексируется (включает хосты с branch из network_scope): фильтр по Python.
+        if branch_value and branch_value != EMPTY_BRANCH_LABEL.lower():
+            keys = app_store.list_host_keys_for_context(context_db_ids, branch_name=branch_value)
+            # Unassigned-ветка: «Без привязки» и branch из network_scope не индексируются
+            keys |= app_store.list_unassigned_host_keys(context_db_ids)
+            result = keys
+        status_value = _normalize_text(status_filter).lower()
+        if status_value:
+            keys = app_store.list_host_keys_by_status(
+                status_value,
+                now_ts=now_ts,
+                online_max_age_seconds=ONLINE_MAX_AGE_SECONDS,
+                stale_max_age_seconds=STALE_MAX_AGE_SECONDS,
+            )
+            result = keys if result is None else (result & keys)
+        if changed_only:
+            keys = app_store.list_changed_host_keys(
+                since_ts=now_ts - CHANGES_WINDOW_DAYS * 24 * 60 * 60
+            )
+            result = keys if result is None else (result & keys)
+        return result
+    except Exception as exc:
+        logger.debug("Inventory filter key resolution skipped: %s", exc)
+        return None
+
+
+def _merge_records_of_same_card(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Один ПК с несколькими сетевыми картами приходит строками по каждому MAC: показываем одну.
+
+    Сливаем только строки с одной карточкой ITINVENT (БД + инв. №), одним именем хоста и одним
+    признаком скрытия. Остаётся строка с самым свежим last_seen_at; остальные MAC попадают в
+    alias_macs, число слитых строк в merged_hosts_count. Разные имена на одной карточке не сливаем:
+    это возможная ошибка привязки, её нельзя прятать. Данные агента не удаляются.
+    """
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for item in records:
+        inv_no = _normalize_text(item.get("inventory_inv_no"))
+        db_id = _normalize_text(item.get("database_id"))
+        hostname = _normalize_text(item.get("hostname")).lower()
+        if not inv_no or not db_id or not hostname:
+            continue
+        groups.setdefault((db_id, inv_no, hostname, bool(item.get("is_hidden"))), []).append(item)
+
+    drop: set = set()
+    for rows in groups.values():
+        if len(rows) < 2:
+            continue
+        keeper = max(rows, key=lambda row: (_to_int(row.get("last_seen_at"), default=0), bool(_normalize_text(row.get("mac_address")))))
+        keeper["alias_macs"] = [
+            _normalize_text(row.get("mac_address")) for row in rows if row is not keeper and _normalize_text(row.get("mac_address"))
+        ]
+        keeper["merged_hosts_count"] = len(rows)
+        drop.update(id(row) for row in rows if row is not keeper)
+    if not drop:
+        return records
+    return [item for item in records if id(item) not in drop]
+
+
+def _collect_scoped_computer_records(**kwargs: Any) -> List[Dict[str, Any]]:
+    """Records visible to the user: an IT owner sees only the computers of his objects' branches."""
+    records = _collect_all_scoped_computer_records(**kwargs)
+    scope = it_object_branch_scope.computer_scope(kwargs.get("current_user"))
+    if scope is None:
+        return records
+    return [item for item in records if it_object_branch_scope.computer_allowed(item, scope)]
+
+
+def _collect_all_scoped_computer_records(
+    *,
+    current_user: User,
+    db_id_selected: Optional[str],
+    scope: str,
+    branch: Optional[str],
+    status_filter: Optional[str],
+    outlook_status: Optional[str],
+    q: Optional[str],
+    search_fields: Any = None,
+    sort_by: str = "hostname",
+    sort_dir: str = "asc",
+    changed_only: bool = False,
+    include_hidden: bool = False,
+    hidden_only: bool = False,
+    hide_vm_172: bool = False,
+    network_lookup: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+    changes_index: Optional[Dict[str, Dict[str, Any]]] = None,
+    content_version: Optional[tuple] = None,
+    copy_items: bool = True,
+    track_hot: bool = True,
+) -> List[Dict[str, Any]]:
+    """Обогащённые записи с учётом видимости, через кэш записей (см. COMPUTERS_RECORDS_CACHE_TTL_SEC).
+
+    Решение по записи кэша (версия содержимого должна совпасть):
+    - возраст <= TTL: отдаём; статусы пересчитываются от now;
+    - TTL < возраст <= STALE_MAX и ключ не зависит от времени (без status/changed_only):
+      отдаём устаревшие записи сразу, пересборка в фоне (single-flight, executor с ограничением);
+    - иначе синхронная пересборка; параллельные запросы того же ключа ждут её, а не дублируют.
+    Версия изменилась: пересборка синхронная, чтобы запись сразу после правки была видна.
+    copy_items сохранён для совместимости: записи, отданные из кэша, всегда новые dict.
+    """
+    fields = _parse_computer_search_fields(search_fields)
+    app_store = _get_inventory_app_store()
+    requested_scope = _normalize_scope(scope)
+    can_read_all = _can_read_all_databases(current_user)
+    db_candidates = _resolve_computer_db_candidates(
+        current_user=current_user,
+        db_id_selected=db_id_selected,
+        scope=scope,
+    )
+    context_db_ids = list(db_candidates)
+    if app_store is not None and requested_scope == "selected":
+        for database_id in _get_accessible_db_ids(current_user):
+            normalized_database_id = _normalize_text(database_id)
+            if normalized_database_id and normalized_database_id not in context_db_ids:
+                context_db_ids.append(normalized_database_id)
+
+    if app_store is not None and content_version is None:
+        try:
+            content_version = app_store.content_version_probe()
+        except Exception:
+            content_version = None
+
+    def _make_cache_key(query_text: Optional[str]) -> tuple:
+        # Ключ без версии: версия хранится в записи, поэтому устаревшая запись остаётся доступна.
+        return (
+            requested_scope,
+            bool(can_read_all),
+            tuple(db_candidates),
+            tuple(context_db_ids),
+            _normalize_text(branch).lower(),
+            _normalize_text(status_filter).lower(),
+            _normalize_text(outlook_status).lower(),
+            _normalize_text(query_text).lower(),
+            tuple(sorted(fields)),
+            _normalize_text(sort_by).lower() or "hostname",
+            _normalize_text(sort_dir).lower() == "desc",
+            bool(changed_only),
+            bool(include_hidden),
+            bool(hidden_only),
+            bool(hide_vm_172),
+        )
+
+    cache_key: Optional[tuple] = None
+    if app_store is not None and content_version is not None:
+        try:
+            cache_key = _make_cache_key(q)
+        except Exception:
+            cache_key = None
+
+    pre = {
+        "fields": fields,
+        "app_store": app_store,
+        "requested_scope": requested_scope,
+        "can_read_all": can_read_all,
+        "db_candidates": db_candidates,
+        "context_db_ids": context_db_ids,
+    }
+    compute_kwargs = dict(
+        current_user=current_user,
+        db_id_selected=db_id_selected,
+        scope=scope,
+        branch=branch,
+        status_filter=status_filter,
+        outlook_status=outlook_status,
+        q=q,
+        search_fields=search_fields,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        changed_only=changed_only,
+        include_hidden=include_hidden,
+        hidden_only=hidden_only,
+        hide_vm_172=hide_vm_172,
+    )
+    if cache_key is None:
+        return _compute_scoped_records(
+            **compute_kwargs,
+            network_lookup=network_lookup,
+            changes_index=changes_index,
+            content_version=content_version,
+            pre=pre,
+            cache_key=None,
+        )
+
+    if track_hot:
+        _track_hot_list_key(cache_key, dict(compute_kwargs, copy_items=False, track_hot=False))
+    time_sensitive = bool(_normalize_text(status_filter)) or bool(changed_only)
+
+    def _build_now(
+        index: Optional[Dict[str, Dict[str, Any]]],
+        net: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = network_lookup,
+    ) -> List[Dict[str, Any]]:
+        return _compute_scoped_records(
+            **compute_kwargs,
+            network_lookup=net,
+            changes_index=index,
+            content_version=content_version,
+            pre=pre,
+            cache_key=cache_key,
+        )
+
+    now_mono = time.monotonic()
+    with _computers_records_cache_lock:
+        entry = _computers_records_cache.get(cache_key)
+        if entry is not None:
+            _computers_records_cache.move_to_end(cache_key)
+    if entry is not None and entry[1] == content_version:
+        age = now_mono - entry[0]
+        if age <= COMPUTERS_RECORDS_CACHE_TTL_SEC:
+            _count_computers_list("hit")
+            logger.debug("computers_collect cache=hit records=%d", len(entry[2]))
+            return _serve_cached_computer_records(entry[2], status_filter)
+        if not time_sensitive and age <= COMPUTERS_RECORDS_CACHE_STALE_MAX_SEC:
+            _count_computers_list("stale")
+            _schedule_computers_rebuild(cache_key, content_version, lambda: _build_now(None))
+            return _serve_cached_computer_records(entry[2], status_filter)
+
+    derived = _derive_search_records_from_base(
+        _make_cache_key(None),
+        cache_key,
+        content_version,
+        fields,
+        q,
+        network_lookup,
+    )
+    if derived is not None:
+        _count_computers_list("derived")
+        return _serve_cached_computer_records(derived, status_filter)
+
+    _count_computers_list("miss")
+    flight, owner = _claim_computers_flight(cache_key, content_version)
+    if not owner:
+        try:
+            shared = flight.result(timeout=COMPUTERS_RECORDS_FLIGHT_WAIT_SEC)
+        except FutureTimeoutError:
+            # Владелец завис: строим самостоятельно, без регистрации в single-flight.
+            return _build_now(changes_index)
+        _count_computers_list("wait")
+        return _serve_cached_computer_records(shared, status_filter)
+    return _run_computers_flight(cache_key, flight, lambda: _build_now(changes_index), inline=True)
+
+
+def _serve_cached_computer_records(
+    records: Any,
+    status_filter: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Выдача из кэша: новые dict со статусом и возрастом от текущего времени.
+
+    Для фильтра по статусу состав пересчитывается по свежему статусу записи.
+    """
+    now_ts = int(time.time())
+    served = [_enrich_status(item, now_ts) for item in records if isinstance(item, dict)]
+    target_status = _normalize_text(status_filter).lower()
+    if target_status:
+        served = [item for item in served if _normalize_text(item.get("status")).lower() == target_status]
+    return served
+
+
+def _derive_search_records_from_base(
+    base_key: tuple,
+    cache_key: tuple,
+    content_version: Any,
+    fields: set[str],
+    q: Optional[str],
+    network_lookup: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+) -> Optional[tuple]:
+    """Поиск по свежему кэшу того же списка без запроса: фильтр в памяти вместо SQL-скана payload.
+
+    Базовая запись — тот же ключ с пустым q и той же версией содержимого, моложе TTL. Записи
+    уже обогащены, поэтому Python-фильтр даёт тот же результат, что и сборка с SQL-кандидатами
+    (кандидаты — лишь надмножество). Сетевые совпадения привязываются позже, в
+    _build_computers_search_payload, поэтому при поиске по сети здесь остаётся надмножество:
+    токен совпал в остальных полях либо mac есть среди сетевых совпадений токена.
+    Результат кладётся в кэш с меткой времени базы: он устаревает вместе с ней.
+    """
+    tokens = _search_tokens(q)
+    if not tokens or base_key == cache_key:
+        return None
+    with _computers_records_cache_lock:
+        base = _computers_records_cache.get(base_key)
+        if base is not None:
+            _computers_records_cache.move_to_end(base_key)
+    if base is None or base[1] != content_version:
+        return None
+    if time.monotonic() - base[0] > COMPUTERS_RECORDS_CACHE_TTL_SEC:
+        return None
+    records = base[2]
+    if "network" in fields:
+        if not isinstance(network_lookup, dict):
+            return None
+        other_fields = fields - {"network"}
+        network_keys = _search_network_mac_key_sets(network_lookup, tokens)
+        matched = []
+        for item in records:
+            text = " ".join(_record_search_field_texts(item, other_fields).values()) if other_fields else ""
+            mac_key = _normalize_mac(item.get("mac_address")) or _normalize_text(item.get("mac_address"))
+            if all(token in text or mac_key in network_keys.get(token, ()) for token in tokens):
+                matched.append(item)
+    else:
+        matched = _apply_search_filter(list(records), q, fields)
+    derived = tuple(matched)
+    with _computers_records_cache_lock:
+        _computers_records_cache[cache_key] = (base[0], content_version, derived)
+        _computers_records_cache.move_to_end(cache_key)
+        while len(_computers_records_cache) > COMPUTERS_RECORDS_CACHE_MAX_ENTRIES:
+            _computers_records_cache.popitem(last=False)
+    return derived
+
+
+def _count_computers_list(name: str, value: float = 1.0) -> None:
+    with _computers_list_counters_lock:
+        _computers_list_counters[name] = _computers_list_counters.get(name, 0) + value
+
+
+def list_cache_metrics() -> Dict[str, float]:
+    """Счётчики кэша списка компьютеров (hit/stale/miss/wait/rebuild_*) для логов и диагностики."""
+    with _computers_list_counters_lock:
+        return dict(_computers_list_counters)
+
+
+def _key_tag(cache_key: tuple) -> str:
+    # В логи попадает только короткий хэш ключа: в ключе есть текст поиска и филиал.
+    return hashlib.sha1(repr(cache_key).encode("utf-8")).hexdigest()[:8]
+
+
+def _claim_computers_flight(cache_key: tuple, content_version: Any) -> Tuple[Future, bool]:
+    with _computers_flights_lock:
+        current = _computers_flights.get(cache_key)
+        if current is not None and current[0] == content_version and not current[1].done():
+            return current[1], False
+        flight: Future = Future()
+        _computers_flights[cache_key] = (content_version, flight)
+        return flight, True
+
+
+def _release_computers_flight(cache_key: tuple, flight: Future) -> None:
+    with _computers_flights_lock:
+        current = _computers_flights.get(cache_key)
+        if current is not None and current[1] is flight:
+            _computers_flights.pop(cache_key, None)
+
+
+def _run_computers_flight(
+    cache_key: tuple,
+    flight: Future,
+    build: Callable[[], List[Dict[str, Any]]],
+    *,
+    inline: bool,
+) -> List[Dict[str, Any]]:
+    """Пересборка владельцем флага. Ошибка не трогает кэш: запись кладётся только при успехе."""
+    started = time.perf_counter()
+    try:
+        result = build()
+    except BaseException as exc:
+        _count_computers_list("rebuild_error")
+        _release_computers_flight(cache_key, flight)
+        flight.set_exception(exc)
+        if not isinstance(exc, Exception):
+            raise
+        logger.warning("computers_rebuild failed key=%s error=%s", _key_tag(cache_key), type(exc).__name__)
+        if inline:
+            raise
+        return []
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    _count_computers_list("rebuild_ok")
+    _count_computers_list("rebuild_ms_total", elapsed_ms)
+    with _computers_list_counters_lock:
+        _computers_list_counters["rebuild_ms_last"] = round(elapsed_ms, 1)
+    logger.debug("computers_rebuild ok key=%s ms=%.1f records=%d", _key_tag(cache_key), elapsed_ms, len(result))
+    _release_computers_flight(cache_key, flight)
+    flight.set_result(result)
+    return result
+
+
+def _schedule_computers_rebuild(
+    cache_key: tuple,
+    content_version: Any,
+    build: Callable[[], List[Dict[str, Any]]],
+) -> None:
+    flight, owner = _claim_computers_flight(cache_key, content_version)
+    if not owner:
+        return
+    try:
+        _computers_rebuild_executor.submit(_run_computers_flight, cache_key, flight, build, inline=False)
+    except Exception as exc:
+        _release_computers_flight(cache_key, flight)
+        logger.warning("computers_rebuild schedule failed error=%s", type(exc).__name__)
+
+
+def _track_hot_list_key(cache_key: tuple, recipe: Dict[str, Any]) -> None:
+    now = time.monotonic()
+    with _computers_hot_lock:
+        _computers_hot_keys[cache_key] = (now, recipe)
+        _computers_hot_keys.move_to_end(cache_key)
+        while len(_computers_hot_keys) > COMPUTERS_LIST_HOT_MAX_KEYS:
+            _computers_hot_keys.popitem(last=False)
+
+
+def warm_hot_list_keys(stop_event: Optional[threading.Event] = None) -> int:
+    """Прогрев горячих ключей списка: повторный вызов по рецепту. Свежая запись не пересчитывается,
+    устаревшая или сменившая версию пересобирается. Ключи, к которым не обращались дольше
+    COMPUTERS_LIST_HOT_IDLE_SEC, выбрасываются. Сам прогрев ключи не регистрирует."""
+    now = time.monotonic()
+    with _computers_hot_lock:
+        for key in [k for k, (last, _) in _computers_hot_keys.items() if now - last > COMPUTERS_LIST_HOT_IDLE_SEC]:
+            _computers_hot_keys.pop(key, None)
+        recipes = [recipe for _, recipe in _computers_hot_keys.values()]
+    done = 0
+    for recipe in recipes:
+        if stop_event is not None and stop_event.is_set():
+            break
+        try:
+            _collect_scoped_computer_records(**recipe)
+        except Exception as exc:
+            logger.warning("computers_warmup key failed error=%s", type(exc).__name__)
+        done += 1
+    last_changes = _changes_last_request
+    if last_changes is not None and now - last_changes <= COMPUTERS_LIST_HOT_IDLE_SEC and not (
+        stop_event is not None and stop_event.is_set()
+    ):
+        try:
+            _get_changes_summary()
+        except Exception as exc:
+            logger.warning("computers_warmup changes failed error=%s", type(exc).__name__)
+    _count_computers_list("warmup_runs")
+    return done
+
+
+_extra_warmups: List[Tuple[str, Callable[[], Any], float]] = []
+_extra_warmups_last: Dict[str, float] = {}
+
+
+def register_extra_warmup(name: str, func: Callable[[], Any], min_interval_sec: float = 60.0) -> None:
+    """Дополнительный прогрев в той же фоновой нити (например, обзор мониторинга); идемпотентно по имени."""
+    for index, (existing, _, _) in enumerate(_extra_warmups):
+        if existing == name:
+            _extra_warmups[index] = (name, func, float(min_interval_sec))
+            return
+    _extra_warmups.append((name, func, float(min_interval_sec)))
+
+
+def _run_extra_warmups(stop_event: Optional[threading.Event] = None) -> None:
+    for name, func, min_interval in list(_extra_warmups):
+        if stop_event is not None and stop_event.is_set():
+            return
+        now = time.monotonic()
+        if now - _extra_warmups_last.get(name, -1e9) < min_interval:
+            continue
+        _extra_warmups_last[name] = now
+        try:
+            func()
+        except Exception as exc:
+            logger.warning("extra_warmup %s failed error=%s", name, type(exc).__name__)
+
+
+def _list_warmup_enabled() -> bool:
+    raw = os.getenv("INVENTORY_LIST_WARMUP_ENABLED")
+    if raw is None or raw.strip() == "":
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _list_warmup_interval_sec() -> float:
+    try:
+        value = float(os.getenv("INVENTORY_LIST_WARMUP_INTERVAL_SEC", "30"))
+    except (TypeError, ValueError):
+        value = 30.0
+    return max(10.0, value)
+
+
+class _ListWarmupWorker:
+    def __init__(self) -> None:
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self) -> bool:
+        if self._thread is not None and self._thread.is_alive():
+            return True
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="inventory-list-warmup", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=5)
+        self._thread = None
+
+    def _run(self) -> None:
+        interval = _list_warmup_interval_sec()
+        # Одна нить на процесс: прогревы не параллелятся. Джиттер разводит процессы по времени.
+        while not self._stop.wait(interval + random.uniform(0, 10)):
+            try:
+                warm_hot_list_keys(self._stop)
+                _run_extra_warmups(self._stop)
+            except Exception as exc:
+                logger.warning("computers_warmup tick failed error=%s", type(exc).__name__)
+
+
+_list_warmup_worker = _ListWarmupWorker()
+
+
+def start_list_warmup() -> bool:
+    """Фоновый прогрев горячих ключей списка; выключается INVENTORY_LIST_WARMUP_ENABLED=0."""
+    if not _list_warmup_enabled():
+        return False
+    return _list_warmup_worker.start()
+
+
+def stop_list_warmup() -> None:
+    _list_warmup_worker.stop()
+
+
+def _compute_scoped_records(
+    *,
+    current_user: User,
+    db_id_selected: Optional[str],
+    scope: str,
+    branch: Optional[str],
+    status_filter: Optional[str],
+    outlook_status: Optional[str],
+    q: Optional[str],
+    search_fields: Any,
+    sort_by: str,
+    sort_dir: str,
+    changed_only: bool,
+    include_hidden: bool,
+    hidden_only: bool,
+    hide_vm_172: bool,
+    network_lookup: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    changes_index: Optional[Dict[str, Dict[str, Any]]],
+    content_version: Optional[tuple],
+    pre: Dict[str, Any],
+    cache_key: Optional[tuple],
+) -> List[Dict[str, Any]]:
+    """Сборка записей из снимка БД без чтения кэша. При cache_key результат кладётся в кэш с версией."""
+    fields = pre["fields"]
+    app_store = pre["app_store"]
+    requested_scope = pre["requested_scope"]
+    can_read_all = pre["can_read_all"]
+    db_candidates = pre["db_candidates"]
+    context_db_ids = pre["context_db_ids"]
+
+    database_name_map = _get_database_name_map()
+    now_ts = int(time.time())
+
+    scoped_keys = _resolve_scoped_host_keys(
+        app_store=app_store,
+        q=q,
+        fields=fields,
+        scope=requested_scope,
+        db_candidates=db_candidates,
+        context_db_ids=context_db_ids,
+        network_lookup=network_lookup,
+        database_name_map=database_name_map,
+        restrict_to_context_dbs=requested_scope == "selected" and not can_read_all,
+    )
+    if scoped_keys is not None and len(scoped_keys) == 0:
+        return []
+
+    filter_keys = _resolve_filter_host_keys(
+        app_store=app_store,
+        branch=branch,
+        status_filter=status_filter,
+        changed_only=changed_only,
+        scope=requested_scope,
+        db_candidates=db_candidates,
+        context_db_ids=context_db_ids,
+        now_ts=now_ts,
+    )
+    candidate_keys = scoped_keys
+    if filter_keys is not None:
+        candidate_keys = filter_keys if candidate_keys is None else (candidate_keys & filter_keys)
+    if candidate_keys is not None and len(candidate_keys) == 0:
+        return []
+
+    current_data = _load_inventory_snapshot(
+        host_keys=candidate_keys,
+        include_hidden=include_hidden or hidden_only,
+        hidden_only=hidden_only,
+    )
+    if not isinstance(current_data, dict):
+        current_data = {}
+
+    if changes_index is None:
+        changes_index = _get_changes_index(now_ts, content_version)
+
+    sql_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+    prefetched_sql_contexts: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    if app_store is not None and current_data and context_db_ids:
+        try:
+            prefetched_sql_contexts = app_store.list_sql_contexts(
+                hosts=[item for item in current_data.values() if isinstance(item, dict)],
+                db_ids=context_db_ids,
+            )
+        except Exception as exc:
+            logger.debug("Inventory SQL context prefetch skipped: %s", exc)
+            prefetched_sql_contexts = {}
+    # Список читает только сохранённые привязки; per-host резолв ITINVENT только без app-DB (legacy/JSON).
+    allow_sync_context_resolution = app_store is None
+
+    def _get_prefetched_sql_context(mac_address: str, hostname: str, db_id: str) -> Optional[Dict[str, Any]]:
+        normalized_mac = _normalize_mac(mac_address)
+        normalized_hostname = _normalize_text(hostname).lower()
+        normalized_db_id = _normalize_text(db_id)
+        for key in (
+            (normalized_mac, normalized_hostname, normalized_db_id),
+            (normalized_mac, "", normalized_db_id),
+            ("", normalized_hostname, normalized_db_id),
+        ):
+            cached_context = prefetched_sql_contexts.get(key)
+            if isinstance(cached_context, dict):
+                return dict(cached_context)
+        return None
+
+    records: List[Dict[str, Any]] = []
+    try:
+        for item in current_data.values():
+            if not isinstance(item, dict):
+                continue
+
+            record = _enrich_status(item, now_ts)
+            _ensure_identity_fields(record)
+            _ensure_runtime_fields(record)
+            _enrich_outlook_fields_light(record)
+
+            mac_address = _normalize_text(record.get("mac_address"))
+            hostname = _normalize_text(record.get("hostname"))
+            sql_key = f"{_normalize_mac(mac_address)}|{hostname.lower()}|{','.join(context_db_ids)}"
+            if sql_key not in sql_cache:
+                selected_context: Optional[Dict[str, Any]] = None
+                any_context: Optional[Dict[str, Any]] = None
+                for candidate_db in context_db_ids:
+                    context = _get_prefetched_sql_context(mac_address, hostname, candidate_db)
+                    if not isinstance(context, dict) and allow_sync_context_resolution:
+                        context = _resolve_sql_context_cached(app_store, mac_address, hostname, candidate_db)
+                    if not isinstance(context, dict):
+                        continue
+                    enriched_context = dict(context)
+                    enriched_context["database_id"] = candidate_db
+                    enriched_context["database_name"] = database_name_map.get(candidate_db, candidate_db)
+                    enriched_context["assignment_source"] = "sql"
+                    if any_context is None:
+                        any_context = enriched_context
+                    if candidate_db in db_candidates and selected_context is None:
+                        selected_context = enriched_context
+
+                # Карточку в чужой БД видят только admin/computers.read_all; иначе хост скрывается.
+                excluded = not can_read_all and selected_context is None and any_context is not None
+                resolved_context = selected_context if selected_context is not None else (
+                    any_context if can_read_all else None
+                )
+                network_scope = _resolve_inventory_network_scope(record)
+                if resolved_context is None and not excluded and isinstance(network_scope, dict):
+                    network_database_id = _normalize_text(network_scope.get("database_id"))
+                    if requested_scope == "all" or network_database_id in db_candidates or can_read_all:
+                        resolved_context = {
+                            "branch_name": _normalize_text(network_scope.get("branch_name")),
+                            "ip_address": _normalize_text(network_scope.get("ip_address")),
+                            "database_id": network_database_id,
+                            "database_name": database_name_map.get(network_database_id, network_database_id),
+                            "assignment_source": "network_scope",
+                        }
+                    else:
+                        excluded = True
+
+                if excluded or (resolved_context is None and app_store is None):
+                    sql_cache[sql_key] = {"_excluded": True}
+                else:
+                    sql_cache[sql_key] = resolved_context
+
+            sql_context = sql_cache.get(sql_key)
+            if isinstance(sql_context, dict) and sql_context.get("_excluded"):
+                continue
+
+            if isinstance(sql_context, dict):
+                assignment_source = _normalize_text(sql_context.get("assignment_source")) or "sql"
+                record["branch_no"] = sql_context.get("branch_no")
+                record["branch_name"] = _normalize_text(sql_context.get("branch_name")) or EMPTY_BRANCH_LABEL
+                record["location_name"] = _normalize_text(sql_context.get("location_name"))
+                record["branch_source"] = assignment_source
+                record["assignment_source"] = assignment_source
+                record["is_unassigned"] = False
+                record["inventory_inv_no"] = _normalize_text(sql_context.get("inv_no"))
+                record["inventory_model_name"] = _normalize_text(sql_context.get("model_name"))
+                record["database_id"] = _normalize_text(sql_context.get("database_id"))
+                record["database_name"] = _normalize_text(sql_context.get("database_name")) or record["database_id"]
+                if not record.get("user_full_name"):
+                    record["user_full_name"] = _normalize_person_name(sql_context.get("employee_name"))
+            else:
+                record["branch_no"] = None
+                record["branch_name"] = UNASSIGNED_BRANCH_LABEL
+                record["location_name"] = ""
+                record["branch_source"] = "unassigned"
+                record["assignment_source"] = "unassigned"
+                record["is_unassigned"] = True
+                record["inventory_inv_no"] = ""
+                record["inventory_model_name"] = ""
+                record["database_id"] = ""
+                record["database_name"] = "Без привязки"
+
+            ip_primary = _normalize_text(record.get("ip_primary"))
+            ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
+            if not ip_primary and isinstance(sql_context, dict):
+                ip_primary = _extract_first_ipv4(sql_context.get("ip_address"))
+            if ip_primary and ip_primary not in ip_list:
+                ip_list = [ip_primary] + [item for item in ip_list if _normalize_text(item) and _normalize_text(item) != ip_primary]
+            record["ip_primary"] = ip_primary
+            record["ip_list"] = _dedupe_strings(ip_list)
+
+            change_key = _event_host_key(mac_address, hostname)
+            change_meta = changes_index.get(change_key, {})
+            record["last_change_at"] = change_meta.get("last_change_at")
+            record["changes_count_30d"] = int(change_meta.get("changes_count_30d") or 0)
+            record["has_hardware_changes"] = record["changes_count_30d"] > 0
+            record.pop("_hardware_signature", None)
+            records.append(record)
+    finally:
+        pass
+
+    records = _merge_records_of_same_card(records)
+
+    if branch:
+        branch_value = _normalize_text(branch).lower()
+        records = [item for item in records if _normalize_text(item.get("branch_name")).lower() == branch_value]
+
+    if status_filter:
+        target_status = _normalize_text(status_filter).lower()
+        records = [item for item in records if _normalize_text(item.get("status")).lower() == target_status]
+
+    if outlook_status:
+        target_outlook_status = _normalize_text(outlook_status).lower()
+        if target_outlook_status in OUTLOOK_ALLOWED_STATUS:
+            records = [item for item in records if _normalize_text(item.get("outlook_status")).lower() == target_outlook_status]
+
+    if changed_only:
+        records = [item for item in records if bool(item.get("has_hardware_changes"))]
+
+    if hide_vm_172:
+        records = [item for item in records if not _is_vm_only_172_host(item)]
+
+    if _normalize_text(q) and "network" not in fields:
+        records = _apply_search_filter(records, q, fields)
+
+    normalized_sort_by = _normalize_text(sort_by).lower() or "hostname"
+    reverse = _normalize_text(sort_dir).lower() == "desc"
+    records.sort(key=lambda item: _computer_sort_key(item, normalized_sort_by), reverse=reverse)
+    if cache_key is not None:
+        snapshot = tuple(dict(item) for item in records)
+        with _computers_records_cache_lock:
+            _computers_records_cache[cache_key] = (time.monotonic(), content_version, snapshot)
+            _computers_records_cache.move_to_end(cache_key)
+            while len(_computers_records_cache) > COMPUTERS_RECORDS_CACHE_MAX_ENTRIES:
+                _computers_records_cache.popitem(last=False)
+    return records
+
+
+def _inventory_content_version() -> Optional[tuple]:
+    """Отпечаток содержимого (без heartbeat); один вызов на запрос, передаётся дальше."""
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        return None
+    try:
+        return app_store.content_version_probe()
+    except Exception:
+        return None
+
+
+def _inventory_data_etag(content_version: Optional[tuple] = None) -> Optional[str]:
+    """Weak ETag: содержимое + минутный бакет времени.
+
+    Статусы online/stale/offline зависят от now (порог 12 и 60 мин), поэтому без бакета 304
+    могло бы вернуть устаревший статус. Бакет по минуте: 304 не переживает смену минуты.
+    """
+    if content_version is None:
+        return None
+    bucket = int(time.time()) // 60
+    digest = hashlib.sha1(repr((content_version, bucket)).encode("utf-8")).hexdigest()[:16]
+    return f'W/"inv-{digest}"'
+
+
+def _computer_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    status_counts = {"online": 0, "stale": 0, "offline": 0, "unknown": 0}
+    branch_counts: Dict[str, int] = {}
+    outlook_counts = {"ok": 0, "warning": 0, "critical": 0, "unknown": 0}
+    unassigned_count = 0
+    for item in records:
+        status_key = _normalize_text(item.get("status")).lower() or "unknown"
+        if status_key not in status_counts:
+            status_key = "unknown"
+        status_counts[status_key] += 1
+        branch_name = _normalize_text(item.get("branch_name")) or EMPTY_BRANCH_LABEL
+        branch_counts[branch_name] = branch_counts.get(branch_name, 0) + 1
+        outlook_key = _normalize_text(item.get("outlook_status")).lower() or "unknown"
+        if outlook_key not in outlook_counts:
+            outlook_key = "unknown"
+        outlook_counts[outlook_key] += 1
+        if bool(item.get("is_unassigned")):
+            unassigned_count += 1
+    return {
+        "total": len(records),
+        "unassigned": unassigned_count,
+        "statuses": status_counts,
+        "branches": branch_counts,
+        "outlook": outlook_counts,
+    }
+
+
+@router.post("")
+def receive_inventory(
+    payload: InventoryPayload,
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    Receive inventory data from PC agents.
+    """
+    if not _is_valid_agent_api_key(x_api_key):
+        logger.warning("Inventory rejected unknown agent key fingerprint=%s", _api_key_fingerprint(x_api_key))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key",
+        )
+
+    inventory_runtime.configure_runtime_hooks(
+        is_app_database_configured=is_app_database_configured,
+        get_app_database_url=get_app_database_url,
+        ensure_app_schema_initialized=ensure_app_schema_initialized,
+        AppInventoryStore=AppInventoryStore,
+        get_local_store=get_local_store,
+    )
+    try:
+        return inventory_runtime.process_inventory_payload(_model_dump(payload))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/changes")
+def get_inventory_changes(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+):
+    global _changes_last_request
+    _changes_last_request = time.monotonic()
+    scope = it_object_branch_scope.computer_scope(current_user)
+    if scope is None:
+        response = _get_changes_summary()
+    else:
+        visible = _collect_scoped_computer_records(
+            current_user=current_user,
+            db_id_selected=it_object_branch_scope._objects_db_id(),
+            scope="selected",
+            branch=None,
+            status_filter=None,
+            outlook_status=None,
+            q=None,
+        )
+        allowed_macs = {_normalize_mac(item.get("mac_address")) for item in visible}
+        response = _build_inventory_changes_summary(int(time.time()), allowed_macs)
+    return {**response, "latest_events": response["latest_events"][: int(limit)]}
+
+
+def _get_changes_summary() -> Dict[str, Any]:
+    """Сводка изменений через кэш (TTL + версия контента); общая для эндпоинта и прогрева."""
+    global _changes_summary_cache
+    now_ts = int(time.time())
+    app_store = _get_inventory_app_store()
+    summary_key: Optional[tuple] = None
+    if app_store is not None:
+        content_version = _inventory_content_version()
+        if content_version is not None:
+            summary_key = (getattr(app_store, "_database_url", None), content_version)
+    if summary_key is not None:
+        with _derived_cache_lock:
+            cached = _changes_summary_cache
+        if (
+            cached is not None
+            and cached[1] == summary_key
+            and time.monotonic() - cached[0] <= COMPUTERS_RECORDS_CACHE_TTL_SEC
+        ):
+            return cached[2]
+    response = _build_inventory_changes_summary(now_ts)
+    if summary_key is not None:
+        with _derived_cache_lock:
+            _changes_summary_cache = (time.monotonic(), summary_key, response)
+    return response
+
+
+def _build_inventory_changes_summary(now_ts: int, allowed_macs: Optional[set] = None) -> Dict[str, Any]:
+    """Сводка изменений за окно хранения; latest_events — максимальные 200 (лимит эндпоинта).
+
+    ``allowed_macs`` — только события этих хостов (IT-владелец видит лишь компьютеры своих филиалов).
+    """
+    changes = _prune_old_changes(
+        _load_changes(since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60),
+        now_ts,
+    )
+    if allowed_macs is not None:
+        changes = [item for item in changes if _normalize_mac(item.get("mac_address")) in allowed_macs]
+    sorted_changes = sorted(changes, key=lambda item: _to_int(item.get("detected_at"), 0), reverse=True)
+
+    def _unique_hosts_since(seconds_back: int) -> int:
+        threshold = now_ts - seconds_back
+        keys = {
+            _event_host_key(_normalize_text(item.get("mac_address")), _normalize_text(item.get("hostname")))
+            for item in sorted_changes
+            if _to_int(item.get("detected_at"), 0) >= threshold
+        }
+        return len(keys)
+
+    daily_map: Dict[str, int] = {}
+    for item in sorted_changes:
+        ts = _to_int(item.get("detected_at"), 0)
+        if ts <= 0:
+            continue
+        if ts < now_ts - CHANGES_WINDOW_DAYS * 24 * 60 * 60:
+            continue
+        day_key = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        daily_map[day_key] = daily_map.get(day_key, 0) + 1
+
+    daily_rows: List[Dict[str, Any]] = []
+    start_day = datetime.fromtimestamp(now_ts, tz=timezone.utc).date() - timedelta(days=CHANGES_WINDOW_DAYS - 1)
+    for offset in range(CHANGES_WINDOW_DAYS):
+        current_day = start_day + timedelta(days=offset)
+        day_key = current_day.strftime("%Y-%m-%d")
+        daily_rows.append({"date": day_key, "count": int(daily_map.get(day_key, 0))})
+
+    return {
+        "totals": {
+            "changed_24h": _unique_hosts_since(24 * 60 * 60),
+            "changed_7d": _unique_hosts_since(7 * 24 * 60 * 60),
+            "changed_30d": _unique_hosts_since(30 * 24 * 60 * 60),
+        },
+        "daily": daily_rows,
+        "latest_events": sorted_changes[:200],
+    }
+
+
+def _build_computers_search_payload(
+    *,
+    current_user: User,
+    db_id_selected: Optional[str],
+    scope: str,
+    branch: Optional[str],
+    status_filter: Optional[str],
+    outlook_status: Optional[str],
+    q: Optional[str],
+    search_fields: Any = None,
+    sort_by: str = "hostname",
+    sort_dir: str = "asc",
+    changed_only: bool = False,
+    include_hidden: bool = False,
+    hidden_only: bool = False,
+    hide_vm_172: bool = False,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    include_summary: bool = False,
+    content_version: Optional[tuple] = None,
+) -> Dict[str, Any]:
+    fields = _parse_computer_search_fields(search_fields)
+    needle = _normalize_text(q).lower()
+    now_ts = int(time.time())
+    if content_version is None and _get_inventory_app_store() is not None:
+        try:
+            content_version = _get_inventory_app_store().content_version_probe()
+        except Exception:
+            content_version = None
+    changes_index = _get_changes_index(now_ts, content_version)
+
+    network_conn: Optional[Any] = None
+    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
+    if needle and "network" in fields:
+        try:
+            network_conn = _open_network_lookup_connection()
+        except Exception:
+            network_conn = None
+        if network_conn is not None:
+            try:
+                network_index = _load_network_lookup_index_cached(network_conn)
+            except Exception:
+                network_index = None
+    try:
+        records = _collect_scoped_computer_records(
+            current_user=current_user,
+            db_id_selected=db_id_selected,
+            scope=scope,
+            branch=branch,
+            status_filter=status_filter,
+            outlook_status=outlook_status,
+            q=q,
+            search_fields=search_fields,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            changed_only=changed_only,
+            include_hidden=include_hidden,
+            hidden_only=hidden_only,
+            hide_vm_172=hide_vm_172,
+            network_lookup=network_index,
+            changes_index=changes_index,
+            content_version=content_version,
+            copy_items=False,
+        )
+
+        if needle and "network" in fields:
+            # records могут быть ссылками из кэша: network_link пишем только в копии.
+            records = [dict(item) for item in records]
+            network_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+
+            def _attach_network_fields(items: List[Dict[str, Any]]) -> None:
+                nonlocal network_conn, network_index
+                if not items:
+                    return
+                if network_conn is None:
+                    try:
+                        network_conn = _open_network_lookup_connection()
+                    except Exception:
+                        network_conn = None
+                if network_index is None and network_conn is not None:
+                    network_index = _load_network_lookup_index_cached(network_conn)
+                for record in items:
+                    mac_address = _normalize_text(record.get("mac_address"))
+                    record_ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
+                    network_key = f"{_normalize_mac(mac_address)}|{','.join(_dedupe_strings(record_ip_list))}"
+                    if network_key not in network_cache:
+                        indexed_link = _resolve_network_link_from_index(
+                            network_index,
+                            mac_address=mac_address,
+                            ip_list=record_ip_list,
+                        )
+                        if indexed_link is not None:
+                            network_cache[network_key] = indexed_link
+                        elif network_index is not None:
+                            network_cache[network_key] = None
+                        else:
+                            network_cache[network_key] = _resolve_network_link(
+                                network_conn,
+                                mac_address=mac_address,
+                                ip_list=record_ip_list,
+                            )
+                    record["network_link"] = network_cache.get(network_key)
+
+            _attach_network_fields(records)
+            records = _apply_search_filter(records, q, fields)
+
+        total = len(records)
+        safe_offset = max(0, int(offset or 0))
+        if limit is None:
+            page_items = [dict(item) for item in records]
+            safe_limit = len(records)
+        else:
+            safe_limit = max(1, min(500, int(limit or 50)))
+            # Копируем только страницу: обогащение ниже меняет элементы, кэш не должен.
+            page_items = [dict(item) for item in records[safe_offset:safe_offset + safe_limit]]
+
+        if page_items:
+            network_cache_enrich: Dict[str, Optional[Dict[str, Any]]] = {}
+
+            def _attach_network_fields_enrich(items: List[Dict[str, Any]]) -> None:
+                nonlocal network_conn, network_index
+                if not items:
+                    return
+                if network_conn is None:
+                    try:
+                        network_conn = _open_network_lookup_connection()
+                    except Exception:
+                        network_conn = None
+                if network_index is None and network_conn is not None:
+                    network_index = _load_network_lookup_index_cached(network_conn)
+                for record in items:
+                    mac_address = _normalize_text(record.get("mac_address"))
+                    record_ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
+                    if "network_link" not in record:
+                        network_key = f"{_normalize_mac(mac_address)}|{','.join(_dedupe_strings(record_ip_list))}"
+                        if network_key not in network_cache_enrich:
+                            indexed_link = _resolve_network_link_from_index(
+                                network_index,
+                                mac_address=mac_address,
+                                ip_list=record_ip_list,
+                            )
+                            if indexed_link is not None:
+                                network_cache_enrich[network_key] = indexed_link
+                            elif network_index is not None:
+                                network_cache_enrich[network_key] = None
+                            else:
+                                network_cache_enrich[network_key] = _resolve_network_link(
+                                    network_conn,
+                                    mac_address=mac_address,
+                                    ip_list=record_ip_list,
+                                )
+                        record["network_link"] = network_cache_enrich.get(network_key)
+                    ip_primary = _normalize_text(record.get("ip_primary"))
+                    ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
+                    if not ip_primary and isinstance(record.get("network_link"), dict):
+                        ip_primary = _extract_first_ipv4(record["network_link"].get("endpoint_ip_raw"))
+                    if ip_primary and ip_primary not in ip_list:
+                        ip_list = [ip_primary] + [item for item in ip_list if _normalize_text(item) and _normalize_text(item) != ip_primary]
+                    record["ip_primary"] = ip_primary
+                    record["ip_list"] = _dedupe_strings(ip_list)
+
+            _heavy_enrich_computer_records(
+                page_items,
+                changes_index=changes_index,
+                attach_network=_attach_network_fields_enrich,
+                include_profile_rows=bool(needle and "profiles" in fields),
+            )
+            if needle:
+                tokens = _search_tokens(needle)
+                for record in page_items:
+                    field_texts = _record_search_field_texts(record, fields)
+                    matched = [
+                        key for key, text in field_texts.items()
+                        if any(token in text for token in tokens)
+                    ]
+                    if matched:
+                        record["matched_fields"] = matched
+    finally:
+        if network_conn is not None:
+            try:
+                network_conn.close()
+            except Exception:
+                pass
+
+    next_offset = safe_offset + len(page_items)
+    payload = {
+        "items": page_items,
+        "total": total,
+        "limit": safe_limit,
+        "offset": safe_offset,
+        "has_more": next_offset < total,
+        "next_offset": next_offset if next_offset < total else None,
+    }
+    if include_summary:
+        payload["summary"] = _computer_summary(records)
+    return payload
+
+
+def _build_computer_detail_payload(
+    *,
+    current_user: User,
+    mac_address: str,
+    db_id_selected: Optional[str],
+    scope: str,
+) -> Dict[str, Any]:
+    normalized_mac = _normalize_mac(mac_address) or _normalize_text(mac_address)
+    if not normalized_mac:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+
+    requested_scope = _normalize_scope(scope)
+    if requested_scope == "all":
+        ensure_user_permission(current_user, PERM_COMPUTERS_READ_ALL)
+
+    db_candidates = _resolve_computer_db_candidates(
+        current_user=current_user,
+        db_id_selected=db_id_selected,
+        scope=scope,
+    )
+    app_store = _get_inventory_app_store()
+    database_name_map = _get_database_name_map()
+
+    snapshot = _load_inventory_snapshot(host_keys={normalized_mac}, include_hidden=True)
+    raw = None
+    for item in snapshot.values():
+        if isinstance(item, dict):
+            raw = item
+            break
+    if raw is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+
+    now_ts = int(time.time())
+    record = _enrich_status(dict(raw), now_ts)
+    _ensure_identity_fields(record)
+    _ensure_runtime_fields(record)
+
+    mac_value = _normalize_text(record.get("mac_address"))
+    hostname = _normalize_text(record.get("hostname"))
+    context_db_ids = list(db_candidates)
+    if app_store is not None and requested_scope == "selected":
+        for database_id in _get_accessible_db_ids(current_user):
+            normalized_database_id = _normalize_text(database_id)
+            if normalized_database_id and normalized_database_id not in context_db_ids:
+                context_db_ids.append(normalized_database_id)
+
+    contexts: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    if app_store is not None:
+        try:
+            contexts = app_store.list_sql_contexts(hosts=[record], db_ids=context_db_ids)
+        except Exception:
+            contexts = {}
+
+    selected_context: Optional[Dict[str, Any]] = None
+    any_context: Optional[Dict[str, Any]] = None
+    normalized_hostname = hostname.lower()
+    normalized_mac_value = _normalize_mac(mac_value)
+    for candidate_db in context_db_ids:
+        context = None
+        for key in (
+            (normalized_mac_value, normalized_hostname, candidate_db),
+            (normalized_mac_value, "", candidate_db),
+            ("", normalized_hostname, candidate_db),
+        ):
+            if isinstance(contexts.get(key), dict):
+                context = dict(contexts[key])
+                break
+        if not isinstance(context, dict) and app_store is None:
+            context = _resolve_sql_context_cached(None, mac_value, hostname, candidate_db)
+        if not isinstance(context, dict):
+            continue
+        context["database_id"] = candidate_db
+        context["database_name"] = database_name_map.get(candidate_db, candidate_db)
+        context["assignment_source"] = "sql"
+        if any_context is None:
+            any_context = context
+        if candidate_db in db_candidates and selected_context is None:
+            selected_context = context
+
+    can_read_all = _can_read_all_databases(current_user)
+    sql_context = selected_context if selected_context is not None else (any_context if can_read_all else None)
+    excluded = not can_read_all and selected_context is None and any_context is not None
+    network_scope = _resolve_inventory_network_scope(record)
+    if sql_context is None and not excluded and isinstance(network_scope, dict):
+        network_database_id = _normalize_text(network_scope.get("database_id"))
+        if requested_scope == "all" or network_database_id in db_candidates or can_read_all:
+            sql_context = {
+                "branch_name": _normalize_text(network_scope.get("branch_name")),
+                "ip_address": _normalize_text(network_scope.get("ip_address")),
+                "database_id": network_database_id,
+                "database_name": database_name_map.get(network_database_id, network_database_id),
+                "assignment_source": "network_scope",
+            }
+        else:
+            excluded = True
+
+    if excluded or (sql_context is None and app_store is None):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+
+    if isinstance(sql_context, dict):
+        assignment_source = _normalize_text(sql_context.get("assignment_source")) or "sql"
+        record["branch_no"] = sql_context.get("branch_no")
+        record["branch_name"] = _normalize_text(sql_context.get("branch_name")) or EMPTY_BRANCH_LABEL
+        record["location_name"] = _normalize_text(sql_context.get("location_name"))
+        record["branch_source"] = assignment_source
+        record["assignment_source"] = assignment_source
+        record["is_unassigned"] = False
+        record["inventory_inv_no"] = _normalize_text(sql_context.get("inv_no"))
+        record["inventory_model_name"] = _normalize_text(sql_context.get("model_name"))
+        record["database_id"] = _normalize_text(sql_context.get("database_id"))
+        record["database_name"] = _normalize_text(sql_context.get("database_name")) or record["database_id"]
+        if not record.get("user_full_name"):
+            record["user_full_name"] = _normalize_person_name(sql_context.get("employee_name"))
+    else:
+        record["branch_no"] = None
+        record["branch_name"] = UNASSIGNED_BRANCH_LABEL
+        record["location_name"] = ""
+        record["branch_source"] = "unassigned"
+        record["assignment_source"] = "unassigned"
+        record["is_unassigned"] = True
+        record["inventory_inv_no"] = ""
+        record["inventory_model_name"] = ""
+        record["database_id"] = ""
+        record["database_name"] = "Без привязки"
+
+    if not it_object_branch_scope.computer_allowed(record, it_object_branch_scope.computer_scope(current_user)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+
+    record["monitors"] = _enrich_monitors_with_inventory(
+        record.get("monitors"),
+        record.get("database_id"),
+        db_candidates=_get_accessible_db_ids(current_user),
+    )
+
+    ip_primary = _normalize_text(record.get("ip_primary"))
+    ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
+    if not ip_primary and isinstance(sql_context, dict):
+        ip_primary = _extract_first_ipv4(sql_context.get("ip_address"))
+    if ip_primary and ip_primary not in ip_list:
+        ip_list = [ip_primary] + [item for item in ip_list if _normalize_text(item) and _normalize_text(item) != ip_primary]
+    record["ip_primary"] = ip_primary
+    record["ip_list"] = _dedupe_strings(ip_list)
+
+    # Только события этого хоста: фильтр по MAC/hostname в SQL, без чтения 90 дней по всем ПК.
+    changes = _prune_old_changes(
+        _load_changes(
+            since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60,
+            host_mac=_normalize_mac(mac_value),
+            host_hostname=hostname,
+        ),
+        now_ts,
+    )
+    changes_index = _build_changes_index(changes, now_ts)
+    change_key = _event_host_key(mac_value, hostname)
+    change_meta = changes_index.get(change_key, {})
+    record["last_change_at"] = change_meta.get("last_change_at")
+    record["changes_count_30d"] = int(change_meta.get("changes_count_30d") or 0)
+    record["has_hardware_changes"] = record["changes_count_30d"] > 0
+
+    page_items = [record]
+    network_conn: Optional[Any] = None
+
+    def _attach_network_fields(items: List[Dict[str, Any]]) -> None:
+        # Одна карточка: резолв по MAC/IP в БД, без полного сетевого индекса на каждый запрос.
+        nonlocal network_conn
+        if network_conn is None:
+            try:
+                network_conn = _open_network_lookup_connection()
+            except Exception:
+                network_conn = None
+        for row in items:
+            row["network_link"] = _resolve_network_link(
+                network_conn,
+                mac_address=_normalize_text(row.get("mac_address")),
+                ip_list=row.get("ip_list") if isinstance(row.get("ip_list"), list) else [],
+            )
+
+    try:
+        for row in page_items:
+            _enrich_outlook_fields(row)
+            _enrich_user_profile_size_fields(row)
+            row["recent_changes"] = change_meta.get("recent_changes") or []
+        _attach_network_fields(page_items)
+    finally:
+        if network_conn is not None:
+            try:
+                network_conn.close()
+            except Exception:
+                pass
+    return page_items[0]
+
+
+_OBJECT_COMPUTER_FIELDS = _MOBILE_COMPUTER_DETAIL_FIELDS
+# Server-side reader of one database: access is decided by the caller (IT object section grant),
+# so the per-user database scoping of the web list must not hide hosts from it.
+_OBJECT_COMPUTERS_ACTOR = User(
+    id=0,
+    username="it-objects",
+    full_name="IT objects",
+    role="admin",
+    is_active=True,
+)
+
+
+def list_object_computers(*, database_id: str, branch_no: Any) -> List[Dict[str, Any]]:
+    """Agent computers bound to one ITINVENT branch of ``database_id`` (the computers of an IT object)."""
+    target_db = _normalize_text(database_id)
+    target_branch = _normalize_text(branch_no)
+    if not target_db or not target_branch:
+        return []
+    records = _collect_scoped_computer_records(
+        current_user=_OBJECT_COMPUTERS_ACTOR,
+        db_id_selected=target_db,
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+    )
+    return [
+        {field: item.get(field) for field in _OBJECT_COMPUTER_FIELDS}
+        for item in records
+        if _normalize_text(item.get("database_id")) == target_db
+        and _normalize_text(item.get("branch_no")) == target_branch
+        and _normalize_text(item.get("assignment_source")) == "sql"
+    ]
+
+
+def get_object_computer_detail(*, database_id: str, branch_no: Any, mac_address: str) -> Optional[Dict[str, Any]]:
+    """Bounded detail of one agent computer of an IT object; ``None`` when the host is not one of its computers."""
+    normalized_mac = _normalize_mac(mac_address)
+    if not normalized_mac:
+        return None
+    members = list_object_computers(database_id=database_id, branch_no=branch_no)
+    if not any(_normalize_mac(item.get("mac_address")) == normalized_mac for item in members):
+        return None
+    try:
+        payload = _build_computer_detail_payload(
+            current_user=_OBJECT_COMPUTERS_ACTOR,
+            mac_address=mac_address,
+            db_id_selected=_normalize_text(database_id),
+            scope="selected",
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            return None
+        raise
+    return _project_mobile_computer(payload, detail=True)
+
+
+@router.get("/computers/summary")
+def get_computers_summary(
+    request: Request = None,
+    response: Response = None,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    branch: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    outlook_status: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    search_fields: str = Query("", min_length=0),
+    changed_only: bool = Query(False),
+    include_hidden: bool = Query(False),
+    hidden_only: bool = Query(False),
+    hide_vm_172: bool = Query(False),
+):
+    """Return aggregate counts for computers matching the current filters."""
+    content_version = _inventory_content_version()
+    etag = _inventory_data_etag(content_version)
+    if etag and request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
+    include_hidden = _query_bool(include_hidden, False)
+    hidden_only = _query_bool(hidden_only, False)
+    hide_vm_172 = _query_bool(hide_vm_172, False)
+    changed_only = _query_bool(changed_only, False)
+    fields = _parse_computer_search_fields(search_fields)
+    needle = _normalize_text(q).lower()
+    network_conn: Optional[Any] = None
+    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
+    if needle and "network" in fields:
+        try:
+            network_conn = _open_network_lookup_connection()
+        except Exception:
+            network_conn = None
+        if network_conn is not None:
+            try:
+                network_index = _load_network_lookup_index_cached(network_conn)
+            except Exception:
+                network_index = None
+    try:
+        records = _collect_scoped_computer_records(
+            content_version=content_version,
+            current_user=current_user,
+            db_id_selected=db_id_selected,
+            scope=scope,
+            branch=branch,
+            status_filter=status_filter,
+            outlook_status=outlook_status,
+            q=q,
+            search_fields=search_fields,
+            changed_only=changed_only,
+            include_hidden=include_hidden,
+            hidden_only=hidden_only,
+            hide_vm_172=hide_vm_172,
+            network_lookup=network_index,
+        )
+        if needle and "network" in fields:
+            network_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+
+            def _attach_network_fields(items: List[Dict[str, Any]]) -> None:
+                for row in items:
+                    mac_value = _normalize_text(row.get("mac_address"))
+                    record_ip_list = row.get("ip_list") if isinstance(row.get("ip_list"), list) else []
+                    network_key = f"{_normalize_mac(mac_value)}|{','.join(_dedupe_strings(record_ip_list))}"
+                    if network_key not in network_cache:
+                        network_cache[network_key] = _resolve_network_link_from_index(
+                            network_index,
+                            mac_address=mac_value,
+                            ip_list=record_ip_list,
+                        ) or _resolve_network_link(
+                            network_conn,
+                            mac_address=mac_value,
+                            ip_list=record_ip_list,
+                        )
+                    row["network_link"] = network_cache.get(network_key)
+
+            _attach_network_fields(records)
+            records = _apply_search_filter(records, q, fields)
+    finally:
+        if network_conn is not None:
+            try:
+                network_conn.close()
+            except Exception:
+                pass
+    if etag and response is not None:
+        response.headers["ETag"] = etag
+    return _computer_summary(records)
+
+
+@router.get("/computers/search")
+def search_computers(
+    request: Request = None,
+    response: Response = None,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    branch: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    outlook_status: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    search_fields: str = Query("", min_length=0),
+    sort_by: str = Query("hostname"),
+    sort_dir: str = Query("asc"),
+    changed_only: bool = Query(False),
+    include_hidden: bool = Query(False),
+    hidden_only: bool = Query(False),
+    hide_vm_172: bool = Query(False),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    include_summary: bool = Query(False),
+    mobile_safe: bool = Query(False),
+    view: str = Query(""),
+):
+    """Return paginated collected computers with fielded server-side search.
+
+    view=card — облегчённая проекция строки списка (без CPU/RAM/профилей), см. _project_card_computer.
+    """
+    content_version = _inventory_content_version()
+    etag = _inventory_data_etag(content_version)
+    request_id = request.headers.get("x-request-id", "") if request is not None else ""
+    if etag and request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
+    started_at = time.perf_counter()
+    payload = _build_computers_search_payload(
+        content_version=content_version,
+        current_user=current_user,
+        db_id_selected=db_id_selected,
+        scope=scope,
+        branch=branch,
+        status_filter=status_filter,
+        outlook_status=outlook_status,
+        q=q,
+        search_fields=search_fields,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        changed_only=_query_bool(changed_only, False),
+        include_hidden=_query_bool(include_hidden, False),
+        hidden_only=_query_bool(hidden_only, False),
+        hide_vm_172=_query_bool(hide_vm_172, False),
+        limit=limit,
+        offset=offset,
+        include_summary=_query_bool(include_summary, False),
+    )
+    logger.info(
+        "computers_search rid=%s scope=%s q_len=%d filters=%s%s%s%s total=%s items=%d ms=%.1f",
+        request_id,
+        scope,
+        len(_search_tokens(q)),
+        "b" if _normalize_text(branch) else "-",
+        "s" if _normalize_text(status_filter) else "-",
+        "c" if _query_bool(changed_only, False) else "-",
+        "o" if _normalize_text(outlook_status) else "-",
+        payload.get("total"),
+        len(payload.get("items") or []),
+        (time.perf_counter() - started_at) * 1000,
+    )
+    if etag and response is not None:
+        response.headers["ETag"] = etag
+    if _query_bool(mobile_safe, False):
+        payload["items"] = [
+            _project_mobile_computer(item, detail=False)
+            for item in payload.get("items", [])
+            if isinstance(item, dict)
+        ]
+    elif _normalize_text(view).lower() == "card":
+        payload["items"] = [_project_card_computer(item) for item in payload.get("items", []) if isinstance(item, dict)]
+    return payload
+
+
+def _visible_host_payloads(
+    *, current_user: User, db_id_selected: Optional[str], scope: str
+) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Stored agent payloads of the computers the user may see, plus the scoped records keyed by MAC."""
+    if _normalize_scope(scope) == "all":
+        ensure_user_permission(current_user, PERM_COMPUTERS_READ_ALL)
+    records = _collect_scoped_computer_records(
+        current_user=current_user,
+        db_id_selected=db_id_selected,
+        scope=scope,
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+    )
+    visible = {_normalize_mac(item.get("mac_address")): item for item in records}
+    visible.pop("", None)
+    app_store = _get_inventory_app_store()
+    hosts = app_store.list_hosts(set(visible)) if app_store is not None and visible else []
+    return hosts, visible
+
+
+@router.get("/computers/usb/search")
+def search_computers_usb(
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    q: str = Query(..., min_length=2, max_length=120),
+    present_only: bool = Query(False),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """USB devices ever seen by the agents (storage history of the registry + what is plugged in now).
+
+    q matches vendor, product, name, serial or PNP id: "где подключали флешку с серийным номером X".
+    """
+    needle = _normalize_text(q).lower()
+    if len(needle) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query is too short")
+    hosts, visible = _visible_host_payloads(current_user=current_user, db_id_selected=db_id_selected, scope=scope)
+
+    rows: List[Dict[str, Any]] = []
+    hosts_with_usb = 0
+    for host in hosts:
+        usb = host.get("usb_devices") if isinstance(host.get("usb_devices"), dict) else {}
+        items = [item for item in list(usb.get("items") or []) if isinstance(item, dict)]
+        if items:
+            hosts_with_usb += 1
+        mac_value = _normalize_mac(host.get("mac_address"))
+        record = visible.get(mac_value) or {}
+        for item in items:
+            if present_only and not item.get("present"):
+                continue
+            haystack = " ".join(
+                _normalize_text(item.get(key))
+                for key in ("vendor", "product", "friendly_name", "serial", "pnp_device_id")
+            ).lower()
+            if needle not in haystack:
+                continue
+            rows.append(
+                {
+                    "kind": _normalize_text(item.get("kind")),
+                    "vendor": _normalize_text(item.get("vendor")),
+                    "product": _normalize_text(item.get("product")),
+                    "friendly_name": _normalize_text(item.get("friendly_name")),
+                    "serial": _normalize_text(item.get("serial")),
+                    "has_unique_serial": bool(item.get("has_unique_serial")),
+                    "present": bool(item.get("present")),
+                    "size_gb": item.get("size_gb"),
+                    "first_connected_at": item.get("first_connected_at"),
+                    "last_connected_at": item.get("last_connected_at"),
+                    "last_removed_at": item.get("last_removed_at"),
+                    "hostname": _normalize_text(host.get("hostname")),
+                    "mac_address": mac_value,
+                    "user_login": _normalize_text(host.get("user_login")),
+                    "branch_name": _normalize_text(record.get("branch_name")),
+                }
+            )
+    rows.sort(key=lambda row: (-(row["last_connected_at"] or 0), row["hostname"].lower()))
+    return {
+        "items": rows[:limit],
+        "total": len(rows),
+        "truncated": len(rows) > limit,
+        "computers_checked": len(hosts),
+        "computers_with_usb_data": hosts_with_usb,
+    }
+
+
+def _software_version_key(value: Any) -> tuple:
+    parts: List[int] = []
+    for piece in str(value or "").replace("-", ".").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+@router.get("/computers/software/search")
+def search_computers_software(
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    q: str = Query(..., min_length=2, max_length=120),
+    version_below: Optional[str] = Query(None, max_length=40),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """Installs of a program across the computers the user can see (software inventory of the agent).
+
+    version_below keeps only installs with an older version ("где устаревший Adobe Reader").
+    """
+    needle = _normalize_text(q).lower()
+    if len(needle) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query is too short")
+    below_key = _software_version_key(version_below) if _normalize_text(version_below) else None
+    hosts, visible = _visible_host_payloads(current_user=current_user, db_id_selected=db_id_selected, scope=scope)
+
+    installs: List[Dict[str, Any]] = []
+    hosts_with_software = 0
+    for host in hosts:
+        software = host.get("software_inventory") if isinstance(host.get("software_inventory"), dict) else {}
+        items = [item for item in list(software.get("items") or []) if isinstance(item, dict)]
+        if items:
+            hosts_with_software += 1
+        mac_value = _normalize_mac(host.get("mac_address"))
+        record = visible.get(mac_value) or {}
+        for item in items:
+            name = _normalize_text(item.get("display_name"))
+            if needle not in name.lower():
+                continue
+            version = _normalize_text(item.get("display_version"))
+            if below_key is not None and _software_version_key(version) >= below_key:
+                continue
+            installs.append(
+                {
+                    "program": name,
+                    "version": version,
+                    "publisher": _normalize_text(item.get("publisher")),
+                    "install_date": _normalize_text(item.get("install_date")),
+                    "hostname": _normalize_text(host.get("hostname")),
+                    "mac_address": mac_value,
+                    "user_login": _normalize_text(host.get("user_login")),
+                    "branch_name": _normalize_text(record.get("branch_name")),
+                    "collected_at": software.get("collected_at"),
+                }
+            )
+    installs.sort(
+        key=lambda row: (row["program"].lower(), _software_version_key(row["version"]), row["hostname"].lower())
+    )
+    return {
+        "items": installs[:limit],
+        "total": len(installs),
+        "truncated": len(installs) > limit,
+        "computers_checked": len(hosts),
+        "computers_with_software": hosts_with_software,
+    }
+
+
+FLEET_SILENT_AFTER_SEC = 7 * 24 * 3600
+FLEET_QUEUE_BACKLOG = 50
+FLEET_SPOOL_BACKLOG = 500
+# Порядок = важность: сверху то, что требует действия раньше.
+FLEET_ISSUE_ORDER = (
+    "silent",
+    "fs_dead",
+    "dead_letter",
+    "scan_down",
+    "backlog",
+    "old_version",
+    "no_egress",
+)
+
+
+def _fleet_host_issues(host: Dict[str, Any], *, now_ts: int, latest_key: tuple) -> Dict[str, Any]:
+    runtime = host.get("agent_runtime") if isinstance(host.get("agent_runtime"), dict) else {}
+    sidecars = runtime.get("sidecars") if isinstance(runtime.get("sidecars"), dict) else {}
+    fs_info = sidecars.get("fs_egress") if isinstance(sidecars.get("fs_egress"), dict) else None
+    scan_info = sidecars.get("scan") if isinstance(sidecars.get("scan"), dict) else None
+    version = _normalize_text(runtime.get("agent_version"))
+    last_seen = _to_int(host.get("last_seen_at") or host.get("timestamp"), default=0)
+    age = (now_ts - last_seen) if last_seen > 0 else None
+
+    inv_dead = _to_int(runtime.get("inventory_dead_letter_depth"), default=0)
+    scan_dead = _to_int(runtime.get("scan_dead_letter_depth"), default=0)
+    fs_dead_letter = _to_int((fs_info or {}).get("dead_letter"), default=0)
+    fs_pending = _to_int((fs_info or {}).get("pending"), default=0)
+    inv_queue = _to_int(runtime.get("inventory_queue_depth"), default=0)
+    scan_outbox = _to_int(runtime.get("scan_outbox_depth"), default=0)
+
+    issues: List[str] = []
+    if age is None or age > FLEET_SILENT_AFTER_SEC:
+        issues.append("silent")
+    if fs_info is not None and fs_info.get("enabled") and not fs_info.get("alive"):
+        issues.append("fs_dead")
+    if inv_dead + scan_dead + fs_dead_letter > 0:
+        issues.append("dead_letter")
+    if scan_info is not None and not scan_info.get("alive"):
+        issues.append("scan_down")
+    if inv_queue >= FLEET_QUEUE_BACKLOG or scan_outbox >= FLEET_QUEUE_BACKLOG or fs_pending >= FLEET_SPOOL_BACKLOG:
+        issues.append("backlog")
+    if version and _software_version_key(version) < latest_key:
+        issues.append("old_version")
+    if fs_info is None:
+        issues.append("no_egress")
+    return {
+        "issues": issues,
+        "agent_version": version,
+        "last_seen_at": last_seen or None,
+        "age_sec": age,
+        "dead_letter": {"inventory": inv_dead, "scan": scan_dead, "fs_egress": fs_dead_letter},
+        "pending": {"inventory": inv_queue, "scan": scan_outbox, "fs_egress": fs_pending},
+        "fs_egress_enabled": bool(fs_info.get("enabled")) if fs_info is not None else None,
+        "fs_egress_alive": bool(fs_info.get("alive")) if fs_info is not None else None,
+        "scan_alive": bool(scan_info.get("alive")) if scan_info is not None else None,
+    }
+
+
+@router.get("/computers/fleet/health")
+def get_fleet_health(
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Состояние парка агентов: давность отчётов, версии, живость fs_egress/scan и очереди.
+
+    problems — компьютеры хотя бы с одной проблемой, самые тяжёлые сверху.
+    """
+    hosts, visible = _visible_host_payloads(current_user=current_user, db_id_selected=db_id_selected, scope=scope)
+    now_ts = int(time.time())
+
+    version_counts: Dict[str, int] = {}
+    for host in hosts:
+        runtime = host.get("agent_runtime") if isinstance(host.get("agent_runtime"), dict) else {}
+        version = _normalize_text(runtime.get("agent_version")) or ""
+        version_counts[version] = version_counts.get(version, 0) + 1
+    known_versions = [value for value in version_counts if value]
+    latest_version = max(known_versions, key=_software_version_key) if known_versions else ""
+    latest_key = _software_version_key(latest_version) if latest_version else ()
+
+    buckets = {"online": 0, "stale": 0, "offline_week": 0, "silent": 0}
+    issue_counts: Dict[str, int] = {code: 0 for code in FLEET_ISSUE_ORDER}
+    sidecars_summary = {
+        "fs_egress_reporting": 0,
+        "fs_egress_alive": 0,
+        "scan_reporting": 0,
+        "scan_alive": 0,
+        "dead_letter_total": 0,
+        "dead_letter_hosts": 0,
+    }
+    problems: List[Dict[str, Any]] = []
+    for host in hosts:
+        info = _fleet_host_issues(host, now_ts=now_ts, latest_key=latest_key)
+        age = info["age_sec"]
+        if age is None or age > FLEET_SILENT_AFTER_SEC:
+            buckets["silent"] += 1
+        elif age <= ONLINE_MAX_AGE_SECONDS:
+            buckets["online"] += 1
+        elif age <= STALE_MAX_AGE_SECONDS:
+            buckets["stale"] += 1
+        else:
+            buckets["offline_week"] += 1
+        if info["fs_egress_enabled"] is not None:
+            sidecars_summary["fs_egress_reporting"] += 1
+            if info["fs_egress_alive"]:
+                sidecars_summary["fs_egress_alive"] += 1
+        if info["scan_alive"] is not None:
+            sidecars_summary["scan_reporting"] += 1
+            if info["scan_alive"]:
+                sidecars_summary["scan_alive"] += 1
+        dead_total = sum(info["dead_letter"].values())
+        sidecars_summary["dead_letter_total"] += dead_total
+        if dead_total:
+            sidecars_summary["dead_letter_hosts"] += 1
+        for code in info["issues"]:
+            issue_counts[code] += 1
+        if not info["issues"]:
+            continue
+        mac_value = _normalize_mac(host.get("mac_address"))
+        record = visible.get(mac_value) or {}
+        problems.append(
+            {
+                **info,
+                "hostname": _normalize_text(host.get("hostname")),
+                "mac_address": mac_value,
+                "user_login": _normalize_text(host.get("user_login")),
+                "branch_name": _normalize_text(record.get("branch_name")),
+            }
+        )
+    problems.sort(
+        key=lambda row: (
+            min(FLEET_ISSUE_ORDER.index(code) for code in row["issues"]),
+            -sum(row["dead_letter"].values()),
+            row["hostname"].lower(),
+        )
+    )
+    versions = sorted(
+        ({"version": key, "count": value} for key, value in version_counts.items()),
+        key=lambda row: _software_version_key(row["version"]),
+        reverse=True,
+    )
+    return {
+        "generated_at": now_ts,
+        "computers_total": len(hosts),
+        "latest_version": latest_version,
+        "age_buckets": buckets,
+        "versions": versions,
+        "sidecars": sidecars_summary,
+        "issue_counts": issue_counts,
+        "problems": problems[:limit],
+        "problems_total": len(problems),
+        "truncated": len(problems) > limit,
+    }
+
+
+@router.get("/computers")
+def get_computers(
+    request: Request = None,
+    response: Response = None,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    branch: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    outlook_status: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    search_fields: str = Query("", min_length=0),
+    sort_by: str = Query("hostname"),
+    sort_dir: str = Query("asc"),
+    changed_only: bool = Query(False),
+    include_hidden: bool = Query(False),
+    hidden_only: bool = Query(False),
+    hide_vm_172: bool = Query(False),
+):
+    """
+    Return all collected computers from the active inventory store.
+    """
+    content_version = _inventory_content_version()
+    etag = _inventory_data_etag(content_version)
+    if etag and request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
+    payload = _build_computers_search_payload(
+        content_version=content_version,
+        current_user=current_user,
+        db_id_selected=db_id_selected,
+        scope=scope,
+        branch=branch,
+        status_filter=status_filter,
+        outlook_status=outlook_status,
+        q=q,
+        search_fields=search_fields,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        changed_only=_query_bool(changed_only, False),
+        include_hidden=_query_bool(include_hidden, False),
+        hidden_only=_query_bool(hidden_only, False),
+        hide_vm_172=_query_bool(hide_vm_172, False),
+        limit=None,
+        offset=0,
+        include_summary=False,
+    )
+    if etag and response is not None:
+        response.headers["ETag"] = etag
+    return payload["items"]
+
+
+@router.get("/computers/inv-lookup")
+def lookup_computers_by_inv_nos(
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    inv_nos: str = Query("", min_length=0),
+    db_id: Optional[str] = Query(None),
+):
+    """Map ITINVENT inventory numbers to live agent computers.
+
+    Uses the same join keys as resolve_pc_context_by_mac_or_hostname
+    (MAC first, then NETBIOS_NAME/DOMAIN_NAME) so equipment lists can show
+    which item is currently in use.
+    """
+    requested: List[str] = []
+    for raw in str(inv_nos or "").split(","):
+        token = _normalize_text(raw)
+        if token and token not in requested:
+            requested.append(token)
+        if len(requested) >= 200:
+            break
+    if not requested:
+        return {"items": {}}
+
+    try:
+        from backend.database import queries
+
+        rows = queries.get_equipment_items_by_inv_nos(requested, _normalize_text(db_id) or None)
+    except Exception as exc:
+        logger.debug("Inventory inv-lookup equipment query skipped: %s", exc)
+        rows = []
+    # An IT owner maps only equipment of his branches to live computers.
+    lookup_scope = it_object_branch_scope.branch_scope(current_user, _normalize_text(db_id) or None)
+    rows = it_object_branch_scope.filter_rows(rows, lookup_scope)
+
+    mac_to_inv: Dict[str, str] = {}
+    host_to_inv: Dict[str, str] = {}
+    serial_to_inv: Dict[str, str] = {}
+    serial_pairs: List[Tuple[str, str]] = []
+    for row in rows or []:
+        inv_no = _normalize_text(row.get("inv_no"))
+        if not inv_no:
+            continue
+        mac = _normalize_mac(row.get("mac_address"))
+        if mac:
+            mac_to_inv.setdefault(mac, inv_no)
+        for name in (row.get("network_name"), row.get("domain_name")):
+            normalized_name = _normalize_text(name).upper()
+            if normalized_name:
+                host_to_inv.setdefault(normalized_name, inv_no)
+        for serial in (row.get("serial_no"), row.get("hw_serial_no")):
+            token = _normalize_serial_token(serial)
+            if token:
+                serial_to_inv.setdefault(token, inv_no)
+                serial_pairs.append((token, inv_no))
+
+    now_ts = int(time.time())
+    items: Dict[str, Dict[str, Any]] = {}
+    for record in _load_inventory_snapshot().values():
+        if not isinstance(record, dict):
+            continue
+        inv_no = mac_to_inv.get(_normalize_mac(record.get("mac_address")))
+        if not inv_no:
+            hostname = _normalize_text(record.get("hostname")).upper()
+            candidates = [hostname] if hostname else []
+            short_name = hostname.split(".")[0].strip() if hostname else ""
+            if short_name and short_name != hostname:
+                candidates.append(short_name)
+            inv_no = next((host_to_inv[name] for name in candidates if name in host_to_inv), None)
+        enriched = _enrich_status(record, now_ts)
+        base = {
+            "hostname": _normalize_text(enriched.get("hostname")),
+            "mac_address": _normalize_text(enriched.get("mac_address")),
+            "status": _normalize_text(enriched.get("status")) or "unknown",
+            "age_seconds": enriched.get("age_seconds"),
+            "last_seen_at": enriched.get("last_seen_at"),
+            "current_user": _normalize_text(enriched.get("current_user")),
+            "user_login": _normalize_login(enriched.get("user_login") or enriched.get("current_user")),
+        }
+        if inv_no and inv_no not in items:
+            items[inv_no] = {**base, "kind": "computer"}
+        for monitor in record.get("monitors") or []:
+            if not isinstance(monitor, dict):
+                continue
+            token = _normalize_serial_token(monitor.get("serial_number"))
+            monitor_inv = serial_to_inv.get(token)
+            match_kind = "serial"
+            if not monitor_inv and len(token) >= 4:
+                hits = {
+                    pair_inv
+                    for serial, pair_inv in serial_pairs
+                    if len(serial) >= len(token) + 2 and serial.endswith(token)
+                }
+                if len(hits) == 1:
+                    monitor_inv = next(iter(hits))
+                    match_kind = "serial_suffix"
+            if not monitor_inv:
+                digits = re.sub(r"\D", "", token)
+                if len(digits) >= 6:
+                    hits = {
+                        pair_inv
+                        for serial, pair_inv in serial_pairs
+                        if serial != token and re.sub(r"\D", "", serial) == digits
+                    }
+                    if len(hits) == 1:
+                        monitor_inv = next(iter(hits))
+                        match_kind = "serial_tail"
+            if not monitor_inv or monitor_inv in items:
+                continue
+            items[monitor_inv] = {
+                **base,
+                "kind": "monitor",
+                "monitor_match": match_kind,
+                "monitor_serial_number": _normalize_text(monitor.get("serial_number")),
+                "monitor_manufacturer": _normalize_text(monitor.get("manufacturer")),
+                "monitor_product_code": _normalize_text(monitor.get("product_code")),
+            }
+    return {"items": items}
+
+
+@router.get("/computers/{mac_address}")
+def get_computer_detail(
+    mac_address: str,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    mobile_safe: bool = Query(False),
+):
+    """Return full inventory payload for a single computer."""
+    payload = _build_computer_detail_payload(
+        current_user=current_user,
+        mac_address=mac_address,
+        db_id_selected=db_id_selected,
+        scope=scope,
+    )
+    if _query_bool(mobile_safe, False):
+        return _project_mobile_computer(payload, detail=True)
+    return payload
+
+
+def _ensure_computer_in_scope(current_user: User, mac_address: str) -> None:
+    """Hide/unhide/delete: an IT owner touches only computers of his branches (404 otherwise)."""
+    scope = it_object_branch_scope.computer_scope(current_user)
+    if scope is None:
+        return
+    _build_computer_detail_payload(
+        current_user=current_user,
+        mac_address=mac_address,
+        db_id_selected=it_object_branch_scope._objects_db_id(),
+        scope="selected",
+    )
+
+
+@router.post("/computers/{mac_address}/hide")
+def hide_computer(
+    mac_address: str,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_MANAGE)),
+    reason: Optional[str] = Query(None),
+):
+    """Soft-hide an inventory host for a Computers manager."""
+    ensure_user_permission(current_user, PERM_COMPUTERS_MANAGE)
+    _ensure_computer_in_scope(current_user, mac_address)
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Inventory app database is not configured",
+        )
+    hidden_by = _normalize_text(getattr(current_user, "username", None) or getattr(current_user, "login", None))
+    result = app_store.set_host_hidden(
+        mac_address,
+        hidden=True,
+        hidden_by=hidden_by or None,
+        hidden_reason=_normalize_text(reason) or None,
+    )
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+    return {
+        "ok": True,
+        "mac_address": result.get("mac_address") or mac_address,
+        "is_hidden": True,
+        "hidden_at": result.get("hidden_at"),
+        "hidden_by": result.get("hidden_by"),
+        "hidden_reason": result.get("hidden_reason"),
+    }
+
+
+@router.post("/computers/{mac_address}/unhide")
+def unhide_computer(
+    mac_address: str,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_MANAGE)),
+):
+    """Restore a soft-hidden inventory host to the default list."""
+    ensure_user_permission(current_user, PERM_COMPUTERS_MANAGE)
+    _ensure_computer_in_scope(current_user, mac_address)
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Inventory app database is not configured",
+        )
+    result = app_store.set_host_hidden(mac_address, hidden=False)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+    return {
+        "ok": True,
+        "mac_address": result.get("mac_address") or mac_address,
+        "is_hidden": False,
+        "hidden_at": None,
+        "hidden_by": None,
+        "hidden_reason": None,
+    }
+
+
+@router.delete("/computers/{mac_address}")
+def delete_computer(
+    mac_address: str,
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_MANAGE)),
+):
+    """Hard-delete an inventory host and its related rows.
+
+    Если агент продолжает слать отчёты, хост пересоздастся — для сокрытия без
+    удаления используется hide (архив).
+    """
+    ensure_user_permission(current_user, PERM_COMPUTERS_MANAGE)
+    _ensure_computer_in_scope(current_user, mac_address)
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Inventory app database is not configured",
+        )
+    result = app_store.delete_host(mac_address)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+    return {
+        "ok": True,
+        "deleted": True,
+        "mac_address": result.get("mac_address") or mac_address,
+    }

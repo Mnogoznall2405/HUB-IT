@@ -1,0 +1,883 @@
+"""
+Unit tests for TicketsService employee CRUD operations.
+Tests encryption, masking, validation, and basic CRUD flows.
+"""
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+# Ensure crypto key is set for tests
+os.environ.setdefault("MAIL_CREDENTIALS_KEY", "test-key-for-tickets-employee-crud-unit-tests-32ch")
+
+from backend.appdb.db import app_session
+from backend.appdb.tickets_models import TicketEmployee, TicketEmployeeDocument
+from backend.services.address_book_service import AddressBookService
+from backend.services.secret_crypto_service import decrypt_secret, encrypt_secret
+from backend.services.tickets_service import (
+    MASKED_VALUE,
+    Pagination,
+    TicketsNotFoundError,
+    TicketsService,
+    TicketsValidationError,
+    _parse_date,
+    map_zup_person_to_ticket_employee,
+)
+
+
+@pytest.fixture
+def db_url(prebuilt_app_db):
+    """Create a fresh SQLite database for each test."""
+    return f"sqlite:///{prebuilt_app_db.as_posix()}"
+
+
+@pytest.fixture
+def service(db_url):
+    """Create a TicketsService instance with the test database URL."""
+    return TicketsService(database_url=db_url)
+
+
+# ---------------------------------------------------------------------------
+# Tests: list_employees
+# ---------------------------------------------------------------------------
+
+
+class TestListEmployees:
+    def test_empty_list(self, service):
+        result = service.list_employees()
+        assert result.items == []
+        assert result.total == 0
+        assert result.page == 1
+
+    def test_list_with_employees(self, service, db_url):
+        # Seed employees
+        with app_session(db_url) as session:
+            for i in range(3):
+                emp = TicketEmployee(
+                    full_name=f"Employee {i}",
+                    status="active",
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                session.add(emp)
+
+        result = service.list_employees()
+        assert result.total == 3
+        assert len(result.items) == 3
+
+    def test_search_by_name(self, service, db_url):
+        with app_session(db_url) as session:
+            session.add(TicketEmployee(
+                full_name="Иванов Иван Иванович",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            ))
+            session.add(TicketEmployee(
+                full_name="Петров Пётр Петрович",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            ))
+
+        # Search with matching case (SQLite doesn't support Unicode lower())
+        result = service.list_employees(search="Иванов")
+        assert result.total == 1
+        assert result.items[0]["full_name"] == "Иванов Иван Иванович"
+
+    def test_search_min_length(self, service, db_url):
+        """Search with less than 2 chars should return all."""
+        with app_session(db_url) as session:
+            session.add(TicketEmployee(
+                full_name="Test Employee",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            ))
+
+        # Single char search should not filter
+        result = service.list_employees(search="T")
+        assert result.total == 1  # Returns all
+
+    def test_filter_by_status(self, service, db_url):
+        with app_session(db_url) as session:
+            session.add(TicketEmployee(
+                full_name="Active Employee",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            ))
+            session.add(TicketEmployee(
+                full_name="Dismissed Employee",
+                status="dismissed",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            ))
+
+        result = service.list_employees(status="dismissed")
+        assert result.total == 1
+        assert result.items[0]["full_name"] == "Dismissed Employee"
+
+    def test_pagination(self, service, db_url):
+        with app_session(db_url) as session:
+            for i in range(10):
+                session.add(TicketEmployee(
+                    full_name=f"Employee {i:02d}",
+                    status="active",
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                ))
+
+        result = service.list_employees(pagination=Pagination(page=1, page_size=25))
+        assert result.total == 10
+        assert len(result.items) == 10
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_employee
+# ---------------------------------------------------------------------------
+
+
+class TestGetEmployee:
+    def test_not_found(self, service):
+        with pytest.raises(TicketsNotFoundError):
+            service.get_employee(9999)
+
+    def test_get_with_documents_masked(self, service, db_url):
+        """Without personal_data.read permission, data should be masked."""
+        with app_session(db_url) as session:
+            emp = TicketEmployee(
+                full_name="Test Person",
+                status="active",
+                date_of_birth_enc=encrypt_secret("1990-01-15"),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+
+            doc = TicketEmployeeDocument(
+                employee_id=emp.id,
+                passport_series_number_enc=encrypt_secret("1234 567890"),
+                issued_by_enc=encrypt_secret("ОВД Москвы"),
+                issue_date=datetime(2020, 5, 10, tzinfo=timezone.utc),
+                registration_address_enc=encrypt_secret("г. Москва, ул. Ленина, д. 1"),
+                is_current=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(doc)
+            session.flush()
+            emp_id = emp.id
+
+        # No permission — masked
+        result = service.get_employee(emp_id, user_permissions=["tickets.read"])
+        assert result["full_name"] == "Test Person"
+        assert len(result["documents"]) == 1
+        assert result["documents"][0]["passport_series_number"] == MASKED_VALUE
+        assert result["documents"][0]["issued_by"] == MASKED_VALUE
+        assert result["documents"][0]["registration_address"] == MASKED_VALUE
+
+    def test_get_with_documents_decrypted(self, service, db_url):
+        """With personal_data.read permission, data should be decrypted."""
+        with app_session(db_url) as session:
+            emp = TicketEmployee(
+                full_name="Test Person",
+                status="active",
+                date_of_birth_enc=encrypt_secret("1990-01-15"),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+
+            doc = TicketEmployeeDocument(
+                employee_id=emp.id,
+                passport_series_number_enc=encrypt_secret("1234 567890"),
+                issued_by_enc=encrypt_secret("ОВД Москвы"),
+                issue_date=datetime(2020, 5, 10, tzinfo=timezone.utc),
+                registration_address_enc=encrypt_secret("г. Москва, ул. Ленина, д. 1"),
+                is_current=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(doc)
+            session.flush()
+            emp_id = emp.id
+
+        # With permission — decrypted
+        result = service.get_employee(
+            emp_id,
+            user_permissions=["tickets.read", "tickets.personal_data.read"],
+        )
+        assert result["documents"][0]["passport_series_number"] == "1234 567890"
+        assert result["documents"][0]["issued_by"] == "ОВД Москвы"
+        assert result["documents"][0]["registration_address"] == "г. Москва, ул. Ленина, д. 1"
+
+
+# ---------------------------------------------------------------------------
+# Tests: create_employee
+# ---------------------------------------------------------------------------
+
+
+class TestCreateEmployee:
+    def test_create_basic(self, service):
+        result = service.create_employee(
+            {"full_name": "Новый Сотрудник", "phone": "+79001234567"},
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert result["full_name"] == "Новый Сотрудник"
+        assert result["phone"] == "+79001234567"
+        assert result["status"] == "active"
+        assert result["id"] is not None
+
+    def test_create_with_document(self, service):
+        result = service.create_employee(
+            {
+                "full_name": "Сотрудник с Документом",
+                "documents": [
+                    {
+                        "passport_series_number": "4515 123456",
+                        "issued_by": "УФМС России",
+                        "issue_date": "2018-03-20",
+                        "registration_address": "г. Санкт-Петербург",
+                    }
+                ],
+            },
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert result["full_name"] == "Сотрудник с Документом"
+        assert len(result["documents"]) == 1
+        assert result["documents"][0]["passport_series_number"] == "4515 123456"
+        assert result["documents"][0]["issued_by"] == "УФМС России"
+        assert result["documents"][0]["issue_date"] is not None
+
+    def test_create_with_department_position_and_split_passport(self, service):
+        result = service.create_employee(
+            {
+                "full_name": "Новый Сотрудник",
+                "department": "ИТ-отдел",
+                "position": "Системный администратор",
+                "documents": [
+                    {
+                        "passport_series": "4515",
+                        "passport_number": "123456",
+                        "issued_by": "УФМС России",
+                        "issuer_code": "770-001",
+                        "birth_place": "Москва",
+                        "issue_date": "2018-03-20",
+                        "registration_address": "г. Москва",
+                    }
+                ],
+            },
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert result["department"] == "ИТ-отдел"
+        assert result["position"] == "Системный администратор"
+        assert result["documents"][0]["passport_series"] == "4515"
+        assert result["documents"][0]["passport_number"] == "123456"
+        assert result["documents"][0]["issuer_code"] == "770-001"
+        assert result["documents"][0]["birth_place"] == "Москва"
+
+    def test_create_missing_full_name(self, service):
+        with pytest.raises(TicketsValidationError, match="full_name is required"):
+            service.create_employee({"full_name": ""})
+
+    def test_create_with_invalid_status(self, service):
+        with pytest.raises(TicketsValidationError, match="status must be one of"):
+            service.create_employee({"full_name": "Test", "status": "invalid_status"})
+
+    def test_create_document_missing_passport(self, service):
+        with pytest.raises(TicketsValidationError, match="passport_series_number or passport_series"):
+            service.create_employee(
+                {
+                    "full_name": "Test",
+                    "documents": [{"issued_by": "Test", "issue_date": "2020-01-01"}],
+                }
+            )
+
+    def test_create_document_missing_issued_by(self, service):
+        with pytest.raises(TicketsValidationError, match="issued_by is required"):
+            service.create_employee(
+                {
+                    "full_name": "Test",
+                    "documents": [
+                        {"passport_series_number": "1234 567890", "issue_date": "2020-01-01"}
+                    ],
+                }
+            )
+
+    def test_create_document_missing_issue_date(self, service):
+        with pytest.raises(TicketsValidationError, match="issue_date is required"):
+            service.create_employee(
+                {
+                    "full_name": "Test",
+                    "documents": [
+                        {"passport_series_number": "1234 567890", "issued_by": "Test"}
+                    ],
+                }
+            )
+
+    def test_create_document_future_issue_date(self, service):
+        future_date = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+        with pytest.raises(TicketsValidationError, match="issue_date must not be in the future"):
+            service.create_employee(
+                {
+                    "full_name": "Test",
+                    "documents": [
+                        {
+                            "passport_series_number": "1234 567890",
+                            "issued_by": "Test",
+                            "issue_date": future_date,
+                        }
+                    ],
+                }
+            )
+
+    def test_create_document_encrypted_in_db(self, service, db_url):
+        """Verify that personal data is actually encrypted in the database."""
+        result = service.create_employee(
+            {
+                "full_name": "Encrypted Test",
+                "documents": [
+                    {
+                        "passport_series_number": "9999 888777",
+                        "issued_by": "Secret Agency",
+                        "issue_date": "2019-06-15",
+                        "registration_address": "Secret Address",
+                    }
+                ],
+            },
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+
+        # Read raw from DB — should be encrypted, not plaintext
+        with app_session(db_url) as session:
+            from sqlalchemy import select
+
+            doc = session.scalars(
+                select(TicketEmployeeDocument).where(
+                    TicketEmployeeDocument.employee_id == result["id"]
+                )
+            ).first()
+            assert doc is not None
+            # Encrypted values should NOT be plaintext
+            assert doc.passport_series_number_enc != "9999 888777"
+            assert doc.issued_by_enc != "Secret Agency"
+            assert doc.registration_address_enc != "Secret Address"
+            # But decrypting should give back the original
+            assert decrypt_secret(doc.passport_series_number_enc) == "9999 888777"
+            assert decrypt_secret(doc.issued_by_enc) == "Secret Agency"
+            assert decrypt_secret(doc.registration_address_enc) == "Secret Address"
+
+
+# ---------------------------------------------------------------------------
+# Tests: update_employee
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateEmployee:
+    def test_update_basic_fields(self, service, db_url):
+        # Create employee first
+        with app_session(db_url) as session:
+            emp = TicketEmployee(
+                full_name="Original Name",
+                phone="+70001112233",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+            emp_id = emp.id
+
+        result = service.update_employee(
+            emp_id,
+            {"full_name": "Updated Name", "phone": "+79998887766"},
+            user_permissions=["tickets.write"],
+        )
+        assert result["full_name"] == "Updated Name"
+        assert result["phone"] == "+79998887766"
+
+    def test_update_status(self, service, db_url):
+        with app_session(db_url) as session:
+            emp = TicketEmployee(
+                full_name="To Dismiss",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+            emp_id = emp.id
+
+        result = service.update_employee(emp_id, {"status": "dismissed"})
+        assert result["status"] == "dismissed"
+
+    def test_update_not_found(self, service):
+        with pytest.raises(TicketsNotFoundError):
+            service.update_employee(9999, {"full_name": "Ghost"})
+
+    def test_update_invalid_status(self, service, db_url):
+        with app_session(db_url) as session:
+            emp = TicketEmployee(
+                full_name="Test",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+            emp_id = emp.id
+
+        with pytest.raises(TicketsValidationError, match="status must be one of"):
+            service.update_employee(emp_id, {"status": "bogus"})
+
+    def test_update_add_document(self, service, db_url):
+        with app_session(db_url) as session:
+            emp = TicketEmployee(
+                full_name="Doc Test",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+            emp_id = emp.id
+
+        result = service.update_employee(
+            emp_id,
+            {
+                "documents": [
+                    {
+                        "passport_series_number": "1111 222333",
+                        "issued_by": "МВД",
+                        "issue_date": "2021-01-01",
+                    }
+                ]
+            },
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert len(result["documents"]) == 1
+        assert result["documents"][0]["passport_series_number"] == "1111 222333"
+
+    def test_update_existing_document(self, service, db_url):
+        with app_session(db_url) as session:
+            emp = TicketEmployee(
+                full_name="Doc Update Test",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+
+            doc = TicketEmployeeDocument(
+                employee_id=emp.id,
+                passport_series_number_enc=encrypt_secret("0000 111222"),
+                issued_by_enc=encrypt_secret("Old Issuer"),
+                issue_date=datetime(2019, 1, 1, tzinfo=timezone.utc),
+                registration_address_enc=encrypt_secret("Old Address"),
+                is_current=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(doc)
+            session.flush()
+            emp_id = emp.id
+            doc_id = doc.id
+
+        result = service.update_employee(
+            emp_id,
+            {
+                "documents": [
+                    {
+                        "id": doc_id,
+                        "passport_series_number": "5555 666777",
+                        "issued_by": "New Issuer",
+                    }
+                ]
+            },
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert result["documents"][0]["passport_series_number"] == "5555 666777"
+        assert result["documents"][0]["issued_by"] == "New Issuer"
+
+    def test_update_document_future_issue_date(self, service, db_url):
+        with app_session(db_url) as session:
+            emp = TicketEmployee(
+                full_name="Future Date Test",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+
+            doc = TicketEmployeeDocument(
+                employee_id=emp.id,
+                passport_series_number_enc=encrypt_secret("1234 567890"),
+                issued_by_enc=encrypt_secret("Issuer"),
+                issue_date=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                registration_address_enc="",
+                is_current=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(doc)
+            session.flush()
+            emp_id = emp.id
+            doc_id = doc.id
+
+        future_date = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+        with pytest.raises(TicketsValidationError, match="issue_date must not be in the future"):
+            service.update_employee(
+                emp_id,
+                {"documents": [{"id": doc_id, "issue_date": future_date}]},
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests: _parse_date helper
+# ---------------------------------------------------------------------------
+
+
+class TestParseDate:
+    def test_none(self):
+        assert _parse_date(None) is None
+
+    def test_empty_string(self):
+        assert _parse_date("") is None
+
+    def test_iso_date(self):
+        result = _parse_date("2023-06-15")
+        assert result == datetime(2023, 6, 15, tzinfo=timezone.utc)
+
+    def test_iso_datetime(self):
+        result = _parse_date("2023-06-15T10:30:00")
+        assert result == datetime(2023, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
+
+    def test_datetime_object(self):
+        dt = datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        assert _parse_date(dt) == dt
+
+    def test_naive_datetime_gets_utc(self):
+        dt = datetime(2023, 1, 1, 12, 0, 0)
+        result = _parse_date(dt)
+        assert result.tzinfo == timezone.utc
+
+    def test_invalid_format(self):
+        assert _parse_date("not-a-date") is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Encryption round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestEncryptionRoundTrip:
+    def test_encrypt_decrypt(self):
+        original = "4515 123456"
+        encrypted = encrypt_secret(original)
+        assert encrypted != original
+        assert decrypt_secret(encrypted) == original
+
+    def test_empty_string(self):
+        assert encrypt_secret("") == ""
+        assert decrypt_secret("") == ""
+
+    def test_none_value(self):
+        assert encrypt_secret(None) == ""
+        assert decrypt_secret(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests: ZUP / Address Book prefill
+# ---------------------------------------------------------------------------
+
+
+class TestMapZupPersonToTicketEmployee:
+    def test_maps_core_fields_and_contacts(self):
+        mapped = map_zup_person_to_ticket_employee({
+            "full_name": "Иванов Иван Иванович",
+            "employee_code": "000123",
+            "department": "Отдел логистики",
+            "department_location": "Москва",
+            "position": "Менеджер",
+            "work_phones": [{"value": "+7 (999) 111-22-33"}],
+            "personal_phones": [{"value": "+7 (999) 000-00-00"}],
+            "work_emails": [{"value": "ivanov@example.com"}],
+            "personal_emails": [{"value": "ivan@mail.ru"}],
+        })
+        assert mapped == {
+            "full_name": "Иванов Иван Иванович",
+            "department": "Отдел логистики г. Москва",
+            "position": "Менеджер",
+            "phone": "+7 (999) 111-22-33",
+            "email": "ivanov@example.com",
+            "employee_code": "000123",
+        }
+
+    def test_maps_personal_fields_when_allowed(self):
+        mapped = map_zup_person_to_ticket_employee(
+            {
+                "full_name": "Иванов Иван Иванович",
+                "employee_code": "000123",
+            },
+            personal={
+                "date_of_birth": "1990-05-01",
+                "birth_place": "г. Москва",
+                "passport_series": "4509",
+                "passport_number": "123456",
+                "issued_by": "ОВД",
+                "issuer_code": "770-001",
+                "issue_date": "2010-06-15",
+                "registration_address": "Москва, ул. Тверская, 1",
+            },
+            include_personal=True,
+        )
+        assert mapped["date_of_birth"] == "1990-05-01"
+        assert mapped["passport_series"] == "4509"
+        assert mapped["passport_number"] == "123456"
+        assert mapped["registration_address"] == "Москва, ул. Тверская, 1"
+        assert "date_of_birth" not in map_zup_person_to_ticket_employee(
+            {"full_name": "Иванов"},
+            personal={"date_of_birth": "1990-05-01"},
+            include_personal=False,
+        )
+
+    def test_falls_back_to_personal_contacts(self):
+        mapped = map_zup_person_to_ticket_employee({
+            "full_name": "Петров Пётр",
+            "personal_phones": [{"value": "89001234567"}],
+            "personal_emails": [{"value": "petrov@mail.ru"}],
+        })
+        assert mapped["phone"] == "89001234567"
+        assert mapped["email"] == "petrov@mail.ru"
+        assert mapped["department"] is None
+        assert mapped["position"] is None
+
+    def test_empty_input(self):
+        assert map_zup_person_to_ticket_employee(None)["full_name"] == ""
+        assert map_zup_person_to_ticket_employee({})["full_name"] == ""
+
+
+class _MemoryAddressBookData:
+    """Minimal JSON data manager for a real AddressBookService in unit tests."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def load_json(self, filename, default_content=None):
+        return self.payload or default_content
+
+    def save_json(self, filename, data):
+        self.payload = data
+        return True
+
+
+class TestSearchZupEmployees:
+    def test_search_maps_address_book_items(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.search",
+            lambda query, limit, **kwargs: {
+                "items": [
+                    {
+                        "full_name": "Сидоров Сидор",
+                        "employee_code": "42",
+                        "department": "IT",
+                        "department_location": "",
+                        "position": "Инженер",
+                        "work_phones": [{"value": "123"}],
+                        "work_emails": [{"value": "sidorov@example.com"}],
+                    },
+                    {"full_name": "", "employee_code": "skip"},
+                ],
+                "updated_at": "2026-07-23T00:00:00Z",
+            },
+        )
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_personal_by_codes",
+            lambda codes: {
+                "42": {
+                    "date_of_birth": "1988-02-02",
+                    "passport_series": "4500",
+                    "passport_number": "654321",
+                }
+            },
+        )
+
+        result = service.search_zup_employees(
+            "сидор",
+            limit=10,
+            user_permissions=["tickets.personal_data.read"],
+        )
+
+        assert result["source"] == "zup"
+        assert result["include_personal"] is True
+        assert result["total"] == 1
+        assert result["synced_at"] == "2026-07-23T00:00:00Z"
+        assert result["items"][0]["full_name"] == "Сидоров Сидор"
+        assert result["items"][0]["phone"] == "123"
+        assert result["items"][0]["email"] == "sidorov@example.com"
+        assert result["items"][0]["passport_number"] == "654321"
+        assert result["items"][0]["date_of_birth"] == "1988-02-02"
+
+    def test_search_hides_personal_without_permission(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.search",
+            lambda query, limit, **kwargs: {
+                "items": [
+                    {
+                        "full_name": "Сидоров Сидор",
+                        "employee_code": "42",
+                        "department": "IT",
+                        "work_phones": [],
+                        "work_emails": [],
+                    }
+                ],
+                "updated_at": "2026-07-23T00:00:00Z",
+            },
+        )
+        called = {"personal": False}
+
+        def _personal(codes):
+            called["personal"] = True
+            return {"42": {"passport_number": "1"}}
+
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_personal_by_codes",
+            _personal,
+        )
+
+        result = service.search_zup_employees("сидор", user_permissions=["tickets.read"])
+        assert result["include_personal"] is False
+        assert "passport_number" not in result["items"][0]
+        assert called["personal"] is False
+
+    def test_search_does_not_fall_back_to_personal_contacts_without_flags(
+        self, service, monkeypatch
+    ):
+        payload = {
+            "items": [
+                {
+                    "full_name": "Сидоров Сидор",
+                    "employee_code": "42",
+                    "work_phones": [],
+                    "personal_phones": [{"value": "79990001122"}],
+                    "work_emails": [],
+                    "personal_emails": [{"value": "private@example.com"}],
+                }
+            ],
+            "updated_at": "2026-07-23T00:00:00Z",
+        }
+        address_book = AddressBookService(data_manager=_MemoryAddressBookData(payload))
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.search",
+            address_book.search,
+        )
+
+        hidden = service.search_zup_employees("сидор", user_permissions=["tickets.read"])
+        assert hidden["items"][0]["phone"] is None
+        assert hidden["items"][0]["email"] is None
+
+        visible = service.search_zup_employees(
+            "сидор",
+            user_permissions=["tickets.read"],
+            include_personal_phones=True,
+            include_personal_emails=True,
+        )
+        assert visible["items"][0]["phone"] == "79990001122"
+        assert visible["items"][0]["email"] == "private@example.com"
+
+
+class TestEnsureEmployeeFromZup:
+    def test_creates_employee_with_personal_data(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_person_by_code",
+            lambda code: {
+                "full_name": "Сидоров Сидор",
+                "employee_code": code,
+                "department": "IT",
+                "department_location": "",
+                "position": "Инженер",
+                "work_phones": [{"value": "123"}],
+                "work_emails": [{"value": "sidorov@example.com"}],
+            },
+        )
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_personal_by_codes",
+            lambda codes: {
+                "42": {
+                    "date_of_birth": "1991-03-03",
+                    "passport_series": "4500",
+                    "passport_number": "111222",
+                    "issued_by": "ОВД",
+                    "issuer_code": "770-001",
+                    "issue_date": "2011-04-04",
+                    "birth_place": "0,г. Тюмень,,,",
+                    "registration_address": "Тюмень",
+                }
+            },
+        )
+
+        created = service.ensure_employee_from_zup(
+            "42",
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert created["full_name"] == "Сидоров Сидор"
+        assert created["zup_employee_code"] == "42"
+        assert created["date_of_birth"] == "1991-03-03"
+        assert created["documents"][0]["passport_number"] == "111222"
+        assert created["documents"][0]["birth_place"] == "г. Тюмень"
+
+        again = service.ensure_employee_from_zup(
+            "42",
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert again["id"] == created["id"]
+
+    def test_ensure_does_not_fall_back_to_personal_contacts_without_flags(
+        self, service, monkeypatch
+    ):
+        payload = {
+            "items": [
+                {
+                    "full_name": "Сидоров Сидор",
+                    "employee_code": "42",
+                    "department": "IT",
+                    "department_location": "",
+                    "position": "Инженер",
+                    "work_phones": [],
+                    "personal_phones": [{"value": "79990001122"}],
+                    "work_emails": [],
+                    "personal_emails": [{"value": "private@example.com"}],
+                }
+            ],
+        }
+        address_book = AddressBookService(data_manager=_MemoryAddressBookData(payload))
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_person_by_code",
+            address_book.get_person_by_code,
+        )
+
+        created = service.ensure_employee_from_zup("42", user_permissions=["tickets.write"])
+        assert created["phone"] is None
+        assert created["email"] is None
+
+        updated = service.ensure_employee_from_zup(
+            "42",
+            user_permissions=["tickets.write"],
+            include_personal_phones=True,
+            include_personal_emails=True,
+        )
+        assert updated["id"] == created["id"]
+        assert updated["phone"] == "79990001122"
+        assert updated["email"] == "private@example.com"
+
+        cleared = service.ensure_employee_from_zup("42", user_permissions=["tickets.write"])
+        assert cleared["id"] == created["id"]
+        assert cleared["phone"] is None
+        assert cleared["email"] is None

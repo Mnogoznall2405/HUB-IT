@@ -1,0 +1,1206 @@
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException, Response
+from pydantic import ValidationError
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = ROOT / "WEB-itinvent"
+if str(WEB_ROOT) not in sys.path:
+    sys.path.insert(0, str(WEB_ROOT))
+
+from backend.api.v1 import equipment as equipment_api  # noqa: E402
+from backend.database import queries as db_queries  # noqa: E402
+from backend.services import equipment_transfer_execution_service as transfer_execution_service  # noqa: E402
+
+
+def _user():
+    return SimpleNamespace(id=1, username="tester", role="operator", full_name="Tester")
+
+
+class _Background:
+    def __init__(self):
+        self.tasks = []
+
+    def add_task(self, func, **kwargs):
+        self.tasks.append((func, kwargs))
+
+    def run_all(self):
+        for func, kwargs in list(self.tasks):
+            func(**kwargs)
+
+
+def _forbid_branch_location_check(*args, **kwargs):
+    raise AssertionError("legacy branch/location validation should not be used")
+
+
+def _construct_transfer_location_payload(**kwargs):
+    request = equipment_api.TransferLocationRequest
+    if hasattr(request, "model_construct"):
+        return request.model_construct(**kwargs)
+    return request.construct(**kwargs)
+
+
+def test_location_transfer_requires_client_operation_id():
+    with pytest.raises(ValidationError):
+        equipment_api.TransferLocationRequest(inv_nos=["1001"], branch_no=10, loc_no=20)
+
+
+@pytest.mark.asyncio
+async def test_transfer_endpoint_uses_shared_execution_service(monkeypatch):
+    calls = []
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{
+                "inv_no": "1001",
+                "new_employee_no": 55,
+                "new_employee_name": "New Owner",
+            }],
+            "failed": [],
+            "acts": [],
+            "upload_reminder_created": False,
+            "upload_reminder_task_id": None,
+            "upload_reminder_id": None,
+            "upload_reminder_warning": None,
+            "upload_reminder_controller_username": None,
+            "upload_reminder_controller_fallback_used": False,
+        }
+
+    monkeypatch.setattr(equipment_api, "execute_equipment_transfer", fake_execute)
+
+    payload = equipment_api.TransferExecuteRequest(
+        inv_nos=["1001"],
+        new_employee="New Owner",
+        new_employee_no=55,
+    )
+    background = _Background()
+    result = await equipment_api.transfer_equipment(payload, background_tasks=background, db_id="main", current_user=_user())
+
+    assert result.job_id
+    assert result.job_status == "queued"
+    background.run_all()
+    completed = equipment_api.transfer_act_job_service.response_payload(result.job_id)
+    assert completed["success_count"] == 1
+    assert calls[0]["payload"] is payload
+    assert calls[0]["db_id"] == "main"
+    assert calls[0]["allow_create_owner"] is True
+
+
+@pytest.mark.asyncio
+async def test_transfer_operation_id_is_idempotent_across_duplicate_requests(monkeypatch):
+    calls = []
+    service = equipment_api.transfer_act_job_service
+    monkeypatch.setattr(service, "_app_db_available", lambda: False)
+    service._memory_jobs.clear()
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{"inv_no": "1001"}],
+            "failed": [],
+            "acts": [],
+            "one_c_sync_state": "not_requested",
+        }
+
+    monkeypatch.setattr(equipment_api, "execute_equipment_transfer", fake_execute)
+    payload = equipment_api.TransferExecuteRequest(
+        operation_id="web-transfer-retry-001",
+        inv_nos=["1001"],
+        new_employee="New Owner",
+        new_employee_no=55,
+    )
+    background = _Background()
+
+    first = await equipment_api.transfer_equipment(
+        payload,
+        background_tasks=background,
+        db_id="main",
+        current_user=_user(),
+    )
+    repeated = await equipment_api.transfer_equipment(
+        payload,
+        background_tasks=background,
+        db_id="main",
+        current_user=_user(),
+    )
+    background.run_all()
+
+    assert first.job_id == repeated.job_id == "web-transfer-retry-001"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_transfer_retry_recovers_stale_processing_job_once(monkeypatch):
+    calls = []
+    service = equipment_api.transfer_act_job_service
+    monkeypatch.setattr(service, "_app_db_available", lambda: False)
+    monkeypatch.setattr(service, "TRANSFER_ACT_JOB_LEASE_SECONDS", 60)
+    service._memory_jobs.clear()
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{"inv_no": "1001"}],
+            "failed": [],
+            "acts": [],
+            "one_c_sync_state": "not_requested",
+        }
+
+    monkeypatch.setattr(equipment_api, "execute_equipment_transfer", fake_execute)
+    payload = equipment_api.TransferExecuteRequest(
+        operation_id="web-transfer-recovery-001",
+        inv_nos=["1001"],
+        new_employee="New Owner",
+        new_employee_no=55,
+    )
+    first_background = _Background()
+    first = await equipment_api.transfer_equipment(
+        payload,
+        background_tasks=first_background,
+        db_id="main",
+        current_user=_user(),
+    )
+
+    # Simulate a backend process that died after claiming the first task.
+    assert service.claim_for_execution(first.job_id, "processing") is True
+    service._memory_jobs[first.job_id]["updated_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=61)
+    ).isoformat()
+
+    retry_background = _Background()
+    retried = await equipment_api.transfer_equipment(
+        payload,
+        background_tasks=retry_background,
+        db_id="main",
+        current_user=_user(),
+    )
+    assert retried.job_id == first.job_id
+    assert retried.job_status == "queued"
+
+    retry_background.run_all()
+    first_background.run_all()
+
+    assert len(calls) == 1
+    completed = service.response_payload(first.job_id)
+    assert completed["job_status"] == "done"
+    assert completed["success_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_transfer_location_endpoint_updates_location_without_acts(monkeypatch):
+    calls = []
+    cache_invalidations = []
+    service = equipment_api.transfer_act_job_service
+    monkeypatch.setattr(service, "_app_db_available", lambda: False)
+    service._memory_jobs.clear()
+
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", lambda loc_no, branch_no, db_id=None: True)
+    monkeypatch.setattr(
+        transfer_execution_service,
+        "invalidate_equipment_cache",
+        lambda db_id=None: cache_invalidations.append(db_id),
+    )
+
+    def fake_transfer_location(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "inv_no": kwargs["inv_no"],
+            "old_employee_no": 55,
+            "old_employee_name": "Current Owner",
+            "new_employee_no": 55,
+            "new_employee_name": "Current Owner",
+            "branch_no": kwargs["new_branch_no"],
+            "loc_no": kwargs["new_loc_no"],
+            "hist_id": 44,
+        }
+
+    monkeypatch.setattr(equipment_api.queries, "transfer_equipment_location_by_inv_with_history", fake_transfer_location)
+
+    payload = equipment_api.TransferLocationRequest(
+        operation_id="web-location-transfer-001",
+        inv_nos=["1001"],
+        branch_no=10,
+        loc_no=20,
+    )
+    background = _Background()
+    result = await equipment_api.transfer_equipment_location(
+        payload,
+        background_tasks=background,
+        db_id="main",
+        current_user=_user(),
+    )
+
+    assert result.job_id == "web-location-transfer-001"
+    assert result.job_status == "queued"
+    assert result.one_c_sync_state == "not_requested"
+    assert service.get_job(result.job_id)["payload"]["one_c_sync_state"] == "not_requested"
+    background.run_all()
+    completed = service.response_payload(result.job_id)
+
+    assert completed["success_count"] == 1
+    assert completed["failed_count"] == 0
+    assert completed["acts"] == []
+    assert calls == [{
+        "inv_no": "1001",
+        "new_branch_no": 10,
+        "new_loc_no": 20,
+        "changed_by": "tester",
+        "comment": None,
+        "operation_id": "web-location-transfer-001",
+        "db_id": "main",
+    }]
+    assert cache_invalidations == ["main"]
+
+
+@pytest.mark.asyncio
+async def test_transfer_location_endpoint_validates_branch_location_and_empty_targets(monkeypatch):
+    payload = _construct_transfer_location_payload(inv_nos=[], branch_no=10, loc_no=20)
+    with pytest.raises(HTTPException) as empty_exc:
+        await equipment_api.transfer_equipment_location(
+            payload,
+            background_tasks=_Background(),
+            db_id="main",
+            current_user=_user(),
+        )
+    assert empty_exc.value.status_code == 400
+
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: None)
+    payload = equipment_api.TransferLocationRequest(
+        operation_id="web-location-invalid-001",
+        inv_nos=["1001"],
+        branch_no=10,
+        loc_no=20,
+    )
+    with pytest.raises(HTTPException) as branch_exc:
+        await equipment_api.transfer_equipment_location(
+            payload,
+            background_tasks=_Background(),
+            db_id="main",
+            current_user=_user(),
+        )
+    assert branch_exc.value.status_code == 400
+    assert branch_exc.value.detail == "Invalid branch_no"
+
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: None)
+    with pytest.raises(HTTPException) as loc_exc:
+        await equipment_api.transfer_equipment_location(
+            payload,
+            background_tasks=_Background(),
+            db_id="main",
+            current_user=_user(),
+        )
+    assert loc_exc.value.status_code == 400
+    assert loc_exc.value.detail == "Invalid loc_no"
+
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", lambda loc_no, branch_no, db_id=None: False)
+    with pytest.raises(HTTPException) as mismatch_exc:
+        await equipment_api.transfer_equipment_location(
+            payload,
+            background_tasks=_Background(),
+            db_id="main",
+            current_user=_user(),
+        )
+    assert mismatch_exc.value.status_code == 400
+    assert mismatch_exc.value.detail == "loc_no does not belong to branch_no"
+
+
+def test_transfer_location_query_writes_history_and_updates_only_location(monkeypatch):
+    executed = []
+
+    class Cursor:
+        def __init__(self):
+            self.description = []
+            self._next = None
+            self._rows = []
+            self.rowcount = 1
+
+        def execute(self, sql, params=()):
+            executed.append((sql, params))
+            if "FROM ITEMS i" in sql:
+                self.description = [
+                    ("ID",), ("INV_NO",), ("SERIAL_NO",), ("HW_SERIAL_NO",), ("PART_NO",),
+                    ("EMPL_NO",), ("BRANCH_NO",), ("LOC_NO",), ("STATUS_NO",),
+                    ("TYPE_NO",), ("MODEL_NO",), ("CI_TYPE",), ("QTY",),
+                    ("OLD_EMPLOYEE_NAME",), ("BRANCH_NAME",), ("LOCATION_NAME",),
+                    ("TYPE_NAME",), ("MODEL_NAME",),
+                ]
+                self._rows = [(
+                    7, 1001.0, "SN-1", None, "PN-1",
+                    55, 1, 2, 3,
+                    4, 5, 1, 1,
+                    "Current Owner", "Old Branch", "Old Room",
+                    "Notebook", "ThinkPad",
+                )]
+            elif "MAX(HIST_ID)" in sql:
+                self._next = (44,)
+            elif "BRANCH_NAME FROM BRANCHES" in sql:
+                self._next = ("New Branch",)
+            elif "DESCR FROM LOCATIONS" in sql:
+                self._next = ("New Room",)
+            else:
+                self._next = None
+
+        def fetchone(self):
+            return self._next
+
+        def fetchall(self):
+            return self._rows
+
+    class Connection:
+        def __init__(self):
+            self.cursor_obj = Cursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return self.cursor_obj
+
+    class Db:
+        def get_connection(self):
+            return Connection()
+
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: Db())
+
+    result = db_queries.transfer_equipment_location_by_inv_with_history(
+        inv_no="1001",
+        new_branch_no=10,
+        new_loc_no=20,
+        changed_by="tester",
+        comment="move only",
+        operation_id="location-query-001",
+        db_id="main",
+    )
+
+    assert result["success"] is True
+    assert result["new_employee_no"] == 55
+    assert result["branch_no"] == 10
+    assert result["loc_no"] == 20
+    history_sql, history_params = next(item for item in executed if "INSERT INTO CI_HISTORY" in item[0])
+    update_sql, update_params = next(item for item in executed if "UPDATE ITEMS" in item[0])
+    assert "EMPL_NO_OLD, EMPL_NO_NEW" in history_sql
+    assert history_params[2:8] == (55, 55, 1, 10, 2, 20)
+    assert "[operation_id=location-query-001]" in history_params[-1]
+    assert "SET BRANCH_NO = ?" in update_sql
+    assert "EMPL_NO =" not in update_sql
+    assert update_params[0:2] == (10, 20)
+
+
+def test_location_transfer_query_replays_committed_operation_without_second_history(monkeypatch):
+    executed = []
+
+    class Cursor:
+        def __init__(self):
+            self.description = []
+            self._next = None
+            self._rows = []
+            self.rowcount = 1
+
+        def execute(self, sql, params=()):
+            executed.append((sql, params))
+            if "FROM ITEMS i" in sql:
+                self.description = [
+                    ("ID",), ("INV_NO",), ("SERIAL_NO",), ("HW_SERIAL_NO",), ("PART_NO",),
+                    ("EMPL_NO",), ("BRANCH_NO",), ("LOC_NO",), ("STATUS_NO",),
+                    ("TYPE_NO",), ("MODEL_NO",), ("CI_TYPE",), ("QTY",),
+                    ("OLD_EMPLOYEE_NAME",), ("BRANCH_NAME",), ("LOCATION_NAME",),
+                    ("TYPE_NAME",), ("MODEL_NAME",),
+                ]
+                # This is the state after SQL committed but before its job
+                # result was persisted.
+                self._rows = [(
+                    7, 1001.0, "SN-1", None, "PN-1",
+                    55, 10, 20, 3,
+                    4, 5, 1, 1,
+                    "Current Owner", "New Branch", "New Room",
+                    "Notebook", "ThinkPad",
+                )]
+            elif "FROM CI_HISTORY h" in sql:
+                self._next = (44, 55, 55, 10, 20)
+            else:
+                self._next = None
+
+        def fetchone(self):
+            return self._next
+
+        def fetchall(self):
+            return self._rows
+
+    class Connection:
+        def __init__(self):
+            self.cursor_obj = Cursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return self.cursor_obj
+
+    class Db:
+        def get_connection(self):
+            return Connection()
+
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: Db())
+
+    result = db_queries.transfer_equipment_location_by_inv_with_history(
+        inv_no="1001",
+        new_branch_no=10,
+        new_loc_no=20,
+        changed_by="tester",
+        operation_id="location-recovery-001",
+        db_id="main",
+    )
+
+    assert result["success"] is True
+    assert result["replayed"] is True
+    assert result["hist_id"] == 44
+    assert result["item_id"] == 7
+    assert result["operation_id"] == "location-recovery-001"
+    assert any("WHERE h.ITEM_ID = ?" in sql for sql, _ in executed)
+    assert not any("INSERT INTO CI_HISTORY" in sql for sql, _ in executed)
+    assert not any("UPDATE ITEMS" in sql for sql, _ in executed)
+
+
+@pytest.mark.asyncio
+async def test_location_transfer_duplicate_operation_uses_one_durable_job(monkeypatch):
+    service = equipment_api.transfer_act_job_service
+    monkeypatch.setattr(service, "_app_db_available", lambda: False)
+    service._memory_jobs.clear()
+    calls = []
+
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", lambda loc_no, branch_no, db_id=None: True)
+    monkeypatch.setattr(transfer_execution_service, "invalidate_equipment_cache", lambda db_id=None: None)
+
+    def fake_transfer_location(**kwargs):
+        calls.append(kwargs)
+        return {"success": True, "inv_no": kwargs["inv_no"], "item_id": 7}
+
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "transfer_equipment_location_by_inv_with_history",
+        fake_transfer_location,
+    )
+
+    payload = equipment_api.TransferLocationRequest(
+        operation_id="web-location-retry-001",
+        inv_nos=["1001"],
+        branch_no=10,
+        loc_no=20,
+    )
+    background = _Background()
+    first = await equipment_api.transfer_equipment_location(
+        payload,
+        background_tasks=background,
+        db_id="main",
+        current_user=_user(),
+    )
+    repeated = await equipment_api.transfer_equipment_location(
+        payload,
+        background_tasks=background,
+        db_id="main",
+        current_user=_user(),
+    )
+    background.run_all()
+
+    assert first.job_id == repeated.job_id == "web-location-retry-001"
+    assert len(calls) == 1
+    assert calls[0]["operation_id"] == "web-location-retry-001"
+    completed = service.response_payload(first.job_id)
+    assert completed["job_status"] == "done"
+    assert completed["success_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_location_transfer_recovers_stale_job_once(monkeypatch):
+    service = equipment_api.transfer_act_job_service
+    monkeypatch.setattr(service, "_app_db_available", lambda: False)
+    monkeypatch.setattr(service, "TRANSFER_ACT_JOB_LEASE_SECONDS", 60)
+    service._memory_jobs.clear()
+    calls = []
+
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", lambda loc_no, branch_no, db_id=None: True)
+    monkeypatch.setattr(transfer_execution_service, "invalidate_equipment_cache", lambda db_id=None: None)
+
+    def fake_transfer_location(**kwargs):
+        calls.append(kwargs)
+        return {"success": True, "inv_no": kwargs["inv_no"], "item_id": 7}
+
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "transfer_equipment_location_by_inv_with_history",
+        fake_transfer_location,
+    )
+    payload = equipment_api.TransferLocationRequest(
+        operation_id="web-location-recovery-001",
+        inv_nos=["1001"],
+        branch_no=10,
+        loc_no=20,
+    )
+    first_background = _Background()
+    first = await equipment_api.transfer_equipment_location(
+        payload,
+        background_tasks=first_background,
+        db_id="main",
+        current_user=_user(),
+    )
+
+    assert service.claim_for_execution(first.job_id, "processing") is True
+    service._memory_jobs[first.job_id]["updated_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=61)
+    ).isoformat()
+
+    retry_background = _Background()
+    retried = await equipment_api.transfer_equipment_location(
+        payload,
+        background_tasks=retry_background,
+        db_id="main",
+        current_user=_user(),
+    )
+    assert retried.job_id == first.job_id
+    assert retried.job_status == "queued"
+
+    retry_background.run_all()
+    first_background.run_all()
+
+    assert len(calls) == 1
+    assert calls[0]["operation_id"] == first.job_id
+    completed = service.response_payload(first.job_id)
+    assert completed["job_status"] == "done"
+    assert completed["success_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_location_transfer_does_not_offer_unknown_sql_error_for_retry(monkeypatch):
+    service = equipment_api.transfer_act_job_service
+    monkeypatch.setattr(service, "_app_db_available", lambda: False)
+    service._memory_jobs.clear()
+
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", lambda loc_no, branch_no, db_id=None: True)
+    monkeypatch.setattr(transfer_execution_service, "invalidate_equipment_cache", lambda db_id=None: None)
+
+    def fail_after_unknown_sql_state(**_kwargs):
+        raise TimeoutError("connection lost after SQL response")
+
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "transfer_equipment_location_by_inv_with_history",
+        fail_after_unknown_sql_state,
+    )
+    payload = equipment_api.TransferLocationRequest(
+        operation_id="web-location-timeout-001",
+        inv_nos=["1001"],
+        branch_no=10,
+        loc_no=20,
+    )
+    background = _Background()
+    queued = await equipment_api.transfer_equipment_location(
+        payload,
+        background_tasks=background,
+        db_id="main",
+        current_user=_user(),
+    )
+    background.run_all()
+
+    completed = service.response_payload(queued.job_id)
+    assert completed["job_status"] == "failed"
+    assert completed["failed"][0]["retryable"] is False
+    assert completed["retry_inv_nos"] == []
+
+
+@pytest.mark.asyncio
+async def test_locations_endpoints_use_global_directory(monkeypatch):
+    sample_locations = [
+        {"loc_no": 10, "loc_name": "Кабинет 10"},
+        {"loc_no": 20, "loc_name": "Склад"},
+    ]
+    calls = []
+
+    def fake_get_all_locations(db_id=None, branch_no=None):
+        calls.append((db_id, branch_no))
+        return sample_locations
+
+    monkeypatch.setattr(equipment_api.queries, "get_all_locations", fake_get_all_locations)
+
+    assert await equipment_api.get_all_locations(response=Response(), db_id="main", branch_no=None, _=_user()) == sample_locations
+    assert await equipment_api.get_all_locations(response=Response(), db_id="main", branch_no="17", _=_user()) == sample_locations
+    assert await equipment_api.get_locations(branch_id="123", response=Response(), db_id="main", _=_user()) == sample_locations
+    assert calls == [("main", None), ("main", "17"), ("main", "123")]
+
+
+def test_queries_get_all_locations_uses_branch_priority_query_only_for_ordering(monkeypatch):
+    rows = [
+        {"LOC_NO": 100, "LOC_NAME": "Alpha"},
+        {"LOC_NO": 200, "LOC_NAME": "Beta"},
+    ]
+    calls = []
+
+    class FakeDB:
+        def execute_query(self, query, params=None):
+            calls.append((query, params))
+            if "INFORMATION_SCHEMA.COLUMNS" in query:
+                return []
+            return rows
+
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: FakeDB())
+
+    assert db_queries.get_all_locations(db_id="main") == [
+        {"loc_no": 100, "loc_name": "Alpha"},
+        {"loc_no": 200, "loc_name": "Beta"},
+    ]
+    assert db_queries.get_all_locations(db_id="main", branch_no="17") == [
+        {"loc_no": 100, "loc_name": "Alpha"},
+        {"loc_no": 200, "loc_name": "Beta"},
+    ]
+    assert db_queries.get_locations_by_branch("17", db_id="main") == [
+        {"loc_no": 100, "loc_name": "Alpha"},
+        {"loc_no": 200, "loc_name": "Beta"},
+    ]
+
+    assert calls == [
+        (db_queries.QUERY_GET_ALL_LOCATIONS, None),
+        (db_queries.QUERY_LOCATIONS_HAS_BRANCH_COLUMN, None),
+        (db_queries.QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY, ("17",)),
+        (db_queries.QUERY_LOCATIONS_HAS_BRANCH_COLUMN, None),
+        (db_queries.QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY, ("17",)),
+    ]
+
+
+def test_queries_get_all_locations_filters_by_locations_branch_column(monkeypatch):
+    calls = []
+
+    class FakeDB:
+        def execute_query(self, query, params=None):
+            calls.append((query, params))
+            if "INFORMATION_SCHEMA.COLUMNS" in query:
+                return [{"ok": 1}]
+            if "FROM LOCATIONS" in query:
+                return [
+                    {"LOC_NO": 300, "LOC_NAME": "Empty branch room", "BRANCH_NO": params[0]},
+                ]
+            return []
+
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: FakeDB())
+
+    assert db_queries.get_all_locations(db_id="main", branch_no="17") == [
+        {"loc_no": 300, "loc_name": "Empty branch room", "branch_no": "17"},
+    ]
+    assert calls == [
+        (db_queries.QUERY_LOCATIONS_HAS_BRANCH_COLUMN, None),
+        (db_queries.QUERY_GET_LOCATIONS_BY_BRANCH_COLUMN, ("17",)),
+    ]
+
+
+def test_queries_is_location_in_branch_uses_locations_branch_column_when_available(monkeypatch):
+    calls = []
+
+    class FakeDB:
+        def __init__(self, has_branch_column=True, belongs=True):
+            self.has_branch_column = has_branch_column
+            self.belongs = belongs
+
+        def execute_query(self, query, params=None):
+            calls.append((query, params))
+            if "INFORMATION_SCHEMA.COLUMNS" in query:
+                return [{"ok": 1}] if self.has_branch_column else []
+            if "FROM LOCATIONS" in query:
+                return [{"ok": 1}] if self.belongs else []
+            return []
+
+    fake = FakeDB(has_branch_column=True, belongs=True)
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: fake)
+    assert db_queries.is_location_in_branch(300, 17, db_id="main") is True
+    assert calls[-1][1] == (300, 17)
+
+    fake.belongs = False
+    assert db_queries.is_location_in_branch(300, 18, db_id="main") is False
+
+    fake.has_branch_column = False
+    assert db_queries.is_location_in_branch(300, 99, db_id="main") is True
+
+
+def test_queries_directory_read_helpers_preserve_public_shapes(monkeypatch):
+    db_ids = []
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = []
+
+        def execute_query(self, query, params=None):
+            self.calls.append((query, tuple(params or ())))
+            if "FROM BRANCHES" in query and not params:
+                return [
+                    {"BRANCH_NO": 1, "BRANCH_NAME": "North"},
+                    {"id": 2, "name": "South"},
+                ]
+            if "FROM BRANCHES" in query:
+                return [{"BRANCH_NO": params[0], "BRANCH_NAME": "North"}]
+            if "FROM LOCATIONS" in query:
+                return [{"LOC_NO": params[0], "LOC_NAME": "Room 101"}]
+            return []
+
+    fake_db = FakeDB()
+
+    def fake_get_db(db_id=None):
+        db_ids.append(db_id)
+        return fake_db
+
+    monkeypatch.setattr(db_queries, "get_db", fake_get_db)
+
+    assert db_queries.get_all_branches(db_id="main") == [
+        {"id": 1, "name": "North"},
+        {"id": 2, "name": "South"},
+    ]
+    assert db_queries.get_branch_by_no(1, db_id="main") == {"BRANCH_NO": 1, "BRANCH_NAME": "North"}
+    assert db_queries.get_location_by_no(101, db_id="main") == {"LOC_NO": 101, "LOC_NAME": "Room 101"}
+    assert [call[1] for call in fake_db.calls] == [(), (1,), (101,)]
+    assert db_ids == ["main", "main", "main"]
+
+
+@pytest.mark.asyncio
+async def test_create_equipment_accepts_existing_location_without_branch_mapping(monkeypatch):
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "get_type_by_no", lambda type_no, db_id=None: {"TYPE_NO": type_no})
+    monkeypatch.setattr(equipment_api.queries, "get_status_by_no", lambda status_no, db_id=None: {"STATUS_NO": status_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", _forbid_branch_location_check)
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "create_equipment_item",
+        lambda **kwargs: {
+            "success": True,
+            "item_id": 101,
+            "inv_no": "1001",
+            "created_owner": False,
+            "created_model": False,
+            "message": "ok",
+        },
+    )
+
+    payload = equipment_api.EquipmentCreateRequest(
+        serial_no="SN-1",
+        employee_name="Иванов И.И.",
+        branch_no=1,
+        loc_no=999,
+        type_no=10,
+        status_no=1,
+        model_name="Dell OptiPlex",
+    )
+
+    result = await equipment_api.create_equipment(payload, db_id="main", current_user=_user())
+    assert result.success is True
+    assert result.inv_no == "1001"
+
+
+@pytest.mark.asyncio
+async def test_create_equipment_stores_normalized_mac_and_rejects_bad_mac(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "get_type_by_no", lambda type_no, db_id=None: {"TYPE_NO": type_no})
+    monkeypatch.setattr(equipment_api.queries, "get_status_by_no", lambda status_no, db_id=None: {"STATUS_NO": status_no})
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return {"success": True, "item_id": 7, "inv_no": "7", "created_owner": False, "created_model": False, "message": "ok"}
+
+    monkeypatch.setattr(equipment_api.queries, "create_equipment_item", fake_create)
+
+    def make(mac):
+        return equipment_api.EquipmentCreateRequest(
+            serial_no="SN-MAC",
+            employee_name="Иванов И.И.",
+            branch_no=1,
+            loc_no=5,
+            type_no=10,
+            status_no=1,
+            model_name="Switch",
+            ip_address="10.0.0.5",
+            mac_address=mac,
+            network_name=" SW-01 ",
+        )
+
+    result = await equipment_api.create_equipment(make("aa-bb.cc dd:ee:ff"), db_id="main", current_user=_user())
+    assert result.success is True
+    assert captured["mac_address"] == "AA:BB:CC:DD:EE:FF"
+    assert captured["network_name"] == "SW-01"
+
+    for bad in ("AA:BB:CC", "ZZ:BB:CC:DD:EE:FF"):
+        with pytest.raises(HTTPException) as exc_info:
+            await equipment_api.create_equipment(make(bad), db_id="main", current_user=_user())
+        assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_serial_search_endpoint_returns_rows_the_query_selects_in_upper_case(monkeypatch):
+    # Regression: the query returns INV_NO/SERIAL_NO (numeric INV_NO as float) while the
+    # response model needs inv_no/serial_no — the endpoint answered 500 on any match.
+    async def no_scope(user, db_id):
+        return None
+
+    monkeypatch.setattr(equipment_api, "_branch_scope", no_scope)
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "search_equipment_by_serial",
+        lambda q, db_id=None, **kwargs: [
+            {"INV_NO": 100491.0, "SERIAL_NO": "PF1K0LNY", "HW_SERIAL_NO": None, "PART_NO": "P1",
+             "type_name": "Ноутбук", "employee_name": "Тимошин А.В."},
+        ],
+    )
+
+    result = await equipment_api.search_by_serial(q="PF1K0LNY", db_id="main", current_user=_user())
+
+    assert result.found is True
+    assert result.equipment[0].inv_no == "100491"
+    assert result.equipment[0].serial_no == "PF1K0LNY"
+    assert result.equipment[0].employee_name == "Тимошин А.В."
+
+
+@pytest.mark.asyncio
+async def test_create_consumable_accepts_existing_location_without_branch_mapping(monkeypatch):
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "get_type_by_no", lambda type_no, db_id=None, ci_type=4: {"TYPE_NO": type_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", _forbid_branch_location_check)
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "create_consumable_item",
+        lambda **kwargs: {
+            "success": True,
+            "item_id": 202,
+            "inv_no": "2002",
+            "created_model": False,
+            "message": "ok",
+        },
+    )
+
+    payload = equipment_api.ConsumableCreateRequest(
+        branch_no=1,
+        loc_no=999,
+        type_no=4,
+        qty=3,
+        model_name="HP 85A",
+    )
+
+    result = await equipment_api.create_consumable(payload, db_id="main", current_user=_user())
+    assert result.success is True
+    assert result.inv_no == "2002"
+
+
+@pytest.mark.asyncio
+async def test_invalid_location_is_still_rejected(monkeypatch):
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: None)
+
+    payload = equipment_api.EquipmentCreateRequest(
+        serial_no="SN-404",
+        employee_name="Петров П.П.",
+        branch_no=1,
+        loc_no=404,
+        type_no=10,
+        status_no=1,
+        model_name="Test model",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await equipment_api.create_equipment(payload, db_id="main", current_user=_user())
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Invalid loc_no"
+
+
+@pytest.mark.asyncio
+async def test_update_branch_keeps_existing_location(monkeypatch):
+    before_row = {"inv_no": "1001", "branch_no": 1, "loc_no": 777, "type_no": 10}
+    after_row = {"inv_no": "1001", "branch_no": 2, "loc_no": 777, "type_no": 10}
+    captured = {}
+    call_count = {"value": 0}
+
+    def get_equipment_by_inv(inv_no, db_id=None):
+        call_count["value"] += 1
+        return before_row if call_count["value"] == 1 else after_row
+
+    def update_equipment_fields(inv_no, fields, changed_by="IT-WEB", db_id=None):
+        captured["inv_no"] = inv_no
+        captured["fields"] = dict(fields)
+        captured["changed_by"] = changed_by
+        return True
+
+    monkeypatch.setattr(equipment_api.queries, "get_equipment_by_inv", get_equipment_by_inv)
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", _forbid_branch_location_check)
+    monkeypatch.setattr(equipment_api.queries, "update_equipment_fields", update_equipment_fields)
+
+    payload = equipment_api.EquipmentUpdateRequest(branch_no=2)
+    updated = await equipment_api.update_equipment_by_inv("1001", payload, db_id="main", current_user=_user())
+
+    assert captured["fields"] == {"branch_no": 2}
+    assert updated["loc_no"] == 777
+
+
+@pytest.mark.asyncio
+async def test_update_normalizes_mac_and_rejects_a_broken_one(monkeypatch):
+    row = {"inv_no": "1001", "branch_no": 1, "loc_no": 5, "type_no": 10}
+    captured = {}
+
+    monkeypatch.setattr(equipment_api.queries, "get_equipment_by_inv", lambda inv_no, db_id=None: row)
+
+    def update_equipment_fields(inv_no, fields, changed_by="IT-WEB", db_id=None):
+        captured["fields"] = dict(fields)
+        return True
+
+    monkeypatch.setattr(equipment_api.queries, "update_equipment_fields", update_equipment_fields)
+
+    await equipment_api.update_equipment_by_inv(
+        "1001", equipment_api.EquipmentUpdateRequest(mac_address="aa-bb-cc-dd-ee-ff"), db_id="main", current_user=_user()
+    )
+    assert captured["fields"] == {"mac_address": "AA:BB:CC:DD:EE:FF"}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await equipment_api.update_equipment_by_inv(
+            "1001", equipment_api.EquipmentUpdateRequest(mac_address="10.105.0.251"), db_id="main", current_user=_user()
+        )
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_transfer_accepts_existing_location_without_branch_mapping(monkeypatch):
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "get_owner_by_no",
+        lambda owner_no, db_id=None: {
+            "OWNER_NO": owner_no,
+            "OWNER_DISPLAY_NAME": "Новый сотрудник",
+            "OWNER_DEPT": "ИТ",
+        },
+    )
+    monkeypatch.setattr(equipment_api.queries, "get_owner_email_by_no", lambda owner_no, db_id=None: None)
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "is_location_in_branch", _forbid_branch_location_check)
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "transfer_equipment_by_inv_with_history",
+        lambda **kwargs: {
+            "success": True,
+            "inv_no": kwargs["inv_no"],
+            "new_employee_no": kwargs["new_employee_no"],
+            "new_employee_name": kwargs["new_employee_name"],
+            "old_employee_no": 1,
+            "old_employee_name": "Старый сотрудник",
+            "branch_no": kwargs["new_branch_no"],
+            "loc_no": kwargs["new_loc_no"],
+        },
+    )
+    transfer_execution_service = __import__(
+        "backend.services.equipment_transfer_execution_service",
+        fromlist=["generate_transfer_acts"],
+    )
+    monkeypatch.setattr(transfer_execution_service, "generate_transfer_acts", lambda **kwargs: [])
+
+    payload = equipment_api.TransferExecuteRequest(
+        inv_nos=["1001"],
+        new_employee="Новый сотрудник",
+        new_employee_no=55,
+        branch_no=2,
+        loc_no=999,
+    )
+
+    background = _Background()
+    result = await equipment_api.transfer_equipment(payload, background_tasks=background, db_id="main", current_user=_user())
+    background.run_all()
+    completed = equipment_api.transfer_act_job_service.response_payload(result.job_id)
+
+    assert completed["success_count"] == 1
+    assert completed["failed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_transfer_act_only_uses_current_owner_without_updating_inventory(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "get_owner_by_no",
+        lambda owner_no, db_id=None: {
+            "OWNER_NO": owner_no,
+            "OWNER_DISPLAY_NAME": "Issuer User",
+            "OWNER_DEPT": "IT",
+        },
+    )
+    monkeypatch.setattr(equipment_api.queries, "get_owner_email_by_no", lambda owner_no, db_id=None: "issuer@example.test")
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "get_transfer_act_items_by_inv_nos",
+        lambda inv_no, db_id=None: [{
+            "inv_no": "1001",
+            "serial_no": "SN-1",
+            "part_no": "PN-1",
+            "type_name": "Notebook",
+            "model_name": "ThinkPad",
+            "employee_name": "Current Holder",
+            "employee_dept": "Finance",
+            "employee_email": "holder@example.test",
+        }],
+    )
+
+    def fail_transfer(**kwargs):
+        raise AssertionError("act-only endpoint must not transfer equipment")
+
+    def fake_generate_without_move(**kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "act_id": "act-1",
+                "old_employee": kwargs["issuer_name"],
+                "new_employee": "Current Holder",
+                "equipment_count": 1,
+                "file_name": "act.docx",
+                "file_type": "docx",
+            }
+        ]
+
+    monkeypatch.setattr(equipment_api.queries, "transfer_equipment_by_inv_with_history", fail_transfer)
+    monkeypatch.setattr(equipment_api, "generate_transfer_acts_without_move", fake_generate_without_move)
+
+    payload = equipment_api.TransferActOnlyRequest(
+        inv_nos=["1001"],
+        issuer_employee="manual fallback",
+        issuer_owner_no=77,
+    )
+
+    background = _Background()
+    result = await equipment_api.create_transfer_act_without_move(
+        payload,
+        background_tasks=background,
+        db_id="main",
+        current_user=_user(),
+    )
+    assert result.job_id
+    assert result.job_status == "queued"
+    background.run_all()
+    completed = equipment_api.transfer_act_job_service.response_payload(result.job_id)
+
+    assert completed["success_count"] == 1
+    assert completed["failed_count"] == 0
+    assert completed["acts"][0]["old_employee"] == "Issuer User"
+    assert completed["acts"][0]["new_employee"] == "Current Holder"
+    assert captured["issuer_name"] == "Issuer User"
+    assert captured["issuer_email"] == "issuer@example.test"
+    assert captured["items"][0]["employee_name"] == "Current Holder"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_create_equipment_does_not_serialize_sync_stages(monkeypatch):
+    import asyncio
+    import time
+
+    def _sleeping(result):
+        def fake(*_args, **_kwargs):
+            time.sleep(0.04)
+            return result
+        return fake
+
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", _sleeping({"BRANCH_NO": 1}))
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", _sleeping({"LOC_NO": 999}))
+    monkeypatch.setattr(equipment_api.queries, "get_type_by_no", _sleeping({"TYPE_NO": 10}))
+    monkeypatch.setattr(equipment_api.queries, "get_status_by_no", _sleeping({"STATUS_NO": 1}))
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "create_equipment_item",
+        _sleeping({
+            "success": True,
+            "item_id": 101,
+            "inv_no": "1001",
+            "created_owner": False,
+            "created_model": False,
+            "message": "ok",
+        }),
+    )
+    monkeypatch.setattr(equipment_api, "invalidate_equipment_cache", lambda db_id=None: None)
+
+    def _payload(serial_no):
+        return equipment_api.EquipmentCreateRequest(
+            serial_no=serial_no,
+            employee_name="Иванов И.И.",
+            branch_no=1,
+            loc_no=999,
+            type_no=10,
+            status_no=1,
+            model_name="Dell OptiPlex",
+        )
+
+    started = time.monotonic()
+    first, second = await asyncio.gather(
+        equipment_api.create_equipment(_payload("SN-1"), db_id="main", current_user=_user()),
+        equipment_api.create_equipment(_payload("SN-2"), db_id="main", current_user=_user()),
+    )
+    elapsed = time.monotonic() - started
+
+    assert first.success is True
+    assert second.success is True
+    assert elapsed < 0.30
+
+
+def test_only_branch_returns_rooms_linked_or_used_by_the_branch(monkeypatch):
+    calls = []
+
+    class FakeDB:
+        def execute_query(self, query, params=None):
+            calls.append((query, params))
+            if "INFORMATION_SCHEMA.COLUMNS" in query:
+                return []
+            return [{"LOC_NO": 401, "LOC_NAME": "401 (29)"}]
+
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: FakeDB())
+
+    rows = db_queries.get_all_locations(db_id="only-branch-db", branch_no="17", only_branch=True)
+
+    assert rows == [{"loc_no": 401, "loc_name": "401 (29)"}]
+    assert calls[-1] == (db_queries.QUERY_GET_LOCATIONS_FOR_BRANCH, ("17", "17"))
+    assert "LOC_BRANCH" in db_queries.QUERY_GET_LOCATIONS_FOR_BRANCH
+    assert "ITEMS" in db_queries.QUERY_GET_LOCATIONS_FOR_BRANCH
+
+
+@pytest.mark.asyncio
+async def test_locations_endpoint_restricts_to_branch_only_on_request(monkeypatch):
+    calls = []
+
+    def fake_get_all_locations(db_id=None, branch_no=None, only_branch=False):
+        calls.append((branch_no, only_branch))
+        return [{"loc_no": 1, "loc_name": "A"}]
+
+    monkeypatch.setattr(equipment_api.queries, "get_all_locations", fake_get_all_locations)
+
+    await equipment_api.get_all_locations(response=Response(), branch_no="31", only_branch=True, db_id="ob-main", _=_user())
+    await equipment_api.get_all_locations(response=Response(), branch_no="32", only_branch=False, db_id="ob-main", _=_user())
+
+    assert calls == [("31", True), ("32", False)]

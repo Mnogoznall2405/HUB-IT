@@ -1,0 +1,27 @@
+[Unit]
+Description=HUB OpenCode trusted LLM gateway
+Wants=network-online.target
+Requires=user@10001.service
+After=network-online.target user@10001.service
+
+[Service]
+Type=simple
+User=hub-ai-sandbox
+Group=hub-ai-sandbox
+WorkingDirectory=/opt/hub-ai/current
+Environment=XDG_RUNTIME_DIR=/run/user/10001
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/10001/bus
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=CONTAINERS_CONF=/etc/hub-ai-sandbox/containers-service.conf
+EnvironmentFile=/etc/hub-ai-sandbox/gateway-runtime.env
+ExecStart=/opt/hub-ai/venv/bin/python /opt/hub-ai/current/scripts/ai-sandbox/run_gateway.py
+ExecStop=/usr/bin/podman stop --time=30 hub-ai-llm-gateway
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+Delegate=yes
+KillMode=mixed
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

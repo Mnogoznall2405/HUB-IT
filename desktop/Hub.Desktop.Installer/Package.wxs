@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="HUB Desktop"
+           Manufacturer="HUB-IT"
+           Version="$(DesktopVersion)"
+           UpgradeCode="E6CBB09A-A4C5-458B-995B-544B999F4A1F"
+           Scope="perMachine"
+           Language="1049"
+           Codepage="1251"
+           InstallerVersion="500"
+           Compressed="yes">
+    <SummaryInformation Description="Windows-клиент корпоративного портала HUB"
+                        Manufacturer="HUB-IT"
+                        Codepage="1251" />
+
+    <MajorUpgrade DowngradeErrorMessage="Установлена более новая версия HUB Desktop."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://hubit.zsgp.ru/" />
+    <Property Id="ARPCONTACT" Value="HUB-IT" />
+    <Property Id="ARPPRODUCTICON" Value="HubDesktop.ico" />
+    <Icon Id="HubDesktop.ico" SourceFile="$(IconPath)" />
+
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <UIRef Id="WixUI_FeatureTree_X64" />
+
+    <Property Id="WINDOWSBUILDNUMBER">
+      <RegistrySearch Id="FindWindowsBuildNumber"
+                      Root="HKLM"
+                      Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentBuildNumber"
+                      Type="raw"
+                      Bitness="always64" />
+    </Property>
+
+    <Launch Condition="VersionNT64 AND WINDOWSBUILDNUMBER &gt;= 17763"
+            Message="HUB Desktop поддерживает только 64-разрядные Windows 10 и Windows 11." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="HUBITFOLDER" Name="HUB-IT">
+        <Directory Id="INSTALLFOLDER" Name="HUB Desktop" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDirectory" Name="HUB-IT" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="ApplicationFiles" Directory="INSTALLFOLDER">
+      <Files Include="!(bindpath.Publish)\**">
+        <Exclude Files="!(bindpath.Publish)\**\*.pdb" />
+        <Exclude Files="!(bindpath.Publish)\HUB.Desktop.exe" />
+      </Files>
+    </ComponentGroup>
+
+    <Component Id="MainExecutable"
+               Directory="INSTALLFOLDER"
+               Guid="BA7E279C-9E40-47D6-9FE7-2BDBD9FCAB4A">
+      <File Id="HubDesktopExecutable"
+            Source="!(bindpath.Publish)\HUB.Desktop.exe"
+            KeyPath="yes" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\HUB-IT\Desktop"
+                     Name="InstallerVersion"
+                     Type="string"
+                     Value="$(DesktopVersion)" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\HUB-IT\Desktop"
+                     Name="InstalledPath"
+                     Type="string"
+                     Value="[INSTALLFOLDER]HUB.Desktop.exe" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Classes\hubit"
+                     Type="string"
+                     Value="URL:HUB Desktop Protocol" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Classes\hubit"
+                     Name="URL Protocol"
+                     Type="string"
+                     Value="" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Classes\hubit\DefaultIcon"
+                     Type="string"
+                     Value="&quot;[#HubDesktopExecutable]&quot;,0" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\Classes\hubit\shell\open\command"
+                     Type="string"
+                     Value="&quot;[#HubDesktopExecutable]&quot; &quot;%1&quot;" />
+      <RemoveRegistryKey Id="RemoveHubitProtocolRegistration"
+                         Root="HKLM"
+                         Key="Software\Classes\hubit"
+                         Action="removeOnUninstall" />
+    </Component>
+
+    <Component Id="StartMenuShortcut"
+               Directory="ProgramMenuDirectory"
+               Guid="E3B4A7F8-5C9D-4E1B-8F2A-3D6E7C0B9A5F">
+      <Shortcut Id="HubDesktopStartMenuShortcut"
+                Name="HUB Desktop"
+                Description="Корпоративный портал HUB"
+                Target="[INSTALLFOLDER]HUB.Desktop.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="HubDesktop.ico"
+                IconIndex="0">
+        <ShortcutProperty Key="System.AppUserModel.ID"
+                          Value="HUB-IT.HUBDesktop" />
+      </Shortcut>
+      <RemoveFolder Id="RemoveProgramMenuFolder"
+                    Directory="ProgramMenuDirectory"
+                    On="uninstall" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\HUB-IT\Desktop\InstallerOptions"
+                     Name="StartMenu"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <Component Id="DesktopShortcut"
+               Directory="DesktopFolder"
+               Guid="A7C9E2B1-4D3F-4A6B-9E2C-1F5D8B0E7A3C">
+      <Shortcut Id="HubDesktopDesktopShortcut"
+                Name="HUB Desktop"
+                Description="Корпоративный портал HUB"
+                Target="[INSTALLFOLDER]HUB.Desktop.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="HubDesktop.ico"
+                IconIndex="0">
+        <ShortcutProperty Key="System.AppUserModel.ID"
+                          Value="HUB-IT.HUBDesktop" />
+      </Shortcut>
+      <RegistryValue Root="HKCU"
+                     Key="Software\HUB-IT\Desktop\InstallerOptions"
+                     Name="Desktop"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <Component Id="TaskbarPinOption"
+               Directory="INSTALLFOLDER"
+               Guid="B8D1F3C2-5E4A-4B7C-8F3D-2A6E9C1F8B4D">
+      <File Id="TaskbarLayoutXml"
+            Source="taskbar-layout.xml" />
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\Policies\Microsoft\Windows\Explorer"
+                     Name="LockedStartLayout"
+                     Type="integer"
+                     Value="1" />
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\Policies\Microsoft\Windows\Explorer"
+                     Name="StartLayoutFile"
+                     Type="string"
+                     Value="[INSTALLFOLDER]taskbar-layout.xml" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\HUB-IT\Desktop\InstallerOptions"
+                     Name="Taskbar"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Complete"
+             Title="HUB Desktop"
+             Level="1"
+             AllowAbsent="no"
+             Display="expand"
+             Description="Корпоративный портал HUB">
+      <ComponentGroupRef Id="ApplicationFiles" />
+      <ComponentRef Id="MainExecutable" />
+
+      <Feature Id="StartMenuFeature"
+               Title="Ярлык в меню Пуск"
+               Level="1"
+               Description="Создать ярлык в меню Пуск">
+        <ComponentRef Id="StartMenuShortcut" />
+      </Feature>
+
+      <Feature Id="DesktopFeature"
+               Title="Ярлык на рабочем столе"
+               Level="1"
+               Description="Создать ярлык на рабочем столе">
+        <ComponentRef Id="DesktopShortcut" />
+      </Feature>
+
+      <Feature Id="TaskbarPinFeature"
+               Title="Закрепить на панели задач"
+               Level="1"
+               Description="Закрепить HUB на панели задач">
+        <ComponentRef Id="StartMenuShortcut" />
+        <ComponentRef Id="TaskbarPinOption" />
+      </Feature>
+    </Feature>
+
+    <util:CloseApplication Id="CloseHubDesktop"
+                           Target="HUB.Desktop.exe"
+                           Description="HUB Desktop необходимо закрыть для продолжения установки."
+                           CloseMessage="yes"
+                           ElevatedCloseMessage="yes"
+                           Timeout="5"
+                           TerminateProcess="0"
+                           RebootPrompt="no" />
+  </Package>
+</Wix>

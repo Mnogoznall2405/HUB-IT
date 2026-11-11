@@ -1,0 +1,551 @@
+@import "tailwindcss";
+
+/**
+ * Global Styles for IT-invent Web
+ *
+ * Mobile-first, responsive design system
+ */
+
+/* CSS Reset & Base */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:root {
+  --app-density-header-height: 64px;
+  --app-density-header-standalone-height: 60px;
+  --app-density-header-overlay-height: 56px;
+  --app-density-drawer-width: 240px;
+  --app-density-page-padding: 24px;
+  --app-density-sidebar-list-px: 8px;
+  --app-density-sidebar-list-pt: 6px;
+  --app-density-sidebar-item-min-height: 44px;
+  --app-density-sidebar-item-px: 11px;
+  --app-density-sidebar-item-py: 2px;
+  --app-density-sidebar-icon-min-width: 38px;
+  --app-density-control-height: 38px;
+  --app-density-control-small-height: 32px;
+  --app-density-control-padding-y: 5px;
+  --app-density-control-small-padding-y: 3px;
+  --app-density-icon-button-size: 38px;
+  --app-density-icon-button-small-size: 34px;
+  --app-density-input-height: 38px;
+  --app-density-input-small-height: 34px;
+  --app-density-input-padding-y: 8px;
+  --app-density-input-small-padding-y: 6px;
+  --app-density-menu-item-height: 40px;
+  --app-density-table-cell-padding-y: 10px;
+  --app-density-table-cell-padding-x: 16px;
+  --app-density-chip-height: 28px;
+  --app-density-chip-small-height: 24px;
+  --app-density-dialog-title-padding: 16px 20px;
+  --app-density-dialog-content-padding: 20px;
+  --app-density-dialog-actions-padding: 14px 20px;
+}
+
+html {
+  font-size: 16px;
+  min-height: 100%;
+  background-color: var(--app-page-bg, #f5f7fa);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+@media (min-width: 600px) and (max-width: 1920px), (min-width: 600px) and (max-height: 960px) {
+  :root {
+    --app-density-header-height: 52px;
+    --app-density-header-standalone-height: 52px;
+    --app-density-header-overlay-height: 52px;
+    --app-density-drawer-width: 216px;
+    --app-density-page-padding: 12px;
+    --app-density-sidebar-list-px: 4px;
+    --app-density-sidebar-list-pt: 3px;
+    --app-density-sidebar-item-min-height: 32px;
+    --app-density-sidebar-item-px: 8px;
+    --app-density-sidebar-item-py: 0px;
+    --app-density-sidebar-icon-min-width: 30px;
+    --app-density-control-height: 32px;
+    --app-density-control-small-height: 28px;
+    --app-density-control-padding-y: 2px;
+    --app-density-control-small-padding-y: 1px;
+    --app-density-icon-button-size: 32px;
+    --app-density-icon-button-small-size: 28px;
+    --app-density-input-height: 32px;
+    --app-density-input-small-height: 30px;
+    --app-density-input-padding-y: 5px;
+    --app-density-input-small-padding-y: 4px;
+    --app-density-menu-item-height: 32px;
+    --app-density-table-cell-padding-y: 5px;
+    --app-density-table-cell-padding-x: 8px;
+    --app-density-chip-height: 24px;
+    --app-density-chip-small-height: 20px;
+    --app-density-dialog-title-padding: 10px 14px;
+    --app-density-dialog-content-padding: 12px;
+    --app-density-dialog-actions-padding: 10px 14px;
+  }
+
+  html {
+    font-size: 14px;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: Aptos, 'Segoe UI', Arial, sans-serif;
+  background-color: var(--app-page-bg, #f5f7fa);
+  color: rgba(0, 0, 0, 0.87);
+  line-height: 1.5;
+  min-height: 100%;
+  min-height: 100dvh;
+  overscroll-behavior: none;
+}
+
+#root {
+  min-height: 100%;
+  min-height: 100dvh;
+  background-color: var(--app-page-bg, #f5f7fa);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Desktop keeps wheel/touchpad scrolling but does not show the root WebView track.
+   Do not set height:100% or overflow:hidden on html/body/#root: that clips the
+   document and removes page scroll on every route that relies on window scroll. */
+html[data-desktop-shell='true'],
+html[data-desktop-shell='true'] body,
+html[data-desktop-shell='true'] #root {
+  background-color: var(--app-page-bg, #f5f7fa);
+}
+
+html[data-desktop-shell='true'],
+html[data-desktop-shell='true'] body {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+html[data-desktop-shell='true']::-webkit-scrollbar,
+html[data-desktop-shell='true'] body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+html[data-desktop-shell='true'] .hub-sidebar-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+html[data-desktop-shell='true'] .hub-sidebar-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+:focus-visible {
+  outline: 2px solid #1976d2;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+button {
+  font: inherit;
+  border: none;
+  background: none;
+}
+
+a {
+  color: #1976d2;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+::selection {
+  background: rgba(25, 118, 210, 0.2);
+  color: inherit;
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  touch-action: manipulation;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.container {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+@media (min-width: 600px) {
+  .container {
+    max-width: 600px;
+  }
+}
+
+@media (min-width: 900px) {
+  .container {
+    max-width: 900px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .container {
+    max-width: 1200px;
+  }
+}
+
+.card {
+  background: var(--app-surface-raised, #ffffff);
+  border-radius: 8px;
+  border: 1px solid var(--app-border-soft, rgba(32, 31, 30, 0.08));
+  box-shadow: var(--app-shadow-soft, 0 10px 28px rgba(32, 31, 30, 0.06));
+}
+
+@layer utilities {
+  .chat-safe-top {
+    padding-top: max(env(safe-area-inset-top, 0px), 12px);
+  }
+
+  .chat-safe-bottom {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+  }
+
+  .chat-native-shell {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  .chat-scroll-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .chat-scroll-hidden::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
+  .chat-no-select {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .chat-no-select .chat-selectable,
+  .chat-no-select input,
+  .chat-no-select textarea {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .mail-safe-top {
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  }
+
+  .mail-safe-bottom {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .mail-scroll-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .mail-scroll-hidden::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
+  .mail-edge-shell {
+    min-height: 0;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 38%),
+      radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.06), transparent 32%),
+      var(--mail-shell-bg, transparent);
+  }
+
+  .mail-glass-header {
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    background: color-mix(in srgb, var(--mail-panel-solid, rgba(255, 255, 255, 0.82)) 88%, transparent);
+  }
+
+  .mail-divider-inset {
+    margin-left: 0;
+    width: 100%;
+    border-color: color-mix(in srgb, var(--mail-divider, rgba(148, 163, 184, 0.18)) 70%, transparent);
+  }
+
+  .mail-line-clamp-1 {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .mail-line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .mail-quote-collapsed blockquote,
+  .mail-quote-collapsed .gmail_quote,
+  .mail-quote-collapsed .protonmail_quote,
+  .mail-quote-collapsed .yahoo_quoted,
+  .mail-quote-collapsed .moz-cite-prefix {
+    display: none !important;
+  }
+
+  .mail-composer-quote-collapsed .ql-editor blockquote {
+    max-height: 3.2em;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .mail-composer-quote-collapsed .ql-editor blockquote::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 2.6em;
+    background: linear-gradient(180deg, transparent, var(--mail-panel-bg, #fff));
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--app-skeleton-base, rgba(32, 31, 30, 0.05)) 0%,
+    var(--app-skeleton-highlight, rgba(32, 31, 30, 0.09)) 50%,
+    var(--app-skeleton-base, rgba(32, 31, 30, 0.05)) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@media (max-width: 600px) {
+  :root {
+    --spacing-unit: 6px;
+  }
+
+  button,
+  a,
+  input,
+  select {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+.vault-secret {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.vault-privacy-blur #root {
+  filter: blur(28px);
+}
+
+.vault-privacy-blur .vault-secret {
+  visibility: hidden;
+}
+
+.vault-blur-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  color: #f8fafc;
+  text-align: center;
+}
+
+@media print {
+  body {
+    background: white;
+  }
+
+  .no-print,
+  .vault-secret {
+    display: none !important;
+  }
+}
+
+@keyframes login-ambient-drift-a {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(24px, 18px, 0);
+  }
+}
+
+@keyframes login-ambient-drift-b {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(-24px, -16px, 0);
+  }
+}
+
+.login-ambient-blob {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 9999px;
+  filter: blur(130px);
+  will-change: transform;
+}
+
+.login-ambient-blob--primary {
+  left: -18%;
+  top: -18%;
+  width: 38rem;
+  height: 38rem;
+  background: rgb(14 116 144 / 0.18);
+  animation: login-ambient-drift-a 18s ease-in-out infinite;
+}
+
+.login-ambient-blob--secondary {
+  right: -14%;
+  bottom: -20%;
+  width: 32rem;
+  height: 32rem;
+  background: rgb(4 120 87 / 0.12);
+  animation: login-ambient-drift-b 20s ease-in-out infinite;
+}
+
+@media (max-width: 767px) {
+  .login-mobile-shell .login-mobile-card,
+  .login-mobile-shell [data-testid="password-auth-form"] input,
+  .login-mobile-shell [data-testid="password-auth-form"] textarea,
+  .login-mobile-shell [data-testid="biometric-hero-button"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+/*
+  Browser autofill paints a light yellow/blue field background and can force
+  dark text. Keep login fields dark so floating labels and the eye icon stay readable.
+*/
+.login-field-input:-webkit-autofill,
+.login-field-input:-webkit-autofill:hover,
+.login-field-input:-webkit-autofill:focus,
+.login-field-input:-webkit-autofill:active,
+.login-field-input:autofill,
+.login-field-input:autofill:hover,
+.login-field-input:autofill:focus {
+  -webkit-text-fill-color: #f8fafc !important;
+  caret-color: #f8fafc;
+  border-color: rgb(255 255 255 / 0.22) !important;
+  /* Delay native autofill background paint; box-shadow provides the real fill. */
+  transition: background-color 99999s ease-out 0s;
+  box-shadow: 0 0 0 1000px #182028 inset !important;
+  background-color: #182028 !important;
+  background-image: none !important;
+  color: #f8fafc !important;
+}
+
+.login-field:has(.login-field-input:-webkit-autofill) .login-field-label,
+.login-field:has(.login-field-input:autofill) .login-field-label {
+  color: rgb(248 250 252 / 0.72);
+}
+
+.login-field:has(.login-field-input:-webkit-autofill) .login-field-adornment,
+.login-field:has(.login-field-input:-webkit-autofill) .login-field-eye,
+.login-field:has(.login-field-input:autofill) .login-field-adornment,
+.login-field:has(.login-field-input:autofill) .login-field-eye {
+  color: rgb(248 250 252 / 0.82);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-ambient-blob {
+    animation: none !important;
+  }
+}

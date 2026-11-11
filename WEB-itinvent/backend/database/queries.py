@@ -1,0 +1,5373 @@
+"""
+SQL queries for ITINVENT database.
+All queries use parameterized statements to prevent SQL injection.
+Based on universal_database.py schema
+"""
+from datetime import datetime
+from typing import Optional, List, Any, Dict, Sequence
+import mimetypes
+import base64
+import logging
+import re
+import os
+from backend.database.connection import get_db
+from backend.utils.inv_no import normalize_inv_no_token
+from backend.utils.person_names import to_short_fio
+from backend.database.equipment_act_history_reads import (
+    get_equipment_acts_by_inv as _act_history_get_equipment_acts_by_inv,
+    get_equipment_history_by_inv as _act_history_get_equipment_history_by_inv,
+    list_latest_equipment_acts as _act_history_list_latest_equipment_acts,
+    search_equipment_acts as _act_history_search_equipment_acts,
+)
+from backend.database.equipment_current_act_reads import enrich_equipment_current_acts
+from backend.database.equipment_directory_reads import (
+    QUERY_GET_ALL_BRANCHES,
+    QUERY_GET_ALL_LOCATIONS,
+    QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY,
+    QUERY_GET_LOCATIONS_FOR_BRANCH,
+    QUERY_GET_LOCATIONS_BY_BRANCH_COLUMN,
+    QUERY_LOCATIONS_HAS_BRANCH_COLUMN,
+    get_all_branches as _directory_get_all_branches,
+    get_all_locations as _directory_get_all_locations,
+    get_branch_by_no as _directory_get_branch_by_no,
+    is_location_in_branch as _directory_is_location_in_branch,
+    get_location_by_no as _directory_get_location_by_no,
+    get_locations_by_branch as _directory_get_locations_by_branch,
+    locations_has_branch_column as _directory_locations_has_branch_column,
+)
+from backend.database.equipment_reference_reads import (
+    QUERY_GET_ALL_EQUIPMENT_TYPES,
+    QUERY_GET_ALL_STATUSES,
+    get_all_equipment_types as _reference_get_all_equipment_types,
+    get_all_statuses as _reference_get_all_statuses,
+    get_default_status_no as _reference_get_default_status_no,
+    get_model_by_no as _reference_get_model_by_no,
+    get_model_no_by_name as _reference_get_model_no_by_name,
+    get_models_by_type as _reference_get_models_by_type,
+    get_owner_by_no as _reference_get_owner_by_no,
+    get_owner_email_by_no as _reference_get_owner_email_by_no,
+    get_owner_no_by_name as _reference_get_owner_no_by_name,
+    get_status_by_no as _reference_get_status_by_no,
+    get_type_by_no as _reference_get_type_by_no,
+)
+from backend.database.equipment_search_reads import (
+    QUERY_SEARCH_BY_SERIAL,
+    QUERY_COUNT_UNIVERSAL,
+    QUERY_COUNT_UNIVERSAL_BY_DIGIT,
+    QUERY_SEARCH_UNIVERSAL,
+    QUERY_SEARCH_UNIVERSAL_BY_DIGIT,
+    search_equipment_by_serial as _search_equipment_by_serial,
+    search_equipment_universal as _search_equipment_universal,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _quote_sqlserver_identifier(identifier: Any) -> str:
+    """Bracket-quote a SQL Server identifier; values must still use parameters."""
+    normalized = str(identifier or "").strip()
+    if not normalized or any(char in normalized for char in "\x00\r\n"):
+        raise ValueError("Invalid SQL Server identifier")
+    return f"[{normalized.replace(']', ']]')}]"
+
+
+_LEGACY_SQLSERVER_TEXT_REPLACEMENTS = {
+    "→": "->",
+    "←": "<-",
+    "↔": "<->",
+    "⇒": "=>",
+}
+
+
+def _legacy_sqlserver_text(value: Any, *, max_len: Optional[int] = None) -> str:
+    """Normalize text before sending it through the legacy SQL Server ANSI path."""
+    text = str(value or "")
+    for source, replacement in _LEGACY_SQLSERVER_TEXT_REPLACEMENTS.items():
+        text = text.replace(source, replacement)
+
+    encoding = os.getenv("SQL_CHAR_ENCODING", "cp1251") or "cp1251"
+    try:
+        text.encode(encoding)
+    except LookupError:
+        encoding = "cp1251"
+        text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    except UnicodeEncodeError:
+        text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+
+    if max_len is not None:
+        text = text[:max_len]
+    return text
+
+
+_LEGACY_SQLSERVER_LINE_BREAK = "\r\n"
+
+
+def _join_legacy_multiline_lines(*lines: str) -> str:
+    return _LEGACY_SQLSERVER_LINE_BREAK.join(line for line in lines if line is not None)
+
+
+def _normalize_legacy_multiline_storage(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return text
+    unified = text.replace("\r\n", "\n").replace("\r", "\n")
+    return unified.replace("\n", _LEGACY_SQLSERVER_LINE_BREAK)
+
+
+def _legacy_items_descr_value(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return _legacy_sqlserver_text(
+        _normalize_legacy_multiline_storage(text),
+        max_len=4000,
+    )
+
+
+# SQL Queries
+QUERY_SEARCH_BY_EMPLOYEE = """
+    SELECT DISTINCT
+        o.OWNER_NO,
+        o.OWNER_DISPLAY_NAME,
+        o.OWNER_DEPT,
+        COUNT(i.INV_NO) as equipment_count
+    FROM OWNERS o
+    LEFT JOIN ITEMS i ON o.OWNER_NO = i.EMPL_NO AND i.CI_TYPE = 1
+    WHERE o.OWNER_DISPLAY_NAME LIKE ?
+       OR o.OWNER_DEPT LIKE ?
+    GROUP BY o.OWNER_NO, o.OWNER_DISPLAY_NAME, o.OWNER_DEPT
+    ORDER BY o.OWNER_DISPLAY_NAME, o.OWNER_NO
+    OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+"""
+
+QUERY_COUNT_EMPLOYEES = """
+    SELECT COUNT(DISTINCT o.OWNER_NO) as total
+    FROM OWNERS o
+    WHERE o.OWNER_DISPLAY_NAME LIKE ?
+       OR o.OWNER_DEPT LIKE ?
+"""
+
+QUERY_GET_EQUIPMENT_BY_OWNER = """
+    SELECT
+        i.ID as id,
+        CAST(i.INV_NO AS VARCHAR(64)) as inv_no,
+        i.SERIAL_NO as serial_no,
+        i.HW_SERIAL_NO as hw_serial_no,
+        i.PART_NO as part_no,
+        t.TYPE_NO as type_no,
+        t.TYPE_NAME as type_name,
+        m.MODEL_NO as model_no,
+        m.MODEL_NAME as model_name,
+        v.VENDOR_NO as vendor_no,
+        v.VENDOR_NAME as vendor_name,
+        s.STATUS_NO as status_no,
+        s.DESCR as status_name,
+        i.EMPL_NO as empl_no,
+        o.OWNER_DISPLAY_NAME as employee_name,
+        o.OWNER_DEPT as employee_dept,
+        b.BRANCH_NO as branch_no,
+        b.BRANCH_NAME as branch_name,
+        l.LOC_NO as loc_no,
+        l.DESCR as location_name
+    FROM ITEMS i
+    LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+    LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+    LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+    LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
+    LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+    LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+    LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+    WHERE i.CI_TYPE = 1 AND i.EMPL_NO = ?
+    ORDER BY i.INV_NO
+"""
+
+QUERY_GET_EQUIPMENT_BY_INV = """
+    SELECT
+        i.ID as id,
+        i.INV_NO as inv_no,
+        i.SERIAL_NO as serial_no,
+        i.HW_SERIAL_NO as hw_serial_no,
+        i.PART_NO as part_no,
+        i.CI_TYPE as ci_type,
+        i.TYPE_NO as type_no,
+        i.MODEL_NO as model_no,
+        i.STATUS_NO as status_no,
+        i.EMPL_NO as empl_no,
+        i.BRANCH_NO as branch_no,
+        i.LOC_NO as loc_no,
+        t.TYPE_NAME as type_name,
+        m.MODEL_NAME as model_name,
+        v.VENDOR_NAME as vendor_name,
+        s.DESCR as status,
+        o.OWNER_DISPLAY_NAME as employee_name,
+        o.OWNER_DEPT as employee_dept,
+        o.OWNER_EMAIL as employee_email,
+        b.BRANCH_NAME as branch_name,
+        l.DESCR as location,
+        i.DESCR as DESCRIPTION,
+        i.IP_ADDRESS as ip_address,
+        NULL as mac_address,
+        NULL as network_name,
+        NULL as domain_name
+    FROM ITEMS i
+    LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+    LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+    LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+    LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
+    LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+    LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+    LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+    WHERE i.CI_TYPE = 1 AND i.INV_NO = ?
+"""
+
+QUERY_GET_ALL_EQUIPMENT = """
+    SELECT
+        i.INV_NO,
+        i.SERIAL_NO,
+        t.TYPE_NAME as type_name,
+        m.MODEL_NAME as model_name,
+        o.OWNER_DISPLAY_NAME as employee_name,
+        b.BRANCH_NAME as branch_name,
+        l.DESCR as location_name,
+        s.DESCR as status_name
+    FROM ITEMS i
+    LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+    LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+    LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+    LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
+    LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+    LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+    LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+    WHERE i.CI_TYPE = 1
+    ORDER BY i.INV_NO
+    OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+"""
+
+QUERY_COUNT_ALL_EQUIPMENT = """
+    SELECT COUNT(*) as total
+    FROM ITEMS i
+    WHERE i.CI_TYPE = 1
+"""
+
+QUERY_GET_MODELS_BY_TYPE = """
+    SELECT
+        m.MODEL_NO as model_no,
+        m.MODEL_NAME as model_name,
+        m.TYPE_NO as type_no
+    FROM CI_MODELS m
+    WHERE m.CI_TYPE = 1 AND m.TYPE_NO = ?
+    ORDER BY m.MODEL_NAME
+"""
+
+# Branches for database switching
+AVAILABLE_DATABASES = {
+    "ITINVENT": {
+        "host": "10.103.0.213",
+        "database": "ITINVENT",
+        "username": "ROUser",
+        "access": "read-only",
+        "description": "Главная база"
+    },
+    "MSK-ITINVENT": {
+        "host": "10.103.0.213",
+        "database": "MSK-ITINVENT",
+        "username": "ROUser",
+        "access": "read-only",
+        "description": "Филиал Москва"
+    },
+    "OBJ-ITINVENT": {
+        "host": "10.103.0.213",
+        "database": "OBJ-ITINVENT",
+        "username": "RWUser",
+        "access": "read-write",
+        "description": "Объекты"
+    },
+    "SPB-ITINVENT": {
+        "host": "10.103.0.213",
+        "database": "SPB-ITINVENT",
+        "username": "ROUser",
+        "access": "read-only",
+        "description": "Филиал Санкт-Петербург"
+    },
+}
+
+
+def search_equipment_by_serial(
+    search_term: str, db_id: Optional[str] = None, branch_nos: Optional[Sequence[int]] = None
+) -> List[dict]:
+    """
+    Search equipment by serial number, hardware serial, or inventory number.
+
+    Args:
+        search_term: Serial number or inventory number to search for
+        db_id: Database ID to use (None for default)
+
+    Returns:
+        List of equipment dictionaries
+    """
+    return _search_equipment_by_serial(search_term, db_id, branch_nos=branch_nos, get_db_fn=get_db)
+
+
+def search_equipment_universal(
+    search_term: str,
+    page: int = 1,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+    type_no: Optional[int] = None,
+    field: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
+) -> dict:
+    """
+    Universal search across all equipment fields.
+
+    Args:
+        search_term: Search term
+        page: Page number (1-indexed)
+        limit: Results per page
+        db_id: Database ID to use (None for default)
+        type_no: Optional CI_TYPES.TYPE_NO filter (CI_TYPE=1)
+        field: Optional single-field scope (serial/model/inv_no/...)
+
+    Returns:
+        Dict with equipment list and pagination info
+    """
+    return _search_equipment_universal(
+        search_term,
+        page=page,
+        limit=limit,
+        db_id=db_id,
+        type_no=type_no,
+        field=field,
+        branch_nos=branch_nos,
+        get_db_fn=get_db,
+    )
+
+
+def search_employees(search_term: str, page: int = 1, limit: int = 50, db_id: Optional[str] = None) -> dict:
+    """
+    Search employees by name or department.
+
+    Args:
+        search_term: Name or department to search for
+        page: Page number (1-indexed)
+        limit: Results per page
+        db_id: Database ID to use (None for default)
+
+    Returns:
+        Dict with employees list and pagination info
+    """
+    db = get_db(db_id)
+    pattern = f"%{search_term}%"
+    offset = (page - 1) * limit
+
+    # Get count for pagination
+    count_result = db.execute_query(QUERY_COUNT_EMPLOYEES, (pattern, pattern))
+    total = count_result[0]["total"] if count_result else 0
+
+    # Get employees
+    employees = db.execute_query(
+        QUERY_SEARCH_BY_EMPLOYEE,
+        (pattern, pattern, offset, limit)
+    )
+
+    # The legacy ODBC driver preserves the uppercase source column names even
+    # when the API response models use snake_case.  Normalize at the database
+    # boundary so Pydantic does not reject otherwise valid SQL Server rows.
+    normalized_employees = [
+        {
+            "owner_no": row.get("owner_no", row.get("OWNER_NO")),
+            "name": row.get("name", row.get("OWNER_DISPLAY_NAME")) or "",
+            "department": row.get("department", row.get("OWNER_DEPT")),
+            "email": row.get("email", row.get("OWNER_EMAIL")),
+            "equipment_count": row.get("equipment_count", row.get("EQUIPMENT_COUNT", 0)) or 0,
+        }
+        for row in employees
+    ]
+
+    return {
+        "employees": normalized_employees,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
+
+
+def get_equipment_by_owner(owner_no: int, db_id: Optional[str] = None) -> List[dict]:
+    """
+    Get all equipment assigned to an employee.
+
+    Args:
+        owner_no: Employee ID (OWNER_NO)
+        db_id: Database ID to use (None for default)
+
+    Returns:
+        List of equipment dictionaries
+    """
+    db = get_db(db_id)
+    return db.execute_query(QUERY_GET_EQUIPMENT_BY_OWNER, (owner_no,))
+
+
+def get_equipment_by_owner_with_current_acts(
+    owner_no: int,
+    db_id: Optional[str] = None,
+) -> List[dict]:
+    """Get employee equipment enriched for the UI's current-act indicator."""
+    rows = get_equipment_by_owner(owner_no, db_id)
+    return enrich_equipment_current_acts(rows, db_id=db_id, get_db_fn=get_db)
+
+
+def _resolve_owner_no_across_db(
+    *,
+    db_id: Optional[str],
+    owner_no: Optional[int],
+    current_db_id: Optional[str],
+    employee_name: str = "",
+) -> Optional[int]:
+    """Resolve OWNER_NO for a Hub DB: exact id on current DB, else FIO match."""
+    current_key = str(current_db_id or "").strip().casefold()
+    db_key = str(db_id or "").strip().casefold()
+    prefer: Optional[int] = None
+    if owner_no and current_key and db_key and current_key == db_key:
+        prefer = int(owner_no)
+    elif owner_no and not current_key and (not db_key or db_key == current_key):
+        prefer = int(owner_no)
+
+    label = str(employee_name or "").strip()
+    if prefer is None and label:
+        from backend.services.warehouse_1c_service import fio_person_match_score
+
+        best_score = 0
+        best_owner_nos: set[int] = set()
+        for owner in list_owners_compact(db_id=db_id) or []:
+            owner_name = str(
+                owner.get("OWNER_DISPLAY_NAME")
+                or owner.get("owner_display_name")
+                or ""
+            ).strip()
+            if not owner_name:
+                continue
+            score = fio_person_match_score(owner_name, label)
+            if score < best_score:
+                continue
+            try:
+                candidate_no = int(owner.get("OWNER_NO") or owner.get("owner_no"))
+            except (TypeError, ValueError):
+                continue
+            if candidate_no <= 0:
+                continue
+            if score > best_score:
+                best_score = score
+                best_owner_nos = {candidate_no}
+            else:
+                best_owner_nos.add(candidate_no)
+        if best_score >= 50 and len(best_owner_nos) == 1:
+            prefer = next(iter(best_owner_nos))
+        elif best_score >= 50 and len(best_owner_nos) > 1:
+            # Several distinct owners tie on FIO — auto-picking the first one
+            # showed another person's equipment.  Leave unresolved so the
+            # caller reports nothing rather than wrong data.
+            logger.warning(
+                "Ambiguous owner FIO match for %r in db=%s: owner_nos=%s score=%s",
+                label, db_id, sorted(best_owner_nos), best_score,
+            )
+    return prefer
+
+
+def get_equipment_by_owner_all_databases(
+    owner_no: int,
+    *,
+    employee_name: str = "",
+    current_db_id: Optional[str] = None,
+    include_current_acts: bool = False,
+) -> List[dict]:
+    """Load employee equipment from all configured Hub databases, tagged with db meta."""
+    from backend.api.v1.database import get_all_db_configs
+
+    current = str(current_db_id or "").strip() or None
+    db_configs = get_all_db_configs() or []
+    if not db_configs and current:
+        db_configs = [{"id": current, "name": current}]
+    if not db_configs:
+        db_configs = [{"id": None, "name": "default"}]
+
+    label = str(employee_name or "").strip()
+
+    def _load_for_db(cfg: dict) -> tuple:
+        """Resolve the owner and fetch equipment for one Hub DB.
+
+        Returns (rows, failed_db_name) — a per-DB failure is reported to the
+        caller instead of silently dropping the database.
+        """
+        one_db_id = str(cfg.get("id") or "").strip() or None
+        one_db_name = str(cfg.get("name") or one_db_id or "Hub").strip() or "Hub"
+        is_current_db = bool(
+            current and one_db_id and current.casefold() == one_db_id.casefold()
+        )
+        try:
+            resolved = _resolve_owner_no_across_db(
+                db_id=one_db_id,
+                owner_no=owner_no,
+                current_db_id=current,
+                employee_name=label,
+            )
+        except Exception:
+            logger.exception("owner resolution failed for db=%s", one_db_id)
+            return [], one_db_name
+        if not resolved:
+            return [], None
+        try:
+            rows = (
+                get_equipment_by_owner_with_current_acts(resolved, one_db_id)
+                if include_current_acts
+                else get_equipment_by_owner(resolved, one_db_id)
+            )
+        except Exception:
+            logger.exception("get_equipment_by_owner failed for db=%s owner=%s", one_db_id, resolved)
+            return [], one_db_name
+        payloads = []
+        for row in rows or []:
+            payload = dict(row)
+            payload["hub_db_id"] = one_db_id or ""
+            payload["hub_db_name"] = one_db_name
+            payload["is_current_db"] = is_current_db
+            payload["hub_owner_no"] = resolved
+            payloads.append(payload)
+        return payloads, None
+
+    if len(db_configs) > 1:
+        # Fan out across DBs: latency becomes the slowest DB's RTT instead of
+        # the sum — matters once a remote SQL Server lags or hangs.
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = min(4, len(db_configs))
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="hub-crossdb"
+        ) as pool:
+            # map preserves config order, so failed_dbs stays deterministic.
+            outcomes = list(pool.map(_load_for_db, db_configs))
+    else:
+        outcomes = [_load_for_db(cfg) for cfg in db_configs]
+
+    merged: List[dict] = []
+    failed_dbs: List[str] = []
+    for rows, failed_name in outcomes:
+        merged.extend(rows)
+        if failed_name:
+            failed_dbs.append(failed_name)
+
+    merged.sort(
+        key=lambda row: (
+            0 if row.get("is_current_db") else 1,
+            str(row.get("hub_db_name") or "").casefold(),
+            str(row.get("inv_no") or row.get("INV_NO") or ""),
+        )
+    )
+    return {"equipment": merged, "failed_dbs": failed_dbs}
+
+
+def get_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> Optional[dict]:
+    """
+    Get equipment by inventory number.
+
+    Args:
+        inv_no: Inventory number (string or numeric)
+        db_id: Database ID to use (None for default)
+
+    Returns:
+        Equipment dict or None if not found
+    """
+    db = get_db(db_id)
+    # INV_NO is float in database, convert string to float
+    try:
+        inv_no_float = float(inv_no) if inv_no else None
+    except (ValueError, TypeError):
+        inv_no_float = None
+    # Primary expected columns in ITINVENT DB snapshots.
+    # If a specific database does not have these columns, query will fallback below.
+    optional_ip_select = "i.IP_ADDRESS as ip_address"
+    optional_mac_select = "i.MAC_ADDRESS as mac_address"
+    optional_network_select = "i.NETBIOS_NAME as network_name"
+    optional_domain_select = "i.DOMAIN_NAME as domain_name"
+    optional_extra_select = ""
+
+    try:
+        item_columns = _get_table_columns("ITEMS", db_id)
+        available_columns = {
+            str(row.get("column_name") or row.get("COLUMN_NAME") or "").upper()
+            for row in (item_columns or [])
+        }
+
+        def _pick_first(candidates: List[str]) -> Optional[str]:
+            for column in candidates:
+                if column in available_columns:
+                    return column
+            return None
+
+        ip_col = _pick_first(["IP_ADDRESS"])
+        mac_col = _pick_first(["MAC_ADDRESS", "MAC_ADDR", "MAC"])
+        network_col = _pick_first(
+            [
+                "NETBIOS_NAME",
+                "HOST_NAME",
+                "HOSTNAME",
+                "DNS_NAME",
+                "NETWORK_NAME",
+                "NET_NAME",
+                "PC_NAME",
+                "COMPUTER_NAME",
+            ]
+        )
+        domain_col = _pick_first(["DOMAIN_NAME", "NET_DOMAIN", "DOMAIN"])
+        date_create_col = _pick_first(["CREATE_DATE", "DATE_CREATE"])
+        date_modify_col = _pick_first(["CH_DATE", "DATE_LAST_MODIFY"])
+        ch_user_col = _pick_first(["CH_USER"])
+
+        if ip_col:
+            optional_ip_select = f"i.{ip_col} as ip_address"
+        if mac_col:
+            optional_mac_select = f"i.{mac_col} as mac_address"
+        if network_col:
+            optional_network_select = f"i.{network_col} as network_name"
+        if domain_col:
+            optional_domain_select = f"i.{domain_col} as domain_name"
+
+        extra_selects = []
+        if date_create_col:
+            extra_selects.append(f"i.{date_create_col} as date_create")
+        if date_modify_col:
+            extra_selects.append(f"i.{date_modify_col} as date_last_modify")
+        if ch_user_col:
+            extra_selects.append(f"i.{ch_user_col} as ch_user")
+        if extra_selects:
+            optional_extra_select = ",\n            " + ",\n            ".join(extra_selects)
+    except Exception:
+        pass
+
+    query = f"""
+        SELECT
+            i.ID as id,
+            i.INV_NO as inv_no,
+            i.SERIAL_NO as serial_no,
+            i.HW_SERIAL_NO as hw_serial_no,
+            i.PART_NO as part_no,
+            i.CI_TYPE as ci_type,
+            i.TYPE_NO as type_no,
+            i.MODEL_NO as model_no,
+            i.STATUS_NO as status_no,
+            i.EMPL_NO as empl_no,
+            i.BRANCH_NO as branch_no,
+            i.LOC_NO as loc_no,
+            t.TYPE_NAME as type_name,
+            m.MODEL_NAME as model_name,
+            v.VENDOR_NAME as vendor_name,
+            s.DESCR as status,
+            o.OWNER_DISPLAY_NAME as employee_name,
+            o.OWNER_DEPT as employee_dept,
+            o.OWNER_EMAIL as employee_email,
+            b.BRANCH_NAME as branch_name,
+            l.DESCR as location,
+            i.DESCR as DESCRIPTION,
+            {optional_ip_select},
+            {optional_mac_select},
+            {optional_network_select},
+            {optional_domain_select}{optional_extra_select}
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+        LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 1 AND i.INV_NO = ?
+    """
+
+    try:
+        result = db.execute_query(query, (inv_no_float,))
+    except Exception:
+        # Safe fallback to legacy query shape when optional metadata lookup fails.
+        result = db.execute_query(QUERY_GET_EQUIPMENT_BY_INV, (inv_no_float,))
+    return result[0] if result else None
+
+
+def get_equipment_acts_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
+    return _act_history_get_equipment_acts_by_inv(
+        inv_no,
+        db_id=db_id,
+        get_db_fn=get_db,
+        equipment_by_inv_fn=get_equipment_by_inv,
+    )
+
+
+def get_equipment_history_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
+    return _act_history_get_equipment_history_by_inv(
+        inv_no,
+        db_id=db_id,
+        get_db_fn=get_db,
+        equipment_by_inv_fn=get_equipment_by_inv,
+    )
+
+
+def search_equipment_acts(
+    q: str,
+    *,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
+) -> dict:
+    scope = {} if branch_nos is None else {"branch_nos": branch_nos}
+    return _act_history_search_equipment_acts(
+        q,
+        limit=limit,
+        db_id=db_id,
+        get_db_fn=get_db,
+        **scope,
+    )
+
+
+def list_latest_equipment_acts(
+    *,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
+) -> dict:
+    scope = {} if branch_nos is None else {"branch_nos": branch_nos}
+    return _act_history_list_latest_equipment_acts(
+        limit=limit,
+        db_id=db_id,
+        get_db_fn=get_db,
+        **scope,
+    )
+
+
+def get_equipment_items_by_ids(item_ids: List[int], db_id: Optional[str] = None) -> List[dict]:
+    """
+    Resolve equipment records by ITEMS.ID.
+
+    Returns normalized fields used by uploaded-act draft preview.
+    """
+    normalized_ids: List[int] = []
+    for raw in item_ids or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in normalized_ids:
+            normalized_ids.append(value)
+
+    if not normalized_ids:
+        return []
+
+    query = """
+        SELECT
+            i.ID AS item_id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.SERIAL_NO AS serial_no,
+            m.MODEL_NAME AS model_name,
+            o.OWNER_DISPLAY_NAME AS employee_name,
+            b.BRANCH_NAME AS branch_name,
+            l.DESCR AS location_name
+        FROM ITEMS i
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 1
+          AND i.ID IN ({ID_PLACEHOLDERS})
+        ORDER BY i.ID
+    """
+    db = get_db(db_id)
+    merged_rows: List[dict] = []
+    seen_item_ids: set = set()
+    for id_chunk in _in_clause_chunks(normalized_ids):
+        placeholders = ", ".join(["?"] * len(id_chunk))
+        rows = db.execute_query(
+            query.replace("{ID_PLACEHOLDERS}", placeholders),
+            tuple(id_chunk),
+        )
+        for row in rows or []:
+            key = row.get("item_id")
+            if key is not None and key in seen_item_ids:
+                continue
+            seen_item_ids.add(key)
+            merged_rows.append(row)
+    return merged_rows
+
+
+def _normalize_inv_no_token(raw: Any) -> Optional[str]:
+    """Normalize inventory number token for resilient matching.
+
+    Keeps non-numeric tokens (``INV/2``); the strict all-digits variant lives
+    behind ``strict_digits=True`` in the shared helper (act upload semantics).
+    """
+    return normalize_inv_no_token(raw)
+
+
+# SQL Server rejects statements with more than 2100 parameters. IN-clause
+# lookups chunk at 1800, same bound as equipment_current_act_reads.
+_IN_CLAUSE_CHUNK_SIZE = 1800
+
+
+def _in_clause_chunks(values: list):
+    for idx in range(0, len(values), _IN_CLAUSE_CHUNK_SIZE):
+        yield values[idx:idx + _IN_CLAUSE_CHUNK_SIZE]
+
+
+def _inv_no_sort_key(row: dict) -> tuple:
+    """Replicate ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID after merge."""
+    try:
+        inv_bigint = int(str(row.get("inv_no") or row.get("INV_NO") or "").strip())
+        numeric_rank = (1, inv_bigint)
+    except (TypeError, ValueError):
+        numeric_rank = (0, 0)  # TRY_CONVERT -> NULL sorts first in T-SQL
+    try:
+        item_id = int(row.get("id") or row.get("ID") or row.get("item_id") or 0)
+    except (TypeError, ValueError):
+        item_id = 0
+    return (*numeric_rank, item_id)
+
+
+def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = None) -> List[dict]:
+    """
+    Resolve equipment records by ITEMS.INV_NO.
+
+    Returns normalized fields used by uploaded-act draft preview.
+    """
+    normalized_tokens: List[str] = []
+    for raw in inv_nos or []:
+        token = _normalize_inv_no_token(raw)
+        if token and token not in normalized_tokens:
+            normalized_tokens.append(token)
+
+    if not normalized_tokens:
+        return []
+
+    query = f"""
+        SELECT
+            i.ID AS item_id,
+            i.ID AS id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.SERIAL_NO AS serial_no,
+            i.HW_SERIAL_NO AS hw_serial_no,
+            i.PART_NO AS part_no,
+            i.CI_TYPE AS ci_type,
+            i.TYPE_NO AS type_no,
+            i.MODEL_NO AS model_no,
+            i.STATUS_NO AS status_no,
+            i.EMPL_NO AS empl_no,
+            i.BRANCH_NO AS branch_no,
+            i.LOC_NO AS loc_no,
+            t.TYPE_NAME AS type_name,
+            m.MODEL_NAME AS model_name,
+            v.VENDOR_NAME AS vendor_name,
+            s.DESCR AS status,
+            o.OWNER_DISPLAY_NAME AS employee_name,
+            o.OWNER_DEPT AS employee_dept,
+            o.OWNER_EMAIL AS employee_email,
+            b.BRANCH_NAME AS branch_name,
+            l.DESCR AS location,
+            l.DESCR AS location_name,
+            i.DESCR AS DESCRIPTION,
+            i.IP_ADDRESS AS ip_address,
+            i.MAC_ADDRESS AS mac_address,
+            i.NETBIOS_NAME AS network_name,
+            i.DOMAIN_NAME AS domain_name
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+        LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 1
+          AND ({{WHERE_PARTS}})
+        ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID
+    """
+
+    db = get_db(db_id)
+    merged_rows: List[dict] = []
+    seen_item_ids: set = set()
+    for token_chunk in _in_clause_chunks(normalized_tokens):
+        text_tokens = [token for token in token_chunk if not re.fullmatch(r"\d+", token)]
+        numeric_tokens = [
+            int(token) for token in token_chunk if re.fullmatch(r"\d+", token)
+        ]
+
+        where_parts: List[str] = []
+        params: List[Any] = []
+        if text_tokens:
+            placeholders = ", ".join(["?"] * len(text_tokens))
+            where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
+            params.extend([token.upper() for token in text_tokens])
+        if numeric_tokens:
+            placeholders = ", ".join(["?"] * len(numeric_tokens))
+            where_parts.append(f"i.INV_NO IN ({placeholders})")
+            params.extend(numeric_tokens)
+        if not where_parts:
+            continue
+
+        rows = db.execute_query(
+            query.replace("{WHERE_PARTS}", " OR ".join(where_parts)),
+            tuple(params),
+        )
+        for row in rows or []:
+            key = row.get("item_id") or row.get("id")
+            if key is not None and key in seen_item_ids:
+                continue
+            seen_item_ids.add(key)
+            merged_rows.append(row)
+
+    merged_rows.sort(key=_inv_no_sort_key)
+    return merged_rows
+
+
+def get_equipment_items_by_serials(
+    serials: List[str],
+    db_id: Optional[str] = None,
+    *,
+    include_suffix: bool = False,
+) -> List[dict]:
+    """
+    Resolve equipment records by ITEMS.SERIAL_NO / HW_SERIAL_NO.
+
+    Serials are normalized on both sides (alphanumeric only, upper) so agent
+    monitor serials (EDID/WMI) match legacy values with separators.
+    With include_suffix=True also returns rows whose serial ENDS WITH a
+    requested token (EDID is often the numeric tail of the sticker serial).
+    Callers must disambiguate suffix hits themselves.
+    """
+    normalized_tokens: List[str] = []
+    for raw in serials or []:
+        token = re.sub(r"[^0-9A-Za-z]", "", str(raw or "")).upper()
+        if token and token not in normalized_tokens:
+            normalized_tokens.append(token)
+
+    if not normalized_tokens:
+        return []
+
+    query = """
+        SELECT
+            i.ID AS item_id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.SERIAL_NO AS serial_no,
+            i.HW_SERIAL_NO AS hw_serial_no,
+            t.TYPE_NAME AS type_name,
+            m.MODEL_NAME AS model_name,
+            i.EMPL_NO AS empl_no,
+            o.OWNER_DISPLAY_NAME AS employee_name
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        WHERE i.CI_TYPE = 1
+          AND ({WHERE_PARTS})
+        ORDER BY i.ID DESC
+    """
+
+    serial_expr = (
+        "UPPER(REPLACE(REPLACE(REPLACE(COALESCE({column}, ''), '-', ''), ' ', ''), ':', ''))"
+    )
+    db = get_db(db_id)
+    merged_rows: List[dict] = []
+    seen_item_ids: set = set()
+    for token_chunk in _in_clause_chunks(normalized_tokens):
+        placeholders = ", ".join(["?"] * len(token_chunk))
+        where_parts = (
+            f"{serial_expr.format(column='i.SERIAL_NO')} IN ({placeholders})"
+            f" OR {serial_expr.format(column='i.HW_SERIAL_NO')} IN ({placeholders})"
+        )
+        params = list(token_chunk) * 2
+        if include_suffix:
+            # Whole-token suffix + longest digit run (>=6 digits) so that
+            # 'UK02145013324' also fetches 'UK0A2145013324'-style rows.
+            suffix_terms: List[str] = []
+            for token in token_chunk:
+                if len(token) >= 4:
+                    suffix_terms.append(token)
+                digit_runs = re.findall(r"\d+", token)
+                longest_run = max(digit_runs, key=len, default="")
+                if len(longest_run) >= 6 and longest_run != token:
+                    suffix_terms.append(longest_run)
+                    if len(longest_run) >= 7:
+                        # A stray letter inside the stored serial splits the run;
+                        # its tail suffix still fetches the row.
+                        suffix_terms.append(longest_run[1:])
+            suffix_conditions = [
+                f"{serial_expr.format(column=column)} LIKE ('%' + ?)"
+                for term in suffix_terms
+                for column in ("i.SERIAL_NO", "i.HW_SERIAL_NO")
+            ]
+            if suffix_conditions:
+                where_parts += " OR " + " OR ".join(suffix_conditions)
+                params.extend(term for term in suffix_terms for _ in range(2))
+        rows = db.execute_query(
+            query.replace("{WHERE_PARTS}", where_parts),
+            tuple(params),
+        )
+        for row in rows or []:
+            key = row.get("item_id")
+            if key is not None and key in seen_item_ids:
+                continue
+            seen_item_ids.add(key)
+            merged_rows.append(row)
+
+    return merged_rows
+
+
+def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = None) -> List[dict]:
+    """
+    Resolve equipment records for transfer-act generation in one query.
+
+    This intentionally avoids get_equipment_by_inv() because that helper performs
+    per-call metadata discovery and would turn a multi-select act into N+1 SQL.
+    """
+    normalized_tokens: List[str] = []
+    for raw in inv_nos or []:
+        token = _normalize_inv_no_token(raw)
+        if token and token not in normalized_tokens:
+            normalized_tokens.append(token)
+
+    if not normalized_tokens:
+        return []
+
+    query = """
+        SELECT
+            i.ID AS id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.SERIAL_NO AS serial_no,
+            i.HW_SERIAL_NO AS hw_serial_no,
+            i.PART_NO AS part_no,
+            i.CI_TYPE AS ci_type,
+            i.TYPE_NO AS type_no,
+            i.MODEL_NO AS model_no,
+            i.STATUS_NO AS status_no,
+            i.EMPL_NO AS empl_no,
+            i.BRANCH_NO AS branch_no,
+            i.LOC_NO AS loc_no,
+            t.TYPE_NAME AS type_name,
+            m.MODEL_NAME AS model_name,
+            v.VENDOR_NAME AS vendor_name,
+            s.DESCR AS status,
+            o.OWNER_DISPLAY_NAME AS employee_name,
+            o.OWNER_DEPT AS employee_dept,
+            o.OWNER_EMAIL AS employee_email,
+            b.BRANCH_NAME AS branch_name,
+            l.DESCR AS location,
+            i.DESCR AS DESCRIPTION
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+        LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 1
+          AND ({WHERE_PARTS})
+        ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID
+    """
+
+    db = get_db(db_id)
+    merged_rows: List[dict] = []
+    seen_item_ids: set = set()
+    for token_chunk in _in_clause_chunks(normalized_tokens):
+        text_tokens = [token for token in token_chunk if not re.fullmatch(r"\d+", token)]
+        numeric_tokens = [
+            int(token) for token in token_chunk if re.fullmatch(r"\d+", token)
+        ]
+
+        where_parts: List[str] = []
+        params: List[Any] = []
+        if text_tokens:
+            placeholders = ", ".join(["?"] * len(text_tokens))
+            where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
+            params.extend([token.upper() for token in text_tokens])
+        if numeric_tokens:
+            placeholders = ", ".join(["?"] * len(numeric_tokens))
+            where_parts.append(f"i.INV_NO IN ({placeholders})")
+            params.extend(numeric_tokens)
+        if not where_parts:
+            continue
+
+        rows = db.execute_query(
+            query.replace("{WHERE_PARTS}", " OR ".join(where_parts)),
+            tuple(params),
+        )
+        for row in rows or []:
+            key = row.get("id")
+            if key is not None and key in seen_item_ids:
+                continue
+            seen_item_ids.add(key)
+            merged_rows.append(row)
+
+    merged_rows.sort(key=_inv_no_sort_key)
+    return merged_rows
+
+
+def _build_uploaded_act_addinfo(
+    doc_no: int,
+    from_employee: str,
+    to_employee: str,
+    doc_date: Optional[datetime],
+) -> str:
+    """Build DOCS.ADDINFO for uploaded transfer acts."""
+    from_short = to_short_fio(from_employee) or "-"
+    to_short = to_short_fio(to_employee) or "-"
+    date_str = doc_date.strftime("%d.%m.%Y %H:%M") if doc_date else "-"
+    return f"Акт {int(doc_no)} {from_short} - {to_short} от {date_str}"
+
+
+def _build_uploaded_act_file_name(act_line: str, original_file_name: str) -> str:
+    """Build a readable database file name from the uploaded-act note."""
+    raw_name = str(original_file_name or "").strip()
+    _base_name, extension = os.path.splitext(raw_name)
+    extension = extension.strip()
+    if not extension or len(extension) > 16:
+        extension = ".pdf"
+
+    max_base_len = 255 - len(extension)
+    base_name = _legacy_sqlserver_text(str(act_line or "").strip(), max_len=max_base_len).strip()
+    if not base_name:
+        base_name = "Акт"
+    return _legacy_sqlserver_text(f"{base_name}{extension}", max_len=255)
+
+
+def find_duplicate_uploaded_act(
+    from_employee: str,
+    to_employee: str,
+    doc_date: Optional[datetime],
+    file_name: str,
+    db_id: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Detect possible duplicate act by DOCS and FILES metadata.
+    """
+    db = get_db(db_id)
+    fname = str(file_name or "").strip()
+    from_short = to_short_fio(from_employee)
+    to_short = to_short_fio(to_employee)
+    date_str = doc_date.strftime("%d.%m.%Y") if doc_date else ""
+
+    if from_short and to_short and date_str:
+        addinfo_pattern = f"Акт % {from_short} - {to_short} от {date_str}"
+        docs_rows = db.execute_query(
+            """
+            SELECT TOP 1
+                d.DOC_NO AS doc_no,
+                d.DOC_NUMBER AS doc_number,
+                d.DOC_DATE AS doc_date
+            FROM DOCS d
+            WHERE d.ADDINFO LIKE ?
+            ORDER BY
+                CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
+                d.DOC_DATE DESC,
+                d.DOC_NO DESC
+            """,
+            (addinfo_pattern,),
+        )
+        if docs_rows:
+            row = docs_rows[0]
+            return {
+                "source": "DOCS",
+                "doc_no": row.get("doc_no") or row.get("DOC_NO"),
+                "doc_number": row.get("doc_number") or row.get("DOC_NUMBER"),
+                "doc_date": row.get("doc_date") or row.get("DOC_DATE"),
+            }
+
+    if fname:
+        files_rows = db.execute_query(
+            """
+            SELECT TOP 1
+                f.ITEM_ID AS doc_no,
+                f.FILE_NO AS file_no,
+                f.FILE_NAME AS file_name,
+                f.FILE_DESCR AS file_descr,
+                f.CREATE_DATE AS create_date
+            FROM FILES f
+            WHERE f.FILE_NAME = ?
+            ORDER BY f.CREATE_DATE DESC, f.FILE_NO DESC
+            """,
+            (fname,),
+        )
+        if files_rows:
+            row = files_rows[0]
+            return {
+                "source": "FILES",
+                "doc_no": row.get("doc_no") or row.get("DOC_NO"),
+                "file_no": row.get("file_no") or row.get("FILE_NO"),
+                "file_name": row.get("file_name") or row.get("FILE_NAME"),
+                "file_descr": row.get("file_descr") or row.get("FILE_DESCR"),
+                "create_date": row.get("create_date") or row.get("CREATE_DATE"),
+            }
+
+    return None
+
+
+def create_uploaded_transfer_act(
+    *,
+    from_employee: str,
+    to_employee: str,
+    doc_date: Optional[datetime],
+    equipment_item_ids: List[int],
+    file_name: str,
+    file_bytes: bytes,
+    created_by: str = "IT-WEB",
+    db_id: Optional[str] = None,
+) -> dict:
+    """
+    Create uploaded transfer act in DOCS + DOCS_LIST + FILES within one transaction.
+    """
+    if not file_bytes:
+        raise ValueError("file_bytes is empty")
+
+    normalized_ids: List[int] = []
+    for raw in equipment_item_ids or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in normalized_ids:
+            normalized_ids.append(value)
+    if not normalized_ids:
+        raise ValueError("equipment_item_ids is empty")
+    if len(normalized_ids) > _IN_CLAUSE_CHUNK_SIZE:
+        # The act links every item through several IN(...) lookups inside one
+        # transaction — beyond the SQL Server parameter budget it cannot
+        # complete anyway, so fail explicitly instead of mid-transaction.
+        raise ValueError(
+            f"Too many equipment items for one act: {len(normalized_ids)} "
+            f"(max {_IN_CLAUSE_CHUNK_SIZE})"
+        )
+
+    created_by_value = (
+        _legacy_sqlserver_text(created_by or "IT-WEB", max_len=128).strip()
+        or "IT-WEB"
+    )
+
+    date_value = doc_date or datetime.now()
+    from_employee_value = _legacy_sqlserver_text(str(from_employee or "").strip(), max_len=250)
+    to_employee_value = _legacy_sqlserver_text(str(to_employee or "").strip(), max_len=250)
+
+    owner_no = None
+    if to_employee_value:
+        owner_no = get_owner_no_by_name(to_employee_value, strict=True, db_id=db_id)
+        if owner_no is None:
+            owner_no = get_owner_no_by_name(to_employee_value, strict=False, db_id=db_id)
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+
+        # Collect previous act links before creating a new act.
+        previous_act_links: dict[int, list[str]] = {}
+        previous_doc_by_item: dict[int, int] = {}
+        if normalized_ids:
+            placeholders_prev = ", ".join(["?"] * len(normalized_ids))
+            cursor.execute(
+                f"""
+                SELECT
+                    dl.DOC_NO,
+                    dl.ITEM_ID,
+                    CAST(i.INV_NO AS VARCHAR(64)) AS INV_NO,
+                    i.SERIAL_NO AS SERIAL_NO,
+                    m.MODEL_NAME AS MODEL_NAME
+                FROM DOCS_LIST dl
+                INNER JOIN DOCS d ON d.DOC_NO = dl.DOC_NO
+                LEFT JOIN ITEMS i ON i.ID = dl.ITEM_ID AND i.CI_TYPE = 1
+                LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
+                WHERE dl.ITEM_ID IN ({placeholders_prev})
+                  AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+                  AND (
+                    LOWER(COALESCE(d.DOC_NUMBER, N'')) LIKE N'%акт%'
+                    OR LOWER(COALESCE(d.ADDINFO, N'')) LIKE N'%акт%'
+                    OR LOWER(COALESCE(d.DOC_NUMBER, N'')) LIKE N'%перемещ%'
+                    OR LOWER(COALESCE(d.ADDINFO, N'')) LIKE N'%перемещ%'
+                  )
+                """,
+                tuple(normalized_ids),
+            )
+            for row in cursor.fetchall() or []:
+                try:
+                    prev_doc_no = int(row[0]) if row[0] is not None else None
+                except Exception:
+                    prev_doc_no = None
+                if prev_doc_no is None:
+                    continue
+                try:
+                    item_id_value = int(row[1]) if row[1] is not None else None
+                except Exception:
+                    item_id_value = None
+                if item_id_value is not None:
+                    current_prev = previous_doc_by_item.get(item_id_value)
+                    if current_prev is None or prev_doc_no > current_prev:
+                        previous_doc_by_item[item_id_value] = prev_doc_no
+
+                inv_value = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ""
+                serial_value = str(row[3]).strip() if len(row) > 3 and row[3] is not None else ""
+                model_value = str(row[4]).strip() if len(row) > 4 and row[4] is not None else ""
+
+                label_parts: List[str] = []
+                if inv_value:
+                    label_parts.append(f"Инв.№ {inv_value}")
+                if serial_value:
+                    label_parts.append(f"Серийный {serial_value}")
+                if model_value:
+                    label_parts.append(f"Модель {model_value}")
+                item_label = ", ".join(label_parts).strip()
+                if not item_label:
+                    item_label = f"ITEM_ID {row[1]}"
+
+                bucket = previous_act_links.setdefault(prev_doc_no, [])
+                if item_label and item_label not in bucket:
+                    bucket.append(item_label)
+
+        # 1) Resolve branch/location from linked equipment (priority source).
+        equipment_branch_no = None
+        equipment_loc_no = None
+        if normalized_ids:
+            placeholders = ", ".join(["?"] * len(normalized_ids))
+            cursor.execute(
+                f"""
+                SELECT i.ID, i.BRANCH_NO, i.LOC_NO
+                FROM ITEMS i
+                WHERE i.CI_TYPE = 1
+                  AND i.ID IN ({placeholders})
+                """,
+                tuple(normalized_ids),
+            )
+            rows = cursor.fetchall()
+            by_item_id = {}
+            for row in rows or []:
+                try:
+                    by_item_id[int(row[0])] = row
+                except Exception:
+                    continue
+
+            for item_id in normalized_ids:
+                row = by_item_id.get(int(item_id))
+                if row is None:
+                    continue
+                if equipment_branch_no is None and row[1] is not None:
+                    equipment_branch_no = int(row[1])
+                if equipment_loc_no is None and row[2] is not None:
+                    equipment_loc_no = int(row[2])
+                if equipment_branch_no is not None and equipment_loc_no is not None:
+                    break
+
+        # 2) Resolve generic template defaults from latest linked document.
+        cursor.execute(
+            """
+            SELECT TOP 1
+                d.TYPE_NO, d.COMP_NO, d.BRANCH_NO, d.LOC_NO, d.EMPL_NO, d.SUPPL_NO
+            FROM DOCS d
+            WHERE EXISTS (
+                SELECT 1
+                FROM DOCS_LIST dl
+                WHERE dl.DOC_NO = d.DOC_NO
+                  AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+            )
+            ORDER BY
+                CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
+                d.DOC_DATE DESC,
+                d.DOC_NO DESC
+            """
+        )
+        template = cursor.fetchone()
+
+        template_type_no = int(template[0]) if template and template[0] is not None else 0
+        template_comp_no = int(template[1]) if template and template[1] is not None else 0
+        template_branch_no = int(template[2]) if template and template[2] is not None else None
+        template_loc_no = int(template[3]) if template and template[3] is not None else None
+        template_suppl_no = int(template[5]) if template and template[5] is not None else None
+
+        # Force document type as "Act" using recent non-annulled act documents.
+        cursor.execute(
+            """
+            SELECT TOP 1 d.TYPE_NO
+            FROM DOCS d
+            WHERE d.TYPE_NO IS NOT NULL
+              AND (
+                LOWER(COALESCE(d.DOC_NUMBER, N'')) LIKE N'%акт%'
+                OR LOWER(COALESCE(d.ADDINFO, N'')) LIKE N'%акт%'
+              )
+              AND LOWER(COALESCE(d.DOC_NUMBER, N'')) NOT LIKE N'%аннулир%'
+              AND LOWER(COALESCE(d.ADDINFO, N'')) NOT LIKE N'%аннулир%'
+            ORDER BY
+                CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
+                d.DOC_DATE DESC,
+                d.DOC_NO DESC
+            """
+        )
+        act_type_row = cursor.fetchone()
+        if act_type_row and act_type_row[0] is not None:
+            template_type_no = int(act_type_row[0])
+
+        branch_no_value = equipment_branch_no if equipment_branch_no is not None else template_branch_no
+        loc_no_value = equipment_loc_no if equipment_loc_no is not None else template_loc_no
+        # A template employee is unrelated to the uploaded transfer. Keeping
+        # EMPL_NO empty is safer than assigning the act to a random old owner;
+        # current-act lookup can still correlate it via equipment history.
+        empl_no_value = owner_no
+
+        # 3) DOCS insert. TABLOCKX+HOLDLOCK like CI_HISTORY: serializes the
+        # MAX+1 read so a concurrent act cannot claim the same DOC_NO.
+        cursor.execute("SELECT ISNULL(MAX(DOC_NO), 0) + 1 FROM DOCS WITH (TABLOCKX, HOLDLOCK)")
+        doc_no = int(cursor.fetchone()[0])
+        doc_number_value = _legacy_sqlserver_text(str(doc_no), max_len=250)
+        file_descr = doc_number_value
+        act_descr_line = _build_uploaded_act_addinfo(
+            doc_no,
+            from_employee_value,
+            to_employee_value,
+            date_value,
+        )
+        add_info = _legacy_sqlserver_text(act_descr_line, max_len=500)
+        safe_file_name = _build_uploaded_act_file_name(act_descr_line, file_name)
+
+        cursor.execute(
+            """
+            INSERT INTO DOCS (
+                DOC_NO, TYPE_NO, COMP_NO, BRANCH_NO, LOC_NO, EMPL_NO, SUPPL_NO,
+                DOC_NUMBER, DOC_DATE, DOC_SUMM, ADDINFO,
+                CREATE_DATE, CREATE_USER_NAME, CH_DATE, CH_USER
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                doc_no,
+                template_type_no,
+                template_comp_no,
+                branch_no_value,
+                loc_no_value,
+                empl_no_value,
+                template_suppl_no,
+                doc_number_value,
+                date_value,
+                0,
+                add_info,
+                date_value,
+                created_by_value,
+                date_value,
+                created_by_value,
+            ),
+        )
+
+        # 4) DOCS_LIST links. Keep old links; add only missing links for the new act.
+        for item_id in normalized_ids:
+            cursor.execute(
+                """
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM DOCS_LIST
+                    WHERE DOC_NO = ? AND ITEM_ID = ? AND (CI_TYPE = 1 OR CI_TYPE IS NULL)
+                )
+                INSERT INTO DOCS_LIST (DOC_NO, ITEM_ID, CI_TYPE)
+                VALUES (?, ?, 1)
+                """,
+                (doc_no, item_id, doc_no, item_id),
+            )
+
+        # 5) Add transfer note to equipment DESCRIPTION.
+        if normalized_ids:
+            placeholders_items = ", ".join(["?"] * len(normalized_ids))
+            cursor.execute(
+                f"""
+                SELECT i.ID, i.DESCR
+                FROM ITEMS i
+                WHERE i.CI_TYPE = 1
+                  AND i.ID IN ({placeholders_items})
+                """,
+                tuple(normalized_ids),
+            )
+            descr_by_item: dict[int, str] = {}
+            for row in cursor.fetchall() or []:
+                try:
+                    descr_item_id = int(row[0]) if row[0] is not None else None
+                except Exception:
+                    descr_item_id = None
+                if descr_item_id is None:
+                    continue
+                descr_by_item[descr_item_id] = str(row[1]) if row[1] is not None else ""
+
+            max_descr_len = 4000
+            now_dt_for_items = datetime.now()
+            note_line = act_descr_line
+            if len(note_line) > max_descr_len:
+                note_line = note_line[:max_descr_len]
+            for item_id in normalized_ids:
+                item_id_int = int(item_id)
+
+                existing_descr = descr_by_item.get(item_id_int) or ""
+                if existing_descr:
+                    separator = "" if note_line.endswith(("\r\n", "\n")) else "\r\n"
+                    remaining = max_descr_len - len(note_line) - len(separator)
+                    existing_descr = existing_descr[:max(0, remaining)]
+                    new_descr = f"{note_line}{separator}{existing_descr}"
+                else:
+                    new_descr = note_line
+
+                cursor.execute(
+                    """
+                    UPDATE ITEMS
+                    SET DESCR = ?, CH_DATE = ?, CH_USER = ?
+                    WHERE ID = ? AND CI_TYPE = 1
+                    """,
+                    (
+                        _legacy_sqlserver_text(new_descr, max_len=max_descr_len),
+                        now_dt_for_items,
+                        created_by_value,
+                        item_id_int,
+                    ),
+                )
+
+        # 6) Add note to previous acts and auto-annul old act when all items moved.
+        annulled_doc_nos: List[int] = []
+        cursor.execute(
+            """
+            SELECT TOP 1 d.TYPE_NO
+            FROM DOCS d
+            WHERE d.TYPE_NO IS NOT NULL
+              AND (
+                LOWER(COALESCE(d.DOC_NUMBER, N'')) LIKE N'%аннулирован%'
+                OR LOWER(COALESCE(d.ADDINFO, N'')) LIKE N'%аннулирован%'
+              )
+            ORDER BY
+                CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
+                d.DOC_DATE DESC,
+                d.DOC_NO DESC
+            """
+        )
+        annulled_type_row = cursor.fetchone()
+        annulled_type_no = int(annulled_type_row[0]) if annulled_type_row and annulled_type_row[0] is not None else None
+
+        if previous_act_links:
+            now_text = datetime.now().strftime("%d.%m.%Y %H:%M")
+            for prev_doc_no, inv_list in previous_act_links.items():
+                if int(prev_doc_no) == int(doc_no):
+                    continue
+                inv_part = "; ".join(inv_list[:20]) if inv_list else "нет данных"
+                note = f"{now_text}: №{prev_doc_no}->№{doc_no}: {inv_part}."
+
+                cursor.execute("SELECT TOP 1 ADDINFO FROM DOCS WHERE DOC_NO = ?", (prev_doc_no,))
+                prev_row = cursor.fetchone()
+                existing_addinfo = str(prev_row[0]).strip() if prev_row and prev_row[0] is not None else ""
+
+                max_len = 500
+                if len(note) > max_len:
+                    note = note[:max_len]
+                if existing_addinfo:
+                    remaining = max_len - len(note) - 1
+                    if remaining < 0:
+                        remaining = 0
+                    existing_addinfo = existing_addinfo[:remaining]
+                    new_addinfo = f"{existing_addinfo}\r\n{note}" if existing_addinfo else note
+                else:
+                    new_addinfo = note
+
+                cursor.execute(
+                    """
+                    UPDATE DOCS
+                    SET ADDINFO = ?, CH_DATE = ?, CH_USER = ?
+                    WHERE DOC_NO = ?
+                    """,
+                    (
+                        _legacy_sqlserver_text(new_addinfo, max_len=max_len),
+                        datetime.now(),
+                        created_by_value,
+                        prev_doc_no,
+                    ),
+                )
+
+                # Annul old act when all its equipment already has links to newer acts.
+                cursor.execute(
+                    """
+                    SELECT COUNT(DISTINCT dl.ITEM_ID)
+                    FROM DOCS_LIST dl
+                    WHERE dl.DOC_NO = ?
+                      AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+                    """,
+                    (prev_doc_no,),
+                )
+                total_items_raw = cursor.fetchone()
+                total_items = int(total_items_raw[0]) if total_items_raw and total_items_raw[0] is not None else 0
+
+                if total_items > 0:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(DISTINCT dl.ITEM_ID)
+                        FROM DOCS_LIST dl
+                        WHERE dl.DOC_NO = ?
+                          AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+                          AND EXISTS (
+                              SELECT 1
+                              FROM DOCS_LIST dl2
+                              INNER JOIN DOCS d2 ON d2.DOC_NO = dl2.DOC_NO
+                              WHERE dl2.ITEM_ID = dl.ITEM_ID
+                                AND (dl2.CI_TYPE = 1 OR dl2.CI_TYPE IS NULL)
+                                AND dl2.DOC_NO > ?
+                                AND (
+                                    LOWER(COALESCE(d2.DOC_NUMBER, N'')) LIKE N'%акт%'
+                                    OR LOWER(COALESCE(d2.ADDINFO, N'')) LIKE N'%акт%'
+                                    OR LOWER(COALESCE(d2.DOC_NUMBER, N'')) LIKE N'%перемещ%'
+                                    OR LOWER(COALESCE(d2.ADDINFO, N'')) LIKE N'%перемещ%'
+                                )
+                          )
+                        """,
+                        (prev_doc_no, prev_doc_no),
+                    )
+                    moved_items_raw = cursor.fetchone()
+                    moved_items = int(moved_items_raw[0]) if moved_items_raw and moved_items_raw[0] is not None else 0
+
+                    if moved_items >= total_items:
+                        cursor.execute(
+                            "SELECT TOP 1 DOC_NUMBER, ADDINFO FROM DOCS WHERE DOC_NO = ?",
+                            (prev_doc_no,),
+                        )
+                        doc_row = cursor.fetchone()
+                        old_doc_number = str(doc_row[0]).strip() if doc_row and doc_row[0] is not None else ""
+                        old_addinfo = str(doc_row[1]).strip() if doc_row and doc_row[1] is not None else ""
+
+                        annul_note = f"{now_text}: акт аннулирован (все позиции перенесены)."
+                        max_len = 500
+                        if len(annul_note) > max_len:
+                            annul_note = annul_note[:max_len]
+                        if old_addinfo:
+                            remaining = max_len - len(annul_note) - 1
+                            if remaining < 0:
+                                remaining = 0
+                            old_addinfo = old_addinfo[:remaining]
+                            old_addinfo_new = f"{old_addinfo}\r\n{annul_note}" if old_addinfo else annul_note
+                        else:
+                            old_addinfo_new = annul_note
+
+                        marker = "АННУЛИРОВАН"
+                        if marker.lower() in old_doc_number.lower():
+                            new_doc_number = _legacy_sqlserver_text(old_doc_number, max_len=250)
+                        else:
+                            prefix = "АННУЛИРОВАНО: "
+                            base_name = (old_doc_number or f"Акт {prev_doc_no}").strip()
+                            new_doc_number = _legacy_sqlserver_text(f"{prefix}{base_name}", max_len=250)
+                        old_addinfo_new = _legacy_sqlserver_text(old_addinfo_new, max_len=max_len)
+
+                        if annulled_type_no is not None:
+                            cursor.execute(
+                                """
+                                UPDATE DOCS
+                                SET DOC_NUMBER = ?, ADDINFO = ?, TYPE_NO = ?, CH_DATE = ?, CH_USER = ?
+                                WHERE DOC_NO = ?
+                                """,
+                                (
+                                    new_doc_number,
+                                    old_addinfo_new,
+                                    annulled_type_no,
+                                    datetime.now(),
+                                    created_by_value,
+                                    prev_doc_no,
+                                ),
+                            )
+                        else:
+                            cursor.execute(
+                                """
+                                UPDATE DOCS
+                                SET DOC_NUMBER = ?, ADDINFO = ?, CH_DATE = ?, CH_USER = ?
+                                WHERE DOC_NO = ?
+                                """,
+                                (
+                                    new_doc_number,
+                                    old_addinfo_new,
+                                    datetime.now(),
+                                    created_by_value,
+                                    prev_doc_no,
+                                ),
+                            )
+                        if int(prev_doc_no) not in annulled_doc_nos:
+                            annulled_doc_nos.append(int(prev_doc_no))
+
+        # 7) FILES insert (store binary PDF in FILE_DATA). Locked MAX+1 —
+        # same DOCS transaction already serializes, keep the FILES counter
+        # consistent under concurrency too.
+        cursor.execute("SELECT ISNULL(MAX(FILE_NO), 0) + 1 FROM FILES WITH (TABLOCKX, HOLDLOCK)")
+        file_no = int(cursor.fetchone()[0])
+
+        cursor.execute(
+            """
+            INSERT INTO FILES (
+                FILE_NO, CI_TYPE, ITEM_ID, FILE_TYPE, FILE_NAME, FILE_SIZE, FILE_DESCR, FILE_DATA,
+                CREATE_DATE, CREATE_USER
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)
+            """,
+            (
+                file_no,
+                10,  # Documents/acts bucket used in existing DB snapshots.
+                doc_no,
+                1,
+                safe_file_name,
+                round(float(len(file_bytes)) / (1024.0 * 1024.0), 2),
+                file_descr,
+                bytes(file_bytes),
+                created_by_value,
+            ),
+        )
+
+        return {
+            "doc_no": doc_no,
+            "doc_number": doc_number_value,
+            "file_no": file_no,
+            "linked_item_ids": normalized_ids,
+            "updated_previous_doc_nos": sorted(
+                [doc for doc in previous_act_links.keys() if int(doc) != int(doc_no)]
+            ),
+            "annulled_doc_nos": sorted(annulled_doc_nos),
+        }
+
+
+def update_uploaded_transfer_act_file(
+    *,
+    file_no: int,
+    file_bytes: bytes,
+    db_id: Optional[str] = None,
+) -> None:
+    """
+    Update FILES.FILE_DATA for uploaded act file.
+    Used to post-process PDF bytes (e.g., apply visible DOC_NO stamp).
+    """
+    if not file_bytes:
+        raise ValueError("file_bytes is empty")
+    try:
+        normalized_file_no = int(file_no)
+    except (TypeError, ValueError):
+        raise ValueError("file_no must be int") from None
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE FILES
+            SET FILE_DATA = ?,
+                FILE_SIZE = ?
+            WHERE FILE_NO = ?
+            """,
+            (
+                bytes(file_bytes),
+                round(float(len(file_bytes)) / (1024.0 * 1024.0), 2),
+                normalized_file_no,
+            ),
+        )
+
+
+def update_uploaded_transfer_act_file_by_doc_no(
+    *,
+    doc_no: int,
+    file_bytes: bytes,
+    db_id: Optional[str] = None,
+) -> Optional[int]:
+    """
+    Update latest FILES row bound to DOC_NO (FILES.ITEM_ID = DOC_NO, CI_TYPE=10).
+    Returns updated FILE_NO or None if not found.
+    """
+    if not file_bytes:
+        raise ValueError("file_bytes is empty")
+    try:
+        normalized_doc_no = int(doc_no)
+    except (TypeError, ValueError):
+        raise ValueError("doc_no must be int") from None
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 FILE_NO
+            FROM FILES
+            WHERE ITEM_ID = ?
+              AND CI_TYPE = 10
+            ORDER BY CREATE_DATE DESC, FILE_NO DESC
+            """,
+            (normalized_doc_no,),
+        )
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        file_no = int(row[0])
+        cursor.execute(
+            """
+            UPDATE FILES
+            SET FILE_DATA = ?,
+                FILE_SIZE = ?
+            WHERE FILE_NO = ?
+            """,
+            (
+                bytes(file_bytes),
+                round(float(len(file_bytes)) / (1024.0 * 1024.0), 2),
+                file_no,
+            ),
+        )
+        return file_no
+
+
+_table_columns_cache: dict = {}
+
+
+def _get_table_columns(table_name: str, db_id: Optional[str] = None) -> List[dict]:
+    """Read table columns metadata from INFORMATION_SCHEMA.COLUMNS.
+
+    Schema facts don't change without a deploy/restart — memoized per (db, table).
+    """
+    cache_key = (str(db_id or "").strip(), table_name)
+    cached = _table_columns_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    db = get_db(db_id)
+    query = """
+        SELECT
+            COLUMN_NAME as column_name,
+            DATA_TYPE as data_type
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION
+    """
+    rows = db.execute_query(query, (table_name,))
+    _table_columns_cache[cache_key] = rows
+    return rows
+
+
+def _guess_content_type_from_name(file_name: str) -> str:
+    guessed, _ = mimetypes.guess_type(file_name or "")
+    return guessed or "application/octet-stream"
+
+
+def _normalize_base64_text(raw_value: Any) -> Optional[str]:
+    """Normalize possible base64 text payload."""
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    if not text:
+        return None
+
+    # Handle data URI format: data:...;base64,<payload>
+    if text.lower().startswith("data:") and "," in text:
+        text = text.split(",", 1)[1].strip()
+
+    # Remove whitespace/new lines often present in DB text blobs
+    text = re.sub(r"\s+", "", text)
+    if not text:
+        return None
+
+    # Heuristic: binary file as base64 is usually long
+    if len(text) < 64:
+        return None
+
+    return text
+
+
+def _try_decode_base64(raw_value: Any) -> Optional[bytes]:
+    """Decode bytes from base64-like string value."""
+    normalized = _normalize_base64_text(raw_value)
+    if not normalized:
+        return None
+
+    candidates = [normalized]
+    if "-" in normalized or "_" in normalized:
+        candidates.append(normalized.replace("-", "+").replace("_", "/"))
+
+    for candidate in candidates:
+        padded = candidate
+        padding = len(padded) % 4
+        if padding:
+            padded += "=" * (4 - padding)
+
+        try:
+            data = base64.b64decode(padded, validate=True)
+            if data:
+                return data
+        except Exception:
+            try:
+                data = base64.b64decode(padded, validate=False)
+                if data:
+                    return data
+            except Exception:
+                continue
+
+    return None
+
+
+def _try_decode_base64_from_bytes(raw_bytes: bytes) -> Optional[bytes]:
+    """Try base64 decode for byte payloads that actually store ASCII base64."""
+    if not raw_bytes:
+        return None
+    try:
+        text = raw_bytes.decode("ascii")
+    except Exception:
+        return None
+    return _try_decode_base64(text)
+
+
+def get_equipment_act_file(
+    doc_no: Any,
+    item_id: Optional[int] = None,
+    inv_no: Optional[str] = None,
+    db_id: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Resolve binary file for equipment act/document.
+
+    Primary source: FILES table.
+    Fallback source: DOCS table (if binary data is stored there).
+    """
+    resolved_item_id = item_id
+    doc_tokens_text: List[str] = []
+    doc_tokens_int: List[int] = []
+
+    raw_doc_no = str(doc_no or "").strip()
+    if raw_doc_no:
+        doc_tokens_text.append(raw_doc_no)
+        try:
+            doc_tokens_int.append(int(raw_doc_no))
+        except (TypeError, ValueError):
+            pass
+
+    # Some databases store document file metadata by DOC_NUMBER (human number),
+    # while API path receives DOC_NO (internal id). Resolve both and search by both.
+    if doc_no not in (None, ""):
+        try:
+            db_for_doc = get_db(db_id)
+            doc_rows = db_for_doc.execute_query(
+                """
+                SELECT TOP 1 d.DOC_NUMBER
+                FROM DOCS d
+                WHERE d.DOC_NO = ?
+                """,
+                (doc_no,),
+            )
+            if doc_rows:
+                doc_number_raw = str(doc_rows[0].get("DOC_NUMBER") or "").strip()
+                if doc_number_raw and doc_number_raw not in doc_tokens_text:
+                    doc_tokens_text.append(doc_number_raw)
+                # Add DOC_NUMBER as numeric token only when it is a pure number.
+                # Do not extract all numeric chunks from free text (e.g. date "16.02.2026"),
+                # otherwise lookup can match unrelated FILES.ITEM_ID values.
+                if re.fullmatch(r"\d+", doc_number_raw):
+                    try:
+                        as_int = int(doc_number_raw)
+                        if as_int not in doc_tokens_int:
+                            doc_tokens_int.append(as_int)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
+    if resolved_item_id is None and inv_no not in (None, ""):
+        equipment = get_equipment_by_inv(str(inv_no), db_id)
+        if equipment:
+            raw_id = equipment.get("id") or equipment.get("ID")
+            try:
+                resolved_item_id = int(raw_id) if raw_id is not None else None
+            except (TypeError, ValueError):
+                resolved_item_id = None
+
+    candidate_item_ids: List[int] = []
+    if resolved_item_id is not None:
+        candidate_item_ids = [resolved_item_id]
+    elif doc_no not in (None, ""):
+        try:
+            db_for_items = get_db(db_id)
+            link_rows = db_for_items.execute_query(
+                """
+                SELECT DISTINCT dl.ITEM_ID
+                FROM DOCS_LIST dl
+                WHERE dl.DOC_NO = ?
+                  AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+                  AND dl.ITEM_ID IS NOT NULL
+                """,
+                (doc_no,),
+            )
+            for row in link_rows:
+                raw = row.get("ITEM_ID") or row.get("item_id")
+                try:
+                    if raw is not None:
+                        candidate_item_ids.append(int(raw))
+                except (TypeError, ValueError):
+                    continue
+        except Exception:
+            # If DOCS_LIST is unavailable in this DB/user context,
+            # keep fallback logic by explicit item_id/inv_no only.
+            candidate_item_ids = []
+
+    def _extract_from_table(table_name: str) -> Optional[dict]:
+        columns = _get_table_columns(table_name, db_id)
+        if not columns:
+            return None
+
+        db = get_db(db_id)
+        names = {str(c.get("column_name") or "").upper(): str(c.get("column_name") or "") for c in columns}
+        try:
+            safe_table_name = _quote_sqlserver_identifier(table_name)
+        except ValueError:
+            return None
+        safe_names = {}
+        for key, value in names.items():
+            try:
+                safe_names[key] = _quote_sqlserver_identifier(value)
+            except ValueError:
+                continue
+        file_name_col = names.get("FILE_NAME")
+        file_descr_col = names.get("FILE_DESCR")
+
+        rows: List[dict] = []
+        table_upper = table_name.upper()
+
+        # Pass 0 (FILES-specific): strict lookup by DOC token in ITEM_ID.
+        # In production snapshots act files are stored as FILES.ITEM_ID = DOC_NO.
+        if table_upper == "FILES" and "ITEM_ID" in safe_names and doc_tokens_int:
+            try:
+                exact_doc_ids = list(dict.fromkeys(doc_tokens_int))
+                cond_item = ""
+                params_item: List[Any] = []
+                if len(exact_doc_ids) == 1:
+                    cond_item = f"{safe_names['ITEM_ID']} = ?"
+                    params_item.append(exact_doc_ids[0])
+                else:
+                    placeholders = ", ".join(["?"] * len(exact_doc_ids))
+                    cond_item = f"{safe_names['ITEM_ID']} IN ({placeholders})"
+                    params_item.extend(exact_doc_ids)
+
+                conds = [cond_item]
+                if "CI_TYPE" in safe_names:
+                    # Prefer documents bucket to avoid collisions with equipment attachments.
+                    conds.append(f"{safe_names['CI_TYPE']} = 10")
+                where_exact = " AND ".join(conds)
+
+                order_cols: List[str] = []
+                if "CREATE_DATE" in safe_names:
+                    order_cols.append(f"{safe_names['CREATE_DATE']} DESC")
+                if "FILE_NO" in safe_names:
+                    order_cols.append(f"{safe_names['FILE_NO']} DESC")
+                order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else ""
+
+                rows = db.execute_query(
+                    f"SELECT TOP 50 * FROM {safe_table_name} WHERE {where_exact}{order_clause}",
+                    tuple(params_item),
+                )
+            except Exception:
+                rows = []
+
+        # Pass 1 (FILES-specific): direct metadata match by DOC number.
+        if table_upper == "FILES" and not rows and doc_tokens_text and (file_name_col or file_descr_col):
+            try:
+                conds: List[str] = []
+                ps: List[Any] = []
+                for token in doc_tokens_text:
+                    if not token:
+                        continue
+                    if file_name_col and "FILE_NAME" in safe_names:
+                        conds.append(f"{safe_names['FILE_NAME']} LIKE ?")
+                        ps.append(f"%{token}%")
+                    if file_descr_col and "FILE_DESCR" in safe_names:
+                        conds.append(f"{safe_names['FILE_DESCR']} LIKE ?")
+                        ps.append(f"%{token}%")
+                where_meta = f"({' OR '.join(conds)})"
+                # If possible, keep metadata search in DOC-related ITEM_ID subset only.
+                if "ITEM_ID" in safe_names and doc_tokens_int:
+                    exact_doc_ids = list(dict.fromkeys(doc_tokens_int))
+                    if len(exact_doc_ids) == 1:
+                        where_meta += f" AND {safe_names['ITEM_ID']} = ?"
+                        ps.append(exact_doc_ids[0])
+                    else:
+                        placeholders = ", ".join(["?"] * len(exact_doc_ids))
+                        where_meta += f" AND {safe_names['ITEM_ID']} IN ({placeholders})"
+                        ps.extend(exact_doc_ids)
+                order_meta = f" ORDER BY {safe_names['CREATE_DATE']} DESC" if "CREATE_DATE" in safe_names else ""
+                rows = db.execute_query(
+                    f"SELECT TOP 50 * FROM {safe_table_name} WHERE {where_meta}{order_meta}",
+                    tuple(ps),
+                )
+            except Exception:
+                rows = []
+            # Avoid false positive by ITEM_ID fallback when FILE metadata does not match DOC_NO.
+            if not rows:
+                return None
+
+        # Pass 2: standard key-based filters.
+        if not rows:
+            conditions: List[str] = []
+            params: List[Any] = []
+            item_ids_for_lookup: List[int] = []
+            for raw_id in (candidate_item_ids + doc_tokens_int):
+                if raw_id not in item_ids_for_lookup:
+                    item_ids_for_lookup.append(raw_id)
+
+            if item_ids_for_lookup and "ITEM_ID" in safe_names:
+                if len(item_ids_for_lookup) == 1:
+                    conditions.append(f"{safe_names['ITEM_ID']} = ?")
+                    params.append(item_ids_for_lookup[0])
+                else:
+                    placeholders = ", ".join(["?"] * len(item_ids_for_lookup))
+                    conditions.append(f"{safe_names['ITEM_ID']} IN ({placeholders})")
+                    params.extend(item_ids_for_lookup)
+            if doc_no not in (None, "") and "DOC_NO" in safe_names:
+                conditions.append(f"{safe_names['DOC_NO']} = ?")
+                params.append(doc_no)
+
+            if not conditions:
+                return None
+
+            where_clause = " AND ".join(conditions)
+            rows = db.execute_query(f"SELECT TOP 50 * FROM {safe_table_name} WHERE {where_clause}", tuple(params))
+
+        if not rows:
+            return None
+
+        path_columns = [
+            "FILE_PATH", "PATH", "DOC_PATH", "FULL_PATH", "STORAGE_PATH", "ABS_PATH",
+        ]
+        url_columns = [
+            "FILE_URL", "URL", "LINK", "DOC_URL",
+        ]
+        preferred_name_columns = [
+            "FILE_NAME", "FILENAME", "DOC_FILE_NAME", "NAME",
+            "FILE_TITLE", "TITLE", "DOC_NAME",
+        ]
+        preferred_type_columns = [
+            "CONTENT_TYPE", "MIME_TYPE", "FILE_MIME",
+        ]
+
+        binary_data_types = {"varbinary", "binary", "image"}
+        binary_candidates = [
+            str(col.get("column_name") or "")
+            for col in columns
+            if str(col.get("data_type") or "").lower() in binary_data_types
+        ]
+        preferred_binary_names = [
+            "FILE_DATA", "DOC_DATA", "DATA", "CONTENT", "FILE_CONTENT",
+            "BINARY_DATA", "BIN_DATA", "IMAGE_DATA", "BODY",
+        ]
+
+        text_data_types = {"varchar", "nvarchar", "text", "ntext", "char", "nchar"}
+        text_candidates = [
+            str(col.get("column_name") or "")
+            for col in columns
+            if str(col.get("data_type") or "").lower() in text_data_types
+        ]
+        preferred_text_names = [
+            "FILE_DATA", "DOC_DATA", "DATA", "CONTENT", "FILE_CONTENT",
+            "BINARY_DATA", "BIN_DATA", "BODY", "BASE64_DATA",
+        ]
+
+        def _payload_from_row(row: dict) -> Optional[dict]:
+            # 1) Path/URL storage support (keep as fallback; prefer blob when available)
+            path_payload: Optional[dict] = None
+            url_payload: Optional[dict] = None
+
+            for candidate in path_columns:
+                if candidate in names:
+                    raw_path = row.get(names[candidate])
+                    file_path = str(raw_path or "").strip()
+                    if file_path:
+                        file_name = os.path.basename(file_path) or f"act_{doc_no}.bin"
+                        path_payload = {
+                            "file_path": file_path,
+                            "file_name": file_name,
+                            "source_table": table_name,
+                            "storage": "path",
+                        }
+                        break
+
+            for candidate in url_columns:
+                if candidate in names:
+                    raw_url = row.get(names[candidate])
+                    file_url = str(raw_url or "").strip()
+                    if file_url:
+                        file_name = f"act_{doc_no}.bin"
+                        for name_col in preferred_name_columns:
+                            if name_col in names:
+                                raw_name = row.get(names[name_col])
+                                if raw_name is not None and str(raw_name).strip():
+                                    file_name = str(raw_name).strip()
+                                    break
+                        url_payload = {
+                            "file_url": file_url,
+                            "file_name": file_name,
+                            "source_table": table_name,
+                            "storage": "url",
+                        }
+                        break
+
+            selected_binary_cols: List[str] = []
+            for candidate in preferred_binary_names:
+                if candidate in names and names[candidate] in binary_candidates:
+                    selected_binary_cols.append(names[candidate])
+            for col_name in binary_candidates:
+                if col_name not in selected_binary_cols:
+                    selected_binary_cols.append(col_name)
+            for key, value in row.items():
+                if key not in selected_binary_cols and isinstance(value, (bytes, bytearray, memoryview)):
+                    selected_binary_cols.append(key)
+
+            file_bytes = None
+            for col_name in selected_binary_cols:
+                raw_bytes = row.get(col_name)
+                if isinstance(raw_bytes, memoryview):
+                    candidate_bytes = raw_bytes.tobytes()
+                elif isinstance(raw_bytes, bytearray):
+                    candidate_bytes = bytes(raw_bytes)
+                elif isinstance(raw_bytes, bytes):
+                    candidate_bytes = raw_bytes
+                else:
+                    continue
+
+                # Some schemas store base64 text in byte columns.
+                try:
+                    maybe_text = candidate_bytes.decode("ascii")
+                except Exception:
+                    maybe_text = None
+                if maybe_text:
+                    decoded = _try_decode_base64(maybe_text)
+                    if decoded:
+                        candidate_bytes = decoded
+
+                if candidate_bytes:
+                    file_bytes = candidate_bytes
+                    if file_bytes.startswith(b"%PDF-"):
+                        break
+
+            # Fallback: decode base64 from text columns
+            if not file_bytes:
+                selected_text_cols: List[str] = []
+                for candidate in preferred_text_names:
+                    if candidate in names and names[candidate] in text_candidates:
+                        selected_text_cols.append(names[candidate])
+                for col_name in text_candidates:
+                    if col_name not in selected_text_cols:
+                        selected_text_cols.append(col_name)
+
+                for col_name in selected_text_cols:
+                    decoded = _try_decode_base64(row.get(col_name))
+                    if decoded:
+                        file_bytes = decoded
+                        if file_bytes.startswith(b"%PDF-"):
+                            break
+
+            if not file_bytes:
+                if path_payload:
+                    return path_payload
+                if url_payload:
+                    return url_payload
+                return None
+
+            # If payload contains prefix bytes before PDF header, cut to real PDF start.
+            pdf_idx = file_bytes.find(b"%PDF-")
+            if 0 < pdf_idx < 4096:
+                file_bytes = file_bytes[pdf_idx:]
+
+            file_name = None
+            for candidate in preferred_name_columns:
+                if candidate in names:
+                    value = row.get(names[candidate])
+                    if value is not None and str(value).strip():
+                        file_name = str(value).strip()
+                        break
+
+            if not file_name:
+                ext = ".pdf" if file_bytes.startswith(b"%PDF-") else ".bin"
+                file_name = f"act_{doc_no}{ext}" if doc_no not in (None, "") else f"act_file{ext}"
+
+            content_type = None
+            for candidate in preferred_type_columns:
+                if candidate in names:
+                    value = row.get(names[candidate])
+                    normalized = str(value or "").strip().lower()
+                    # Keep only valid MIME-like values.
+                    if normalized and "/" in normalized and " " not in normalized:
+                        content_type = normalized
+                        break
+            if not content_type:
+                content_type = "application/pdf" if file_bytes.startswith(b"%PDF-") else _guess_content_type_from_name(file_name)
+
+            return {
+                "file_bytes": file_bytes,
+                "file_name": file_name,
+                "content_type": content_type,
+                "source_table": table_name,
+                "storage": "blob",
+                "raw_name": str(row.get(file_name_col) or "") if file_name_col else "",
+                "raw_descr": str(row.get(file_descr_col) or "") if file_descr_col else "",
+                "raw_item_id": row.get(names["ITEM_ID"]) if "ITEM_ID" in names else None,
+            }
+
+        def _score_payload(payload: dict) -> int:
+            if not payload:
+                return -1
+            doc_token_values = [str(token).strip().lower() for token in doc_tokens_text if str(token).strip()]
+            name_text = str(payload.get("raw_name") or payload.get("file_name") or "").lower()
+            descr_text = str(payload.get("raw_descr") or "").lower()
+            doc_match_bonus = 0
+            if doc_token_values:
+                has_match = any((token in name_text) or (token in descr_text) for token in doc_token_values)
+                if has_match:
+                    doc_match_bonus = 40
+                elif name_text or descr_text:
+                    doc_match_bonus = -30
+
+            item_match_bonus = 0
+            raw_item_id = payload.get("raw_item_id")
+            primary_doc_int = doc_tokens_int[0] if doc_tokens_int else None
+            try:
+                raw_item_id_int = int(raw_item_id) if raw_item_id is not None else None
+            except (TypeError, ValueError):
+                raw_item_id_int = None
+            if raw_item_id_int is not None and primary_doc_int is not None:
+                if raw_item_id_int == primary_doc_int:
+                    item_match_bonus = 80
+                elif raw_item_id_int in doc_tokens_int:
+                    item_match_bonus = 40
+                elif raw_item_id_int in candidate_item_ids:
+                    # Penalize equipment-level attachments when DOC-level file is expected.
+                    item_match_bonus = -25
+
+            if payload.get("file_path"):
+                fp = str(payload.get("file_path") or "").lower()
+                base = 95 if fp.endswith(".pdf") else 70
+                return base + doc_match_bonus + item_match_bonus
+            if payload.get("file_url"):
+                fu = str(payload.get("file_url") or "").lower()
+                base = 92 if fu.endswith(".pdf") else 65
+                return base + doc_match_bonus + item_match_bonus
+            b = payload.get("file_bytes") or b""
+            if not isinstance(b, (bytes, bytearray)):
+                return 0 + doc_match_bonus + item_match_bonus
+            if bytes(b).startswith(b"%PDF-"):
+                return 100 + doc_match_bonus + item_match_bonus
+            if b"%PDF-" in bytes(b)[:4096]:
+                return 90 + doc_match_bonus + item_match_bonus
+            if bytes(b).startswith(b"PK\x03\x04"):
+                return 80 + doc_match_bonus + item_match_bonus
+            return 10 + min(len(bytes(b)) // 1024, 30) + doc_match_bonus + item_match_bonus
+
+        best_payload = None
+        best_score = -1
+        for row in rows:
+            payload = _payload_from_row(row)
+            score = _score_payload(payload) if payload else -1
+            if score > best_score:
+                best_payload = payload
+                best_score = score
+                if score >= 100:
+                    break
+
+        return best_payload
+
+    payload = _extract_from_table("FILES")
+    if payload:
+        return payload
+    return _extract_from_table("DOCS")
+
+
+def inspect_equipment_act_storage(
+    doc_no: Any,
+    item_id: Optional[int] = None,
+    inv_no: Optional[str] = None,
+    db_id: Optional[str] = None,
+) -> dict:
+    """
+    Inspect how act/document content is stored in FILES/DOCS.
+    Returns metadata only (no full payload) to diagnose storage format.
+    """
+    resolved_item_id = item_id
+    if resolved_item_id is None and inv_no not in (None, ""):
+        equipment = get_equipment_by_inv(str(inv_no), db_id)
+        if equipment:
+            raw_id = equipment.get("id") or equipment.get("ID")
+            try:
+                resolved_item_id = int(raw_id) if raw_id is not None else None
+            except (TypeError, ValueError):
+                resolved_item_id = None
+
+    candidate_item_ids: List[int] = []
+    docs_list_error: Optional[str] = None
+    if resolved_item_id is not None:
+        candidate_item_ids = [resolved_item_id]
+    elif doc_no not in (None, ""):
+        try:
+            db_for_items = get_db(db_id)
+            link_rows = db_for_items.execute_query(
+                """
+                SELECT DISTINCT dl.ITEM_ID
+                FROM DOCS_LIST dl
+                WHERE dl.DOC_NO = ?
+                  AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
+                  AND dl.ITEM_ID IS NOT NULL
+                """,
+                (doc_no,),
+            )
+            for row in link_rows:
+                raw = row.get("ITEM_ID") or row.get("item_id")
+                try:
+                    if raw is not None:
+                        candidate_item_ids.append(int(raw))
+                except (TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            docs_list_error = str(exc)
+
+    def _looks_like_path(text: str) -> bool:
+        s = str(text or "").strip()
+        if not s:
+            return False
+        sl = s.lower()
+        if sl.startswith("\\\\") or re.match(r"^[a-z]:\\", sl):
+            return True
+        return sl.endswith((".pdf", ".doc", ".docx", ".xls", ".xlsx", ".jpg", ".jpeg", ".png"))
+
+    def _looks_like_url(text: str) -> bool:
+        s = str(text or "").strip().lower()
+        return s.startswith("http://") or s.startswith("https://")
+
+    def _sample_row(row: dict, column_types: dict) -> dict:
+        fields = []
+        for key, value in row.items():
+            if value is None:
+                continue
+            field_info = {
+                "column": key,
+                "data_type": column_types.get(key.lower()),
+            }
+            if isinstance(value, memoryview):
+                b = value.tobytes()
+                field_info.update({
+                    "kind": "bytes",
+                    "length": len(b),
+                    "head_hex": b[:24].hex(),
+                    "has_pdf_prefix": b.startswith(b"%PDF-"),
+                    "has_pdf_inside": b"%PDF-" in b[:4096],
+                })
+            elif isinstance(value, (bytes, bytearray)):
+                b = bytes(value)
+                field_info.update({
+                    "kind": "bytes",
+                    "length": len(b),
+                    "head_hex": b[:24].hex(),
+                    "has_pdf_prefix": b.startswith(b"%PDF-"),
+                    "has_pdf_inside": b"%PDF-" in b[:4096],
+                })
+                decoded_b64 = _try_decode_base64_from_bytes(b)
+                if decoded_b64:
+                    field_info["base64_decoded_len"] = len(decoded_b64)
+                    field_info["base64_has_pdf_prefix"] = decoded_b64.startswith(b"%PDF-")
+            elif isinstance(value, str):
+                s = value.strip()
+                field_info.update({
+                    "kind": "text",
+                    "length": len(s),
+                    "sample": s[:140],
+                    "looks_like_path": _looks_like_path(s),
+                    "looks_like_url": _looks_like_url(s),
+                    "looks_like_base64": _normalize_base64_text(s) is not None,
+                })
+                decoded = _try_decode_base64(s)
+                if decoded:
+                    field_info["base64_decoded_len"] = len(decoded)
+                    field_info["base64_has_pdf_prefix"] = decoded.startswith(b"%PDF-")
+            else:
+                field_info.update({
+                    "kind": type(value).__name__,
+                    "sample": str(value)[:140],
+                })
+            fields.append(field_info)
+        return {
+            "non_null_fields": len(fields),
+            "fields": fields,
+        }
+
+    def _inspect_table(table_name: str) -> dict:
+        columns = _get_table_columns(table_name, db_id)
+        column_list = [
+            {
+                "column_name": str(col.get("column_name") or ""),
+                "data_type": str(col.get("data_type") or "").lower(),
+            }
+            for col in columns
+        ]
+        column_types = {
+            str(col.get("column_name") or "").lower(): str(col.get("data_type") or "").lower()
+            for col in columns
+        }
+        names = {str(col.get("column_name") or "").upper(): str(col.get("column_name") or "") for col in columns}
+        try:
+            safe_table_name = _quote_sqlserver_identifier(table_name)
+        except ValueError:
+            return {
+                "table": table_name,
+                "filter_supported": False,
+                "rows_found": 0,
+                "columns": column_list,
+                "rows": [],
+            }
+        safe_names = {}
+        for key, value in names.items():
+            try:
+                safe_names[key] = _quote_sqlserver_identifier(value)
+            except ValueError:
+                continue
+
+        conditions: List[str] = []
+        params: List[Any] = []
+        if candidate_item_ids and "ITEM_ID" in safe_names:
+            if len(candidate_item_ids) == 1:
+                conditions.append(f"{safe_names['ITEM_ID']} = ?")
+                params.append(candidate_item_ids[0])
+            else:
+                placeholders = ", ".join(["?"] * len(candidate_item_ids))
+                conditions.append(f"{safe_names['ITEM_ID']} IN ({placeholders})")
+                params.extend(candidate_item_ids)
+        if doc_no not in (None, "") and "DOC_NO" in safe_names:
+            conditions.append(f"{safe_names['DOC_NO']} = ?")
+            params.append(doc_no)
+
+        if not conditions:
+            sample_rows = []
+            try:
+                db = get_db(db_id)
+                rows = db.execute_query(f"SELECT TOP 3 * FROM {safe_table_name}", ())
+                sample_rows = [_sample_row(row, column_types) for row in rows]
+            except Exception:
+                sample_rows = []
+            return {
+                "table": table_name,
+                "filter_supported": False,
+                "rows_found": 0,
+                "columns": column_list,
+                "rows": sample_rows,
+            }
+
+        where_clause = " AND ".join(conditions)
+        db = get_db(db_id)
+        rows = db.execute_query(f"SELECT TOP 5 * FROM {safe_table_name} WHERE {where_clause}", tuple(params))
+
+        return {
+            "table": table_name,
+            "filter_supported": True,
+            "rows_found": len(rows),
+            "columns": column_list,
+            "rows": [_sample_row(row, column_types) for row in rows],
+        }
+
+    return {
+        "doc_no": doc_no,
+        "item_id": resolved_item_id,
+        "candidate_item_ids": candidate_item_ids,
+        "docs_list_error": docs_list_error,
+        "tables": [
+            _inspect_table("FILES"),
+            _inspect_table("DOCS"),
+        ],
+    }
+
+
+def get_all_equipment(page: int = 1, limit: int = 50, db_id: Optional[str] = None) -> dict:
+    """
+    Get all equipment with pagination.
+
+    Args:
+        page: Page number (1-indexed)
+        limit: Results per page
+        db_id: Database ID to use (None for default)
+
+    Returns:
+        Dict with equipment list and pagination info
+    """
+    db = get_db(db_id)
+    offset = (page - 1) * limit
+
+    # Get count
+    count_result = db.execute_query(QUERY_COUNT_ALL_EQUIPMENT)
+    total = count_result[0]["total"] if count_result else 0
+
+    # Get equipment
+    equipment = db.execute_query(QUERY_GET_ALL_EQUIPMENT, (offset, limit))
+    normalized_equipment = []
+    for row in equipment:
+        normalized = {str(key).lower(): value for key, value in row.items()}
+        normalized["inv_no"] = _normalize_inv_no_token(normalized.get("inv_no")) or ""
+        normalized_equipment.append(normalized)
+
+    return {
+        "equipment": normalized_equipment,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
+
+
+def get_all_branches(db_id: Optional[str] = None) -> List[dict]:
+    return _directory_get_all_branches(db_id, get_db_fn=get_db)
+
+
+def get_locations_by_branch(branch_id: Any, db_id: Optional[str] = None) -> List[dict]:
+    return _directory_get_locations_by_branch(branch_id, db_id, get_db_fn=get_db)
+
+
+def get_all_locations(db_id: Optional[str] = None, branch_no: Any = None, only_branch: bool = False) -> List[dict]:
+    return _directory_get_all_locations(db_id, branch_no=branch_no, only_branch=only_branch, get_db_fn=get_db)
+
+
+def get_all_equipment_types(db_id: Optional[str] = None) -> List[dict]:
+    """Get all equipment types."""
+    return _reference_get_all_equipment_types(db_id, get_db_fn=get_db)
+
+
+def get_all_statuses(db_id: Optional[str] = None) -> List[dict]:
+    """Get all equipment statuses."""
+    return _reference_get_all_statuses(db_id, get_db_fn=get_db)
+
+
+def get_available_databases() -> dict:
+    """Get list of available databases."""
+    return AVAILABLE_DATABASES
+
+
+def update_equipment_location(
+    inv_no: str,
+    new_employee_no: int,
+    branch_no: int,
+    loc_no: int,
+    db_id: Optional[str] = None
+) -> bool:
+    """
+    Update equipment location and employee assignment.
+
+    Args:
+        inv_no: Inventory number (string or numeric)
+        new_employee_no: New employee ID
+        branch_no: Branch ID
+        loc_no: Location ID
+        db_id: Database ID to use (None for default)
+
+    Returns:
+        True if update was successful
+    """
+    db = get_db(db_id)
+    # INV_NO is float in database, convert string to float
+    try:
+        inv_no_float = float(inv_no) if inv_no else None
+    except (ValueError, TypeError):
+        inv_no_float = None
+    query = """
+        UPDATE ITEMS
+        SET EMPL_NO = ?, BRANCH_NO = ?, LOC_NO = ?
+        WHERE CI_TYPE = 1
+          AND INV_NO = ?
+    """
+    affected = db.execute_update(query, (new_employee_no, branch_no, loc_no, inv_no_float))
+    return affected > 0
+
+
+def search_owners(search_term: str, limit: int = 20, db_id: Optional[str] = None) -> List[dict]:
+    """
+    Search owners for autocomplete/select controls.
+
+    Args:
+        search_term: Name or department search term
+        limit: Maximum number of rows
+        db_id: Database ID to use
+
+    Returns:
+        List of owners with OWNER_NO, OWNER_DISPLAY_NAME, OWNER_DEPT
+    """
+    db = get_db(db_id)
+    safe_limit = max(1, min(int(limit or 20), 100))
+    pattern = f"%{search_term}%"
+    query = f"""
+        SELECT TOP {safe_limit}
+            o.OWNER_NO,
+            o.OWNER_DISPLAY_NAME,
+            o.OWNER_DEPT
+        FROM OWNERS o
+        WHERE o.OWNER_DISPLAY_NAME LIKE ?
+           OR o.OWNER_DEPT LIKE ?
+        ORDER BY o.OWNER_DISPLAY_NAME
+    """
+    return db.execute_query(query, (pattern, pattern))
+
+
+def list_owners_compact(db_id: Optional[str] = None, limit: int = 20000) -> List[dict]:
+    """Compact OWNERS list for FIO matching against 1C warehouse names."""
+    db = get_db(db_id)
+    safe_limit = max(1, min(int(limit or 20000), 50000))
+    query = f"""
+        SELECT TOP {safe_limit}
+            o.OWNER_NO,
+            o.OWNER_DISPLAY_NAME,
+            o.OWNER_DEPT
+        FROM OWNERS o
+        WHERE o.OWNER_DISPLAY_NAME IS NOT NULL
+          AND LTRIM(RTRIM(o.OWNER_DISPLAY_NAME)) <> ''
+        ORDER BY o.OWNER_DISPLAY_NAME
+    """
+    return db.execute_query(query, ())
+
+
+def get_owner_part_no_counts(db_id: Optional[str] = None) -> List[dict]:
+    """Per-owner PART_NO buckets for the employee↔1C compare summary."""
+    db = get_db(db_id)
+    sql = """
+        SELECT
+            i.EMPL_NO AS owner_no,
+            i.PART_NO AS part_no,
+            COUNT(1) AS item_count
+        FROM ITEMS i
+        WHERE i.CI_TYPE = 1
+          AND i.EMPL_NO IS NOT NULL
+          AND i.EMPL_NO > 0
+        GROUP BY i.EMPL_NO, i.PART_NO
+    """
+    return db.execute_query(sql, ())
+
+
+# Canonical sentinel: equipment checked and intentionally not linked to 1C.
+HUB_PART_NO_NOT_IN_1C = "нет в 1С"
+
+# Pending = still needs a real 1C code or explicit «нет в 1С».
+# Closed sentinel must NOT appear here (otherwise it stays in candidate queues).
+_PART_NO_PENDING_SQL = """
+(
+    i.PART_NO IS NULL
+    OR LTRIM(RTRIM(i.PART_NO)) = ''
+    OR LTRIM(RTRIM(i.PART_NO)) IN ('-', N'—')
+    OR (
+        LOWER(LTRIM(RTRIM(i.PART_NO))) LIKE N'%не%найден%'
+        AND LOWER(LTRIM(RTRIM(i.PART_NO))) NOT LIKE N'%нет в 1с%'
+        AND LOWER(LTRIM(RTRIM(i.PART_NO))) NOT LIKE N'%нет в 1c%'
+    )
+)
+"""
+
+# Backward-compatible alias used by match-to-hub candidates.
+_PART_NO_UNUSABLE_SQL = _PART_NO_PENDING_SQL
+
+_PART_NO_NOT_IN_1C_SQL = """
+(
+    LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN (N'нет в 1с', N'нет в 1c')
+    OR LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) LIKE N'нет в 1с%'
+    OR LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) LIKE N'нет в 1c%'
+)
+"""
+
+
+def _normalize_hub_part_no_text(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _is_not_in_1c_hub_part_no(value: str) -> bool:
+    text = _normalize_hub_part_no_text(value)
+    if not text:
+        return False
+    # Accept both Cyrillic «с» and Latin «c» in «1С».
+    return text in {"нет в 1с", "нет в 1c"} or text.startswith("нет в 1с") or text.startswith("нет в 1c")
+
+
+def _is_usable_hub_part_no(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text or text in {"-", "—"}:
+        return False
+    if _is_not_in_1c_hub_part_no(text):
+        return False
+    if re.search(r"не\s*найден", text, flags=re.IGNORECASE):
+        return False
+    return True
+
+
+def _is_pending_hub_part_no(value: str) -> bool:
+    """True when PART_NO still needs human/system resolution."""
+    return (not _is_usable_hub_part_no(value)) and (not _is_not_in_1c_hub_part_no(value))
+
+
+_HUB_MATCH_ITEM_FROM = """
+    FROM ITEMS i
+    LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
+    LEFT JOIN CI_TYPES t ON t.CI_TYPE = i.CI_TYPE AND t.TYPE_NO = i.TYPE_NO
+    LEFT JOIN VENDORS v ON v.VENDOR_NO = m.VENDOR_NO
+    LEFT JOIN OWNERS o ON o.OWNER_NO = i.EMPL_NO
+"""
+
+_HUB_MATCH_ITEM_COLUMNS = """
+        i.ID AS item_id,
+        i.INV_NO AS inv_no,
+        i.SERIAL_NO AS serial_no,
+        i.HW_SERIAL_NO AS hw_serial_no,
+        i.PART_NO AS part_no,
+        m.MODEL_NAME AS model_name,
+        t.TYPE_NAME AS type_name,
+        v.VENDOR_NAME AS vendor_name,
+        i.EMPL_NO AS owner_no,
+        o.OWNER_DISPLAY_NAME AS employee_name,
+        o.OWNER_DEPT AS employee_dept
+"""
+
+
+def _normalize_prefer_owner_no(prefer_owner_no: Optional[int]) -> Optional[int]:
+    try:
+        value = int(prefer_owner_no) if prefer_owner_no is not None else None
+    except (TypeError, ValueError):
+        return None
+    return value if value and value > 0 else None
+
+
+def _hub_match_order_sql(prefer_owner_no: Optional[int]) -> str:
+    if prefer_owner_no:
+        return """
+        ORDER BY
+            CASE WHEN i.EMPL_NO = ? THEN 0 ELSE 1 END,
+            o.OWNER_DISPLAY_NAME,
+            i.INV_NO
+        """
+    return """
+        ORDER BY
+            o.OWNER_DISPLAY_NAME,
+            i.INV_NO
+        """
+
+
+def _normalize_hub_match_row(row: Dict[str, Any], *, prefer_owner_no: Optional[int]) -> Dict[str, Any]:
+    item_id = str(row.get("item_id") if row.get("item_id") is not None else row.get("ID") or "").strip()
+    owner_raw = row.get("owner_no") if row.get("owner_no") is not None else row.get("OWNER_NO")
+    try:
+        owner_no = int(owner_raw) if owner_raw is not None else None
+    except (TypeError, ValueError):
+        owner_no = None
+    inv_raw = row.get("inv_no") if row.get("inv_no") is not None else row.get("INV_NO")
+    inv_no = ""
+    if inv_raw is not None:
+        try:
+            inv_no = str(int(float(inv_raw)))
+        except (TypeError, ValueError):
+            inv_no = str(inv_raw).strip()
+    return {
+        "item_id": item_id,
+        "inv_no": inv_no,
+        "serial_no": str(row.get("serial_no") or row.get("SERIAL_NO") or "").strip(),
+        "hw_serial_no": str(row.get("hw_serial_no") or row.get("HW_SERIAL_NO") or "").strip(),
+        "part_no": str(row.get("part_no") or row.get("PART_NO") or "").strip(),
+        "model_name": str(row.get("model_name") or row.get("MODEL_NAME") or "").strip(),
+        "type_name": str(row.get("type_name") or row.get("TYPE_NAME") or "").strip(),
+        "vendor_name": str(row.get("vendor_name") or row.get("VENDOR_NAME") or "").strip(),
+        "owner_no": owner_no,
+        "employee_name": str(row.get("employee_name") or row.get("OWNER_DISPLAY_NAME") or "").strip(),
+        "employee_dept": str(row.get("employee_dept") or row.get("OWNER_DEPT") or "").strip(),
+        "is_current_owner": bool(prefer_owner_no and owner_no == prefer_owner_no),
+    }
+
+
+def match_nomenclature_to_hub_query(
+    *,
+    part_nos: Optional[List[str]] = None,
+    model_patterns: Optional[List[str]] = None,
+    prefer_owner_no: Optional[int] = None,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Reverse Hub match for a 1C nomenclature row.
+
+    - exact: CI_TYPE=1 with usable PART_NO equal to any target part (casefold)
+    - candidates: CI_TYPE=1 with unusable PART_NO and MODEL_NAME LIKE any pattern;
+      items that already have a different usable PART_NO are excluded
+    """
+    prefer = _normalize_prefer_owner_no(prefer_owner_no)
+    safe_limit = max(1, min(int(limit or 50), 200))
+
+    target_parts: List[str] = []
+    seen_parts: set[str] = set()
+    for raw in part_nos or []:
+        text = str(raw or "").strip()
+        key = text.casefold()
+        if not _is_usable_hub_part_no(text) or key in seen_parts:
+            continue
+        seen_parts.add(key)
+        target_parts.append(text)
+
+    patterns: List[str] = []
+    seen_patterns: set[str] = set()
+    for raw in model_patterns or []:
+        text = str(raw or "").strip().casefold()
+        if len(text) < 3 or text in seen_patterns:
+            continue
+        seen_patterns.add(text)
+        patterns.append(text)
+
+    db = get_db(db_id)
+    exact: List[Dict[str, Any]] = []
+    candidates: List[Dict[str, Any]] = []
+
+    if target_parts:
+        part_placeholders = ", ".join(["?"] * len(target_parts))
+        params: List[Any] = [part.casefold() for part in target_parts]
+        order_sql = _hub_match_order_sql(prefer)
+        if prefer:
+            params.append(prefer)
+        sql = f"""
+            SELECT TOP {safe_limit}
+            {_HUB_MATCH_ITEM_COLUMNS}
+            {_HUB_MATCH_ITEM_FROM}
+            WHERE i.CI_TYPE = 1
+              AND LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
+            {order_sql}
+        """
+        rows = db.execute_query(sql, tuple(params)) or []
+        exact = [_normalize_hub_match_row(row, prefer_owner_no=prefer) for row in rows]
+
+    exact_inv = {row["inv_no"] for row in exact if row.get("inv_no")}
+
+    if patterns:
+        like_clauses = " OR ".join(
+            ["LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?"] * len(patterns)
+        )
+        params = [f"%{pattern}%" for pattern in patterns]
+        order_sql = _hub_match_order_sql(prefer)
+        if prefer:
+            params.append(prefer)
+        sql = f"""
+            SELECT TOP {safe_limit}
+            {_HUB_MATCH_ITEM_COLUMNS}
+            {_HUB_MATCH_ITEM_FROM}
+            WHERE i.CI_TYPE = 1
+              AND {_PART_NO_UNUSABLE_SQL}
+              AND ({like_clauses})
+            {order_sql}
+        """
+        rows = db.execute_query(sql, tuple(params)) or []
+        for row in rows:
+            normalized = _normalize_hub_match_row(row, prefer_owner_no=prefer)
+            if normalized.get("inv_no") and normalized["inv_no"] in exact_inv:
+                continue
+            candidates.append(normalized)
+            if len(candidates) >= safe_limit:
+                break
+
+    return {"exact": exact, "candidates": candidates}
+
+
+def _resolve_hub_equipment_match_targets(
+    *,
+    part_no: str = "",
+    part_nos: Optional[List[str]] = None,
+    model_name: str = "",
+    hub_query: str = "",
+    hub_query_source: str = "model",
+) -> tuple[List[str], str]:
+    """Resolve usable PART_NO list and model text for Hub «same equipment» matching."""
+    target_parts: List[str] = []
+    seen_parts: set[str] = set()
+    for raw in [part_no, *(part_nos or [])]:
+        text = str(raw or "").strip()
+        key = text.casefold()
+        if not _is_usable_hub_part_no(text) or key in seen_parts:
+            continue
+        seen_parts.add(key)
+        target_parts.append(text)
+
+    target_model = str(model_name or "").strip()
+    # Backward-compatible fallback for older callers.
+    if not target_parts and not target_model and hub_query:
+        source = str(hub_query_source or "model").strip().lower()
+        if source == "part_no" and _is_usable_hub_part_no(hub_query):
+            target_parts = [str(hub_query).strip()]
+        else:
+            target_model = str(hub_query).strip()
+    if not target_model and hub_query and str(hub_query_source or "").strip().lower() != "part_no":
+        target_model = str(hub_query).strip()
+    return target_parts, target_model
+
+
+def _hub_equipment_match_sql(
+    target_parts: List[str],
+    target_model: str,
+    params: List[Any],
+) -> str:
+    """Append match params and return SQL fragment for Hub equipment matching."""
+    model_like = f"%{target_model.casefold()}%" if target_model else ""
+    if target_parts:
+        part_placeholders = ", ".join(["?"] * len(target_parts))
+        params.extend(part.casefold() for part in target_parts)
+        if target_model:
+            params.append(model_like)
+            return f"""
+                (
+                    LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
+                    OR (
+                        {_PART_NO_UNUSABLE_SQL}
+                        AND LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?
+                    )
+                )
+            """
+        return f"""
+            LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
+        """
+    params.append(model_like)
+    return "LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?"
+
+
+def count_equipment_by_owners_hub_query(
+    owner_nos: List[int],
+    *,
+    part_no: str = "",
+    part_nos: Optional[List[str]] = None,
+    model_name: str = "",
+    hub_query: str = "",
+    hub_query_source: str = "model",
+    db_id: Optional[str] = None,
+) -> dict[int, int]:
+    """
+    Count CI_TYPE=1 items per owner for Hub «same equipment».
+
+    Rules:
+    - if any target PART_NO is usable: count items with matching PART_NO;
+      also count items without usable PART_NO whose MODEL_NAME matches (LIKE);
+      do NOT count items with a different PART_NO even if the model name matches;
+    - if no usable target PART_NO: count by MODEL_NAME (LIKE).
+    """
+    normalized_ids: List[int] = []
+    for raw in owner_nos or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in normalized_ids:
+            normalized_ids.append(value)
+    if not normalized_ids:
+        return {}
+
+    target_parts, target_model = _resolve_hub_equipment_match_targets(
+        part_no=part_no,
+        part_nos=part_nos,
+        model_name=model_name,
+        hub_query=hub_query,
+        hub_query_source=hub_query_source,
+    )
+    if not target_parts and not target_model:
+        return {owner_no: 0 for owner_no in normalized_ids}
+
+    placeholders = ", ".join(["?"] * len(normalized_ids))
+    params: List[Any] = list(normalized_ids)
+    match_sql = _hub_equipment_match_sql(target_parts, target_model, params)
+
+    sql = f"""
+        SELECT
+            i.EMPL_NO AS owner_no,
+            COUNT(*) AS hub_count
+        FROM ITEMS i
+        LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
+        WHERE i.CI_TYPE = 1
+          AND i.EMPL_NO IN ({placeholders})
+          AND ({match_sql})
+        GROUP BY i.EMPL_NO
+    """
+    db = get_db(db_id)
+    rows = db.execute_query(sql, tuple(params))
+    counts: dict[int, int] = {owner_no: 0 for owner_no in normalized_ids}
+    for row in rows or []:
+        try:
+            owner_no = int(row.get("owner_no") or row.get("OWNER_NO"))
+            hub_count = int(row.get("hub_count") or row.get("HUB_COUNT") or 0)
+        except (TypeError, ValueError):
+            continue
+        counts[owner_no] = hub_count
+    return counts
+
+
+def count_all_owners_by_hub_query(
+    *,
+    part_no: str = "",
+    part_nos: Optional[List[str]] = None,
+    model_name: str = "",
+    hub_query: str = "",
+    hub_query_source: str = "model",
+    db_id: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Count matching Hub CI_TYPE=1 items for every owner (not only 1C warehouses).
+
+    Used to surface Hub-only holders when enriching 1C balances.
+    """
+    target_parts, target_model = _resolve_hub_equipment_match_targets(
+        part_no=part_no,
+        part_nos=part_nos,
+        model_name=model_name,
+        hub_query=hub_query,
+        hub_query_source=hub_query_source,
+    )
+    if not target_parts and not target_model:
+        return []
+
+    safe_limit = max(1, min(int(limit or 500), 500))
+    params: List[Any] = []
+    match_sql = _hub_equipment_match_sql(target_parts, target_model, params)
+    sql = f"""
+        SELECT TOP {safe_limit}
+            i.EMPL_NO AS owner_no,
+            COUNT(*) AS hub_count,
+            MAX(LTRIM(RTRIM(COALESCE(o.OWNER_DISPLAY_NAME, '')))) AS owner_display_name,
+            MAX(LTRIM(RTRIM(COALESCE(o.OWNER_DEPT, '')))) AS owner_dept
+        FROM ITEMS i
+        LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
+        LEFT JOIN OWNERS o ON o.OWNER_NO = i.EMPL_NO
+        WHERE i.CI_TYPE = 1
+          AND i.EMPL_NO IS NOT NULL
+          AND i.EMPL_NO > 0
+          AND ({match_sql})
+        GROUP BY i.EMPL_NO
+        ORDER BY COUNT(*) DESC, MAX(LTRIM(RTRIM(COALESCE(o.OWNER_DISPLAY_NAME, '')))) ASC
+    """
+    db = get_db(db_id)
+    rows = db.execute_query(sql, tuple(params)) or []
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            owner_no = int(row.get("owner_no") or row.get("OWNER_NO"))
+            hub_count = int(row.get("hub_count") or row.get("HUB_COUNT") or 0)
+        except (TypeError, ValueError):
+            continue
+        if owner_no <= 0 or hub_count <= 0:
+            continue
+        result.append(
+            {
+                "owner_no": owner_no,
+                "hub_count": hub_count,
+                "owner_display_name": str(
+                    row.get("owner_display_name") or row.get("OWNER_DISPLAY_NAME") or ""
+                ).strip(),
+                "owner_dept": str(
+                    row.get("owner_dept") or row.get("OWNER_DEPT") or ""
+                ).strip(),
+            }
+        )
+    return result
+
+
+def count_equipment_by_owners_and_part_nos(
+    owner_nos: List[int],
+    part_nos: List[str],
+    *,
+    db_id: Optional[str] = None,
+) -> dict[tuple[int, str], int]:
+    """Count exact legacy projections in one SQL query per owner/code pair.
+
+    Reconciliation must compare a confirmed 1C nomenclature code with the
+    matching HUB projection.  This deliberately has no model-name fallback:
+    fallback matching is only a candidate suggestion, never a quantity fact.
+    """
+    owners: list[int] = []
+    for raw in owner_nos or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in owners:
+            owners.append(value)
+    codes: list[str] = []
+    seen_codes: set[str] = set()
+    for raw in part_nos or []:
+        code = str(raw or "").strip()
+        key = code.casefold()
+        if not _is_usable_hub_part_no(code) or key in seen_codes:
+            continue
+        seen_codes.add(key)
+        codes.append(code)
+    if not owners or not codes:
+        return {}
+
+    query = """
+        SELECT
+            i.EMPL_NO AS owner_no,
+            LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) AS part_no_key,
+            COUNT(*) AS hub_count
+        FROM ITEMS i
+        WHERE i.CI_TYPE = 1
+          AND i.EMPL_NO IN ({OWNER_PLACEHOLDERS})
+          AND LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({CODE_PLACEHOLDERS})
+        GROUP BY
+            i.EMPL_NO,
+            LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, ''))))
+    """
+    owner_placeholders = ", ".join(["?"] * len(owners))
+    db = get_db(db_id)
+    rows: List[dict] = []
+    # owners + codes share the 2100-param budget; chunk codes so each
+    # statement stays under the SQL Server limit.
+    codes_per_chunk = max(1, _IN_CLAUSE_CHUNK_SIZE - len(owners))
+    for code_idx in range(0, len(codes), codes_per_chunk):
+        code_chunk = codes[code_idx:code_idx + codes_per_chunk]
+        code_placeholders = ", ".join(["?"] * len(code_chunk))
+        rows.extend(
+            db.execute_query(
+                query.replace("{OWNER_PLACEHOLDERS}", owner_placeholders)
+                     .replace("{CODE_PLACEHOLDERS}", code_placeholders),
+                tuple([*owners, *(code.casefold() for code in code_chunk)]),
+            )
+            or []
+        )
+    result: dict[tuple[int, str], int] = {}
+    for row in rows:
+        try:
+            owner_no = int(row.get("owner_no") or row.get("OWNER_NO"))
+            count = int(row.get("hub_count") or row.get("HUB_COUNT") or 0)
+        except (TypeError, ValueError):
+            continue
+        key = str(row.get("part_no_key") or row.get("PART_NO_KEY") or "").strip().casefold()
+        if key:
+            result[(owner_no, key)] = count
+    return result
+
+
+def list_hub_equipment_by_part_no_status(
+    *,
+    status: str = "pending",
+    limit: int = 100,
+    offset: int = 0,
+    q: str = "",
+    has_owner: str = "all",
+    db_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    List CI_TYPE=1 Hub items by PART_NO reconcile status.
+
+    status:
+      - pending: empty / placeholder / «не найден»
+      - not_in_1c: sentinel «нет в 1С»
+      - linked: usable 1C nomenclature code
+
+    has_owner:
+      - all | with | without
+    """
+    status_key = str(status or "pending").strip().lower()
+    owner_key = str(has_owner or "all").strip().lower()
+    if owner_key not in {"all", "with", "without"}:
+        owner_key = "all"
+    safe_limit = max(1, min(int(limit or 100), 500))
+    safe_offset = max(0, int(offset or 0))
+    search = str(q or "").strip()
+
+    if status_key == "not_in_1c":
+        part_filter = _PART_NO_NOT_IN_1C_SQL
+    elif status_key == "linked":
+        part_filter = f"""
+        (
+            NOT {_PART_NO_PENDING_SQL}
+            AND NOT {_PART_NO_NOT_IN_1C_SQL}
+        )
+        """
+    else:
+        part_filter = _PART_NO_PENDING_SQL
+
+    owner_filter = ""
+    if owner_key == "with":
+        owner_filter = "AND i.EMPL_NO IS NOT NULL AND i.EMPL_NO > 0"
+    elif owner_key == "without":
+        owner_filter = "AND (i.EMPL_NO IS NULL OR i.EMPL_NO = 0)"
+
+    params: List[Any] = []
+    search_sql = ""
+    if search:
+        like = f"%{search.casefold()}%"
+        search_sql = """
+          AND (
+            LOWER(LTRIM(RTRIM(COALESCE(i.INV_NO, '')))) LIKE ?
+            OR LOWER(LTRIM(RTRIM(COALESCE(i.SERIAL_NO, '')))) LIKE ?
+            OR LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) LIKE ?
+            OR LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?
+            OR LOWER(LTRIM(RTRIM(COALESCE(o.OWNER_DISPLAY_NAME, '')))) LIKE ?
+            OR LOWER(LTRIM(RTRIM(COALESCE(o.OWNER_LNAME, '')))) LIKE ?
+            OR LOWER(LTRIM(RTRIM(COALESCE(o.OWNER_FNAME, '')))) LIKE ?
+          )
+        """
+        params.extend([like, like, like, like, like, like, like])
+
+    employee_expr = """
+        NULLIF(
+            LTRIM(RTRIM(COALESCE(
+                NULLIF(LTRIM(RTRIM(o.OWNER_DISPLAY_NAME)), ''),
+                LTRIM(RTRIM(CONCAT(
+                    COALESCE(o.OWNER_LNAME, ''),
+                    CASE WHEN o.OWNER_FNAME IS NULL OR LTRIM(RTRIM(o.OWNER_FNAME)) = '' THEN '' ELSE ' ' + LTRIM(RTRIM(o.OWNER_FNAME)) END,
+                    CASE WHEN o.OWNER_MNAME IS NULL OR LTRIM(RTRIM(o.OWNER_MNAME)) = '' THEN '' ELSE ' ' + LTRIM(RTRIM(o.OWNER_MNAME)) END
+                )))
+            ))),
+            ''
+        )
+    """
+
+    count_sql = f"""
+        SELECT COUNT(1) AS total
+        {_HUB_MATCH_ITEM_FROM}
+        WHERE i.CI_TYPE = 1
+          AND {part_filter}
+          {owner_filter}
+          {search_sql}
+    """
+    list_sql = f"""
+        SELECT
+            i.ID AS item_id,
+            i.INV_NO AS inv_no,
+            i.SERIAL_NO AS serial_no,
+            i.HW_SERIAL_NO AS hw_serial_no,
+            i.PART_NO AS part_no,
+            m.MODEL_NAME AS model_name,
+            t.TYPE_NAME AS type_name,
+            v.VENDOR_NAME AS vendor_name,
+            i.EMPL_NO AS owner_no,
+            {employee_expr} AS employee_name,
+            o.OWNER_DEPT AS employee_dept
+        {_HUB_MATCH_ITEM_FROM}
+        WHERE i.CI_TYPE = 1
+          AND {part_filter}
+          {owner_filter}
+          {search_sql}
+        ORDER BY
+            CASE WHEN i.EMPL_NO IS NULL OR i.EMPL_NO = 0 THEN 1 ELSE 0 END,
+            {employee_expr},
+            i.INV_NO
+        OFFSET {safe_offset} ROWS FETCH NEXT {safe_limit} ROWS ONLY
+    """
+
+    db = get_db(db_id)
+    total_rows = db.execute_query(count_sql, tuple(params)) or []
+    try:
+        total = int((total_rows[0] or {}).get("total") or (total_rows[0] or {}).get("TOTAL") or 0)
+    except (TypeError, ValueError, IndexError, AttributeError):
+        total = 0
+
+    rows = db.execute_query(list_sql, tuple(params)) or []
+    items = [_normalize_hub_match_row(row, prefer_owner_no=None) for row in rows]
+    return {
+        "items": items,
+        "total": total,
+        "limit": safe_limit,
+        "offset": safe_offset,
+        "has_owner": owner_key,
+    }
+
+
+def count_hub_part_no_coverage(db_id: Optional[str] = None) -> Dict[str, int]:
+    """Legacy ``PART_NO`` projection counters for the reconcile KPI.
+
+    Confirmed coverage is calculated from the app-owned 1C link registry by
+    :func:`backend.services.warehouse_1c_reconcile.get_reconcile_coverage`
+    whenever that registry is configured.  Keep these values available during
+    the staged migration so consumers can compare the old projection with the
+    verified registry without treating a non-empty ``PART_NO`` as proof of a
+    confirmed 1C link.
+    """
+    db = get_db(db_id)
+    sql = f"""
+        SELECT
+            SUM(CASE WHEN {_PART_NO_PENDING_SQL} THEN 1 ELSE 0 END) AS pending_count,
+            SUM(CASE WHEN {_PART_NO_NOT_IN_1C_SQL} THEN 1 ELSE 0 END) AS not_in_1c_count,
+            SUM(
+                CASE
+                    WHEN NOT {_PART_NO_PENDING_SQL}
+                     AND NOT {_PART_NO_NOT_IN_1C_SQL}
+                    THEN 1 ELSE 0
+                END
+            ) AS linked_count,
+            COUNT(1) AS total_count
+        FROM ITEMS i
+        WHERE i.CI_TYPE = 1
+    """
+    rows = db.execute_query(sql, ()) or []
+    row = rows[0] if rows else {}
+
+    def _as_int(key: str) -> int:
+        try:
+            return int(row.get(key) or row.get(key.upper()) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    pending_count = _as_int("pending_count")
+    not_in_1c_count = _as_int("not_in_1c_count")
+    linked_count = _as_int("linked_count")
+    total_count = _as_int("total_count")
+    return {
+        # Keep the original keys while the registry is not configured.
+        "pending_count": pending_count,
+        "not_in_1c_count": not_in_1c_count,
+        "linked_count": linked_count,
+        "total_count": total_count,
+        # Explicitly expose the legacy projection for audit-only comparison.
+        "legacy_pending_count": pending_count,
+        "legacy_not_in_1c_count": not_in_1c_count,
+        "legacy_linked_count": linked_count,
+    }
+
+
+def list_hub_part_no_projection_candidates(
+    *,
+    limit: int = 500,
+    offset: int = 0,
+    db_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return immutable HUB IDs plus their legacy PART_NO projection.
+
+    Used only by the opt-in app-registry migration.  It does not modify SQL
+    Server and it deliberately includes usable codes and the historic
+    ``нет в 1С`` sentinel so their semantics can be carried into the audit
+    store without falsely treating old codes as verified links.
+    """
+    safe_limit = max(1, min(int(limit or 500), 2000))
+    safe_offset = max(0, int(offset or 0))
+    rows = get_db(db_id).execute_query(
+        f"""
+        SELECT
+            i.ID AS id,
+            i.INV_NO AS inv_no,
+            LTRIM(RTRIM(COALESCE(i.PART_NO, ''))) AS part_no
+        FROM ITEMS i
+        WHERE i.CI_TYPE = 1
+          AND (
+              NOT {_PART_NO_PENDING_SQL}
+              OR {_PART_NO_NOT_IN_1C_SQL}
+          )
+        ORDER BY i.ID
+        OFFSET {safe_offset} ROWS FETCH NEXT {safe_limit} ROWS ONLY
+        """,
+        (),
+    ) or []
+    return [
+        {
+            "id": row.get("id") or row.get("ID"),
+            "inv_no": row.get("inv_no") or row.get("INV_NO"),
+            "part_no": str(row.get("part_no") or row.get("PART_NO") or "").strip(),
+        }
+        for row in rows
+    ]
+
+
+def count_hub_items_by_usable_part_no(
+    *,
+    limit: int = 5000,
+    db_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Aggregate usable PART_NO counts for Hub>1C reconcile."""
+    safe_limit = max(1, min(int(limit or 5000), 20000))
+    db = get_db(db_id)
+    sql = f"""
+        SELECT TOP {safe_limit}
+            LTRIM(RTRIM(i.PART_NO)) AS part_no,
+            COUNT(1) AS hub_count
+        FROM ITEMS i
+        WHERE i.CI_TYPE = 1
+          AND NOT {_PART_NO_PENDING_SQL}
+          AND NOT {_PART_NO_NOT_IN_1C_SQL}
+        GROUP BY LTRIM(RTRIM(i.PART_NO))
+        ORDER BY COUNT(1) DESC
+    """
+    rows = db.execute_query(sql, ()) or []
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        part_no = str(row.get("part_no") or row.get("PART_NO") or "").strip()
+        if not _is_usable_hub_part_no(part_no):
+            continue
+        try:
+            hub_count = int(row.get("hub_count") or row.get("HUB_COUNT") or 0)
+        except (TypeError, ValueError):
+            hub_count = 0
+        if hub_count <= 0:
+            continue
+        result.append({"part_no": part_no, "hub_count": hub_count})
+    return result
+
+
+def get_hub_items_by_usable_part_no_page(
+    *,
+    limit: int = 100,
+    after_hub_count: int | None = None,
+    after_part_no: str = "",
+    db_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Keyset page plus real group total for HUB-over-1C reconciliation.
+
+    The grouping stays in SQL Server.  This prevents the former fixed TOP
+    cap from making an incomplete source look like a completed comparison.
+    """
+    safe_limit = max(1, min(int(limit or 100), 500))
+    safe_after_count: int | None
+    try:
+        safe_after_count = int(after_hub_count) if after_hub_count is not None else None
+    except (TypeError, ValueError):
+        safe_after_count = None
+    safe_after_part = str(after_part_no or "").strip()
+    db = get_db(db_id)
+    grouped_sql = f"""
+        SELECT
+            LTRIM(RTRIM(i.PART_NO)) AS part_no,
+            COUNT(1) AS hub_count
+        FROM ITEMS i
+        WHERE i.CI_TYPE = 1
+          AND NOT {_PART_NO_PENDING_SQL}
+          AND NOT {_PART_NO_NOT_IN_1C_SQL}
+        GROUP BY LTRIM(RTRIM(i.PART_NO))
+    """
+    total_rows = db.execute_query(
+        f"SELECT COUNT(1) AS total FROM ({grouped_sql}) grouped",
+        (),
+    ) or []
+    try:
+        total = int((total_rows[0] if total_rows else {}).get("total") or (total_rows[0] if total_rows else {}).get("TOTAL") or 0)
+    except (TypeError, ValueError):
+        total = 0
+
+    where_sql = ""
+    params: list[Any] = []
+    if safe_after_count is not None:
+        where_sql = """
+            WHERE grouped.hub_count < ?
+               OR (grouped.hub_count = ? AND grouped.part_no > ?)
+        """
+        params = [safe_after_count, safe_after_count, safe_after_part]
+    rows = db.execute_query(
+        f"""
+        SELECT TOP {safe_limit + 1} grouped.part_no, grouped.hub_count
+        FROM ({grouped_sql}) grouped
+        {where_sql}
+        ORDER BY grouped.hub_count DESC, grouped.part_no ASC
+        """,
+        tuple(params),
+    ) or []
+    has_more = len(rows) > safe_limit
+    result: list[Dict[str, Any]] = []
+    for row in rows[:safe_limit]:
+        part_no = str(row.get("part_no") or row.get("PART_NO") or "").strip()
+        if not _is_usable_hub_part_no(part_no):
+            continue
+        try:
+            hub_count = int(row.get("hub_count") or row.get("HUB_COUNT") or 0)
+        except (TypeError, ValueError):
+            continue
+        if hub_count > 0:
+            result.append({"part_no": part_no, "hub_count": hub_count})
+    return {
+        "items": result,
+        "total": total,
+        "has_more": has_more,
+        "returned": len(result),
+        "source": "sql_keyset",
+    }
+
+
+def list_hub_items_by_part_no(
+    part_no: str,
+    *,
+    limit: int = 100,
+    db_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List Hub CI_TYPE=1 items with exact PART_NO (case-insensitive)."""
+    code = str(part_no or "").strip()
+    if not code:
+        return []
+    safe_limit = max(1, min(int(limit or 100), 500))
+    db = get_db(db_id)
+    sql = f"""
+        SELECT TOP {safe_limit}
+        {_HUB_MATCH_ITEM_COLUMNS}
+        {_HUB_MATCH_ITEM_FROM}
+        WHERE i.CI_TYPE = 1
+          AND LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) = ?
+        ORDER BY o.OWNER_DISPLAY_NAME, i.INV_NO
+    """
+    rows = db.execute_query(sql, (code.casefold(),)) or []
+    return [_normalize_hub_match_row(row, prefer_owner_no=None) for row in rows]
+
+
+def get_owner_departments(limit: int = 500, db_id: Optional[str] = None) -> List[str]:
+    """
+    Get distinct owner departments for selection controls.
+
+    Args:
+        limit: Maximum number of departments
+        db_id: Database ID to use
+
+    Returns:
+        List of department names
+    """
+    db = get_db(db_id)
+    safe_limit = max(1, min(int(limit or 500), 2000))
+    query = f"""
+        SELECT DISTINCT TOP {safe_limit}
+            LTRIM(RTRIM(o.OWNER_DEPT)) AS OWNER_DEPT
+        FROM OWNERS o
+        WHERE o.OWNER_DEPT IS NOT NULL
+          AND LTRIM(RTRIM(o.OWNER_DEPT)) <> ''
+        ORDER BY LTRIM(RTRIM(o.OWNER_DEPT))
+    """
+    rows = db.execute_query(query, ())
+    departments: List[str] = []
+    for row in rows:
+        value = row.get("OWNER_DEPT") or row.get("owner_dept")
+        dept = str(value or "").strip()
+        if dept:
+            departments.append(dept)
+    return departments
+
+
+def get_owner_by_no(owner_no: int, db_id: Optional[str] = None) -> Optional[dict]:
+    """Get owner by OWNER_NO."""
+    return _reference_get_owner_by_no(owner_no, db_id, get_db_fn=get_db)
+
+
+def get_status_by_no(status_no: int, db_id: Optional[str] = None) -> Optional[dict]:
+    """Get status by STATUS_NO."""
+    return _reference_get_status_by_no(status_no, db_id, get_db_fn=get_db)
+
+
+def get_default_status_no(db_id: Optional[str] = None) -> Optional[int]:
+    """Resolve default STATUS_NO for create forms."""
+    return _reference_get_default_status_no(db_id, get_db_fn=get_db)
+
+
+def get_type_by_no(type_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> Optional[dict]:
+    """Get equipment type by TYPE_NO for selected CI_TYPE."""
+    return _reference_get_type_by_no(type_no, db_id, ci_type=ci_type, get_db_fn=get_db)
+
+
+def get_models_by_type(type_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> List[dict]:
+    """Get model list by TYPE_NO for selected CI_TYPE."""
+    return _reference_get_models_by_type(type_no, db_id, ci_type=ci_type, get_db_fn=get_db)
+
+
+def get_model_no_by_name(model_name: str, ci_type: int = 1, strict: bool = True, db_id: Optional[str] = None) -> Optional[int]:
+    """Get MODEL_NO by model name."""
+    return _reference_get_model_no_by_name(model_name, ci_type=ci_type, strict=strict, db_id=db_id, get_db_fn=get_db)
+
+
+def create_model(model_name: str, type_no: int, ci_type: int = 1, db_id: Optional[str] = None) -> Optional[int]:
+    """Create model in CI_MODELS and return MODEL_NO."""
+    if not model_name:
+        return None
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 MODEL_NO
+            FROM CI_MODELS
+            WHERE CI_TYPE = ? AND MODEL_NAME = ?
+            ORDER BY MODEL_NO
+            """,
+            (ci_type, model_name),
+        )
+        existing = cursor.fetchone()
+        if existing and existing[0] is not None:
+            return int(existing[0])
+
+        cursor.execute("SELECT ISNULL(MAX(MODEL_NO), 0) + 1 FROM CI_MODELS WITH (TABLOCKX, HOLDLOCK)")
+        next_model_no = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            INSERT INTO CI_MODELS (MODEL_NO, CI_TYPE, TYPE_NO, MODEL_NAME)
+            VALUES (?, ?, ?, ?)
+            """,
+            (next_model_no, ci_type, type_no, model_name),
+        )
+        return int(next_model_no)
+
+
+def get_model_by_no(model_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> Optional[dict]:
+    """Get model by MODEL_NO for selected CI_TYPE."""
+    return _reference_get_model_by_no(model_no, db_id, ci_type=ci_type, get_db_fn=get_db)
+
+
+def get_branch_by_no(branch_no: Any, db_id: Optional[str] = None) -> Optional[dict]:
+    return _directory_get_branch_by_no(branch_no, db_id, get_db_fn=get_db)
+
+
+def get_location_by_no(loc_no: Any, db_id: Optional[str] = None) -> Optional[dict]:
+    return _directory_get_location_by_no(loc_no, db_id, get_db_fn=get_db)
+
+
+def locations_has_branch_column(db_id: Optional[str] = None) -> bool:
+    return _directory_locations_has_branch_column(db_id, get_db_fn=get_db)
+
+
+def is_location_in_branch(loc_no: Any, branch_no: Any, db_id: Optional[str] = None) -> bool:
+    return _directory_is_location_in_branch(loc_no, branch_no, db_id, get_db_fn=get_db)
+
+
+def update_equipment_fields(
+    inv_no: str,
+    fields: dict,
+    changed_by: str = "IT-WEB",
+    db_id: Optional[str] = None,
+) -> bool:
+    """
+    Update allowed fields for equipment card by inventory number.
+
+    Allowed field keys:
+        serial_no, hw_serial_no, part_no, ip_address, mac_address, network_name, description,
+        status_no, empl_no, branch_no, loc_no,
+        type_no, model_no
+    """
+    allowed_columns = {
+        "serial_no": "SERIAL_NO",
+        "hw_serial_no": "HW_SERIAL_NO",
+        "part_no": "PART_NO",
+        "ip_address": "IP_ADDRESS",
+        "mac_address": "MAC_ADDRESS",
+        "network_name": "NETBIOS_NAME",
+        "description": "DESCR",
+        "status_no": "STATUS_NO",
+        "empl_no": "EMPL_NO",
+        "branch_no": "BRANCH_NO",
+        "loc_no": "LOC_NO",
+        "type_no": "TYPE_NO",
+        "model_no": "MODEL_NO",
+    }
+
+    set_clauses = []
+    params = []
+    for key, value in (fields or {}).items():
+        column = allowed_columns.get(key)
+        if not column:
+            continue
+        if column == "DESCR":
+            value = _legacy_items_descr_value(value)
+        set_clauses.append(f"{column} = ?")
+        params.append(value)
+
+    if not set_clauses:
+        return False
+
+    db = get_db(db_id)
+
+    try:
+        inv_no_float = float(inv_no) if inv_no else None
+    except (ValueError, TypeError):
+        return False
+
+    query = f"""
+        UPDATE ITEMS
+        SET {", ".join(set_clauses)},
+            CH_DATE = GETDATE(),
+            CH_USER = ?
+        WHERE INV_NO = ?
+    """
+    params.append(changed_by or "IT-WEB")
+    params.append(inv_no_float)
+    affected = db.execute_update(query, tuple(params))
+    return affected > 0
+
+
+def update_equipment_part_no_if_current(
+    inv_no: str,
+    *,
+    part_no: str,
+    expected_part_no: str,
+    changed_by: str = "IT-WEB",
+    db_id: Optional[str] = None,
+) -> bool:
+    """Set the legacy PART_NO projection only if it has not changed.
+
+    The durable reconciliation mapping lives in the app database, but legacy
+    consumers still read ``ITEMS.PART_NO`` during migration.  This conditional
+    update prevents a reviewed decision from silently overwriting a different
+    operator's newer projection.
+    """
+    try:
+        inv_no_float = float(inv_no) if inv_no else None
+    except (ValueError, TypeError):
+        return False
+    if inv_no_float is None:
+        return False
+
+    db = get_db(db_id)
+    affected = db.execute_update(
+        """
+        UPDATE ITEMS
+        SET PART_NO = ?,
+            CH_DATE = GETDATE(),
+            CH_USER = ?
+        WHERE CI_TYPE = 1
+          AND INV_NO = ?
+          AND ISNULL(PART_NO, '') = ?
+        """,
+        (
+            str(part_no or "").strip(),
+            changed_by or "IT-WEB",
+            inv_no_float,
+            str(expected_part_no or "").strip(),
+        ),
+    )
+    return affected > 0
+
+
+def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None, force: bool = False) -> dict:
+    """
+    Hard-delete one equipment card from ITEMS by INV_NO.
+
+    Deletion is blocked when the equipment already has related acts or
+    transfer history. With ``force=True`` the item's DOCS_LIST links and
+    CI_HISTORY rows are removed in the same transaction (act headers in DOCS
+    are kept).
+    """
+    normalized_inv_no = str(inv_no or "").strip()
+    try:
+        inv_no_float = float(normalized_inv_no) if normalized_inv_no else None
+    except (ValueError, TypeError):
+        return {
+            "success": False,
+            "code": "invalid_inv_no",
+            "message": "Invalid inventory number",
+        }
+
+    def _format_inv_no(value: Any) -> str:
+        if value in (None, ""):
+            return normalized_inv_no
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        text = str(value).strip()
+        if re.fullmatch(r"-?\d+\.0", text):
+            return text[:-2]
+        return text or normalized_inv_no
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 ID, INV_NO
+            FROM ITEMS
+            WHERE CI_TYPE = 1
+              AND INV_NO = ?
+            """,
+            (inv_no_float,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "success": False,
+                "code": "not_found",
+                "message": f"Equipment with INV_NO {normalized_inv_no or inv_no} not found",
+            }
+
+        item_id = int(row[0])
+        resolved_inv_no = _format_inv_no(row[1])
+
+        cursor.execute(
+            """
+            SELECT COUNT(1)
+            FROM DOCS_LIST
+            WHERE ITEM_ID = ?
+            """,
+            (item_id,),
+        )
+        docs_count = int((cursor.fetchone() or [0])[0] or 0)
+
+        cursor.execute(
+            """
+            SELECT COUNT(1)
+            FROM CI_HISTORY
+            WHERE ITEM_ID = ?
+            """,
+            (item_id,),
+        )
+        history_count = int((cursor.fetchone() or [0])[0] or 0)
+
+        if (docs_count > 0 or history_count > 0) and not force:
+            details = []
+            if docs_count > 0:
+                details.append(f"acts={docs_count}")
+            if history_count > 0:
+                details.append(f"history={history_count}")
+            suffix = f" ({', '.join(details)})" if details else ""
+            return {
+                "success": False,
+                "code": "has_dependencies",
+                "message": f"Equipment is linked to acts or history and cannot be deleted{suffix}",
+                "item_id": item_id,
+                "inv_no": resolved_inv_no,
+                "docs_count": docs_count,
+                "history_count": history_count,
+            }
+
+        if force:
+            if docs_count > 0:
+                cursor.execute("DELETE FROM DOCS_LIST WHERE ITEM_ID = ?", (item_id,))
+            if history_count > 0:
+                cursor.execute("DELETE FROM CI_HISTORY WHERE ITEM_ID = ?", (item_id,))
+
+        cursor.execute(
+            """
+            DELETE FROM ITEMS
+            WHERE ID = ?
+              AND CI_TYPE = 1
+            """,
+            (item_id,),
+        )
+
+        if int(getattr(cursor, "rowcount", 0) or 0) <= 0:
+            return {
+                "success": False,
+                "code": "not_found",
+                "message": f"Equipment with INV_NO {resolved_inv_no} not found",
+            }
+
+        return {
+            "success": True,
+            "item_id": item_id,
+            "inv_no": resolved_inv_no,
+            "message": "Equipment deleted",
+            "docs_deleted": docs_count if force else 0,
+            "history_deleted": history_count if force else 0,
+        }
+
+
+def _format_item_inv_no(value: Any, *, fallback: str = "") -> str:
+    if value in (None, ""):
+        return fallback
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = str(value).strip()
+    if re.fullmatch(r"-?\d+\.0", text):
+        return text[:-2]
+    return text or fallback
+
+
+def delete_consumable_by_id(item_id: int, db_id: Optional[str] = None) -> dict:
+    """
+    Hard-delete one consumable card from ITEMS by ID (CI_TYPE=4).
+
+    Deletion is blocked when the consumable is linked to acts (DOCS_LIST).
+    Operational audit rows in CI_HISTORY are removed together with the card.
+    """
+    try:
+        resolved_item_id = int(item_id)
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "code": "invalid_item_id",
+            "message": "Invalid consumable item id",
+        }
+    if resolved_item_id <= 0:
+        return {
+            "success": False,
+            "code": "invalid_item_id",
+            "message": "Invalid consumable item id",
+        }
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 ID, INV_NO
+            FROM ITEMS
+            WHERE CI_TYPE = 4
+              AND ID = ?
+            """,
+            (resolved_item_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "success": False,
+                "code": "not_found",
+                "message": f"Consumable with ID {resolved_item_id} not found",
+            }
+
+        target_item_id = int(row[0])
+        resolved_inv_no = _format_item_inv_no(row[1], fallback=str(resolved_item_id))
+
+        cursor.execute(
+            """
+            SELECT COUNT(1)
+            FROM DOCS_LIST
+            WHERE ITEM_ID = ?
+            """,
+            (target_item_id,),
+        )
+        docs_count = int((cursor.fetchone() or [0])[0] or 0)
+
+        if docs_count > 0:
+            return {
+                "success": False,
+                "code": "has_dependencies",
+                "message": f"Consumable is linked to acts and cannot be deleted (acts={docs_count})",
+                "item_id": target_item_id,
+                "inv_no": resolved_inv_no,
+                "docs_count": docs_count,
+                "history_count": 0,
+            }
+
+        cursor.execute(
+            """
+            DELETE FROM CI_HISTORY
+            WHERE ITEM_ID = ?
+            """,
+            (target_item_id,),
+        )
+
+        cursor.execute(
+            """
+            DELETE FROM ITEMS
+            WHERE ID = ?
+              AND CI_TYPE = 4
+            """,
+            (target_item_id,),
+        )
+
+        if int(getattr(cursor, "rowcount", 0) or 0) <= 0:
+            return {
+                "success": False,
+                "code": "not_found",
+                "message": f"Consumable with ID {resolved_item_id} not found",
+            }
+
+        return {
+            "success": True,
+            "item_id": target_item_id,
+            "inv_no": resolved_inv_no,
+            "message": "Consumable deleted",
+        }
+
+
+def get_owner_no_by_name(employee_name: str, strict: bool = True, db_id: Optional[str] = None) -> Optional[int]:
+    """Get OWNER_NO by employee full name."""
+    return _reference_get_owner_no_by_name(employee_name, strict=strict, db_id=db_id, get_db_fn=get_db)
+
+
+def _parse_fio(full_name: str) -> tuple[str, str, str]:
+    """Split FIO to last/first/middle name parts."""
+    parts = (full_name or "").strip().split()
+    if len(parts) >= 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return parts[0], parts[1], ""
+    if len(parts) == 1:
+        return parts[0], "", ""
+    return "", "", ""
+
+
+def create_owner(employee_name: str, department: Optional[str] = None, db_id: Optional[str] = None) -> Optional[int]:
+    """Create owner in OWNERS and return OWNER_NO."""
+    if not employee_name:
+        return None
+    db = get_db(db_id)
+    lname, fname, mname = _parse_fio(employee_name)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT ISNULL(MAX(OWNER_NO), 0) + 1 FROM OWNERS WITH (TABLOCKX, HOLDLOCK)")
+        next_owner_no = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            INSERT INTO OWNERS (
+                OWNER_NO, OWNER_LNAME, OWNER_FNAME, OWNER_MNAME,
+                OWNER_DISPLAY_NAME, OWNER_DEPT
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (next_owner_no, lname, fname, mname, employee_name, department or ""),
+        )
+        return int(next_owner_no)
+
+
+def get_owner_email_by_no(owner_no: int, db_id: Optional[str] = None) -> Optional[str]:
+    """Get owner email by OWNER_NO."""
+    return _reference_get_owner_email_by_no(owner_no, db_id, get_db_fn=get_db)
+
+
+def find_owner_nos_by_identity(
+    *,
+    email: Optional[str] = None,
+    display_name: Optional[str] = None,
+    db_id: Optional[str] = None,
+    limit: int = 3,
+) -> Dict[str, List[int]]:
+    """Exact (not fuzzy) OWNER lookups used to map a portal account to its ITinvent owner.
+
+    Returns OWNER_NO lists for an exact e-mail match and an exact display-name match;
+    callers decide what counts as unambiguous.
+    """
+    db = get_db(db_id)
+    top = max(1, min(int(limit or 3), 10))
+    result: Dict[str, List[int]] = {"email": [], "name": []}
+    email_text = str(email or "").strip().lower()
+    if email_text and "@" in email_text:
+        rows = db.execute_query(
+            f"SELECT TOP {top} o.OWNER_NO FROM OWNERS o "
+            "WHERE LOWER(LTRIM(RTRIM(COALESCE(o.OWNER_EMAIL, '')))) = ?",
+            (email_text,),
+        ) or []
+        result["email"] = [int(row.get("OWNER_NO")) for row in rows if row.get("OWNER_NO") is not None]
+    name_text = " ".join(str(display_name or "").split())
+    if name_text:
+        rows = db.execute_query(
+            f"SELECT TOP {top} o.OWNER_NO FROM OWNERS o "
+            "WHERE LTRIM(RTRIM(COALESCE(o.OWNER_DISPLAY_NAME, ''))) = ?",
+            (name_text,),
+        ) or []
+        result["name"] = [int(row.get("OWNER_NO")) for row in rows if row.get("OWNER_NO") is not None]
+    return result
+
+
+def create_equipment_item(
+    serial_no: str,
+    employee_name: str,
+    branch_no: Any,
+    loc_no: Any,
+    type_no: int,
+    status_no: int,
+    model_name: Optional[str] = None,
+    model_no: Optional[int] = None,
+    employee_no: Optional[int] = None,
+    employee_dept: Optional[str] = None,
+    hw_serial_no: Optional[str] = None,
+    part_no: Optional[str] = None,
+    description: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    mac_address: Optional[str] = None,
+    network_name: Optional[str] = None,
+    changed_by: str = "IT-WEB",
+    db_id: Optional[str] = None,
+) -> dict:
+    """
+    Create equipment record in ITEMS.
+    Generates INV_NO automatically and creates OWNER/MODEL when needed.
+    """
+    result = {
+        "success": False,
+        "item_id": None,
+        "inv_no": None,
+        "created_owner": False,
+        "created_model": False,
+        "message": "",
+    }
+
+    normalized_serial = str(serial_no or "").strip()
+    normalized_employee = str(employee_name or "").strip()
+    normalized_model_name = str(model_name or "").strip()
+    normalized_hw_serial = str(hw_serial_no or "").strip() or None
+    normalized_part_no = str(part_no or "").strip() or None
+    normalized_descr = _legacy_items_descr_value(description)
+    normalized_ip = str(ip_address or "").strip() or None
+    normalized_mac = str(mac_address or "").strip() or None
+    normalized_network_name = str(network_name or "").strip() or None
+
+    if not normalized_serial:
+        result["message"] = "serial_no is required"
+        return result
+    if not normalized_employee:
+        result["message"] = "employee_name is required"
+        return result
+
+    resolved_type_no = int(type_no)
+    resolved_status_no = int(status_no)
+    resolved_model_no = int(model_no) if model_no is not None else None
+    resolved_employee_no = int(employee_no) if employee_no is not None else None
+
+    if resolved_model_no is None:
+        if not normalized_model_name:
+            result["message"] = "model_name is required when model_no is not provided"
+            return result
+        resolved_model_no = get_model_no_by_name(normalized_model_name, ci_type=1, strict=True, db_id=db_id)
+        if resolved_model_no is None:
+            resolved_model_no = get_model_no_by_name(normalized_model_name, ci_type=1, strict=False, db_id=db_id)
+        if resolved_model_no is None:
+            created = create_model(normalized_model_name, resolved_type_no, ci_type=1, db_id=db_id)
+            if created is None:
+                result["message"] = "Failed to resolve or create model"
+                return result
+            resolved_model_no = created
+            result["created_model"] = True
+
+    if resolved_employee_no is None:
+        resolved_employee_no = get_owner_no_by_name(normalized_employee, strict=True, db_id=db_id)
+        if resolved_employee_no is None:
+            resolved_employee_no = get_owner_no_by_name(normalized_employee, strict=False, db_id=db_id)
+        if resolved_employee_no is None:
+            created_owner = create_owner(normalized_employee, department=employee_dept, db_id=db_id)
+            if created_owner is None:
+                result["message"] = "Failed to resolve or create employee"
+                return result
+            resolved_employee_no = created_owner
+            result["created_owner"] = True
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT TOP 1 ID, INV_NO
+            FROM ITEMS
+            WHERE CI_TYPE = 1 AND SERIAL_NO = ?
+            ORDER BY ID DESC
+            """,
+            (normalized_serial,),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            result["item_id"] = int(existing[0]) if existing[0] is not None else None
+            result["inv_no"] = str(existing[1]).strip() if existing[1] is not None else None
+            result["message"] = f"Equipment with serial {normalized_serial} already exists"
+            return result
+
+        cursor.execute("SELECT ISNULL(MAX(ID), 0) + 1 FROM ITEMS WITH (TABLOCKX, HOLDLOCK)")
+        next_id = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            SELECT ISNULL(MAX(CAST(INV_NO AS INT)), 0) + 1
+            FROM ITEMS
+            WHERE INV_NO IS NOT NULL AND ISNUMERIC(INV_NO) = 1
+            """
+        )
+        next_inv_no = cursor.fetchone()[0]
+        inv_no_value = str(next_inv_no)
+
+        # MAC/NETBIOS columns are optional in some ITINVENT snapshots: add them only when the user filled them.
+        extra_columns = ""
+        extra_placeholders = ""
+        extra_values: list = []
+        if normalized_mac:
+            extra_columns += ", MAC_ADDRESS"
+            extra_placeholders += ", ?"
+            extra_values.append(normalized_mac)
+        if normalized_network_name:
+            extra_columns += ", NETBIOS_NAME"
+            extra_placeholders += ", ?"
+            extra_values.append(normalized_network_name)
+
+        cursor.execute(
+            f"""
+            INSERT INTO ITEMS (
+                ID, SERIAL_NO, HW_SERIAL_NO, PART_NO, INV_NO,
+                CI_TYPE, TYPE_NO, MODEL_NO, STATUS_NO, EMPL_NO,
+                BRANCH_NO, LOC_NO, QTY, COMP_NO, DESCR, IP_ADDRESS,
+                CREATE_DATE, CH_DATE, CH_USER{extra_columns}
+            )
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, GETDATE(), GETDATE(), ?{extra_placeholders})
+            """,
+            (
+                next_id,
+                normalized_serial,
+                normalized_hw_serial,
+                normalized_part_no,
+                inv_no_value,
+                resolved_type_no,
+                resolved_model_no,
+                resolved_status_no,
+                resolved_employee_no,
+                branch_no,
+                loc_no,
+                normalized_descr,
+                normalized_ip,
+                changed_by or "IT-WEB",
+                *extra_values,
+            ),
+        )
+
+        result["success"] = True
+        result["item_id"] = int(next_id)
+        result["inv_no"] = inv_no_value
+        result["message"] = "Equipment created successfully"
+        return result
+
+
+def create_consumable_item(
+    branch_no: Any,
+    loc_no: Any,
+    type_no: int,
+    qty: int,
+    model_name: Optional[str] = None,
+    model_no: Optional[int] = None,
+    status_no: Optional[int] = None,
+    part_no: Optional[str] = None,
+    description: Optional[str] = None,
+    changed_by: str = "IT-WEB",
+    db_id: Optional[str] = None,
+) -> dict:
+    """
+    Create consumable record in ITEMS (CI_TYPE=4).
+    Creates missing model when needed.
+    """
+    result = {
+        "success": False,
+        "item_id": None,
+        "inv_no": None,
+        "created_model": False,
+        "message": "",
+    }
+
+    normalized_model_name = str(model_name or "").strip()
+    normalized_part_no = str(part_no or "").strip() or None
+    normalized_descr = _legacy_items_descr_value(description)
+
+    try:
+        resolved_qty = int(qty)
+    except (TypeError, ValueError):
+        result["message"] = "qty must be a positive integer"
+        return result
+    if resolved_qty <= 0:
+        result["message"] = "qty must be a positive integer"
+        return result
+
+    resolved_type_no = int(type_no)
+    resolved_model_no = int(model_no) if model_no is not None else None
+    resolved_status_no = int(status_no) if status_no is not None else None
+    if resolved_status_no is None:
+        resolved_status_no = get_default_status_no(db_id)
+    if resolved_status_no is None:
+        result["message"] = "Unable to resolve default status"
+        return result
+
+    if resolved_model_no is None:
+        if not normalized_model_name:
+            result["message"] = "model_name is required when model_no is not provided"
+            return result
+        resolved_model_no = get_model_no_by_name(normalized_model_name, ci_type=4, strict=True, db_id=db_id)
+        if resolved_model_no is None:
+            resolved_model_no = get_model_no_by_name(normalized_model_name, ci_type=4, strict=False, db_id=db_id)
+        if resolved_model_no is None:
+            created = create_model(normalized_model_name, resolved_type_no, ci_type=4, db_id=db_id)
+            if created is None:
+                result["message"] = "Failed to resolve or create consumable model"
+                return result
+            resolved_model_no = created
+            result["created_model"] = True
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT ISNULL(MAX(ID), 0) + 1 FROM ITEMS WITH (TABLOCKX, HOLDLOCK)")
+        next_id = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            SELECT ISNULL(MAX(CAST(INV_NO AS INT)), 0) + 1
+            FROM ITEMS
+            WHERE INV_NO IS NOT NULL AND ISNUMERIC(INV_NO) = 1
+            """
+        )
+        next_inv_no = cursor.fetchone()[0]
+        inv_no_value = str(next_inv_no)
+
+        cursor.execute(
+            """
+            INSERT INTO ITEMS (
+                ID, SERIAL_NO, HW_SERIAL_NO, PART_NO, INV_NO,
+                CI_TYPE, TYPE_NO, MODEL_NO, STATUS_NO, EMPL_NO,
+                BRANCH_NO, LOC_NO, QTY, COMP_NO, DESCR, IP_ADDRESS,
+                CREATE_DATE, CH_DATE, CH_USER
+            )
+            VALUES (?, NULL, NULL, ?, ?, 4, ?, ?, ?, NULL, ?, ?, ?, 0, ?, NULL, GETDATE(), GETDATE(), ?)
+            """,
+            (
+                next_id,
+                normalized_part_no,
+                inv_no_value,
+                resolved_type_no,
+                resolved_model_no,
+                resolved_status_no,
+                branch_no,
+                loc_no,
+                resolved_qty,
+                normalized_descr,
+                changed_by or "IT-WEB",
+            ),
+        )
+
+        result["success"] = True
+        result["item_id"] = int(next_id)
+        result["inv_no"] = inv_no_value
+        result["message"] = "Consumable created successfully"
+        return result
+
+
+def get_consumables_lookup(
+    db_id: Optional[str] = None,
+    *,
+    type_no: Optional[int] = None,
+    model_name: Optional[str] = None,
+    branch_no: Optional[Any] = None,
+    loc_no: Optional[Any] = None,
+    only_positive_qty: bool = True,
+    limit: int = 300,
+) -> List[Dict[str, Any]]:
+    """Lookup consumables (CI_TYPE=4) with branch/location for work operations."""
+    db = get_db(db_id)
+    safe_limit = max(1, min(int(limit or 300), 1000))
+
+    conditions = ["i.CI_TYPE = 4"]
+    params: List[Any] = []
+
+    if only_positive_qty:
+        conditions.append("ISNULL(i.QTY, 0) > 0")
+    if type_no is not None:
+        conditions.append("i.TYPE_NO = ?")
+        params.append(int(type_no))
+    if model_name:
+        conditions.append("LOWER(CAST(m.MODEL_NAME AS NVARCHAR(255))) LIKE ?")
+        params.append(f"%{str(model_name).strip().lower()}%")
+    if branch_no not in (None, ""):
+        conditions.append("i.BRANCH_NO = ?")
+        params.append(branch_no)
+    if loc_no not in (None, ""):
+        conditions.append("i.LOC_NO = ?")
+        params.append(loc_no)
+
+    query = f"""
+        SELECT TOP {safe_limit}
+            i.ID as id,
+            i.INV_NO as inv_no,
+            i.TYPE_NO as type_no,
+            i.MODEL_NO as model_no,
+            ISNULL(i.QTY, 0) as qty,
+            i.PART_NO as part_no,
+            i.DESCR as description,
+            t.TYPE_NAME as type_name,
+            m.MODEL_NAME as model_name,
+            b.BRANCH_NO as branch_no,
+            b.BRANCH_NAME as branch_name,
+            l.LOC_NO as loc_no,
+            l.DESCR as location_name
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE {" AND ".join(conditions)}
+        ORDER BY m.MODEL_NAME, b.BRANCH_NAME, l.DESCR, i.ID
+    """
+    return db.execute_query(query, tuple(params))
+
+
+def get_consumable_by_id(item_id: int, db_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Get one consumable card (CI_TYPE=4) by ITEMS.ID with branch/location metadata."""
+    try:
+        resolved_item_id = int(item_id)
+    except (TypeError, ValueError):
+        return None
+    if resolved_item_id <= 0:
+        return None
+
+    db = get_db(db_id)
+    rows = db.execute_query(
+        """
+        SELECT TOP 1
+            i.ID as id,
+            i.INV_NO as inv_no,
+            i.TYPE_NO as type_no,
+            i.MODEL_NO as model_no,
+            ISNULL(i.QTY, 0) as qty,
+            i.PART_NO as part_no,
+            i.DESCR as description,
+            t.TYPE_NAME as type_name,
+            m.MODEL_NAME as model_name,
+            b.BRANCH_NO as branch_no,
+            b.BRANCH_NAME as branch_name,
+            l.LOC_NO as loc_no,
+            l.DESCR as location_name
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 4 AND i.ID = ?
+        """,
+        (resolved_item_id,),
+    )
+    if not rows:
+        return None
+
+    row = dict(rows[0])
+    row["inv_no"] = _format_item_inv_no(row.get("inv_no"), fallback="") or None
+    try:
+        row["qty"] = int(row.get("qty") or 0)
+    except (TypeError, ValueError):
+        row["qty"] = 0
+    return row
+
+
+def consume_consumable_stock(
+    *,
+    db_id: Optional[str] = None,
+    item_id: Optional[int] = None,
+    inv_no: Optional[str] = None,
+    qty: int = 1,
+    changed_by: str = "IT-WEB",
+) -> Dict[str, Any]:
+    """Decrease consumable stock by qty with underflow protection."""
+    result: Dict[str, Any] = {
+        "success": False,
+        "item_id": None,
+        "inv_no": None,
+        "qty_old": None,
+        "qty_new": None,
+        "message": "",
+    }
+
+    try:
+        resolved_qty = int(qty)
+    except (TypeError, ValueError):
+        result["message"] = "qty must be a positive integer"
+        return result
+    if resolved_qty <= 0:
+        result["message"] = "qty must be a positive integer"
+        return result
+
+    if item_id is None and not str(inv_no or "").strip():
+        result["message"] = "item_id or inv_no is required"
+        return result
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+
+        if item_id is not None:
+            cursor.execute(
+                """
+                SELECT TOP 1 i.ID, i.INV_NO, ISNULL(i.QTY, 0) AS QTY
+                FROM ITEMS i
+                WHERE i.CI_TYPE = 4 AND i.ID = ?
+                """,
+                (int(item_id),),
+            )
+        else:
+            try:
+                inv_no_float = float(str(inv_no).strip())
+            except (TypeError, ValueError):
+                result["message"] = "Invalid inv_no"
+                return result
+            cursor.execute(
+                """
+                SELECT TOP 1 i.ID, i.INV_NO, ISNULL(i.QTY, 0) AS QTY
+                FROM ITEMS i
+                WHERE i.CI_TYPE = 4 AND i.INV_NO = ?
+                ORDER BY i.ID DESC
+                """,
+                (inv_no_float,),
+            )
+
+        row = cursor.fetchone()
+        if not row:
+            result["message"] = "Consumable not found"
+            return result
+
+        target_id = int(row[0])
+        target_inv_no = str(row[1]).strip() if row[1] is not None else None
+        qty_old = int(row[2]) if row[2] is not None else 0
+        if qty_old < resolved_qty:
+            result["item_id"] = target_id
+            result["inv_no"] = target_inv_no
+            result["qty_old"] = qty_old
+            result["qty_new"] = qty_old
+            result["message"] = "Insufficient consumable quantity"
+            return result
+
+        cursor.execute(
+            """
+            UPDATE ITEMS
+            SET QTY = ISNULL(QTY, 0) - ?,
+                CH_DATE = GETDATE(),
+                CH_USER = ?
+            WHERE ID = ?
+              AND CI_TYPE = 4
+              AND ISNULL(QTY, 0) >= ?
+            """,
+            (resolved_qty, changed_by or "IT-WEB", target_id, resolved_qty),
+        )
+        if cursor.rowcount <= 0:
+            result["item_id"] = target_id
+            result["inv_no"] = target_inv_no
+            result["qty_old"] = qty_old
+            result["qty_new"] = qty_old
+            result["message"] = "Insufficient consumable quantity"
+            return result
+
+        cursor.execute("SELECT ISNULL(QTY, 0) FROM ITEMS WHERE ID = ?", (target_id,))
+        next_row = cursor.fetchone()
+        qty_new = int(next_row[0]) if next_row and next_row[0] is not None else max(qty_old - resolved_qty, 0)
+
+        result["success"] = True
+        result["item_id"] = target_id
+        result["inv_no"] = target_inv_no
+        result["qty_old"] = qty_old
+        result["qty_new"] = qty_new
+        result["message"] = "Consumable stock updated"
+        return result
+
+
+def set_consumable_stock_qty(
+    *,
+    db_id: Optional[str] = None,
+    item_id: Optional[int] = None,
+    inv_no: Optional[str] = None,
+    qty: int = 0,
+    changed_by: str = "IT-WEB",
+) -> Dict[str, Any]:
+    """Set exact consumable stock quantity (CI_TYPE=4)."""
+    result: Dict[str, Any] = {
+        "success": False,
+        "item_id": None,
+        "inv_no": None,
+        "qty_old": None,
+        "qty_new": None,
+        "message": "",
+    }
+
+    try:
+        resolved_qty = int(qty)
+    except (TypeError, ValueError):
+        result["message"] = "qty must be a non-negative integer"
+        return result
+    if resolved_qty < 0:
+        result["message"] = "qty must be a non-negative integer"
+        return result
+
+    if item_id is None and not str(inv_no or "").strip():
+        result["message"] = "item_id or inv_no is required"
+        return result
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+
+        if item_id is not None:
+            cursor.execute(
+                """
+                SELECT TOP 1 i.ID, i.INV_NO, ISNULL(i.QTY, 0) AS QTY
+                FROM ITEMS i
+                WHERE i.CI_TYPE = 4 AND i.ID = ?
+                """,
+                (int(item_id),),
+            )
+        else:
+            try:
+                inv_no_float = float(str(inv_no).strip())
+            except (TypeError, ValueError):
+                result["message"] = "Invalid inv_no"
+                return result
+            cursor.execute(
+                """
+                SELECT TOP 1 i.ID, i.INV_NO, ISNULL(i.QTY, 0) AS QTY
+                FROM ITEMS i
+                WHERE i.CI_TYPE = 4 AND i.INV_NO = ?
+                ORDER BY i.ID DESC
+                """,
+                (inv_no_float,),
+            )
+
+        row = cursor.fetchone()
+        if not row:
+            result["message"] = "Consumable not found"
+            return result
+
+        target_id = int(row[0])
+        target_inv_no = str(row[1]).strip() if row[1] is not None else None
+        qty_old = int(row[2]) if row[2] is not None else 0
+
+        cursor.execute(
+            """
+            UPDATE ITEMS
+            SET QTY = ?,
+                CH_DATE = GETDATE(),
+                CH_USER = ?
+            WHERE ID = ?
+              AND CI_TYPE = 4
+            """,
+            (resolved_qty, changed_by or "IT-WEB", target_id),
+        )
+        if cursor.rowcount <= 0:
+            result["item_id"] = target_id
+            result["inv_no"] = target_inv_no
+            result["qty_old"] = qty_old
+            result["qty_new"] = qty_old
+            result["message"] = "Failed to update consumable quantity"
+            return result
+
+        result["success"] = True
+        result["item_id"] = target_id
+        result["inv_no"] = target_inv_no
+        result["qty_old"] = qty_old
+        result["qty_new"] = resolved_qty
+        result["message"] = "Consumable quantity updated"
+        return result
+
+
+def transfer_equipment_by_inv_with_history(
+    inv_no: str,
+    new_employee_no: int,
+    new_employee_name: str,
+    new_branch_no: Optional[Any] = None,
+    new_loc_no: Optional[Any] = None,
+    changed_by: str = "IT-WEB",
+    comment: Optional[str] = None,
+    operation_id: Optional[str] = None,
+    db_id: Optional[str] = None,
+) -> dict:
+    """
+    Transfer one equipment unit by INV_NO and write CI_HISTORY.
+
+    Returns:
+        Dict with operation status and transferred item metadata.
+    """
+    result = {
+        "success": False,
+        "inv_no": str(inv_no or "").strip(),
+        "message": "",
+        "hist_id": None,
+        "replayed": False,
+    }
+
+    normalized_operation_id = str(operation_id or "").strip()
+    operation_marker = (
+        f"[operation_id={normalized_operation_id}]" if normalized_operation_id else ""
+    )
+    history_comment = str(comment or "").strip()
+    if operation_marker and operation_marker not in history_comment:
+        history_comment = f"{history_comment} {operation_marker}".strip()
+
+    try:
+        inv_no_float = float(inv_no) if inv_no not in (None, "") else None
+    except (TypeError, ValueError):
+        result["message"] = "Invalid inventory number"
+        return result
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 2
+                i.ID, i.INV_NO, i.SERIAL_NO, i.HW_SERIAL_NO, i.PART_NO,
+                i.EMPL_NO, i.BRANCH_NO, i.LOC_NO, i.STATUS_NO,
+                i.TYPE_NO, i.MODEL_NO, i.CI_TYPE, i.QTY,
+                o.OWNER_DISPLAY_NAME AS OLD_EMPLOYEE_NAME,
+                b.BRANCH_NAME AS BRANCH_NAME,
+                l.DESCR AS LOCATION_NAME,
+                t.TYPE_NAME AS TYPE_NAME,
+                m.MODEL_NAME AS MODEL_NAME
+            FROM ITEMS i WITH (UPDLOCK, HOLDLOCK)
+            LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+            LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+            LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+            LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+            WHERE i.CI_TYPE = 1 AND i.INV_NO = ?
+            """,
+            (inv_no_float,),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            result["message"] = f"Equipment with INV_NO {inv_no} not found"
+            return result
+        if len(rows) != 1:
+            result["message"] = f"Equipment with INV_NO {inv_no} is ambiguous"
+            return result
+
+        columns = [column[0] for column in cursor.description]
+        current = dict(zip(columns, rows[0]))
+
+        old_empl_no = current.get("EMPL_NO")
+        old_branch_no = current.get("BRANCH_NO")
+        old_loc_no = current.get("LOC_NO")
+        old_status_no = current.get("STATUS_NO")
+        old_serial_no = current.get("SERIAL_NO")
+        old_inv_no = current.get("INV_NO")
+        old_type_no = current.get("TYPE_NO")
+        old_model_no = current.get("MODEL_NO")
+        old_ci_type = current.get("CI_TYPE")
+        old_qty = current.get("QTY") if current.get("QTY") is not None else 1
+
+        final_branch_no = new_branch_no if new_branch_no is not None else old_branch_no
+        final_loc_no = new_loc_no if new_loc_no is not None else old_loc_no
+        new_qty = 1
+        now = datetime.now()
+
+        # A recovered background job must not create a second CI_HISTORY row
+        # after SQL commit but before it persisted the job result.  The row
+        # lock above serializes this lookup with competing transfers of the
+        # same immutable ITEMS.ID.
+        if operation_marker:
+            cursor.execute(
+                """
+                SELECT TOP 1
+                    h.HIST_ID, h.EMPL_NO_OLD, h.EMPL_NO_NEW,
+                    h.BRANCH_NO_NEW, h.LOC_NO_NEW,
+                    old_owner.OWNER_DISPLAY_NAME AS OLD_EMPLOYEE_NAME
+                FROM CI_HISTORY h WITH (UPDLOCK, HOLDLOCK)
+                LEFT JOIN OWNERS old_owner ON old_owner.OWNER_NO = h.EMPL_NO_OLD
+                WHERE h.ITEM_ID = ?
+                  AND CHARINDEX(?, COALESCE(h.CH_COMMENT, '')) > 0
+                ORDER BY h.HIST_ID DESC
+                """,
+                (current.get("ID"), operation_marker),
+            )
+            replay = cursor.fetchone()
+            if replay:
+                (
+                    replay_hist_id,
+                    replay_old_employee_no,
+                    replay_new_employee_no,
+                    replay_branch_no,
+                    replay_loc_no,
+                    replay_old_employee_name,
+                ) = replay
+                same_target = (
+                    str(replay_new_employee_no) == str(new_employee_no)
+                    and str(replay_branch_no) == str(final_branch_no)
+                    and str(replay_loc_no) == str(final_loc_no)
+                )
+                current_still_at_target = (
+                    str(current.get("EMPL_NO")) == str(new_employee_no)
+                    and str(current.get("BRANCH_NO")) == str(final_branch_no)
+                    and str(current.get("LOC_NO")) == str(final_loc_no)
+                )
+                if not same_target or not current_still_at_target:
+                    result["message"] = (
+                        f"operation_id {normalized_operation_id} conflicts with the current equipment state"
+                    )
+                    return result
+
+                try:
+                    inv_text = (
+                        str(int(round(float(old_inv_no))))
+                        if old_inv_no is not None
+                        else str(inv_no)
+                    )
+                except (TypeError, ValueError):
+                    inv_text = str(inv_no)
+                result.update(
+                    {
+                        "success": True,
+                        "hist_id": int(replay_hist_id),
+                        "item_id": int(current.get("ID")),
+                        "inv_no": inv_text,
+                        "serial_no": old_serial_no,
+                        "old_employee_no": replay_old_employee_no,
+                        "old_employee_name": replay_old_employee_name,
+                        "new_employee_no": int(new_employee_no),
+                        "new_employee_name": new_employee_name,
+                        "branch_no": final_branch_no,
+                        "loc_no": final_loc_no,
+                        "branch_name": current.get("BRANCH_NAME"),
+                        "location_name": current.get("LOCATION_NAME"),
+                        "type_name": current.get("TYPE_NAME"),
+                        "model_name": current.get("MODEL_NAME"),
+                        "part_no": current.get("PART_NO"),
+                        "replayed": True,
+                        "operation_id": normalized_operation_id,
+                        "message": "Transferred (idempotent replay)",
+                    }
+                )
+                return result
+
+        cursor.execute("SELECT ISNULL(MAX(HIST_ID), 0) + 1 FROM CI_HISTORY WITH (TABLOCKX, HOLDLOCK)")
+        hist_id = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            INSERT INTO CI_HISTORY (
+                HIST_ID,
+                ITEM_ID,
+                EMPL_NO_OLD, EMPL_NO_NEW,
+                BRANCH_NO_OLD, BRANCH_NO_NEW,
+                LOC_NO_OLD, LOC_NO_NEW,
+                STATUS_NO_OLD, STATUS_NO_NEW,
+                SERIAL_NO_OLD, SERIAL_NO_NEW,
+                INV_NO_OLD, INV_NO_NEW,
+                TYPE_NO_OLD, TYPE_NO_NEW,
+                MODEL_NO_OLD, MODEL_NO_NEW,
+                CI_TYPE_OLD, CI_TYPE_NEW,
+                COMP_NO_OLD, COMP_NO_NEW,
+                QTY_OLD, QTY_NEW,
+                CH_DATE, CH_USER, CH_COMMENT
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                hist_id,
+                current.get("ID"),
+                old_empl_no, new_employee_no,
+                old_branch_no, final_branch_no,
+                old_loc_no, final_loc_no,
+                old_status_no, old_status_no,
+                old_serial_no, old_serial_no,
+                old_inv_no, old_inv_no,
+                old_type_no, old_type_no,
+                old_model_no, old_model_no,
+                old_ci_type, old_ci_type,
+                0, 0,
+                old_qty, new_qty,
+                now, changed_by or "IT-WEB", history_comment or None,
+            ),
+        )
+
+        cursor.execute(
+            """
+            UPDATE ITEMS
+            SET EMPL_NO = ?,
+                BRANCH_NO = ?,
+                LOC_NO = ?,
+                QTY = ?,
+                CH_DATE = ?,
+                CH_USER = ?
+            WHERE ID = ?
+              AND CI_TYPE = 1
+            """,
+            (
+                new_employee_no,
+                final_branch_no,
+                final_loc_no,
+                new_qty,
+                now,
+                changed_by or "IT-WEB",
+                current.get("ID"),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"Equipment item {current.get('ID')} was changed or removed during transfer")
+
+        branch_name = current.get("BRANCH_NAME")
+        location_name = current.get("LOCATION_NAME")
+
+        if final_branch_no is not None:
+            cursor.execute("SELECT TOP 1 BRANCH_NAME FROM BRANCHES WHERE BRANCH_NO = ?", (final_branch_no,))
+            branch_row = cursor.fetchone()
+            if branch_row and branch_row[0] is not None:
+                branch_name = branch_row[0]
+
+        if final_loc_no is not None:
+            cursor.execute("SELECT TOP 1 DESCR FROM LOCATIONS WHERE LOC_NO = ?", (final_loc_no,))
+            loc_row = cursor.fetchone()
+            if loc_row and loc_row[0] is not None:
+                location_name = loc_row[0]
+
+        try:
+            inv_text = str(int(round(float(old_inv_no)))) if old_inv_no is not None else str(inv_no)
+        except (TypeError, ValueError):
+            inv_text = str(inv_no)
+
+        result.update(
+            {
+                "success": True,
+                "hist_id": int(hist_id),
+                "item_id": int(current.get("ID")),
+                "inv_no": inv_text,
+                "serial_no": old_serial_no,
+                "old_employee_no": old_empl_no,
+                "old_employee_name": current.get("OLD_EMPLOYEE_NAME"),
+                "new_employee_no": int(new_employee_no),
+                "new_employee_name": new_employee_name,
+                "branch_no": final_branch_no,
+                "loc_no": final_loc_no,
+                "branch_name": branch_name,
+                "location_name": location_name,
+                "type_name": current.get("TYPE_NAME"),
+                "model_name": current.get("MODEL_NAME"),
+                "part_no": current.get("PART_NO"),
+                "operation_id": normalized_operation_id or None,
+                "message": "Transferred",
+            }
+        )
+        return result
+
+
+def transfer_equipment_location_by_inv_with_history(
+    inv_no: str,
+    new_branch_no: Any,
+    new_loc_no: Any,
+    changed_by: str = "IT-WEB",
+    comment: Optional[str] = None,
+    operation_id: Optional[str] = None,
+    db_id: Optional[str] = None,
+) -> dict:
+    """
+    Move one equipment unit to another branch/location and write CI_HISTORY.
+
+    Ownership, status, type, model and quantity are preserved.
+    """
+    result = {
+        "success": False,
+        "inv_no": str(inv_no or "").strip(),
+        "message": "",
+        "hist_id": None,
+        "replayed": False,
+    }
+
+    normalized_operation_id = str(operation_id or "").strip()
+    operation_marker = (
+        f"[operation_id={normalized_operation_id}]" if normalized_operation_id else ""
+    )
+    history_comment = str(comment or "").strip()
+    if operation_marker and operation_marker not in history_comment:
+        history_comment = f"{history_comment} {operation_marker}".strip()
+
+    try:
+        inv_no_float = float(inv_no) if inv_no not in (None, "") else None
+    except (TypeError, ValueError):
+        result["message"] = "Invalid inventory number"
+        return result
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 2
+                i.ID, i.INV_NO, i.SERIAL_NO, i.HW_SERIAL_NO, i.PART_NO,
+                i.EMPL_NO, i.BRANCH_NO, i.LOC_NO, i.STATUS_NO,
+                i.TYPE_NO, i.MODEL_NO, i.CI_TYPE, i.QTY,
+                o.OWNER_DISPLAY_NAME AS OLD_EMPLOYEE_NAME,
+                b.BRANCH_NAME AS BRANCH_NAME,
+                l.DESCR AS LOCATION_NAME,
+                t.TYPE_NAME AS TYPE_NAME,
+                m.MODEL_NAME AS MODEL_NAME
+            FROM ITEMS i WITH (UPDLOCK, HOLDLOCK)
+            LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+            LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+            LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+            LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+            WHERE i.CI_TYPE = 1 AND i.INV_NO = ?
+            """,
+            (inv_no_float,),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            result["message"] = f"Equipment with INV_NO {inv_no} not found"
+            return result
+        if len(rows) != 1:
+            result["message"] = f"Equipment with INV_NO {inv_no} is ambiguous"
+            return result
+
+        columns = [column[0] for column in cursor.description]
+        current = dict(zip(columns, rows[0]))
+
+        old_empl_no = current.get("EMPL_NO")
+        old_branch_no = current.get("BRANCH_NO")
+        old_loc_no = current.get("LOC_NO")
+        old_status_no = current.get("STATUS_NO")
+        old_serial_no = current.get("SERIAL_NO")
+        old_inv_no = current.get("INV_NO")
+        old_type_no = current.get("TYPE_NO")
+        old_model_no = current.get("MODEL_NO")
+        old_ci_type = current.get("CI_TYPE")
+        old_qty = current.get("QTY") if current.get("QTY") is not None else 1
+        employee_name = current.get("OLD_EMPLOYEE_NAME") or "Без владельца"
+        now = datetime.now()
+
+        # The marker is keyed by immutable ITEMS.ID, not an inventory number.
+        # It closes the crash window after a SQL commit but before the durable
+        # job worker has persisted its result: a recovered job returns the
+        # original CI_HISTORY row instead of creating a second one.
+        if operation_marker:
+            cursor.execute(
+                """
+                SELECT TOP 1
+                    h.HIST_ID, h.EMPL_NO_OLD, h.EMPL_NO_NEW,
+                    h.BRANCH_NO_NEW, h.LOC_NO_NEW
+                FROM CI_HISTORY h WITH (UPDLOCK, HOLDLOCK)
+                WHERE h.ITEM_ID = ?
+                  AND CHARINDEX(?, COALESCE(h.CH_COMMENT, '')) > 0
+                ORDER BY h.HIST_ID DESC
+                """,
+                (current.get("ID"), operation_marker),
+            )
+            replay = cursor.fetchone()
+            if replay:
+                (
+                    replay_hist_id,
+                    replay_old_employee_no,
+                    replay_new_employee_no,
+                    replay_branch_no,
+                    replay_loc_no,
+                ) = replay
+                same_target = (
+                    str(replay_branch_no) == str(new_branch_no)
+                    and str(replay_loc_no) == str(new_loc_no)
+                    and str(replay_old_employee_no) == str(replay_new_employee_no)
+                )
+                current_still_at_target = (
+                    str(current.get("EMPL_NO")) == str(replay_new_employee_no)
+                    and str(current.get("BRANCH_NO")) == str(new_branch_no)
+                    and str(current.get("LOC_NO")) == str(new_loc_no)
+                )
+                if not same_target or not current_still_at_target:
+                    result["message"] = (
+                        f"operation_id {normalized_operation_id} conflicts with the current equipment state"
+                    )
+                    result["retryable"] = False
+                    return result
+
+                try:
+                    inv_text = (
+                        str(int(round(float(old_inv_no))))
+                        if old_inv_no is not None
+                        else str(inv_no)
+                    )
+                except (TypeError, ValueError):
+                    inv_text = str(inv_no)
+                result.update(
+                    {
+                        "success": True,
+                        "hist_id": int(replay_hist_id),
+                        "item_id": int(current.get("ID")),
+                        "inv_no": inv_text,
+                        "serial_no": old_serial_no,
+                        "old_employee_no": replay_old_employee_no,
+                        "old_employee_name": employee_name,
+                        "new_employee_no": replay_new_employee_no,
+                        "new_employee_name": employee_name,
+                        "branch_no": new_branch_no,
+                        "loc_no": new_loc_no,
+                        "branch_name": current.get("BRANCH_NAME"),
+                        "location_name": current.get("LOCATION_NAME"),
+                        "type_name": current.get("TYPE_NAME"),
+                        "model_name": current.get("MODEL_NAME"),
+                        "part_no": current.get("PART_NO"),
+                        "replayed": True,
+                        "operation_id": normalized_operation_id,
+                        "message": "Location transferred (idempotent replay)",
+                    }
+                )
+                return result
+
+        cursor.execute("SELECT ISNULL(MAX(HIST_ID), 0) + 1 FROM CI_HISTORY WITH (TABLOCKX, HOLDLOCK)")
+        hist_id = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            INSERT INTO CI_HISTORY (
+                HIST_ID,
+                ITEM_ID,
+                EMPL_NO_OLD, EMPL_NO_NEW,
+                BRANCH_NO_OLD, BRANCH_NO_NEW,
+                LOC_NO_OLD, LOC_NO_NEW,
+                STATUS_NO_OLD, STATUS_NO_NEW,
+                SERIAL_NO_OLD, SERIAL_NO_NEW,
+                INV_NO_OLD, INV_NO_NEW,
+                TYPE_NO_OLD, TYPE_NO_NEW,
+                MODEL_NO_OLD, MODEL_NO_NEW,
+                CI_TYPE_OLD, CI_TYPE_NEW,
+                COMP_NO_OLD, COMP_NO_NEW,
+                QTY_OLD, QTY_NEW,
+                CH_DATE, CH_USER, CH_COMMENT
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                hist_id,
+                current.get("ID"),
+                old_empl_no, old_empl_no,
+                old_branch_no, new_branch_no,
+                old_loc_no, new_loc_no,
+                old_status_no, old_status_no,
+                old_serial_no, old_serial_no,
+                old_inv_no, old_inv_no,
+                old_type_no, old_type_no,
+                old_model_no, old_model_no,
+                old_ci_type, old_ci_type,
+                0, 0,
+                old_qty, old_qty,
+                now, changed_by or "IT-WEB", history_comment or None,
+            ),
+        )
+
+        cursor.execute(
+            """
+            UPDATE ITEMS
+            SET BRANCH_NO = ?,
+                LOC_NO = ?,
+                CH_DATE = ?,
+                CH_USER = ?
+            WHERE ID = ?
+              AND CI_TYPE = 1
+            """,
+            (
+                new_branch_no,
+                new_loc_no,
+                now,
+                changed_by or "IT-WEB",
+                current.get("ID"),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"Equipment item {current.get('ID')} was changed or removed during location transfer")
+
+        branch_name = current.get("BRANCH_NAME")
+        location_name = current.get("LOCATION_NAME")
+
+        cursor.execute("SELECT TOP 1 BRANCH_NAME FROM BRANCHES WHERE BRANCH_NO = ?", (new_branch_no,))
+        branch_row = cursor.fetchone()
+        if branch_row and branch_row[0] is not None:
+            branch_name = branch_row[0]
+
+        cursor.execute("SELECT TOP 1 DESCR FROM LOCATIONS WHERE LOC_NO = ?", (new_loc_no,))
+        loc_row = cursor.fetchone()
+        if loc_row and loc_row[0] is not None:
+            location_name = loc_row[0]
+
+        try:
+            inv_text = str(int(round(float(old_inv_no)))) if old_inv_no is not None else str(inv_no)
+        except (TypeError, ValueError):
+            inv_text = str(inv_no)
+
+        result.update(
+            {
+                "success": True,
+                "hist_id": int(hist_id),
+                "item_id": int(current.get("ID")),
+                "inv_no": inv_text,
+                "serial_no": old_serial_no,
+                "old_employee_no": old_empl_no,
+                "old_employee_name": employee_name,
+                "new_employee_no": old_empl_no,
+                "new_employee_name": employee_name,
+                "branch_no": new_branch_no,
+                "loc_no": new_loc_no,
+                "branch_name": branch_name,
+                "location_name": location_name,
+                "type_name": current.get("TYPE_NAME"),
+                "model_name": current.get("MODEL_NAME"),
+                "part_no": current.get("PART_NO"),
+                "operation_id": normalized_operation_id or None,
+                "message": "Location transferred",
+            }
+        )
+        return result
+
+
+def _normalize_mac_for_lookup(value: Optional[str]) -> str:
+    return re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).upper()
+
+
+def resolve_pc_context_by_mac_or_hostname(
+    mac_address: Optional[str],
+    hostname: Optional[str],
+    db_id: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Resolve branch and owner context for a PC from SQL inventory.
+
+    Priority:
+    1. Exact MAC match (normalized)
+    2. Exact hostname/netbios match (case-insensitive)
+    """
+    db = get_db(db_id)
+    normalized_mac = _normalize_mac_for_lookup(mac_address)
+    normalized_hostname = str(hostname or "").strip()
+
+    if normalized_mac:
+        query_mac = """
+            SELECT TOP 1
+                i.INV_NO as inv_no,
+                i.MAC_ADDRESS as mac_address,
+                i.NETBIOS_NAME as network_name,
+                i.IP_ADDRESS as ip_address,
+                m.MODEL_NAME as model_name,
+                i.BRANCH_NO as branch_no,
+                i.LOC_NO as loc_no,
+                b.BRANCH_NAME as branch_name,
+                l.DESCR as location_name,
+                i.EMPL_NO as empl_no,
+                o.OWNER_DISPLAY_NAME as employee_name
+            FROM ITEMS i
+            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+            LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+            LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+            LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+            WHERE i.CI_TYPE = 1
+              AND '|' + REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                    UPPER(COALESCE(i.MAC_ADDRESS, '')), ':', ''), '-', ''), '.', ''), ';', '|'), ',', '|'), ' ', '|') + '|'
+                  LIKE ?
+            ORDER BY i.ID DESC
+        """
+        try:
+            # В поле может быть несколько MAC через «;», «,» или пробел: ищем адрес как отдельный элемент списка.
+            rows = db.execute_query(query_mac, (f"%|{normalized_mac}|%",))
+            if rows:
+                return rows[0]
+        except Exception:
+            # Some legacy snapshots may have schema differences; hostname fallback below.
+            pass
+
+    if normalized_hostname:
+        candidates: List[str] = [normalized_hostname]
+        short_name = normalized_hostname.split(".")[0].strip()
+        if short_name and short_name.upper() != normalized_hostname.upper():
+            candidates.append(short_name)
+
+        query_host = """
+            SELECT TOP 1
+                i.INV_NO as inv_no,
+                i.MAC_ADDRESS as mac_address,
+                i.NETBIOS_NAME as network_name,
+                i.IP_ADDRESS as ip_address,
+                m.MODEL_NAME as model_name,
+                i.BRANCH_NO as branch_no,
+                i.LOC_NO as loc_no,
+                b.BRANCH_NAME as branch_name,
+                l.DESCR as location_name,
+                i.EMPL_NO as empl_no,
+                o.OWNER_DISPLAY_NAME as employee_name
+            FROM ITEMS i
+            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+            LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+            LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+            LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+            WHERE i.CI_TYPE = 1
+              AND (
+                    UPPER(COALESCE(i.NETBIOS_NAME, '')) = UPPER(?)
+                 OR UPPER(COALESCE(i.DOMAIN_NAME, '')) = UPPER(?)
+              )
+            ORDER BY i.ID DESC
+        """
+        for candidate in candidates:
+            try:
+                rows = db.execute_query(query_host, (candidate, candidate))
+                if rows:
+                    return rows[0]
+            except Exception:
+                continue
+
+    return None
+
+
+def list_pc_cards_for_binding(db_id: Optional[str] = None) -> List[dict]:
+    """
+    Все карточки ПК ITINVENT (ITEMS.CI_TYPE=1) одним запросом для пакетной привязки
+    inventory-хостов. Сопоставление выполняется в памяти (backend/services/inventory_binding.py).
+
+    ORDER BY ID DESC: при совпадении ключа побеждает самая свежая карточка.
+    """
+    db = get_db(db_id)
+    query = """
+        SELECT
+            i.ID AS item_id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.MAC_ADDRESS AS mac_address,
+            i.NETBIOS_NAME AS network_name,
+            i.DOMAIN_NAME AS domain_name,
+            i.IP_ADDRESS AS ip_address,
+            m.MODEL_NAME AS model_name,
+            i.BRANCH_NO AS branch_no,
+            b.BRANCH_NAME AS branch_name,
+            l.DESCR AS location_name,
+            o.OWNER_DISPLAY_NAME AS employee_name
+        FROM ITEMS i
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 1
+          AND i.INV_NO IS NOT NULL
+        ORDER BY i.ID DESC
+    """
+    return db.execute_query(query)

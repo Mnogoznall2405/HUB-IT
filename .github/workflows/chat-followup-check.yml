@@ -1,0 +1,94 @@
+name: Check native chat follow-up
+on:
+  push:
+    branches: [fix/chat-offline-history-safety-2026-09-07]
+    paths:
+      - mobile-hub/**
+      - .github/workflows/chat-followup-check.yml
+permissions:
+  contents: read
+concurrency:
+  group: native-chat-followup-check
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'Mnogoznall2405/HUB-IT' && github.ref == 'refs/heads/fix/chat-offline-history-safety-2026-09-07'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile-hub/package-lock.json
+      - name: Install locked dependencies
+        working-directory: mobile-hub
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify test network guard
+        working-directory: mobile-hub
+        run: |
+          node --require ./scripts/block-test-network.cjs -e "require('node:assert/strict').throws(() => new (require('node:net').Socket)().connect(443, 'example.invalid'), { code: 'HUBIT_TEST_REMOTE_NETWORK_BLOCKED' })"
+      - name: Queue and navigation regression checks
+        id: logic
+        continue-on-error: true
+        working-directory: mobile-hub
+        run: node --test scripts/chat-delivery.regression.cjs scripts/chat-screen.regression.cjs
+      - name: Full mobile type check
+        id: lint
+        continue-on-error: true
+        working-directory: mobile-hub
+        run: npm run lint
+      - name: Full mobile Jest suite with remote connections blocked
+        id: jest
+        continue-on-error: true
+        working-directory: mobile-hub
+        run: |
+          export NODE_OPTIONS="--require=$PWD/scripts/block-test-network.cjs"
+          npm run test:ci -- --json --outputFile=/tmp/hub-current-jest.json 2>&1 | tee /tmp/hub-current-jest.log
+      - name: Compare the unchanged base when project tests fail
+        if: steps.jest.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/hub-baseline
+          git archive ca755a9884ac6230d08bd3ade59b226344630018 mobile-hub | tar -x -C /tmp/hub-baseline
+          ln -s "$GITHUB_WORKSPACE/mobile-hub/node_modules" /tmp/hub-baseline/mobile-hub/node_modules
+          export NODE_OPTIONS="--require=$GITHUB_WORKSPACE/mobile-hub/scripts/block-test-network.cjs"
+          cd /tmp/hub-baseline/mobile-hub
+          npm run test:ci -- --json --outputFile=/tmp/hub-base-jest.json 2>&1 | tee /tmp/hub-base-jest.log
+      - name: Summarize failures and preserve a failing check
+        if: always()
+        env:
+          LOGIC_RESULT: ${{ steps.logic.outcome }}
+          LINT_RESULT: ${{ steps.lint.outcome }}
+          JEST_RESULT: ${{ steps.jest.outcome }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for label in ['current', 'base']:
+              path = Path(f'/tmp/hub-{label}-jest.json')
+              if not path.exists():
+                  continue
+              data = json.loads(path.read_text())
+              print(label, 'tests=', data.get('numTotalTests'), 'passed=', data.get('numPassedTests'), 'failed=', data.get('numFailedTests'))
+              for suite in data.get('testResults', []):
+                  if suite.get('status') != 'failed':
+                      continue
+                  print('FAILED_SUITE', suite.get('name'))
+                  print(suite.get('message', '')[:2500])
+                  for case in suite.get('assertionResults', []):
+                      if case.get('status') == 'failed':
+                          print(case.get('fullName'), '\n'.join(case.get('failureMessages', []))[:2000])
+          PY
+          test "$LOGIC_RESULT" = success
+          test "$LINT_RESULT" = success
+          test "$JEST_RESULT" = success

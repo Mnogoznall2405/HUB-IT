@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph publicContour [Publichnyj_kontur]
+        TokenPage["/onboarding/:token"]
+    end
+    subgraph protectedContour [HUB_avtorizovannyj]
+        HRPage["/hr/onboarding"]
+    end
+    subgraph reuse [Pereispolzovanie]
+        Crypto[secret_crypto_service]
+        Files[my_files_pipeline]
+        Perms[authorization_service]
+    end
+    subgraph storage [Hranenie]
+        PG[(PostgreSQL_APP)]
+        Blob[Filesystem_SHA256]
+    end
+    TokenPage --> Files
+    HRPage --> PG
+    Files --> Blob
+    PG --> Crypto
+    HRPage --> Perms

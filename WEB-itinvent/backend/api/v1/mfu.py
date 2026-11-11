@@ -1,0 +1,441 @@
+"""
+MFU/printer dashboard endpoints.
+"""
+from __future__ import annotations
+
+import os
+import time
+from datetime import datetime, timezone
+from threading import RLock
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
+
+from backend.api.deps import get_current_database_id, require_permission
+from backend.database.equipment_db import get_all_equipment_flat, get_equipment_grouped
+from backend.json_db.works import WorksManager
+from backend.models.auth import User
+from backend.services import it_object_branch_scope
+from backend.services.authorization_service import PERM_MFU_READ
+from backend.services.mfu_monitor_service import mfu_runtime_monitor
+from backend.services.mfu_device_rows import (
+    _read_first,
+    _normalize_text,
+    normalize_device_row as _normalize_device_row,
+)
+
+router = APIRouter()
+works_manager = WorksManager()
+SNMP_ACTIVE_TTL_SEC = max(60, int(os.getenv("MFU_SNMP_ACTIVE_TTL_SEC", "600")))
+
+# Simple TTL cache for the heavy events-index query (works history)
+_events_cache: Dict[str, Any] = {}  # keyed by "db_id|period_days"
+_EVENTS_CACHE_TTL_SEC = int(os.getenv("MFU_EVENTS_CACHE_TTL_SEC", "300"))  # 5 minutes
+_mfu_devices_cache: Dict[str, Any] = {}
+_mfu_devices_cache_lock = RLock()
+_MFU_DEVICES_CACHE_TTL_SEC = max(15, int(os.getenv("MFU_DEVICES_CACHE_TTL_SEC", "45")))
+MFU_FALLBACK_KEYWORDS = (
+    "принтер",
+    "мфу",
+    "плоттер",
+    "плотер",
+    "printer",
+    "mfp",
+    "mfc",
+    "laserjet",
+    "officejet",
+    "deskjet",
+    "workcentre",
+    "versalink",
+    "i-sensys",
+    "imageprograf",
+    "imagerunner",
+    "plotter",
+    "designjet",
+    "plotwave",
+    "surecolor",
+)
+MFU_EXCLUDED_TYPE_KEYWORDS = (
+    "коммутатор",
+    "switch",
+    "ноутбук",
+    "notebook",
+    "laptop",
+    "лэптоп",
+    "монитор",
+    "ибп",
+    "сервер",
+    "server",
+    "телефон",
+    "камера",
+    "роутер",
+    "router",
+    "точка доступа",
+    "системный блок",
+    "тонкий клиент",
+)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _to_int_or_none(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _parse_utc_datetime(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        normalized = text.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _is_snmp_recent(last_success_at: Any, now_utc: datetime, ttl_sec: int) -> bool:
+    dt = _parse_utc_datetime(last_success_at)
+    if dt is None:
+        return False
+    age_sec = (now_utc - dt).total_seconds()
+    return 0 <= age_sec <= max(60, int(ttl_sec))
+
+
+def _is_mfu_device(device: Dict[str, Any]) -> bool:
+    type_name = _normalize_text(device.get("type_name")).lower()
+    if any(keyword in type_name for keyword in MFU_EXCLUDED_TYPE_KEYWORDS):
+        return False
+
+    payload = {
+        "type_name": device.get("type_name"),
+        "model_name": device.get("model_name"),
+        "vendor_name": device.get("manufacturer"),
+    }
+    if works_manager._is_printer_mfu_record(payload):  # noqa: SLF001
+        return True
+    if works_manager._is_pc_record(payload):  # noqa: SLF001
+        return False
+
+    model_name = _normalize_text(device.get("model_name")).lower()
+    manufacturer = _normalize_text(device.get("manufacturer")).lower()
+    full_text = f"{type_name} {model_name} {manufacturer}".strip()
+    return any(keyword in full_text for keyword in MFU_FALLBACK_KEYWORDS)
+
+
+def _normalize_identifier(value: Any) -> str:
+    text = _normalize_text(value).upper()
+    if not text:
+        return ""
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    return text
+
+
+def _flatten_grouped(grouped: Dict[str, Any]) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for locations in (grouped or {}).values():
+        if not isinstance(locations, dict):
+            continue
+        for items in locations.values():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    result.append(item)
+    return result
+
+
+def _resolve_device_hostname(device: Dict[str, Any], runtime: Dict[str, Any]) -> str:
+    inventory_hostname = _normalize_text(device.get("hostname"))
+    if inventory_hostname:
+        return inventory_hostname
+
+    snmp_state = runtime.get("snmp") if isinstance(runtime, dict) else {}
+    device_info = snmp_state.get("device_info") if isinstance(snmp_state, dict) else {}
+    return _normalize_text(device_info.get("sys_name") if isinstance(device_info, dict) else "")
+
+
+def _sanitize_runtime_for_public_api(runtime: Any) -> Dict[str, Any]:
+    """Return the dashboard runtime without SNMP credentials."""
+    if not isinstance(runtime, dict):
+        return {}
+    public_runtime = dict(runtime)
+    snmp_state = runtime.get("snmp")
+    if isinstance(snmp_state, dict):
+        public_snmp = dict(snmp_state)
+        public_snmp.pop("used_community", None)
+        public_runtime["snmp"] = public_snmp
+    return public_runtime
+
+
+def _build_mfu_events_index(db_id: Optional[str], period_days: int) -> Dict[str, List[Dict[str, Any]]]:
+    cache_key = f"{db_id or ''}|{period_days}"
+    cached = _events_cache.get(cache_key)
+    if cached and time.monotonic() - cached["ts"] < _EVENTS_CACHE_TTL_SEC:
+        return cached["data"]
+
+    stats = works_manager.get_mfu_statistics(
+        period_days=period_days,
+        db_name=db_id,
+        max_recent=None,
+    )
+    events = stats.get("recent_replacements") if isinstance(stats, dict) else []
+    if not isinstance(events, list):
+        return {}
+
+    by_identifier: Dict[str, List[Dict[str, Any]]] = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        candidates = [
+            _normalize_identifier(event.get("inv_no")),
+            _normalize_identifier(event.get("serial_no")),
+        ]
+        for identifier in candidates:
+            if not identifier:
+                continue
+            by_identifier.setdefault(identifier, []).append(event)
+
+    for identifier in list(by_identifier.keys()):
+        by_identifier[identifier].sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+
+    _events_cache[cache_key] = {"data": by_identifier, "ts": time.monotonic()}
+    return by_identifier
+
+
+def _get_cached_mfu_devices_payload(cache_key: str) -> Optional[Dict[str, Any]]:
+    with _mfu_devices_cache_lock:
+        cached = _mfu_devices_cache.get(cache_key)
+        if not cached:
+            return None
+        if (time.monotonic() - float(cached.get("ts") or 0)) >= _MFU_DEVICES_CACHE_TTL_SEC:
+            _mfu_devices_cache.pop(cache_key, None)
+            return None
+        return cached.get("data") if isinstance(cached.get("data"), dict) else None
+
+
+def _set_cached_mfu_devices_payload(cache_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    with _mfu_devices_cache_lock:
+        _mfu_devices_cache[cache_key] = {
+            "ts": time.monotonic(),
+            "data": payload,
+        }
+    return payload
+
+
+def _collect_device_maintenance(
+    device: Dict[str, Any],
+    events_by_identifier: Dict[str, List[Dict[str, Any]]],
+    recent_limit: int,
+) -> Dict[str, Any]:
+    identifiers = [
+        _normalize_identifier(device.get("inv_no")),
+        _normalize_identifier(device.get("serial_no")),
+        _normalize_identifier(device.get("hw_serial_no")),
+    ]
+    identifiers = [item for item in identifiers if item]
+
+    merged: List[Dict[str, Any]] = []
+    seen = set()
+    for identifier in identifiers:
+        for event in events_by_identifier.get(identifier, []):
+            signature = (
+                str(event.get("timestamp") or ""),
+                str(event.get("component_type") or ""),
+                str(event.get("replacement_item") or ""),
+                str(event.get("inv_no") or ""),
+                str(event.get("serial_no") or ""),
+            )
+            if signature in seen:
+                continue
+            seen.add(signature)
+            merged.append(event)
+
+    merged.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+    recent = merged[:recent_limit] if recent_limit > 0 else []
+    return {
+        "total_operations": len(merged),
+        "last_operation_at": _normalize_text(merged[0].get("timestamp")) if merged else None,
+        "recent": recent,
+    }
+
+
+@router.get("/devices")
+async def get_mfu_devices(
+    period_days: int = Query(365, ge=1, le=3650),
+    recent_limit: int = Query(5, ge=0, le=50),
+    limit: int = Query(5000, ge=1, le=10000),
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(require_permission(PERM_MFU_READ)),
+):
+    """
+    MFU/Printer/Plotter inventory with runtime status and maintenance history.
+    """
+    # An IT owner sees only the devices of his branches; the scope is part of the cache key.
+    scope = await run_in_threadpool(it_object_branch_scope.branch_scope, current_user, db_id)
+    scope_tag = "" if scope is None else ",".join(str(number) for number in sorted(scope))
+    cache_key = f"{db_id or ''}|{int(period_days)}|{int(recent_limit)}|{int(limit)}|{scope_tag}"
+    cached_payload = _get_cached_mfu_devices_payload(cache_key)
+    if cached_payload is not None:
+        return cached_payload
+
+    rows = get_all_equipment_flat(db_id=db_id, limit=max(1, limit))
+    rows_count = len(rows)
+    if scope is not None:
+        rows = it_object_branch_scope.filter_rows(rows, scope)
+
+    normalized_devices: List[Dict[str, Any]] = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict):
+            continue
+        device = _normalize_device_row(row, db_id)
+        if not _is_mfu_device(device):
+            continue
+        normalized_devices.append(device)
+
+    await mfu_runtime_monitor.register_devices(
+        [
+            {
+                "key": device["key"],
+                "ip": device.get("ip_address"),
+                "model_name": device.get("model_name"),
+                "manufacturer": device.get("manufacturer"),
+                "type_name": device.get("type_name"),
+            }
+            for device in normalized_devices
+        ]
+    )
+
+    events_index = await run_in_threadpool(_build_mfu_events_index, db_id=db_id, period_days=period_days)
+
+    grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    totals = {
+        "devices": 0,
+        "online": 0,
+        "offline": 0,
+        "unknown": 0,
+        "snmp_ok": 0,
+        "snmp_fresh": 0,
+        "snmp_cached_active": 0,
+        "snmp_error": 0,
+        "snmp_unknown": 0,
+        "snmp_probe_timeout_count": 0,
+        "snmp_devices_in_backoff": 0,
+        "snmp_active_ttl_sec": SNMP_ACTIVE_TTL_SEC,
+    }
+    now_utc = datetime.now(timezone.utc)
+    for device in normalized_devices:
+        runtime = await mfu_runtime_monitor.get_snapshot(device["key"])
+        maintenance = _collect_device_maintenance(device, events_index, recent_limit=recent_limit)
+
+        payload = dict(device)
+        payload["hostname"] = _resolve_device_hostname(device, runtime)
+        payload["runtime"] = _sanitize_runtime_for_public_api(runtime)
+        payload["maintenance"] = maintenance
+
+        branch_name = _normalize_text(device.get("branch_name"), "Не указано")
+        location_name = _normalize_text(device.get("location_name"), "Не указано")
+        grouped.setdefault(branch_name, {}).setdefault(location_name, []).append(payload)
+
+        totals["devices"] += 1
+        ping_status = _normalize_text(runtime.get("ping", {}).get("status")).lower()
+        if ping_status == "online":
+            totals["online"] += 1
+        elif ping_status == "offline":
+            totals["offline"] += 1
+        else:
+            totals["unknown"] += 1
+
+        snmp_state = runtime.get("snmp", {}) if isinstance(runtime.get("snmp"), dict) else {}
+        snmp_status = _normalize_text(snmp_state.get("status")).lower()
+        has_recent_success = _is_snmp_recent(snmp_state.get("last_success_at"), now_utc=now_utc, ttl_sec=SNMP_ACTIVE_TTL_SEC)
+
+        if snmp_status in {"ok", "no_data"}:
+            totals["snmp_fresh"] += 1
+            totals["snmp_ok"] += 1
+        elif has_recent_success:
+            totals["snmp_cached_active"] += 1
+            totals["snmp_ok"] += 1
+
+        if snmp_status == "error":
+            totals["snmp_error"] += 1
+            if _normalize_text(snmp_state.get("error")).lower() == "probe_timeout":
+                totals["snmp_probe_timeout_count"] += 1
+        elif snmp_status not in {"ok", "no_data"}:
+            totals["snmp_unknown"] += 1
+
+        next_retry_at = _normalize_text(snmp_state.get("next_retry_at"))
+        if next_retry_at:
+            next_retry_dt = _parse_utc_datetime(next_retry_at)
+            if next_retry_dt and next_retry_dt > now_utc:
+                totals["snmp_devices_in_backoff"] += 1
+    return _set_cached_mfu_devices_payload(cache_key, {
+        "generated_at": _utc_now_iso(),
+        "db_id": db_id,
+        "totals": totals,
+        "grouped": grouped,
+        "meta": {
+            "source_limit": int(limit),
+            "raw_rows_count": len(rows),
+            "matched_mfu_count": len(normalized_devices),
+            "source_maybe_truncated": rows_count >= int(limit),
+        },
+    })
+
+
+@router.get("/pages/monthly")
+async def get_mfu_pages_monthly(
+    device_key: str = Query(..., min_length=3, max_length=255),
+    months: int = Query(12, ge=1, le=36),
+    current_user: User = Depends(require_permission(PERM_MFU_READ)),
+):
+    """
+    Monthly printed pages summary for one MFU device key.
+    """
+    normalized_key = _normalize_text(device_key)
+    # The key is "<db>|<item id>": an IT owner may ask only for devices of his branches.
+    key_db, _sep, _item = normalized_key.partition("|")
+    key_db_id = None if key_db == "default" else key_db
+    scope = await run_in_threadpool(it_object_branch_scope.branch_scope, current_user, key_db_id)
+    if scope is not None:
+        rows = it_object_branch_scope.filter_rows(
+            await run_in_threadpool(get_all_equipment_flat, db_id=key_db_id, limit=5000), scope
+        )
+        if normalized_key not in {_normalize_device_row(row, key_db_id)["key"] for row in rows if isinstance(row, dict)}:
+            raise HTTPException(status_code=404, detail="Устройство не найдено")
+    summary = mfu_runtime_monitor.get_monthly_page_summary(
+        device_key=normalized_key,
+        months=months,
+    )
+    runtime = await mfu_runtime_monitor.get_snapshot(normalized_key)
+    snmp_state = runtime.get("snmp", {}) if isinstance(runtime.get("snmp"), dict) else {}
+    runtime_total = _to_int_or_none(snmp_state.get("page_total"))
+    runtime_checked_at = _normalize_text(snmp_state.get("page_checked_at"))
+    runtime_oid = _normalize_text(snmp_state.get("page_oid"))
+
+    current_total = summary.get("current_total_pages")
+    if current_total is None and runtime_total is not None:
+        current_total = runtime_total
+    current_checked_at = _normalize_text(summary.get("current_checked_at"))
+    if not current_checked_at and runtime_checked_at:
+        current_checked_at = runtime_checked_at
+
+    return {
+        "generated_at": _utc_now_iso(),
+        "device_key": normalized_key,
+        "months_requested": max(1, min(36, int(months))),
+        "months": summary.get("months") if isinstance(summary.get("months"), list) else [],
+        "current_total_pages": current_total,
+        "current_checked_at": current_checked_at or None,
+        "tracking_start_date": _normalize_text(summary.get("tracking_start_date")) or None,
+        "page_oid": runtime_oid or None,
+    }

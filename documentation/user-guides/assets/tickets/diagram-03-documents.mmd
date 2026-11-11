@@ -1,0 +1,56 @@
+flowchart TB
+    subgraph input [Поступление информации]
+        MANUAL[Ручное создание заявки]
+        EXCEL[Импорт из Excel]
+        COMMENT[Комментарий координатора]
+    end
+
+    subgraph request [Заявка]
+        REQ[Карточка заявки]
+        HIST[История изменений]
+    end
+
+    subgraph attachments [Вложения]
+        ROUTE[Маршрут]
+        TICKET[PDF билета]
+        RECEIPT[Чек / квитанция]
+        VOUCHER[Ваучер]
+        OTHER[Прочие файлы]
+    end
+
+    subgraph employee_docs [Данные сотрудника]
+        PASS[Паспортные данные]
+        DOB[Дата рождения]
+    end
+
+    subgraph output [Результат для контроля]
+        DASH[Дашборд и канбан]
+        LOSS[Отчёт по потерям]
+        EXPORT[Выгрузка в Excel]
+    end
+
+    MANUAL --> REQ
+    EXCEL --> REQ
+    COMMENT --> REQ
+    REQ --> HIST
+
+    OP[Оператор] -->|прикрепляет| ROUTE
+    OP -->|прикрепляет| TICKET
+    OP -->|прикрепляет| RECEIPT
+    OP -->|прикрепляет| VOUCHER
+    OP -->|прикрепляет| OTHER
+
+    ROUTE --> REQ
+    TICKET --> REQ
+    RECEIPT --> REQ
+    VOUCHER --> REQ
+    OTHER --> REQ
+
+    COORD[Координатор] -->|заполняет при наличии прав| PASS
+    COORD --> DOB
+    PASS --> REQ
+    DOB --> REQ
+
+    REQ --> DASH
+    REQ --> LOSS
+    REQ --> EXPORT

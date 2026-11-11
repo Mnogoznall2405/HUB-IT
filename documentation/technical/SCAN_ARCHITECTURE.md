@@ -1,0 +1,89 @@
+# Scan Architecture (MVP)
+
+План безопасного переноса очереди и инцидентов в PostgreSQL и базовые замеры: [SCAN_POSTGRES_MIGRATION.md](./SCAN_POSTGRES_MIGRATION.md).
+
+## OCR capacity and measurements
+
+- The worker runs up to 6 jobs and 6 OCR tasks concurrently in production and uses Windows `BelowNormal` priority.
+- Ingest backpressure starts at 200 pending documents; agents persist deferred uploads in the local outbox.
+- Full-page rendering is capped at 20 million pixels. A3 remains at a true 300 DPI.
+- Large A2/A1/A0 sheets also get four direct PDF clip renders for header/footer corners at up to 400 DPI,
+  capped at 12 million pixels per clip. The clips are rendered from the PDF, not cropped from a downscaled page.
+- The three-page PDF slice is capped at 50 MiB; an oversize or damaged slice is `analysis_incomplete`, never clean.
+- Every job records queue, processing, OCR and conversion times plus effective render DPI. The dashboard reports
+  24-hour throughput, p50/p95 latency, oldest pending age and downscaled-page count.
+- While a scan task is active, server CPU, memory, disk and network counters are sampled every 5 seconds into
+  `scan_task_system_metrics`; use `GET /api/v1/scan/tasks/{task_id}/system-metrics` for the timeline and summary.
+- On worker restart, interrupted `processing` jobs are immediately requeued without deleting their transient spool.
+- Repeat a real-folder measurement with
+  `python scripts\benchmark_scan_ocr.py <path> --require-prefix dsp_ --json-output <report.json>`.
+- Repeat the large-sheet control with
+  `python scripts\benchmark_scan_large_page.py --json-output <report.json>`.
+
+## Цель
+
+Добавить контур поиска чувствительных документов без влияния на текущий backend инвентаризации.
+
+## Компоненты
+
+1. `scan_agent/agent.py`
+- Сканирует Windows Known Folders (`Desktop`, `Documents`, `Downloads`), OneDrive Personal/Business
+  и дополнительные каталоги из `SCAN_AGENT_EXTRA_ROOTS` (включая UNC). Целые диски автоматически не обходятся.
+- Watchdog отслеживает изменения в этих папках в реальном времени.
+- Хэширует файлы и сохраняет state в `%ProgramData%\IT-Invent\ScanAgent\scan_agent_state.json`.
+- Не пересканирует неизмененные/уже обработанные файлы.
+- PDF:
+  - текстовый слой проверяется локально максимум на первых 10 страницах;
+  - независимо от качества текстового слоя всегда отправляется только фрагмент первых 3 страниц для OCR;
+  - полный PDF на сервер не передаётся.
+- Изображения (`JPG/PNG/TIFF/BMP/WEBP`) и Office/ODF отправляются через `/ingest/document`;
+  Office временно конвертируется LibreOffice, после чего OCR получает только первые 3 страницы.
+- Текстовые файлы читаются потоково целиком, включая UTF-16.
+- `analysis_version` в state заставляет повторно проверить файл после изменения OCR или правил.
+- Polling задач: `ping`, `scan_now`.
+
+2. `scan_server/app.py` (FastAPI, порт `127.0.0.1:8011`)
+- API приема (`/ingest`, `/ingest/pdf-slice`, `/ingest/document`, `/heartbeat`), очереди задач
+  (`/tasks/poll`, `/tasks/{id}/result`), UI (`/incidents`, `/review-items`, `/dashboard`, `/agents`).
+- Хранилище: PostgreSQL schema `scan` при `SCAN_DATABASE_URL`, иначе SQLite `data/scan_server/scan_server.db`.
+- Схема PostgreSQL создаётся только Alembic (`scan_server/alembic`, текущий head `20261102_0003`); при старте Scan не выполняет DDL, а лишь сверяет `scan.alembic_version` с head и пишет `schema_migration_check` при расхождении. Применять явной командой при релизе: `$env:SCAN_DATABASE_URL = '<url>'; python -m alembic -c scan_server/alembic.ini upgrade head`. Для пустой одноразовой БД (разработка, тесты) есть `SCAN_SCHEMA_DEV_AUTO_CREATE=1` (по умолчанию `0`).
+  План/cutover: [SCAN_POSTGRES_MIGRATION.md](./SCAN_POSTGRES_MIGRATION.md).
+- Worker обрабатывает задания и создает инциденты (`FOR UPDATE SKIP LOCKED` на PostgreSQL).
+- OCR: `rus`, 300 DPI для страницы и усиленная проверка верхней/нижней области в масштабе 400 DPI. Для русскоязычных грифов это снижает путаницу похожих кириллических и латинских букв; типовые OCR-подмены дополнительно нормализуются правилами.
+- Неполный анализ получает финальный статус `analysis_incomplete` и никогда не считается `done_clean`.
+
+3. IIS reverse proxy
+- `/api/v1/scan/*` -> `127.0.0.1:8011`
+- `/api/*` -> `127.0.0.1:8001` (основной backend)
+
+4. Frontend
+- Страница `Scan Center` (`/scan-center`) с:
+  - сводкой,
+  - графиками (severity/филиалы/динамика),
+  - статусами агентов/очередей,
+  - инцидентами и ACK,
+  - списком «Не удалось проверить» с хостом, путём и причиной,
+  - явной политикой: «OCR — первые 3 страницы; текстовый слой — до 10 страниц».
+
+## Очередь оффлайн-команд
+
+- Таблица `scan_tasks`.
+- Статусы: `queued -> delivered -> acknowledged -> completed|failed|expired`.
+- `scan_now` остаётся `acknowledged`, пока агент не передаст `ingest_complete=true` и все связанные server jobs
+  не выйдут из `queued|processing`; ранний `completed` от агента не обходит эту проверку.
+- Если агент оффлайн: задачи остаются в `queued`.
+- При poll доставляются по FIFO.
+- TTL по умолчанию: 7 дней (`SCAN_TASK_TTL_DAYS`).
+- Повторная доставка: backoff до 15 минут при отсутствии результата.
+- Нагрузка от опроса (≈2 запроса в минуту на агента): `GET /tasks/poll` сначала делает read-only проверку и не открывает write-транзакцию, если для агента нет задач; sweep истечения/возврата `delivered → queued` выполняется не чаще раза в `SCAN_TASK_MAINTENANCE_INTERVAL_SEC` (15 с, 1–60) на процесс. `POST /heartbeat` без изменений в payload (кроме `last_seen_at`) пишется в БД не чаще раза в `SCAN_HEARTBEAT_WRITE_MIN_SEC` (120 с, 0 отключает); окно «онлайн» — `SCAN_SERVER_AGENT_ONLINE_TIMEOUT_SEC` (1800 с).
+
+## Retention
+
+- По умолчанию 90 дней (`SCAN_RETENTION_DAYS`).
+- Worker раз в час чистит старые инциденты/задачи/артефакты.
+
+## Задачи агентам: self_update и install_package
+
+- `self_update` — агент скачивает собственный MSI (`GET /api/v1/scan/agent-package`, путь и SHA-256 из `SCAN_AGENT_PACKAGE_PATH`/`SCAN_AGENT_PACKAGE_SHA256`), ставит его `msiexec /qn` и после рестарта сверяет версию.
+- `install_package` (агент ≥ 1.4.15) — тихая установка стороннего ПО (например, HUB Desktop). Что ставить, определяет только сервер: реестр пакетов — JSON-файл `SCAN_INSTALL_MANIFEST_PATH` (`id → file, kind msi|exe, args, version, display_name, sha256?`). В теле задачи от вызывающего берётся только `package_id`; ссылка, хеш, тип и аргументы подставляются из реестра. Агент качает `GET /api/v1/scan/install-package?package_id=…` по API-ключу, проверяет SHA-256, запускает установщик (30 мин максимум), сверяет версию по `Uninstall` и возвращает `installed` / `already_installed` / `failed`. Абсолютные и чужие URL агент отвергает.
+- Массовая постановка по волнам: `python -I scripts/scan/rollout_install_package.py --package-id <id> [--apply]` (по умолчанию dry-run; останавливается при >5% сбоев или недоступности сервиса).
