@@ -192,6 +192,68 @@ def test_usb_search_finds_the_same_flash_drive_on_different_computers(app_env):
     assert _usb_search(q="kingston")["total"] == 1
 
 
+def _receive_no_software(mac: str, hostname: str):
+    payload = inventory.InventoryPayload(
+        hostname=hostname,
+        system_serial=f"SYS-{hostname}",
+        mac_address=mac,
+        current_user="CORP\\user",
+        user_login="CORP\\user",
+        user_full_name="User Name",
+        ip_primary="10.10.1.11",
+        ip_list=["10.10.1.11"],
+        cpu_model="CPU1",
+        ram_gb=16,
+        logical_disks=[{"mountpoint": "C:\\", "total_gb": 100, "free_gb": 40, "percent": 60}],
+        storage=[{"name": "SSD", "health_status": "Healthy", "size_gb": 256}],
+        report_type="full_snapshot",
+        timestamp=T0 - 60,
+    )
+    assert inventory.receive_inventory(payload, x_api_key=AGENT_KEY)["success"] is True
+
+
+def _presence(**overrides):
+    params = dict(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+        q="HUB Desktop",
+        match="exact",
+        limit=2000,
+    )
+    params.update(overrides)
+    return inventory.get_computers_software_presence(**params)
+
+
+def test_software_presence_covers_every_visible_host_and_separates_missing_from_no_data(app_env):
+    _receive("AA-BB-CC-DD-EE-01", "PC-01", [("HUB Desktop", "0.1.50"), ("7-Zip", "23.01")])
+    _receive("AA-BB-CC-DD-EE-02", "PC-02", [("HUB Desktop", "0.1.44"), ("HUB Desktop Updater", "1.0")])
+    _receive("AA-BB-CC-DD-EE-03", "PC-03", [("Notepad++", "8.6")])
+    _receive_no_software("AA-BB-CC-DD-EE-04", "PC-04")
+    for index, host in enumerate(("PC-01", "PC-02", "PC-03", "PC-04"), start=1):
+        _bind(app_env, f"AA-BB-CC-DD-EE-0{index}", host, "Tyumen")
+
+    result = _presence()
+    by_host = {row["hostname"]: row for row in result["items"]}
+    assert result["total"] == 4 and result["computers_installed"] == 2
+    assert by_host["PC-01"]["installed_version"] == "0.1.50"
+    # Exact match ignores "HUB Desktop Updater".
+    assert by_host["PC-02"]["installed_version"] == "0.1.44"
+    assert by_host["PC-03"]["installed_version"] is None
+    assert by_host["PC-03"]["has_software_inventory"] is True
+    # No software inventory at all → "нет данных", not "не установлен".
+    assert by_host["PC-04"]["installed_version"] is None
+    assert by_host["PC-04"]["has_software_inventory"] is False
+    assert result["computers_with_software"] == 3
+
+    contains = _presence(match="contains")
+    assert {row["hostname"] for row in contains["items"] if row["installed_version"]} == {"PC-01", "PC-02"}
+
+    with pytest.raises(Exception) as bad_match:
+        _presence(match="regex")
+    assert getattr(bad_match.value, "status_code", None) == 400
+
+
 def _receive_with_runtime(mac: str, hostname: str, runtime: dict | None, timestamp: int):
     payload = inventory.InventoryPayload(
         hostname=hostname,

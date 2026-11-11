@@ -1,11 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Box,
   Button,
   Chip,
+  Collapse,
   FormControl,
   FormControlLabel,
   InputAdornment,
@@ -22,8 +20,11 @@ import {
   TableRow,
   TextField,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import SearchIcon from '@mui/icons-material/Search';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
@@ -31,12 +32,43 @@ import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import { formatAgo, formatDwell, formatTs } from './utils';
 import { CountCell, GroupStatChip } from './stats';
 
+const EXPANDED_GROUPS_STORAGE_KEY = 'dlp_host_groups_expanded';
+
+function readExpandedGroups() {
+  try {
+    const raw = localStorage.getItem(EXPANDED_GROUPS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.map((item) => String(item)) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeExpandedGroups(groups) {
+  try {
+    localStorage.setItem(EXPANDED_GROUPS_STORAGE_KEY, JSON.stringify([...groups]));
+  } catch {
+    // localStorage may be unavailable (private mode) — expansion still works for the session.
+  }
+}
+
 export default function DlpHostList({ hosts, attentionMap, onOpenHost }) {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [hostQuery, setHostQuery] = useState('');
   const [branchFilter, setBranchFilter] = useState('all');
   const [activeOnly, setActiveOnly] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
-  const collapseInitRef = useRef(false);
+  // Empty = every branch collapsed on first render (как на странице «База данных»).
+  const [expandedGroups, setExpandedGroups] = useState(readExpandedGroups);
+
+  const toggleGroup = (name) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      writeExpandedGroups(next);
+      return next;
+    });
+  };
 
   const todayStartTs = useMemo(() => {
     const d = new Date();
@@ -75,6 +107,8 @@ export default function DlpHostList({ hosts, attentionMap, onOpenHost }) {
     });
   }, [hosts]);
 
+  const dayStat = (name) => attentionMap?.get(String(name || '').toUpperCase()) || null;
+
   const branchGroups = useMemo(() => {
     const dayStart = new Date();
     dayStart.setHours(0, 0, 0, 0);
@@ -84,7 +118,7 @@ export default function DlpHostList({ hosts, attentionMap, onOpenHost }) {
       const name = String(host.branch_name || '').trim() || 'Без филиала';
       const group = groups.get(name) || {
         name, items: [], lastTs: 0, activeToday: 0,
-        files: 0, usb: 0, tg: 0, max: 0, visits: 0,
+        files: 0, usb: 0, tg: 0, max: 0, visits: 0, workedSec: 0, awaySec: 0,
       };
       group.items.push(host);
       const lastTs = Number(host.last_ts) || 0;
@@ -95,6 +129,11 @@ export default function DlpHostList({ hosts, attentionMap, onOpenHost }) {
       group.tg += Number(host.telegram_events) || 0;
       group.max += Number(host.max_events) || 0;
       group.visits += Number(host.visits) || 0;
+      const stat = attentionMap?.get(String(host.computer_name || '').toUpperCase());
+      if (stat) {
+        group.workedSec += Number(stat.active_sec) || 0;
+        group.awaySec += Number(stat.away_sec) || 0;
+      }
       groups.set(name, group);
     }
     const unassigned = (n) => n === 'Неотсортированные' || n === 'Без филиала';
@@ -108,16 +147,15 @@ export default function DlpHostList({ hosts, attentionMap, onOpenHost }) {
       if (ua !== ub) return ua ? 1 : -1;
       return (b.activeToday - a.activeToday) || (b.lastTs - a.lastTs) || a.name.localeCompare(b.name, 'ru');
     });
-  }, [visibleHosts]);
+  }, [visibleHosts, attentionMap]);
 
-  // First load: every branch starts collapsed — expand what you need.
-  useEffect(() => {
-    if (collapseInitRef.current || !branchGroups.length) return;
-    collapseInitRef.current = true;
-    setCollapsedGroups(new Set(branchGroups.map((g) => g.name)));
-  }, [branchGroups]);
+  const allExpanded = branchGroups.length > 0 && branchGroups.every((g) => expandedGroups.has(g.name));
 
-  const dayStat = (name) => attentionMap?.get(String(name || '').toUpperCase()) || null;
+  const setAllExpanded = (expanded) => {
+    const next = expanded ? new Set(branchGroups.map((g) => g.name)) : new Set();
+    writeExpandedGroups(next);
+    setExpandedGroups(next);
+  };
 
   return (
     <>
@@ -174,50 +212,84 @@ export default function DlpHostList({ hosts, attentionMap, onOpenHost }) {
         <Button
           size="small"
           variant="text"
-          startIcon={collapsedGroups.size ? <UnfoldMoreIcon /> : <UnfoldLessIcon />}
-          onClick={() => setCollapsedGroups(
-            collapsedGroups.size ? new Set() : new Set(branchGroups.map((g) => g.name)),
-          )}
+          startIcon={allExpanded ? <UnfoldLessIcon /> : <UnfoldMoreIcon />}
+          onClick={() => setAllExpanded(!allExpanded)}
           sx={{ flexShrink: 0 }}
         >
-          {collapsedGroups.size ? 'Развернуть все' : 'Свернуть все'}
+          {allExpanded ? 'Свернуть все' : 'Развернуть все'}
         </Button>
       </Stack>
-      <Box sx={{ overflow: 'auto', flex: 1, minHeight: 0, bgcolor: 'background.paper', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
-        {branchGroups.map((group) => (
-          <Accordion
-            key={group.name}
-            expanded={!collapsedGroups.has(group.name)}
-            onChange={(_, expanded) => setCollapsedGroups((prev) => {
-              const next = new Set(prev);
-              if (expanded) next.delete(group.name); else next.add(group.name);
-              return next;
-            })}
-            disableGutters
-            elevation={0}
-            sx={{
-              mb: 0,
-              bgcolor: 'transparent',
-              '&::before': { display: 'none' },
-              borderBottom: '1px solid',
-              borderColor: 'divider',
-            }}
-          >
-            <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 48 }}>
-              <Stack
-                direction="row"
-                spacing={1.5}
-                alignItems="center"
-                flexWrap="wrap"
-                useFlexGap
-                sx={{ minWidth: 0, width: '100%', pr: 1 }}
+      <Box sx={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
+        {branchGroups.map((group, groupIndex) => {
+          const expanded = expandedGroups.has(group.name);
+          const contentId = `dlp-branch-${groupIndex}-content`;
+          return (
+            <Box
+              key={group.name}
+              sx={{
+                mb: isMobile ? 1 : 1.5,
+                border: '1px solid ' + theme.palette.divider,
+                borderRadius: 1,
+                overflow: 'hidden',
+              }}
+            >
+              <Box
+                component="button"
+                type="button"
+                aria-expanded={expanded}
+                aria-controls={contentId}
+                onClick={() => toggleGroup(group.name)}
+                sx={{
+                  p: isMobile ? 0.65 : 1.2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 1,
+                  cursor: 'pointer',
+                  width: '100%',
+                  border: 0,
+                  font: 'inherit',
+                  textAlign: 'left',
+                  backgroundColor: theme.palette.mode === 'dark' ? '#0f172a' : theme.palette.grey[100],
+                  '&:hover': {
+                    backgroundColor: theme.palette.mode === 'dark' ? '#1e293b' : theme.palette.grey[200],
+                  },
+                  '&:focus-visible': {
+                    outline: `2px solid ${theme.palette.primary.main}`,
+                    outlineOffset: -2,
+                  },
+                  color: theme.palette.mode === 'dark' ? '#ffffff' : 'inherit',
+                }}
               >
-                <Typography fontWeight={700} noWrap>{group.name}</Typography>
-                <Chip size="small" variant="outlined" label={`${group.items.length} ПК`} />
-                {group.activeToday ? (
-                  <Chip size="small" color="success" variant="outlined" label={`активны: ${group.activeToday}`} />
-                ) : null}
-                <Stack direction="row" spacing={0.75} alignItems="center" sx={{ ml: 'auto' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+                  {expanded ? <ExpandMoreIcon fontSize="small" /> : <ChevronRightIcon fontSize="small" />}
+                  <Typography variant={isMobile ? 'subtitle1' : 'h6'} sx={{ fontSize: isMobile ? '0.78rem' : undefined }} noWrap>
+                    {group.name}
+                  </Typography>
+                </Box>
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  flexWrap="wrap"
+                  useFlexGap
+                  justifyContent="flex-end"
+                  sx={{ minWidth: 0 }}
+                >
+                  <Chip size="small" variant="outlined" label={`${group.items.length} ПК`} />
+                  {group.activeToday ? (
+                    <Chip size="small" color="success" variant="outlined" label={`активны: ${group.activeToday}`} />
+                  ) : null}
+                  {group.workedSec > 0 ? (
+                    <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                      работал {formatDwell(group.workedSec)}
+                    </Typography>
+                  ) : null}
+                  {group.awaySec > 0 ? (
+                    <Typography variant="caption" color="warning.main" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                      отошёл {formatDwell(group.awaySec)}
+                    </Typography>
+                  ) : null}
                   <GroupStatChip label="USB" count={group.usb} color="warning" />
                   <GroupStatChip label="TG" count={group.tg} color="info" />
                   <GroupStatChip label="MAX" count={group.max} color="secondary" />
@@ -232,86 +304,88 @@ export default function DlpHostList({ hosts, attentionMap, onOpenHost }) {
                     {group.lastTs ? formatAgo(group.lastTs) : '—'}
                   </Typography>
                 </Stack>
-              </Stack>
-            </AccordionSummary>
-            <AccordionDetails sx={{ p: 0, overflow: 'auto' }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Хост</TableCell>
-                    <TableCell>Работал</TableCell>
-                    <TableCell>Отошёл</TableCell>
-                    <TableCell>Удалено</TableCell>
-                    <TableCell>USB</TableCell>
-                    <TableCell>Telegram</TableCell>
-                    <TableCell>MAX</TableCell>
-                    <TableCell>Браузер</TableCell>
-                    <TableCell>Последнее событие</TableCell>
-                    <TableCell align="right" />
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {group.items.map((host) => {
-                    const fileCount = Math.max(
-                      0,
-                      (Number(host.deleted_events) || 0) - (Number(host.service_files) || 0),
-                    );
-                    const stat = dayStat(host.computer_name);
-                    return (
-                      <TableRow
-                        key={host.computer_name}
-                        hover
-                        onClick={() => onOpenHost(host.computer_name)}
-                        sx={{ cursor: 'pointer' }}
-                      >
-                        <TableCell>
-                          <Typography fontWeight={600}>{host.computer_name}</Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            {[host.user_full_name, host.windows_user].filter(Boolean).join(' · ') || '—'}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>
-                          <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {stat && (Number(stat.active_sec) || 0) > 0 ? formatDwell(stat.active_sec) : '—'}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>
-                          <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {stat && (Number(stat.away_sec) || 0) > 0 ? formatDwell(stat.away_sec) : '—'}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>
-                          <CountCell value={fileCount} />
-                        </TableCell>
-                        <TableCell><CountCell value={host.usb_events} color="warning.main" /></TableCell>
-                        <TableCell><CountCell value={host.telegram_events} color="info.main" /></TableCell>
-                        <TableCell><CountCell value={host.max_events} color="secondary.main" /></TableCell>
-                        <TableCell><CountCell value={host.visits} /></TableCell>
-                        <TableCell>
-                          <Typography variant="body2" title={formatTs(host.last_ts)}>
-                            {formatAgo(host.last_ts)}
-                          </Typography>
-                        </TableCell>
-                        <TableCell align="right">
-                          <Button
-                            size="small"
-                            variant="contained"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOpenHost(host.computer_name);
-                            }}
-                          >
-                            Открыть
-                          </Button>
-                        </TableCell>
+              </Box>
+              <Collapse in={expanded} timeout="auto" unmountOnExit id={contentId}>
+                <Box sx={{ overflow: 'auto', borderTop: '1px solid ' + theme.palette.divider }}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Хост</TableCell>
+                        <TableCell>Работал</TableCell>
+                        <TableCell>Отошёл</TableCell>
+                        <TableCell>Удалено</TableCell>
+                        <TableCell>USB</TableCell>
+                        <TableCell>Telegram</TableCell>
+                        <TableCell>MAX</TableCell>
+                        <TableCell>Браузер</TableCell>
+                        <TableCell>Последнее событие</TableCell>
+                        <TableCell align="right" />
                       </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </AccordionDetails>
-          </Accordion>
-        ))}
+                    </TableHead>
+                    <TableBody>
+                      {group.items.map((host) => {
+                        const fileCount = Math.max(
+                          0,
+                          (Number(host.deleted_events) || 0) - (Number(host.service_files) || 0),
+                        );
+                        const stat = dayStat(host.computer_name);
+                        return (
+                          <TableRow
+                            key={host.computer_name}
+                            hover
+                            onClick={() => onOpenHost(host.computer_name)}
+                            sx={{ cursor: 'pointer' }}
+                          >
+                            <TableCell>
+                              <Typography fontWeight={600}>{host.computer_name}</Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {[host.user_full_name, host.windows_user].filter(Boolean).join(' · ') || '—'}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                {stat && (Number(stat.active_sec) || 0) > 0 ? formatDwell(stat.active_sec) : '—'}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                {stat && (Number(stat.away_sec) || 0) > 0 ? formatDwell(stat.away_sec) : '—'}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <CountCell value={fileCount} />
+                            </TableCell>
+                            <TableCell><CountCell value={host.usb_events} color="warning.main" /></TableCell>
+                            <TableCell><CountCell value={host.telegram_events} color="info.main" /></TableCell>
+                            <TableCell><CountCell value={host.max_events} color="secondary.main" /></TableCell>
+                            <TableCell><CountCell value={host.visits} /></TableCell>
+                            <TableCell>
+                              <Typography variant="body2" title={formatTs(host.last_ts)}>
+                                {formatAgo(host.last_ts)}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Button
+                                size="small"
+                                variant="contained"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenHost(host.computer_name);
+                                }}
+                              >
+                                Открыть
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </Box>
+              </Collapse>
+            </Box>
+          );
+        })}
         {!visibleHosts.length ? (
           <Paper sx={{ p: 2 }}>
             <Typography color="text.secondary" sx={{ py: 2 }}>

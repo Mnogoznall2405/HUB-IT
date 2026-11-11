@@ -246,6 +246,125 @@ def test_download_gives_up_after_the_attempt_limit(monkeypatch, tmp_path):
         )
 
 
+def test_partial_download_survives_a_failed_task_and_is_resumed_on_retry(monkeypatch, tmp_path):
+    agent, ran, _ = _agent(monkeypatch, tmp_path)
+    installer = tmp_path / "stage" / "HUB-Desktop-Setup-0.1.50-win-x64.exe"
+
+    def flaky_download(url, dest):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(INSTALLER[:5])
+        raise RuntimeError("Package download failed after 10 attempts: read timeout")
+
+    monkeypatch.setattr(agent, "_download_agent_package", flaky_download)
+    with pytest.raises(RuntimeError, match="download failed"):
+        agent.run_install_package(_task_payload(), task_id="t1")
+    assert installer.read_bytes() == INSTALLER[:5], "the partial file must stay for the retry to resume"
+    assert ran == []
+
+    versions = iter(["", "0.1.50"])
+    monkeypatch.setattr(scan_agent, "_installed_program_version", lambda name: next(versions, "0.1.50"))
+    monkeypatch.setattr(agent, "_download_agent_package", lambda url, dest: shutil.copy2(tmp_path / "served.exe", dest))
+    (tmp_path / "served.exe").write_bytes(INSTALLER)
+    result = agent.run_install_package(_task_payload(), task_id="t2")
+    assert result["phase"] == "installed"
+    assert not installer.exists(), "a verified installer is removed after the run"
+
+
+def _feed_manifest(tmp_path: Path) -> Path:
+    updates = tmp_path / "hub-desktop-updates"
+    (updates / "stable" / "0.1.50").mkdir(parents=True)
+    (updates / "stable" / "0.1.50" / "HUB-Desktop-Setup-0.1.50-win-x64.exe").write_bytes(INSTALLER)
+    (updates / "stable" / "latest.json").write_text(
+        json.dumps(
+            {
+                "version": "0.1.50",
+                "relative_path": "stable/0.1.50/HUB-Desktop-Setup-0.1.50-win-x64.exe",
+                "sha256": INSTALLER_SHA,
+            }
+        ),
+        encoding="utf-8",
+    )
+    path = tmp_path / "install_packages.json"
+    path.write_text(
+        json.dumps(
+            {
+                "hub-desktop": {
+                    "feed": str(updates / "stable" / "latest.json"),
+                    "kind": "exe",
+                    "args": ["/quiet", "/norestart"],
+                    "display_name": "HUB Desktop",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_feed_backed_package_tracks_the_published_version(tmp_path):
+    from scan_server.install_packages import resolve_install_package
+
+    info = resolve_install_package(str(_feed_manifest(tmp_path)), "hub-desktop")
+    assert info.version == "0.1.50"
+    assert info.sha256 == INSTALLER_SHA
+    assert info.filename == "HUB-Desktop-Setup-0.1.50-win-x64.exe"
+    assert info.local_path.read_bytes() == INSTALLER
+
+
+def test_feed_relative_path_cannot_escape_the_feed_root(tmp_path):
+    from scan_server.install_packages import InstallPackageError, resolve_install_package
+
+    manifest = _feed_manifest(tmp_path)
+    updates = tmp_path / "hub-desktop-updates"
+    (updates / "stable" / "latest.json").write_text(
+        json.dumps({"version": "9.9.9", "relative_path": "../evil.exe", "sha256": "0" * 64}),
+        encoding="utf-8",
+    )
+    with pytest.raises(InstallPackageError, match="feed"):
+        resolve_install_package(str(manifest), "hub-desktop")
+
+
+def test_feed_package_rejected_when_file_does_not_match_feed_hash(tmp_path):
+    from scan_server.install_packages import InstallPackageError, resolve_install_package
+
+    manifest = _feed_manifest(tmp_path)
+    updates = tmp_path / "hub-desktop-updates"
+    target = updates / "stable" / "0.1.50" / "HUB-Desktop-Setup-0.1.50-win-x64.exe"
+    target.write_bytes(b"half-uploaded content")
+    with pytest.raises(InstallPackageError, match="does not match sha256"):
+        resolve_install_package(str(manifest), "hub-desktop")
+
+
+def test_package_list_and_deployment_expose_metadata_and_latest_task(server, tmp_path):
+    scan_app.create_task(
+        scan_app.TaskCreatePayload(agent_id="agent-1", command="install_package", payload={"package_id": "hub-desktop"}),
+        {},
+    )
+    task = server.poll_tasks(agent_id="agent-1", limit=5)[0]
+    server.report_task_result(
+        agent_id="agent-1",
+        task_id=str(task["task_id"]),
+        status="completed",
+        result={"phase": "installed", "installed_version": "0.1.50"},
+        error_text="",
+    )
+    scan_app.create_task(
+        scan_app.TaskCreatePayload(agent_id="agent-2", command="install_package", payload={"package_id": "hub-desktop"}),
+        {},
+    )
+
+    listing = scan_app.list_install_packages_endpoint({})
+    assert listing["configured"] is True
+    pack = listing["packages"][0]
+    assert pack["ok"] is True and pack["version"] == "0.1.50" and pack["size_bytes"] == len(INSTALLER)
+    assert "local_path" not in pack and "sha256" not in pack
+
+    deployment = scan_app.install_package_deployment("hub-desktop", {})
+    assert deployment["package"]["package_id"] == "hub-desktop"
+    assert deployment["tasks"]["agent-1"]["result"]["phase"] == "installed"
+    assert deployment["tasks"]["agent-2"]["status"] == "queued"
+
+
 def test_disable_message_probes_stops_tasks_processes_and_persists_flags(monkeypatch, tmp_path):
     agent, _, _ = _agent(monkeypatch, tmp_path)
     import agent_installer

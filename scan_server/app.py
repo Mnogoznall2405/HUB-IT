@@ -26,7 +26,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from agent_version import SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
 
 from .agent_package import package_payload, resolve_agent_package
-from .install_packages import InstallPackageError, install_task_payload, resolve_install_package
+from .install_packages import (
+    InstallPackageError,
+    install_task_payload,
+    list_install_packages,
+    resolve_install_package,
+)
 from .config import config
 from .database import ScanStore
 from .memory_guard import get_process_rss_bytes
@@ -1298,6 +1303,44 @@ def download_install_package(
         media_type="application/octet-stream",
         headers={"X-Install-Package-Sha256": info.sha256},
     )
+
+
+@app.get("/api/v1/scan/install-packages")
+def list_install_packages_endpoint(
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    """Packages the administrator may deploy; metadata only, no paths or hashes."""
+    return list_install_packages(config.install_manifest_path)
+
+
+@app.get("/api/v1/scan/install-packages/{package_id}/deployment")
+def install_package_deployment(
+    package_id: str,
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    """Latest install_package task per agent for the deployment status view."""
+    try:
+        info = resolve_install_package(config.install_manifest_path, package_id)
+    except InstallPackageError as exc:
+        raise HTTPException(status_code=_install_error_status(exc), detail=str(exc)) from exc
+    tasks = {
+        agent_id: task
+        for agent_id, task in store.list_latest_install_package_tasks().items()
+        if str((task.get("payload") or {}).get("package_id") or "").strip().lower() == info.package_id
+    }
+    return {
+        "package": {
+            "package_id": info.package_id,
+            "display_name": info.display_name,
+            "version": info.version,
+            "kind": info.kind,
+            "filename": info.filename,
+            "size_bytes": info.size_bytes,
+            "channel": info.channel,
+            "published_at": info.published_at,
+        },
+        "tasks": tasks,
+    }
 
 
 @app.post("/api/v1/scan/tasks")

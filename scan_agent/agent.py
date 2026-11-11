@@ -123,7 +123,7 @@ SELF_UPDATE_MARKER_PATH = SELF_UPDATE_STAGING_DIR.parent / "pending_update.json"
 INSTALL_STAGING_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT" / "AgentInstall"
 INSTALL_SUCCESS_EXIT_CODES = frozenset({0, 1641, 3010})  # OK / reboot initiated / reboot required
 INSTALL_TIMEOUT_SEC = 30 * 60
-DOWNLOAD_ATTEMPTS = 5
+DOWNLOAD_ATTEMPTS = 10
 INSTALL_PACKAGE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 TEMP_DIR = Path(os.environ.get("TEMP", r"C:\Windows\Temp"))
@@ -2576,10 +2576,11 @@ class ScanAgent:
     def _download_with_resume(self, open_stream: Any, destination: Path, attempts: int = DOWNLOAD_ATTEMPTS) -> None:
         """Stream a package to ``destination``; a broken connection resumes with ``Range`` instead of starting over.
 
-        Over a slow or flaky WAN link a 45 MB package often breaks mid-transfer (IncompleteRead / read timeout).
-        The caller verifies SHA-256 afterwards, so a resumed file that is wrong is still rejected.
+        Over a slow or flaky WAN link a 200 MB package often breaks mid-transfer (IncompleteRead / read timeout).
+        A partial file is kept between attempts AND between task retries (the destination name is stamped
+        with the package version); the caller verifies SHA-256 afterwards, so a resumed file that is wrong
+        is still rejected and deleted.
         """
-        destination.unlink(missing_ok=True)
         last_error: Optional[BaseException] = None
         for attempt in range(1, max(1, int(attempts)) + 1):
             have = destination.stat().st_size if destination.exists() else 0
@@ -2600,7 +2601,7 @@ class ScanAgent:
                 last_error = exc
                 logging.warning("Package download interrupted attempt=%s/%s have=%s: %s", attempt, attempts, have, exc)
                 if attempt < attempts:
-                    time.sleep(min(30, 2 ** attempt))
+                    time.sleep(min(60, 2 ** attempt))
         raise RuntimeError(f"Package download failed after {attempts} attempts: {last_error}")
 
     def _download_agent_package(self, msi_url: str, destination: Path) -> None:
@@ -2816,10 +2817,20 @@ class ScanAgent:
         stamp = int(time.time())
         log_path = INSTALL_STAGING_DIR / f"{package_id}-{stamp}.log"
         logging.info("Install package start id=%s version=%s task=%s", package_id, version or "?", task_id)
+        keep_partial = False
         try:
-            self._download_agent_package(url, installer)
+            try:
+                self._download_agent_package(url, installer)
+            except Exception:
+                # A partial file survives the failed task so the next retry resumes with
+                # Range instead of re-downloading everything on a slow link.
+                keep_partial = installer.is_file() and installer.stat().st_size > 0
+                raise
             actual_sha = self._sha256_file(installer)
             if actual_sha != expected_sha:
+                # Corrupt or stale bytes: drop the file so the next retry restarts cleanly
+                # instead of resuming the same bad content forever.
+                installer.unlink(missing_ok=True)
                 raise RuntimeError(f"Package SHA256 mismatch: expected={expected_sha} actual={actual_sha}")
             completed = subprocess.run(
                 _build_install_command(kind, installer, args, log_path),
@@ -2831,10 +2842,11 @@ class ScanAgent:
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"Installer did not finish within {INSTALL_TIMEOUT_SEC}s") from exc
         finally:
-            try:
-                installer.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if not keep_partial:
+                try:
+                    installer.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         exit_code = int(completed.returncode)
         after = _installed_program_version(display_name) if display_name else ""

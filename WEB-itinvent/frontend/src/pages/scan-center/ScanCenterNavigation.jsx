@@ -11,6 +11,7 @@ import {
   ComputerOutlined as ComputerOutlinedIcon,
   DashboardOutlined as DashboardOutlinedIcon,
   GppMaybeOutlined as GppMaybeOutlinedIcon,
+  InstallDesktopOutlined as InstallDesktopOutlinedIcon,
   ReportProblemOutlined as ReportProblemOutlinedIcon,
   SensorsOutlined as SensorsOutlinedIcon,
 } from '@mui/icons-material';
@@ -21,6 +22,7 @@ const NAV_ITEMS = [
   { id: 'review', label: 'Не проверено', helper: 'Ошибки анализа', icon: ReportProblemOutlinedIcon },
   { id: 'agents', label: 'Агенты', helper: 'Связь и задания', icon: SensorsOutlinedIcon },
   { id: 'hosts', label: 'Компьютеры', helper: 'Устройства с рисками', icon: ComputerOutlinedIcon },
+  { id: 'deploy', label: 'HUB Desktop', helper: 'Установка программы', icon: InstallDesktopOutlinedIcon },
 ];
 
 function formatNavCount(count) {

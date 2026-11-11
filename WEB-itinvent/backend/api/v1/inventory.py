@@ -3790,6 +3790,74 @@ def search_computers_software(
     }
 
 
+@router.get("/computers/software/presence")
+def get_computers_software_presence(
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    q: str = Query(..., min_length=1, max_length=120),
+    match: str = Query("exact"),
+    limit: int = Query(2000, ge=1, le=10000),
+):
+    """One row per visible computer: is program ``q`` installed, and which version.
+
+    Unlike ``/software/search`` (which lists only installs), this answers «у кого нет программы»
+    and distinguishes "нет данных об инвентаризации" from "программа не установлена".
+    """
+    needle = _normalize_text(q).lower()
+    if not needle:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query is too short")
+    match_mode = str(match or "").strip().lower()
+    if match_mode not in {"exact", "contains"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="match must be exact|contains")
+    hosts, visible = _visible_host_payloads(current_user=current_user, db_id_selected=db_id_selected, scope=scope)
+
+    def _matches(name: str) -> bool:
+        lowered = name.lower()
+        return needle in lowered if match_mode == "contains" else lowered == needle
+
+    rows: List[Dict[str, Any]] = []
+    installed_count = 0
+    for host in hosts:
+        software = host.get("software_inventory") if isinstance(host.get("software_inventory"), dict) else {}
+        items = [item for item in list(software.get("items") or []) if isinstance(item, dict)]
+        installed_version = ""
+        for item in items:
+            name = _normalize_text(item.get("display_name"))
+            if not name or not _matches(name):
+                continue
+            version = _normalize_text(item.get("display_version"))
+            if not installed_version or _software_version_key(version) > _software_version_key(installed_version):
+                installed_version = version
+        if installed_version:
+            installed_count += 1
+        mac_value = _normalize_mac(host.get("mac_address"))
+        record = visible.get(mac_value) or {}
+        rows.append(
+            {
+                "hostname": _normalize_text(host.get("hostname")),
+                "mac_address": mac_value,
+                "user_login": _normalize_text(host.get("user_login")),
+                "user_full_name": _normalize_text(host.get("user_full_name"))
+                or _normalize_text(record.get("user_full_name")),
+                "branch_name": _normalize_text(record.get("branch_name")),
+                "installed_version": installed_version or None,
+                "collected_at": software.get("collected_at"),
+                "has_software_inventory": bool(items),
+            }
+        )
+    rows.sort(key=lambda row: (row["installed_version"] is None, row["hostname"].lower()))
+    return {
+        "items": rows[:limit],
+        "total": len(rows),
+        "truncated": len(rows) > limit,
+        "computers_checked": len(hosts),
+        "computers_with_software": sum(1 for row in rows if row["has_software_inventory"]),
+        "computers_installed": installed_count,
+        "match": match_mode,
+    }
+
+
 FLEET_SILENT_AFTER_SEC = 7 * 24 * 3600
 FLEET_QUEUE_BACKLOG = 50
 FLEET_SPOOL_BACKLOG = 500

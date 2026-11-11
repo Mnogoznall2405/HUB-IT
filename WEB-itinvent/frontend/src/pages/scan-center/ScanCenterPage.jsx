@@ -42,6 +42,7 @@ import {
 } from '../../lib/scanIncidentInbox';
 import HostDrawer from './HostDrawer';
 import AgentsSection from './AgentsSection';
+import DeploySection from './DeploySection';
 import HostsSection from './HostsSection';
 import IncidentsInboxSection from './IncidentsInboxSection';
 import ReviewItemsSection from './ReviewItemsSection';
@@ -2183,6 +2184,8 @@ function ScanCenterPage() {
           onRowsPerPageChange={(value) => { setHostRowsPerPage(value); setHostPage(0); }}
           onOpenHost={openHostDetails}
         />}
+
+        {activeSection === 'deploy' && <DeploySection canScanTasks={canScanTasks} />}
           </Box>
         </Box>
 

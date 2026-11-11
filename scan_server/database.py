@@ -2451,6 +2451,32 @@ class ScanStore:
             "view": resolved_view,
         }
 
+    def list_latest_install_package_tasks(self) -> Dict[str, Dict[str, Any]]:
+        """Latest ``install_package`` task per agent (for the deployment status view)."""
+        now_ts = _now_ts()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.*
+                FROM scan_tasks t
+                JOIN (
+                    SELECT agent_id, MAX(created_at) AS mx
+                    FROM scan_tasks
+                    WHERE command = 'install_package'
+                    GROUP BY agent_id
+                ) m ON m.agent_id = t.agent_id AND m.mx = t.created_at
+                WHERE t.command = 'install_package'
+                ORDER BY t.created_at DESC
+                """
+            ).fetchall()
+        out: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            agent_id = str(row["agent_id"] or "").strip()
+            if not agent_id or agent_id in out:
+                continue
+            out[agent_id] = self._serialize_task_row(row, now_ts=now_ts)
+        return out
+
     def active_scan_task_ids(self) -> List[str]:
         now_ts = _now_ts()
         with self._lock, self._connect() as conn:

@@ -117,6 +117,7 @@ const SUMMARY = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.removeItem('dlp_host_groups_expanded');
   fsEgressAPI.listDlpHosts.mockResolvedValue({ data: { hosts: HOSTS } });
   fsEgressAPI.getDlpSummary.mockResolvedValue({ data: { summary: SUMMARY } });
   fsEgressAPI.getDlpAttention.mockResolvedValue({ data: { hosts: [] } });
@@ -131,7 +132,7 @@ beforeEach(() => {
 });
 
 describe('FileEgress DLP page', () => {
-  it('loads server host stats and groups hosts by branch', async () => {
+  it('loads server host stats and keeps branch groups collapsed until clicked', async () => {
     renderPage();
 
     await waitFor(() => expect(fsEgressAPI.listDlpHosts).toHaveBeenCalledTimes(1));
@@ -140,11 +141,17 @@ describe('FileEgress DLP page', () => {
     expect(fsEgressAPI.listEvents).not.toHaveBeenCalled();
     expect(fsEgressAPI.listBrowserHosts).not.toHaveBeenCalled();
 
-    expect(await screen.findByText('Тюмень')).toBeInTheDocument();
-    expect(screen.getByText('Без филиала')).toBeInTheDocument();
-    expect(screen.getByText('PC-01')).toBeInTheDocument();
+    // Branch headers are visible, host rows are not rendered while collapsed.
+    const tyumenHeader = await screen.findByRole('button', { name: /Тюмень/ });
+    expect(tyumenHeader).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: /Без филиала/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('PC-01')).not.toBeInTheDocument();
+    expect(screen.queryByText('PC-77')).not.toBeInTheDocument();
+
+    fireEvent.click(tyumenHeader);
+    expect(tyumenHeader).toHaveAttribute('aria-expanded', 'true');
+    expect(await screen.findByText('PC-01')).toBeInTheDocument();
     expect(screen.getByText('PC-02')).toBeInTheDocument();
-    expect(screen.getByText('PC-77')).toBeInTheDocument();
     // Deleted-file counter from server stats (14 deleted − 4 service names).
     expect(screen.getByText('10')).toBeInTheDocument();
     // Summary cards.
@@ -177,6 +184,7 @@ describe('FileEgress DLP page', () => {
     });
     renderPage();
 
+    fireEvent.click(await screen.findByRole('button', { name: /Тюмень/ }));
     const openButtons = await screen.findAllByRole('button', { name: 'Открыть' });
     fireEvent.click(openButtons[0]);
 
@@ -247,6 +255,7 @@ describe('FileEgress DLP page', () => {
     });
     renderPage();
 
+    fireEvent.click(await screen.findByRole('button', { name: /Тюмень/ }));
     const openButtons = await screen.findAllByRole('button', { name: 'Открыть' });
     fireEvent.click(openButtons[0]);
     fireEvent.click(await screen.findByRole('tab', { name: /Браузер/ }));
