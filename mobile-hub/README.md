@@ -30,6 +30,24 @@ EXPO_PUBLIC_NATIVE_NOTIFICATIONS_ENABLED=true
 
 Expo Go подходит для быстрой проверки UI. Remote push нужно проверять в development/preview APK, а не в Expo Go.
 
+## Развёртывание сборки на новой машине
+
+Клон репозитория самодостаточен: `android/` генерируется `expo prebuild`, `patches/` применяются `npm ci` через patch-package. В Git не хранятся только secrets — release keystore и `google-services.json` берутся из защищённого хранилища.
+
+1. Машина: Windows 10/11 с включённой виртуализацией (эмулятору нужен WHPX/Hyper-V; на Windows Server и VMware-гостях без nested virtualization он не запускается), Node.js, Git.
+2. `git clone https://github.com/Mnogoznall2405/HUB-IT.git` → `cd HUB-IT\mobile-hub` → `npm ci`.
+3. JDK 17: `powershell -ExecutionPolicy Bypass -File scripts\install-jdk.ps1` ставит Temurin в `..\tools\jdk-*` — `build-apk.ps1` находит его сам. Либо свой JDK 17 через `HUBIT_JAVA_HOME`.
+4. Android SDK: установить Android Studio (включает cmdline-tools и adb) или отдельно SDK Command-line Tools. Нужные пакеты (`sdkmanager`): `platform-tools` ≥ 37.0.1, `platforms;android-36`, `build-tools;36.0.0`, `ndk;27.1.12297006`, `cmake;3.22.1`. Путь к SDK через `HUBIT_ANDROID_SDK_ROOT` или стандартный `%LOCALAPPDATA%\Android\Sdk`.
+5. `.env` — только если API не продовый (см. выше); для `https://hubit.zsgp.ru` не нужен.
+6. Сборка по назначению:
+   - preview с постоянной подписью — 4 переменные `HUBIT_ANDROID_*` + `npm run build:apk:local`;
+   - debug для разработки — `npm run build:apk:local:debug` (release keystore не нужен);
+   - APK под эмулятор — `powershell -ExecutionPolicy Bypass -File scripts\build-apk.ps1 -Local -Variant emulator -Architectures x86_64 -AllowDebugSigning`.
+7. Эмулятор: `scripts\setup-android-emulator.ps1` ставит emulator + system image и создаёт AVD `HubIT_Pixel_API34`; `scripts\start-emulator-and-expo.ps1` запускает его и Metro одной командой.
+8. Проверки перед пушем: `npm run lint`, `npm run test:ci`, `npx expo-doctor`.
+
+Правки мобильного приложения коммитим и пушим в `main`; на второй машине — `git pull` и пересборка. `dist/`, `*.apk`, `android/`, `tools/` в репозиторий не попадают — артефакты сборки распространяются через preview-канал (`scripts/mobile/publish-apk.ps1`).
+
 Preview APK регистрирует notification task в module scope: `Ответить` и `Прочитано` могут выполняться в фоне без открытия интерфейса приложения. Быстрый ответ обновляет исходный Android notification identifier, чтобы RemoteInput штатно сменился со статуса отправки на итоговый; при временной ошибке точный текст хранится в ограниченной SecureStore-очереди, а Android WorkManager повторяет безопасную синхронизацию с минимальным интервалом 15 минут. Реальная частота зависит от Doze, производителя и Force stop; поэтому background/killed сценарии обязательно проверяются на физическом устройстве.
 
 ## Приёмка на физическом Android
