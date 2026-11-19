@@ -138,6 +138,9 @@ function NativeAdminUsersScreenContent() {
   const [status, setStatus] = useState({ error: '', message: '' });
   const [delegateLinks, setDelegateLinks] = useState<userAdminApi.TaskDelegateLink[]>([]);
   const [delegatesLoading, setDelegatesLoading] = useState(false);
+  // Saving sends replace_task_delegates: it must only run when the list was
+  // actually loaded — an unloaded/failed list would wipe the user's links.
+  const [delegatesLoaded, setDelegatesLoaded] = useState(false);
   const [delegateSearch, setDelegateSearch] = useState('');
   const [delegateCandidates, setDelegateCandidates] = useState<userAdminApi.AdminUser[]>([]);
   const [delegateSearchResults, setDelegateSearchResults] = useState<userAdminApi.AdminUser[]>([]);
@@ -270,16 +273,21 @@ function NativeAdminUsersScreenContent() {
         await userAdminApi.updateUser(draft.id, payload);
         if (!mounted.current) return;
         profileSaved = true;
-        await userAdminApi.updateTaskDelegates(draft.id, delegateLinks.map((item) => ({
-          delegate_user_id: item.delegate_user_id,
-          role_type: item.role_type,
-          is_active: item.is_active !== false,
-        })));
-        setStatus({ error: '', message: 'Пользователь сохранён.' });
+        if (delegatesLoaded) {
+          await userAdminApi.updateTaskDelegates(draft.id, delegateLinks.map((item) => ({
+            delegate_user_id: item.delegate_user_id,
+            role_type: item.role_type,
+            is_active: item.is_active !== false,
+          })));
+          setStatus({ error: '', message: 'Пользователь сохранён.' });
+        } else {
+          setStatus({ error: '', message: 'Пользователь сохранён. Список помощников и заместителей не загрузился — назначения не изменены.' });
+        }
       } else {
         await userAdminApi.createUser({ ...payload, username });
         setStatus({ error: '', message: 'Пользователь создан.' });
       }
+      delegatesRequestRef.current += 1;
       setDraft(null);
       await loadUsers(0);
     } catch (error) {
@@ -298,19 +306,25 @@ function NativeAdminUsersScreenContent() {
     } finally {
       setSaving(false);
     }
-  }, [delegateLinks, draft, loadUsers]);
+  }, [delegateLinks, delegatesLoaded, draft, loadUsers]);
 
   const openUser = useCallback(async (item: userAdminApi.AdminUser) => {
+    const requestId = ++delegatesRequestRef.current;
+    const isCurrent = () => mounted.current && delegatesRequestRef.current === requestId;
     setDraft(draftFromUser(item));
     setDelegateLinks([]);
     setDelegateSearch('');
     setDelegateCandidates([]);
     setDelegateSearchResults([]);
     setDelegatesLoading(true);
+    setDelegatesLoaded(false);
     try {
       const links = await userAdminApi.getTaskDelegates(item.id);
-      if (!mounted.current) return;
+      // A slower request for user A must not overwrite user B's delegates:
+      // the response is applied only while this form is still the latest open.
+      if (!isCurrent()) return;
       setDelegateLinks(links);
+      setDelegatesLoaded(true);
       const delegateIds = links.map((link) => link.delegate_user_id);
       if (delegateIds.length > 0) {
         const result = await userAdminApi.searchUsers({
@@ -320,12 +334,14 @@ function NativeAdminUsersScreenContent() {
           status: 'all',
           role: 'all',
         });
+        if (!isCurrent()) return;
         setDelegateCandidates(result.items);
       }
     } catch (error) {
+      if (!isCurrent()) return;
       setStatus({ error: formatApiError(error, 'Не удалось загрузить помощников и заместителей.'), message: '' });
     } finally {
-      setDelegatesLoading(false);
+      if (isCurrent()) setDelegatesLoading(false);
     }
   }, []);
 
@@ -391,6 +407,7 @@ function NativeAdminUsersScreenContent() {
         title={draft.id ? 'Пользователь' : 'Новый пользователь'}
         tokens={tokens}
         onBack={() => {
+          delegatesRequestRef.current += 1;
           setDelegateSearch('');
           setDelegateCandidates([]);
           setDelegateSearchResults([]);
@@ -461,7 +478,20 @@ function NativeAdminUsersScreenContent() {
           ))}
           <View style={styles.switchRow}>
             <Text style={{ color: tokens.textPrimary, fontWeight: '700', flex: 1 }}>Активен</Text>
-            <Switch value={draft.is_active} onValueChange={(value) => setDraft({ ...draft, is_active: value })} />
+            <Switch value={draft.is_active} onValueChange={(value) => {
+              if (!value && draft.is_active && draft.id) {
+                Alert.alert(
+                  'Отключить пользователя?',
+                  'Все его сессии будут закрыты, вход по биометрии отозван. Изменение применится после «Сохранить».',
+                  [
+                    { text: 'Отмена', style: 'cancel' },
+                    { text: 'Отключить', style: 'destructive', onPress: () => setDraft({ ...draft, is_active: false }) },
+                  ],
+                );
+                return;
+              }
+              setDraft({ ...draft, is_active: value });
+            }} />
           </View>
           <View style={styles.switchRow}>
             <View style={styles.switchCopy}>
@@ -616,6 +646,7 @@ function NativeAdminUsersScreenContent() {
         ))}
       </View>
       <AccountPrimaryButton tokens={tokens} label="Новый пользователь" onPress={() => {
+        delegatesRequestRef.current += 1;
         setDelegateLinks([]);
         setDelegateSearch('');
         setDelegateCandidates([]);

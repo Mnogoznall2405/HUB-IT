@@ -15,6 +15,7 @@ import {
   getTaskObjects,
   searchTaskAssignees,
   searchTaskControllers,
+  updateTask,
   uploadTaskAttachment,
   type TaskAssignee,
   type TaskAssignmentMode,
@@ -80,6 +81,35 @@ function findDefaultProject(items: TaskProject[]): TaskProject | null {
   )) || items[0] || null;
 }
 
+// Fields of the create payload that also exist on TaskUpdatePayload — a retry
+// can patch them onto already-created tasks. Assignees/visibility/assignment
+// mode are creation-time semantics and are deliberately not synced.
+const TASK_RETRY_SYNC_KEYS = [
+  'title',
+  'description',
+  'protocol_date',
+  'due_at',
+  'email_deadline_remind_hours',
+  'priority',
+  'observer_user_ids',
+  'controller_user_id',
+  'checklist_items',
+] as const;
+
+function diffTaskCreatePayload(
+  before: Record<string, unknown> | null | undefined,
+  after: Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (!before) return null;
+  const patch: Record<string, unknown> = {};
+  for (const key of TASK_RETRY_SYNC_KEYS) {
+    if (JSON.stringify(before[key] ?? null) !== JSON.stringify(after[key] ?? null)) {
+      patch[key] = after[key] ?? null;
+    }
+  }
+  return patch;
+}
+
 export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: { parentTaskId?: string; parentTitle?: string } = {}) {
   const { user, hasPermission, offlineMode } = useAuth();
   // Подзадачу создаёт участник родителя, даже без tasks.create: доступ проверяет сервер.
@@ -137,9 +167,18 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
   const incomingShareAppliedRef = useRef(false);
   const debouncedAssigneeQuery = useDebouncedValue(assigneeQuery);
   const [protocolDate, setProtocolDate] = useState(() => todayProtocolDate());
-  const [uploadRecovery, setUploadRecovery] = useState<{ taskIds: string[]; pending: Array<{ taskId: string; file: TaskUploadFile }>; creating?: boolean } | null>(null);
+  const [uploadRecovery, setUploadRecovery] = useState<{
+    taskIds: string[];
+    pending: Array<{ taskId: string; file: TaskUploadFile }>;
+    uploaded?: string[];
+    creating?: boolean;
+    /** Payload snapshot at creation time — lets a retry diff-apply form edits. */
+    payload?: Record<string, unknown> | null;
+    /** Assignees stayed in the form after a partial failure — still need tasks. */
+    needsCreate?: boolean;
+  } | null>(null);
   const localState = { title, description, dueDate, emailReminder, priority, selectedAssigneeIds, assignmentMode, projectId, controllerId, observerIds, objectId, departmentId, visibility, checklistText, checklistItems, files, protocolDate, newProjectName, newObjectName, uploadRecovery };
-  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: isSubtask ? `task-subtask-${parentTaskId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96)}` : 'task-create', state: localState, ready: allowed && !loadingRefs, paused: saving, restore: (saved) => { setTitle(saved.title); setDescription(saved.description); setDueDate(saved.dueDate); setEmailReminder(saved.emailReminder); setPriority(saved.priority); setSelectedAssigneeIds(saved.selectedAssigneeIds); setAssignmentMode(saved.assignmentMode === 'separate' ? 'separate' : 'shared'); setProjectId(saved.projectId); setControllerId(saved.controllerId); setObserverIds(saved.observerIds); setObjectId(saved.objectId); setDepartmentId(saved.departmentId); setVisibility(saved.visibility); setChecklistText(saved.checklistText); setChecklistItems(saved.checklistItems); setFiles(saved.files); setProtocolDate(saved.protocolDate); setNewProjectName(saved.newProjectName); setNewObjectName(saved.newObjectName); setUploadRecovery(saved.uploadRecovery); } });
+  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: isSubtask ? `task-subtask-${parentTaskId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96)}` : 'task-create', state: localState, ready: allowed && !loadingRefs, paused: saving, restore: (saved) => { if (incomingShareAppliedRef.current) return; setTitle(saved.title); setDescription(saved.description); setDueDate(saved.dueDate); setEmailReminder(saved.emailReminder); setPriority(saved.priority); setSelectedAssigneeIds(saved.selectedAssigneeIds); setAssignmentMode(saved.assignmentMode === 'separate' ? 'separate' : 'shared'); setProjectId(saved.projectId); setControllerId(saved.controllerId); setObserverIds(saved.observerIds); setObjectId(saved.objectId); setDepartmentId(saved.departmentId); setVisibility(saved.visibility); setChecklistText(saved.checklistText); setChecklistItems(saved.checklistItems); setFiles(saved.files); setProtocolDate(saved.protocolDate); setNewProjectName(saved.newProjectName); setNewObjectName(saved.newObjectName); setUploadRecovery(saved.uploadRecovery); } });
   const visibleObjects = useMemo(
     () => objects.filter((item) => String(item.project_id) === projectId),
     [objects, projectId],
@@ -147,9 +186,9 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
 
   useEffect(() => {
     if (incomingShareAppliedRef.current || isSubtask) return;
-    incomingShareAppliedRef.current = true;
     const share = consumeIncomingShare('task');
     if (!share) return;
+    incomingShareAppliedRef.current = true;
     const fallbackTitle = share.text.trim().split(/\r?\n/, 1)[0] || 'Новая задача';
     setTitle((share.subject || fallbackTitle).slice(0, 300));
     setDescription(share.text.slice(0, 12_000));
@@ -259,6 +298,7 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
   }, [checklistText]);
 
   const addFile = useCallback(async () => {
+    if (saving) return;
     try {
       const file = await pickNativeTaskFile();
       if (!file) return;
@@ -266,7 +306,7 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось выбрать файл.'));
     }
-  }, []);
+  }, [saving]);
 
   const selectProject = useCallback((nextProjectId: string) => {
     setProjectId(nextProjectId);
@@ -362,23 +402,83 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
       const savedDraft = await draft.write();
       let recovery = savedDraft.uploadRecovery;
       if (recovery?.creating) throw new Error('Ответ о создании задачи не получен. Проверьте список задач перед новой отправкой. Локальная копия сохранена.');
+      const fileKey = (file: TaskUploadFile) => `${file.uri}:${file.name}`;
+      // Success is tracked per task: in per-assignee mode the same file is
+      // uploaded to every created task, so the key must include the task id.
+      const uploadKey = (taskId: string, file: TaskUploadFile) => `${taskId}|${fileKey(file)}`;
+      const common = {
+        title: normalizedTitle,
+        description: description.trim(),
+        assignee_user_ids: selectedAssigneeIds,
+        protocol_date: protocolDate,
+        due_at: normalizedDueAt,
+        ...(normalizedDueAt && emailReminder !== 'default' ? {
+          email_deadline_remind_hours: emailReminder === 'off' ? 0 : Number(emailReminder),
+        } : {}),
+        priority,
+        observer_user_ids: observerIds,
+        controller_user_id: controllerId,
+        checklist_items: checklistItems,
+      };
+      if (recovery) {
+        // Rebuild the retry list from the CURRENT form files: a file the user
+        // removed stops blocking the retry, a newly added file is scheduled,
+        // and files already uploaded for a task are not sent a second time.
+        // Drafts saved before `uploaded` existed retry every current file once.
+        const uploadedKeys = new Set(recovery.uploaded || []);
+        recovery = {
+          ...recovery,
+          uploaded: recovery.uploaded || [],
+          pending: recovery.taskIds.flatMap((taskId) =>
+            savedDraft.files.filter((file) => !uploadedKeys.has(uploadKey(taskId, file))).map((file) => ({ taskId, file }))),
+        };
+        // Edits made after creation must reach the created tasks too: diff the
+        // stored payload snapshot against the current form and patch.
+        const patch = diffTaskCreatePayload(recovery.payload, common);
+        if (patch && Object.keys(patch).length) {
+          for (const taskId of recovery.taskIds) {
+            // A failed patch aborts the submit: the user must see it instead
+            // of silently uploading files onto a stale task.
+            await updateTask(taskId, patch);
+          }
+          recovery = { ...recovery, payload: { ...common } };
+          await draft.write({ ...savedDraft, uploadRecovery: recovery });
+        }
+        // A previous partial failure left assignees without tasks: create
+        // them now and extend the upload list before touching attachments.
+        if (recovery.needsCreate) {
+          const created: TaskCreateResult = isSubtask
+            ? [await createSubtask(parentTaskId, common)]
+            : await createTask({
+              ...common,
+              project_id: projectId,
+              department_id: departmentId || null,
+              visibility_scope: departmentId ? visibility : 'private',
+              object_id: objectId || null,
+              ...(multipleAssignees ? { assignment_mode: assignmentMode } : {}),
+            });
+          const failed = created.failed ?? [];
+          const newIds = created.map((task) => String(task.id || '').trim()).filter(Boolean);
+          recovery = {
+            ...recovery,
+            taskIds: [...recovery.taskIds, ...newIds],
+            pending: [
+              ...recovery.pending,
+              ...newIds.flatMap((taskId) => savedDraft.files.map((file) => ({ taskId, file }))),
+            ],
+            needsCreate: failed.length > 0,
+          };
+          setUploadRecovery(recovery);
+          await draft.write({ ...savedDraft, uploadRecovery: recovery });
+          if (failed.length) {
+            setError(`Не удалось создать задачи для ${failed.length} исполнителей — повторите отправку.`);
+            return;
+          }
+        }
+      }
       if (!recovery) {
         await draft.write({ ...savedDraft, uploadRecovery: { taskIds: [], pending: [], creating: true } });
         setUploadRecovery({ taskIds: [], pending: [], creating: true });
-        const common = {
-          title: normalizedTitle,
-          description: description.trim(),
-          assignee_user_ids: selectedAssigneeIds,
-          protocol_date: protocolDate,
-          due_at: normalizedDueAt,
-          ...(normalizedDueAt && emailReminder !== 'default' ? {
-            email_deadline_remind_hours: emailReminder === 'off' ? 0 : Number(emailReminder),
-          } : {}),
-          priority,
-          observer_user_ids: observerIds,
-          controller_user_id: controllerId,
-          checklist_items: checklistItems,
-        };
         const created: TaskCreateResult = isSubtask
           ? [await createSubtask(parentTaskId, common)]
           : await createTask({
@@ -395,14 +495,29 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
           // чтобы повторная отправка не задублировала уже созданные.
           const failedIds = failed.map((item) => Number(item.assignee_user_id)).filter((id) => selectedAssigneeIds.includes(id));
           let notUploaded = 0;
+          const uploadedKeys: string[] = [];
           for (const task of created) {
             for (const file of savedDraft.files) {
-              try { await uploadTaskAttachment(String(task.id), file); } catch { notUploaded += 1; }
+              try {
+                await uploadTaskAttachment(String(task.id), file);
+                uploadedKeys.push(uploadKey(String(task.id), file));
+              } catch { notUploaded += 1; }
             }
           }
+          const taskIds = created.map((task) => String(task.id || '').trim()).filter(Boolean);
+          const uploadedSet = new Set(uploadedKeys);
+          const pendingRecovery = taskIds.length ? {
+            taskIds,
+            pending: taskIds.flatMap((taskId) => savedDraft.files
+              .filter((file) => !uploadedSet.has(uploadKey(taskId, file)))
+              .map((file) => ({ taskId, file }))),
+            uploaded: uploadedKeys,
+            payload: { ...common },
+            needsCreate: failedIds.length > 0,
+          } : null;
           const nextMode: TaskAssignmentMode = failedIds.length >= 2 ? assignmentMode : 'shared';
-          await draft.write({ ...savedDraft, selectedAssigneeIds: failedIds, assignmentMode: nextMode, uploadRecovery: null });
-          setUploadRecovery(null);
+          await draft.write({ ...savedDraft, selectedAssigneeIds: failedIds, assignmentMode: nextMode, uploadRecovery: pendingRecovery });
+          setUploadRecovery(pendingRecovery);
           setSelectedAssigneeIds(failedIds);
           setAssignmentMode(nextMode);
           const names = failedIds.map((id) => {
@@ -413,14 +528,18 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
           return;
         }
         const taskIds = created.map((task) => String(task.id || '').trim()).filter(Boolean);
-        recovery = { taskIds, pending: taskIds.flatMap((taskId) => savedDraft.files.map((file) => ({ taskId, file }))) };
+        recovery = { taskIds, pending: taskIds.flatMap((taskId) => savedDraft.files.map((file) => ({ taskId, file }))), uploaded: [], payload: { ...common } };
         setUploadRecovery(recovery);
         await draft.write({ ...savedDraft, uploadRecovery: recovery });
       }
       for (const item of [...recovery.pending]) {
         try { await uploadTaskAttachment(item.taskId, item.file); }
         catch { continue; }
-        recovery = { ...recovery, pending: recovery.pending.filter((entry) => entry !== item) };
+        recovery = {
+          ...recovery,
+          uploaded: [...(recovery.uploaded || []), uploadKey(item.taskId, item.file)],
+          pending: recovery.pending.filter((entry) => entry !== item),
+        };
         setUploadRecovery(recovery);
         await draft.write({ ...savedDraft, uploadRecovery: recovery });
       }
@@ -509,6 +628,9 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
           label="Название *"
           value={title}
           onChangeText={setTitle}
+          // Edits after «Создать» never reach the request snapshot — lock the
+          // field while saving instead of silently dropping them.
+          editable={!saving}
           autoCapitalize="sentences"
           returnKeyType="next"
           maxLength={300}
@@ -662,6 +784,7 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
           label="Описание"
           value={description}
           onChangeText={setDescription}
+          editable={!saving}
           multiline
           numberOfLines={5}
           maxLength={12000}
@@ -774,21 +897,21 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
 
       <AccountSectionCard tokens={tokens} collapsible title={`Чек-лист (${checklistItems.length})`}>
         <HubTextField testID="native-task-create-checklist-input" label="Новый пункт" value={checklistText} onChangeText={setChecklistText} returnKeyType="done" onSubmitEditing={addChecklistItem} />
-        <View style={styles.inlineActions}><AccountSecondaryButton tokens={tokens} label="Добавить пункт" disabled={!checklistText.trim()} onPress={addChecklistItem} /></View>
+        <View style={styles.inlineActions}><AccountSecondaryButton tokens={tokens} label="Добавить пункт" disabled={saving || !checklistText.trim()} onPress={addChecklistItem} /></View>
         {checklistItems.map((item) => (
           <View key={item.id} style={[styles.checklistRow, { borderBottomColor: tokens.borderSoft }]}> 
             <Text style={[styles.checklistText, { color: tokens.textPrimary }]}>{item.text}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel={`Удалить ${item.text}`} onPress={() => setChecklistItems((current) => current.filter((entry) => entry.id !== item.id))} style={styles.removeButton}><MaterialCommunityIcons name="close" size={19} color={tokens.error} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Удалить ${item.text}`} disabled={saving} onPress={() => setChecklistItems((current) => current.filter((entry) => entry.id !== item.id))} style={styles.removeButton}><MaterialCommunityIcons name="close" size={19} color={tokens.error} /></Pressable>
           </View>
         ))}
       </AccountSectionCard>
 
       <AccountSectionCard tokens={tokens} collapsible title={`Файлы (${files.length})`} description="До 20 МБ на файл.">
-        <AccountSecondaryButton tokens={tokens} label="Добавить файл" onPress={() => { void addFile(); }} />
+        <AccountSecondaryButton tokens={tokens} label="Добавить файл" disabled={saving} onPress={() => { void addFile(); }} />
         {files.map((file) => (
           <View key={`${file.uri}:${file.name}`} style={[styles.checklistRow, { borderBottomColor: tokens.borderSoft }]}> 
             <Text numberOfLines={1} style={[styles.checklistText, { color: tokens.textPrimary }]}>{file.name}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel={`Убрать ${file.name}`} onPress={() => setFiles((current) => current.filter((item) => item !== file))} style={styles.removeButton}><MaterialCommunityIcons name="close" size={19} color={tokens.error} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Убрать ${file.name}`} disabled={saving} onPress={() => setFiles((current) => current.filter((item) => item !== file))} style={styles.removeButton}><MaterialCommunityIcons name="close" size={19} color={tokens.error} /></Pressable>
           </View>
         ))}
       </AccountSectionCard>

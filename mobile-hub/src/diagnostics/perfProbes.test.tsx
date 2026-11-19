@@ -19,6 +19,24 @@ describe('perf probes (temporary)', () => {
     expect(endpointTemplate('GET', '')).toBeNull();
   });
 
+  it('masks alphabetic conversation ids and usernames in shared endpoint stats', () => {
+    // An all-lowercase conversation id must not leak into the report, and the
+    // query string / user names never survive either.
+    expect(endpointTemplate('get', '/chat/conversations/privateclient/messages?token=secret'))
+      .toBe('GET /chat/conversations/:id/messages');
+    expect(endpointTemplate('get', '/chat/users/ivan/profile?expand=full'))
+      .toBe('GET /chat/users/:id/profile');
+    const own = { method: 'get', url: '/chat/conversations/privateclient/messages' };
+    const other = { method: 'get', url: '/chat/users/ivan/profile' };
+    noteRequestStart(own, 1000); noteRequestEnd(own, false, 1200);
+    noteRequestStart(other, 1000); noteRequestEnd(other, false, 1100);
+    const keys = Object.keys(getPerfSummary().endpoints);
+    expect(keys).toContain('GET /chat/conversations/:id/messages');
+    expect(keys).toContain('GET /chat/users/:id/profile');
+    expect(keys.join(' ')).not.toContain('privateclient');
+    expect(keys.join(' ')).not.toContain('ivan');
+  });
+
   it('measures request time per endpoint, counting errors and slow ones', () => {
     const ok = { method: 'get', url: '/chat/conversations?limit=50' };
     const bad = { method: 'get', url: '/chat/conversations?limit=50' };
@@ -27,6 +45,21 @@ describe('perf probes (temporary)', () => {
     expect(getPerfSummary().endpoints['GET /chat/conversations']).toMatchObject({ count: 2, total: 2, maxMs: 1500, slow: 1, errors: 1 });
     noteRequestEnd({ method: 'get', url: '/never-started' }, false, 5000);
     expect(Object.keys(getPerfSummary().endpoints)).toEqual(['GET /chat/conversations']);
+  });
+
+  it('drops a response that completes after the sampler was reset', () => {
+    const stale = { method: 'get', url: '/chat/conversations' };
+    noteRequestStart(stale, 1000);
+    resetPerfProbes();
+    // A request started in the old epoch resolving now must not record.
+    noteRequestEnd(stale, false, 9000);
+    expect(getPerfSummary().endpoints).toEqual({});
+
+    const fresh = { method: 'get', url: '/chat/conversations' };
+    noteRequestStart(fresh, 10_000);
+    noteRequestEnd(fresh, false, 10_200);
+    expect(getPerfSummary().endpoints['GET /chat/conversations'])
+      .toMatchObject({ count: 1, total: 1, maxMs: 200 });
   });
 
   it('counts realtime events, the busiest second and fixed type names only', () => {

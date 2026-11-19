@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // AG: provider balance warning for AI managers (settings.ai.manage).
 export const aiBalanceAPI = {

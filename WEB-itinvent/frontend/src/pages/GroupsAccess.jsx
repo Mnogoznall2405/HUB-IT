@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import useDebounce from '../hooks/useDebounce';
 import {
   Alert,
   Box,
@@ -55,16 +56,7 @@ const VIEW_MODES = {
   EXPORT: 'export',
 };
 
-const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [delayMs, value]);
-
-  return debounced;
-};
+const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => useDebounce(value, delayMs);
 
 const formatDateTime = (value) => {
   const raw = String(value || '').trim();

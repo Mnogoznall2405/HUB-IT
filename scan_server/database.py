@@ -2,6 +2,7 @@
 
 import base64
 import copy
+import ipaddress
 import json
 import logging
 import os
@@ -27,6 +28,26 @@ from .scan_task_report_store import ScanTaskIncidentReportStore
 from .scan_view import InvalidScanView, normalize_scan_list_view
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_agent_ip(value: str) -> str:
+    raw = str(value or "").strip()
+    try:
+        return str(ipaddress.ip_address(raw))
+    except ValueError:
+        pass
+    if raw.startswith("["):
+        host, sep, port = raw[1:].partition("]:")
+    elif raw.count(":") == 1:
+        host, sep, port = raw.rpartition(":")
+    else:
+        return ""
+    if not sep or len(port) > 5 or not port.isascii() or not port.isdigit() or not 0 <= int(port) <= 65535:
+        return ""
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return ""
 
 
 def _claim_guard(claim_attempt: Optional[int]) -> tuple[str, tuple]:
@@ -418,6 +439,11 @@ def _env_float(name: str, default: float) -> float:
         return float(str(os.getenv(name, str(default)) or "").strip())
     except Exception:
         return float(default)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def _is_sqlite_busy_error(exc: BaseException) -> bool:
@@ -813,7 +839,10 @@ class ScanStore:
         self._reconcile_last_mono: Dict[str, float] = {}
         self._reconcile_pending_jobs: Dict[str, int] = {}
         # Light presence touch throttle (ingest/poll/result): ≤1 / 30s per agent.
-        self._touch_throttle_sec = max(5.0, min(60.0, _env_float("SCAN_TOUCH_THROTTLE_SEC", 30.0)))
+        self._touch_throttle_sec = min(
+            self.agent_online_timeout_sec / 2.0,
+            max(5.0, min(60.0, _env_float("SCAN_TOUCH_THROTTLE_SEC", 30.0))),
+        )
         self._touch_throttle_lock = threading.Lock()
         self._touch_last_mono: Dict[str, float] = {}
         # Task expiry/requeue sweep runs at most once per interval per process instead of on every
@@ -821,9 +850,11 @@ class ScanStore:
         self._maintain_interval_sec = max(1.0, min(60.0, _env_float("SCAN_TASK_MAINTENANCE_INTERVAL_SEC", 15.0)))
         self._maintain_lock = threading.Lock()
         self._maintain_last_mono = 0.0
-        # Heartbeat rewrites last_heartbeat_json; an unchanged heartbeat is persisted at most once per
-        # SCAN_HEARTBEAT_WRITE_MIN_SEC (0 disables). Online status uses a 30 min window, so this is safe.
-        self._heartbeat_write_min_sec = max(0.0, min(600.0, _env_float("SCAN_HEARTBEAT_WRITE_MIN_SEC", 120.0)))
+        # Resource-only heartbeat changes are sampled; identity/queue/error changes are immediate.
+        self._heartbeat_write_min_sec = min(
+            self.agent_online_timeout_sec / 2.0,
+            max(0.0, min(600.0, _env_float("SCAN_HEARTBEAT_WRITE_MIN_SEC", 120.0))),
+        )
         self._heartbeat_write_lock = threading.Lock()
         self._heartbeat_last_write: Dict[str, Tuple[float, str]] = {}
         if self.backend == "postgres":
@@ -861,6 +892,8 @@ class ScanStore:
 
     def get_realtime_cursor(self) -> Dict[str, tuple[tuple[str, int, int], ...]]:
         """Return a compact shared-DB change cursor for Scan Center invalidations."""
+        if self.is_postgres:
+            return self._get_realtime_cursor_pg()
         query = """
             SELECT 'agents' AS section, status, COUNT(*) AS c,
                    MAX(COALESCE(updated_at, last_seen_at, 0)) AS changed_at
@@ -892,6 +925,32 @@ class ScanStore:
                     int(row["c"] or 0),
                     int(row["changed_at"] or 0),
                 ))
+        return {section: tuple(values) for section, values in grouped.items()}
+
+    def _get_realtime_cursor_pg(self) -> Dict[str, tuple[tuple[str, int, int], ...]]:
+        # The legacy UNION ran MAX(COALESCE(...)) per section: a non-sargable
+        # expression that seq-scanned all four tables every poll (~2s while a
+        # Scan Center subscriber is open). Status counts already run index-only;
+        # pg_stat commit counters are a stricter change signal than a timestamp —
+        # they also catch in-place same-status updates.
+        grouped: Dict[str, list[tuple[str, int, int]]] = {
+            "agents": [], "tasks": [], "jobs": [], "incidents": [],
+        }
+        sections = (("agents", "scan_agents"), ("tasks", "scan_tasks"),
+                    ("jobs", "scan_jobs"), ("incidents", "scan_incidents"))
+        with self._lock, self._connect() as conn:
+            for section, table in sections:
+                rows = conn.execute(
+                    f"SELECT status, COUNT(*) AS c FROM {table} GROUP BY status ORDER BY status"
+                ).fetchall()
+                writes = conn.execute(
+                    "SELECT n_tup_ins + n_tup_upd + n_tup_del AS c "
+                    "FROM pg_stat_user_tables WHERE schemaname='scan' AND relname=?",
+                    (table,),
+                ).fetchone()
+                marker = int((writes["c"] if writes else 0) or 0)
+                for row in rows:
+                    grouped[section].append((str(row["status"] or ""), int(row["c"] or 0), marker))
         return {section: tuple(values) for section, values in grouped.items()}
 
     @property
@@ -1491,90 +1550,108 @@ class ScanStore:
     ORPHAN_SPOOL_GRACE_SEC = 900
 
     def reconcile_job_pdf_spool(self, *, orphan_grace_sec: Optional[int] = None) -> Dict[str, int]:
+        with self._pdf_spool.reconciliation_guard() as acquired:
+            if not acquired:
+                return {
+                    "removed_orphan_files": 0, "removed_final_files": 0,
+                    "failed_jobs": 0, "waiting_processing_missing": 0,
+                }
+            return self._reconcile_job_pdf_spool(orphan_grace_sec=orphan_grace_sec)
+
+    def _reconcile_job_pdf_spool(self, *, orphan_grace_sec: Optional[int]) -> Dict[str, int]:
         now_ts = _now_ts()
         grace = self.ORPHAN_SPOOL_GRACE_SEC if orphan_grace_sec is None else max(0, int(orphan_grace_sec))
+        batch_size = 400
+        spool_paths = self._pdf_spool.list_pdf_paths()
 
-        def _write() -> Dict[str, int]:
-            removed_orphan = 0
-            removed_final = 0
-            failed_jobs = 0
+        removed_orphan = 0
+        removed_final = 0
+        failed_jobs = 0
+        waiting_processing_missing = 0
+        for offset in range(0, len(spool_paths), batch_size):
+            paths = spool_paths[offset:offset + batch_size]
+            ids = [path.stem.strip().lower() for path in paths]
+            placeholders = ",".join("?" for _ in ids)
             with self._lock, self._connect() as conn:
                 rows = conn.execute(
-                    """
-                    SELECT id, status, source_kind, scan_task_id, started_at
-                    FROM scan_jobs
-                    """
+                    f"SELECT id, status FROM scan_jobs WHERE id IN ({placeholders})",
+                    ids,
                 ).fetchall()
-                existing_ids = {str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()}
-                pending_pdf_rows = [
-                    row for row in rows
-                    if str(row["status"] or "").strip().lower() in PENDING_JOB_STATUSES
-                    and str(row["source_kind"] or "").strip().lower() in {"pdf_slice", "image", "office"}
-                ]
-                final_ids = {
-                    str(row["id"] or "").strip()
-                    for row in rows
-                    if str(row["status"] or "").strip().lower() in FINAL_JOB_STATUSES
-                }
-
-                spool_paths = self._pdf_spool.list_pdf_paths()
-                spool_ids = {path.stem.strip().lower() for path in spool_paths}
-
-                for path in spool_paths:
-                    job_id = path.stem.strip().lower()
-                    if job_id not in existing_ids:
-                        try:
-                            if now_ts - int(path.stat().st_mtime) < grace:
-                                continue
-                        except OSError:
+            statuses = {str(row["id"]): str(row["status"] or "").lower() for row in rows}
+            for path in paths:
+                job_id = path.stem.strip().lower()
+                if job_id not in statuses:
+                    try:
+                        if now_ts - int(path.stat().st_mtime) < grace:
                             continue
-                        if self._pdf_spool.delete_path(path, description="orphan"):
-                            removed_orphan += 1
+                    except OSError:
                         continue
-                    if job_id in final_ids:
-                        if self._pdf_spool.delete_path(path, description="stale"):
-                            removed_final += 1
+                    if self._pdf_spool.delete_path(path, description="orphan"):
+                        removed_orphan += 1
+                elif statuses[job_id] in FINAL_JOB_STATUSES:
+                    if self._pdf_spool.delete_path(path, description="stale"):
+                        removed_final += 1
 
+        # Walk only the active queue using the existing status index, not completed history.
+        stale_before = now_ts - self.job_processing_timeout_sec
+        for pending_status in PENDING_JOB_STATUSES:
+            after_id = ""
+            while True:
+                with self._lock, self._connect() as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT id, status, source_kind, scan_task_id, started_at
+                        FROM scan_jobs
+                        WHERE status=? AND source_kind IN ('pdf_slice','image','office') AND id>?
+                        ORDER BY id LIMIT ?
+                        """,
+                        (pending_status, after_id, batch_size),
+                    ).fetchall()
+                if not rows:
+                    break
+                after_id = str(rows[-1]["id"])
                 missing_rows = []
-                waiting_processing_missing = 0
-                stale_before = now_ts - self.job_processing_timeout_sec
-                for row in pending_pdf_rows:
-                    if str(row["id"] or "").strip().lower() in spool_ids:
+                for row in rows:
+                    if self._pdf_spool.path_for_job(str(row["id"])).exists():
                         continue
-                    status_value = str(row["status"] or "").strip().lower()
                     started_at = int(row["started_at"] or 0)
-                    if status_value == "processing" and started_at > stale_before:
+                    if pending_status == "processing" and started_at > stale_before:
                         waiting_processing_missing += 1
                         continue
                     missing_rows.append(row)
-                touched_task_ids = set()
-                for row in missing_rows:
-                    job_id = str(row["id"] or "").strip()
-                    if not job_id:
-                        continue
-                    conn.execute(
-                        """
-                        UPDATE scan_jobs
-                        SET status='analysis_incomplete', finished_at=?, error_text=?
-                        WHERE id=?
-                        """,
-                        (now_ts, MISSING_TRANSIENT_PDF_PAYLOAD, job_id),
-                    )
-                    failed_jobs += 1
-                    task_id = str(row["scan_task_id"] or "").strip()
-                    if task_id:
-                        touched_task_ids.add(task_id)
-                for task_id in touched_task_ids:
-                    self._reconcile_scan_task_progress_locked(conn, task_id, now_ts=now_ts, force=True)
-                conn.commit()
-            return {
-                "removed_orphan_files": removed_orphan,
-                "removed_final_files": removed_final,
-                "failed_jobs": failed_jobs,
-                "waiting_processing_missing": waiting_processing_missing,
-            }
+                if not missing_rows:
+                    continue
 
-        return self._run_write_transaction("reconcile_job_pdf_spool", _write)
+                def _write() -> int:
+                    changed = 0
+                    touched_task_ids = set()
+                    with self._lock, self._connect() as conn:
+                        for row in missing_rows:
+                            cursor = conn.execute(
+                                """
+                                UPDATE scan_jobs
+                                SET status='analysis_incomplete', finished_at=?, error_text=?
+                                WHERE id=? AND status=? AND COALESCE(started_at,0)=?
+                                """,
+                                (now_ts, MISSING_TRANSIENT_PDF_PAYLOAD, row["id"],
+                                 row["status"], int(row["started_at"] or 0)),
+                            )
+                            if cursor.rowcount:
+                                changed += 1
+                                if row["scan_task_id"]:
+                                    touched_task_ids.add(str(row["scan_task_id"]))
+                        for task_id in touched_task_ids:
+                            self._reconcile_scan_task_progress_locked(conn, task_id, now_ts=now_ts, force=True)
+                        conn.commit()
+                    return changed
+
+                failed_jobs += self._run_write_transaction("reconcile_job_pdf_spool", _write)
+        return {
+            "removed_orphan_files": removed_orphan,
+            "removed_final_files": removed_final,
+            "failed_jobs": failed_jobs,
+            "waiting_processing_missing": waiting_processing_missing,
+        }
 
     def _normalize_linked_scan_task_id_locked(self, conn: sqlite3.Connection, task_id: Any) -> str:
         tid = str(task_id or "").strip()
@@ -1792,15 +1869,15 @@ class ScanStore:
             "version": str(payload.get("version") or "").strip(),
             "status": str(payload.get("status") or "online").strip() or "online",
             "last_seen_at": int(payload.get("last_seen_at") or now_ts),
-            "last_heartbeat_json": _json_dumps(payload),
+            "last_heartbeat_json": _json_dumps({**payload, "last_seen_at": int(payload.get("last_seen_at") or now_ts)}),
             "updated_at": now_ts,
             "outbox_depth": 0 if outbox_depth is None else outbox_depth,
             "dead_letter_depth": 0 if dead_letter_depth is None else dead_letter_depth,
             "last_ingest_ok_at": 0 if last_ingest_ok_at is None else last_ingest_ok_at,
         }
-        def _write() -> None:
+        def _write() -> bool:
             with self._lock, self._connect() as conn:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     INSERT INTO scan_agents(
                         agent_id, hostname, branch, ip_address, version, status, last_seen_at,
@@ -1818,6 +1895,7 @@ class ScanStore:
                         outbox_depth=CASE WHEN ? <> 0 THEN excluded.outbox_depth ELSE scan_agents.outbox_depth END,
                         dead_letter_depth=CASE WHEN ? <> 0 THEN excluded.dead_letter_depth ELSE scan_agents.dead_letter_depth END,
                         last_ingest_ok_at=CASE WHEN ? <> 0 THEN excluded.last_ingest_ok_at ELSE scan_agents.last_ingest_ok_at END
+                    WHERE ? <> 0 OR scan_agents.last_heartbeat_json=?
                     """,
                     (
                         row["agent_id"],
@@ -1835,20 +1913,58 @@ class ScanStore:
                         1 if has_outbox else 0,
                         1 if has_dead else 0,
                         1 if has_ingest_ok else 0,
+                        1 if force_write else 0,
+                        previous_json or "",
                     ),
                 )
+                written = cursor.rowcount > 0
                 conn.commit()
+                return written
 
-        if self._heartbeat_write_unchanged_recently(agent_id, payload):
-            return row
-        self._run_write_transaction("upsert_agent_heartbeat", _write)
-        self._remember_heartbeat_write(agent_id, payload)
+        for attempt in range(3):
+            if self._heartbeat_write_unchanged_recently(agent_id, payload):
+                return row
+            previous_json = None
+            sample_only = False
+            if self._heartbeat_write_min_sec > 0:
+                with self._lock, self._connect() as conn:
+                    previous = conn.execute(
+                        "SELECT last_heartbeat_json FROM scan_agents WHERE agent_id=?",
+                        (agent_id,),
+                    ).fetchone()
+                if previous is not None:
+                    previous_json = str(previous["last_heartbeat_json"] or "")
+                    previous_payload = _json_loads(previous_json, {})
+                    if isinstance(previous_payload, dict):
+                        elapsed = now_ts - _as_nonneg_int(previous_payload.get("last_seen_at"), 0)
+                        sample_only = self._heartbeat_fingerprint(previous_payload) == self._heartbeat_fingerprint(payload)
+                        if 0 <= elapsed < self._heartbeat_write_min_sec and sample_only:
+                            self._remember_heartbeat_write(agent_id, payload, elapsed=elapsed)
+                            return row
+            # A competing worker may have sampled this agent after our read. Recheck
+            # instead of overwriting it; under sustained changes retain last-writer semantics.
+            force_write = self._heartbeat_write_min_sec <= 0 or attempt == 2
+            if self._run_write_transaction("upsert_agent_heartbeat", _write):
+                self._remember_heartbeat_write(agent_id, payload)
+                break
+            if sample_only:
+                # Another heartbeat won. A stale resource sample must not replay
+                # the queue/error/identity state observed before that heartbeat.
+                return row
         return row
 
     @staticmethod
     def _heartbeat_fingerprint(payload: Dict[str, Any]) -> str:
         stable = {key: value for key, value in payload.items() if key != "last_seen_at"}
-        return _json_dumps(stable)
+        if stable.get("ip_address"):
+            stable["ip_address"] = _normalize_agent_ip(stable["ip_address"]) or stable["ip_address"]
+        if isinstance(stable.get("metadata"), dict):
+            sampled = {
+                "agent_cpu_percent", "agent_rss_mb", "system_drive_free_gb",
+                "outbox_oldest_age_sec", "server_queue_pending",
+            }
+            stable["metadata"] = {key: value for key, value in stable["metadata"].items() if key not in sampled}
+        return json.dumps(_strip_null_chars(stable), ensure_ascii=False, sort_keys=True)
 
     def _heartbeat_write_unchanged_recently(self, agent_id: str, payload: Dict[str, Any]) -> bool:
         if self._heartbeat_write_min_sec <= 0:
@@ -1861,12 +1977,12 @@ class ScanStore:
         written_at, written_fingerprint = previous
         return written_fingerprint == fingerprint and (time.monotonic() - written_at) < self._heartbeat_write_min_sec
 
-    def _remember_heartbeat_write(self, agent_id: str, payload: Dict[str, Any]) -> None:
+    def _remember_heartbeat_write(self, agent_id: str, payload: Dict[str, Any], *, elapsed: float = 0.0) -> None:
         if self._heartbeat_write_min_sec <= 0:
             return
         fingerprint = self._heartbeat_fingerprint(payload)
         with self._heartbeat_write_lock:
-            self._heartbeat_last_write[agent_id] = (time.monotonic(), fingerprint)
+            self._heartbeat_last_write[agent_id] = (time.monotonic() - elapsed, fingerprint)
 
     def touch_agent_presence(
         self,
@@ -1892,7 +2008,6 @@ class ScanStore:
             last = float(self._touch_last_mono.get(normalized_agent_id, 0.0) or 0.0)
             if last and (now_m - last) < self._touch_throttle_sec:
                 return None
-            self._touch_last_mono[normalized_agent_id] = now_m
 
         now_ts = _now_ts()
         next_hostname = str(hostname or "").strip()
@@ -1903,24 +2018,41 @@ class ScanStore:
         # (avoids read-modify-write of last_heartbeat_json on hot ingest/poll).
         _ = metadata
 
-        def _write() -> Dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT agent_id, hostname, branch, ip_address, status, last_seen_at
+                FROM scan_agents WHERE agent_id=? LIMIT 1
+                """,
+                (normalized_agent_id,),
+            ).fetchone()
+        if row is not None:
+            elapsed = now_ts - int(row["last_seen_at"] or 0)
+            same_identity = (
+                (not next_hostname or next_hostname == str(row["hostname"] or ""))
+                and (not next_branch or next_branch == str(row["branch"] or ""))
+                and (
+                    not next_ip
+                    or (_normalize_agent_ip(next_ip) or next_ip)
+                    == (_normalize_agent_ip(str(row["ip_address"] or "")) or str(row["ip_address"] or ""))
+                )
+                and next_status == str(row["status"] or "online")
+            )
+            if 0 <= elapsed < self._touch_throttle_sec and same_identity:
+                with self._touch_throttle_lock:
+                    self._touch_last_mono[normalized_agent_id] = now_m - elapsed
+                return None
+
+        def _write() -> Optional[Dict[str, Any]]:
             with self._lock, self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT agent_id, hostname, branch, ip_address, status, last_seen_at
-                    FROM scan_agents
-                    WHERE agent_id=?
-                    LIMIT 1
-                    """,
-                    (normalized_agent_id,),
-                ).fetchone()
                 if row is None:
-                    conn.execute(
+                    cursor = conn.execute(
                         """
                         INSERT INTO scan_agents(
                             agent_id, hostname, branch, ip_address, version, status, last_seen_at,
                             last_heartbeat_json, updated_at, outbox_depth, dead_letter_depth, last_ingest_ok_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+                        ON CONFLICT (agent_id) DO NOTHING
                         """,
                         (
                             normalized_agent_id,
@@ -1935,6 +2067,8 @@ class ScanStore:
                         ),
                     )
                     conn.commit()
+                    if cursor.rowcount <= 0:
+                        return None
                     return {
                         "agent_id": normalized_agent_id,
                         "hostname": next_hostname or normalized_agent_id,
@@ -1943,7 +2077,7 @@ class ScanStore:
                         "status": next_status,
                         "last_seen_at": now_ts,
                     }
-                conn.execute(
+                cursor = conn.execute(
                     """
                     UPDATE scan_agents
                     SET last_seen_at=?,
@@ -1952,7 +2086,8 @@ class ScanStore:
                         branch=CASE WHEN ? <> '' THEN ? ELSE branch END,
                         ip_address=CASE WHEN ? <> '' THEN ? ELSE ip_address END,
                         status=CASE WHEN ? <> '' THEN ? ELSE status END
-                    WHERE agent_id=?
+                    WHERE agent_id=? AND last_seen_at=?
+                      AND hostname=? AND branch=? AND ip_address=? AND status=?
                     """,
                     (
                         now_ts,
@@ -1966,9 +2101,16 @@ class ScanStore:
                         next_status,
                         next_status,
                         normalized_agent_id,
+                        row["last_seen_at"],
+                        row["hostname"],
+                        row["branch"],
+                        row["ip_address"],
+                        row["status"],
                     ),
                 )
                 conn.commit()
+                if cursor.rowcount <= 0:
+                    return None
                 return {
                     "agent_id": normalized_agent_id,
                     "hostname": next_hostname or str(row["hostname"] or ""),
@@ -1978,7 +2120,10 @@ class ScanStore:
                     "last_seen_at": now_ts,
                 }
 
-        return self._run_write_transaction("touch_agent_presence", _write)
+        result = self._run_write_transaction("touch_agent_presence", _write)
+        with self._touch_throttle_lock:
+            self._touch_last_mono[normalized_agent_id] = now_m
+        return result
 
     def create_task(
         self,
@@ -1993,9 +2138,9 @@ class ScanStore:
         command = str(command or "").strip().lower()
         if not agent_id:
             raise ValueError("agent_id is required")
-        if command not in {"ping", "scan_now", "self_update", "install_package", "disable_message_probes"}:
+        if command not in {"ping", "scan_now", "self_update", "install_package", "disable_message_probes", "rotate_key"}:
             raise ValueError(
-                "command must be one of: ping, scan_now, self_update, install_package, disable_message_probes"
+                "command must be one of: ping, scan_now, self_update, install_package, disable_message_probes, rotate_key"
             )
 
         now_ts = _now_ts()
@@ -2131,11 +2276,308 @@ class ScanStore:
                     return dict(existing)
             raise
 
+    def agent_key_lookup_name(self, candidate: str) -> str:
+        """``app.agent_api_keys`` binding for a presented key; ``""`` on miss or non-postgres."""
+        token = str(candidate or "").strip()
+        if not token or not self.is_postgres or self._pg_engine is None:
+            return ""
+        from backend.appdb import agent_api_keys
+
+        return agent_api_keys.lookup_name_by_key(self._pg_engine, token)
+
+    @staticmethod
+    def _rotate_min_version_key(version: str) -> tuple:
+        return tuple(
+            int("".join(ch for ch in piece if ch.isdigit()) or 0)
+            for piece in str(version or "").split(".")
+        )
+
+    #: A ``rotate_key`` task left un-acked longer than this while ring-key
+    #: requests continue means the delivery likely went to an impersonator (or
+    #: the agent failed to apply the keys) — the pair is re-minted.
+    ROTATE_APPLY_GRACE_SEC = 900
+    #: Cap on automatic re-mints per agent; beyond it only an operator resolves.
+    MAX_CONTESTED_REMINT = 5
+
+    @staticmethod
+    def _stored_agent_mac(agent_row: Any) -> str:
+        """MAC last reported by the agent, from ``scan_agents.last_heartbeat_json``.
+
+        Agents report ``metadata.mac_address``; older payloads may carry it at
+        top level. The value is poisoned only if a ring-key thief heartbeats
+        first, so a mismatch here is a strong impersonation signal.
+        """
+        try:
+            payload = agent_row[2] if len(agent_row) > 2 else None
+            raw = ""
+            if isinstance(payload, str) and payload.strip():
+                data = json.loads(payload)
+                if isinstance(data, dict):
+                    raw = str(data.get("mac_address") or "").strip()
+                    if not raw and isinstance(data.get("metadata"), dict):
+                        raw = str(data["metadata"].get("mac_address") or "").strip()
+            return _normalize_mac_for_lookup(raw)
+        except Exception:
+            return ""
+
+    def maybe_enroll_agent_keys(
+        self,
+        agent_id: str,
+        *,
+        source_ip: str = "",
+        source_mac: str = "",
+        min_rotate_version=(1, 4, 22),
+    ) -> Optional[Dict[str, Any]]:
+        """Auto-enroll a ring-authenticated known agent into ``app.agent_api_keys``.
+
+        Ring-key requests carry no proof of ``agent_id`` ownership, so key
+        delivery is guarded by observed-IP continuity: keys are minted on first
+        contact (recording ``source_ip``), the rotate task is queued only on a
+        later request from the *same* observed IP, and ``poll_tasks`` delivers
+        it only to that IP. A completed/stale-delivered rotation followed by
+        continued ring-key requests means the keys went to an impersonator or
+        failed to apply — the pair is re-minted (bounded by
+        ``MAX_CONTESTED_REMINT``) which invalidates the stolen material.
+        """
+        if not self.is_postgres or self._pg_engine is None:
+            return None
+        name = str(agent_id or "").strip()
+        if not name:
+            return None
+        import sqlalchemy as sa
+        from backend.appdb import agent_api_keys
+
+        engine = self._pg_engine
+        now_ts = _now_ts()
+        observed_ip = _normalize_agent_ip(source_ip)
+        if not observed_ip:
+            return {"agent_id": name, "enrolled": False, "rotate_queued": False, "reason": "invalid_source_ip"}
+        pair: Optional[Dict[str, str]] = None
+        contested = False
+        contested_count = 0
+        version_key: tuple = (0,)
+        try:
+            with engine.begin() as conn:
+                if engine.dialect.name == "postgresql":
+                    # Serialize the decision and task creation across API processes.
+                    conn.execute(
+                        sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:name, 0))"),
+                        {"name": f"scan-agent-key-enroll:{name.casefold()}"},
+                    )
+                agent = conn.execute(
+                    sa.text(
+                        "SELECT version, hostname, last_heartbeat_json "
+                        "FROM scan_agents WHERE lower(agent_id)=:n LIMIT 1"
+                    ),
+                    {"n": name.lower()},
+                ).first()
+                if not agent:
+                    return None  # not a registered machine: never mint credentials for strangers
+                version_key = self._rotate_min_version_key(agent[0])
+                # MAC evidence gate: a ring-key thief can claim any agent_id but
+                # does not know the victim's MAC. Requests that carry a MAC must
+                # match the agent's last reported one; when a MAC is on record
+                # and the request carries none (tasks/poll), enrollment stays
+                # parked until a MAC-bearing request (heartbeat/ingest) proves it.
+                stored_mac = self._stored_agent_mac(agent)
+                presented_mac = _normalize_mac_for_lookup(source_mac)
+                if stored_mac:
+                    if not presented_mac:
+                        return {"agent_id": name, "enrolled": True, "rotate_queued": False, "reason": "awaiting_identity"}
+                    if presented_mac != stored_mac:
+                        logger.warning(
+                            "agent key enroll MAC mismatch for agent_id=%s from ip=%s: possible impersonation",
+                            name,
+                            observed_ip,
+                        )
+                        return {"agent_id": name, "enrolled": True, "rotate_queued": False, "reason": "mac_mismatch"}
+                state = agent_api_keys.get_row(engine, name)
+                if state is None:
+                    if not _env_flag("SCAN_AGENT_KEY_AUTO_MINT_NEW"):
+                        # Ring-key requests carry no proof of agent_id ownership:
+                        # a poll/heartbeat for an invented name self-seeds
+                        # scan_agents, so minting bound keys here would hand a
+                        # persistent identity to any ring-key holder. All fleet
+                        # agents already hold bound rows; enable the flag only
+                        # while onboarding genuinely new machines.
+                        logger.warning(
+                            "agent key mint denied for unbound agent_id=%s from ip=%s "
+                            "(SCAN_AGENT_KEY_AUTO_MINT_NEW off)",
+                            name,
+                            observed_ip,
+                        )
+                        return {
+                            "agent_id": name,
+                            "enrolled": False,
+                            "rotate_queued": False,
+                            "reason": "mint_disabled",
+                        }
+                    twin = conn.execute(
+                        sa.text("SELECT hostname FROM app.inventory_hosts WHERE lower(hostname)=:n LIMIT 1"),
+                        {"n": name.lower()},
+                    ).first()
+                    scan_key = agent_api_keys.generate_key()
+                    inv_key = agent_api_keys.generate_key() if twin else ""
+                    if not agent_api_keys.upsert_keypair(
+                        engine,
+                        name,
+                        hostname=str((twin[0] if twin else agent[1]) or "").strip(),
+                        scan_key=scan_key,
+                        inv_key=inv_key,
+                        source="auto",
+                        enroll_ip=observed_ip,
+                    ):
+                        return None
+                    logger.info(
+                        "agent key auto-enrolled for agent_id=%s (inventory_twin=%s)",
+                        name,
+                        bool(twin),
+                    )
+                    # Keys are never queued on the very first contact: a thief's
+                    # drive-by poll must not arm a delivery to their IP. The real
+                    # agent heartbeats continuously and queues on the next request.
+                    return {"agent_id": name, "enrolled": True, "rotate_queued": False, "reason": "enrolling"}
+
+                if version_key < tuple(min_rotate_version):
+                    # Too old to apply a rotation: re-minting here would only burn
+                    # the contested cap while the agent can never pick keys up.
+                    return {
+                        "agent_id": name,
+                        "enrolled": True,
+                        "rotate_queued": False,
+                        "reason": "agent_too_old",
+                    }
+                contested_count = int(state.get("contested_count") or 0)
+                generation = f"rotate-key-{name}" + (f"-c{contested_count}" if contested_count else "")
+                tasks = conn.execute(
+                    sa.text(
+                        "SELECT status, delivered_at, dedupe_key, ttl_at FROM scan_tasks "
+                        "WHERE agent_id=:n AND command='rotate_key' "
+                        "AND status IN ('queued','delivered','acknowledged','completed') "
+                        "ORDER BY created_at DESC"
+                    ),
+                    {"n": name},
+                ).fetchall()
+                completed = False
+                in_flight = False
+                stale_delivery = False
+                for t in tasks:
+                    status_v = str(t[0] or "")
+                    current_generation = str(t[2] or "") == generation
+                    if status_v == "completed":
+                        completed = completed or current_generation
+                        continue
+                    if int(t[3] or 0) <= now_ts:
+                        continue
+                    if status_v in ("queued", "acknowledged"):
+                        in_flight = True
+                    elif status_v == "delivered":
+                        delivered_at = int(t[1] or 0)
+                        if delivered_at and now_ts - delivered_at > self.ROTATE_APPLY_GRACE_SEC:
+                            if not current_generation:
+                                continue
+                            stale_delivery = True
+                        else:
+                            in_flight = True
+                # An older completed rotation must not revoke a pending replacement.
+                if in_flight:
+                    return None
+                contested = completed or stale_delivery
+                if contested:
+                    contested_count = int(state.get("contested_count") or 0)
+                    if contested_count >= self.MAX_CONTESTED_REMINT:
+                        logger.error(
+                            "agent key contested beyond re-mint cap for agent_id=%s (count=%s): "
+                            "manual intervention required",
+                            name,
+                            contested_count,
+                        )
+                        return {"agent_id": name, "enrolled": True, "contested": True, "rotate_queued": False, "reason": "contested_cap"}
+                    conn.execute(
+                        sa.text(
+                            "UPDATE scan_tasks SET status='expired', updated_at=:ts "
+                            "WHERE agent_id=:n AND command='rotate_key' "
+                            "AND status IN ('queued','delivered','acknowledged')"
+                        ),
+                        {"ts": now_ts, "n": name},
+                    )
+                    pair = agent_api_keys.remint_keypair(
+                        engine,
+                        name,
+                        hostname=str(state.get("hostname") or ""),
+                    )
+                    if not pair:
+                        return None
+                    contested_count += 1
+                    logger.warning(
+                        "agent key contested re-mint #%d for agent_id=%s: "
+                        "rotate task was %s but ring-key requests continue",
+                        contested_count,
+                        name,
+                        "completed" if completed else "stale-delivered",
+                    )
+                else:
+                    enroll_ip = _normalize_agent_ip(state.get("enroll_ip") or "")
+                    if (
+                        observed_ip
+                        and enroll_ip != observed_ip
+                        and agent_api_keys.enroll_guard_supported(engine)
+                    ):
+                        # First contact from a different observed IP: record it and
+                        # require one more consistent contact before arming delivery.
+                        agent_api_keys.update_enroll_ip(engine, name, observed_ip)
+                        return {
+                            "agent_id": name,
+                            "enrolled": True,
+                            "rotate_queued": False,
+                            "reason": "ip_changed" if enroll_ip else "ip_recorded",
+                        }
+                    pair = agent_api_keys.get_keypair(engine, name)
+                    if not pair:
+                        return None
+                dedupe = f"rotate-key-{name}" + (f"-c{contested_count}" if contested_count else "")
+                result = self.create_task(
+                    agent_id=name,
+                    command="rotate_key",
+                    payload={"scan_api_key": pair.get("scan_api_key", ""), "itinv_api_key": pair.get("itinv_api_key", "")},
+                    ttl_days=30,
+                    dedupe_key=dedupe,
+                )
+                return {
+                    "agent_id": name,
+                    "enrolled": True,
+                    "contested": contested,
+                    "rotate_queued": bool(result.get("id")),
+                    "task": result,
+                }
+        except Exception:
+            logger.warning("agent key auto-enroll failed for agent_id=%s", name, exc_info=True)
+            return None
+
+    def rotate_payload_for_agent(self, agent_id: str) -> Optional[Dict[str, str]]:
+        """Server-side rotate_key payload rebuilt from ``app.agent_api_keys``.
+
+        Caller-supplied key material is never trusted: an operator may only
+        trigger re-delivery of the pair the store already holds for the agent.
+        """
+        if not self.is_postgres or self._pg_engine is None:
+            return None
+        name = str(agent_id or "").strip()
+        if not name:
+            return None
+        from backend.appdb import agent_api_keys
+
+        pair = agent_api_keys.get_keypair(self._pg_engine, name)
+        if not pair or not pair.get("scan_api_key"):
+            return None
+        return {"scan_api_key": pair["scan_api_key"], "itinv_api_key": pair.get("itinv_api_key", "")}
+
     def _maintain_tasks(self, conn: sqlite3.Connection, now_ts: int) -> None:
         conn.execute(
             """
             UPDATE scan_tasks
-            SET status='expired', updated_at=?, completed_at=COALESCE(completed_at, ?)
+            SET status='expired', updated_at=?, completed_at=COALESCE(completed_at, ?),
+                payload_json=CASE WHEN command='rotate_key' THEN '{}' ELSE payload_json END
             WHERE status IN ('queued', 'delivered', 'acknowledged') AND ttl_at <= ?
             """,
             (now_ts, now_ts, now_ts),
@@ -2178,7 +2620,20 @@ class ScanStore:
             logger.warning("poll_tasks read-only probe failed; using the full path", exc_info=True)
             return True
 
-    def poll_tasks(self, *, agent_id: str, limit: int) -> List[Dict[str, Any]]:
+    def _rotate_delivery_ip(self, agent_id: str) -> str:
+        # ``rotate_key`` deliveries are pinned to the enrollment source IP: a
+        # ring-key thief polling from a foreign network holds the task queued.
+        if not self.is_postgres or self._pg_engine is None:
+            return ""
+        try:
+            from backend.appdb import agent_api_keys
+
+            state = agent_api_keys.get_row(self._pg_engine, agent_id)
+            return str((state or {}).get("enroll_ip") or "").strip()
+        except Exception:
+            return ""
+
+    def poll_tasks(self, *, agent_id: str, limit: int, source_ip: str = "") -> List[Dict[str, Any]]:
         aid = str(agent_id or "").strip()
         if not aid:
             return []
@@ -2190,6 +2645,17 @@ class ScanStore:
 
         def _write() -> List[Dict[str, Any]]:
             out: List[Dict[str, Any]] = []
+            enroll_ip: Optional[str] = None
+            enroll_ip_fetched = False
+
+            def _rotate_pin_ip() -> str:
+                nonlocal enroll_ip, enroll_ip_fetched
+                if not enroll_ip_fetched:
+                    enroll_ip_fetched = True
+                    enroll_ip = self._rotate_delivery_ip(aid)
+                return enroll_ip or ""
+
+            request_ip = _normalize_agent_ip(source_ip)
             with self._lock, self._connect() as conn:
                 if maintain:
                     self._maintain_tasks(conn, now_ts)
@@ -2212,6 +2678,14 @@ class ScanStore:
                 ).fetchall()
 
                 for row in rows:
+                    if str(row["command"] or "") == "rotate_key":
+                        pin = _rotate_pin_ip()
+                        if pin and (not request_ip or _normalize_agent_ip(pin) != request_ip):
+                            logger.warning(
+                                "rotate_key delivery held for agent_id=%s: poll IP does not match enroll IP",
+                                aid,
+                            )
+                            continue
                     attempts = int(row["attempt_count"] or 0) + 1
                     backoff = min(900, 30 * (2 ** min(attempts - 1, 5)))
                     next_attempt = now_ts + backoff
@@ -2331,6 +2805,16 @@ class ScanStore:
                     )
                     if isinstance(reconciled, dict):
                         returned_status = str(reconciled.get("status") or returned_status).strip().lower() or returned_status
+                if (
+                    str(row["command"] or "").strip().lower() == "rotate_key"
+                    and normalized in {"completed", "failed"}
+                ):
+                    # Key material must not outlive delivery: plaintext pairs in
+                    # scan_tasks payloads would leak usable credentials to a DB dump.
+                    conn.execute(
+                        "UPDATE scan_tasks SET payload_json='{}' WHERE id=?",
+                        (tid,),
+                    )
                 conn.commit()
             return {"task_id": tid, "status": returned_status}
 

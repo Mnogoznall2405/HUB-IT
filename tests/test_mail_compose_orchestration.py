@@ -69,6 +69,30 @@ def test_resolve_outbound_mailbox_id_uses_message_scope_fallbacks():
     )
 
 
+def test_prepare_outgoing_body_converts_plain_text_to_html_body():
+    result = compose.prepare_outgoing_body(
+        body="Первая строка\n\nВторая < строка",
+        signature="<p>Подпись</p>",
+        is_html=True,
+        has_reply_or_forward=False,
+    )
+
+    assert "Первая строка<br><br>Вторая &lt; строка" in result
+    assert 'data-mail-signature="true"' in result
+
+
+def test_prepare_outgoing_body_keeps_html_body_unchanged():
+    result = compose.prepare_outgoing_body(
+        body="<p>Уже разметка</p>",
+        signature="",
+        is_html=True,
+        has_reply_or_forward=False,
+    )
+
+    assert "<p>Уже разметка</p>" in result
+    assert "&lt;p&gt;" not in result
+
+
 def test_prepare_outgoing_body_places_html_signature_before_quote():
     result = compose.prepare_outgoing_body(
         body='<p>Hello</p><div class="quoted-mail"><p>Old</p></div>',
@@ -154,3 +178,24 @@ def test_build_outbound_send_plan_prepares_text_signature_and_requires_to_recipi
     assert plan.subject == "Subject"
     assert plan.body == "Body\n\nSignature"
     assert plan.draft_id == "draft-id"
+
+
+def test_build_outbound_send_plan_renders_html_signature_as_text_in_plain_message():
+    plan = compose.build_outbound_send_plan(
+        to=["user@example.com"],
+        subject="Subject",
+        body="Body",
+        signature=(
+            '<p style="margin:0 0 4px 0;line-height:1.35;">'
+            '<span style="color: rgb(31, 78, 121);">С уважением,</span></p>'
+            '<p style="margin:0 0 4px 0;line-height:1.35;">'
+            '<a href="mailto:kozlovskii.me@zsgp.ru">kozlovskii.me@zsgp.ru</a></p>'
+            "<p><br></p>"
+        ),
+        is_html=False,
+        mailbox_id_from_message=lambda value: "",
+        mailbox_scope_resolver=lambda *items: "",
+    )
+
+    assert plan.body == "Body\n\nС уважением,\nkozlovskii.me@zsgp.ru"
+    assert "<" not in plan.body

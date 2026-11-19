@@ -17,7 +17,7 @@ import {
 } from '../api/mailConfigApi';
 import { formatApiError } from '../api/formatError';
 import { listMailboxes, type MailMailbox } from '../api/mailMailboxesApi';
-import { readNativeCollectionSnapshot, writeNativeCollectionSnapshot } from '../cache/nativeSnapshotCache';
+import { nativeCollectionSignature, readNativeCollectionSnapshot, writeNativeCollectionSnapshot } from '../cache/nativeSnapshotCache';
 import { hubRealtimeSocket } from '../realtime/hubRealtimeSocket';
 import { applyPendingMailReadOverrides } from './nativeMailReadOverrides';
 import { parseNativeMailSearchQuery } from './nativeMailModel';
@@ -31,6 +31,8 @@ import { publishNativeMailUnreadDelta, subscribeNativeMailUnread } from './nativ
 
 export const MAIL_PAGE_SIZE = 50;
 export const MAIL_METADATA_TTL_MS = 60_000;
+// Folder membership changes often (moves, new mail) — 60 s is too stale.
+export const MAIL_FOLDER_TREE_TTL_MS = 15_000;
 export const MAIL_FOCUS_RELOAD_GUARD_MS = 250;
 
 export type NativeMailAdvancedFilters = {
@@ -103,6 +105,7 @@ export function useMailList(options: {
   const lastFocusLoadRef = useRef<{ key: string; pending: boolean; finishedAt: number } | null>(null);
   const loadedScopeRef = useRef('');
   const metadataFreshRef = useRef({ scope: '', savedAt: 0 });
+  const folderTreeFreshRef = useRef({ scope: '', savedAt: 0 });
   const onScopeResetRef = useRef(onScopeReset);
   onScopeResetRef.current = onScopeReset;
   const listScope = JSON.stringify([userId, mailboxId, folder, debouncedQuery, unreadOnly, hasAttachments, advancedFilters, view]);
@@ -140,11 +143,14 @@ export function useMailList(options: {
       limit: MAIL_PAGE_SIZE,
       offset,
     };
-    const signature = JSON.stringify({ ...filters, offset: 0, view });
+    const signature = nativeCollectionSignature({ ...filters, view });
     const owner = Number(userId || 0);
     const dataScope = `${owner}:${signature}`;
     let cached = loadedScopeRef.current === dataScope;
     if (reset && !cached) {
+      // The scope changed: drop the selection whether a snapshot fills the
+      // list or it stays empty — bulk actions must never hit hidden messages.
+      onScopeResetRef.current?.();
       let snapshotHit = false;
       if (owner) {
         const snapshot = await readNativeCollectionSnapshot<NativeMailInboxSnapshot>(
@@ -174,7 +180,6 @@ export function useMailList(options: {
         setItems([]);
         setTotal(0);
         setHasMore(false);
-        onScopeResetRef.current?.();
       }
     }
     if (offlineMode) {
@@ -193,11 +198,15 @@ export function useMailList(options: {
         catch { warnings.push(label); return null; }
       };
       const metadataScope = `${owner}:${mailboxId}`;
+      const metadataAge = Date.now() - metadataFreshRef.current.savedAt;
+      const folderTreeAge = Date.now() - folderTreeFreshRef.current.savedAt;
       const reloadMetadata = reset && (refresh || metadataFreshRef.current.scope !== metadataScope
-        || Date.now() - metadataFreshRef.current.savedAt >= MAIL_METADATA_TTL_MS);
+        || metadataAge >= MAIL_METADATA_TTL_MS);
+      const reloadFolderTree = reset && (refresh || folderTreeFreshRef.current.scope !== metadataScope
+        || folderTreeAge >= MAIL_FOLDER_TREE_TTL_MS);
       const metadata = Promise.all([
         reset ? optional(getMailFolderSummary(mailboxId), 'Не обновлены счётчики папок.') : Promise.resolve(null),
-        reloadMetadata ? optional(getMailFolderTree(mailboxId), 'Не обновлён список папок.') : Promise.resolve(null),
+        reloadFolderTree ? optional(getMailFolderTree(mailboxId), 'Не обновлён список папок.') : Promise.resolve(null),
         reset && mailboxes.length === 0 ? optional(listMailboxes(true), 'Не обновлён список почтовых ящиков.') : Promise.resolve(null),
         reloadMetadata ? optional(getNativeMailPreferences(), 'Не обновлены настройки отображения.') : Promise.resolve(null),
       ]);
@@ -219,7 +228,10 @@ export function useMailList(options: {
       setLoadingMore(false);
       const [summaryResult, folderTreeResult, mailboxesResult, viewPreferencesResult] = await metadata;
       if (requestId !== requestRef.current) return;
-      if (folderTreeResult && viewPreferencesResult) metadataFreshRef.current = { scope: metadataScope, savedAt: Date.now() };
+      // Each metadata source keeps its own TTL: a successful tree response
+      // refreshes only the tree ref, preferences only the preferences ref.
+      if (folderTreeResult) folderTreeFreshRef.current = { scope: metadataScope, savedAt: Date.now() };
+      if (viewPreferencesResult) metadataFreshRef.current = { scope: metadataScope, savedAt: Date.now() };
       const nextSummary = summaryResult
         ? applyPendingUnreadToSummary(mailboxId, summaryResult)
         : summary;
@@ -272,6 +284,14 @@ export function useMailList(options: {
     }
   }, [advancedFilters, debouncedQuery, folder, folderTree, hasAttachments, items.length, mailboxId, mailViewPreferences, mailboxes, offlineMode, summary, unreadOnly, userId, view]);
 
+  // Only real navigation focus (or a user/mailbox switch) invalidates the
+  // metadata TTLs — a search typing change must not refetch tree/preferences.
+  useFocusEffect(useCallback(() => {
+    metadataFreshRef.current = { scope: '', savedAt: 0 };
+    folderTreeFreshRef.current = { scope: '', savedAt: 0 };
+    return undefined;
+  }, [userId, mailboxId]));
+
   useFocusEffect(useCallback(() => {
     if (!allowed) return undefined;
     const key = JSON.stringify({ advancedFilters, debouncedQuery, folder, hasAttachments, mailboxId, unreadOnly, view, offlineMode, userId });
@@ -306,44 +326,56 @@ export function useMailList(options: {
     };
   }, [allowed, load, offlineMode]);
 
+  // summary/folderTree show counters of THIS mailbox only: a delta belonging
+  // to another mailbox (e.g. marked read on a different account's screen)
+  // must not skew them. The mailboxes list self-filters by id regardless.
+  const isCurrentMailboxScope = useCallback((scopedMailboxId: string) => (
+    !scopedMailboxId || !mailboxId || String(mailboxId) === String(scopedMailboxId)
+  ), [mailboxId]);
+
   const applyUnreadDeltaLocal = useCallback((delta: number, targetFolder: string, scopedMailboxId: string) => {
     if (!delta) return;
-    setSummary((current) => ({
-      ...current,
-      [targetFolder]: {
-        ...(current[targetFolder] || {}),
-        unread: Math.max(0, Number(current[targetFolder]?.unread || 0) + delta),
-      },
-    }));
-    setFolderTree((current) => adjustMailFolderTreeUnread(current, targetFolder, delta));
+    if (isCurrentMailboxScope(scopedMailboxId)) {
+      setSummary((current) => ({
+        ...current,
+        [targetFolder]: {
+          ...(current[targetFolder] || {}),
+          unread: Math.max(0, Number(current[targetFolder]?.unread || 0) + delta),
+        },
+      }));
+      setFolderTree((current) => adjustMailFolderTreeUnread(current, targetFolder, delta));
+    }
     if (targetFolder === 'inbox') {
       setMailboxes((current) => current.map((mailbox) => String(mailbox.id) === scopedMailboxId
         ? { ...mailbox, unread_count: Math.max(0, Number(mailbox.unread_count || 0) + delta) }
         : mailbox));
     }
-  }, []);
+  }, [isCurrentMailboxScope]);
 
   const applyUnreadAbsoluteLocal = useCallback((targetFolder: string, scopedMailboxId: string, value: number) => {
     const unread = Math.max(0, Math.trunc(Number(value)) || 0);
-    setSummary((current) => ({
-      ...current,
-      [targetFolder]: { ...(current[targetFolder] || {}), unread },
-    }));
-    setFolderTree((current) => setMailFolderTreeUnread(current, targetFolder, unread));
+    if (isCurrentMailboxScope(scopedMailboxId)) {
+      setSummary((current) => ({
+        ...current,
+        [targetFolder]: { ...(current[targetFolder] || {}), unread },
+      }));
+      setFolderTree((current) => setMailFolderTreeUnread(current, targetFolder, unread));
+    }
     if (targetFolder === 'inbox') {
       setMailboxes((current) => current.map((mailbox) => (!scopedMailboxId || String(mailbox.id) === scopedMailboxId)
         ? { ...mailbox, unread_count: unread }
         : mailbox));
     }
-  }, []);
+  }, [isCurrentMailboxScope]);
 
-  const applyUnreadDelta = useCallback((delta: number, scopedMailboxId: string) => {
+  const applyUnreadDelta = useCallback((delta: number, scopedMailboxId: string, targetFolder?: string) => {
     if (!delta) return;
-    applyUnreadDeltaLocal(delta, folder, scopedMailboxId);
-    if (folder === 'inbox') {
-      publishNativeMailUnreadDelta(delta, { mailboxId: scopedMailboxId, folder }, unreadSourceRef.current);
+    const effectiveFolder = targetFolder || folder;
+    applyUnreadDeltaLocal(delta, effectiveFolder, scopedMailboxId);
+    if (effectiveFolder === 'inbox') {
+      publishNativeMailUnreadDelta(delta, { mailboxId: scopedMailboxId, folder: effectiveFolder }, unreadSourceRef.current);
     } else {
-      stageNativeMailUnreadDelta(scopedMailboxId, folder, delta);
+      stageNativeMailUnreadDelta(scopedMailboxId, effectiveFolder, delta);
     }
   }, [applyUnreadDeltaLocal, folder]);
 

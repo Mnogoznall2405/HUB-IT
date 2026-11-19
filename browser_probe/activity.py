@@ -200,7 +200,10 @@ class ActivityTracker:
             self._accrue(0.0, 0.0, 0.0, delta, "")
             return self._drain()
 
-        idle = get_idle_seconds()
+        idle = get_idle_seconds(on_error=None)
+        if idle is None:
+            # Sensor read failed: accrue nothing rather than fabricate active seconds.
+            return self._drain()
         # On the "time since last input" axis this tick covers [idle-delta, idle].
         hi = idle
         lo = idle - delta

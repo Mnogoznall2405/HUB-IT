@@ -210,6 +210,10 @@ export function NativeTaskAnalyticsScreen() {
   const requestRef = useRef(0);
   const [filters, setFilters] = useState<AnalyticsFilters>(initialFilters);
   const [applied, setApplied] = useState<AnalyticsFilters>(initialFilters);
+  // Reconnect/focus reloads must repeat the last applied filter set — a stale
+  // initial default would silently re-scope the charts to 30 days while the
+  // filter chips still show the user's choice.
+  const appliedRef = useRef<AnalyticsFilters>(applied);
   const [payload, setPayload] = useState<TaskAnalyticsPayload | null>(null);
   const [projects, setProjects] = useState<TaskProject[]>([]);
   const [objects, setObjects] = useState<TaskObject[]>([]);
@@ -232,6 +236,7 @@ export function NativeTaskAnalyticsScreen() {
       if (lease !== requestRef.current) return;
       setPayload(next);
       setApplied(nextFilters);
+      appliedRef.current = nextFilters;
     } catch (cause) {
       if (lease !== requestRef.current) return;
       setError(formatApiError(cause, 'Не удалось загрузить аналитику задач.'));
@@ -243,8 +248,7 @@ export function NativeTaskAnalyticsScreen() {
   useEffect(() => {
     if (!allowed || offlineMode) { setLoading(false); return; }
     let active = true;
-    const current = initialFilters();
-    void load(current);
+    void load(appliedRef.current);
     void Promise.all([getTaskProjects(), getTaskObjects(), searchTaskAssignees('', 100)])
       .then(([nextProjects, nextObjects, nextParticipants]) => {
         if (!active) return;

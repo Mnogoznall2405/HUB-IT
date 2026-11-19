@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TypeVar
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -99,6 +99,21 @@ def _create_all_app_metadata(connection_or_engine) -> None:
     )
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default) or default).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _async_commit_enabled() -> bool:
+    """Process-wide async commit opt-in (APP_DB_ASYNC_COMMIT=1 in PM2 env).
+
+    Only telemetry-class workers set it (monitoring/preview/my-files/mail):
+    their commits stop waiting for WAL fsync, so datastore stalls no longer
+    freeze them. At worst a crash loses sub-second acknowledged commits,
+    which those writers tolerate. Auth/chat/document paths never set it.
+    """
+    return _env_flag("APP_DB_ASYNC_COMMIT")
+
+
 def is_app_database_configured() -> bool:
     return bool(str(config.app_db.database_url or "").strip())
 
@@ -146,6 +161,8 @@ def _build_engine(database_url: str):
         "keepalives_count": int(os.getenv("APP_DB_KEEPALIVES_COUNT", "6") or 6),
         "connect_timeout": int(os.getenv("APP_DB_CONNECT_TIMEOUT", "10") or 10),
     }
+    if _async_commit_enabled():
+        engine_kwargs["connect_args"]["options"] = "-c synchronous_commit=off"
     engine = create_engine(database_url, **engine_kwargs)
     attach_slow_sql_logging(engine, source="app")
     return engine
@@ -182,8 +199,15 @@ def get_app_session_factory(database_url: str | None = None):
 
 
 @contextmanager
-def app_session(database_url: str | None = None) -> Session:
+def app_session(database_url: str | None = None, *, relax_commit: bool = False) -> Session:
     session = get_app_session_factory(database_url)()
+    if relax_commit and session.get_bind().dialect.name == "postgresql":
+        # Telemetry-class writes (DLP/probe stores): commit does not wait for
+        # WAL fsync, so a stalling datastore cannot freeze the ingest path.
+        # after_begin re-arms it for every transaction on this session.
+        @event.listens_for(session, "after_begin")
+        def _async_commit(sess, _transaction, connection):
+            connection.execute(text("SET LOCAL synchronous_commit = off"))
     try:
         yield session
         session.commit()

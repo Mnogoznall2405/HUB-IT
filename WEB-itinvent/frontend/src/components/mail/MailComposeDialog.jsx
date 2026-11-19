@@ -625,6 +625,8 @@ function ComposerContent({
             <Button
               data-testid="mail-compose-close-action"
               onClick={onClose}
+              disabled={composeSending}
+              title={composeSending ? 'Дождитесь завершения отправки' : undefined}
               sx={{
                 minWidth: 0,
                 px: 0.6,
@@ -670,6 +672,8 @@ function ComposerContent({
           <Button
             data-testid="mail-compose-close-action"
             onClick={onClose}
+            disabled={composeSending}
+            title={composeSending ? 'Дождитесь завершения отправки' : undefined}
             sx={{
               minWidth: 0,
               px: 0.4,

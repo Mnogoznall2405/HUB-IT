@@ -1,4 +1,4 @@
-import apiClient, { getCachedGet } from './client';
+import apiClient, { getCachedGet } from './http';
 
 const MAIL_UNREAD_COUNT_STALE_TIME_MS = 90_000;
 

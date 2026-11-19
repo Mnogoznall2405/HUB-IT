@@ -118,6 +118,10 @@ export function useThreadRealtime({
       logChatSocketState(nextStatus);
       setStatus(nextStatus);
       if (nextStatus !== 'connected') return;
+      // AppLifecycle disconnects with clearSubscriptions when the Chat tab is
+      // left: this screen stays mounted, so the room subscription must be
+      // re-armed on every reconnect, not only in the mount effect.
+      chatSocket.subscribeConversation(conversationId);
       if (connectedOnceRef.current) void syncLatestMessages();
       else connectedOnceRef.current = true;
     });
@@ -147,7 +151,14 @@ export function useThreadRealtime({
           try { return mergeMessages(current, message, userId); } finally { done(); }
         });
       }
-      if (!detached && nearBottomRef.current) {
+      // A stacked (non-top) thread screen still receives room events: without
+      // the active-conversation check it would mark messages read while the
+      // user cannot actually see them.
+      if (
+        !detached
+        && nearBottomRef.current
+        && getActiveNativeChatConversationId() === conversationId
+      ) {
         requestBottomAnchor();
         markRead(message);
       }

@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { WAREHOUSE_1C_QUERY_TIMEOUT_MS } from './warehouse1c';
 
 export const warehouse1cItRequestsAPI = {

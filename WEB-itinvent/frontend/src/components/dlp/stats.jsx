@@ -48,6 +48,24 @@ export function GroupStatChip({ label, count, color }) {
   );
 }
 
+// Same pill as GroupStatChip but for preformatted time text ("ввод/пауза 3ч 12м"):
+// a bordered chip keeps the duration from merging with neighbouring metrics.
+export function GroupTimeChip({ label, color, icon }) {
+  return (
+    <Chip
+      size="small"
+      variant="outlined"
+      color={color}
+      icon={icon}
+      label={label}
+      sx={{
+        height: 22,
+        '& .MuiChip-label': { px: 0.75, fontVariantNumeric: 'tabular-nums' },
+      }}
+    />
+  );
+}
+
 export function MiniStat({ label, value, icon, color = 'primary' }) {
   return (
     <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>

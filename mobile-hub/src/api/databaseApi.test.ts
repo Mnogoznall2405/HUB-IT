@@ -27,6 +27,7 @@ import {
   searchEquipmentOwners,
   switchDatabase,
   submitEquipmentTransfer,
+  transferEquipmentToDatabase,
   updateConsumableQuantity,
   updateEquipment,
   UPLOADED_ACT_PARSE_TIMEOUT_MS,
@@ -359,6 +360,49 @@ it('submits a stable background transfer contract and normalizes generated acts'
     acts: [{ act_id: 'act-1', file_type: 'pdf' }],
   });
   expect(client.post).toHaveBeenCalledWith('/equipment/transfer', expect.objectContaining({ operation_id: 'mobile-operation-1' }), { headers: { 'X-Database-ID': 'OBJ' } });
+});
+
+it('posts the cross-database transfer contract with the long timeout and normalizes the report', async () => {
+  client.post.mockResolvedValueOnce({
+    data: {
+      target_db: 'MSK',
+      act_doc_no: '9001',
+      summary: { ok: 2, total: 2, failed: 0 },
+      items: [{ inv_no: 'INV-1', inv_no_old: 'INV-1', inv_no_new: 'T-1', status: 'ok' }],
+      acts: [{ act_id: '5', db_id: 'MSK', file_no: 41, doc_no: 9001, file_name: 'act-9001.pdf' }],
+      created_refs: ['сотрудник «Петров П.П.» -> 42'],
+      task: { id: 'task-1', title: 'Принять технику в базе MSK' },
+    },
+  });
+  await expect(transferEquipmentToDatabase({
+    inv_nos: [' INV-1 ', '', 'INV-2'],
+    target_db: ' MSK ',
+    new_owner_name: 'Петров П.П.',
+    target_branch_no: 3,
+    target_loc_no: null,
+    comment: 'через мобильное приложение',
+    operation_id: 'op-1',
+  }, 'ITINVENT')).resolves.toMatchObject({
+    target_db: 'MSK',
+    act_doc_no: '9001',
+    summary: { ok: 2, total: 2, failed: 0 },
+    items: [{ inv_no_old: 'INV-1', inv_no_new: 'T-1', status: 'ok' }],
+    acts: [{ file_no: 41, db_id: 'MSK' }],
+    task_id: 'task-1',
+  });
+  expect(client.post).toHaveBeenCalledWith('/equipment/transfer/to-db', {
+    operation_id: 'op-1',
+    inv_nos: ['INV-1', 'INV-2'],
+    target_db: 'MSK',
+    target_owner_no: null,
+    new_owner_name: 'Петров П.П.',
+    new_owner_dept: null,
+    target_branch_no: 3,
+    target_loc_no: null,
+    task_assignee_user_ids: null,
+    task_due_at: null,
+    comment: 'через мобильное приложение',
+  }, { headers: { 'X-Database-ID': 'ITINVENT' }, timeout: 180_000 });
 });
 
 it('uploads a PDF to the synchronous recognition contract with the selected database', async () => {

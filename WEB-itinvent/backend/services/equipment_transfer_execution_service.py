@@ -243,6 +243,7 @@ def execute_equipment_transfer(
                 new_employee_email=target_employee_email,
                 db_id=db_id,
                 operation_id=operation_id or None,
+                created_by_user_id=_user_attr(current_user, "id"),
             )
         except TransferActGenerationError as exc:
             raise TransferActGenerationError(
@@ -292,6 +293,30 @@ def execute_equipment_transfer(
                 logger.exception("Failed to create transfer act upload reminder")
                 reminder_result = _default_reminder_result()
                 reminder_result["warning"] = f"Напоминание о загрузке акта не создано: {exc}"
+            if reminder_result.get("created") and checkpoint is not None:
+                checkpoint(
+                    {
+                        "success_count": len(transferred),
+                        "failed_count": 0,
+                        "transferred": transferred,
+                        "failed": [],
+                        "retry_inv_nos": [],
+                        "acts": acts,
+                        "_act_records": get_act_records(
+                            [str(act.get("act_id") or "").strip() for act in acts]
+                        ),
+                        "upload_reminder_created": True,
+                        "upload_reminder_task_id": reminder_result.get("task_id"),
+                        "upload_reminder_id": reminder_result.get("reminder_id"),
+                        "upload_reminder_warning": reminder_result.get("warning"),
+                        "upload_reminder_controller_username": reminder_result.get("controller_username"),
+                        "upload_reminder_controller_fallback_used": bool(
+                            reminder_result.get("controller_fallback_used")
+                        ),
+                        "execution_stage": "reminder_created",
+                        "one_c_sync_state": "not_requested",
+                    }
+                )
 
     result = {
         "success_count": len(transferred),

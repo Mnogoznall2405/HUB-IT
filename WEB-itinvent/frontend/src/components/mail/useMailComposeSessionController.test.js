@@ -47,6 +47,22 @@ describe('useMailComposeSessionController', () => {
     });
   });
 
+  it('keeps the current session instead of silently replacing it on a repeated openCompose', () => {
+    const { result } = renderComposeHook();
+
+    act(() => {
+      result.current.openCompose();
+    });
+    const firstSession = result.current.composeSession;
+    expect(result.current.composeOpen).toBe(true);
+
+    act(() => {
+      result.current.openCompose();
+    });
+
+    expect(result.current.composeSession).toBe(firstSession);
+  });
+
   it('restores a stored draft instead of a blank new message', () => {
     const storage = createMemoryStorage({
       'mail_compose_draft_v2:mailbox-primary': JSON.stringify({

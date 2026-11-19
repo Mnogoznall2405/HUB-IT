@@ -14,6 +14,9 @@ import {
 
 const EQUIPMENT_CATALOG_MANIFEST_KIND = 'equipment-catalog-shards-v1';
 const EQUIPMENT_CATALOG_SHARD_KIND = 'equipment-catalog-shard-v1';
+// Card-level refreshes patch single catalog rows through a small overlay
+// instead of re-sharding the whole catalog on every view.
+const EQUIPMENT_CATALOG_PATCH_LIMIT = 200;
 // Keep AES/base64 and file-system bridge calls well below the generic 2 MiB
 // ceiling. Android briefly holds plaintext and ciphertext at the same time.
 const EQUIPMENT_CATALOG_SHARD_TARGET_BYTES = 512 * 1024;
@@ -98,6 +101,12 @@ function catalogScope(databaseId: string): string {
 
 function shardScope(databaseId: string, revision: string, index: number): string {
   return `database-catalog-shard-${hashScopePart(databaseId)}-${revision}-${index}`;
+}
+
+type EquipmentCatalogPatchMap = Record<string, { record: EquipmentRecord; savedAt: number }>;
+
+function patchScope(databaseId: string): string {
+  return `database-catalog-patch-${hashScopePart(databaseId)}`;
 }
 
 function isCatalogManifest(value: unknown, databaseId: string): value is EquipmentCatalogManifest {
@@ -274,6 +283,18 @@ async function readCatalogFromDisk(
     return null;
   }
 
+  const patches = (await readNativeSnapshot<EquipmentCatalogPatchMap>(
+    patchScope(normalizedId) as NativeSnapshotScope,
+    userId,
+  ))?.data;
+  if (context.dropStaleResults && !stillCurrent()) return null;
+  if (patches) {
+    for (let index = 0; index < equipment.length; index += 1) {
+      const patch = patches[normalizedInventoryNumber(equipment[index].inv_no)];
+      if (patch?.record) equipment[index] = patch.record;
+    }
+  }
+
   const result: NativeSnapshot<NativeEquipmentCatalogSnapshot> = {
     savedAt: root.savedAt,
     data: {
@@ -377,6 +398,43 @@ export async function findNativeEquipmentCatalogItem(
   ) ?? null;
 }
 
+export async function patchNativeEquipmentCatalogItem(
+  userId: number,
+  databaseId: string,
+  record: EquipmentRecord,
+): Promise<boolean> {
+  const normalizedId = normalizedDatabaseId(databaseId);
+  const key = normalizedInventoryNumber(record?.inv_no);
+  if (!normalizedId || !key || !Number.isInteger(userId) || userId <= 0) return false;
+  const scope = patchScope(normalizedId) as NativeSnapshotScope;
+  const existing = (await readNativeSnapshot<EquipmentCatalogPatchMap>(scope, userId))?.data;
+  const map: EquipmentCatalogPatchMap = { ...(existing || {}) };
+  map[key] = { record, savedAt: Date.now() };
+  const keys = Object.keys(map);
+  if (keys.length > EQUIPMENT_CATALOG_PATCH_LIMIT) {
+    keys.sort((a, b) => Number(map[a]?.savedAt || 0) - Number(map[b]?.savedAt || 0));
+    for (const staleKey of keys.slice(0, keys.length - EQUIPMENT_CATALOG_PATCH_LIMIT)) {
+      delete map[staleKey];
+    }
+  }
+  const stored = await writeNativeSnapshot(scope, userId, map);
+  if (!stored) return false;
+  // Fold the patch into the live memory slot so readers do not re-read shards.
+  const slot = memorySlot;
+  if (slot && slot.userId === userId && slot.databaseId === normalizedId) {
+    const index = slot.snapshot.data.equipment.findIndex(
+      (item) => normalizedInventoryNumber(item.inv_no) === key,
+    );
+    if (index >= 0) {
+      const equipment = [...slot.snapshot.data.equipment];
+      equipment[index] = record;
+      slot.snapshot = { ...slot.snapshot, data: { ...slot.snapshot.data, equipment } };
+      slot.index.set(key, record);
+    }
+  }
+  return true;
+}
+
 export async function writeNativeEquipmentCatalogSnapshot(
   userId: number,
   databaseId: string,
@@ -469,5 +527,7 @@ export async function writeNativeEquipmentCatalogSnapshot(
   if (previous && isCatalogManifest(previous.data, normalizedId)) {
     await cleanupScopes(userId, previous.data.shards.map((shard) => shard.scope));
   }
+  // A full catalog rewrite supersedes every pending row patch.
+  await deleteEncryptedNativeSnapshot(patchScope(normalizedId), userId).catch(() => undefined);
   return true;
 }

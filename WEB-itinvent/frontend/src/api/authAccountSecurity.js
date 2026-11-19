@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const authAccountSecurityAPI = {
   getCurrentUser: async (options = {}) => {
@@ -18,13 +18,13 @@ export const authAccountSecurityAPI = {
     return response.data;
   },
 
-  regenerateBackupCodes: async () => {
-    const response = await apiClient.post('/auth/backup-codes/regenerate');
+  regenerateBackupCodes: async (payload) => {
+    const response = await apiClient.post('/auth/backup-codes/regenerate', payload);
     return response.data;
   },
 
-  resetOwnTwoFactor: async () => {
-    const response = await apiClient.post('/auth/reset-2fa-self');
+  resetOwnTwoFactor: async (payload) => {
+    const response = await apiClient.post('/auth/reset-2fa-self', payload);
     return response.data;
   },
 };

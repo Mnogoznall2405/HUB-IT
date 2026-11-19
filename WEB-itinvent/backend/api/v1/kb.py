@@ -258,6 +258,8 @@ async def upload_attachment(
         item = await run_in_threadpool(kb_service.add_attachment, article_id=article_id, upload=file, actor_username=actor, current_user=_user_context(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     if not item:
         raise HTTPException(status_code=404, detail="Article not found")
     return item

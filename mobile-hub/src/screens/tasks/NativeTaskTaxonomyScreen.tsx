@@ -31,7 +31,9 @@ function draftFrom(item: TaskProject | TaskObject): TaxonomyDraft {
     name: String(item.name || ''),
     code: String(item.code || ''),
     description: String(item.description || ''),
-    isActive: item.is_active !== false,
+    // Backend stores is_active as INTEGER 0/1 — `0 !== false` is true, so
+    // strict-boolean checks silently re-enable disabled items on save.
+    isActive: item.is_active === undefined || item.is_active === null ? true : Boolean(item.is_active),
   };
 }
 

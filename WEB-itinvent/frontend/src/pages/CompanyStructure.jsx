@@ -88,6 +88,8 @@ const CompanyStructure = () => {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
   const { hasPermission } = useAuth();
   const { notifySuccess, notifyApiError } = useNotification();
@@ -155,7 +157,7 @@ const CompanyStructure = () => {
       const nextBlock = pathBlock || requestedBlock || blocks[0] || null;
       const fallback = nextBlock?.id ? String(nextBlock.id) : (items[0]?.id ? String(items[0].id) : '');
       const nextId = requested && findNodeById(items, requested) ? requested : fallback;
-      const nextView = isMobile ? 'focus' : urlState.view;
+      const nextView = isMobileRef.current ? 'focus' : urlState.view;
       selectedIdRef.current = nextId;
       setSelectedId(nextId);
       setBlockId(String(nextBlock?.id || ''));
@@ -173,7 +175,7 @@ const CompanyStructure = () => {
     } finally {
       if (!background) setLoading(false);
     }
-  }, [isMobile, notifyApiError, updateUrlState]);
+  }, [notifyApiError, updateUrlState]);
 
   useEffect(() => {
     void loadTree();

@@ -169,17 +169,21 @@ export async function setNativeChatDraft(
   // storage queue — a draft autosave must not block outbox put/claim. The pin
   // covers the whole operation: while the metadata commit waits in the queue,
   // an overtaking file-reference check must not reclaim the fresh copies.
-  const unpinSource = context?.files?.length ? pinNativeChatDraftFiles(context.files) : null;
+  const saveGeneration = generation;
+  let unpinSource = context?.files?.length ? pinNativeChatDraftFiles(context.files) : null;
   let storedFiles: NativePickedFile[] | null = null;
   let unpinCopies: (() => void) | null = null;
   try {
     storedFiles = context?.files?.length
       ? await persistNativeChatDraftFiles(normalizedUserId, context.files)
       : null;
+    if (saveGeneration !== generation) throw new Error('Сеанс сохранения черновика завершён');
     if (storedFiles) unpinCopies = pinNativeChatDraftFiles(storedFiles);
     const storedContext = storedFiles ? { ...context, files: storedFiles } : context;
     const committed = await mutateDrafts(async () => {
+      if (saveGeneration !== generation) return false;
       const stored = await loadDrafts();
+      if (saveGeneration !== generation) return false;
       const candidates = stored.filter((item) => item.userId === normalizedUserId && item.conversationId === normalizedConversationId)
         .flatMap((item) => item.context?.files?.map((file) => file.uri) || []);
       // Keep the previous draft on disk until the replacement copy + metadata write both succeed.
@@ -206,12 +210,21 @@ export async function setNativeChatDraft(
       // copies it just made are unreferenced; reclaim them now, not at logout.
       // Shared copies (the newer write reused them via the copies cache) are
       // still referenced by its pin, so deleteUnreferencedChatFiles skips them.
+      unpinCopies?.();
+      unpinCopies = null;
+      unpinSource?.();
+      unpinSource = null;
       const uris = storedFiles.map((file) => file.uri);
       await mutateDrafts(() => deleteUnreferencedChatFiles(uris)).catch(() => undefined);
     }
   } catch (error) {
-    // A rejected/failed commit leaves the copies it just made orphaned.
+    // A rejected/failed commit leaves the copies it just made orphaned. Release
+    // this save's pins first or the reference check treats them as still in use.
     if (storedFiles?.length) {
+      unpinCopies?.();
+      unpinCopies = null;
+      unpinSource?.();
+      unpinSource = null;
       const uris = storedFiles.map((file) => file.uri);
       await mutateDrafts(() => deleteUnreferencedChatFiles(uris)).catch(() => undefined);
     }

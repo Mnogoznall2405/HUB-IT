@@ -12,6 +12,8 @@ public sealed class SingleInstanceCoordinator : IDisposable
     private const string DefaultApplicationId = "HUBIT.Desktop";
     private const string ActivateCommand = "ACTIVATE";
     private const string OpenDownloadsCommand = "OPEN_DOWNLOADS";
+    private const string NativeHubCommand = "NATIVE_HUB";
+    private const string NativeHubRoutePrefix = "NATIVE_HUB_ROUTE:";
     private const string ShareCommandPrefix = "SHARE:";
     private const string RouteCommandPrefix = "ROUTE:";
     private const int MaximumCommandLength = DesktopDeepLinkParser.MaximumInputLength + 16;
@@ -202,6 +204,21 @@ public sealed class SingleInstanceCoordinator : IDisposable
             return OpenDownloadsCommand;
         }
 
+        if (request.OpenNativeHub)
+        {
+            if (request.Route is null)
+            {
+                return NativeHubCommand;
+            }
+
+            if (DesktopDeepLinkParser.TryParseInternalRoute(request.Route, out var nativeRoute))
+            {
+                return NativeHubRoutePrefix + nativeRoute;
+            }
+
+            return NativeHubCommand;
+        }
+
         if (!request.OpenDownloads
             && DesktopDeepLinkParser.TryParseInternalRoute(request.Route, out var route))
         {
@@ -227,6 +244,12 @@ public sealed class SingleInstanceCoordinator : IDisposable
             return true;
         }
 
+        if (string.Equals(command, NativeHubCommand, StringComparison.Ordinal))
+        {
+            request = DesktopLaunchRequest.Default with { OpenNativeHub = true };
+            return true;
+        }
+
         if (command is not null
             && command.StartsWith(ShareCommandPrefix, StringComparison.Ordinal)
             && command.Length <= MaximumCommandLength)
@@ -244,6 +267,17 @@ public sealed class SingleInstanceCoordinator : IDisposable
             }
 
             return false;
+        }
+
+        if (command is not null
+            && command.StartsWith(NativeHubRoutePrefix, StringComparison.Ordinal)
+            && command.Length <= MaximumCommandLength
+            && DesktopDeepLinkParser.TryParseInternalRoute(
+                command[NativeHubRoutePrefix.Length..],
+                out var nativeRoute))
+        {
+            request = DesktopLaunchRequest.Default with { OpenNativeHub = true, Route = nativeRoute };
+            return true;
         }
 
         if (command is null

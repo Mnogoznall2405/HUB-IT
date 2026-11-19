@@ -564,6 +564,16 @@ export async function getWarehouse1CCatalogStatus(options: { signal?: AbortSigna
   return normalizeWarehouse1CCatalogStatus(response.data);
 }
 
+// Admin-only server endpoint: a full 1C catalog export can take minutes, so
+// the request keeps the same long timeout the web client uses (610 s).
+export async function syncWarehouse1CCatalog(options: { signal?: AbortSignal } = {}): Promise<Warehouse1CCatalogStatus> {
+  const response = await apiClient.post('/warehouse-1c/catalog/sync', undefined, {
+    signal: options.signal,
+    timeout: 610_000,
+  });
+  return normalizeWarehouse1CCatalogStatus(response.data);
+}
+
 export async function searchWarehouse1CCatalog(options: {
   kind: Warehouse1CCatalogKind;
   query: string;

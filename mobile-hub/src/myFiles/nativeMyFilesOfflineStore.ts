@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import type { MyFileRecord } from '../api/myFilesApi';
 import {
   deleteEncryptedNativeSnapshot,
+  hasEncryptedNativeSnapshot,
   readEncryptedNativeSnapshot,
   writeEncryptedNativeSnapshot,
 } from '../cache/nativeSnapshotStorage';
@@ -122,10 +123,20 @@ function normalizeEntry(value: unknown): OfflineFileEntry | null {
   };
 }
 
+class ManifestReadError extends Error {}
+
 async function readManifest(userId: number): Promise<OfflineFileManifest> {
   try {
     const raw = await readEncryptedNativeSnapshot(OFFLINE_MANIFEST_SCOPE, userId);
-    if (!raw) return emptyManifest(userId);
+    if (!raw) {
+      // `null` covers transient bridge/key/read failures too — only a proven
+      // absence may be treated as an empty manifest, otherwise a failed read
+      // followed by pin/remove would erase every pinned entry.
+      if (await hasEncryptedNativeSnapshot(OFFLINE_MANIFEST_SCOPE, userId)) {
+        throw new ManifestReadError('Не удалось прочитать индекс офлайн-копий файлов');
+      }
+      return emptyManifest(userId);
+    }
     const parsed = JSON.parse(raw) as Partial<OfflineFileManifest>;
     if (parsed.version !== 1 || parsed.userId !== userId || !Array.isArray(parsed.entries)) {
       await deleteEncryptedNativeSnapshot(OFFLINE_MANIFEST_SCOPE, userId).catch(() => undefined);
@@ -140,7 +151,8 @@ async function readManifest(userId: number): Promise<OfflineFileManifest> {
       entries.push(entry);
     }
     return { version: 1, userId, entries: entries.slice(0, MAX_OFFLINE_ENTRIES) };
-  } catch {
+  } catch (error) {
+    if (error instanceof ManifestReadError) throw error;
     await deleteEncryptedNativeSnapshot(OFFLINE_MANIFEST_SCOPE, userId).catch(() => undefined);
     return emptyManifest(userId);
   }
@@ -183,9 +195,13 @@ async function withWriteLock<T>(userId: number, operation: () => Promise<T>): Pr
 function entryMatchesItem(entry: OfflineFileEntry, item: MyFileRecord): boolean {
   const expectedSize = expectedFileSize(item);
   const expiresAt = fileExpiryMs(entry.expiresAt);
+  const itemUpdatedAt = String(item.updated_at || '').trim();
   return entry.fileId === item.id
     && (!expectedSize || entry.size === expectedSize)
-    && (!expiresAt || expiresAt > Date.now());
+    && (!expiresAt || expiresAt > Date.now())
+    // A same-size edit (e.g. an ONLYOFFICE save) keeps the byte count but
+    // bumps updated_at — a pinned copy with another timestamp is stale.
+    && (!itemUpdatedAt || entry.serverUpdatedAt === itemUpdatedAt);
 }
 
 function entryFileIsValid(userId: number, entry: OfflineFileEntry): boolean {
@@ -197,7 +213,8 @@ function entryFileIsValid(userId: number, entry: OfflineFileEntry): boolean {
 export async function listNativeMyFilesOffline(userId: number): Promise<MyFileRecord[]> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web') return [];
-  const manifest = await readManifest(owner);
+  const manifest = await readManifest(owner).catch(() => null);
+  if (!manifest) return [];
   return manifest.entries.filter(entry => {
     const expires = fileExpiryMs(entry.expiresAt);
     return (!entry.expiresAt || expires > Date.now()) && entryFileIsValid(owner, entry);
@@ -228,7 +245,8 @@ export async function getNativeMyFilesOfflineFile(
 ): Promise<File | null> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web') return null;
-  const manifest = await readManifest(owner);
+  const manifest = await readManifest(owner).catch(() => null);
+  if (!manifest) return null;
   const entry = manifest.entries.find((candidate) => candidate.fileId === item.id);
   if (!entry) return null;
   if (entryMatchesItem(entry, item) && entryFileIsValid(owner, entry)) {
@@ -246,7 +264,8 @@ export async function getNativeMyFilesOfflineIds(
   if (!owner || Platform.OS === 'web') return new Set();
   return withWriteLock(owner, async () => {
     const byId = new Map(items.map((item) => [item.id, item]));
-    const manifest = await readManifest(owner);
+    const manifest = await readManifest(owner).catch(() => null);
+    if (!manifest) return new Set<string>();
     const valid: OfflineFileEntry[] = [];
     const visibleIds = new Set<string>();
     for (const entry of manifest.entries) {
@@ -289,6 +308,30 @@ export async function pinNativeMyFileOffline(
     const manifest = await readManifest(owner);
     const existing = manifest.entries.find((entry) => entry.fileId === item.id);
     if (existing && entryMatchesItem(existing, item) && entryFileIsValid(owner, existing)) {
+      // Контент совпадает — но переименование/срок могли измениться: запись
+      // обновляем, иначе офлайн-копия навсегда отдаёт старое имя.
+      const visibleFileName = sanitizeNativeFileName(item.download_file_name || item.original_file_name || 'file.bin');
+      const serverUpdatedAt = String(item.updated_at || '');
+      const expiresAt = String(item.expires_at || '');
+      const mimeType = String(item.download_mime_type || item.mime_type || existing.mimeType);
+      if (existing.fileName !== visibleFileName
+        || existing.serverUpdatedAt !== serverUpdatedAt
+        || existing.expiresAt !== expiresAt
+        || existing.mimeType !== mimeType
+        || existing.record !== item) {
+        const updated: OfflineFileEntry = {
+          ...existing,
+          fileName: visibleFileName,
+          mimeType,
+          serverUpdatedAt,
+          expiresAt,
+          record: item,
+        };
+        await writeManifest({
+          ...manifest,
+          entries: manifest.entries.map((entry) => (entry.fileId === item.id ? updated : entry)),
+        });
+      }
       return offlineFile(owner, existing.localName);
     }
     if (!existing && manifest.entries.length >= MAX_OFFLINE_ENTRIES) {

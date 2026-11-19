@@ -18,11 +18,11 @@ async function getPdfjsRuntime() {
   if (!pdfjsModulePromise) {
     pdfjsModulePromise = (async () => {
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
+      const workerAsset = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url');
       const viewerStyles = await import('pdfjs-dist/web/pdf_viewer.css?inline');
       return {
         pdfjs,
-        WorkerMessageHandler: worker.WorkerMessageHandler,
+        workerUrl: workerAsset.default,
         viewerCss: viewerStyles.default || '',
       };
     })();
@@ -60,10 +60,17 @@ export const resolveInitialPdfFitZoom = ({
 
 export const ensurePdfWorker = async () => {
   if (workerReady) return;
-  const { pdfjs, WorkerMessageHandler } = await getPdfjsRuntime();
-  globalThis.pdfjsWorker = { WorkerMessageHandler };
-  // workerSrc is still read before fake-worker fallback; keep a harmless placeholder.
-  pdfjs.GlobalWorkerOptions.workerSrc ||= 'data:text/javascript,export{}';
+  const { pdfjs, workerUrl } = await getPdfjsRuntime();
+  try {
+    // Dedicated module worker keeps multi-MB PDF parsing off the main thread.
+    pdfjs.GlobalWorkerOptions.workerPort ||= new Worker(workerUrl, { type: 'module' });
+  } catch {
+    // No usable Worker (old browser/CSP block): fall back to the in-page fake
+    // worker so previews degrade to slow-but-working instead of failing.
+    const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
+    globalThis.pdfjsWorker = { WorkerMessageHandler: worker.WorkerMessageHandler };
+    pdfjs.GlobalWorkerOptions.workerSrc ||= 'data:text/javascript,export{}';
+  }
   workerReady = true;
 };
 

@@ -37,6 +37,7 @@ from backend.appdb.models import (
 from local_store import get_local_store
 from backend.config import config
 from backend.services.authorization_service import authorization_service
+from backend.services.ldap_security import open_ldap_connection
 from backend.services.my_files_service import USER_QUOTA_MAX_BYTES
 from backend.services.secret_crypto_service import SecretCryptoError, encrypt_secret
 from backend.services.session_auth_context_service import normalize_exchange_login
@@ -811,9 +812,8 @@ class UserService:
             try:
                 domain = config.app.ldap_domain or "zsgp.corp"
                 user_principal = f"{username}@{domain}"
-                server = ldap3.Server(config.app.ldap_server, get_info=ldap3.ALL)
                 # Попытка bind (авторизации) с логином-паролем пользователя
-                conn = ldap3.Connection(server, user=user_principal, password=password, auto_bind=True)
+                conn = open_ldap_connection(config.app.ldap_server, user=user_principal, password=password)
                 conn.unbind()
                 return self._sanitize_user(user)
             except ldap3.core.exceptions.LDAPInvalidCredentialsResult:

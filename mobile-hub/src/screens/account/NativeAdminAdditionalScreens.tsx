@@ -92,7 +92,14 @@ function AiBotsScreen() {
   const [kbScopeText, setKbScopeText] = useState('');
   const [databases, setDatabases] = useState<Array<{ id: string; name: string }>>([]);
   const openDraft = (bot: api.AdminAiBot | Partial<api.AdminAiBot>) => {
-    setDraft({ ...bot });
+    const toolSettings = bot.tool_settings;
+    setDraft({
+      ...bot,
+      // Backend contract is 'admin_multi_db'; legacy 'multi' means the same.
+      tool_settings: toolSettings?.multi_db_mode === 'multi'
+        ? { ...toolSettings, multi_db_mode: 'admin_multi_db' }
+        : toolSettings,
+    });
     setKbScopeText(Array.isArray(bot.allowed_kb_scope) ? bot.allowed_kb_scope.join(', ') : '');
   };
   const [runs, setRuns] = useState<Awaited<ReturnType<typeof api.getAdminAiBotRuns>> | null>(null);
@@ -123,10 +130,12 @@ function AiBotsScreen() {
       enabled_tools: Array.isArray(draft.enabled_tools) ? draft.enabled_tools : [],
       allowed_kb_scope: kbScopeText.split(',').map((value) => value.trim()).filter(Boolean),
       tool_settings: {
-        multi_db_mode: toolSettings.multi_db_mode === 'multi' ? 'multi' : 'single',
+        multi_db_mode: (toolSettings.multi_db_mode === 'admin_multi_db' || toolSettings.multi_db_mode === 'multi') ? 'admin_multi_db' : 'single',
         allowed_databases: Array.isArray(toolSettings.allowed_databases) ? toolSettings.allowed_databases : [],
-        max_tool_rounds: Number(toolSettings.max_tool_rounds ?? 6),
-        max_tool_calls_per_round: Number(toolSettings.max_tool_calls_per_round ?? 3),
+        // Same clamps as backend ai_chat/tools/context.py — the server
+        // silently truncates out-of-range values, so keep the draft honest.
+        max_tool_rounds: Math.max(1, Math.min(12, Number(toolSettings.max_tool_rounds ?? 6) || 6)),
+        max_tool_calls_per_round: Math.max(1, Math.min(5, Number(toolSettings.max_tool_calls_per_round ?? 3) || 3)),
       },
       ...(!draft.id ? { slug: draft.slug } : {}) };
     void state.run(() => api.saveAdminAiBot(draft.id || null, fields)).then(saved => { if (saved) setDraft(null); });
@@ -173,7 +182,7 @@ function AiBotsScreen() {
         </AccountSectionCard>
         <AccountSectionCard tokens={tokens} title="Параметры инструментов" description="Ограничения вызова инструментов и доступных баз.">
           <View style={{ flexDirection: 'row', gap: 8 }}>
-            {([['single', 'Одна база'], ['multi', 'Несколько баз']] as const).map(([mode, label]) => (
+            {([['single', 'Одна база'], ['admin_multi_db', 'Несколько баз']] as const).map(([mode, label]) => (
               <Pressable
                 key={mode}
                 accessibilityRole="button"
@@ -218,7 +227,7 @@ function AiBotsScreen() {
                 onChangeText={(value) => setDraft({ ...draft, tool_settings: { ...draft.tool_settings, max_tool_rounds: Number(value) } })} />
             </View>
             <View style={{ flex: 1 }}>
-              <HubTextField label="Вызовов за раунд (1–10)" keyboardType="number-pad" value={String(draft.tool_settings?.max_tool_calls_per_round ?? 3)}
+              <HubTextField label="Вызовов за раунд (1–5)" keyboardType="number-pad" value={String(draft.tool_settings?.max_tool_calls_per_round ?? 3)}
                 onChangeText={(value) => setDraft({ ...draft, tool_settings: { ...draft.tool_settings, max_tool_calls_per_round: Number(value) } })} />
             </View>
           </View>

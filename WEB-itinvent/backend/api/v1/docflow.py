@@ -153,6 +153,20 @@ async def test_my_docflow_credentials(
 ) -> DocflowConnectionTestResponse:
     correlation = _correlation_id(request)
     _no_store(response)
+    # LOW-06: проверка учётных данных — оракул перебора паролей; throttling обязателен.
+    from starlette.concurrency import run_in_threadpool
+    from backend.utils.rate_limit_guard import enforce_rate_limit
+
+    await run_in_threadpool(
+        enforce_rate_limit,
+        namespace="docflow_profile_test",
+        key=f"user:{int(current_user.id)}",
+        limit=5,
+        window_seconds=60,
+        request=request,
+        include_retry_after=True,
+        allow_internal_bypass=False,
+    )
     try:
         result = await docflow_service.test_credentials(
             user_id=int(current_user.id),

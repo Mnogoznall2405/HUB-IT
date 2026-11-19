@@ -261,30 +261,42 @@ export function getFeedInitials(name: unknown): string {
   return parts.slice(0, 2).map((part) => part[0]?.toLocaleUpperCase('ru-RU') || '').join('') || '?';
 }
 
-export function stripFeedMarkdown(value: unknown): string {
+// Removes only paired emphasis markers. A `_`/`~` inside a word
+// (app_server_01, ~/.ssh, file_name.pdf) is plain text, not markup.
+const FEED_MD_WORD = '0-9A-Za-zА-Яа-яЁё';
+
+export function stripInlineFeedMarkdown(value: unknown): string {
   return String(value || '')
+    .replace(/\*\*(\S[^*]*?)\*\*/g, '$1')
+    .replace(new RegExp(`(^|[^${FEED_MD_WORD}_])__(\\S[^_]*?)__(?=[^${FEED_MD_WORD}_]|$)`, 'g'), '$1$2')
+    .replace(new RegExp(`(^|[^${FEED_MD_WORD}_])_(\\S[^_]*?)_(?=[^${FEED_MD_WORD}_]|$)`, 'g'), '$1$2')
+    .replace(/~~(\S[^~]*?)~~/g, '$1')
+    .replace(new RegExp(`(^|[^${FEED_MD_WORD}~])~(\\S[^~]*?)~(?=[^${FEED_MD_WORD}~]|$)`, 'g'), '$1$2')
+    .replace(/\*(\S[^*\n]*?)\*/g, '$1');
+}
+
+export function stripFeedMarkdown(value: unknown): string {
+  return stripInlineFeedMarkdown(String(value || '')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*>\s?/gm, '')
-    .replace(/[*_~]/g, '')
+    .replace(/^\s*>\s?/gm, ''))
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 export function stripFeedMarkdownMultiline(value: unknown): string {
-  return String(value || '')
+  return stripInlineFeedMarkdown(String(value || '')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*>\s?/gm, '')
-    .replace(/[*_~]/g, '')
+    .replace(/^\s*>\s?/gm, ''))
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();

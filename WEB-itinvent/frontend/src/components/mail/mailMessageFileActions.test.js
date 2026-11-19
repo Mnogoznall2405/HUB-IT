@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   MAIL_ATTACHMENT_CONTEXT_MISSING_CODE,
@@ -9,6 +9,7 @@ import {
   buildAttachmentRequestContext,
   buildMessageSourceDownloadPayload,
   buildPrintMailDocumentHtml,
+  downloadBlobFile,
   normalizeAttachmentPreviewMetadata,
   parseDownloadFilename,
 } from './mailMessageFileActions';
@@ -202,5 +203,100 @@ describe('mailMessageFileActions', () => {
     expect(printHtml).toContain('<title>Quarterly report</title>');
     expect(printHtml).toContain('Ops &lt;ops@example.com&gt;');
     expect(printHtml).toContain('<p>Hello</p>');
+  });
+});
+
+describe('downloadBlobFile iOS open fallback', () => {
+  const IOS_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15';
+  const POPUP_URL = 'blob:mock-download-url';
+
+  let navigatorDescriptors;
+  let urlDescriptors;
+  let openDescriptor;
+  let popup;
+  let clickSpy;
+
+  const restoreDescriptors = (target, descriptors) => {
+    Object.entries(descriptors).forEach(([key, descriptor]) => {
+      if (descriptor) Object.defineProperty(target, key, descriptor);
+      else delete target[key];
+    });
+  };
+
+  beforeEach(() => {
+    navigatorDescriptors = {
+      userAgent: Object.getOwnPropertyDescriptor(window.navigator, 'userAgent'),
+      standalone: Object.getOwnPropertyDescriptor(window.navigator, 'standalone'),
+    };
+    urlDescriptors = {
+      createObjectURL: Object.getOwnPropertyDescriptor(window.URL, 'createObjectURL'),
+      revokeObjectURL: Object.getOwnPropertyDescriptor(window.URL, 'revokeObjectURL'),
+    };
+    openDescriptor = Object.getOwnPropertyDescriptor(window, 'open');
+
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: IOS_USER_AGENT });
+    Object.defineProperty(window.navigator, 'standalone', { configurable: true, value: true });
+    Object.defineProperty(window.URL, 'createObjectURL', {
+      configurable: true, writable: true, value: vi.fn(() => POPUP_URL),
+    });
+    Object.defineProperty(window.URL, 'revokeObjectURL', {
+      configurable: true, writable: true, value: vi.fn(),
+    });
+    popup = { location: { replace: vi.fn() }, opener: {} };
+    Object.defineProperty(window, 'open', {
+      configurable: true, writable: true, value: vi.fn(() => popup),
+    });
+    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    clickSpy.mockRestore();
+    restoreDescriptors(window, { open: openDescriptor });
+    restoreDescriptors(window.URL, urlDescriptors);
+    restoreDescriptors(window.navigator, navigatorDescriptors);
+  });
+
+  it('never navigates a same-origin popup for executable or unknown blob types', () => {
+    const unsafeTypes = [
+      'text/html',
+      'image/svg+xml',
+      'application/octet-stream',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '',
+    ];
+
+    unsafeTypes.forEach((type, index) => {
+      downloadBlobFile(new Blob(['<script>alert(1)</script>'], { type }), `file-${index}.bin`, { preferOpenFallback: true });
+    });
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(popup.location.replace).not.toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalledTimes(unsafeTypes.length);
+    expect(window.URL.createObjectURL).toHaveBeenCalledTimes(unsafeTypes.length);
+    expect(window.URL.revokeObjectURL).toHaveBeenCalledWith(POPUP_URL);
+  });
+
+  it('still uses the popup open fallback for pdf and safe image blobs', () => {
+    const safeTypes = ['application/pdf; charset=utf-8', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+    safeTypes.forEach((type, index) => {
+      downloadBlobFile(new Blob(['data'], { type }), `file-${index}`, { preferOpenFallback: true });
+    });
+
+    expect(window.open).toHaveBeenCalledTimes(safeTypes.length);
+    expect(window.open).toHaveBeenCalledWith('', '_blank');
+    expect(popup.opener).toBeNull();
+    expect(popup.location.replace).toHaveBeenCalledTimes(safeTypes.length);
+    expect(popup.location.replace).toHaveBeenCalledWith(POPUP_URL);
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses the anchor download even for pdf blobs outside the iOS standalone shell', () => {
+    Object.defineProperty(window.navigator, 'standalone', { configurable: true, value: false });
+
+    downloadBlobFile(new Blob(['data'], { type: 'application/pdf' }), 'doc.pdf', { preferOpenFallback: true });
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
   });
 });

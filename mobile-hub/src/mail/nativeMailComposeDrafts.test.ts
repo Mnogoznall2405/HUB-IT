@@ -18,6 +18,32 @@ it('restores all fields in a new session without crossing user or mailbox bounda
   expect(await createMailComposeDraftSession({ ...scope, mailboxId: 'other' }).read()).toBeNull();
 });
 
+it('removes orphaned attachment copies when a draft is discarded', async () => {
+  const source = new File(Paths.cache, 'mail-orphaned-copy'); source.write('Вложение');
+  const session = createMailComposeDraftSession(scope);
+  const saved = await session.write({ ...state, files: [{ uri: source.uri, name: 'Файл.txt', size: source.size, mimeType: 'text/plain' }] });
+  const copyUri = saved.files[0].uri;
+  expect(new File(copyUri).exists).toBe(true);
+
+  await session.clear();
+
+  expect(new File(copyUri).exists).toBe(false);
+});
+
+it('keeps attachment copies still referenced by another draft of the user', async () => {
+  const source = new File(Paths.cache, 'mail-shared-copy'); source.write('Вложение');
+  const kept = await createMailComposeDraftSession(scope)
+    .write({ ...state, files: [{ uri: source.uri, name: 'Файл.txt', size: source.size, mimeType: 'text/plain' }] });
+  const otherScope = { ...scope, sourceId: 'other-target' };
+  const other = createMailComposeDraftSession(otherScope);
+  await other.write({ ...state, subject: 'Другое письмо' });
+
+  await other.clear();
+
+  expect(new File(kept.files[0].uri).exists).toBe(true);
+  expect(await createMailComposeDraftSession(scope).read()).not.toBeNull();
+});
+
 it('preserves a private attachment copy after the temporary picker file is removed', async () => {
   const source = new File(Paths.cache, 'mail-fixture'); source.write('Вложение');
   const saved = await createMailComposeDraftSession(scope).write({ ...state, files: [{ uri: source.uri, name: 'Файл.txt', size: source.size, mimeType: 'text/plain' }] });
@@ -65,10 +91,13 @@ it('preserves the previous revision on quota or storage failure', async () => {
   expect(await session.read()).toEqual(state);
 });
 
-it('does not replace malformed stored drafts and invalidates writers on cleanup', async () => {
+it('replaces malformed stored drafts and invalidates writers on cleanup', async () => {
   const session = createMailComposeDraftSession(scope);
   jest.mocked(SecureStore.getItemAsync).mockResolvedValueOnce('{ invalid');
-  await expect(session.write(state)).rejects.toThrow('Не удалось прочитать');
+  // MB5-07: a corrupted record must not block the editor — it is dropped and
+  // the new draft replaces it.
+  await session.write(state);
+  expect((await createMailComposeDraftSession(scope).read())?.subject).toBe(state.subject);
   await clearMailComposeDrafts();
   await expect(session.write(state)).rejects.toThrow('Сессия черновика завершена');
   expect(await createMailComposeDraftSession(scope).read()).toBeNull();

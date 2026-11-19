@@ -35,18 +35,23 @@ def _resolve_server_url() -> str:
     return base
 
 
+def _resolve_api_key() -> str:
+    return str(os.getenv("ITINV_AGENT_API_KEY", "") or os.getenv("SCAN_AGENT_API_KEY", "") or "").strip()
+
+
 def run_fs_egress_forever() -> None:
     if not _env_bool("ITINV_FS_EGRESS_ENABLED", True):
         logger.info("fs_egress disabled by ITINV_FS_EGRESS_ENABLED")
         return
 
     server_url = _resolve_server_url()
-    api_key = str(os.getenv("ITINV_AGENT_API_KEY", "") or os.getenv("SCAN_AGENT_API_KEY", "") or "").strip()
+    api_key = _resolve_api_key()
     spool_root = spool_root_from_env()
     spool = EgressSpool(
         spool_root,
         server_url=server_url,
         api_key=api_key,
+        api_key_provider=_resolve_api_key,
         max_pending=_env_int("ITINV_FS_EGRESS_MAX_PENDING", 5000),
     )
     monitor = FsEgressMonitor(
@@ -58,24 +63,22 @@ def run_fs_egress_forever() -> None:
     )
     monitor.start()
     last_refresh = time.monotonic()
-    drain_every = float(os.getenv("ITINV_FS_EGRESS_DRAIN_SEC", "3") or 3)
-    last_drain = 0.0
+    last_dropped = 0
     logger.info("fs_egress running spool=%s server=%s", spool_root, server_url or "(offline)")
     try:
         while True:
             monitor.flush_due()
             last_refresh = monitor.refresh_if_due(last_refresh=last_refresh)
-            now = time.monotonic()
-            if (now - last_drain) >= drain_every:
-                stats = spool.drain(batch_size=_env_int("ITINV_FS_EGRESS_BATCH", 50))
-                if stats.get("sent") or stats.get("failed") or monitor.dropped:
-                    logger.info(
-                        "fs_egress drain sent=%s failed=%s dropped=%s",
-                        stats.get("sent"),
-                        stats.get("failed"),
-                        monitor.dropped,
-                    )
-                last_drain = now
+            # The spool owns pacing (startup jitter, backoff and Retry-After).
+            stats = spool.drain(batch_size=_env_int("ITINV_FS_EGRESS_BATCH", 50))
+            if stats.get("sent") or stats.get("failed") or monitor.dropped != last_dropped:
+                logger.info(
+                    "fs_egress drain sent=%s failed=%s dropped=%s",
+                    stats.get("sent"),
+                    stats.get("failed"),
+                    monitor.dropped,
+                )
+                last_dropped = monitor.dropped
             time.sleep(0.25)
     finally:
         monitor.stop()

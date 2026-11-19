@@ -7,7 +7,9 @@ import sys
 from contextvars import ContextVar
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
+from fastapi import HTTPException
 from starlette.datastructures import UploadFile
 from starlette.requests import Request
 
@@ -19,6 +21,7 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 chat_api_module = importlib.import_module("backend.api.v1.chat")
+chat_uploads_module = importlib.import_module("backend.api.v1.chat.uploads")
 chat_realtime_module = importlib.import_module("backend.chat.realtime")
 auth_models_module = importlib.import_module("backend.models.auth")
 chat_schemas_module = importlib.import_module("backend.chat.schemas")
@@ -531,3 +534,75 @@ def test_publish_presence_updated_uses_presence_watch_distribution(monkeypatch):
         "request_id": None,
         "distribute": True,
     }]
+
+
+def _chunk_request(body: bytes, *, declared_length=None):
+    headers = [] if declared_length is None else [(b'content-length', str(declared_length).encode())]
+    state = {'sent': False}
+
+    async def _receive():
+        if state['sent']:
+            return {'type': 'http.disconnect'}
+        state['sent'] = True
+        return {'type': 'http.request', 'body': body, 'more_body': False}
+
+    return Request({
+        'type': 'http',
+        'method': 'PUT',
+        'path': '/api/v1/chat/upload-sessions/sess-1/files/f-1/chunks/0',
+        'headers': headers,
+        'query_string': b'',
+    }, _receive)
+
+
+def test_upload_session_chunk_route_refuses_body_over_chunk_limit(monkeypatch):
+    current_user = _build_chat_user()
+    calls = []
+
+    async def _fake_run_chat_call(func, **kwargs):
+        calls.append(kwargs)
+        return {'ok': True}
+
+    monkeypatch.setattr(
+        chat_api_module,
+        'chat_service',
+        SimpleNamespace(
+            upload_session_chunk_size_bytes=8,
+            upload_session_chunk=lambda **kwargs: {'ok': True},
+        ),
+    )
+    monkeypatch.setattr(chat_api_module, '_run_chat_call', _fake_run_chat_call)
+
+    def _put(request):
+        return asyncio.run(
+            chat_uploads_module.upload_chat_upload_session_chunk(
+                session_id='sess-1',
+                file_id='f-1',
+                chunk_index=0,
+                request=request,
+                offset=0,
+                current_user=current_user,
+            )
+        )
+
+    # Declared length over the chunk limit is refused before the body is read.
+    caught = None
+    try:
+        _put(_chunk_request(b'123456789', declared_length=9))
+    except HTTPException as exc:
+        caught = exc
+    assert caught is not None and caught.status_code == 413
+    assert calls == []
+
+    # A chunked request has no Content-Length: the streamed read still stops at the limit.
+    caught = None
+    try:
+        _put(_chunk_request(b'123456789'))
+    except HTTPException as exc:
+        caught = exc
+    assert caught is not None and caught.status_code == 413
+    assert calls == []
+
+    # A body inside the limit reaches the service unchanged.
+    assert _put(_chunk_request(b'12345678', declared_length=8)) == {'ok': True}
+    assert calls[-1]['payload'] == b'12345678'

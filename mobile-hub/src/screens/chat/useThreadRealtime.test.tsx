@@ -126,6 +126,8 @@ const typingStarted = (userId: number, expiresInMs?: number, conversationId = 'c
 
 beforeEach(() => {
   mockSocketHandlers.clear();
+  // These tests model a focused (topmost) thread screen.
+  mockActiveConversation.id = 'conversation-1';
 });
 
 it('merges a fresh socket message while the window is attached to the bottom', async () => {

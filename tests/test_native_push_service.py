@@ -38,6 +38,57 @@ def _tokens(database_url):
         )
 
 
+def test_native_push_missing_service_account_file_is_quiet_and_recovers(tmp_path, monkeypatch, caplog):
+    account_file = tmp_path / "fcm-service-account.json"
+    fake_config = SimpleNamespace(
+        fcm_push=SimpleNamespace(
+            service_account_json=None,
+            service_account_file=str(account_file),
+            project_id="",
+        )
+    )
+    monkeypatch.setattr(native_push, "config", fake_config)
+    monkeypatch.setattr(native_push, "is_app_database_configured", lambda: True)
+
+    reads = []
+    real_read_text = Path.read_text
+
+    def _counting_read_text(self, *args, **kwargs):
+        if self == account_file:
+            reads.append(str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _counting_read_text)
+
+    service = native_push.NativePushService()
+    with caplog.at_level("WARNING", logger=native_push.logger.name):
+        first = service.get_runtime_status()
+        second = service.get_runtime_status()
+
+    assert len(reads) == 2, "each status check attempts exactly one file read"
+    assert not first["configured"] and not first["enabled"]
+    assert not second["configured"] and not second["enabled"]
+    warnings = [r for r in caplog.records if "service account" in r.getMessage()]
+    assert len(warnings) == 1, "repeated checks inside the window log once"
+    assert str(account_file) not in warnings[0].getMessage(), "log must not leak the path"
+    assert warnings[0].exc_info is None, "log must not carry a traceback"
+
+    account_file.write_text(json.dumps({"project_id": "hubit-test"}), encoding="utf-8")
+    recovered = service.get_runtime_status()
+    assert recovered["configured"] is True
+    assert recovered["enabled"] is True
+    assert recovered["project_id_present"] is True
+
+    caplog.clear()
+    account_file.unlink()
+    missing_again = service.get_runtime_status()
+    warnings = [r for r in caplog.records if "service account" in r.getMessage()]
+    assert len(warnings) == 1, "a fresh missing episode after a successful read logs again"
+    assert missing_again["configured"] is False
+    assert missing_again["enabled"] is False
+    assert missing_again["service_account_present"] is False
+
+
 def test_native_push_keeps_two_devices_for_the_same_user(tmp_path, monkeypatch):
     service, database_url = _isolated_service(tmp_path, monkeypatch)
 

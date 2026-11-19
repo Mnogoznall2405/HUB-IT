@@ -17,6 +17,7 @@ import {
 } from '../../api/warehouse1cApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
+import { isAdminUser } from '../../navigation/mobileNavItems';
 import { NativeWarehouse1CBalancesPanel } from '../../components/warehouse1c/NativeWarehouse1CBalancesPanel';
 import { NativeWarehouse1CCatalogPanel } from '../../components/warehouse1c/NativeWarehouse1CCatalogPanel';
 import { NativeWarehouse1CDismissedPanel } from '../../components/warehouse1c/NativeWarehouse1CDismissedPanel';
@@ -65,10 +66,13 @@ function prefillItem(refValue: string | string[] | undefined, nameValue: string 
 }
 
 export function NativeWarehouse1CScreen() {
-  const { hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const canRead = hasPermission('warehouse_1c.read');
+  // POST /warehouse-1c/catalog/sync is admin-only on the backend
+  // (get_current_admin_user) — same role gate the web page applies.
+  const canSyncCatalog = canRead && isAdminUser(user);
   const params = useLocalSearchParams<{
     tab?: string | string[];
     nomenclatureRef?: string | string[];
@@ -139,20 +143,28 @@ export function NativeWarehouse1CScreen() {
   const focusedRef = useRef(false);
   const firstFocusRef = useRef(true);
 
-  const loadBalances = useCallback(() => {
+  const loadBalances = useCallback((override?: {
+    nomenclature?: Warehouse1CCatalogItem | null;
+    warehouse?: Warehouse1CCatalogItem | null;
+    query?: string;
+  }) => {
     balGenerationRef.current += 1;
     const requestId = balGenerationRef.current;
     balAbortRef.current?.abort();
-    if (!canRead || offlineMode) return;
+    if (!canRead || offlineMode) {
+      setBalLoading(false);
+      setBalRefreshing(false);
+      return;
+    }
     const controller = new AbortController();
     balAbortRef.current = controller;
     setBalLoading(true);
     setBalError('');
     setBalSearched(true);
     void getWarehouse1CBalances({
-      nomenclatureRef: balNomenclature?.ref || '',
-      warehouseRef: balWarehouse?.ref || '',
-      query: balQueryDraft,
+      nomenclatureRef: override ? (override.nomenclature?.ref || '') : (balNomenclature?.ref || ''),
+      warehouseRef: override ? (override.warehouse?.ref || '') : (balWarehouse?.ref || ''),
+      query: override ? (override.query || '') : balQueryDraft,
       limit: BALANCES_LIMIT,
       signal: controller.signal,
     }).then((result) => {
@@ -174,8 +186,24 @@ export function NativeWarehouse1CScreen() {
     });
   }, [balNomenclature, balQueryDraft, balWarehouse, canRead, offlineMode]);
 
+  const resetBalances = useCallback(() => {
+    // Clearing the fields and loading are one action: the request carries the
+    // empty filters explicitly because the state setters land only on the
+    // next render — otherwise the list keeps stale filtered rows.
+    setBalNomenclature(null);
+    setBalWarehouse(null);
+    setBalQueryDraft('');
+    loadBalances({ nomenclature: null, warehouse: null, query: '' });
+  }, [loadBalances]);
+
   const loadMovements = useCallback((cursor = '') => {
-    if (!movNomenclature?.ref) return;
+    if (!movNomenclature?.ref) {
+      // An early return after pull-to-refresh must still drop the spinner.
+      setMovLoading(false);
+      setMovRefreshing(false);
+      setMovLoadingMore(false);
+      return;
+    }
     movGenerationRef.current += 1;
     const requestId = movGenerationRef.current;
     movAbortRef.current?.abort();
@@ -430,8 +458,9 @@ export function NativeWarehouse1CScreen() {
           error={balError}
           items={balItems}
           meta={balMeta}
-          onSearch={loadBalances}
+          onSearch={() => loadBalances()}
           onRefresh={() => { setBalRefreshing(true); loadBalances(); }}
+          onResetFilters={resetBalances}
           onOpenMovements={openMovementsForBalance}
         />
       ) : null}
@@ -444,7 +473,18 @@ export function NativeWarehouse1CScreen() {
           period={movPeriod}
           onPickNomenclature={() => setPickerTarget('movNom')}
           onPickWarehouse={() => setPickerTarget('movWh')}
-          onClearNomenclature={() => setMovNomenclature(null)}
+          onClearNomenclature={() => {
+            setMovNomenclature(null);
+            // Without a nomenclature no movements can be loaded — the old
+            // rows must not linger and look like a valid result.
+            setMovItems([]);
+            setMovMeta(null);
+            setMovSearched(false);
+            setMovError('');
+            setMovLoading(false);
+            setMovRefreshing(false);
+            setMovLoadingMore(false);
+          }}
           onClearWarehouse={() => setMovWarehouse(null)}
           onSelectPeriod={setMovPeriod}
           searched={movSearched}
@@ -483,6 +523,7 @@ export function NativeWarehouse1CScreen() {
         <NativeWarehouse1CCatalogPanel
           tokens={tokens}
           canRead={canRead}
+          canSync={canSyncCatalog}
           offline={offlineMode}
           active={tab === 'catalog'}
         />

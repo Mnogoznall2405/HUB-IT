@@ -188,8 +188,19 @@ export function normalizeChatConversation(value: unknown): ChatConversationSumma
     online_member_count: Math.max(0, finiteNumber(item.online_member_count)),
     member_count: Math.max(0, finiteNumber(item.member_count)),
     viewer_member_role: optionalText(item.viewer_member_role),
+    unread_mention_count: Math.max(0, finiteNumber(item.unread_mention_count)),
     description: optionalText(item.description),
     posting_policy: optionalText(item.posting_policy),
+    slow_mode_seconds: Object.prototype.hasOwnProperty.call(item, 'slow_mode_seconds')
+      ? finiteNumber(item.slow_mode_seconds)
+      : undefined,
+    members_send_files: Object.prototype.hasOwnProperty.call(item, 'members_send_files')
+      ? Boolean(item.members_send_files)
+      : undefined,
+    viewer_restricted: Object.prototype.hasOwnProperty.call(item, 'viewer_restricted')
+      ? Boolean(item.viewer_restricted)
+      : undefined,
+    viewer_restricted_until: optionalText(item.viewer_restricted_until),
     members,
     member_preview: memberPreview,
     direct_peer: directPeer,

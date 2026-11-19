@@ -10,10 +10,11 @@ import {
   isWarehouse1CListIncomplete,
   normalizeWarehouse1CCatalogItems,
   searchWarehouse1CCatalog,
+  syncWarehouse1CCatalog,
 } from './warehouse1cApi';
 
-jest.mock('./client', () => ({ __esModule: true, default: { get: jest.fn() } }));
-const client = apiClient as unknown as { get: jest.Mock };
+jest.mock('./client', () => ({ __esModule: true, default: { get: jest.fn(), post: jest.fn() } }));
+const client = apiClient as unknown as { get: jest.Mock; post: jest.Mock };
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -33,6 +34,34 @@ it('normalizes only the bounded public catalog status fields', async () => {
   expect(client.get).toHaveBeenCalledWith('/warehouse-1c/catalog/status', {
     signal: undefined,
     timeout: 50_000,
+  });
+});
+
+it('posts the admin catalog sync to the exact route with the long timeout', async () => {
+  client.post.mockResolvedValue({ data: {
+    status: 'ok', nomenclature_count: '120', warehouses_count: 7,
+    updated_at: '2026-08-24T10:00:00Z', sync_in_progress: false,
+    complete: true, source: 'app_db_indexed_snapshot',
+    leader: { is_leader: true, mode: 'postgres_advisory_lease' },
+    last_error: 'not normalized', app_snapshot: { secret: 'not exposed' },
+  } });
+  const controller = new AbortController();
+  await expect(syncWarehouse1CCatalog({ signal: controller.signal })).resolves.toEqual({
+    status: 'ok',
+    nomenclature_count: 120,
+    warehouses_count: 7,
+    updated_at: '2026-08-24T10:00:00Z',
+    age_seconds: null,
+    stale_after_seconds: null,
+    nomenclature_truncated: false,
+    warehouses_truncated: false,
+    sync_in_progress: false,
+    complete: true,
+    source: 'app_db_indexed_snapshot',
+  });
+  expect(client.post).toHaveBeenCalledWith('/warehouse-1c/catalog/sync', undefined, {
+    signal: controller.signal,
+    timeout: 610_000,
   });
 });
 

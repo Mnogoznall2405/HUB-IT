@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import concurrent.futures
+import http.client
 import ipaddress
 import logging
 import re
 import socket
+import ssl
 import threading
 import time
-import urllib.request
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -50,14 +51,6 @@ def extract_og_meta(html: str) -> dict:
     return result
 
 
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, D401
-        return None
-
-
-_LINK_PREVIEW_OPENER = urllib.request.build_opener(_NoRedirectHandler)
-
-
 _DNS_RESOLVE_TIMEOUT_SEC = 1.5
 # Shared pool so a hung getaddrinfo does not tie the endpoint to OS DNS timeouts
 # (unresolvable names took 5-19s to return 422 — see plan P1).
@@ -67,11 +60,19 @@ _DNS_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 )
 
 
-def assert_public_http_url(raw_url: str) -> None:
+def assert_public_http_url(raw_url: str) -> str:
     parts = urlsplit(raw_url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise HTTPException(status_code=400, detail="Invalid URL")
-    port = parts.port or (443 if parts.scheme == "https" else 80)
+    if parts.username is not None or parts.password is not None:
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid URL") from exc
+    if port is not None and port != (443 if parts.scheme == "https" else 80):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    port = port or (443 if parts.scheme == "https" else 80)
     future = _DNS_EXECUTOR.submit(
         socket.getaddrinfo, parts.hostname, port, proto=socket.IPPROTO_TCP,
     )
@@ -81,21 +82,17 @@ def assert_public_http_url(raw_url: str) -> None:
         raise HTTPException(status_code=422, detail="Could not resolve URL") from exc
     except OSError as exc:
         raise HTTPException(status_code=422, detail="Could not resolve URL") from exc
+    if not infos:
+        raise HTTPException(status_code=422, detail="Could not resolve URL")
     for info in infos:
         ip_str = info[4][0]
         try:
             ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="URL host is not allowed") from exc
+        if not ip.is_global:
             raise HTTPException(status_code=400, detail="URL host is not allowed")
+    return infos[0][4][0]
 
 
 # Every client asked again on each app start / thread open, and an unreachable site cost a full
@@ -149,34 +146,61 @@ def fetch_link_preview(url: str) -> dict:
     return dict(result)
 
 
-def _fetch_link_preview_uncached(normalized: str) -> dict:
-    assert_public_http_url(normalized)
+def _open_pinned_url(parts, ip: str):
+    port = 443 if parts.scheme == "https" else 80
+    connection = (
+        http.client.HTTPSConnection(parts.hostname, port, timeout=_PREVIEW_FETCH_TIMEOUT_SEC)
+        if parts.scheme == "https"
+        else http.client.HTTPConnection(parts.hostname, port, timeout=_PREVIEW_FETCH_TIMEOUT_SEC)
+    )
+    sock = socket.create_connection((ip, port), timeout=_PREVIEW_FETCH_TIMEOUT_SEC)
     try:
-        req = urllib.request.Request(
-            normalized,
+        connection.sock = (
+            ssl.create_default_context().wrap_socket(sock, server_hostname=parts.hostname)
+            if parts.scheme == "https"
+            else sock
+        )
+    except Exception:
+        sock.close()
+        raise
+    try:
+        connection.request(
+            "GET",
+            (parts.path or "/") + (f"?{parts.query}" if parts.query else ""),
             headers={
+                "Host": parts.netloc,
                 "User-Agent": "Mozilla/5.0 (compatible; ItInventBot/1.0)",
                 "Accept": "text/html,application/xhtml+xml",
                 "Accept-Language": "ru,en;q=0.9",
             },
         )
-        with _LINK_PREVIEW_OPENER.open(req, timeout=_PREVIEW_FETCH_TIMEOUT_SEC) as resp:
-            content_type = resp.headers.get("Content-Type", "")
-            if "text/html" not in content_type:
-                return {
-                    "url": normalized,
-                    "title": None,
-                    "description": None,
-                    "image": None,
-                    "site_name": None,
-                }
-            raw = resp.read(65536)
-            html = raw.decode("utf-8", errors="replace")
+        response = connection.getresponse()
+        if not 200 <= response.status < 300:
+            raise OSError("Unexpected HTTP status")
+        return response.headers.get("Content-Type", ""), response.read(65536)
+    finally:
+        connection.close()
+
+
+def _fetch_link_preview_uncached(normalized: str) -> dict:
+    ip = assert_public_http_url(normalized)
+    parts = urlsplit(normalized)
+    try:
+        content_type, raw = _open_pinned_url(parts, ip)
     except HTTPException:
         raise
     except Exception as exc:
         http_logger.debug("link-preview fetch failed for %s: %s", normalized, exc)
         raise HTTPException(status_code=422, detail="Could not fetch URL") from exc
+    if "text/html" not in content_type:
+        return {
+            "url": normalized,
+            "title": None,
+            "description": None,
+            "image": None,
+            "site_name": None,
+        }
+    html = raw.decode("utf-8", errors="replace")
     meta = extract_og_meta(html)
     return {
         "url": normalized,

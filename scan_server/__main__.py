@@ -110,6 +110,11 @@ def main() -> None:
             port=config.port,
             reload=False,
             loop="scan_server.uvicorn_loops:windows_proactor_loop_factory",
+            # IIS reverse-proxies all agent traffic; trusting X-Forwarded-For only
+            # from loopback restores the real client IP (last XFF hop, appended
+            # by IIS) used by agent-enrollment IP pinning.
+            proxy_headers=True,
+            forwarded_allow_ips="127.0.0.1,::1",
         )
     finally:
         lock_handle.close()

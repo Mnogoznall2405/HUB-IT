@@ -8,8 +8,51 @@ if (typeof window !== 'undefined') {
   window.addEventListener('popstate', (event) => activePopGuard?.(event), true);
 }
 
-// BrowserRouter has no data-router blocker. Guard its navigator and restore a
-// browser POP before asking, so cancelling keeps both the route and journal.
+// BrowserRouter has no data-router blocker. Several editor instances can guard
+// at once, so the navigator patch is shared per navigator: each instance only
+// subscribes, and the last subscribed (innermost dialog) asks first. Restoring
+// originals happens only when the last subscriber unmounts, so unmount order
+// can no longer leave a dead wrapper on the navigator.
+const navigatorGuards = new WeakMap();
+
+const ensureNavigatorGuard = (navigator) => {
+  let guard = navigatorGuards.get(navigator);
+  if (guard) return guard;
+  const originals = { push: navigator.push, replace: navigator.replace, go: navigator.go };
+  const subscribers = new Set();
+  const wrappers = {};
+  for (const method of ['push', 'replace', 'go']) {
+    wrappers[method] = (...args) => {
+      const target = args[0];
+      const pathname = typeof target === 'string' ? new URL(target, window.location.href).pathname : target?.pathname;
+      const blockers = [...subscribers].filter((entry) => entry.isBlocked(method, pathname));
+      if (!blockers.length) {
+        const result = originals[method].apply(navigator, args);
+        subscribers.forEach((entry) => entry.onNavigated?.(method));
+        return result;
+      }
+      blockers[blockers.length - 1].requestLeave(method, args);
+      return undefined;
+    };
+    navigator[method] = wrappers[method];
+  }
+  guard = { originals, wrappers, subscribers };
+  navigatorGuards.set(navigator, guard);
+  return guard;
+};
+
+const releaseNavigatorGuard = (navigator, entry) => {
+  const guard = navigatorGuards.get(navigator);
+  if (!guard) return;
+  guard.subscribers.delete(entry);
+  if (guard.subscribers.size === 0) {
+    for (const method of Object.keys(guard.originals)) {
+      if (navigator[method] === guard.wrappers[method]) navigator[method] = guard.originals[method];
+    }
+    navigatorGuards.delete(navigator);
+  }
+};
+
 export function useConstructionWorkLeaveGuard(dirty) {
   const context = useContext(UNSAFE_NavigationContext);
   const [pending, setPending] = useState(null);
@@ -17,7 +60,7 @@ export function useConstructionWorkLeaveGuard(dirty) {
   useLayoutEffect(() => {
     if (!dirty || !context?.navigator) return undefined;
     const navigator = context.navigator;
-    const originals = { push: navigator.push, replace: navigator.replace, go: navigator.go };
+    const guard = ensureNavigatorGuard(navigator);
     const readIndex = (state = window.history.state) => {
       const nativeIndex = window.navigation?.currentEntry?.index;
       return Number.isInteger(nativeIndex) && nativeIndex >= 0 ? nativeIndex : state?.idx;
@@ -29,7 +72,7 @@ export function useConstructionWorkLeaveGuard(dirty) {
     let afterRestore = null;
     let currentPath = navigator.location?.pathname || window.location.pathname;
     const run = (method, args) => {
-      const result = originals[method].apply(navigator, args);
+      const result = guard.originals[method].apply(navigator, args);
       if (method !== 'go') {
         index = readIndex();
         currentUrl = window.location.href;
@@ -38,21 +81,24 @@ export function useConstructionWorkLeaveGuard(dirty) {
       }
       return result;
     };
-    const wrappers = {};
-    for (const method of ['push', 'replace', 'go']) {
-      wrappers[method] = (...args) => {
-        const target = args[0];
-        const pathname = typeof target === 'string' ? new URL(target, window.location.href).pathname : target?.pathname;
-        // Search changes switch construction tabs without unmounting the editor.
-        // Authentication redirects must remain available on session expiration.
-        if (allowed.current || (method !== 'go' && (!pathname || pathname === currentPath || /\/(login|logout)\/?$/.test(pathname)))) {
-          return run(method, args);
+    const entry = {
+      isBlocked: (method, pathname) => (
+        !allowed.current
+        && !(method !== 'go' && (!pathname || pathname === currentPath || /\/(login|logout)\/?$/.test(pathname)))
+      ),
+      onNavigated: (method) => {
+        if (method !== 'go') {
+          index = readIndex();
+          currentUrl = window.location.href;
+          currentState = window.history.state;
+          currentPath = navigator.location?.pathname || window.location.pathname;
         }
+      },
+      requestLeave: (method, args) => {
         setPending({ go: method === 'go', run: () => run(method, args) });
-        return undefined;
-      };
-      navigator[method] = wrappers[method];
-    }
+      },
+    };
+    guard.subscribers.add(entry);
     const onPop = (event) => {
       if (allowed.current) { allowed.current = false; index = readIndex(event.state); currentPath = window.location.pathname; currentUrl = window.location.href; currentState = event.state; return; }
       const nextIndex = readIndex(event.state);
@@ -77,16 +123,14 @@ export function useConstructionWorkLeaveGuard(dirty) {
         return;
       }
       restoring = true;
-      afterRestore = { go: true, run: () => originals.go.call(navigator, delta) };
+      afterRestore = { go: true, run: () => guard.originals.go.call(navigator, delta) };
       window.history.go(-delta);
     };
     activePopGuard = onPop;
     return () => {
       allowed.current = false;
       if (activePopGuard === onPop) activePopGuard = null;
-      for (const method of Object.keys(originals)) {
-        if (navigator[method] === wrappers[method]) navigator[method] = originals[method];
-      }
+      releaseNavigatorGuard(navigator, entry);
     };
   }, [context?.navigator, dirty]);
   return {

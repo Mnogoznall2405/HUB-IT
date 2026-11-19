@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const hubTaskAnalyticsAPI = {
   getTaskAnalytics: async (params = {}) => {

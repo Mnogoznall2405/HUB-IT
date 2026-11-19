@@ -90,6 +90,27 @@ describe('native mail HTML isolation', () => {
     expect(shouldAllowMailDocumentNavigation('javascript:alert(1)')).toBe(false);
   });
 
+  it('strips event handlers and link targets written with slash separators (LOW-07)', () => {
+    const result = prepareNativeMailHtml(`
+      <p/onclick=alert(1)>Slash handler</p>
+      <p /onmouseover="alert(2)">Spaced slash</p>
+      <a/href="data:text/html,evil">Slashed link</a>
+      <img/src="https://tracker.example/pixel.png">
+    `);
+
+    expect(result.document).not.toContain('onclick');
+    expect(result.document).not.toContain('onmouseover');
+    expect(result.document).not.toContain('data:text/html,evil');
+    expect(result.document).not.toContain('tracker.example');
+  });
+
+  it('permits data:text/html only for the initial document load (LOW-08)', () => {
+    expect(shouldAllowMailDocumentNavigation('data:text/html,doc', { allowDataDocument: true })).toBe(true);
+    expect(shouldAllowMailDocumentNavigation('data:text/html,nav')).toBe(false);
+    expect(shouldAllowMailDocumentNavigation('about:blank')).toBe(true);
+    expect(shouldAllowMailDocumentNavigation('data:text/html,doc', { allowDataDocument: false })).toBe(false);
+  });
+
   it('normalizes hard-coded black text and neutral backgrounds in dark mode', () => {
     const result = prepareNativeMailHtml(`
       <style>.sender{color:rgb(0,0,0);background:#ffffff}</style>

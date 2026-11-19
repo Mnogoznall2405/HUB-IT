@@ -63,7 +63,7 @@ describe('MailFolderRail', () => {
     expect(screen.getByRole('button', { name: 'Цепочки' })).toBeTruthy();
   });
 
-  it('shows nested custom folders under their parent and lets the user collapse the branch', () => {
+  it('shows a custom folder nested under a system folder in «Мои папки», not inside it', () => {
     renderWithTheme(
       <MailFolderRail
         folder="inbox"
@@ -91,12 +91,10 @@ describe('MailFolderRail', () => {
     );
 
     expect(screen.getByText('Projects')).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId('mail-folder-toggle-inbox'));
-    expect(screen.queryByText('Projects')).toBeNull();
-
-    fireEvent.click(screen.getByTestId('mail-folder-toggle-inbox'));
-    expect(screen.getByText('Projects')).toBeTruthy();
+    expect(screen.getByText('Мои папки')).toBeTruthy();
+    // FEA-017: пользовательская папка не рисуется как вложенная в системную —
+    // у «Входящих» нет раскрываемой ветки.
+    expect(screen.queryByTestId('mail-folder-toggle-inbox')).toBeNull();
   });
 
   it('allows creating a nested folder under a standard folder like inbox', () => {

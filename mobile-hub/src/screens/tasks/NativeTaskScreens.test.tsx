@@ -1,14 +1,16 @@
 import { File, Paths } from 'expo-file-system';
 import { clearNativeFormDrafts } from '../../drafts/nativeFormDrafts';
-import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
+import type { TestInstance } from 'test-renderer';
 import * as Clipboard from 'expo-clipboard';
-import { Alert } from 'react-native';
+import { Alert, Dimensions, StyleSheet } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as departmentsApi from '../../api/departmentsApi';
 import * as taskApi from '../../api/taskApi';
 import { readNativeEntitySnapshot, writeNativeEntitySnapshot } from '../../cache/nativeSnapshotCache';
 import { DEFAULT_PREFERENCES, type UserPreferences } from '../../preferences/preferenceNormalizers';
 import * as nativeTaskFiles from '../../tasks/nativeTaskFiles';
+import { nativeTaskDateKey } from '../../tasks/nativeTaskViews';
 import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import { NativeTaskCreateScreen } from './NativeTaskCreateScreen';
 import { NativeTaskDetailScreen } from './NativeTaskDetailScreen';
@@ -443,6 +445,9 @@ describe('Native Tasks screens', () => {
   });
 
   it('edits task fields through the server capability', async () => {
+    // The department directory is gated on settings.read — the same contract
+    // the create screen already uses for its department picker.
+    setAuth(['tasks.read', 'tasks.create', 'settings.read']);
     (taskApi.getTask as jest.Mock).mockResolvedValueOnce({
       ...detailTask,
       protocol_date: '2026-08-24',
@@ -477,19 +482,19 @@ describe('Native Tasks screens', () => {
     await act(async () => {
       fireEvent.press(view.getByTestId('native-task-edit-save'));
     });
-    await waitFor(() => expect(taskApi.updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({
+    // Only changed fields go out: an untouched list (observers, project)
+    // must not roll back a colleague's parallel edit (MB3-04).
+    await waitFor(() => expect(taskApi.updateTask).toHaveBeenCalledWith('task-1', {
       title: 'Обновлённая задача',
       due_at: '2026-09-02T18:00:00',
       priority: 'urgent',
       assignee_user_ids: [7, 8],
       controller_user_id: 8,
-      observer_user_ids: [],
-      project_id: 'general-tasks',
       object_id: 'object-1',
       department_id: 'department-1',
       visibility_scope: 'department',
       email_deadline_remind_hours: 12,
-    })));
+    }));
     expect(view.getByText('Задача обновлена.')).toBeTruthy();
   });
 
@@ -948,6 +953,289 @@ describe('Native Tasks screens', () => {
       const view = await openFiles({ created_by_user_id: 1, status: 'done' });
       expect(view.queryByTestId('native-task-attachment-delete-own')).toBeNull();
     });
+  });
+
+  it('renders the task board for a task_mode=board deep link and navigates from rows', async () => {
+    mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'board' });
+    (taskApi.getTasksPage as jest.Mock).mockResolvedValue({
+      items: [
+        { ...listTask, id: 'task-new', title: 'Новая задача', status: 'new' },
+        { ...listTask, id: 'task-progress', title: 'Задача в работе', status: 'in_progress' },
+        { ...listTask, id: 'task-done', title: 'Готовая задача', status: 'done' },
+      ],
+      total: 3,
+      limit: 40,
+      offset: 0,
+    });
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByTestId('native-tasks-board')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenCalledWith(expect.objectContaining({
+      sort_by: 'status',
+      sort_dir: 'asc',
+      scope: 'my',
+      role_scope: 'assignee',
+    }));
+    expect(view.getByText('Новое')).toBeTruthy();
+    expect(view.getAllByText('В работе').length).toBe(2);
+    expect(view.getByText('На проверке')).toBeTruthy();
+    expect(view.getByText('Готово')).toBeTruthy();
+    expect(view.getAllByText('Загружено 1').length).toBe(3);
+    expect(view.getByText('Загружено 0')).toBeTruthy();
+    expect(view.getByText('Новая задача')).toBeTruthy();
+    expect(view.getByText('Готовая задача')).toBeTruthy();
+    expect(view.getByTestId('native-tasks-board').props.onEndReached).toBeUndefined();
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-row-task-progress')); });
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/(shell)/tasks/[taskId]',
+      params: { taskId: 'task-progress' },
+    });
+  });
+
+  it('switches to the board tab and refetches sorted by status without the due-sort toggle', async () => {
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByText('Настроить сервер')).toBeTruthy());
+    expect(view.getByTestId('native-task-sort-due')).toBeTruthy();
+    (taskApi.getTasksPage as jest.Mock).mockClear();
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-page-mode-board')); });
+    await waitFor(() => expect(view.getByTestId('native-tasks-board')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenCalledWith(expect.objectContaining({ sort_by: 'status', sort_dir: 'asc' }));
+    expect(view.queryByTestId('native-task-sort-due')).toBeNull();
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-page-mode-list')); });
+    await waitFor(() => expect(view.getByTestId('native-tasks-list')).toBeTruthy());
+  });
+
+  it('warns about a partial board page and loads the next page only on demand', async () => {
+    mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'board' });
+    (taskApi.getTasksPage as jest.Mock)
+      .mockResolvedValueOnce({
+        items: [{ ...listTask, id: 'task-a', title: 'Первая задача' }],
+        total: 60,
+        limit: 40,
+        offset: 0,
+      })
+      .mockResolvedValueOnce({
+        items: [{ ...listTask, id: 'task-b', title: 'Вторая задача', status: 'in_progress' }],
+        total: 60,
+        limit: 40,
+        offset: 1,
+      });
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByText('Загружено 1 из 60 задач. Доска/календарь может быть неполным.')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenCalledTimes(1);
+    await act(async () => { fireEvent.press(view.getByTestId('native-tasks-load-more')); });
+    await waitFor(() => expect(view.getByText('Вторая задача')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenCalledTimes(2);
+    expect(taskApi.getTasksPage).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1, limit: 40 }));
+    expect(view.getByText('Загружено 2 из 60 задач. Доска/календарь может быть неполным.')).toBeTruthy();
+  });
+
+  it('renders the calendar for task_mode=calendar and selects a day agenda', async () => {
+    mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'calendar' });
+    const now = new Date();
+    const localIso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T12:00:00`;
+    const targetDay = now.getDate() === 15 ? 16 : 15;
+    const thisMonth = new Date(now.getFullYear(), now.getMonth(), targetDay, 12);
+    const otherDay = new Date(now.getFullYear(), now.getMonth(), targetDay === 16 ? 15 : 16, 12);
+    (taskApi.getTasksPage as jest.Mock).mockResolvedValue({
+      items: [
+        { ...listTask, id: 'task-day', title: 'Задача выбранного дня', status: 'in_progress', due_at: localIso(thisMonth) },
+        { ...listTask, id: 'task-other', title: 'Задача другого дня', status: 'new', due_at: localIso(otherDay) },
+        { ...listTask, id: 'task-nodue', title: 'Задача без срока', status: 'new', due_at: '' },
+      ],
+      total: 3,
+      limit: 40,
+      offset: 0,
+    });
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByTestId('native-tasks-calendar')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenCalledWith(expect.objectContaining({ sort_by: 'due_at', sort_dir: 'asc' }));
+    await act(async () => {
+      fireEvent.press(view.getByTestId(`native-task-calendar-day-${nativeTaskDateKey(thisMonth)}`));
+    });
+    await waitFor(() => expect(view.getByText('Задача выбранного дня')).toBeTruthy());
+    expect(view.queryByText('Задача другого дня')).toBeNull();
+    expect(view.queryByText('Задача без срока')).toBeNull();
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-calendar-no-due')); });
+    await waitFor(() => expect(view.getByText('Задача без срока')).toBeTruthy());
+    expect(view.queryByText('Задача выбранного дня')).toBeNull();
+    expect(view.getByTestId('native-tasks-calendar').props.onEndReached).toBeUndefined();
+  });
+
+  it('moves the calendar between months and returns to today', async () => {
+    mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'calendar' });
+    (taskApi.getTasksPage as jest.Mock).mockResolvedValue({ items: [], total: 0, limit: 40, offset: 0 });
+    const monthLabel = (value: Date) => new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(value);
+    const now = new Date();
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByText(monthLabel(now))).toBeTruthy());
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-calendar-next')); });
+    expect(view.getByText(monthLabel(nextMonth))).toBeTruthy();
+    expect(view.getByTestId(`native-task-calendar-day-${nativeTaskDateKey(nextMonth)}`)).toBeTruthy();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-calendar-prev')); });
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-calendar-prev')); });
+    expect(view.getByText(monthLabel(prevMonth))).toBeTruthy();
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-calendar-today')); });
+    expect(view.getByText(monthLabel(now))).toBeTruthy();
+    expect(view.getByTestId(`native-task-calendar-day-${nativeTaskDateKey(now)}`)).toBeTruthy();
+  });
+
+  it('renders the gantt view for task_mode=gantt and opens tasks from bars and the no-due section', async () => {
+    mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'gantt' });
+    const now = new Date();
+    const localIso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T12:00:00`;
+    const soon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 3, 12);
+    (taskApi.getTasksPage as jest.Mock).mockResolvedValue({
+      items: [
+        { ...listTask, id: 'task-due', title: 'Задача со сроком', status: 'in_progress', due_at: localIso(soon) },
+        { ...listTask, id: 'task-nodue', title: 'Задача без срока', status: 'new', due_at: '' },
+      ],
+      total: 2,
+      limit: 40,
+      offset: 0,
+    });
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByTestId('native-tasks-gantt')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenCalledWith(expect.objectContaining({ sort_by: 'due_at', sort_dir: 'asc' }));
+    expect(view.getByTestId('native-tasks-gantt-row-task-due')).toBeTruthy();
+    expect(view.queryByTestId('native-tasks-gantt-row-task-nodue')).toBeNull();
+    expect(view.getAllByText('Без срока').length).toBeGreaterThan(0);
+    expect(view.getByText('Задача без срока')).toBeTruthy();
+    expect(view.getByTestId('native-tasks-gantt').props.onEndReached).toBeUndefined();
+    await act(async () => { fireEvent.press(view.getByTestId('native-tasks-gantt-row-task-due')); });
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/(shell)/tasks/[taskId]',
+      params: { taskId: 'task-due' },
+    });
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-row-task-nodue')); });
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/(shell)/tasks/[taskId]',
+      params: { taskId: 'task-nodue' },
+    });
+  });
+
+  it('renders the deadlines view for task_mode=deadlines and groups tasks into buckets', async () => {
+    mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'deadlines' });
+    const now = new Date();
+    const localIso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T12:00:00`;
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12);
+    const farFuture = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 21, 12);
+    (taskApi.getTasksPage as jest.Mock).mockResolvedValue({
+      items: [
+        { ...listTask, id: 'task-overdue', title: 'Просроченная задача', status: 'in_progress', due_at: localIso(yesterday), is_overdue: true },
+        { ...listTask, id: 'task-today', title: 'Задача на сегодня', status: 'new', due_at: localIso(today) },
+        { ...listTask, id: 'task-later', title: 'Задача вдалеке', status: 'new', due_at: localIso(farFuture) },
+        { ...listTask, id: 'task-nodue', title: 'Задача без срока', status: 'new', due_at: '' },
+        { ...listTask, id: 'task-done', title: 'Завершённая задача', status: 'done', due_at: '' },
+      ],
+      total: 5,
+      limit: 40,
+      offset: 0,
+    });
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByTestId('native-tasks-deadlines')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenCalledWith(expect.objectContaining({ sort_by: 'due_at', sort_dir: 'asc' }));
+    ['overdue', 'today', 'this_week', 'next_week', 'no_due', 'later', 'done'].forEach((key) => {
+      expect(view.getByTestId(`native-tasks-deadline-bucket-${key}`)).toBeTruthy();
+    });
+    expect(within(view.getByTestId('native-tasks-deadline-bucket-overdue')).getByText('Просроченная задача')).toBeTruthy();
+    expect(within(view.getByTestId('native-tasks-deadline-bucket-today')).getByText('Задача на сегодня')).toBeTruthy();
+    expect(within(view.getByTestId('native-tasks-deadline-bucket-later')).getByText('Задача вдалеке')).toBeTruthy();
+    expect(within(view.getByTestId('native-tasks-deadline-bucket-no_due')).getByText('Задача без срока')).toBeTruthy();
+    expect(within(view.getByTestId('native-tasks-deadline-bucket-done')).getByText('Завершённая задача')).toBeTruthy();
+    expect(view.getByTestId('native-tasks-deadlines').props.onEndReached).toBeUndefined();
+    await act(async () => { fireEvent.press(view.getByTestId('native-task-row-task-today')); });
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/(shell)/tasks/[taskId]',
+      params: { taskId: 'task-today' },
+    });
+  });
+
+  it('warns about a partial deadlines page and loads the next page only on demand', async () => {
+    mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'deadlines' });
+    (taskApi.getTasksPage as jest.Mock)
+      .mockResolvedValueOnce({
+        items: [{ ...listTask, id: 'task-a', title: 'Первая задача' }],
+        total: 60,
+        limit: 40,
+        offset: 0,
+      })
+      .mockResolvedValueOnce({
+        items: [{ ...listTask, id: 'task-b', title: 'Вторая задача', status: 'in_progress' }],
+        total: 60,
+        limit: 40,
+        offset: 1,
+      });
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByText('Загружено 1 из 60 задач. Доска/календарь может быть неполным.')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenCalledTimes(1);
+    await act(async () => { fireEvent.press(view.getByTestId('native-tasks-load-more')); });
+    await waitFor(() => expect(view.getByText('Вторая задача')).toBeTruthy());
+    expect(taskApi.getTasksPage).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1, limit: 40 }));
+  });
+
+  it('disables the board load-more while offline instead of silently refetching', async () => {
+    mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'board' });
+    (taskApi.getTasksPage as jest.Mock).mockResolvedValueOnce({
+      items: [{ ...listTask, id: 'task-a', title: 'Первая задача' }],
+      total: 60,
+      limit: 40,
+      offset: 0,
+    });
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByText('Загружено 1 из 60 задач. Доска/календарь может быть неполным.')).toBeTruthy());
+    mockAuth.offlineMode = true;
+    await act(async () => { view.rerender(<NativeTasksInboxScreen />); });
+    await waitFor(() => expect(view.getByText('Нет сети — остальные задачи недоступны.')).toBeTruthy());
+    expect(view.getByTestId('native-tasks-load-more').props.accessibilityState.disabled).toBe(true);
+    (taskApi.getTasksPage as jest.Mock).mockClear();
+    await act(async () => { fireEvent.press(view.getByTestId('native-tasks-load-more')); });
+    expect(taskApi.getTasksPage).not.toHaveBeenCalled();
+    expect(view.getByText('Первая задача')).toBeTruthy();
+  });
+
+  it('keeps the calendar navigation reachable at 320px with a larger font scale', async () => {
+    const originalWindow = Dimensions.get('window');
+    await act(async () => { Dimensions.set({ window: { ...originalWindow, width: 320, height: 640, fontScale: 1.4 } }); });
+    try {
+      mockedUseLocalSearchParams.mockReturnValue({ taskMode: 'calendar' });
+      const view = await render(<NativeTasksInboxScreen />);
+      await waitFor(() => expect(view.getByTestId('native-tasks-calendar')).toBeTruthy());
+      const prev = view.getByTestId('native-task-calendar-prev');
+      const today = view.getByTestId('native-task-calendar-today');
+      const next = view.getByTestId('native-task-calendar-next');
+      const styleOf = (element: TestInstance): Record<string, number | string | undefined> => (
+        (StyleSheet.flatten(
+          typeof element.props.style === 'function' ? element.props.style({ pressed: false }) : element.props.style,
+        ) || {}) as Record<string, number | string | undefined>
+      );
+      [prev, today, next].forEach((button) => {
+        expect(styleOf(button).minHeight).toBeGreaterThanOrEqual(44);
+      });
+      expect(styleOf(today).flex).toBe(1);
+      const monthTitle = view.getByText(new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(new Date()));
+      expect(monthTitle.parent).not.toBe(prev.parent);
+      expect(StyleSheet.flatten(monthTitle.props.style).textAlign).toBe('center');
+      const firstDay = view.getAllByTestId(/native-task-calendar-day-/)[0];
+      const dayStyle = styleOf(firstDay);
+      expect(dayStyle.flex).toBe(1);
+      expect(dayStyle.minWidth).toBe(0);
+      expect(dayStyle.minHeight).toBeGreaterThanOrEqual(44);
+    } finally {
+      await act(async () => { Dimensions.set({ window: originalWindow }); });
+    }
+  });
+
+  it('hides board and calendar controls without tasks.read', async () => {
+    setAuth([]);
+    const view = await render(<NativeTasksInboxScreen />);
+    await waitFor(() => expect(view.getByText('Нет доступа к задачам')).toBeTruthy());
+    expect(view.queryByTestId('native-task-page-mode-board')).toBeNull();
+    expect(view.queryByTestId('native-task-page-mode-calendar')).toBeNull();
+    expect(view.queryByTestId('native-tasks-board')).toBeNull();
+    expect(view.queryByTestId('native-tasks-calendar')).toBeNull();
   });
 
   it('does not load task data without tasks.read', async () => {

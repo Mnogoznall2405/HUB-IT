@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { takeMailSendIdempotencyKey, withMailSendIdempotencyHeaders } from '../components/mail/mailSendIdempotency';
 import { withMailSendTimeout } from '../components/mail/mailSendOutcome';
 import { normalizeMailboxId, withMailboxQuery } from './mailMailboxQuery';

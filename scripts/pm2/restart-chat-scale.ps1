@@ -153,14 +153,26 @@ function Stop-ChatNodeForRestart {
     if ($snapshot.ExitCode -ne 0) { throw 'Cannot verify listener ownership.' }
     $owner = @((Convert-HubitPm2Snapshot -Json $snapshot.Output) | Where-Object { $_.Name -eq $Name })
     $knownPid = if ($owner.Count -eq 1) { [int]$owner[0].PID } else { 0 }
+    $processes = @(Get-CimInstance Win32_Process)
+    $verifiedListeners = @{}
     foreach ($listenerPid in (Get-PortListenerPids -ListenPort $Port)) {
-        if ($knownPid -le 0 -or $listenerPid -ne $knownPid) { throw 'Port belongs to an unverified process; refusing restart.' }
+        if (-not (Test-HubitProcessDescendant -ManagedProcessId $knownPid -CandidateProcessId $listenerPid -Processes $processes)) {
+            throw 'Port belongs to an unverified process; refusing restart.'
+        }
+        $identity = @($processes | Where-Object { [int]$_.ProcessId -eq $listenerPid })
+        if ($identity.Count -ne 1 -or -not $identity[0].CreationDate) { throw 'Cannot verify listener creation time.' }
+        $verifiedListeners[$listenerPid] = [datetime]$identity[0].CreationDate
     }
     $stop = Invoke-HubitPm2 -Pm2Command $Pm2Command -Arguments @('stop',$Name)
     if ($stop.ExitCode -ne 0) { throw "Cannot stop $Name." }
     Start-Sleep -Seconds 2
     foreach ($listenerPid in (Get-PortListenerPids -ListenPort $Port)) {
-        if ($listenerPid -ne $knownPid) { throw 'Listener ownership changed during restart.' }
+        # The venv parent may have exited; only stop the exact child verified before PM2 stop.
+        $current = @(Get-CimInstance Win32_Process -Filter "ProcessId=$listenerPid" | Where-Object { [int]$_.ProcessId -eq $listenerPid })
+        if (-not $verifiedListeners.ContainsKey($listenerPid) -or $current.Count -ne 1 -or
+            -not $current[0].CreationDate -or [datetime]$current[0].CreationDate -ne $verifiedListeners[$listenerPid]) {
+            throw 'Listener ownership changed during restart.'
+        }
         Write-Host "Stopping stale $Name listener on port $Port (PID $listenerPid)..." -ForegroundColor Yellow
         taskkill /PID $listenerPid /T /F 2>$null | Out-Null
     }

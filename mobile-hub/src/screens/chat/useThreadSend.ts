@@ -91,6 +91,7 @@ export function useThreadSend({
     stopOutgoingTyping,
   } = composer;
   const attachmentDraftClientMessageIdRef = useRef('');
+  const pendingReactionsRef = useRef(new Set<string>());
 
   const sendBody = useCallback(async (
     body: string,
@@ -168,6 +169,9 @@ export function useThreadSend({
 
   const toggleReaction = useCallback(async (message: ChatMessage, emoji: string) => {
     if (!isCurrentSendScope() || !canWrite || message.is_deleted || message.local_status) return;
+    const reactionKey = JSON.stringify([conversationId, message.id, emoji]);
+    if (pendingReactionsRef.current.has(reactionKey)) return;
+    pendingReactionsRef.current.add(reactionKey);
     const previousReactions = message.reactions || [];
     setMessages((current) => current.map((item) => (
       item.id === message.id
@@ -186,6 +190,8 @@ export function useThreadSend({
         item.id === message.id ? { ...item, reactions: previousReactions } : item
       )));
       showNativeToast('Не удалось изменить реакцию', formatApiError(cause, 'Повторите попытку'));
+    } finally {
+      pendingReactionsRef.current.delete(reactionKey);
     }
   }, [isCurrentSendScope, canWrite, conversationId, user?.id]);
 
@@ -283,7 +289,11 @@ export function useThreadSend({
     const sending = sendBody(body, undefined, replyPreview, true, () => {
       if (pendingComposerSendRef.current === submission) pendingComposerSendRef.current = null;
       if (!mountedRef.current) return;
-      if (user?.id) void clearNativeChatDraft(user.id, conversationId).catch(() => undefined);
+      // The clear must only remove the draft revision that was actually sent:
+      // text typed after the send is a newer draft and survives the ACK.
+      if (user?.id && textRevisionRef.current === postClearRevision) {
+        void clearNativeChatDraft(user.id, conversationId).catch(() => undefined);
+      }
     }, (cause) => {
       if (!isCurrentSendScope()) return;
       if (textRevisionRef.current === postClearRevision) {
@@ -435,7 +445,7 @@ export function useThreadSend({
         action: 'upload', progress: 0, status: cancelled ? 'cancelled' : 'failed', cancellable: false,
       });
       if (!cancelled) {
-        void recordDiagnosticEvent('native_file_error');
+        void recordDiagnosticEvent('native_file_error', undefined, { source: 'chat-attachment', stage: 'queue' });
         if (!previousUpload && textRevisionRef.current === postClearRevision) {
           setText(captionSnapshot || '');
           if (replyModeSnapshot) setComposerMode(replyModeSnapshot);
@@ -501,13 +511,48 @@ export function useThreadSend({
       retryPendingAttachmentUpload(message);
       return;
     }
+    // A task_share carries its card in task_preview + the queue command;
+    // resending body_text would silently degrade it to plain text.
+    if (message.kind === 'task_share' && message.task_preview?.id) {
+      void (async () => {
+        const clientMessageId = message.client_message_id || createClientMessageId();
+        const pending: ChatMessage = {
+          ...message,
+          id: `pending:${clientMessageId}`,
+          client_message_id: clientMessageId,
+          local_status: 'sending',
+        };
+        requestBottomAnchor('own-send');
+        setMessages((current) => mergeMessages(
+          current.filter((item) => item.id !== pending.id && item.id !== message.id),
+          pending,
+          user?.id,
+        ));
+        try {
+          const queued = await outbox.queue(pending, undefined, {
+            type: 'task_share',
+            task_id: message.task_preview!.id,
+          });
+          if (!isCurrentSendScope()) return;
+          setMessages((current) => mergeMessages(current, queued.message, user?.id));
+        } catch (cause) {
+          if (!isCurrentSendScope()) return;
+          setMessages((current) => current.map((item) => (
+            item.id === pending.id ? { ...item, local_status: 'failed' } : item
+          )));
+          showNativeToast('Не удалось отправить задачу', formatApiError(cause, 'Повторите попытку.'));
+        }
+      })();
+      return;
+    }
     void sendBody(
       message.body_text || '',
       message.client_message_id || undefined,
       message.reply_preview || undefined,
       false,
     );
-  }, [retryPendingAttachmentUpload, sendBody]);
+  }, [isCurrentSendScope, outbox, requestBottomAnchor, retryPendingAttachmentUpload, sendBody,
+    setMessages, user?.id]);
 
   const pickAndSendAttachment = useCallback(async (source: NativeAttachmentSource) => {
     setAttachmentPickerVisible(false);

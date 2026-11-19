@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 
+from backend.chat.chat_constants import CHAT_GROUP_MANAGER_ROLES
 from backend.chat.chat_group_permissions import enforce_files_allowed
 from backend.chat.chat_group_settings import enforce_group_posting_policy
 from backend.chat.chat_delivery_state import (
@@ -25,12 +26,13 @@ from backend.chat.chat_message_seq import (
     claim_next_conversation_seq_and_touch,
     touch_conversation_last_message,
 )
+from backend.chat.chat_mentions import mentions_everyone
 from backend.chat.chat_attachment_preview_service import chat_attachment_preview_service
 from backend.chat.lean_ack import (
     build_lean_message_payload_from_orm,
     empty_ack_prepare_stage_metrics,
 )
-from backend.chat.models import ChatConversation, ChatConversationUserState, ChatEventOutbox, ChatMessage, ChatMessageAttachment
+from backend.chat.models import ChatConversation, ChatConversationUserState, ChatEventOutbox, ChatMember, ChatMessage, ChatMessageAttachment
 from backend.chat.utils import normalize_text as _normalize_text
 
 CLIENT_MESSAGE_DEDUP_CONSTRAINTS = {
@@ -279,10 +281,8 @@ class ChatTextMessagePersistence:
         dedup_hit = False
         normalized_client_message_id = _normalize_text(client_message_id) or None
         second_db_session_used = 0
-        claimed_conversation_seq = 0
         written_conversation_id = _normalize_text(conversation_id)
         post_commit_serialize: dict[str, Any] | None = None
-        deferred_outbox_job: dict[str, Any] | None = None
         conversation_kind = "direct"
 
         write_session_started_at = time.perf_counter()
@@ -369,6 +369,29 @@ class ChatTextMessagePersistence:
                 written_conversation_id = conversation.id
                 claim_finished_at: float | None = None
 
+                delivery_job = build_delivery_state_outbox_job(
+                    conversation_id=written_conversation_id,
+                    message_id=prepared_message_id,
+                    sender_user_id=int(current_user_id),
+                    member_user_ids=member_user_ids,
+                    conversation_seq=0,
+                    seen_at=now,
+                )
+                if "@" in body:
+                    # Resolve names in the worker, but never grant @all after a later promotion.
+                    mention_all_allowed = False
+                    if conversation_kind == "group" and mentions_everyone(body):
+                        role = session.execute(select(ChatMember.member_role).where(
+                            ChatMember.conversation_id == written_conversation_id,
+                            ChatMember.user_id == int(current_user_id),
+                            ChatMember.left_at.is_(None),
+                        )).scalar_one_or_none()
+                        mention_all_allowed = _normalize_text(role).lower() in CHAT_GROUP_MANAGER_ROLES
+                    delivery_job["payload"].update(
+                        mention_body=body,
+                        mention_all_allowed=mention_all_allowed,
+                    )
+
                 # Drop ORM instances before claim so flush cannot emit stale conversation UPDATEs.
                 try:
                     session.expunge(conversation)
@@ -401,7 +424,6 @@ class ChatTextMessagePersistence:
                     touch_tip=True,
                 )
                 claim_finished_at = time.perf_counter()
-                claimed_conversation_seq = int(next_conversation_seq)
                 stage_metrics["sequence_ms"] = (claim_finished_at - stage_started_at) * 1000.0
                 stage_metrics["seq_claim_ms"] = stage_metrics["sequence_ms"]
                 stage_metrics["seq_update_total_ms"] = stage_metrics["sequence_ms"]
@@ -418,7 +440,7 @@ class ChatTextMessagePersistence:
                 except Exception:
                     pass
 
-                # Under row lock: Core INSERT + commit only. No SELECT/outbox/payload/ORM sync.
+                # Under row lock: message + durable delivery intent + commit; no fan-out.
                 stage_started_at = time.perf_counter()
                 try:
                     from backend.chat.write_path_metrics import mark_send_stage
@@ -426,63 +448,83 @@ class ChatTextMessagePersistence:
                     mark_send_stage("message_insert_started", chat_id=str(written_conversation_id)[:64])
                 except Exception:
                     pass
-                session.execute(
-                    insert(ChatMessage.__table__).values(
-                        id=prepared_message_id,
+                commit_started_at = None
+                try:
+                    # Non-deferrable uniqueness is checked by INSERT, not just COMMIT.
+                    session.execute(
+                        insert(ChatMessage.__table__).values(
+                            id=prepared_message_id,
+                            conversation_id=written_conversation_id,
+                            sender_user_id=int(current_user_id),
+                            kind=kind,
+                            body_format=body_format,
+                            body=body,
+                            conversation_seq=int(next_conversation_seq),
+                            client_message_id=normalized_client_message_id,
+                            reply_to_message_id=reply_message_id,
+                            created_at=now,
+                        )
+                    )
+                    insert_finished_at = time.perf_counter()
+                    stage_metrics["message_insert_ms"] = (insert_finished_at - stage_started_at) * 1000.0
+                    stage_metrics["insert_total_ms"] = stage_metrics["message_insert_ms"]
+                    outbox_started_at = time.perf_counter()
+                    delivery_job["payload"]["conversation_seq"] = int(next_conversation_seq)
+                    session.execute(insert(ChatEventOutbox.__table__).values(
+                        event_type=delivery_job["event_type"],
+                        target_scope=delivery_job["target_scope"],
+                        target_user_id=delivery_job["target_user_id"],
                         conversation_id=written_conversation_id,
-                        sender_user_id=int(current_user_id),
-                        kind=kind,
-                        body_format=body_format,
-                        body=body,
-                        conversation_seq=int(next_conversation_seq),
-                        client_message_id=normalized_client_message_id,
-                        reply_to_message_id=reply_message_id,
+                        message_id=prepared_message_id,
+                        payload_json=json.dumps(delivery_job["payload"], ensure_ascii=False),
+                        dedupe_key=delivery_job["dedupe_key"],
+                        status="queued",
+                        attempt_count=0,
+                        next_attempt_at=now,
                         created_at=now,
-                    )
-                )
-                insert_finished_at = time.perf_counter()
-                stage_metrics["message_insert_ms"] = (insert_finished_at - stage_started_at) * 1000.0
-                stage_metrics["insert_total_ms"] = stage_metrics["message_insert_ms"]
-                stage_metrics["outbox_insert_ms"] = 0.0
-                stage_metrics["prepare_write_ms"] = float(stage_metrics.get("message_insert_ms") or 0.0)
-                stage_metrics["flush_ms"] = 0.0
-                try:
-                    from backend.chat.write_path_metrics import mark_send_stage
+                        updated_at=now,
+                    ))
+                    stage_metrics["outbox_insert_ms"] = (time.perf_counter() - outbox_started_at) * 1000.0
+                    stage_metrics["insert_total_ms"] += stage_metrics["outbox_insert_ms"]
+                    stage_metrics["prepare_write_ms"] = stage_metrics["insert_total_ms"]
+                    stage_metrics["flush_ms"] = 0.0
+                    try:
+                        from backend.chat.write_path_metrics import mark_send_stage
 
-                    mark_send_stage(
-                        "message_insert_finished",
-                        started_at=stage_started_at,
-                        finished_at=insert_finished_at,
-                        chat_id=str(written_conversation_id)[:64],
-                    )
-                except Exception:
-                    pass
+                        mark_send_stage(
+                            "message_insert_finished",
+                            started_at=stage_started_at,
+                            finished_at=insert_finished_at,
+                            chat_id=str(written_conversation_id)[:64],
+                        )
+                    except Exception:
+                        pass
 
-                commit_started_at = time.perf_counter()
-                stage_metrics["pre_commit_gap_ms"] = (commit_started_at - insert_finished_at) * 1000.0
-                try:
-                    from backend.chat.write_path_metrics import mark_send_stage
+                    commit_started_at = time.perf_counter()
+                    stage_metrics["pre_commit_gap_ms"] = (commit_started_at - insert_finished_at) * 1000.0
+                    try:
+                        from backend.chat.write_path_metrics import mark_send_stage
 
-                    mark_send_stage(
-                        "commit_started",
-                        started_at=insert_finished_at,
-                        finished_at=commit_started_at,
-                        chat_id=str(written_conversation_id)[:64],
-                    )
-                except Exception:
-                    pass
-                try:
+                        mark_send_stage(
+                            "commit_started",
+                            started_at=insert_finished_at,
+                            finished_at=commit_started_at,
+                            chat_id=str(written_conversation_id)[:64],
+                        )
+                    except Exception:
+                        pass
                     session.commit()
                 except IntegrityError as exc:
                     session.rollback()
                     if not is_expected_client_message_dedup_violation(exc):
                         raise
                     dedup_hit = True
-                    claimed_conversation_seq = 0
                     post_commit_serialize = None
-                    deferred_outbox_job = None
                     claim_finished_at = None
-                    stage_metrics["commit_ms"] = (time.perf_counter() - commit_started_at) * 1000.0
+                    stage_metrics["commit_ms"] = (
+                        (time.perf_counter() - commit_started_at) * 1000.0
+                        if commit_started_at is not None else 0.0
+                    )
                     stage_metrics["commit_total_ms"] = stage_metrics["commit_ms"]
                     stage_metrics["conversation_lock_hold_ms"] = float(stage_metrics["commit_ms"])
                 else:
@@ -505,7 +547,7 @@ class ChatTextMessagePersistence:
                     except Exception:
                         pass
                     message_id = prepared_message_id
-                    # Payload/outbox prep AFTER lock release.
+                    # Response preparation stays after lock release.
                     post_commit_serialize = {
                         "conversation_kind": conversation_kind,
                         "message": ChatMessage(
@@ -525,15 +567,6 @@ class ChatTextMessagePersistence:
                         "current_user_id": int(current_user_id),
                         "conversation_id": written_conversation_id,
                     }
-                    deferred_outbox_job = build_delivery_state_outbox_job(
-                        conversation_id=written_conversation_id,
-                        message_id=prepared_message_id,
-                        sender_user_id=int(current_user_id),
-                        member_user_ids=member_user_ids,
-                        conversation_seq=int(next_conversation_seq),
-                        seen_at=now,
-                    )
-                    deferred_outbox_job["_now"] = now
 
         if dedup_hit and not payload:
             second_db_session_used = 1
@@ -595,14 +628,6 @@ class ChatTextMessagePersistence:
             )
         elif "serialize_ms" not in stage_metrics:
             stage_metrics["serialize_ms"] = encode_ms
-        if not dedup_hit and claimed_conversation_seq > 0 and deferred_outbox_job:
-            # Deferred (not atomically durable): enqueue after ACK via aux TX + reconciliation.
-            payload["_deferred_delivery_outbox"] = {
-                key: value
-                for key, value in dict(deferred_outbox_job).items()
-                if key != "_now"
-            }
-
         return TextMessagePersistenceResult(
             payload=payload,
             message_id=message_id,
@@ -676,24 +701,35 @@ class ChatFileMessagePersistence:
                     )
                 ).scalar_one_or_none()
                 if existing_message is not None:
-                    existing_attachments = list(
-                        session.execute(
-                            select(ChatMessageAttachment).where(
-                                ChatMessageAttachment.message_id == existing_message.id
-                            )
-                        ).scalars()
-                    )
-                    payload = self._build_message_payload_for_members(
-                        session=session,
-                        conversation=conversation,
-                        message=existing_message,
-                        current_user_id=int(current_user_id),
-                        member_user_ids=member_user_ids,
-                        attachments=existing_attachments,
-                    )
+                    existing_message_id = existing_message.id
+                    existing_conversation_id = conversation.id
+                    # Release the conversation lock before loading the replay response.
+                    session.commit()
+                    with self._session_factory() as read_session:
+                        saved_conversation = read_session.get(ChatConversation, existing_conversation_id)
+                        if saved_conversation is None:
+                            raise LookupError("Conversation not found")
+                        saved_message = read_session.get(ChatMessage, existing_message_id)
+                        if saved_message is None:
+                            raise LookupError("Message not found")
+                        existing_attachments = list(
+                            read_session.execute(
+                                select(ChatMessageAttachment).where(
+                                    ChatMessageAttachment.message_id == existing_message_id
+                                )
+                            ).scalars()
+                        )
+                        payload = self._build_message_payload_for_members(
+                            session=read_session,
+                            conversation=saved_conversation,
+                            message=saved_message,
+                            current_user_id=int(current_user_id),
+                            member_user_ids=member_user_ids,
+                            attachments=existing_attachments,
+                        )
                     return FileMessagePersistenceResult(
                         payload=payload,
-                        message_id=existing_message.id,
+                        message_id=existing_message_id,
                         member_user_ids=member_user_ids,
                         conversation_kind=conversation_kind,
                         dedup_hit=True,
@@ -761,12 +797,11 @@ class ChatFileMessagePersistence:
             # the preview INSERT before its parent when both ORM objects are
             # pending in the same unit of work.
             session.flush()
-            for attachment in preview_attachments:
-                chat_attachment_preview_service.enqueue_in_session(
-                    session=session,
-                    attachment=attachment,
-                    now=now,
-                )
+            chat_attachment_preview_service.enqueue_many_in_session(
+                session=session,
+                attachments=preview_attachments,
+                now=now,
+            )
 
             _apply_new_message_delivery_state(
                 session=session,
@@ -884,15 +919,26 @@ class ChatForwardMessagePersistence:
                 if existing is not None:
                     if existing.forward_from_message_id != normalized_forward_from_message_id:
                         raise ValueError("client_message_id belongs to another message")
-                    attachments = list(session.execute(select(ChatMessageAttachment).where(
-                        ChatMessageAttachment.message_id == existing.id,
-                    )).scalars())
-                    payload = self._build_message_payload_for_members(
-                        session=session, conversation=conversation, message=existing,
-                        current_user_id=int(current_user_id), member_user_ids=member_user_ids,
-                        attachments=attachments,
-                    )
-                    return ForwardMessagePersistenceResult(payload=payload, message_id=existing.id,
+                    existing_message_id = existing.id
+                    existing_conversation_id = conversation.id
+                    # Release the conversation lock before loading the replay response.
+                    session.commit()
+                    with self._session_factory() as read_session:
+                        saved_conversation = read_session.get(ChatConversation, existing_conversation_id)
+                        if saved_conversation is None:
+                            raise LookupError("Conversation not found")
+                        saved_message = read_session.get(ChatMessage, existing_message_id)
+                        if saved_message is None:
+                            raise LookupError("Message not found")
+                        attachments = list(read_session.execute(select(ChatMessageAttachment).where(
+                            ChatMessageAttachment.message_id == existing_message_id,
+                        )).scalars())
+                        payload = self._build_message_payload_for_members(
+                            session=read_session, conversation=saved_conversation, message=saved_message,
+                            current_user_id=int(current_user_id), member_user_ids=member_user_ids,
+                            attachments=attachments,
+                        )
+                    return ForwardMessagePersistenceResult(payload=payload, message_id=existing_message_id,
                         member_user_ids=member_user_ids, dedup_hit=True)
 
             if validate_member_user_ids is not None:
@@ -959,12 +1005,11 @@ class ChatForwardMessagePersistence:
                 )
 
             session.flush()
-            for attachment in preview_attachments:
-                chat_attachment_preview_service.enqueue_in_session(
-                    session=session,
-                    attachment=attachment,
-                    now=now,
-                )
+            chat_attachment_preview_service.enqueue_many_in_session(
+                session=session,
+                attachments=preview_attachments,
+                now=now,
+            )
 
             _apply_new_message_delivery_state(
                 session=session,
@@ -986,21 +1031,27 @@ class ChatForwardMessagePersistence:
 
         if serialize_context is not None:
             conv_id, serialized_message_id, serialized_member_user_ids, serialized_user_id, serialized_attachments = serialize_context
-            with self._session_factory() as read_session:
-                conversation = read_session.get(ChatConversation, conv_id)
-                if conversation is None:
-                    raise LookupError("Conversation not found")
-                message = read_session.get(ChatMessage, serialized_message_id)
-                if message is None:
-                    raise LookupError("Message not found")
-                payload = self._build_message_payload_for_members(
-                    session=read_session,
-                    conversation=conversation,
-                    message=message,
-                    current_user_id=serialized_user_id,
-                    member_user_ids=serialized_member_user_ids,
-                    attachments=serialized_attachments,
-                )
+            try:
+                with self._session_factory() as read_session:
+                    conversation = read_session.get(ChatConversation, conv_id)
+                    if conversation is None:
+                        raise LookupError("Conversation not found")
+                    message = read_session.get(ChatMessage, serialized_message_id)
+                    if message is None:
+                        raise LookupError("Message not found")
+                    payload = self._build_message_payload_for_members(
+                        session=read_session,
+                        conversation=conversation,
+                        message=message,
+                        current_user_id=serialized_user_id,
+                        member_user_ids=serialized_member_user_ids,
+                        attachments=serialized_attachments,
+                    )
+            except Exception as exc:
+                if serialized_attachments:
+                    # The committed forward now owns its materialized files.
+                    raise FileMessageCommittedError(str(serialized_message_id), exc) from exc
+                raise
         return ForwardMessagePersistenceResult(
             payload=payload,
             message_id=message_id,

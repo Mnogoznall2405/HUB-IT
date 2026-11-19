@@ -10,15 +10,18 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { Alert, AppState, FlatList, Image, Platform, StyleSheet } from 'react-native';
 import * as chatApi from '../../api/chatApi';
+import { setActiveNativeChatConversationId } from '../../chat/chatActiveConversation';
 import { chatSocket } from '../../chat/chatSocket';
 import * as nativeFilePicker from '../../files/nativeFilePicker';
 import * as nativeSnapshotCache from '../../cache/nativeSnapshotCache';
 import * as nativeChatInboxSnapshot from '../../chat/nativeChatInboxSnapshot';
+import { useState } from 'react';
 import { NativeChatInboxScreen } from './NativeChatInboxScreen';
 import { UNREAD_FOLDERS_RELOAD_DEBOUNCE_MS } from './useInboxData';
 import { NativeChatThreadWithDelivery as NativeChatThreadScreen } from '../../test/NativeChatWithDelivery';
 
 const mockSocketHandlers = new Map<string, Set<(payload: unknown) => void>>();
+const mockFocusEffects: { callback: () => void | (() => void); cleanup: (() => void) | null }[] = [];
 let mockOfflineMode = false;
 let mockChatUserId = 1;
 let mockChatWriteAllowed = true;
@@ -31,6 +34,7 @@ function emitSocket(event: string, payload: unknown) {
 jest.mock('../../api/chatApi', () => ({
   getConversations: jest.fn(),
   getConversationPage: jest.fn(),
+  listAllConversations: jest.fn(),
   getConversation: jest.fn(),
   getMessagesPage: jest.fn(),
   getThreadBootstrap: jest.fn(),
@@ -129,6 +133,55 @@ jest.mock('../../chat/chatSocket', () => ({
   },
 }));
 
+jest.mock('expo-router', () => {
+  const React = require('react');
+  return {
+    router: {
+      push: jest.fn(),
+      replace: jest.fn(),
+      back: jest.fn(),
+      navigate: jest.fn(),
+      setParams: jest.fn(),
+      canGoBack: jest.fn(() => true),
+    },
+    Redirect: () => null,
+    Stack: Object.assign(() => null, { Screen: () => null }),
+    Tabs: Object.assign(() => null, { Screen: () => null }),
+    useLocalSearchParams: jest.fn(() => ({})),
+    usePathname: jest.fn(() => '/dashboard'),
+    useSegments: jest.fn(() => ['(shell)', 'dashboard']),
+    // Same default as real navigation (focused on mount, cleaned up on
+    // unmount), but every effect registers so tests can blur and refocus a
+    // still-mounted screen like a stacked route does.
+    useFocusEffect: (callback: () => void | (() => void)) => {
+      React.useEffect(() => {
+        const record = { callback, cleanup: null as null | (() => void) };
+        record.cleanup = callback() || null;
+        mockFocusEffects.push(record);
+        return () => {
+          record.cleanup?.();
+          const index = mockFocusEffects.indexOf(record);
+          if (index >= 0) mockFocusEffects.splice(index, 1);
+        };
+      }, [callback]);
+    },
+  };
+});
+
+const blurFocusEffects = (records: typeof mockFocusEffects) => {
+  records.forEach((record) => {
+    record.cleanup?.();
+    record.cleanup = null;
+  });
+};
+
+const restoreFocusEffects = (records: typeof mockFocusEffects) => {
+  records.forEach((record) => {
+    if (record.cleanup) return;
+    record.cleanup = record.callback() || null;
+  });
+};
+
 const mockedChatApi = chatApi as jest.Mocked<typeof chatApi>;
 
 describe('native Chat screens', () => {
@@ -136,6 +189,7 @@ describe('native Chat screens', () => {
     await clearNativeChatOutbox();
     jest.clearAllMocks();
     mockSocketHandlers.clear();
+    mockFocusEffects.length = 0;
     mockOfflineMode = false;
     mockChatUserId = 1;
     mockChatWriteAllowed = true;
@@ -169,6 +223,9 @@ describe('native Chat screens', () => {
       has_more: false,
       next_cursor: null,
     });
+    mockedChatApi.listAllConversations.mockImplementation(async (query?: string) => (
+      (await mockedChatApi.getConversationPage(query ? { query, limit: 50 } : { limit: 50 })).items
+    ));
     mockedChatApi.listChatFolders.mockResolvedValue({
       items: [{ id: 'work', name: 'Работа', unread_count: 1, conversation_ids: [] }],
       conversation_ids_by_folder: {},
@@ -974,6 +1031,49 @@ describe('native Chat screens', () => {
     ));
   });
 
+  it('does not mark a covered thread read until it owns the active slot again (MB-09)', async () => {
+    const addListener = AppState.addEventListener as unknown as jest.Mock;
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    const initialCalls = mockedChatApi.markConversationRead.mock.calls.length;
+
+    // A screen pushed on top claims the active-conversation slot; the covered
+    // thread stays mounted and keeps receiving room events.
+    setActiveNativeChatConversationId('conversation-2');
+    await act(async () => {
+      emitSocket('chat.message.created', { payload: { message: {
+        id: 'message-covered',
+        conversation_id: 'conversation-1',
+        sender_user_id: 2,
+        body_text: 'Пришло под перекрытым экраном',
+        created_at: '2026-08-24T10:06:00Z',
+      } } });
+      await Promise.resolve();
+    });
+    expect(view.getByText('Пришло под перекрытым экраном')).toBeTruthy();
+    // The AppState 'active' retry used to bypass the focus check entirely.
+    await act(async () => {
+      addListener.mock.calls
+        .filter(([type]) => type === 'change')
+        .forEach(([, handler]) => handler('active'));
+      await Promise.resolve();
+    });
+    expect(mockedChatApi.markConversationRead).toHaveBeenCalledTimes(initialCalls);
+
+    // Regaining the slot re-issues the receipt on the next foreground pass.
+    setActiveNativeChatConversationId('conversation-1');
+    await act(async () => {
+      addListener.mock.calls
+        .filter(([type]) => type === 'change')
+        .forEach(([, handler]) => handler('active'));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockedChatApi.markConversationRead).toHaveBeenCalledWith(
+      'conversation-1',
+      'message-covered',
+    ));
+  });
+
   it('shows the AI run status line and catches up messages when the run finishes (M6)', async () => {
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
@@ -1588,8 +1688,8 @@ describe('native Chat screens', () => {
   });
 
   it('ignores a late forward picker after changing conversation', async () => {
-    let finish!: (items: Awaited<ReturnType<typeof chatApi.getConversations>>) => void;
-    mockedChatApi.getConversations.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    let finish!: (items: Awaited<ReturnType<typeof chatApi.listAllConversations>>) => void;
+    mockedChatApi.listAllConversations.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
     await openMessageActions(view, 'Первое сообщение', 'Переслать');
@@ -2547,6 +2647,32 @@ describe('native Chat screens', () => {
     ));
   });
 
+  it('ignores a repeated quick reaction while the same toggle is in flight', async () => {
+    let finish!: (reactions: Awaited<ReturnType<typeof chatApi.toggleReaction>>) => void;
+    mockedChatApi.toggleReaction.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(view.getByText('Первое сообщение')).toBeTruthy());
+    const bubble = view.getByLabelText(/Сообщение от Мария Иванова\. Первое сообщение/);
+
+    await fireEvent.press(bubble);
+    await fireEvent.press(bubble);
+    await waitFor(() => expect(mockedChatApi.toggleReaction).toHaveBeenCalledTimes(1));
+
+    // The first request is still pending: the same message/emoji toggle must
+    // not fire a second request that could settle out of order.
+    await fireEvent.press(bubble);
+    await fireEvent.press(bubble);
+    await act(async () => { await Promise.resolve(); });
+    expect(mockedChatApi.toggleReaction).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finish([{ emoji: '👍', count: 1, user_ids: [1], reacted_by_me: true }]);
+    });
+    await fireEvent.press(bubble);
+    await fireEvent.press(bubble);
+    await waitFor(() => expect(mockedChatApi.toggleReaction).toHaveBeenCalledTimes(2));
+  });
+
   it('shows a sender avatar next to incoming bubbles in a group', async () => {
     mockedChatApi.getConversation.mockResolvedValue({
       id: 'conversation-1',
@@ -2961,5 +3087,89 @@ describe('native Chat screens', () => {
     await waitFor(() => expect(view.getByText('OpenCode workspace')).toBeTruthy());
     expect(view.getByLabelText('Разрешить один раз')).toBeTruthy();
     expect(mockedChatApi.getAiSandboxConversation).toHaveBeenCalledWith('ai-today');
+  });
+
+  it('restores the peer presence watch when focus returns to a still-mounted thread', async () => {
+    const lastWatchedIds = () => (
+      jest.mocked(chatSocket.watchPresence).mock.calls.at(-1)?.[0] as number[] | undefined
+    );
+    mockedChatApi.getConversation.mockImplementation(async (conversationId: string) => ({
+      id: conversationId,
+      kind: 'direct',
+      title: conversationId === 'conversation-1' ? 'Мария Иванова' : 'Пётр Сидоров',
+      direct_peer: {
+        id: conversationId === 'conversation-1' ? 2 : 5,
+        username: 'peer',
+        full_name: conversationId === 'conversation-1' ? 'Мария Иванова' : 'Пётр Сидоров',
+      },
+    }));
+
+    // Stacked navigation: pushing B blurs A but keeps it mounted; popping back
+    // unmounts B and focuses A again.
+    let setStacked: ((stacked: boolean) => void) | null = null;
+    function StackedThreads() {
+      const [stacked, setStackedState] = useState(false);
+      setStacked = setStackedState;
+      return (<>
+        <NativeChatThreadScreen conversationId="conversation-1" />
+        {stacked ? <NativeChatThreadScreen conversationId="conversation-2" /> : null}
+      </>);
+    }
+
+    const view = await render(<StackedThreads />);
+    await waitFor(() => expect(lastWatchedIds()).toEqual([2]));
+    const effectsA = [...mockFocusEffects];
+
+    // B pushes over A: B mounts and takes the global watch, then A's blur
+    // cleanups run. A late blur must not wipe the watch B just acquired.
+    await act(async () => { setStacked?.(true); });
+    await act(async () => { blurFocusEffects(effectsA); });
+    await waitFor(() => expect(lastWatchedIds()).toEqual([5]));
+
+    // Popping back: A refocuses during the transition, then B unmounts. A late
+    // cleanup from B must not wipe the watch A just restored.
+    await act(async () => { restoreFocusEffects(effectsA); });
+    await waitFor(() => expect(lastWatchedIds()).toEqual([2]));
+    await act(async () => { setStacked?.(false); });
+    expect(lastWatchedIds()).toEqual([2]);
+    // Let the thread's pending bottom-anchor timer fire while still mounted —
+    // it would otherwise race the Jest environment teardown.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+    await view.unmount();
+  });
+
+  it('clears the peer presence watch when the focused thread has no presence ids', async () => {
+    const lastWatchedIds = () => (
+      jest.mocked(chatSocket.watchPresence).mock.calls.at(-1)?.[0] as number[] | undefined
+    );
+    mockedChatApi.getConversation.mockImplementation(async (conversationId: string) => ({
+      id: conversationId,
+      kind: conversationId === 'conversation-1' ? 'direct' : 'notes',
+      title: conversationId === 'conversation-1' ? 'Мария Иванова' : 'Заметки',
+      ...(conversationId === 'conversation-1' ? {
+        direct_peer: { id: 2, username: 'peer', full_name: 'Мария Иванова' },
+      } : {}),
+    }));
+
+    let setStacked: ((stacked: boolean) => void) | null = null;
+    function StackedThreads() {
+      const [stacked, setStackedState] = useState(false);
+      setStacked = setStackedState;
+      return (<>
+        <NativeChatThreadScreen conversationId="conversation-1" />
+        {stacked ? <NativeChatThreadScreen conversationId="conversation-2" /> : null}
+      </>);
+    }
+
+    const view = await render(<StackedThreads />);
+    await waitFor(() => expect(lastWatchedIds()).toEqual([2]));
+
+    // The pushed thread has no peer/member ids — the global watch set is still
+    // replaced so A's peer does not keep consuming presence updates.
+    await act(async () => { setStacked?.(true); });
+    await waitFor(() => expect(lastWatchedIds()).toEqual([]));
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+    await view.unmount();
   });
 });

@@ -5,7 +5,7 @@ import type { Warehouse1CMovementFile } from '../api/warehouse1cApi';
 import { API_V1_BASE } from '../api/config';
 import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
-import { sanitizeNativeFileName } from '../files/filePolicy';
+import { fitNativeFileName, sanitizeNativeFileName } from '../files/filePolicy';
 
 const CACHE_DIRECTORY_NAME = 'hubit-warehouse-1c';
 
@@ -18,7 +18,7 @@ function warehouse1cCacheDirectory(): Directory {
 async function warehouse1cCacheFile(fileName: string): Promise<File> {
   const userId = Number(await getSessionUserId());
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
-  return new File(warehouse1cCacheDirectory(), `${userId}-${fileName}`);
+  return new File(warehouse1cCacheDirectory(), fitNativeFileName(`${userId}-${fileName}`));
 }
 
 export function clearNativeWarehouse1cCache(): void {

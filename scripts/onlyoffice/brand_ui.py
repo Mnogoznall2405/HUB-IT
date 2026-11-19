@@ -162,13 +162,24 @@ def run_binary(*args: str, content: bytes | None = None) -> bytes:
     return result.stdout
 
 
-def wait_for_ready(container: str, seconds: int) -> None:
+def _exists_in_container(container: str, relative: str) -> bool:
+    try:
+        run("podman", "exec", container, "sh", "-c", 'test -f "$1"', "sh", f"{DOCUMENT_ROOT}/{relative}")
+        return True
+    except RuntimeError:
+        return False
+
+
+def wait_for_ready(container: str, seconds: int, assets=()) -> None:
     if not seconds:
         return
     deadline = time.monotonic() + seconds
     while True:
         try:
-            if run("podman", "exec", container, "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1/healthcheck") == "true":
+            healthy = run("podman", "exec", container, "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1/healthcheck") == "true"
+            # /healthcheck answers while the package is still generating api.js(.gz); every file the
+            # apply stage reads has to exist already, otherwise the run fails with ENOENT (2026-11-09).
+            if healthy and all(_exists_in_container(container, relative) for relative in assets):
                 return
         except RuntimeError:
             pass
@@ -214,7 +225,8 @@ def apply(container: str, state: Path, manifest: dict, restore: bool, *, wait_re
     state.mkdir(parents=True, exist_ok=True)
     with (state / "apply.lock").open("w") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        wait_for_ready(container, wait_ready_seconds)
+        required = [relative for relative in manifest] + [relative + ".gz" for relative in manifest] + ["LICENSE.txt"]
+        wait_for_ready(container, wait_ready_seconds, required)
         # All later commands address this exact instance, even if the service recreates its name.
         container = run("podman", "inspect", "--format", "{{.Id}}", container)
         package = run("podman", "exec", container, "dpkg-query", "-W", "-f=${Version}", "onlyoffice-documentserver")

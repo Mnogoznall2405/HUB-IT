@@ -13,9 +13,12 @@ from typing import Any, Collection, Dict, List, Set
 
 import requests
 
+from shared.upload_retry import UploadSchedule
+
 logger = logging.getLogger("browser_probe.sync")
 
 MAX_BATCH_BYTES = 4 * 1024 * 1024
+MAX_BATCHES_PER_SYNC = 4
 CONFIRMED_SCREENSHOT_MAX_AGE_SEC = 7 * 86400
 CONFIRMED_SCREENSHOT_MAX_BYTES = 256 * 1024 * 1024
 _MEDIA_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})
@@ -49,6 +52,13 @@ def _write_queue_file(path: Path, data: Dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+class _UploadRejected(RuntimeError):
+    def __init__(self, response: requests.Response) -> None:
+        super().__init__(f"browser-probe upload HTTP {response.status_code}")
+        self.status = response.status_code
+        self.retry_after = response.headers.get("Retry-After")
+
+
 class BrowserProbeSync:
     def __init__(
         self,
@@ -64,11 +74,12 @@ class BrowserProbeSync:
         self.api_key = str(api_key or "").strip()
         self.sync_interval_sec = max(30, int(sync_interval_sec))
         self.max_media_bytes = max_media_mb * 1024 * 1024
-        self._last_sync = 0.0
+        self._upload_schedule = UploadSchedule(self.sync_interval_sec)
         self._uploaded_media: Set[str] = set()
         self._cursor_path = self.output_dir / "sync_cursor.json"
         self._pending_path = self.output_dir / "pending_upload.json"
         self._inflight_path = self.output_dir / "inflight_upload.json"
+        self._oversize_path = self.output_dir / "oversized_media.json"
         self._queue_lock = threading.Lock()
         self._sync_lock = threading.Lock()
         self._session = requests.Session()
@@ -134,13 +145,12 @@ class BrowserProbeSync:
         if not self._sync_lock.acquire(blocking=force):
             return
         try:
-            if not force and time.monotonic() - self._last_sync < self.sync_interval_sec:
+            if not self._upload_schedule.ready() and (not force or self._upload_schedule.failures):
                 return
             try:
                 self._sync_and_prune()
             except Exception as exc:
                 logger.warning("browser probe sync failed: %s", exc)
-            self._last_sync = time.monotonic()
         finally:
             self._sync_lock.release()
 
@@ -154,7 +164,9 @@ class BrowserProbeSync:
             return base
         return f"{base.rstrip('/')}/browser-probe"
 
-    def _encode_screenshot(self, shot: Any, sent_names: Collection[str]) -> tuple[Path, bytes] | None:
+    def _encode_screenshot(
+        self, shot: Any, sent_names: Collection[str], max_record_bytes: int
+    ) -> tuple[Path, bytes] | None:
         if not isinstance(shot, dict):
             return None
         rel = str(shot.get("file") or shot.get("path") or "").replace("\\", "/").strip()
@@ -166,19 +178,70 @@ class BrowserProbeSync:
         path = self.output_dir / rel.replace("/", os.sep)
         if not path.is_file():
             path = self.output_dir / "screenshots" / name
+        metadata = _json_bytes({"name": name, "content_type": _media_content_type(name)})
+        overhead = len(metadata[:-1]) + len(b',"content_base64":"') + len(b'"}')
+        max_raw = max(0, 3 * ((max_record_bytes - overhead) // 4))
+        cap = min(self.max_media_bytes, max_raw)
         try:
-            with path.open("rb") as file:
-                raw = file.read(self.max_media_bytes + 1)
+            size = path.stat().st_size
         except FileNotFoundError:
             return None
-        if len(raw) > self.max_media_bytes:
-            logger.debug("skip screenshot %s exceeding %s bytes", name, self.max_media_bytes)
+        if size > cap:
+            # Cannot ever fit a batch: signal oversized without reading or
+            # base64-encoding megabytes of bytes that would be discarded.
+            return path, b""
+        try:
+            with path.open("rb") as file:
+                raw = file.read(cap + 1)
+        except FileNotFoundError:
             return None
+        if len(raw) > cap:
+            # The file grew between stat and read — treat it as oversized
+            # rather than encoding a truncated capture.
+            return path, b""
         if not raw:
             return None
-        metadata = _json_bytes({"name": name, "content_type": _media_content_type(name)})
         encoded = b"".join((metadata[:-1], b',"content_base64":"', base64.b64encode(raw), b'"}'))
         return path, encoded
+
+    def _quarantine_screenshot(self, shot: Dict[str, Any], reason: str) -> None:
+        """Park an undeliverable screenshot record in oversized_media.json.
+
+        The record's metadata plus the reason is kept for manual repair; the
+        raw file stays in place and no base64 payload lands in the quarantine.
+        A corrupt quarantine file raises instead of being overwritten so no
+        evidence is lost — the active queue then stays claimable for retry.
+        """
+        rows: List[Dict[str, Any]] = []
+        if self._oversize_path.exists():
+            try:
+                data = json.loads(self._oversize_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise ValueError(f"Invalid oversized media quarantine: {self._oversize_path.name}") from exc
+            if not isinstance(data, dict) or not isinstance(data.get("screenshots"), list):
+                raise ValueError(f"Invalid oversized media quarantine: {self._oversize_path.name}")
+            rows = data["screenshots"]
+            if any(
+                not isinstance(row, dict)
+                or not isinstance(row.get("record"), dict)
+                or not str(row["record"].get("file") or row["record"].get("path") or "").strip()
+                for row in rows
+            ):
+                raise ValueError(f"Invalid oversized media quarantine: {self._oversize_path.name}")
+        marker = str(shot.get("file") or shot.get("path") or "")
+        seen = {
+            str(row["record"].get("file") or row["record"].get("path") or "")
+            for row in rows
+        }
+        if marker not in seen:
+            rows.append({"record": shot, "reason": reason})
+        self._oversize_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_queue_file(self._oversize_path, {"screenshots": rows})
+        logger.warning(
+            "browser probe: screenshot %s quarantined (%s)",
+            Path(marker.replace("\\", "/")).name,
+            reason,
+        )
 
     def _build_batch(self, pending: Dict[str, Any]) -> tuple[bytes, Dict[str, int], Dict[str, Path]]:
         identity = {
@@ -191,6 +254,10 @@ class BrowserProbeSync:
         parts: List[bytes] = [prefix]
         consumed = {key: 0 for key, _ in _QUEUE_FIELDS}
         sent_files: Dict[str, Path] = {}
+        # One-record allowance for a screenshot: the whole batch budget, not
+        # whatever happens to remain — a file that can never fit is quarantined
+        # up front instead of being read into memory over and over.
+        max_record_bytes = MAX_BATCH_BYTES - empty_size
         full = False
         for key, field in _QUEUE_FIELDS:
             parts.append(field)
@@ -200,16 +267,26 @@ class BrowserProbeSync:
                     break
                 media_path = None
                 if key == "screenshots":
-                    media = self._encode_screenshot(record, sent_files)
+                    media = self._encode_screenshot(record, sent_files, max_record_bytes)
                     if media is None:
                         consumed[key] += 1
                         continue
                     media_path, encoded = media
+                    if not encoded:
+                        # Oversized: durably park it first, only then drop it
+                        # from the active queue and keep the rest flowing.
+                        self._quarantine_screenshot(record, "upload-limit")
+                        consumed[key] += 1
+                        continue
                 else:
                     encoded = _json_bytes(record)
                 record_size = len(encoded) + len(separator)
                 if size + record_size > MAX_BATCH_BYTES:
                     if size == empty_size:
+                        if key == "screenshots":
+                            self._quarantine_screenshot(record, "upload-limit")
+                            consumed[key] += 1
+                            continue
                         raise ValueError(f"Browser probe {key} record exceeds upload limit")
                     full = True
                     break
@@ -231,7 +308,7 @@ class BrowserProbeSync:
             timeout=upload_timeout_sec(len(body)),
         )
         if not 200 <= resp.status_code < 300:
-            raise RuntimeError(f"browser-probe upload HTTP {resp.status_code}")
+            raise _UploadRejected(resp)
         try:
             ack = resp.json()
         except ValueError as exc:
@@ -292,12 +369,20 @@ class BrowserProbeSync:
 
     def _sync_and_prune(self) -> Dict[str, Any]:
         try:
-            return self._sync_pending()
+            result = self._sync_pending()
+            self._upload_schedule.succeeded()
+            return result
+        except Exception as exc:
+            self._upload_schedule.failed(
+                getattr(exc, "status", None), getattr(exc, "retry_after", None)
+            )
+            raise
         finally:
             self._prune_confirmed_screenshots()
 
     def _sync_pending(self) -> Dict[str, Any]:
         stats = {"visits": 0, "focus_events": 0, "media": 0}
+        batches = 0
         url = self._upload_url()
         if not url or not self.api_key:
             logger.debug("browser sync skipped: no server_url/api_key")
@@ -310,9 +395,12 @@ class BrowserProbeSync:
                 break
             pending = self._read_queue(self._inflight_path)
             while any(pending[key] for key, _ in _QUEUE_FIELDS):
+                if batches >= MAX_BATCHES_PER_SYNC:
+                    return stats
                 body, consumed, sent_files = self._build_batch(pending)
                 if body:
                     self._post_batch(url, body, len(sent_files))
+                    batches += 1
                 if sent_files:
                     self._uploaded_media.update(sent_files)
                     self._save_cursor()

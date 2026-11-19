@@ -50,7 +50,9 @@ function FocusNodeCard({ node, selected = false, onSelect, onPeople }) {
       sx={{
         width: '100%',
         maxWidth: selected ? 420 : 300,
-        height: selected ? 156 : 136,
+        // minHeight, а не height: у карточки руководителя имя + должность + тип
+        // не влезали в фиксированные 136/156px и обрезались overflow:hidden.
+        minHeight: selected ? 156 : 136,
         display: 'flex',
         flexDirection: 'column',
         borderRadius: 2.5,
@@ -67,10 +69,9 @@ function FocusNodeCard({ node, selected = false, onSelect, onPeople }) {
         onClick={() => onSelect?.(String(node.id))}
         sx={{
           width: '100%',
-          height: selected ? 112 : 92,
+          flex: 1,
           minHeight: selected ? 112 : 92,
           display: 'block',
-          overflow: 'hidden',
           border: 0,
           p: selected ? 2 : 1.5,
           bgcolor: 'transparent',

@@ -3,6 +3,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
+import type { DiagnosticSummary } from '../../diagnostics/diagnosticSummary';
 import { useNativeCommands } from '../../native/useNativeCommands';
 import type { OfflinePreparationProgressEvent } from '../../offline/nativeOfflinePreparation';
 import type { NativeOfflineCoverageEntry } from '../../offline/nativeOfflineCoverage';
@@ -210,7 +211,13 @@ export function NativeAppSettingsScreen() {
       const result = await execute(command, payload, executionOptions) as CommandState;
       if (!current()) return null;
       applyState(group, result);
-      setStatus({ error: '', message: 'Готово.' });
+      // Commands report failures as state (e.g. update.check returns
+      // status:'error' instead of throwing) — "Готово." must not mask that.
+      if (result && typeof result === 'object' && (result as { status?: unknown }).status === 'error') {
+        setStatus({ error: String((result as { message?: unknown }).message || 'Действие завершилось с ошибкой.'), message: '' });
+      } else {
+        setStatus({ error: '', message: 'Готово.' });
+      }
       return result;
     } catch (error) {
       if (current()) setStatus({ error: formatApiError(error, 'Не удалось выполнить действие Android.'), message: '' });
@@ -242,33 +249,13 @@ export function NativeAppSettingsScreen() {
     ? 'Продолжить'
     : updateState?.status === 'ready' ? 'Установить' : `Обновить до ${feed?.version || ''}`;
   const releaseHealth = diagnosticsState?.releaseHealth as {
-    crashFreeSessionPercent?: number;
-    counters?: Record<string, number>;
     queueDepth?: { total?: number };
   } | undefined;
-  const chatSendTiming = diagnosticsState?.chatSendTiming as {
-    sends?: number;
-    intervals?: Record<string, { p50?: number | null }>;
-    storageOps?: Record<string, { p95?: number | null }>;
-  } | undefined;
-  const uiTiming = diagnosticsState?.uiTiming as {
-    threadOpens?: {
-      count?: number;
-      fromCache?: number;
-      intervals?: Record<string, { p50?: number | null }>;
-    };
-    inbox?: {
-      loads?: number;
-      intervals?: Record<string, { p50?: number | null }>;
-    };
-    loopLag?: {
-      sampledSeconds?: number;
-      stalls500?: number;
-      stalls1500?: number;
-      maxLagMs?: number;
-    };
-  } | undefined;
-  const formatTimingMs = (value: number | null | undefined) => (value == null ? '—' : `${Math.round(value)} мс`);
+  const diagnosticSections = Array.isArray(
+    (diagnosticsState?.summary as Partial<DiagnosticSummary> | undefined)?.sections,
+  )
+    ? (diagnosticsState?.summary as DiagnosticSummary).sections
+    : [];
   const snapshotScopes = Array.isArray(offlineState?.snapshotScopes)
     ? offlineState.snapshotScopes.map(String)
     : [];
@@ -578,35 +565,31 @@ export function NativeAppSettingsScreen() {
         <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
 
 
-      <AccountSectionCard tokens={tokens} title="Диагностика" description="Отчёт не содержит переписку, пароли и токены.">
-        <Text style={{ color: tokens.textPrimary, marginBottom: 6 }}>
-          Служебных событий: {String(diagnosticsState?.eventCount ?? '—')}
-        </Text>
-        {releaseHealth ? (
-          <Text style={{ color: tokens.textSecondary, marginBottom: 10 }}>
-            Стабильность: {releaseHealth.crashFreeSessionPercent == null
-              ? 'недостаточно данных'
-              : `${releaseHealth.crashFreeSessionPercent}% сессий без UI-сбоя`}
-            {' · '}очередь: {releaseHealth.queueDepth?.total ?? 0}
-          </Text>
-        ) : null}
-        {(chatSendTiming?.sends || 0) > 0 ? (
-          <Text style={{ color: tokens.textSecondary, marginBottom: 10 }}>
-            {`Чат: tap→пузырь ${formatTimingMs(chatSendTiming?.intervals?.tap_to_bubble?.p50)} · tap→ответ ${formatTimingMs(chatSendTiming?.intervals?.tap_to_ack?.p50)} · очередь write p95 ${formatTimingMs(chatSendTiming?.storageOps?.write?.p95)}`}
-          </Text>
-        ) : null}
-        {(uiTiming?.threadOpens?.count || 0) > 0 ? (
-          <Text style={{ color: tokens.textSecondary, marginBottom: 10 }}>
-            {`Открытие диалога: тап→экран ${formatTimingMs(uiTiming?.threadOpens?.intervals?.tap_to_mount?.p50)} · экран→данные ${formatTimingMs(uiTiming?.threadOpens?.intervals?.mount_to_ready?.p50)} · из кэша ${uiTiming?.threadOpens?.fromCache ?? 0}/${uiTiming?.threadOpens?.count ?? 0}`}
-          </Text>
-        ) : null}
-        {(uiTiming?.loopLag?.sampledSeconds || 0) > 0 ? (
-          <Text style={{ color: tokens.textSecondary, marginBottom: 10 }}>
-            {`JS-паузы за ${Math.round((uiTiming?.loopLag?.sampledSeconds || 0) / 60)} мин: ≥0,5с ${(uiTiming?.loopLag?.stalls500 ?? 0) + (uiTiming?.loopLag?.stalls1500 ?? 0)} · макс ${formatTimingMs(uiTiming?.loopLag?.maxLagMs)}`}
-          </Text>
-        ) : null}
-        <View style={styles.actions}>
+      <AccountSectionCard tokens={tokens} title="Отчёт" description="Только обезличенные технические данные; периоды измерений указаны ниже.">
+        <View style={[styles.actions, { marginBottom: 14 }]}>
           <AccountSecondaryButton tokens={tokens} loading={commandBusy('diagnostics.share')} label="Поделиться отчётом" onPress={() => { void run('diagnostics.share'); }} />
+          <AccountSecondaryButton tokens={tokens} loading={Boolean(loadingStates.diagnostics)} label="Обновить сводку" onPress={() => { void loadState('diagnostics'); }} />
+        </View>
+        {diagnosticSections.length ? (
+          <View style={styles.diagnosticSections}>
+            {diagnosticSections.map((section) => (
+              <View key={section.id} testID={`diagnostic-summary-${section.id}`}>
+                <Text accessibilityRole="header" style={[styles.diagnosticTitle, { color: tokens.textPrimary }]}>{section.title}</Text>
+                {section.lines.map((line, index) => (
+                  <Text key={`${section.id}-${index}`} style={[styles.diagnosticLine, { color: tokens.textSecondary }]}>{line}</Text>
+                ))}
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={{ color: tokens.textSecondary }}>Сводка появится после загрузки данных.</Text>
+        )}
+        {releaseHealth?.queueDepth ? (
+          <Text style={{ color: tokens.textSecondary, marginTop: 12 }}>
+            {`В очереди офлайн-действий: ${releaseHealth.queueDepth.total}.`}
+          </Text>
+        ) : null}
+        <View style={{ marginTop: 12 }}>
           <AccountSecondaryButton tokens={tokens} danger loading={commandBusy('diagnostics.clear')} label="Очистить диагностику" onPress={() => { void run('diagnostics.clear'); }} />
         </View>
       </AccountSectionCard>
@@ -617,6 +600,9 @@ export function NativeAppSettingsScreen() {
 
 const styles = StyleSheet.create({
   actions: { gap: 8 },
+  diagnosticSections: { gap: 18, marginTop: 16 },
+  diagnosticTitle: { fontSize: 14, lineHeight: 20, fontWeight: '800' },
+  diagnosticLine: { fontSize: 13, lineHeight: 19, marginTop: 5, flexShrink: 1 },
   updateProgress: { gap: 6, marginBottom: 12 },
   updateTrack: { height: 5, borderRadius: 3, overflow: 'hidden' },
   updateValue: { height: 5, borderRadius: 3 },

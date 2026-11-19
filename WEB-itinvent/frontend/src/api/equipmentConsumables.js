@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const equipmentConsumablesAPI = {
   getAllConsumablesGrouped: async ({ page = 1, limit = 1000 } = {}) => {

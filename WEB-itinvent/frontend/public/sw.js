@@ -526,6 +526,8 @@ async function notifyClients(type, detail = {}) {
 
 async function cacheShellAssets() {
   const cache = await caches.open(APP_SHELL_CACHE);
+  const shellDocumentUrls = new Set(['/', SHELL_ENTRY_URL]);
+  let shellAssetsJob = null;
   await Promise.allSettled(
     APP_SHELL_URLS.map(async (url) => {
       const request = new Request(url, { cache: 'reload' });
@@ -534,11 +536,15 @@ async function cacheShellAssets() {
         throw new Error(`Failed to precache ${url}: ${response.status}`);
       }
       await cache.put(url, response.clone());
-      if (url === '/' || url === SHELL_ENTRY_URL) {
-        await cacheBuildAssetsFromShell(response.clone());
+      if (shellDocumentUrls.has(url) && !shellAssetsJob) {
+        // '/' and '/index.html' are the same document: fetch build assets once.
+        shellAssetsJob = cacheBuildAssetsFromShell(response.clone());
       }
     }),
   );
+  if (shellAssetsJob) {
+    await shellAssetsJob;
+  }
 }
 
 async function cleanupOldCaches() {

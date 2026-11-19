@@ -24,6 +24,11 @@ vi.mock('./components/layout/DesktopPresenceBootstrap', () => ({ default: () => 
 vi.mock('./components/layout/DesktopLifecycleBootstrap', () => ({ default: () => null }));
 vi.mock('./components/layout/DesktopMemoryPressureBootstrap', () => ({ default: () => null }));
 vi.mock('./lib/appBadge', () => ({ syncAppBadge: vi.fn(() => Promise.resolve()) }));
+vi.mock('./components/layout/MainLayout', () => ({ default: ({ children }) => children }));
+vi.mock('./components/layout/MainLayoutRouteShell', async () => {
+  const { Outlet } = await import('react-router-dom');
+  return { default: () => <Outlet /> };
+});
 vi.mock('./pages/About', () => ({ default: () => <main>Знакомство с HUB-IT</main> }));
 vi.mock('./pages/Login', () => ({ default: () => <main>Вход в HUB-IT</main> }));
 vi.mock('./pages/Dashboard', () => ({ default: () => <main>HUB workspace</main> }));

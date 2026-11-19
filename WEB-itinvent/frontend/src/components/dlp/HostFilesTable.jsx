@@ -21,12 +21,13 @@ import {
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import { fsEgressAPI } from '../../api/fsEgress';
-import { CHANNEL_LABELS, formatTs, isRealTelegramSend } from './utils';
+import { CHANNEL_LABELS, displayAppDetail, formatTs, isRealTelegramSend, sendStateMeta } from './utils';
 
 export function HostFilesTable({ host, channel, onChannelChange }) {
   const [rows, setRows] = useState([]);
   const [noiseHidden, setNoiseHidden] = useState(0);
   const [includeNoise, setIncludeNoise] = useState(false);
+  const [sendOnly, setSendOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -41,6 +42,7 @@ export function HostFilesTable({ host, channel, onChannelChange }) {
         channel: channel === 'all' ? '' : channel,
         group: 1,
         includeNoise: includeNoise ? 1 : 0,
+        sendState: sendOnly ? 'sent' : '',
         limit: 500,
       })
       .then((res) => {
@@ -61,7 +63,7 @@ export function HostFilesTable({ host, channel, onChannelChange }) {
     return () => {
       cancelled = true;
     };
-  }, [host, channel, includeNoise]);
+  }, [host, channel, includeNoise, sendOnly]);
 
   return (
     <Stack spacing={1.5}>
@@ -74,6 +76,7 @@ export function HostFilesTable({ host, channel, onChannelChange }) {
             <MenuItem value="network">Сеть</MenuItem>
             <MenuItem value="telegram">Telegram</MenuItem>
             <MenuItem value="max">MAX</MenuItem>
+            <MenuItem value="browser">Браузер</MenuItem>
             <MenuItem value="deleted">Удаления</MenuItem>
           </Select>
         </FormControl>
@@ -86,6 +89,16 @@ export function HostFilesTable({ host, channel, onChannelChange }) {
             />
           }
           label="Показать служебные файлы"
+        />
+        <FormControlLabel
+          control={
+            <Switch
+              size="small"
+              checked={sendOnly}
+              onChange={(e) => setSendOnly(e.target.checked)}
+            />
+          }
+          label="Только отправленные"
         />
         {!includeNoise && noiseHidden > 0 ? (
           <Typography variant="caption" color="text.secondary">
@@ -147,25 +160,44 @@ export function HostFilesTable({ host, channel, onChannelChange }) {
                   {row.dest_path || '—'}
                 </TableCell>
                 <TableCell>
-                  <Chip
-                    size="small"
-                    label={
-                      row.channel === 'deleted'
-                        ? row.details?.kind === 'dir_deleted'
-                          ? 'Удалена папка'
-                          : row.details?.kind === 'recycle'
-                            ? 'В корзину'
-                            : 'Удаление'
-                        : CHANNEL_LABELS[row.channel] || row.channel
-                    }
-                    color={
-                      row.channel === 'usb'
-                        ? 'warning'
-                        : row.channel === 'telegram' || row.channel === 'max'
-                          ? 'info'
-                          : 'default'
-                    }
-                  />
+                  <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Chip
+                      size="small"
+                      label={
+                        row.channel === 'deleted'
+                          ? row.details?.kind === 'dir_deleted'
+                            ? 'Удалена папка'
+                            : row.details?.kind === 'recycle'
+                              ? 'В корзину'
+                              : 'Удаление'
+                          : CHANNEL_LABELS[row.channel] || row.channel
+                      }
+                      color={
+                        row.channel === 'usb'
+                          ? 'warning'
+                          : row.channel === 'telegram' || row.channel === 'max'
+                            ? 'info'
+                            : 'default'
+                      }
+                    />
+                    {sendStateMeta(row) ? (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={sendStateMeta(row).label}
+                        color={sendStateMeta(row).color}
+                      />
+                    ) : null}
+                    {row.details?.fg_exe ? (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        title="Приложение в фокусе в момент события — контекст, не доказательство источника записи"
+                      >
+                        {`в фокусе: ${displayAppDetail(row.details.fg_exe)}`}
+                      </Typography>
+                    ) : null}
+                  </Stack>
                 </TableCell>
                 <TableCell>
                   {row.size != null ? `${Math.round(Number(row.size) / 1024)} КБ` : '—'}

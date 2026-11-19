@@ -1,4 +1,4 @@
-import apiClient, { API_V1_BASE } from './client';
+import apiClient, { API_V1_BASE } from './http';
 import { BROWSER_ACCOUNT_EVENT, captureBrowserAccountSession } from '../lib/browserAccountSession';
 
 const RETENTION_OPTIONS = [1, 3, 7, 10, 30, 0];

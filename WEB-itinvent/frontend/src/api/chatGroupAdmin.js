@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // Portal-admin management of group conversations (structure only, never message content).
 export const chatGroupAdminAPI = {

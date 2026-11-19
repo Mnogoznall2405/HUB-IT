@@ -165,8 +165,26 @@ export default function useMailListDataController({
   }, [flushPendingSnapshotHeadRefresh, mailAccessReady]);
 
   const applyBootstrapPayload = useCallback((payload, { applyList = true } = {}) => {
-    const configPayload = payload?.selected_mailbox || payload?.mailboxInfo || null;
-    const nextMailboxEntries = mergeMailboxEntries(payload?.mailboxes, configPayload, mailboxesRef?.current);
+    const rawConfigPayload = payload?.selected_mailbox || payload?.mailboxInfo || null;
+    const mergedMailboxEntries = mergeMailboxEntries(payload?.mailboxes, rawConfigPayload, mailboxesRef?.current);
+    const bootstrapMailboxId = getMailboxEntryId(rawConfigPayload);
+    // payload.unread_count is the aggregate across ALL active mailboxes (the
+    // nav badge total). Writing it into the active mailbox entry makes its
+    // badge show every mailbox's unread — the per-mailbox counts already
+    // arrive inside payload.mailboxes entries.
+    const selectedMailboxEntry = mergedMailboxEntries.find(
+      (entry) => getMailboxEntryId(entry) === bootstrapMailboxId,
+    );
+    const configPayload = rawConfigPayload && selectedMailboxEntry
+      ? {
+        ...rawConfigPayload,
+        unread_count: Number(selectedMailboxEntry.unread_count || 0),
+        ...(selectedMailboxEntry.unread_count_state
+          ? { unread_count_state: selectedMailboxEntry.unread_count_state }
+          : {}),
+      }
+      : rawConfigPayload;
+    const nextMailboxEntries = mergedMailboxEntries;
     const resolvedMailboxId = getMailboxEntryId(configPayload) || activeMailboxId;
     const resolvedScope = resolvedMailboxId || mailCacheScope;
     const resolvedFolderSummaryCacheKey = buildMailFolderSummaryCacheKey({ scope: resolvedScope });

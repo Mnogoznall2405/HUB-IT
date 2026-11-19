@@ -71,6 +71,21 @@ function TestHarness({ onAction = vi.fn() }) {
       >
         chat-two
       </button>
+      <button
+        type="button"
+        onClick={() => {
+          for (let index = 1; index <= 20; index += 1) {
+            notifyInfo(`Сообщение ${index}`, {
+              source: 'chat',
+              title: `Chat ${index}`,
+              durationMs: 1000,
+              dedupeKey: `chat:burst:${index}`,
+            });
+          }
+        }}
+      >
+        chat-burst
+      </button>
     </div>
   );
 }
@@ -196,5 +211,62 @@ describe('NotificationProvider', () => {
 
     expect(screen.queryByText('Chat 1')).not.toBeInTheDocument();
     expect(screen.getByText('Chat 2')).toBeInTheDocument();
+  });
+
+  it('bounds the chat toast queue and drops the oldest queued items', () => {
+    vi.useFakeTimers();
+    renderNotifications();
+
+    fireEvent.click(screen.getByRole('button', { name: 'chat-burst' }));
+
+    const shownTitles = new Set();
+    for (let step = 0; step < 15; step += 1) {
+      for (let index = 1; index <= 20; index += 1) {
+        if (screen.queryByText(`Chat ${index}`)) shownTitles.add(index);
+      }
+      act(() => {
+        vi.advanceTimersByTime(1100);
+      });
+    }
+
+    // One toast activates immediately, at most 8 more stay queued.
+    expect(shownTitles.size).toBeLessThanOrEqual(9);
+    expect(shownTitles.has(1)).toBe(true);
+    expect(shownTitles.has(20)).toBe(true);
+    expect(shownTitles.has(2)).toBe(false);
+    expect(shownTitles.has(12)).toBe(false);
+  });
+
+  it('does not re-render useNotification consumers when a toast is pushed', async () => {
+    const consumerRender = vi.fn();
+    function Consumer() {
+      useNotification();
+      consumerRender();
+      return null;
+    }
+    render(
+      <NotificationProvider>
+        <Consumer />
+        <TestHarness />
+      </NotificationProvider>,
+    );
+    const rendersBefore = consumerRender.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: 'success' }));
+    await screen.findByText('Операция завершена');
+
+    expect(consumerRender).toHaveBeenCalledTimes(rendersBefore);
+  });
+
+  it('keeps toasts working when localStorage persistence throws', async () => {
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded');
+    });
+    renderNotifications();
+
+    fireEvent.click(screen.getByRole('button', { name: 'success' }));
+
+    expect(await screen.findByText('Операция завершена')).toBeInTheDocument();
+    setItemSpy.mockRestore();
   });
 });

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import useDebounce from '../../hooks/useDebounce';
 import {
   Alert,
   Box,
@@ -172,16 +173,7 @@ function downloadBlobResponse(response, fallbackName) {
   window.URL.revokeObjectURL(url);
 }
 
-function useDebouncedValue(value, delayMs = SEARCH_DEBOUNCE_MS) {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-
-  return debounced;
-}
+const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => useDebounce(value, delayMs);
 
 /** Empty or shorter than MIN_SEARCH_Q_LEN → no server-side q filter. */
 function effectiveSearchQuery(value) {

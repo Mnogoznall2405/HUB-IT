@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // Статичная копия карты возможностей из backend/api/v1/chat/ai.py
 // (_AI_ASSISTANT_CAPABILITIES). Используется, когда эндпоинт

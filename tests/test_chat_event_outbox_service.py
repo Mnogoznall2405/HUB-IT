@@ -130,9 +130,8 @@ def test_chat_event_outbox_dispatcher_publishes_enqueued_message_side_effects(ch
         rows = list(session.execute(select(chat_models_module.ChatEventOutbox)).scalars())
 
     assert inserted == len(jobs)
-    # poll_once also repairs the deferred delivery-state job for the fresh
-    # message before claiming the realtime jobs.
-    assert int(result["recovered"]) == 1
+    # The message already committed its delivery intent; no repair is needed.
+    assert int(result["recovered"]) == 0
     assert result["claimed"] == len(rows)
     assert result["delivered"] == len(rows)
     assert len(rows) == len(jobs) + 1

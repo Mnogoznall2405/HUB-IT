@@ -20,36 +20,19 @@ from backend.chat import link_preview_service as svc
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     svc._preview_cache.clear()
-    monkeypatch.setattr(svc, "assert_public_http_url", lambda url: None)
+    monkeypatch.setattr(svc, "assert_public_http_url", lambda _url: "93.184.216.34")
     yield
     svc._preview_cache.clear()
-
-
-class _Response:
-    headers = {"Content-Type": "text/html"}
-
-    def __init__(self, html: str) -> None:
-        self._html = html.encode()
-
-    def read(self, _n):
-        return self._html
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
 
 
 def test_successful_preview_is_fetched_once(monkeypatch):
     calls: list[str] = []
 
-    def opener(request, timeout):
-        calls.append(request.full_url)
-        assert timeout == svc._PREVIEW_FETCH_TIMEOUT_SEC
-        return _Response('<title>Отчёт</title><meta property="og:site_name" content="Hub">')
+    def fetch(parts, _ip):
+        calls.append(parts.geturl())
+        return "text/html", '<title>Отчёт</title><meta property="og:site_name" content="Hub">'.encode()
 
-    monkeypatch.setattr(svc._LINK_PREVIEW_OPENER, "open", opener)
+    monkeypatch.setattr(svc, "_open_pinned_url", fetch)
     first = svc.fetch_link_preview("https://example.org/a")
     second = svc.fetch_link_preview("https://example.org/a")
     assert first == second and first["title"] == "Отчёт" and first["site_name"] == "Hub"
@@ -61,11 +44,11 @@ def test_successful_preview_is_fetched_once(monkeypatch):
 def test_unreachable_site_is_remembered_and_expires(monkeypatch):
     calls: list[str] = []
 
-    def opener(request, timeout):
-        calls.append(request.full_url)
+    def fetch(parts, _ip):
+        calls.append(parts.geturl())
         raise OSError("unreachable")
 
-    monkeypatch.setattr(svc._LINK_PREVIEW_OPENER, "open", opener)
+    monkeypatch.setattr(svc, "_open_pinned_url", fetch)
     for _ in range(3):
         with pytest.raises(HTTPException) as caught:
             svc.fetch_link_preview("https://down.example/x")

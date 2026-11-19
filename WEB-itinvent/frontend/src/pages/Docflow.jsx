@@ -1514,6 +1514,16 @@ export default function Docflow() {
           // Keep optimistic completed state if force refresh fails.
         }
         setActionProgressLabel('');
+      } else if (result?.status === 'rejected') {
+        setTaskAction(null);
+        setCommandState(null);
+        setActionProgressLabel('');
+        setTaskActionNotice({
+          severity: 'error',
+          message: '1С отклонила действие. Обновите карточку и при необходимости повторите.',
+        });
+        invalidateTaskDetail(taskRef);
+        void loadTaskDetail({ ref: taskRef }, { force: true });
       } else {
         setTaskAction(null);
         setCommandState(result);
@@ -1592,6 +1602,18 @@ export default function Docflow() {
           severity: 'warning',
           message: '1С не применила действие. Карточка обновлена — действие можно выполнить заново.',
         });
+      } else if (result?.status === 'rejected') {
+        const taskRef = String(result.task?.ref || selectedTaskRef.current || '').trim();
+        setCommandState(null);
+        setActionProgressLabel('');
+        setTaskActionNotice({
+          severity: 'error',
+          message: '1С отклонила действие. Обновите карточку и при необходимости повторите.',
+        });
+        if (taskRef) {
+          invalidateTaskDetail(taskRef);
+          void loadTaskDetail({ ref: taskRef }, { force: true });
+        }
       }
     } catch (error) {
       const resolved = resolveDocflowError(error, 'Не удалось проверить состояние команды в 1С.');

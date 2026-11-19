@@ -155,6 +155,35 @@ def test_app_database_reuses_device_and_enforces_limit(tmp_path, monkeypatch):
     assert {item["session_id"] for item in active} == {"app-device-0", "app-device-1", "app-device-2"}
 
 
+@pytest.mark.parametrize("factory", [_new_service, _new_app_db_service])
+def test_session_owner_binding(tmp_path, monkeypatch, factory):
+    """is_session_active_for_user is true only for the session's real owner."""
+    service = factory(tmp_path, monkeypatch)
+    _create(service, session_id="owned-s7", device_id="browser-owned-000000000000", ip="10.0.0.1")
+
+    assert service.is_session_active_for_user("owned-s7", 7) is True
+    # Warm the active cache, then a wrong owner must still fail closed.
+    assert service.is_session_active("owned-s7") is True
+    assert service.is_session_active_for_user("owned-s7", 8) is False
+    assert service.is_session_active_for_user("owned-s7", 0) is False
+    assert service.is_session_active_for_user("owned-s7", -1) is False
+    assert service.is_session_active_for_user("owned-s7", None) is False
+    assert service.is_session_active_for_user("owned-s7", "not-an-int") is False
+    assert service.is_session_active_for_user("missing-sid", 7) is False
+    assert service.is_session_active_for_user("", 7) is False
+    assert service.is_session_active_for_user(None, 7) is False
+
+    # A live entry cached without owner falls back to the store instead of
+    # failing closed — a touch can populate it before the first owner lookup.
+    service._cache_invalidate("owned-s7")
+    service._cache_put_active("owned-s7", is_active=True)
+    assert service.is_session_active_for_user("owned-s7", 7) is True
+    assert service.is_session_active_for_user("owned-s7", 8) is False
+
+    service.close_session("owned-s7")
+    assert service.is_session_active_for_user("owned-s7", 7) is False
+
+
 def test_postgres_concurrent_logins_do_not_exceed_limit(monkeypatch):
     raw_database_url = str(os.getenv("TEST_DATABASE_URL") or "").strip()
     if not raw_database_url:

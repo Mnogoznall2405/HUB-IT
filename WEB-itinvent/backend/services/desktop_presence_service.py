@@ -68,22 +68,67 @@ class DesktopPresenceService:
         now = self._now()
         expires_at = now + timedelta(seconds=self._ttl_seconds)
         with app_session(self._database_url) as session:
-            row = session.get(AppDesktopPresence, normalized_session_id)
-            if row is None:
-                row = AppDesktopPresence(
-                    session_id=normalized_session_id,
-                    user_id=normalized_user_id,
-                    created_at=now,
-                    last_seen_at=now,
-                    expires_at=expires_at,
-                )
-                session.add(row)
-            else:
-                if int(row.user_id) != normalized_user_id:
-                    raise DesktopPresenceIdentityError("Session presence belongs to another user")
-                row.last_seen_at = now
-                row.expires_at = expires_at
+            upserted = self._atomic_heartbeat(
+                session,
+                session_id=normalized_session_id,
+                user_id=normalized_user_id,
+                now=now,
+                expires_at=expires_at,
+            )
+            if upserted is False:
+                raise DesktopPresenceIdentityError("Session presence belongs to another user")
+            if upserted is None:
+                row = session.get(AppDesktopPresence, normalized_session_id)
+                if row is None:
+                    row = AppDesktopPresence(
+                        session_id=normalized_session_id,
+                        user_id=normalized_user_id,
+                        created_at=now,
+                        last_seen_at=now,
+                        expires_at=expires_at,
+                    )
+                    session.add(row)
+                else:
+                    if int(row.user_id) != normalized_user_id:
+                        raise DesktopPresenceIdentityError("Session presence belongs to another user")
+                    row.last_seen_at = now
+                    row.expires_at = expires_at
         return {"active": True, "expires_in_seconds": self._ttl_seconds}
+
+    @staticmethod
+    def _atomic_heartbeat(session, *, session_id: str, user_id: int, now: datetime, expires_at: datetime):
+        """One atomic upsert on PostgreSQL/SQLite.
+
+        Returns True when the row was written, False when the conflicted row
+        belongs to another user, and None when the dialect lacks upsert support
+        (the caller then uses the read-then-write path).
+        """
+        dialect_name = str(session.get_bind().dialect.name or "").lower()
+        if dialect_name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert
+        elif dialect_name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert
+        else:
+            return None
+        table = AppDesktopPresence.__table__
+        statement = insert(table).values(
+            session_id=session_id,
+            user_id=user_id,
+            created_at=now,
+            last_seen_at=now,
+            expires_at=expires_at,
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[table.c.session_id],
+            set_={
+                "last_seen_at": statement.excluded.last_seen_at,
+                "expires_at": statement.excluded.expires_at,
+            },
+            # The guard turns a foreign-owner conflict into a 0-row no-op, so a
+            # heartbeat can never hijack another user's presence row.
+            where=table.c.user_id == statement.excluded.user_id,
+        )
+        return int(session.execute(statement).rowcount or 0) > 0
 
     def get_current(self, *, user_id: int, session_id: str) -> dict[str, int | bool]:
         normalized_user_id, normalized_session_id = self._identity(

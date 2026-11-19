@@ -2723,12 +2723,10 @@ class Warehouse1CService:
         observed_entry = self._employee_compare_cache.get(cache_key)
         if observed_entry and not refresh:
             age = time.monotonic() - observed_entry["at"]
-            if EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS <= age < EMPLOYEE_COMPARE_SNAPSHOT_MAX_AGE_SECONDS:
-                # Stale-while-revalidate: the badges are advisory, so answer from the previous
-                # snapshot at once and rebuild in the background instead of making the user
-                # wait for the 1C call. Past the STALE window the answer is marked stale (same
-                # contract as the restored snapshot and the failure fallback); only a snapshot
-                # older than a day makes the caller wait for a fresh build.
+            if age < EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS:
+                return dict(observed_entry["payload"])
+            if age < EMPLOYEE_COMPARE_SNAPSHOT_MAX_AGE_SECONDS:
+                # Stale-while-revalidate: cached reads must not queue behind a slow refresh.
                 self._schedule_employee_compare_rebuild(cache_key, db_id)
                 payload = dict(observed_entry["payload"])
                 if age >= EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS:
@@ -2884,10 +2882,14 @@ class Warehouse1CService:
         """
         from backend.database import queries as db_queries
 
+        build_started = time.monotonic()
+        balance_calls = [0]
+
         owners, count_rows = await asyncio.gather(
             asyncio.to_thread(db_queries.list_owners_compact, db_id),
             asyncio.to_thread(db_queries.get_owner_part_no_counts, db_id),
         )
+        local_sql_done = time.monotonic()
 
         hub_counts: dict[int, dict[str, int]] = {}
         no_part_counts: dict[int, int] = {}
@@ -2913,6 +2915,7 @@ class Warehouse1CService:
         warehouse_entries, catalog_meta = await asyncio.to_thread(
             self._list_warehouse_catalog_entries
         )
+        catalog_done = time.monotonic()
 
         def _match_owner_warehouses() -> list[dict[str, Any]]:
             # CPU-bound FIO scoring over thousands of owners: keep it off the event loop.
@@ -2972,6 +2975,7 @@ class Warehouse1CService:
             return owner_rows
 
         owner_rows = await asyncio.to_thread(_match_owner_warehouses)
+        match_done = time.monotonic()
 
         def _prepare_refs(rows: list[dict[str, Any]]) -> list[str]:
             def _collect() -> list[str]:
@@ -3030,6 +3034,7 @@ class Warehouse1CService:
             async def _load_chunk(chunk: list[str]) -> dict[str, Any]:
                 async with semaphore:
                     calls_left[0] -= 1
+                    balance_calls[0] += 1
                     payload = await self.get_balances_for_warehouses(
                         warehouse_refs=chunk,
                         limit=DISMISSED_WAREHOUSE_BALANCES_MAX_LIMIT,
@@ -3091,16 +3096,22 @@ class Warehouse1CService:
         # «unknown» and must not discard the badges of everyone else.
         primary_rows = [row for row in owner_rows if row["has_hub_items"]]
         rest_rows = [row for row in owner_rows if not row["has_hub_items"]]
-        primary_payload = await _load_balances(_prepare_refs(primary_rows))
+        primary_refs = _prepare_refs(primary_rows)
+        primary_payload = await _load_balances(primary_refs)
+        primary_done = time.monotonic()
         balance_payload = primary_payload
+        rest_refs = _prepare_refs(rest_rows)
         try:
             rest_payload = await asyncio.wait_for(
-                _load_balances(_prepare_refs(rest_rows)),
+                _load_balances(rest_refs),
                 timeout=EMPLOYEE_COMPARE_REST_BALANCES_TIMEOUT_SECONDS,
             )
         except Exception as exc:  # best effort: only warehouse-only owners are affected
             rest_payload = exc
-        qty_by_warehouse, names_by_warehouse, invalid_quantity = _index_balances(primary_payload)
+        rest_done = time.monotonic()
+        qty_by_warehouse, names_by_warehouse, invalid_quantity = await asyncio.to_thread(
+            _index_balances, primary_payload
+        )
 
         rest_qty: dict[str, dict[str, float]] = {}
         rest_names: dict[str, dict[str, str]] = {}
@@ -3112,7 +3123,7 @@ class Warehouse1CService:
                 rest_payload,
             )
         else:
-            rest_qty, rest_names, rest_invalid = _index_balances(rest_payload)
+            rest_qty, rest_names, rest_invalid = await asyncio.to_thread(_index_balances, rest_payload)
             rest_incomplete = bool(
                 rest_invalid
                 or rest_payload.get("truncated")
@@ -3128,82 +3139,86 @@ class Warehouse1CService:
                     rest_invalid,
                 )
 
-        items: list[dict[str, Any]] = []
-        for owner_row in owner_rows:
-            owner_no = owner_row["owner_no"]
-            owner_warehouses = owner_row["warehouses"]
-            warehouse = owner_warehouses[0] if owner_warehouses else None
-            counts_map = hub_counts.get(owner_no, {})
-            qty_map: dict[str, float] = {}
-            part_names: dict[str, str] = {}
-            row_qty = qty_by_warehouse if owner_row["has_hub_items"] else rest_qty
-            row_names = names_by_warehouse if owner_row["has_hub_items"] else rest_names
-            for owner_warehouse in owner_warehouses:
-                for code, qty in row_qty.get(owner_warehouse["ref"], {}).items():
-                    qty_map[code] = qty_map.get(code, 0.0) + qty
-                part_names.update(row_names.get(owner_warehouse["ref"], {}))
-            match_cnt = diff = only_hub = only_1c = 0
-            part_status: dict[str, str] = {}
-            part_quantities: dict[str, dict[str, Any]] = {}
-            for key in set(counts_map) | set(qty_map):
-                hub_qty = counts_map.get(key)
-                qty_1c = qty_map.get(key)
-                if hub_qty is not None and qty_1c is not None:
-                    if abs(qty_1c - hub_qty) <= 1e-6:
-                        match_cnt += 1
+        def _build_items() -> list[dict[str, Any]]:
+            items: list[dict[str, Any]] = []
+            for owner_row in owner_rows:
+                owner_no = owner_row["owner_no"]
+                owner_warehouses = owner_row["warehouses"]
+                warehouse = owner_warehouses[0] if owner_warehouses else None
+                counts_map = hub_counts.get(owner_no, {})
+                qty_map: dict[str, float] = {}
+                part_names: dict[str, str] = {}
+                row_qty = qty_by_warehouse if owner_row["has_hub_items"] else rest_qty
+                row_names = names_by_warehouse if owner_row["has_hub_items"] else rest_names
+                for owner_warehouse in owner_warehouses:
+                    for code, qty in row_qty.get(owner_warehouse["ref"], {}).items():
+                        qty_map[code] = qty_map.get(code, 0.0) + qty
+                    part_names.update(row_names.get(owner_warehouse["ref"], {}))
+                match_cnt = diff = only_hub = only_1c = 0
+                part_status: dict[str, str] = {}
+                part_quantities: dict[str, dict[str, Any]] = {}
+                for key in set(counts_map) | set(qty_map):
+                    hub_qty = counts_map.get(key)
+                    qty_1c = qty_map.get(key)
+                    if hub_qty is not None and qty_1c is not None:
+                        if abs(qty_1c - hub_qty) <= 1e-6:
+                            match_cnt += 1
+                        else:
+                            diff += 1
+                    elif hub_qty is not None:
+                        only_hub += 1
                     else:
-                        diff += 1
-                elif hub_qty is not None:
-                    only_hub += 1
+                        only_1c += 1
+                    if hub_qty is not None and qty_1c is not None:
+                        part_status[key] = "match" if abs(qty_1c - hub_qty) <= 1e-6 else "diff"
+                    elif hub_qty is not None:
+                        part_status[key] = "only_hub"
+                    else:
+                        part_status[key] = "only_1c"
+                    # Include already-computed 1C-only codes for assistant reports.
+                    part_quantities[key] = {"hub_count": hub_qty if hub_qty is not None else 0, "qty_1c": qty_1c}
+                if warehouse is None:
+                    status = "ambiguous" if owner_row["ambiguous"] else "no_warehouse"
+                elif not counts_map and not only_1c:
+                    status = "match" if not no_part_counts.get(owner_no) else "unknown"
+                elif not counts_map:
+                    status = "only_1c"
+                elif diff:
+                    status = "diff"
+                elif only_hub:
+                    status = "only_hub"
+                elif only_1c:
+                    status = "only_1c"
                 else:
-                    only_1c += 1
-                if hub_qty is not None and qty_1c is not None:
-                    part_status[key] = "match" if abs(qty_1c - hub_qty) <= 1e-6 else "diff"
-                elif hub_qty is not None:
-                    part_status[key] = "only_hub"
-                else:
-                    part_status[key] = "only_1c"
-                # Include already-computed 1C-only codes for assistant reports.
-                part_quantities[key] = {"hub_count": hub_qty if hub_qty is not None else 0, "qty_1c": qty_1c}
-            if warehouse is None:
-                status = "ambiguous" if owner_row["ambiguous"] else "no_warehouse"
-            elif not counts_map and not only_1c:
-                status = "match" if not no_part_counts.get(owner_no) else "unknown"
-            elif not counts_map:
-                status = "only_1c"
-            elif diff:
-                status = "diff"
-            elif only_hub:
-                status = "only_hub"
-            elif only_1c:
-                status = "only_1c"
-            else:
-                status = "match"
-            items.append({
-                "owner_no": owner_no,
-                "employee_name": owner_row["employee_name"],
-                "warehouse_ref": warehouse["ref"] if warehouse else "",
-                "warehouse_name": "; ".join(w["name"] for w in owner_warehouses),
-                "warehouses": [{"ref": w["ref"], "name": w["name"]} for w in owner_warehouses],
-                "warehouse_count": len(owner_warehouses),
-                "status": status,
-                "part_status": part_status,
-                "part_quantities": part_quantities,
-                "part_names": part_names,
-                "counts": {
-                    "match": match_cnt,
-                    "diff": diff,
-                    "only_hub": only_hub,
-                    "only_1c": only_1c,
-                    "no_part": no_part_counts.get(owner_no, 0),
-                    "not_in_1c": sentinel_counts.get(owner_no, 0),
-                    "hub_items": (
-                        sum(counts_map.values())
-                        + no_part_counts.get(owner_no, 0)
-                        + sentinel_counts.get(owner_no, 0)
-                    ),
-                },
-            })
+                    status = "match"
+                items.append({
+                    "owner_no": owner_no,
+                    "employee_name": owner_row["employee_name"],
+                    "warehouse_ref": warehouse["ref"] if warehouse else "",
+                    "warehouse_name": "; ".join(w["name"] for w in owner_warehouses),
+                    "warehouses": [{"ref": w["ref"], "name": w["name"]} for w in owner_warehouses],
+                    "warehouse_count": len(owner_warehouses),
+                    "status": status,
+                    "part_status": part_status,
+                    "part_quantities": part_quantities,
+                    "part_names": part_names,
+                    "counts": {
+                        "match": match_cnt,
+                        "diff": diff,
+                        "only_hub": only_hub,
+                        "only_1c": only_1c,
+                        "no_part": no_part_counts.get(owner_no, 0),
+                        "not_in_1c": sentinel_counts.get(owner_no, 0),
+                        "hub_items": (
+                            sum(counts_map.values())
+                            + no_part_counts.get(owner_no, 0)
+                            + sentinel_counts.get(owner_no, 0)
+                        ),
+                    },
+                })
+            return items
+
+        items = await asyncio.to_thread(_build_items)
 
         balances_truncated = bool(
             balance_payload.get("truncated") or balance_payload.get("has_more")
@@ -3243,6 +3258,21 @@ class Warehouse1CService:
                 counts = item.get("counts") or {}
                 for key in ("match", "diff", "only_hub", "only_1c"):
                     counts[key] = 0
+        logger.info(
+            "employee_compare_summary_build total_ms=%.0f local_sql_ms=%.0f catalog_ms=%.0f "
+            "match_ms=%.0f primary_balances_ms=%.0f rest_balances_ms=%.0f balance_calls=%d "
+            "refs=%d owners=%d warehouses=%d",
+            (time.monotonic() - build_started) * 1000.0,
+            (local_sql_done - build_started) * 1000.0,
+            (catalog_done - local_sql_done) * 1000.0,
+            (match_done - catalog_done) * 1000.0,
+            (primary_done - match_done) * 1000.0,
+            (rest_done - primary_done) * 1000.0,
+            balance_calls[0],
+            len(primary_refs) + len(rest_refs),
+            len(items),
+            len(warehouse_entries),
+        )
         return {
             "items": items,
             "meta": {

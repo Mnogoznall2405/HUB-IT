@@ -45,13 +45,14 @@ function isSessionUserShape(value: unknown): value is HubUser {
   );
 }
 
-export async function fetchMe(options: { timeoutMs?: number } = {}): Promise<HubUser> {
+export async function fetchMe(options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<HubUser> {
   const timeoutMs = Number(options.timeoutMs || 0);
   const { data } = await apiClient.get<HubUser>('/auth/me', {
     ...(timeoutMs > 0 ? {
       timeout: timeoutMs,
       hubitTotalTimeoutMs: timeoutMs,
     } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
   } as never);
   if (!isSessionUserShape(data)) {
     // Captive portals and HTTP middleboxes can answer 200 with HTML or a

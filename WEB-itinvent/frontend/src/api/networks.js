@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const NETWORK_EQUIPMENT_IMPORT_TIMEOUT_MS = 180000;
 

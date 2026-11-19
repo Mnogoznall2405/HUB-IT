@@ -8,6 +8,7 @@ let mockAuthValue: {
   verifyTwoFactor: jest.Mock<Promise<void>, [string, boolean?]>;
   startTwoFactorSetup?: jest.Mock;
   verifyTwoFactorSetup?: jest.Mock;
+  resetLoginChallenge?: jest.Mock;
   loginChallengeId: string | null;
   hasPermission: (permission: string) => boolean;
   user: {
@@ -19,7 +20,7 @@ let mockAuthValue: {
 };
 
 jest.mock('./AuthContext', () => ({
-  useAuth: () => mockAuthValue,
+  useAuth: () => ({ resetLoginChallenge: jest.fn(), ...mockAuthValue }),
 }));
 
 import TwoFactorScreen from '../../app/(auth)/two-factor';

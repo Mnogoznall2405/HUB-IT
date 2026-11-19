@@ -31,6 +31,51 @@ export type CacheEntry = {
   modifiedAt: number;
 };
 
+// Android filesystems bound a single path component to 255 UTF-8 bytes, not
+// characters: a 180-char Cyrillic name is ~360 bytes and fails on disk.
+export const NATIVE_FILE_NAME_MAX_BYTES = 255;
+const SANITIZED_NAME_MAX_BYTES = 180;
+const EXTENSION_MAX_BYTES = 24;
+
+export function utf8BytesLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) { bytes += 4; index += 1; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
+export function truncateToUtf8Bytes(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  let bytes = 0;
+  let index = 0;
+  while (index < value.length) {
+    const code = value.charCodeAt(index);
+    const size = code < 0x80 ? 1 : code < 0x800 ? 2 : (code >= 0xd800 && code <= 0xdbff ? 4 : 3);
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    index += size === 4 ? 2 : 1;
+  }
+  return value.slice(0, index);
+}
+
+/** Truncates a (already sanitized) file name to a UTF-8 byte budget, keeping
+ * the extension and cutting the tail — so an `id-name` prefix survives. */
+export function fitNativeFileName(name: string, maxBytes = NATIVE_FILE_NAME_MAX_BYTES): string {
+  if (utf8BytesLength(name) <= maxBytes) return name;
+  const dot = name.lastIndexOf('.');
+  const extension = dot > 0 && utf8BytesLength(name.slice(dot)) <= EXTENSION_MAX_BYTES
+    ? name.slice(dot)
+    : '';
+  const stem = extension ? name.slice(0, dot) : name;
+  const budget = Math.max(1, maxBytes - utf8BytesLength(extension));
+  return `${truncateToUtf8Bytes(stem, budget)}${extension}`;
+}
+
 export function sanitizeNativeFileName(value: string): string {
   const normalized = String(value || '')
     .normalize('NFKC')
@@ -41,10 +86,7 @@ export function sanitizeNativeFileName(value: string): string {
     .replace(/\s+/g, ' ')
     .trim();
   const fallback = normalized || 'hubit-file';
-  if (fallback.length <= 180) return fallback;
-  const dot = fallback.lastIndexOf('.');
-  const extension = dot > 0 ? fallback.slice(dot, dot + 24) : '';
-  return `${fallback.slice(0, Math.max(1, 180 - extension.length))}${extension}`;
+  return fitNativeFileName(fallback, SANITIZED_NAME_MAX_BYTES);
 }
 
 function extensionOf(name: string): string {

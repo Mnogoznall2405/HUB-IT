@@ -17,17 +17,25 @@ let inFlight = 0;
 let maxObserved = 0;
 let startedTotal = 0;
 let completedTotal = 0;
+// A completion is booked only for a start seen in the current epoch: response
+// interceptor errors for requests rejected before dispatch carry no tracked
+// config, and late results after a reset must not pollute the new epoch.
+let epoch = 0;
+const requestEpochs = new WeakMap<object, number>();
 const sendStartSamples: number[] = [];
 
-export function noteApiRequestStart(): void {
+export function noteApiRequestStart(config: object): void {
+  requestEpochs.set(config, epoch);
   inFlight += 1;
   startedTotal += 1;
   if (inFlight > maxObserved) maxObserved = inFlight;
   noteScreenLoadActivity();
 }
 
-export function noteApiRequestEnd(): void {
-  if (inFlight > 0) inFlight -= 1;
+export function noteApiRequestEnd(config: object | undefined): void {
+  if (!config || requestEpochs.get(config) !== epoch) return;
+  requestEpochs.delete(config);
+  inFlight -= 1;
   completedTotal += 1;
   noteScreenLoadActivity();
 }
@@ -40,6 +48,7 @@ export function noteChatSendHttpStartInflight(): void {
 }
 
 export function resetApiInflight(): void {
+  epoch += 1;
   inFlight = 0;
   maxObserved = 0;
   startedTotal = 0;

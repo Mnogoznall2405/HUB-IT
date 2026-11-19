@@ -223,7 +223,7 @@ export function getMailUnreadSnapshot(): Promise<MailUnreadSnapshot> {
       state?: string;
       as_of?: string | null;
     }>('/mail/unread-count').then(({ data }) => ({
-      unread_count: Math.max(0, Number(data?.unread_count || data?.total_unread || 0)),
+      unread_count: Math.max(0, Number(data?.unread_count ?? data?.total_unread ?? 0)),
       state: String(data?.state || 'unknown'),
       as_of: data?.as_of || null,
     }));

@@ -332,6 +332,72 @@ def normalize_outgoing_readable_text_colors(value: Any) -> str:
     return normalize_text(parser.get_html())
 
 
+class _SignatureToTextHtmlParser(HTMLParser):
+    _NEWLINE_TAGS = {
+        "address", "article", "aside", "blockquote", "br", "dd", "div", "dl", "dt",
+        "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
+        "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section", "table",
+        "td", "th", "tr", "ul",
+    }
+    _SKIP_CONTENT_TAGS = {"head", "noscript", "script", "style", "template", "title"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip_depth = 0
+
+    def _emit_newline(self, tag: str) -> None:
+        if tag.lower() in self._NEWLINE_TAGS:
+            self.parts.append("\n")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = tag.lower()
+        if name in self._SKIP_CONTENT_TAGS:
+            self._skip_depth += 1
+            return
+        if not self._skip_depth:
+            self._emit_newline(name)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not self._skip_depth:
+            self._emit_newline(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        name = tag.lower()
+        if name in self._SKIP_CONTENT_TAGS:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if not self._skip_depth:
+            self._emit_newline(name)
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self.parts.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self.parts)
+
+
+def signature_html_to_text(value: Any) -> str:
+    source = normalize_text(value)
+    if not source:
+        return ""
+    if "<" not in source:
+        return html.unescape(source)
+    parser = _SignatureToTextHtmlParser()
+    try:
+        parser.feed(source)
+        parser.close()
+        text = parser.get_text()
+    except Exception:
+        text = html.unescape(re.sub(r"<[^>]+>", "", source))
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[ \t]*\n[ \t]*", "\n", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
+
+
 def normalize_signature_line_spacing(value: Any) -> str:
     source = normalize_text(value)
     if not source:

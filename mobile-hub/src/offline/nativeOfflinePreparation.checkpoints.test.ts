@@ -5,7 +5,10 @@ import { prepareNativeOfflineData, type PreparationOptions } from './nativeOffli
 let mockGeneration = 0;
 jest.mock('../auth/tokenStore', () => ({ ...jest.requireActual('../auth/tokenStore'), getSessionGeneration: () => mockGeneration }));
 jest.mock('../api/taskApi', () => ({ getTasksPage: jest.fn() }));
-jest.mock('../cache/nativeSnapshotCache', () => ({ writeNativeCollectionSnapshot: jest.fn(async () => true) }));
+jest.mock('../cache/nativeSnapshotCache', () => ({
+  ...jest.requireActual('../cache/nativeSnapshotCache'),
+  writeNativeCollectionSnapshot: jest.fn(async () => true),
+}));
 jest.mock('./nativeOfflineCoverage', () => ({ recordNativeOfflineCoverageSuccess: jest.fn(async () => true), recordNativeOfflineCoverageFailure: jest.fn(async () => true) }));
 jest.mock('../diagnostics/diagnostics', () => ({ recordSnapshotFailure: jest.fn(async () => undefined) }));
 const options: PreparationOptions = { userId: 17, isAdmin: false, dashboard:false, feed:false,tasks:true,mail:false,docflow:false,addressBook:false,database:false,myFiles:false,companyStructure:false };

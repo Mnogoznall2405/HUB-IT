@@ -37,6 +37,16 @@ export default function useMailKeyboardShortcuts({
     const onKeyDown = (event) => {
       if (isMailShortcutTypingTarget(event.target) && event.key !== 'Escape') return;
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') return;
+      if (event.key !== 'Escape') {
+        const blockingOverlayOpen = composeOpen
+          || shortcutsOpen
+          || advancedSearchOpen
+          || mailPreferencesOpen
+          || headersOpen
+          || mobileNavigationOpen
+          || Boolean(document.querySelector('.MuiModal-root:not(.MuiModal-hidden)'));
+        if (blockingOverlayOpen) return;
+      }
       if (event.key === '?') {
         event.preventDefault();
         setShortcutsOpen?.(true);

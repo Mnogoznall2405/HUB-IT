@@ -355,8 +355,41 @@ def recover_act_record_from_disk(act_id: str) -> Optional[dict[str, Any]]:
                     "file_path": str(candidate),
                     "file_name": candidate.name,
                     "file_type": suffix.lstrip("."),
+                    "created_by_user_id": _recover_act_owner(normalized),
                 }
     return None
+
+
+def _act_owner_marker_path(act_id: str) -> Path:
+    return DEFAULT_ACTS_DIR / f"transfer_act_{str(act_id).strip()}.owner"
+
+
+def _as_owner_user_id(value: Any) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _persist_act_owner(act_id: str, user_id: Any) -> None:
+    normalized = str(act_id or "").strip()
+    uid = _as_owner_user_id(user_id)
+    if uid is None or not _ACT_ID_RE.fullmatch(normalized):
+        return
+    try:
+        marker = _act_owner_marker_path(normalized)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(uid), encoding="utf-8")
+    except Exception:
+        logger.warning("Failed to persist act owner marker act_id=%s", normalized, exc_info=True)
+
+
+def _recover_act_owner(act_id: str) -> Optional[int]:
+    try:
+        raw = _act_owner_marker_path(act_id).read_text(encoding="utf-8").strip()
+        return int(raw) if raw else None
+    except Exception:
+        return None
 
 
 def register_act_records(records: list[dict[str, Any]]) -> None:
@@ -384,6 +417,7 @@ def generate_transfer_acts(
     new_employee_email: Optional[str],
     db_id: Optional[str],
     operation_id: Optional[str] = None,
+    created_by_user_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """
     Generate transfer acts grouped by old employee.
@@ -440,8 +474,10 @@ def generate_transfer_acts(
             "db_id": db_id,
             "created_at": datetime.now().isoformat(),
             "operation_id": str(operation_id or "").strip() or None,
+            "created_by_user_id": _as_owner_user_id(created_by_user_id),
         }
         _ACT_STORE[act_id] = record
+        _persist_act_owner(act_id, record["created_by_user_id"])
         acts.append(
             {
                 "act_id": act_id,
@@ -462,6 +498,7 @@ def generate_transfer_acts_without_move(
     issuer_email: Optional[str],
     db_id: Optional[str],
     operation_id: Optional[str] = None,
+    created_by_user_id: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """
     Generate handover acts for current holders without updating inventory data.
@@ -551,8 +588,10 @@ def generate_transfer_acts_without_move(
             "created_at": datetime.now().isoformat(),
             "act_mode": "without_move",
             "operation_id": str(operation_id or "").strip() or None,
+            "created_by_user_id": _as_owner_user_id(created_by_user_id),
         }
         _ACT_STORE[act_id] = record
+        _persist_act_owner(act_id, record["created_by_user_id"])
         acts.append(
             {
                 "act_id": act_id,

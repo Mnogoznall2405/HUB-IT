@@ -222,12 +222,12 @@ def ctx(monkeypatch, tmp_path):
     monkeypatch.setattr(acts,'DEFAULT_ACTS_DIR',tmp_path/'acts')
     monkeypatch.setattr(acts,'_ACT_STORE',{})
 
-    def render(items,name,dept,email,db_id,operation_id=None):
+    def render(items,name,dept,email,db_id,operation_id=None,created_by_user_id=None):
         harness.rendered.append(items)
         path=tmp_path/'new-act.pdf'
         path.write_bytes(harness.pdf)
         act_id=operation_id+'-act'
-        acts.register_act_records([{'act_id':act_id,'file_path':str(path),'file_name':path.name,'file_type':'pdf'}])
+        acts.register_act_records([{'act_id':act_id,'file_path':str(path),'file_name':path.name,'file_type':'pdf','created_by_user_id':created_by_user_id}])
         return [{'act_id':act_id,'file_name':path.name,'file_type':'pdf'}]
     monkeypatch.setattr(acts,'generate_transfer_acts',render)
     app=FastAPI()

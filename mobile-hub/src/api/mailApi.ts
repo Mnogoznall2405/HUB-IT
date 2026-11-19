@@ -65,6 +65,7 @@ export type MailDraftContext = {
   mailbox_id?: string | null;
   reply_to_message_id?: string | null;
   forward_message_id?: string | null;
+  forward_attachment_refs?: string[] | null;
 };
 
 export type MailMessageDetail = MailMessagePreview & {
@@ -227,6 +228,41 @@ export type MailFolderCreatePayload = {
   name: string;
   parentFolderId?: string;
   scope?: 'mailbox' | 'archive';
+};
+
+export type MailItTemplateField = {
+  key: string;
+  label?: string | null;
+  type?: string | null;
+  default_value?: string | string[] | boolean | null;
+  required?: boolean;
+  placeholder?: string | null;
+  options?: string[] | null;
+};
+
+export type MailItTemplate = {
+  id: string;
+  code?: string | null;
+  title?: string | null;
+  category?: string | null;
+  subject_template?: string | null;
+  body_template_md?: string | null;
+  is_active?: boolean | number | null;
+  fields?: MailItTemplateField[];
+};
+
+export type MailItTemplatePayload = {
+  code: string;
+  title: string;
+  category: string;
+  subject_template: string;
+  body_template_md: string;
+  fields: MailItTemplateField[];
+};
+
+export type MailItRequestPayload = {
+  template_id: string;
+  fields: Record<string, unknown>;
 };
 
 function normalizeId(value: unknown, label: string, maxLength: number): string {
@@ -545,6 +581,9 @@ export async function saveMailDraft(
   const formData = new FormData();
   appendComposeFields(formData, payload);
   formData.append('compose_mode', String(payload.composeMode || 'draft'));
+  if (Array.isArray(payload.forwardAttachmentRefs)) {
+    formData.append('forward_attachment_refs_json', JSON.stringify(payload.forwardAttachmentRefs));
+  }
   const { data } = await apiClient.post<MailDraftResult>('/mail/drafts/upsert-multipart', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     signal: options.signal,
@@ -580,6 +619,40 @@ export async function sendMailMessage(
     timeout: 120_000,
     signal: options.signal,
     onUploadProgress: options.onUploadProgress,
+  });
+  return data;
+}
+
+export async function listMailTemplates(params: { include_inactive?: boolean } = {}): Promise<MailItTemplate[]> {
+  const { data } = await apiClient.get<{ items?: MailItTemplate[] }>('/mail/templates', {
+    params: { include_inactive: params.include_inactive ? true : undefined },
+  });
+  return Array.isArray(data?.items) ? data.items : [];
+}
+
+export async function createMailTemplate(payload: MailItTemplatePayload): Promise<MailItTemplate> {
+  const { data } = await apiClient.post<MailItTemplate>('/mail/templates', payload);
+  return data;
+}
+
+export async function updateMailTemplate(
+  templateId: string,
+  payload: MailItTemplatePayload,
+): Promise<MailItTemplate> {
+  const id = normalizeId(templateId, 'Не указан шаблон', 2_048);
+  const { data } = await apiClient.patch<MailItTemplate>(`/mail/templates/${encodeURIComponent(id)}`, payload);
+  return data;
+}
+
+export async function deleteMailTemplate(templateId: string): Promise<MailActionResult> {
+  const id = normalizeId(templateId, 'Не указан шаблон', 2_048);
+  const { data } = await apiClient.delete<MailActionResult>(`/mail/templates/${encodeURIComponent(id)}`);
+  return data;
+}
+
+export async function sendMailItRequest(payload: MailItRequestPayload): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post<Record<string, unknown>>('/mail/messages/send-it-request', payload, {
+    timeout: 120_000,
   });
   return data;
 }

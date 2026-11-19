@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const getMySettingsMock = vi.fn();
 const updateMySettingsMock = vi.fn();
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/settings', () => ({
   settingsAPI: {
     getMySettings: (...args) => getMySettingsMock(...args),
     updateMySettings: (...args) => updateMySettingsMock(...args),

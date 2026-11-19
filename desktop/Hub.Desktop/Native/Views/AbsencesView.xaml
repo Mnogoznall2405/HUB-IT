@@ -1,0 +1,302 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.AbsencesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
+
+            <Style x:Key="ModeChipRadioStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}" />
+
+            <!-- Плашка источника записи: ручная HUB подсвечена, ЗУП — нейтральная. -->
+            <Style x:Key="SourcePillStyle" TargetType="Border" BasedOn="{StaticResource HubStatusPillStyle}">
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsManual}" Value="True">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+            <Style x:Key="SourcePillTextStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsManual}" Value="True">
+                        <Setter Property="Foreground" Value="{DynamicResource HubAccentBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Верхняя панель: навигация по дате, режимы, обновить -->
+        <Border Grid.Row="0" Padding="20,16,20,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource HubSecondaryButtonStyle}"
+                            MinHeight="36"
+                            Padding="10,2"
+                            Command="{Binding PrevDayCommand}"
+                            AutomationProperties.Name="Предыдущий день">
+                        <TextBlock FontSize="15" FontWeight="SemiBold" Text="❮" />
+                    </Button>
+                    <Button Margin="6,0,0,0"
+                            Style="{StaticResource HubSecondaryButtonStyle}"
+                            MinHeight="36"
+                            Padding="10,2"
+                            Command="{Binding NextDayCommand}"
+                            AutomationProperties.Name="Следующий день">
+                        <TextBlock FontSize="15" FontWeight="SemiBold" Text="❯" />
+                    </Button>
+                    <Button Margin="6,0,0,0"
+                            Style="{StaticResource HubSecondaryButtonStyle}"
+                            MinHeight="36"
+                            Command="{Binding TodayCommand}"
+                            Content="Сегодня"
+                            AutomationProperties.Name="Перейти к сегодняшней дате" />
+                    <TextBlock Margin="14,0,0,0"
+                               VerticalAlignment="Center"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               Text="{Binding SelectedDateText}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <RadioButton GroupName="AbsenceMode"
+                                 Style="{StaticResource ModeChipRadioStyle}"
+                                 IsChecked="{Binding IsDayMode, Mode=TwoWay}"
+                                 Command="{Binding SelectModeCommand}"
+                                 CommandParameter="day"
+                                 Content="День"
+                                 AutomationProperties.Name="Режим: отсутствия на день" />
+                    <RadioButton GroupName="AbsenceMode"
+                                 Style="{StaticResource ModeChipRadioStyle}"
+                                 IsChecked="{Binding IsWeekMode, Mode=TwoWay}"
+                                 Command="{Binding SelectModeCommand}"
+                                 CommandParameter="week"
+                                 Content="Неделя"
+                                 AutomationProperties.Name="Режим: отсутствия за неделю" />
+                    <Button Margin="8,0,0,0"
+                            Background="Transparent"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding RefreshCommand}"
+                            Content="Обновить"
+                            AutomationProperties.Name="Обновить список отсутствующих" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Поиск по сотруднику и фильтр источника: клиентские, без запроса к API -->
+        <Border Grid.Row="1" Padding="20,12,20,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Grid>
+                    <TextBox x:Name="AbsenceSearchInput"
+                             MaxWidth="360"
+                             HorizontalAlignment="Left"
+                             MinWidth="220"
+                             Style="{StaticResource HubTextBoxStyle}"
+                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Поиск по сотруднику" />
+                    <TextBlock Margin="13,0,0,0"
+                               VerticalAlignment="Center"
+                               IsHitTestVisible="False"
+                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                               Text="Поиск сотрудника…">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text, ElementName=AbsenceSearchInput}" Value="">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <RadioButton GroupName="AbsenceSource"
+                                 Style="{StaticResource ModeChipRadioStyle}"
+                                 IsChecked="{Binding IsFilterAll, Mode=TwoWay}"
+                                 Command="{Binding SelectSourceCommand}"
+                                 CommandParameter="all"
+                                 Content="Все"
+                                 AutomationProperties.Name="Фильтр источника: все записи" />
+                    <RadioButton GroupName="AbsenceSource"
+                                 Style="{StaticResource ModeChipRadioStyle}"
+                                 IsChecked="{Binding IsFilterHub, Mode=TwoWay}"
+                                 Command="{Binding SelectSourceCommand}"
+                                 CommandParameter="hub"
+                                 Content="HUB"
+                                 AutomationProperties.Name="Фильтр источника: только ручные записи HUB" />
+                    <RadioButton GroupName="AbsenceSource"
+                                 Style="{StaticResource ModeChipRadioStyle}"
+                                 IsChecked="{Binding IsFilterZup, Mode=TwoWay}"
+                                 Command="{Binding SelectSourceCommand}"
+                                 CommandParameter="zup"
+                                 Content="ЗУП"
+                                 AutomationProperties.Name="Фильтр источника: только записи ЗУП" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Заголовок с количеством -->
+        <TextBlock Grid.Row="2"
+                   Margin="20,14,20,0"
+                   Style="{StaticResource HubSectionTitleStyle}"
+                   Text="{Binding HeaderText}" />
+
+        <!-- Баннер ошибки -->
+        <Border Grid.Row="3"
+                Margin="20,10,20,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{DynamicResource HubErrorTextBrush}"
+                           Text="{Binding BannerErrorText}"
+                           TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <Button Grid.Column="1"
+                        Margin="12,0,8,0"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Повторить"
+                        AutomationProperties.Name="Повторить загрузку отсутствий" />
+                <Button Grid.Column="2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DismissBannerCommand}"
+                        Content="✕"
+                        AutomationProperties.Name="Скрыть ошибку" />
+            </Grid>
+        </Border>
+
+        <!-- Загрузка -->
+        <Border Grid.Row="4"
+                Margin="20,10,20,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                CornerRadius="8"
+                Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel Orientation="Horizontal">
+                <ProgressBar Width="18"
+                             Height="18"
+                             IsIndeterminate="True"
+                             Margin="0,0,12,0" />
+                <TextBlock VerticalAlignment="Center"
+                           Style="{StaticResource HubMutedTextStyle}"
+                           Text="Загружаю отсутствия…" />
+            </StackPanel>
+        </Border>
+
+        <!-- Список отсутствующих -->
+        <Grid Grid.Row="5" Margin="20,12,20,10">
+            <ListBox Style="{StaticResource HubListBoxStyle}"
+                     ItemsSource="{Binding Items}"
+                     AutomationProperties.Name="Список отсутствующих">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border Width="36"
+                                    Height="36"
+                                    VerticalAlignment="Center"
+                                    CornerRadius="18"
+                                    Background="{DynamicResource HubSelectionBrush}">
+                                <TextBlock HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource HubAccentBrush}"
+                                           Text="{Binding Initials}" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                <TextBlock FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding DisplayName}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                    <TextBlock FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding KindLabel}" />
+                                    <TextBlock Margin="10,0,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding RangeText}" />
+                                </StackPanel>
+                            </StackPanel>
+                            <Border Grid.Column="2"
+                                    Margin="12,0,0,0"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource SourcePillStyle}">
+                                <TextBlock Style="{StaticResource SourcePillTextStyle}"
+                                           Text="{Binding SourceText}" />
+                            </Border>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <!-- Пустое состояние -->
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock HorizontalAlignment="Center"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           Text="{Binding EmptyTitleText}" />
+                <TextBlock Margin="0,6,0,0"
+                           HorizontalAlignment="Center"
+                           Style="{StaticResource HubMutedTextStyle}"
+                           Text="{Binding EmptyHintText}" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

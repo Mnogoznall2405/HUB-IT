@@ -608,3 +608,235 @@ def test_send_notification_skips_non_system_push_during_quiet_hours(monkeypatch)
 
     assert result.sent == 0
     assert result.failed == 0
+
+
+import backend.chat.push_service as push_module
+from backend.chat.push_service import assert_public_push_endpoint
+from fastapi import HTTPException
+
+
+def _global_addrinfo(ip: str = "140.82.121.4"):
+    return lambda *_a, **_k: [(0, 0, 0, "", (ip, 443))]
+
+
+class _ScalarResult:
+    def __init__(self, value=None):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _UpsertSession:
+    def __init__(self):
+        self.added = []
+
+    def execute(self, _query):
+        return _ScalarResult(None)
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    def flush(self):
+        pass
+
+
+@contextmanager
+def _fake_chat_session(session):
+    yield session
+
+
+def test_push_endpoint_rejects_non_https():
+    with pytest.raises(HTTPException) as exc:
+        assert_public_push_endpoint("http://push.example/register")
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://user:pass@push.example/",
+        "https://push.example:444/send",
+        "https://push.example:badport/",
+        "https:///missing-host",
+        "not-a-url",
+    ],
+)
+def test_push_endpoint_rejects_invalid_urls_without_dns(monkeypatch, endpoint):
+    monkeypatch.setattr(
+        push_module.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: pytest.fail("DNS must not run for rejected endpoints"),
+    )
+    with pytest.raises(HTTPException) as exc:
+        assert_public_push_endpoint(endpoint)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "ip",
+    ["127.0.0.1", "10.0.0.8", "192.168.1.10", "169.254.169.254", "::1", "::ffff:127.0.0.1"],
+)
+def test_push_endpoint_rejects_non_global_ips(monkeypatch, ip):
+    monkeypatch.setattr(push_module.socket, "getaddrinfo", _global_addrinfo(ip))
+    with pytest.raises(HTTPException) as exc:
+        assert_public_push_endpoint("https://push.example/send")
+    assert exc.value.status_code == 400
+
+
+def test_push_endpoint_rejects_mixed_resolution(monkeypatch):
+    monkeypatch.setattr(
+        push_module.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [
+            (0, 0, 0, "", ("140.82.121.4", 443)),
+            (0, 0, 0, "", ("10.0.0.5", 443)),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        assert_public_push_endpoint("https://push.example/send")
+    assert exc.value.status_code == 400
+
+
+def test_push_endpoint_unresolvable_is_422(monkeypatch):
+    def _raise(*_a, **_k):
+        raise OSError("no DNS")
+
+    monkeypatch.setattr(push_module.socket, "getaddrinfo", _raise)
+    with pytest.raises(HTTPException) as exc:
+        assert_public_push_endpoint("https://push.example/send")
+    assert exc.value.status_code == 422
+
+
+def test_push_endpoint_accepts_global_https(monkeypatch):
+    monkeypatch.setattr(push_module.socket, "getaddrinfo", _global_addrinfo())
+    endpoint = "https://push.example/sub/abc"
+    assert assert_public_push_endpoint(endpoint) == endpoint
+
+
+def test_upsert_rejects_private_endpoint_before_storage(monkeypatch):
+    service = ChatPushService()
+    session_used = []
+
+    @contextmanager
+    def guarded_session():
+        session_used.append(True)
+        yield _UpsertSession()
+
+    monkeypatch.setattr(push_module.socket, "getaddrinfo", _global_addrinfo("169.254.169.254"))
+    monkeypatch.setattr(push_module, "chat_session", guarded_session)
+
+    with pytest.raises(HTTPException) as exc:
+        service.upsert_subscription(
+            current_user_id=7,
+            endpoint="https://169.254.169.254/latest/meta-data",
+            p256dh_key="p256",
+            auth_key="auth",
+        )
+    assert exc.value.status_code == 400
+    assert session_used == []
+
+
+def test_upsert_accepts_public_endpoint(monkeypatch):
+    service = ChatPushService()
+    session = _UpsertSession()
+    monkeypatch.setattr(push_module.socket, "getaddrinfo", _global_addrinfo())
+    monkeypatch.setattr(push_module, "chat_session", lambda: _fake_chat_session(session))
+    monkeypatch.setattr(service, "_dedupe_active_subscriptions_in_session", lambda *_a, **_k: [])
+
+    result = service.upsert_subscription(
+        current_user_id=7,
+        endpoint="https://push.example/sub/abc",
+        p256dh_key="p256",
+        auth_key="auth",
+    )
+
+    assert result["ok"] is True
+    assert len(session.added) == 1
+
+
+def _managed_subscription(endpoint):
+    return SimpleNamespace(
+        id=11,
+        endpoint=endpoint,
+        p256dh_key="p256",
+        auth_key="auth",
+        failure_count=0,
+        is_active=True,
+        updated_at=None,
+        last_error_at=None,
+        last_error_text=None,
+        last_push_at=None,
+        last_seen_at=None,
+    )
+
+
+def test_send_deactivates_stored_private_endpoint_without_webpush(monkeypatch):
+    service = ChatPushService()
+    managed = _managed_subscription("https://internal.example/send")
+    monkeypatch.setattr(type(service), "enabled", property(lambda _s: True))
+    monkeypatch.setattr(push_module.socket, "getaddrinfo", _global_addrinfo("10.0.0.9"))
+    calls = []
+    monkeypatch.setattr(push_module, "webpush", lambda **kwargs: calls.append(kwargs))
+
+    class _Session:
+        def get(self, _model, _key):
+            return managed
+
+    monkeypatch.setattr(push_module, "chat_session", lambda: _fake_chat_session(_Session()))
+
+    result = service._send_payload_to_subscriptions(subscriptions=[managed], payload={"x": 1})
+
+    assert calls == []
+    assert result.disabled == 1
+    assert result.sent == 0
+    assert managed.is_active is False
+    assert managed.failure_count == 1
+
+
+def test_send_keeps_subscription_on_transient_dns_failure(monkeypatch):
+    service = ChatPushService()
+    managed = _managed_subscription("https://push.example/send")
+    monkeypatch.setattr(type(service), "enabled", property(lambda _s: True))
+
+    def _raise(*_a, **_k):
+        raise OSError("no DNS")
+
+    monkeypatch.setattr(push_module.socket, "getaddrinfo", _raise)
+    calls = []
+    monkeypatch.setattr(push_module, "webpush", lambda **kwargs: calls.append(kwargs))
+
+    class _Session:
+        def get(self, _model, _key):
+            return managed
+
+    monkeypatch.setattr(push_module, "chat_session", lambda: _fake_chat_session(_Session()))
+
+    result = service._send_payload_to_subscriptions(subscriptions=[managed], payload={"x": 1})
+
+    assert calls == []
+    assert result.failed == 1
+    assert result.disabled == 0
+    assert managed.is_active is True
+
+
+def test_send_uses_redirect_free_requests_session(monkeypatch):
+    service = ChatPushService()
+    managed = _managed_subscription("https://push.example/send")
+    monkeypatch.setattr(type(service), "enabled", property(lambda _s: True))
+    monkeypatch.setattr(push_module.socket, "getaddrinfo", _global_addrinfo())
+    calls = []
+    monkeypatch.setattr(push_module, "webpush", lambda **kwargs: calls.append(kwargs))
+
+    class _Session:
+        def get(self, _model, _key):
+            return managed
+
+    monkeypatch.setattr(push_module, "chat_session", lambda: _fake_chat_session(_Session()))
+
+    result = service._send_payload_to_subscriptions(subscriptions=[managed], payload={"x": 1})
+
+    assert result.sent == 1
+    session = calls[0]["requests_session"]
+    assert session is not None
+    assert session.max_redirects == 0

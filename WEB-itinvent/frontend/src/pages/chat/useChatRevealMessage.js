@@ -14,6 +14,7 @@ export default function useChatRevealMessage({
   activeConversationIdRef,
   loadMessages,
   messagesHasMoreRef,
+  messagesHasNewerRef,
   messagesRef,
   revealMessageRef,
   scrollToMessage,
@@ -29,6 +30,25 @@ export default function useChatRevealMessage({
     if (scrollToMessage(normalizedMessageId)) return true;
 
     let iterations = 0;
+    // Цель может быть новее загруженного окна (has_newer): сначала идём вперёд
+    // страницами after_message_id, иначе обратный обход никогда её не найдёт.
+    while (messagesHasNewerRef?.current && iterations < CHAT_REVEAL_MAX_ITERATIONS) {
+      if (!isCurrent()) return false;
+      const newestMessageId = String(messagesRef.current[messagesRef.current.length - 1]?.id || '').trim();
+      if (!newestMessageId) break;
+      const newerItems = await loadMessages(conversationId, {
+        silent: true,
+        afterMessageId: newestMessageId,
+        reason: 'reveal:load_newer',
+      });
+      if (!isCurrent()) return false;
+      iterations += 1;
+      if (!Array.isArray(newerItems) || newerItems.length === 0) break;
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      if (!isCurrent()) return false;
+      if (scrollToMessage(normalizedMessageId)) return true;
+    }
+
     while (shouldContinueRevealMessageSearch({
       messagesHasMore: messagesHasMoreRef.current,
       iterations,
@@ -49,7 +69,7 @@ export default function useChatRevealMessage({
       if (scrollToMessage(normalizedMessageId)) return true;
     }
     return false;
-  }, [activeConversationIdRef, loadMessages, messagesHasMoreRef, messagesRef, scrollToMessage]);
+  }, [activeConversationIdRef, loadMessages, messagesHasMoreRef, messagesHasNewerRef, messagesRef, scrollToMessage]);
 
   useEffect(() => {
     revealMessageRef.current = revealMessage;

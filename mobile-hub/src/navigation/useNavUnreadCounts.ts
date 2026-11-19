@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
 import { chatSocket } from '../chat/chatSocket';
 import { applyNativeMailUnreadChange, subscribeNativeMailUnread } from '../mail/nativeMailUnreadEvents';
@@ -35,7 +36,7 @@ const EMPTY_COUNTS: NavUnreadCounts = {
 };
 
 export function useNavUnreadCounts(): NavUnreadCounts {
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, offlineMode } = useAuth();
   const [counts, setCounts] = useState<NavUnreadCounts>(EMPTY_COUNTS);
   const mountedRef = useRef(true);
 
@@ -44,18 +45,22 @@ export function useNavUnreadCounts(): NavUnreadCounts {
       if (mountedRef.current) setCounts(EMPTY_COUNTS);
       return;
     }
+    if (offlineMode) return;
     const canReadChat = hasPermission('chat.read');
     const canReadMail = hasPermission('mail.access');
     const snapshot = await getNativeUnreadSnapshot({ canReadChat, canReadMail, force });
     if (!mountedRef.current) return;
+    // Полный сбой всех источников (обрыв, 5xx): keep the last good counts —
+    // иначе бейджи мигают в 0 до следующего удачного полла. A partial snapshot
+    // without a previous complete one (badge_safe=false) is unsafe for the
+    // same reason — keep the last good counters instead.
+    if (snapshot.successful_sources <= 0 || snapshot.badge_safe === false) return;
     // Серверный счётчик почты может отставать от локально применённых дельт
     // (Exchange обновляет unread с задержкой) — корректируем до подтверждения.
     const corrected = { ...snapshot, mail_unread: applyPendingNativeMailUnread(null, null, snapshot.mail_unread) };
     setCounts(corrected);
-    if (snapshot.successful_sources > 0) {
-      void setNativeBadgeCount(nativeUnreadTotal(corrected));
-    }
-  }, [hasPermission, user]);
+    void setNativeBadgeCount(nativeUnreadTotal(corrected));
+  }, [hasPermission, offlineMode, user]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -72,6 +77,9 @@ export function useNavUnreadCounts(): NavUnreadCounts {
     };
     let lastLoadAt = Date.now();
     const timer = setInterval(() => {
+      // JS timers keep firing while the app is backgrounded on Android: the
+      // poll must not burn battery/data when nothing can render the result.
+      if (AppState.currentState !== 'active' || offlineMode) return;
       const realtimeUp = chatSocket.getStatus() === 'connected' && hubRealtimeSocket.getStatus() === 'connected';
       if (realtimeUp && Date.now() - lastLoadAt < HUB_POLL_CONNECTED_INTERVAL_MS - 1_000) return;
       lastLoadAt = Date.now();

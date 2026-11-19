@@ -451,6 +451,12 @@ def restore_upgrade_runtime_backup(
     return True
 
 
+# Bound agent credentials live in the runtime .env between rotate_key cycles.
+# An MSI reinstall must not stampede them with the embedded ring key, otherwise
+# every update throws the agent back onto the shared ring and forces a re-bind.
+PERSISTED_KEY_ENV_KEYS = frozenset({"ITINV_AGENT_API_KEY", "SCAN_AGENT_API_KEY"})
+
+
 def build_runtime_env_values(existing: Mapping[str, str], overrides: Mapping[str, str]) -> Dict[str, str]:
     merged: Dict[str, str] = {}
     ordered_keys: List[str] = []
@@ -463,6 +469,10 @@ def build_runtime_env_values(existing: Mapping[str, str], overrides: Mapping[str
         if key not in ordered_keys:
             ordered_keys.append(key)
     for key in ordered_keys:
+        existing_value = str(existing.get(key, "") or "").strip() if key in existing else ""
+        if key in PERSISTED_KEY_ENV_KEYS and existing_value:
+            merged[key] = existing_value
+            continue
         raw_override = str(overrides.get(key, "") or "").strip()
         if raw_override:
             merged[key] = raw_override

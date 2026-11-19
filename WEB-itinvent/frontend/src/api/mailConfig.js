@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { withMailboxQuery } from './mailMailboxQuery';
 
 export const mailConfigAPI = {

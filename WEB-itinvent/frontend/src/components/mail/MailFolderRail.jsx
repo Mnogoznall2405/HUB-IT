@@ -324,9 +324,17 @@ export default function MailFolderRail({
 
   const items = useMemo(() => (Array.isArray(folderTreeItems) ? folderTreeItems : []), [folderTreeItems]);
 
+  const standardFolderIds = useMemo(
+    () => new Set(items.filter((item) => item.well_known_key).map((item) => String(item.id))),
+    [items],
+  );
+
   const childrenByParent = useMemo(() => {
     const map = new Map();
     items.forEach((item) => {
+      // Кастомные папки, созданные под системной, показываем в «Мои папки» —
+      // внутри «Входящих» они читаются как служебные.
+      if (!item.well_known_key && item.parent_id && standardFolderIds.has(String(item.parent_id))) return;
       const key = String(item.parent_id || '__root__');
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(item);
@@ -354,12 +362,18 @@ export default function MailFolderRail({
 
   const favoriteItems = useMemo(() => items.filter((item) => item.is_favorite), [items]);
   const rootCustomMailbox = useMemo(
-    () => items.filter((item) => !item.well_known_key && !item.parent_id && item.scope === 'mailbox'),
-    [items],
+    () => items.filter(
+      (item) => !item.well_known_key && item.scope === 'mailbox'
+        && (!item.parent_id || standardFolderIds.has(String(item.parent_id))),
+    ),
+    [items, standardFolderIds],
   );
   const rootCustomArchive = useMemo(
-    () => items.filter((item) => !item.well_known_key && !item.parent_id && item.scope === 'archive'),
-    [items],
+    () => items.filter(
+      (item) => !item.well_known_key && item.scope === 'archive'
+        && (!item.parent_id || standardFolderIds.has(String(item.parent_id))),
+    ),
+    [items, standardFolderIds],
   );
 
   const autoExpandedFolderIds = useMemo(() => {

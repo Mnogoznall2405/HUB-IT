@@ -275,7 +275,10 @@ export function ChatThreadOverlays({
         onClose={() => setAttachmentPickerVisible(false)}
         onSendFiles={(files, caption) => {
           setAttachmentPickerVisible(false);
-          void sendPickedFiles(files, { body: caption });
+          // Empty caption is not an intentional replacement: fall back to the
+          // composer text (it becomes the message caption) instead of
+          // silently dropping it.
+          void sendPickedFiles(files, { body: caption || undefined });
         }}
         onEditFiles={(files, caption, editIndex) => {
           setAttachmentPickerVisible(false);

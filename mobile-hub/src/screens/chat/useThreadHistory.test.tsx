@@ -10,6 +10,7 @@ import type {
 } from '../../api/types';
 import type { NativeSnapshot } from '../../cache/nativeSnapshotCache';
 import { readNativeEntitySnapshot } from '../../cache/nativeSnapshotCache';
+import { getChatDeviceLogSnapshot, resetChatDeviceLog } from '../../diagnostics/chatDeviceLog';
 import type { createNativeChatOutbox } from '../../chat/nativeChatOutbox';
 import type { NativeChatThreadSnapshot } from '../../chat/nativeChatThreadHistory';
 import type { ChatMessageEnterKind } from '../../components/chat/ChatMessageEnterMotion';
@@ -261,9 +262,9 @@ it('starts the bootstrap page and conversation requests before the snapshot read
   expect(view.result.current.history.threadHydrated).toBe(true);
 });
 
-it('falls back to the plain messages page when thread bootstrap is unavailable', async () => {
+it.each([404, 405])('falls back to the plain messages page when thread bootstrap is unsupported (%i)', async (status) => {
   readSnapshot.mockResolvedValue(null);
-  mockedChatApi.getThreadBootstrap.mockRejectedValueOnce(new Error('404'));
+  mockedChatApi.getThreadBootstrap.mockRejectedValueOnce({ response: { status } });
   mockedChatApi.getMessagesPage.mockResolvedValueOnce(livePage([
     peerMessage('m-fallback', 'из fallback-страницы', '2026-08-23T08:00:00Z'),
   ]));
@@ -279,6 +280,23 @@ it('falls back to the plain messages page when thread bootstrap is unavailable',
   expect(mockedChatApi.getMessagesPage).toHaveBeenCalledWith('conversation-1', { limit: 80 });
   expect(view.result.current.messages.map((item) => item.id)).toEqual(['m-fallback']);
   expect(view.result.current.history.loading).toBe(false);
+});
+
+it.each([403, 500])('surfaces a bootstrap failure with status %i instead of retrying via getMessagesPage', async (status) => {
+  readSnapshot.mockResolvedValue(null);
+  mockedChatApi.getThreadBootstrap.mockRejectedValueOnce({ response: { status } });
+  const view = await renderHook(
+    (props: HarnessProps) => useHarness(props),
+    { initialProps: makeHarnessProps({ conversationId: 'conversation-1' }) },
+  );
+
+  await act(async () => {
+    await view.result.current.history.loadInitial();
+  });
+
+  expect(mockedChatApi.getMessagesPage).not.toHaveBeenCalled();
+  expect(view.result.current.history.loading).toBe(false);
+  expect(view.result.current.history.error).toBeTruthy();
 });
 
 it('anchors on the first unread message when bootstrap reports it (M7)', async () => {
@@ -426,4 +444,81 @@ it('drops the stale load when the conversation changes mid-flight', async () => 
   expect(view.result.current.messages).toEqual([]);
   expect(view.result.current.conversation).toBeNull();
   expect(view.result.current.title).toBe('Chat');
+});
+
+describe('thread stage events', () => {
+  beforeEach(async () => {
+    await resetChatDeviceLog();
+  });
+
+  it('logs thread_cache hit and thread_page ok with stage fields only', async () => {
+    readSnapshot.mockResolvedValue(cachedSnapshot([
+      peerMessage('m-cache', 'секретное тело', '2026-08-23T08:00:00Z'),
+    ]));
+    mockedChatApi.getThreadBootstrap.mockResolvedValue(liveBootstrap([
+      peerMessage('m-live', 'ещё секрет', '2026-08-23T09:00:00Z'),
+      peerMessage('m-live-2', 'третий', '2026-08-23T09:01:00Z'),
+    ]));
+    const view = await renderHook(
+      (props: HarnessProps) => useHarness(props),
+      { initialProps: makeHarnessProps({ conversationId: 'conversation-1' }) },
+    );
+    await act(async () => {
+      await view.result.current.history.loadInitial();
+    });
+    const entries = getChatDeviceLogSnapshot();
+    const cache = entries.find((entry) => entry.e === 'thread_cache');
+    const page = entries.find((entry) => entry.e === 'thread_page');
+    expect(cache?.f).toMatchObject({ hit: true });
+    expect(Number.isInteger(cache?.f?.ms)).toBe(true);
+    expect(Number.isInteger(page?.f?.ms)).toBe(true);
+    expect(page?.f).toMatchObject({ count: 2, outcome: 'ok' });
+    // Stage fields carry timings and counts only — no ids, titles or bodies.
+    const stageFields = JSON.stringify(
+      entries.filter((entry) => entry.e.startsWith('thread_')).map((entry) => entry.f ?? null),
+    );
+    expect(stageFields).not.toContain('conversation-1');
+    expect(stageFields).not.toContain('секрет');
+    view.unmount();
+  });
+
+  it('logs thread_page error without leaking the thrown message', async () => {
+    mockedChatApi.getThreadBootstrap.mockRejectedValue(
+      new Error('server exploded for conversation-1'),
+    );
+    const view = await renderHook(
+      (props: HarnessProps) => useHarness(props),
+      { initialProps: makeHarnessProps({ conversationId: 'conversation-1' }) },
+    );
+    await act(async () => {
+      await view.result.current.history.loadInitial();
+    });
+    const page = getChatDeviceLogSnapshot().find((entry) => entry.e === 'thread_page');
+    expect(page?.f?.outcome).toBe('error');
+    expect(Number.isInteger(page?.f?.ms)).toBe(true);
+    const stageFields = JSON.stringify(
+      getChatDeviceLogSnapshot().map((entry) => entry.f ?? null),
+    );
+    expect(stageFields).not.toContain('exploded');
+    expect(stageFields).not.toContain('conversation-1');
+    view.unmount();
+  });
+
+  it('logs only the cache stage offline and never requests a page', async () => {
+    readSnapshot.mockResolvedValue(cachedSnapshot([
+      peerMessage('m-cache', 'кэш', '2026-08-23T08:00:00Z'),
+    ]));
+    const view = await renderHook(
+      (props: HarnessProps) => useHarness(props),
+      { initialProps: makeHarnessProps({ conversationId: 'conversation-1', offlineMode: true }) },
+    );
+    await act(async () => {
+      await view.result.current.history.loadInitial();
+    });
+    expect(getChatDeviceLogSnapshot().some((entry) => entry.e === 'thread_cache')).toBe(true);
+    expect(getChatDeviceLogSnapshot().filter((entry) => entry.e === 'thread_page')).toHaveLength(0);
+    expect(mockedChatApi.getThreadBootstrap).not.toHaveBeenCalled();
+    expect(mockedChatApi.getMessagesPage).not.toHaveBeenCalled();
+    view.unmount();
+  });
 });

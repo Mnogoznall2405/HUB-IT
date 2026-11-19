@@ -341,6 +341,7 @@ class AuthRuntimeStoreService:
         *,
         window_seconds: int,
         amount: int,
+        relax_commit: bool = False,
     ) -> Optional[dict[str, Any]]:
         """One atomic upsert round trip instead of SELECT ... FOR UPDATE + UPDATE.
 
@@ -373,7 +374,7 @@ class AuthRuntimeStoreService:
             """
         )
         try:
-            with app_session(self._database_url) as session:
+            with app_session(self._database_url, relax_commit=relax_commit) as session:
                 bind = session.get_bind()
                 if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
                     return None
@@ -410,8 +411,12 @@ class AuthRuntimeStoreService:
     ) -> dict[str, Any]:
         normalized_namespace = self._normalize_namespace(namespace)
         normalized_key = self._normalize_key(key)
+        # Request-throttling counters are telemetry-class: losing an increment on
+        # crash softens the throttle for seconds. replay/lockout counters stay durable.
+        relax_commit = normalized_namespace == "rate_limit"
         atomic = self._increment_counter_postgres(
-            normalized_namespace, normalized_key, window_seconds=window_seconds, amount=amount
+            normalized_namespace, normalized_key, window_seconds=window_seconds, amount=amount,
+            relax_commit=relax_commit,
         )
         if atomic is not None:
             return atomic
@@ -420,7 +425,7 @@ class AuthRuntimeStoreService:
             now_ts = int(now.timestamp())
             expires_at = now + timedelta(seconds=window_seconds)
             try:
-                with app_session(self._database_url) as session:
+                with app_session(self._database_url, relax_commit=relax_commit) as session:
                     row = session.scalars(
                         select(AppAuthRuntimeItem)
                         .where(
@@ -606,6 +611,23 @@ class AuthRuntimeStoreService:
             if index + 1 < max(1, int(attempts)):
                 time.sleep(max(0.0, float(sleep_seconds)))
         return None
+
+    def note_refresh_rotation_grace_hit(self, old_jti: str, *, ttl_seconds: int) -> int:
+        """Count serves of the rotation-grace payload of one rotated jti.
+
+        M-6: the first serve inside the grace window covers the legitimate
+        parallel-refresh race; a repeat means the rotated token was replayed
+        and the caller must treat the token family as compromised.
+        """
+        normalized = str(old_jti or "").strip()
+        if not normalized:
+            return 0
+        counter = self.increment_counter(
+            "refresh_grace_hits",
+            normalized,
+            window_seconds=max(1, int(ttl_seconds or 1)),
+        )
+        return int(counter.get("count", 0) or 0)
 
     def save_login_challenge(self, challenge_id: str, payload: dict[str, Any], ttl_seconds: int) -> None:
         self.set_json("login_challenge", challenge_id, payload, ttl_seconds=max(1, int(ttl_seconds or 1)))

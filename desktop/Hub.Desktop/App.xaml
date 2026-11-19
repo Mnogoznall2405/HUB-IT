@@ -3,5 +3,13 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Native/Themes/HubTheme.xaml" />
+                <!-- Палитра по умолчанию до загрузки настроек; дальше
+                     Source этого словаря переключает NativeThemeManager. -->
+                <ResourceDictionary Source="Native/Themes/HubColorsDark.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

@@ -1,0 +1,548 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.DashboardView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
+            <local:NonEmptyStringToBoolConverter x:Key="NonEmptyOrNullEnabled" />
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <ScrollViewer Style="{StaticResource HubScrollViewerStyle}"
+                  VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="28,20,28,24">
+
+            <!-- Приветствие -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock FontSize="24"
+                               FontWeight="SemiBold"
+                               Text="{Binding GreetingText}" />
+                    <TextBlock Margin="0,4,0,0"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               Text="{Binding TodayText}" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        VerticalAlignment="Center"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Обновить"
+                        AutomationProperties.Name="Обновить главную страницу" />
+            </Grid>
+
+            <!-- Загрузка -->
+            <Border Margin="0,20,0,0"
+                    Padding="16,12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    CornerRadius="10"
+                    Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Orientation="Horizontal">
+                    <ProgressBar Width="18"
+                                 Height="18"
+                                 IsIndeterminate="True"
+                                 Margin="0,0,12,0" />
+                    <TextBlock VerticalAlignment="Center"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               Text="Загружаю сводку…" />
+                </StackPanel>
+            </Border>
+
+            <!-- Ошибка -->
+            <Border Margin="0,20,0,0"
+                    Padding="16,12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubErrorTextBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{DynamicResource HubErrorTextBrush}"
+                               Text="{Binding ErrorText}"
+                               TextWrapping="Wrap"
+                               AutomationProperties.LiveSetting="Assertive" />
+                    <Button Grid.Column="1"
+                            Margin="12,0,0,0"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding RefreshCommand}"
+                            Content="Повторить"
+                            AutomationProperties.Name="Повторить загрузку главной страницы" />
+                </Grid>
+            </Border>
+
+            <StackPanel Visibility="{Binding HasContent, Converter={StaticResource BoolToVisibility}}">
+
+                <!-- Требует внимания: приоритетная очередь, клик открывает объект -->
+                <Border Margin="0,20,0,0"
+                        Padding="16,12"
+                        Background="{DynamicResource HubSurfaceBrush}"
+                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Visibility="{Binding HasAttention, Converter={StaticResource BoolToVisibility}}">
+                    <Grid>
+                        <Border Width="3"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Stretch"
+                                Margin="0,2,0,2"
+                                CornerRadius="2"
+                                Style="{StaticResource HubToneStripeStyle}"
+                                local:HubTone.Value="{Binding AttentionTone}" />
+                        <StackPanel Margin="13,0,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           Style="{StaticResource HubSectionTitleStyle}"
+                                           FontSize="15"
+                                           Text="Требует внимания" />
+                                <Border Grid.Column="1"
+                                        VerticalAlignment="Center"
+                                        Style="{StaticResource HubStatusPillStyle}"
+                                        local:HubTone.Value="{Binding AttentionTone}">
+                                    <TextBlock FontSize="11"
+                                               FontWeight="SemiBold"
+                                               Style="{StaticResource HubToneTextStyle}"
+                                               Text="{Binding AttentionTotalText}" />
+                                </Border>
+                            </Grid>
+                            <TextBlock Margin="0,8,0,0"
+                                       FontSize="12"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Подробности — в разделах «Задачи» и «Новости» ниже."
+                                       Visibility="{Binding HasAttentionSummaryOnly, Converter={StaticResource BoolToVisibility}}" />
+                            <ItemsControl Margin="0,8,0,0"
+                                          ItemsSource="{Binding AttentionItems}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Margin="0,0,8,8"
+                                                MinWidth="260"
+                                                MaxWidth="420"
+                                                HorizontalContentAlignment="Stretch"
+                                                Command="{Binding DataContext.OpenAttentionItemCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}"
+                                                FocusVisualStyle="{StaticResource HubFocusStyle}"
+                                                AutomationProperties.Name="{Binding Title}">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border x:Name="Surface"
+                                                            Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="10"
+                                                            Padding="12,8"
+                                                            SnapsToDevicePixels="True">
+                                                        <Grid>
+                                                            <Border Width="8"
+                                                                    Height="8"
+                                                                    Margin="0,5,0,0"
+                                                                    VerticalAlignment="Top"
+                                                                    CornerRadius="4"
+                                                                    Style="{StaticResource HubToneStripeStyle}"
+                                                                    local:HubTone.Value="{Binding Tone}" />
+                                                            <StackPanel Margin="18,0,0,0">
+                                                                <TextBlock FontSize="13"
+                                                                           FontWeight="SemiBold"
+                                                                           Text="{Binding Title}"
+                                                                           TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Margin="0,2,0,0"
+                                                                           FontSize="11"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="{Binding SecondaryText}"
+                                                                           TextTrimming="CharacterEllipsis" />
+                                                            </StackPanel>
+                                                        </Grid>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Спокойное состояние: сигналов, требующих реакции, нет -->
+                <Border Margin="0,20,0,0"
+                        Padding="14,10"
+                        Background="{DynamicResource HubSurfaceBrush}"
+                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Visibility="{Binding HasAttention, Converter={StaticResource InverseBoolToVisibility}}">
+                    <StackPanel Orientation="Horizontal">
+                        <Border Width="8"
+                                Height="8"
+                                VerticalAlignment="Center"
+                                CornerRadius="4"
+                                Background="{DynamicResource HubSuccessBrush}" />
+                        <TextBlock Margin="10,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Text="Всё спокойно." />
+                        <TextBlock Margin="8,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Нет просроченных задач и обязательных подтверждений." />
+                    </StackPanel>
+                </Border>
+
+                <!-- Стат-карточки -->
+                <ItemsControl Margin="0,20,0,0"
+                              ItemsSource="{Binding StatCards}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Button Margin="0,0,12,12"
+                                    MinWidth="168"
+                                    HorizontalContentAlignment="Stretch"
+                                    Command="{Binding DataContext.OpenStatCardCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}"
+                                    IsEnabled="{Binding IsNavigable, Mode=OneTime}"
+                                    FocusVisualStyle="{StaticResource HubFocusStyle}"
+                                    AutomationProperties.Name="{Binding AccessibleName}">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="Surface"
+                                                Background="{DynamicResource HubSurfaceBrush}"
+                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="12"
+                                                Padding="16,14"
+                                                SnapsToDevicePixels="True">
+                                            <Grid>
+                                                <Border Width="3"
+                                                        HorizontalAlignment="Left"
+                                                        VerticalAlignment="Stretch"
+                                                        Margin="0,2,0,2"
+                                                        CornerRadius="2"
+                                                        Style="{StaticResource HubToneStripeStyle}"
+                                                        local:HubTone.Value="{Binding Tone}" />
+                                                <StackPanel Margin="13,0,0,0">
+                                                    <TextBlock FontSize="26"
+                                                               FontWeight="SemiBold"
+                                                               Style="{StaticResource HubToneTextStyle}"
+                                                               local:HubTone.Value="{Binding Tone}"
+                                                               Text="{Binding ValueText}" />
+                                                    <TextBlock Margin="0,4,0,0"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                               Text="{Binding Label}" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+                                                <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                                            </Trigger>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter Property="Cursor" Value="Arrow" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" MinWidth="340" />
+                        <ColumnDefinition Width="20" />
+                        <ColumnDefinition Width="*" MinWidth="340" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Ближайшие задачи -->
+                    <StackPanel Grid.Column="0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                       Text="Ближайшие задачи" />
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding DataContext.NavigateToTasksCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="all"
+                                    Content="Все задачи →"
+                                    AutomationProperties.Name="Открыть все мои задачи" />
+                        </Grid>
+
+                        <ItemsControl Margin="0,10,0,0"
+                                      ItemsSource="{Binding UpcomingTasks}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Margin="0,0,0,8"
+                                            HorizontalContentAlignment="Stretch"
+                                            Command="{Binding DataContext.OpenTaskCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            FocusVisualStyle="{StaticResource HubFocusStyle}"
+                                            AutomationProperties.Name="{Binding Title}">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border x:Name="Surface"
+                                                        Background="{DynamicResource HubSurfaceBrush}"
+                                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="10"
+                                                        Padding="14,10"
+                                                        SnapsToDevicePixels="True">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock FontSize="14"
+                                                                       FontWeight="SemiBold"
+                                                                       Text="{Binding Title}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Margin="0,3,0,0"
+                                                                       FontSize="12"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding DueText}" />
+                                                        </StackPanel>
+                                                        <Border Grid.Column="1"
+                                                                Margin="12,0,0,0"
+                                                                VerticalAlignment="Center"
+                                                                Style="{StaticResource HubStatusPillStyle}"
+                                                                local:HubTone.Value="{Binding StatusTone}">
+                                                            <TextBlock FontSize="11"
+                                                                       FontWeight="SemiBold"
+                                                                       Style="{StaticResource HubToneTextStyle}"
+                                                                       Text="{Binding StatusText}" />
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                                                        <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Border Padding="14,12"
+                                Background="{DynamicResource HubSurfaceBrush}"
+                                CornerRadius="10"
+                                Visibility="{Binding HasUpcomingTasks, Converter={StaticResource InverseBoolToVisibility}}">
+                            <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Открытых задач нет — отличный день." />
+                        </Border>
+                    </StackPanel>
+
+                    <!-- Правая колонка: новости + отсутствующие -->
+                    <StackPanel Grid.Column="2">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                       Text="Новости" />
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding DataContext.NavigateToPageCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="news"
+                                    Content="Все новости →"
+                                    AutomationProperties.Name="Открыть все новости" />
+                        </Grid>
+
+                        <ItemsControl Margin="0,10,0,0"
+                                      ItemsSource="{Binding Announcements}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Margin="0,0,0,8"
+                                            HorizontalContentAlignment="Stretch"
+                                            Command="{Binding DataContext.OpenNewsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            FocusVisualStyle="{StaticResource HubFocusStyle}"
+                                            AutomationProperties.Name="{Binding Title}">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border x:Name="Surface"
+                                                        Padding="14,10"
+                                                        Background="{DynamicResource HubSurfaceBrush}"
+                                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="10"
+                                                        SnapsToDevicePixels="True">
+                                                    <StackPanel>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock FontSize="13"
+                                                                       FontWeight="SemiBold"
+                                                                       Text="{Binding Title}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <Border Grid.Column="1"
+                                                                    Margin="10,0,0,0"
+                                                                    Style="{StaticResource HubStatusPillStyle}"
+                                                                    BorderBrush="{DynamicResource HubWarningBrush}"
+                                                                    Visibility="{Binding IsImportant, Converter={StaticResource BoolToVisibility}}">
+                                                                <TextBlock FontSize="10"
+                                                                           FontWeight="SemiBold"
+                                                                           Foreground="{DynamicResource HubWarningBrush}"
+                                                                           Text="Важно" />
+                                                            </Border>
+                                                        </Grid>
+                                                        <TextBlock Margin="0,3,0,0"
+                                                                   FontSize="12"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding Preview}"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   MaxHeight="32" />
+                                                        <TextBlock Margin="0,4,0,0"
+                                                                   FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding DateText}" />
+                                                    </StackPanel>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                                                        <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Border Padding="14,12"
+                                Background="{DynamicResource HubSurfaceBrush}"
+                                CornerRadius="10"
+                                Visibility="{Binding HasAnnouncements, Converter={StaticResource InverseBoolToVisibility}}">
+                            <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Новых объявлений нет." />
+                        </Border>
+
+                        <Grid Margin="0,18,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                       Text="Отсутствуют сегодня" />
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding DataContext.NavigateToPageCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="absences"
+                                    Content="Все отсутствия →"
+                                    AutomationProperties.Name="Открыть все отсутствия" />
+                        </Grid>
+
+                        <ItemsControl Margin="0,10,0,0"
+                                      ItemsSource="{Binding Absences}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Margin="0,0,0,6"
+                                            HorizontalContentAlignment="Stretch"
+                                            Command="{Binding DataContext.NavigateToPageCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            CommandParameter="absences"
+                                            FocusVisualStyle="{StaticResource HubFocusStyle}"
+                                            AutomationProperties.Name="{Binding DisplayName}">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border x:Name="Surface"
+                                                        Padding="12,8"
+                                                        Background="{DynamicResource HubSurfaceBrush}"
+                                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="8"
+                                                        SnapsToDevicePixels="True">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock FontSize="13"
+                                                                       Text="{Binding DisplayName}" />
+                                                            <TextBlock Margin="0,2,0,0"
+                                                                       FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}">
+                                                                <Run Text="{Binding KindLabel, Mode=OneWay}" />
+                                                                <Run Text="{Binding RangeText, Mode=OneWay}" />
+                                                            </TextBlock>
+                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="1"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding SourceText}" />
+                                                    </Grid>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                                                        <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Border Padding="14,12"
+                                Background="{DynamicResource HubSurfaceBrush}"
+                                CornerRadius="10"
+                                Visibility="{Binding HasAbsences, Converter={StaticResource InverseBoolToVisibility}}">
+                            <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Сегодня все на месте." />
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

@@ -41,13 +41,20 @@ export default function useChatPreviewController({
 }) {
   const [attachmentPreview, setAttachmentPreview] = useState(null);
   const [documentPreview, setDocumentPreview] = useState(null);
+  const documentPreviewRef = useRef(null);
   const documentPreviewRequestRef = useRef(null);
   const mediaRequestSeqRef = useRef(0);
+
+  useEffect(() => {
+    documentPreviewRef.current = documentPreview;
+  }, [documentPreview]);
 
   useEffect(() => () => {
     documentPreviewRequestRef.current?.abort();
     documentPreviewRequestRef.current = null;
     mediaRequestSeqRef.current += 1;
+    revokeDocumentPreviewObjectUrl(documentPreviewRef.current);
+    documentPreviewRef.current = null;
   }, []);
 
   const closeAttachmentPreview = useCallback(() => {

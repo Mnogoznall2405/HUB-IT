@@ -114,22 +114,25 @@ def _load_user_from_token(token: Optional[str]) -> User:
     user_raw = None
     if token_data.user_id not in (None, 0):
         user_raw = user_service.get_by_id(token_data.user_id)
-    if user_raw is None and token_data.username:
-        user_raw = user_service.get_by_username(token_data.username)
-    if not user_raw:
+        if user_raw is None and token_data.username:
+            user_raw = user_service.get_by_username(token_data.username)
+    if not user_raw or int(user_raw.get("id") or 0) != int(token_data.user_id or 0):
         raise credentials_exception
     # Deactivation closes sessions (see update_user / AD sync), so the
     # user check must run before the session check to report the reason.
     if not bool(user_raw.get("is_active", True)):
         raise _inactive_user_exception()
 
-    if token_data.session_id and not session_service.is_session_active(token_data.session_id):
-        try:
-            from backend.services.auth_session_metrics import note
-            note("session_inactive_on_api", detail="access_deps")
-        except Exception:
-            pass
-        session_auth_context_service.delete_session_context(token_data.session_id)
+    if not token_data.session_id:
+        raise credentials_exception
+    if not session_service.is_session_active_for_user(token_data.session_id, token_data.user_id):
+        if not session_service.is_session_active(token_data.session_id):
+            try:
+                from backend.services.auth_session_metrics import note
+                note("session_inactive_on_api", detail="access_deps")
+            except Exception:
+                pass
+            session_auth_context_service.delete_session_context(token_data.session_id)
         raise credentials_exception
 
     if not trusted_device_service.is_token_device_valid(
@@ -138,8 +141,7 @@ def _load_user_from_token(token: Optional[str]) -> User:
     ):
         raise credentials_exception
 
-    if token_data.session_id:
-        session_service.touch_session_nowait(token_data.session_id)
+    session_service.touch_session_nowait(token_data.session_id)
 
     public_user = user_service.to_public_user(user_raw)
     public_user["permissions"] = effective_public_permissions(public_user)
@@ -177,9 +179,12 @@ def _load_session_id_from_token(token: Optional[str]) -> Optional[str]:
     if token_data.jti and auth_runtime_store_service.is_jti_revoked(token_data.jti):
         raise credentials_exception
 
-    session_id = str(token_data.session_id or "").strip() or None
-    if session_id and not session_service.is_session_active(session_id):
-        session_auth_context_service.delete_session_context(session_id)
+    session_id = str(token_data.session_id or "").strip()
+    if not session_id:
+        raise credentials_exception
+    if not session_service.is_session_active_for_user(session_id, token_data.user_id):
+        if not session_service.is_session_active(session_id):
+            session_auth_context_service.delete_session_context(session_id)
         raise credentials_exception
     return session_id
 
@@ -195,15 +200,17 @@ def _load_optional_user_from_token(token: Optional[str]) -> Optional[User]:
     if token_data.jti and auth_runtime_store_service.is_jti_revoked(token_data.jti):
         return None
 
-    if token_data.session_id and not session_service.is_session_active(token_data.session_id):
+    if not token_data.session_id or not session_service.is_session_active_for_user(
+        token_data.session_id, token_data.user_id
+    ):
         return None
 
     user_raw = None
     if token_data.user_id not in (None, 0):
         user_raw = user_service.get_by_id(token_data.user_id)
-    if user_raw is None and token_data.username:
-        user_raw = user_service.get_by_username(token_data.username)
-    if not user_raw:
+        if user_raw is None and token_data.username:
+            user_raw = user_service.get_by_username(token_data.username)
+    if not user_raw or int(user_raw.get("id") or 0) != int(token_data.user_id or 0):
         return None
     if not bool(user_raw.get("is_active", True)):
         return None
@@ -214,8 +221,7 @@ def _load_optional_user_from_token(token: Optional[str]) -> Optional[User]:
     ):
         return None
 
-    if token_data.session_id:
-        session_service.touch_session_nowait(token_data.session_id)
+    session_service.touch_session_nowait(token_data.session_id)
 
     public_user = user_service.to_public_user(user_raw)
     public_user["permissions"] = effective_public_permissions(public_user)
@@ -239,7 +245,8 @@ async def get_current_user(
     token = _resolve_access_token(credentials, access_token_cookie)
     current_user = await run_in_threadpool(_load_user_from_token, token)
     network_context = build_request_network_context(request)
-    ensure_admin_ip_allowed(
+    await run_in_threadpool(
+        ensure_admin_ip_allowed,
         current_user,
         client_ip=network_context.client_ip,
         via_forwarded_header=bool(network_context.via_forwarded_header),
@@ -270,7 +277,8 @@ async def get_current_user_from_websocket(websocket: WebSocket) -> User:
     )
     current_user = await run_in_threadpool(_load_user_from_token, token)
     network_context = build_request_network_context(websocket)
-    ensure_admin_ip_allowed(
+    await run_in_threadpool(
+        ensure_admin_ip_allowed,
         current_user,
         client_ip=network_context.client_ip,
         via_forwarded_header=bool(network_context.via_forwarded_header),
@@ -307,16 +315,19 @@ def assert_access_token_still_valid(token: Optional[str], *, touch_session: bool
         raise credentials_exception
     if token_data.jti and auth_runtime_store_service.is_jti_revoked(token_data.jti):
         raise credentials_exception
-    if token_data.session_id and not session_service.is_session_active(token_data.session_id):
-        try:
-            from backend.services.auth_session_metrics import note
-            note("session_inactive_on_ws", detail="ws_revalidate")
-        except Exception:
-            pass
-        session_auth_context_service.delete_session_context(token_data.session_id)
+    if not token_data.session_id:
+        raise credentials_exception
+    if not session_service.is_session_active_for_user(token_data.session_id, token_data.user_id):
+        if not session_service.is_session_active(token_data.session_id):
+            try:
+                from backend.services.auth_session_metrics import note
+                note("session_inactive_on_ws", detail="ws_revalidate")
+            except Exception:
+                pass
+            session_auth_context_service.delete_session_context(token_data.session_id)
         raise credentials_exception
     # Chat WS revalidate path: keep idle alive while the socket is active.
-    if token_data.session_id and touch_session:
+    if touch_session:
         session_service.touch_session_nowait(token_data.session_id)
 
 
@@ -429,7 +440,8 @@ async def get_current_user_optional(
     if current_user is None:
         return None
     network_context = build_request_network_context(request)
-    ensure_admin_ip_allowed(
+    await run_in_threadpool(
+        ensure_admin_ip_allowed,
         current_user,
         client_ip=network_context.client_ip,
         via_forwarded_header=bool(network_context.via_forwarded_header),
@@ -453,7 +465,8 @@ async def get_current_database_id(
     """
     from backend.api.v1.database import resolve_current_database_id
 
-    database_id, _source = resolve_current_database_id(
+    database_id, _source = await run_in_threadpool(
+        resolve_current_database_id,
         current_user,
         request_hint=x_database_id,
         legacy_cookie=selected_database,
@@ -475,7 +488,8 @@ async def get_request_scoped_database_id(
     """
     from backend.api.v1.database import resolve_current_database_id
 
-    database_id, _source = resolve_current_database_id(
+    database_id, _source = await run_in_threadpool(
+        resolve_current_database_id,
         current_user,
         request_hint=x_database_id,
         legacy_cookie=selected_database,

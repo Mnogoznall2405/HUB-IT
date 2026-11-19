@@ -4,8 +4,10 @@ import * as chatApi from '../api/chatApi';
 import * as mailApi from '../api/mailApi';
 import * as tokenStore from '../auth/tokenStore';
 import { reconcileNativeBadge } from './notificationBadge';
-import { getPendingChatReplyCount } from './pendingNotificationReplies';
+import { clearPendingChatReplies, getPendingChatReplyCount, queuePendingChatReply } from './pendingNotificationReplies';
 import { HUBIT_CHAT_REPLY_ACTION, HUBIT_MAIL_MARK_READ_ACTION } from './nativePush';
+import { clearOfflineCommandQueue, getOfflineCommandCount } from '../offline/offlineCommandQueue';
+import { clearAllNativeChatDrafts, getNativeChatDraft, setNativeChatDraft } from '../chat/chatDrafts';
 import { handleNotificationBackgroundTask } from './notificationBackgroundTask';
 
 jest.mock('../api/chatApi', () => ({
@@ -50,6 +52,7 @@ describe('notification background action task', () => {
     jest.mocked(Notifications.dismissNotificationAsync).mockReset().mockResolvedValue(undefined);
     jest.mocked(Notifications.scheduleNotificationAsync).mockReset().mockResolvedValue('feedback');
     jest.mocked(Notifications.clearLastNotificationResponseAsync).mockReset().mockResolvedValue(undefined);
+    (mailApi.markMailMessageRead as jest.Mock).mockReset().mockResolvedValue(undefined);
   });
 
   it('sends a quick reply without opening the app and shows delivery state', async () => {
@@ -177,6 +180,58 @@ describe('notification background action task', () => {
     );
   });
 
+  it('appends a definitively rejected quick reply to an existing draft (MB-10)', async () => {
+    await clearAllNativeChatDrafts();
+    await setNativeChatDraft(7, 'conversation-2', 'Черновик в приложении');
+    (chatApi.sendTextMessage as jest.Mock).mockRejectedValueOnce({
+      isAxiosError: true,
+      config: {},
+      response: { status: 403, headers: { 'content-type': 'application/json' }, data: {} },
+    });
+
+    await expect(handleNotificationBackgroundTask(response())).resolves.toBe(
+      Notifications.BackgroundNotificationTaskResult.Failed,
+    );
+    expect(await getNativeChatDraft(7, 'conversation-2')).toBe('Черновик в приложении\n\nОтвет из уведомления');
+    await clearAllNativeChatDrafts();
+  });
+
+  it('salvages a new quick reply into the draft when the pending queue is full', async () => {
+    await clearAllNativeChatDrafts();
+    for (let index = 0; index < 10; index += 1) {
+      await queuePendingChatReply({
+        id: `queued-${index}`,
+        userId: 7,
+        conversationId: 'conversation-1',
+        messageId: 'message-1',
+        body: `queued body ${index}`,
+        notificationId: '',
+        route: '/chat',
+      });
+    }
+    (chatApi.sendTextMessage as jest.Mock).mockRejectedValue({
+      isAxiosError: true,
+      code: 'ERR_NETWORK',
+      config: {},
+    });
+
+    await expect(handleNotificationBackgroundTask(response())).resolves.toBe(
+      Notifications.BackgroundNotificationTaskResult.Failed,
+    );
+
+    // The new body is salvaged into the draft and ends with a terminal notice;
+    // the stored ten replies are not evicted to make room.
+    expect(await getPendingChatReplyCount(7)).toBe(10);
+    expect(await getNativeChatDraft(7, 'conversation-2')).toBe('Ответ из уведомления');
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.objectContaining({ title: 'Ответ не отправлен' }),
+      }),
+    );
+    await clearPendingChatReplies();
+    await clearAllNativeChatDrafts();
+  });
+
   it('does not execute a notification left by another signed-in user', async () => {
     jest.spyOn(tokenStore, 'getSessionUserId').mockResolvedValueOnce(8);
 
@@ -205,7 +260,8 @@ describe('notification background action task', () => {
     expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('mail:message-7');
   });
 
-  it('keeps the mail notification visible when marking it read fails offline', async () => {
+  it('queues the mail mark-read and dismisses the notification on retryable failure', async () => {
+    await clearOfflineCommandQueue();
     (mailApi.markMailMessageRead as jest.Mock).mockRejectedValueOnce({
       isAxiosError: true,
       code: 'ERR_NETWORK',
@@ -222,9 +278,36 @@ describe('notification background action task', () => {
     };
 
     await expect(handleNotificationBackgroundTask(mailResponse)).resolves.toBe(
+      Notifications.BackgroundNotificationTaskResult.NewData,
+    );
+    expect(await getOfflineCommandCount(7)).toBe(1);
+    expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('mail:message-offline');
+    expect(await getPendingChatReplyCount(7)).toBe(0);
+    await clearOfflineCommandQueue();
+  });
+
+  it('fails the mail mark-read on a definitive error without queueing it', async () => {
+    await clearOfflineCommandQueue();
+    (mailApi.markMailMessageRead as jest.Mock).mockRejectedValueOnce({
+      isAxiosError: true,
+      config: {},
+      response: { status: 403 },
+    });
+    const mailResponse = response();
+    mailResponse.actionIdentifier = HUBIT_MAIL_MARK_READ_ACTION;
+    mailResponse.notification.request.identifier = 'mail:message-denied';
+    mailResponse.notification.request.content.data = {
+      route: '/mail?message=message-denied&mailbox_id=mailbox-2',
+      message_id: 'message-denied',
+      mailbox_id: 'mailbox-2',
+      recipient_user_id: '7',
+    };
+
+    await expect(handleNotificationBackgroundTask(mailResponse)).resolves.toBe(
       Notifications.BackgroundNotificationTaskResult.Failed,
     );
-    expect(Notifications.dismissNotificationAsync).not.toHaveBeenCalled();
-    expect(await getPendingChatReplyCount(7)).toBe(0);
+    expect(await getOfflineCommandCount(7)).toBe(0);
+    expect(Notifications.dismissNotificationAsync).not.toHaveBeenCalledWith('mail:message-denied');
+    await clearOfflineCommandQueue();
   });
 });

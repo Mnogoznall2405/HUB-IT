@@ -733,7 +733,7 @@ export default function useTasksPageController() {
   }, [analytics.loadTaskAnalytics]);
 
   const mobileTasksCopy = TASKS_MOBILE_COPY;
-  const mobileModeLabel = filters.pageMode === 'list' ? mobileTasksCopy.feedTitle : list.activeTaskModeMeta.label;
+  const mobileModeLabel = filters.pageMode === 'list' ? mobileTasksCopy.tasksTitle : list.activeTaskModeMeta.label;
   const mobileBottomMode = ['list', 'deadlines', 'board'].includes(filters.pageMode) ? filters.pageMode : 'more';
   const mobilePrimaryModeOptions = useMemo(
     () => buildTasksMobilePrimaryModeOptions(mobileTasksCopy.feedTitle),

@@ -8,6 +8,7 @@ import { downloadAuthenticatedFile } from './authenticatedFileDownload';
 import {
   resolveTrustedAttachmentUrl,
   resolveTrustedChatMediaUrl,
+  fitNativeFileName,
   sanitizeNativeFileName,
   selectCacheEvictions,
 } from './filePolicy';
@@ -19,7 +20,13 @@ const CACHE_DIRECTORY_NAME = 'hubit-attachments-v2';
 const CACHE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const CACHE_CLEANUP_SIZE_DELTA_BYTES = 16 * 1024 * 1024;
 const CHAT_MEDIA_MAX_PARALLEL_DOWNLOADS = 3;
-const chatMediaDownloads = new Map<string, Promise<File>>();
+type ChatMediaDownloadEntry = {
+  promise: Promise<File>;
+  controller: AbortController;
+  signals: Set<AbortSignal>;
+  hasUnsignaledSubscriber: boolean;
+};
+const chatMediaDownloads = new Map<string, ChatMediaDownloadEntry>();
 const queuedChatMediaDownloads: Array<() => void> = [];
 let lastAttachmentCacheCleanupAt = 0;
 let attachmentCacheBytesAddedSinceCleanup = 0;
@@ -50,7 +57,7 @@ function attachmentCacheDirectory(): Directory {
 async function attachmentCacheFile(fileName: string): Promise<File> {
   const userId = Number(await getSessionUserId());
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
-  return new File(attachmentCacheDirectory(), `${userId}-${fileName}`);
+  return new File(attachmentCacheDirectory(), fitNativeFileName(`${userId}-${fileName}`));
 }
 
 function cacheEntries(files: File[]) {
@@ -228,6 +235,61 @@ export async function downloadChatAttachment(
   }
 }
 
+// A shared download must not be tied to the first caller's AbortSignal: later
+// subscribers still need the file when the first caller aborts (unmount).
+// The transfer is cancelled only once every signaled subscriber aborted and
+// no unsignaled subscriber remains.
+function abortOrphanedChatMediaDownload(entry: ChatMediaDownloadEntry): void {
+  if (entry.signals.size === 0 && !entry.hasUnsignaledSubscriber) {
+    entry.controller.abort();
+  }
+}
+
+function subscribeChatMediaDownload(
+  entry: ChatMediaDownloadEntry,
+  signal?: AbortSignal,
+): Promise<File> {
+  return new Promise<File>((resolve, reject) => {
+    let settled = false;
+    const unsubscribe = () => {
+      if (!signal) return;
+      entry.signals.delete(signal);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      abortOrphanedChatMediaDownload(entry);
+      reject(chatMediaAbortError());
+    };
+    if (signal) {
+      if (signal.aborted) {
+        reject(chatMediaAbortError());
+        return;
+      }
+      entry.signals.add(signal);
+      signal.addEventListener('abort', onAbort, { once: true });
+    } else {
+      entry.hasUnsignaledSubscriber = true;
+    }
+    entry.promise.then(
+      (file) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        resolve(file);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function downloadTrustedChatMedia(
   url: string,
   cacheName: string,
@@ -238,22 +300,25 @@ export async function downloadTrustedChatMedia(
   }
   const cacheGeneration = attachmentCacheGeneration;
   const sessionGeneration = getSessionGeneration();
-  const assertCurrent = () => {
-    if (cacheGeneration !== attachmentCacheGeneration || sessionGeneration !== getSessionGeneration() || options.signal?.aborted) {
-      throw chatMediaAbortError();
-    }
-  };
   const sourceUrl = resolveTrustedChatMediaUrl(url);
   const destination = await attachmentCacheFile(sanitizeNativeFileName(cacheName));
-  assertCurrent();
+  if (options.signal?.aborted) throw chatMediaAbortError();
   // A decode-triggered refresh owns this URI until completion, even while its
   // previous cached file still exists. Share it before considering a cache hit.
   const pending = chatMediaDownloads.get(destination.uri);
-  if (pending) return pending;
+  if (pending) return subscribeChatMediaDownload(pending, options.signal);
   if (destination.exists && destination.size > 0 && !options.forceDownload) {
     maintainAttachmentCache(destination.uri);
     return destination;
   }
+  const controller = new AbortController();
+  const sharedSignal = controller.signal;
+  const assertCurrent = () => {
+    if (cacheGeneration !== attachmentCacheGeneration || sessionGeneration !== getSessionGeneration() || sharedSignal.aborted) {
+      throw chatMediaAbortError();
+    }
+  };
+  assertCurrent();
   const download = withChatMediaDownloadSlot(async () => {
     assertCurrent();
     const hadExisting = destination.exists && destination.size > 0;
@@ -263,7 +328,7 @@ export async function downloadTrustedChatMedia(
       try {
         const downloaded = await downloadAuthenticatedFile(sourceUrl, destination, {
           idempotent: true,
-          signal: options.signal,
+          signal: sharedSignal,
           preserveSessionOnAuthFailure: true,
         });
         assertCurrent();
@@ -282,7 +347,7 @@ export async function downloadTrustedChatMedia(
     try {
       const downloaded = await downloadAuthenticatedFile(sourceUrl, staging, {
         idempotent: true,
-        signal: options.signal,
+        signal: sharedSignal,
         preserveSessionOnAuthFailure: true,
       });
       assertCurrent();
@@ -309,11 +374,17 @@ export async function downloadTrustedChatMedia(
       }
       throw error;
     }
-  }, options.signal).finally(() => {
-    chatMediaDownloads.delete(destination.uri);
+  }, sharedSignal).finally(() => {
+    if (chatMediaDownloads.get(destination.uri) === entry) chatMediaDownloads.delete(destination.uri);
   });
-  chatMediaDownloads.set(destination.uri, download);
-  return download;
+  const entry: ChatMediaDownloadEntry = {
+    promise: download,
+    controller,
+    signals: new Set(),
+    hasUnsignaledSubscriber: false,
+  };
+  chatMediaDownloads.set(destination.uri, entry);
+  return subscribeChatMediaDownload(entry, options.signal);
 }
 
 export async function openNativeFile(file: File, mimeType?: string | null): Promise<void> {

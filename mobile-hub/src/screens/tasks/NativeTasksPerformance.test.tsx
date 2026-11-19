@@ -35,6 +35,7 @@ jest.mock('../../api/departmentsApi', () => ({
 }));
 
 jest.mock('../../cache/nativeSnapshotCache', () => ({
+  ...jest.requireActual('../../cache/nativeSnapshotCache'),
   readNativeCollectionSnapshot: jest.fn(async () => null),
   writeNativeCollectionSnapshot: jest.fn(async () => undefined),
 }));

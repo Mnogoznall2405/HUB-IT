@@ -487,6 +487,7 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/docs" if config.app.debug else None,
     redoc_url="/redoc" if config.app.debug else None,
+    openapi_url="/openapi.json" if config.app.debug else None,
 )
 # No per-route @limiter.limit exists and nothing reads request.state.skip_rate_limit, so the former
 # InternalIPBypassMiddleware (a BaseHTTPMiddleware on every request) was dead weight and is not installed.

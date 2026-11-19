@@ -18,6 +18,15 @@ const writeLocalStorageItemDefault = (storageKey, value) => {
   }
 };
 
+const removeLocalStorageItemDefault = (storageKey) => {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    // Ignore browser storage failures for drafts.
+  }
+};
+
 export function normalizeConversationId(conversationId) {
   return String(conversationId || '').trim();
 }
@@ -83,6 +92,7 @@ export function scheduleDraftSyncResume(callback, {
 export default function useChatConversationDraftRestore({
   activeConversationId,
   draftStorageKey,
+  editDraftSnapshotRef,
   latestMessageTextRef,
   setEditingMessage,
   setMessageText,
@@ -93,6 +103,20 @@ export default function useChatConversationDraftRestore({
   writeLocalStorageItem = writeLocalStorageItemDefault,
 } = {}) {
   useEffect(() => {
+    // FE-004: an in-progress edit snapshot belongs to the previous conversation
+    // — persist it under its own key explicitly, then clear it so the new
+    // conversation's composer never inherits it.
+    const savedEditDraft = editDraftSnapshotRef?.current;
+    if (savedEditDraft) {
+      if (savedEditDraft.key && String(savedEditDraft.text || '')) {
+        writeLocalStorageItem(savedEditDraft.key, savedEditDraft.text);
+      } else if (savedEditDraft.key && writeLocalStorageItem === writeLocalStorageItemDefault) {
+        // Empty snapshot text means no draft — drop a spurious empty key when
+        // the default storage implementation is in use.
+        removeLocalStorageItemDefault(savedEditDraft.key);
+      }
+      editDraftSnapshotRef.current = null;
+    }
     suppressDraftSyncRef.current = true;
     setReplyMessage(null);
     setEditingMessage(null);

@@ -10,6 +10,9 @@ export const CHAT_CLEAR_CONVERSATION_NOTIFICATIONS_MESSAGE_TYPE = 'itinvent:chat
 export const CHAT_NOTIFICATION_CLEAR_THROTTLE_MS = 2_000;
 
 const MAXIMUM_TRACKED_CONVERSATIONS = 200;
+// A noisy chat must not pin an unbounded Set of live Notification objects:
+// only the freshest few are kept, the rest are superseded and closed.
+const MAXIMUM_NOTIFICATIONS_PER_CONVERSATION = 20;
 const lastClearAtByConversation = new Map();
 const localNotificationsByConversation = new Map();
 
@@ -50,6 +53,15 @@ export function rememberChatConversationNotification(conversationId, notificatio
   if (!normalizedConversationId || !notification || typeof notification.close !== 'function') return;
   const entries = localNotificationsByConversation.get(normalizedConversationId) || new Set();
   entries.add(notification);
+  while (entries.size > MAXIMUM_NOTIFICATIONS_PER_CONVERSATION) {
+    const [oldest] = entries.keys();
+    entries.delete(oldest);
+    try {
+      oldest.close();
+    } catch {
+      // Closing a superseded notification is best-effort.
+    }
+  }
   localNotificationsByConversation.delete(normalizedConversationId);
   localNotificationsByConversation.set(normalizedConversationId, entries);
   trimTrackedMap(localNotificationsByConversation);

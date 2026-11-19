@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { myFilesAPI } from './myFiles';
 
 export const SANDBOX_INPUT_MAX_BYTES = 256 * 1024 * 1024;

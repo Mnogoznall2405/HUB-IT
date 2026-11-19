@@ -24,7 +24,7 @@ export const exportGroupsAccessWorkbook = async ({
   branch = '',
   syncedAt = '',
 } = {}) => {
-  const XLSX = await import('xlsx');
+  const XLSX = await import('xlsx-js-style');
   const folderRows = [
     ['Ветка', 'Путь к папке', 'Папка', 'Группа AD', 'Уровень доступа', 'Пользователей', 'Описание'],
     ...groups.map((group) => [
@@ -85,7 +85,7 @@ export const exportGroupMembersWorkbook = async ({
   members = [],
   syncedAt = '',
 } = {}) => {
-  const XLSX = await import('xlsx');
+  const XLSX = await import('xlsx-js-style');
   const meta = getAccessLevelMeta(group?.access_level);
   const folderRows = [
     ['Поле', 'Значение'],

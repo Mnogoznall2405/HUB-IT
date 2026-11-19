@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const computersFleetAPI = {
   // Состояние парка агентов: давность отчётов, версии, fs_egress/scan, очереди, проблемные компьютеры.

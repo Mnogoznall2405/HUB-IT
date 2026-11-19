@@ -22,8 +22,8 @@ class SettingsService:
     """Persist user settings in JSON."""
 
     FILE_NAME = "web_user_settings.json"
-    DASHBOARD_SECTION_KEYS = ("attention", "tasks", "communication", "news")
-    DEFAULT_DASHBOARD_SECTIONS = ["attention", "tasks", "communication", "news"]
+    DASHBOARD_SECTION_KEYS = ("attention", "tasks", "absences", "communication", "news")
+    DEFAULT_DASHBOARD_SECTIONS = ["attention", "tasks", "absences", "communication", "news"]
     DASHBOARD_MOBILE_SECTION_KEYS = ("urgent", "announcements", "tasks")
     MOBILE_BOTTOM_NAV_ITEM_PATHS = (
         "/construction",
@@ -33,7 +33,9 @@ class SettingsService:
         "/tickets",
         "/chat",
         "/mail",
+        "/monitoring",
         "/docflow",
+        "/help",
         "/address-book",
         "/company-structure",
         "/passwords",

@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const computersSoftwareAPI = {
   // Installs of a program across the visible computers (software inventory of the agent).

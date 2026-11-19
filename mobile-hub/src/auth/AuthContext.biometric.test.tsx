@@ -316,6 +316,29 @@ describe('AuthProvider biometric unlock', () => {
     expect(currentAuth?.offlineCacheKey).toBeNull();
   });
 
+  it('disables the fingerprint credential when the restored session belongs to another user (MB-03)', async () => {
+    jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
+    jest.mocked(tokenStore.getSessionUserId).mockResolvedValueOnce(8);
+    jest.mocked(biometricAuth.getBiometricLoginUserId).mockResolvedValueOnce(7);
+    jest.mocked(authApi.fetchMe).mockResolvedValueOnce({ ...cachedUser, id: 8, username: 'other-user' });
+
+    await render(<AuthProvider><Probe /></AuthProvider>);
+
+    await waitFor(() => expect(biometricAuth.disableBiometricLogin).toHaveBeenCalled());
+    expect(currentAuth?.biometricEnabled).toBe(false);
+  });
+
+  it('keeps the fingerprint credential when it belongs to the restored session user', async () => {
+    jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
+    jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
+
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+
+    await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
+    expect(biometricAuth.disableBiometricLogin).not.toHaveBeenCalled();
+    expect(currentAuth?.biometricEnabled).toBe(true);
+  });
+
   it('shows a cached identity immediately and validates the session in the background', async () => {
     jest.mocked(tokenStore.hasSession).mockResolvedValueOnce(true);
     jest.mocked(tokenStore.getCachedSessionUser).mockResolvedValueOnce(cachedUser);
@@ -637,13 +660,13 @@ describe('AuthProvider biometric unlock', () => {
     const view = await render(<AuthProvider><Probe /></AuthProvider>);
     await waitFor(() => expect(view.getByText('locked')).toBeTruthy());
 
-    await act(async () => {
-      const loginPromise = currentAuth?.login('mobile-test', 'password');
-      await Promise.resolve();
-      expect(authApi.login).toHaveBeenCalledWith('mobile-test', 'password');
-      resolveBiometricUser?.(cachedUser.id);
-      await loginPromise;
-    });
+    let loginPromise: Promise<unknown> | undefined;
+    await act(async () => { loginPromise = currentAuth?.login('mobile-test', 'password'); });
+    // authApi.login must fire before the biometric lookup resolves — the
+    // session-cleanup check ahead of it is allowed a few microtasks.
+    await waitFor(() => expect(authApi.login).toHaveBeenCalledWith('mobile-test', 'password'));
+    resolveBiometricUser?.(cachedUser.id);
+    await act(async () => { await loginPromise; });
     await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
   });
 

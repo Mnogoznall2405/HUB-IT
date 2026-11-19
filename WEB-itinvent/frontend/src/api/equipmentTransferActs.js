@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const UPLOADED_ACT_PARSE_TIMEOUT_MS = 180_000;
 

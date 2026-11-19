@@ -55,6 +55,7 @@ export function useMyFilesUpload({
   const [prepareStats, setPrepareStats] = useState({ total: 0, done: 0 });
   const [uploadTargetFolderId, setUploadTargetFolderId] = useState(null);
   const uploadAbortRef = useRef(null);
+  const mountedRef = useRef(false);
   const resetFileInputs = useCallback(() => {
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (folderInputRef.current) folderInputRef.current.value = '';
@@ -112,13 +113,38 @@ export function useMyFilesUpload({
     return () => window.removeEventListener(BROWSER_ACCOUNT_EVENT, accountChanged);
   }, [accountSession]);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      // After unmount the queue must not keep uploading in the background or
+      // push state updates into the dead page: abort the in-flight upload.
+      mountedRef.current = false;
+      uploadAbortRef.current?.abort();
+      uploadAbortRef.current = null;
+    };
+  }, []);
+
+  // Closing/reloading the tab kills the upload queue with no way to resume —
+  // warn while it is active. SPA navigation still aborts silently (by design:
+  // uploads are resumable from the resume-session cache on return).
+  useEffect(() => {
+    if (!uploading) return undefined;
+    const warn = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [uploading]);
+
   const quotaLimitBytes = useMemo(() => {
     const limit = Number(quota?.limit_bytes || 0);
     return limit > 0 ? limit : MY_FILES_MAX_UPLOAD_BYTES;
   }, [quota]);
 
   const queueUploads = useCallback(async (files, selectedRetentionDays = retentionDays, resolveFolderId = null, externalSignal = null) => {
-    if (!accountSession.isCurrent()) return;
+    const alive = () => mountedRef.current && accountSession.isCurrent();
+    if (!alive()) return;
     const selected = normalizeFiles(files);
     if (selected.length === 0) return;
     const controller = externalSignal ? null : new AbortController();
@@ -139,7 +165,7 @@ export function useMyFilesUpload({
       const workers = Array.from(
         { length: Math.min(UPLOAD_PARALLEL_FILES, selected.length) },
         async () => {
-          while (nextIndex < selected.length && !signal.aborted && accountSession.isCurrent()) {
+          while (nextIndex < selected.length && !signal.aborted && alive()) {
             const index = nextIndex;
             nextIndex += 1;
             const file = selected[index];
@@ -163,7 +189,7 @@ export function useMyFilesUpload({
                 signal,
                 accountSession,
                 onUploadProgress: (event) => {
-                  if (!accountSession.isCurrent()) return;
+                  if (!alive()) return;
                   const total = Number(event?.total || file.size || 0);
                   const loaded = Number(event?.loaded || 0);
                   const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
@@ -175,10 +201,10 @@ export function useMyFilesUpload({
                   ));
                 },
               });
-              if (!accountSession.isCurrent()) return;
+              if (!alive()) return;
               uploaded += 1;
             } catch (error) {
-              if (!accountSession.isCurrent()) return;
+              if (!alive()) return;
               const aborted = signal.aborted || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED';
               if (!aborted) {
                 const status = Number(error?.response?.status || 0);
@@ -191,7 +217,7 @@ export function useMyFilesUpload({
                 failures.push(`«${file.name}» — ${detail}`);
               }
             } finally {
-              if (accountSession.isCurrent()) {
+              if (alive()) {
                 setUploadProgress((current) => {
                   if (!(progressKey in current)) return current;
                   const next = { ...current };
@@ -209,7 +235,7 @@ export function useMyFilesUpload({
         },
       );
       await Promise.all(workers);
-      if (!accountSession.isCurrent()) return;
+      if (!alive()) return;
       if (signal.aborted) {
         notifyWarning(
           `Загрузка отменена. Успели загрузиться: ${uploaded} из ${selected.length}.${failures.length > 0 ? ` Ошибок: ${failures.length}.` : ''}`,
@@ -221,17 +247,17 @@ export function useMyFilesUpload({
         }
         if (failures.length > 0) {
           notifyWarning(
-            `Не удалось загрузить: ${failures.slice(0, 5).join('; ')}${failures.length > 5 ? ` и ещё ${failures.length - 5}` : ''}. Загрузку можно повторить — она продолжится с места обрыва.`,
+            `Не удалось загрузить: ${failures.slice(0, 5).join('; ')}${failures.length > 5 ? ` и ещё ${failures.length - 5}` : ''}. Выберите те же файлы ещё раз — загрузка продолжится с места обрыва.`,
             { source: 'my-files-upload-failed', dedupeMode: 'none', durationMs: 9000 },
           );
         }
       }
       await loadData({ silent: true });
     } catch (error) {
-      if (accountSession.isCurrent()) notifyApiError(error, 'Не удалось загрузить файл.', { dedupeMode: 'none' });
+      if (alive()) notifyApiError(error, 'Не удалось загрузить файл.', { dedupeMode: 'none' });
     } finally {
       if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
-      if (accountSession.isCurrent()) {
+      if (alive()) {
         setUploading(false);
         setUploadProgress({});
         setUploadStats({ total: 0, done: 0 });
@@ -321,16 +347,18 @@ export function useMyFilesUpload({
       setPendingUploadFiles([]);
       setUploadTargetFolderId(null);
       void (async () => {
+        const alive = () => mountedRef.current && accountSession.isCurrent();
         const controller = new AbortController();
         uploadAbortRef.current = controller;
         setUploading(true);
+        let uploadStarted = false;
         try {
           const dirToId = new Map([['', baseFolderId]]);
           const existing = indexFoldersBySibling(allFolders);
           const dirs = collectFolderUploadDirs(folderFiles);
           setPrepareStats({ total: dirs.length, done: 0 });
           for (const dirPath of dirs) {
-            if (controller.signal.aborted || !accountSession.isCurrent()) return;
+            if (controller.signal.aborted || !alive()) return;
             const parts = dirPath.split('/');
             const name = parts[parts.length - 1];
             const parentId = dirToId.get(parts.slice(0, -1).join('/')) || null;
@@ -339,20 +367,23 @@ export function useMyFilesUpload({
               dirToId.set(dirPath, existing.get(key));
             } else {
               const created = await myFilesAPI.createFolder(libraryId ? { name, parentId, libraryId } : { name, parentId });
-              if (!accountSession.isCurrent()) return;
+              if (!alive()) return;
+              if (controller.signal.aborted) return;
               dirToId.set(dirPath, String(created.id));
               existing.set(key, String(created.id));
             }
             setPrepareStats((current) => ({ ...current, done: current.done + 1 }));
           }
-          if (!accountSession.isCurrent()) return;
+          if (!alive()) return;
           setPrepareStats({ total: 0, done: 0 });
+          if (controller.signal.aborted) return;
+          uploadStarted = true;
           await queueUploads(folderFiles, selectedRetentionDays, (file) => {
             const dirPath = folderDirPathOfFile(file);
             return dirToId.get(dirPath) || baseFolderId;
           }, controller.signal);
         } catch (error) {
-          if (!accountSession.isCurrent()) return;
+          if (!alive()) return;
           setUploading(false);
           setUploadProgress({});
           setUploadStats({ total: 0, done: 0 });
@@ -360,7 +391,18 @@ export function useMyFilesUpload({
           resetFileInputs();
           notifyApiError(error, 'Не удалось создать структуру папок.', { dedupeMode: 'none' });
         } finally {
-          if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+          const ownsUpload = uploadAbortRef.current === controller;
+          if (ownsUpload) uploadAbortRef.current = null;
+          if (ownsUpload && alive()) {
+            setPrepareStats({ total: 0, done: 0 });
+            if (!uploadStarted) {
+              setUploading(false);
+              setUploadProgress({});
+              setUploadStats({ total: 0, done: 0 });
+              resetFileInputs();
+              if (controller.signal.aborted) notifyWarning('Загрузка отменена.', { source: 'my-files-upload-cancelled', dedupeMode: 'none' });
+            }
+          }
         }
       })();
       return;
@@ -375,6 +417,7 @@ export function useMyFilesUpload({
   }, [
     accountSession,
     notifyApiError,
+    notifyWarning,
     allFolders,
     currentFolderId,
     libraryId,

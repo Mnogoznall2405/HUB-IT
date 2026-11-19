@@ -6,7 +6,10 @@ const escapeEditorHtml = (value) => String(value || '')
 const sanitizeLinkHref = (value) => {
   const href = String(value || '').trim();
   if (!href) return '';
-  if (/^(https?:\/\/|mailto:|tel:|\/|#)/i.test(href)) return href;
+  if (/["'<>`\\]/.test(href)) return '';
+  if (/^(https?:\/\/|mailto:|tel:|\/|#)/i.test(href)) {
+    return href.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
   return '';
 };
 

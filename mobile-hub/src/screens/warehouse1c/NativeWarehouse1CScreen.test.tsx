@@ -1,13 +1,15 @@
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { useLocalSearchParams } from 'expo-router';
 import * as warehouseApi from '../../api/warehouse1cApi';
 import { NativeWarehouse1CScreen } from './NativeWarehouse1CScreen';
 
 let mockPermissions = ['warehouse_1c.read'];
 let mockOfflineMode = false;
+let mockUser: { role: string } | null = { role: 'user' };
 
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
+    user: mockUser,
     offlineMode: mockOfflineMode,
     hasPermission: (permission: string) => mockPermissions.includes(permission),
   }),
@@ -25,6 +27,7 @@ jest.mock('../../api/warehouse1cApi', () => {
     getWarehouse1CMovementDetail: jest.fn(),
     getWarehouse1CMovements: jest.fn(),
     searchWarehouse1CCatalog: jest.fn(),
+    syncWarehouse1CCatalog: jest.fn(),
   };
 });
 jest.mock('../../warehouse1c/nativeWarehouse1cFiles', () => ({
@@ -77,8 +80,10 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockPermissions = ['warehouse_1c.read'];
   mockOfflineMode = false;
+  mockUser = { role: 'user' };
   mockedParams.mockReturnValue({});
   (warehouseApi.getWarehouse1CCatalogStatus as jest.Mock).mockResolvedValue(status);
+  (warehouseApi.syncWarehouse1CCatalog as jest.Mock).mockResolvedValue(status);
   (warehouseApi.searchWarehouse1CCatalog as jest.Mock).mockResolvedValue([
     { ref: 'nom-1', code: 'M-1', name: 'Монитор' },
   ]);
@@ -186,5 +191,68 @@ it('does not request warehouse data without permission or while offline', async 
   await waitFor(() => expect(offline.getByText(/Требуется сеть/)).toBeTruthy());
   await fireEvent.press(offline.getByTestId('native-warehouse-1c-balances-search'));
   expect(warehouseApi.getWarehouse1CBalances).not.toHaveBeenCalled();
+  await offline.unmount();
+});
+
+const openCatalogTab = async (view: Awaited<ReturnType<typeof render>>) => {
+  await fireEvent.press(view.getByTestId('native-warehouse-1c-tab-current'));
+  await fireEvent.press(view.getByTestId('native-warehouse-1c-tab-catalog'));
+  await waitFor(() => expect(warehouseApi.getWarehouse1CCatalogStatus).toHaveBeenCalledTimes(1));
+};
+
+it('syncs the 1C catalog once for an admin and refetches the status', async () => {
+  mockUser = { role: 'admin' };
+  let resolveSync: ((value: warehouseApi.Warehouse1CCatalogStatus) => void) | undefined;
+  (warehouseApi.syncWarehouse1CCatalog as jest.Mock).mockImplementation(
+    () => new Promise((resolve) => { resolveSync = resolve; }),
+  );
+  const view = await render(<NativeWarehouse1CScreen />);
+  await openCatalogTab(view);
+
+  await fireEvent.press(view.getByTestId('native-warehouse-1c-catalog-sync'));
+  // A rapid second tap while the POST is in flight must not issue another one.
+  await fireEvent.press(view.getByTestId('native-warehouse-1c-catalog-sync'));
+  expect(warehouseApi.syncWarehouse1CCatalog).toHaveBeenCalledTimes(1);
+
+  await act(async () => { resolveSync?.(status); });
+  await waitFor(() => expect(view.getByText(/Синхронизация завершена · Номенклатура: 120 · Склады: 7/)).toBeTruthy());
+  // Web parity: after the sync settles the status endpoint is queried again.
+  await waitFor(() => expect(warehouseApi.getWarehouse1CCatalogStatus).toHaveBeenCalledTimes(2));
+  await view.unmount();
+});
+
+it('shows the sync error and keeps the action available for a retry', async () => {
+  mockUser = { role: 'admin' };
+  (warehouseApi.syncWarehouse1CCatalog as jest.Mock).mockRejectedValue(new Error('bridge down'));
+  const view = await render(<NativeWarehouse1CScreen />);
+  await openCatalogTab(view);
+
+  await fireEvent.press(view.getByTestId('native-warehouse-1c-catalog-sync'));
+  await waitFor(() => expect(view.getByText('bridge down')).toBeTruthy());
+  expect(warehouseApi.syncWarehouse1CCatalog).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(warehouseApi.getWarehouse1CCatalogStatus).toHaveBeenCalledTimes(2));
+
+  (warehouseApi.syncWarehouse1CCatalog as jest.Mock).mockResolvedValue(status);
+  await fireEvent.press(view.getByTestId('native-warehouse-1c-catalog-sync'));
+  await waitFor(() => expect(warehouseApi.syncWarehouse1CCatalog).toHaveBeenCalledTimes(2));
+  await view.unmount();
+});
+
+it('hides the catalog sync for non-admins and disables it offline', async () => {
+  // A regular warehouse_1c.read user never sees the admin-only action.
+  const view = await render(<NativeWarehouse1CScreen />);
+  await openCatalogTab(view);
+  expect(view.queryByTestId('native-warehouse-1c-catalog-sync')).toBeNull();
+  await view.unmount();
+
+  mockUser = { role: 'admin' };
+  mockOfflineMode = true;
+  const offline = await render(<NativeWarehouse1CScreen />);
+  await fireEvent.press(offline.getByTestId('native-warehouse-1c-tab-current'));
+  await fireEvent.press(offline.getByTestId('native-warehouse-1c-tab-catalog'));
+  const syncButton = await offline.findByTestId('native-warehouse-1c-catalog-sync');
+  expect(syncButton.props.accessibilityState?.disabled).toBe(true);
+  await fireEvent.press(syncButton);
+  expect(warehouseApi.syncWarehouse1CCatalog).not.toHaveBeenCalled();
   await offline.unmount();
 });

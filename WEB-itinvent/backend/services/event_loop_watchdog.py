@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import traceback
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,9 @@ class EventLoopWatchdog:
         frame = sys._current_frames().get(self._loop_thread_id or 0)
         stack = "".join(traceback.format_stack(frame, limit=_MAX_STACK_FRAMES)) if frame else "<no frame>"
         logger.warning(
-            "event_loop.blocked stalled_ms=%.0f threshold_ms=%.0f stack:\n%s",
+            "event_loop.blocked stalled_ms=%.0f threshold_ms=%.0f timestamp=%s stack:\n%s",
             stalled_sec * 1000.0,
             self._threshold_sec * 1000.0,
+            datetime.now(timezone.utc).isoformat(),
             stack,
         )

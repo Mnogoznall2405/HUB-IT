@@ -14,6 +14,7 @@ import {
 import { SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
 import {
   deleteEquipment,
+  emailDbTransferAct,
   getEquipmentTransferJob,
   listConsumables,
   listEquipmentBranches,
@@ -22,7 +23,10 @@ import {
   recordEquipmentWork,
   sendEquipmentTransferActsEmail,
   submitEquipmentTransfer,
+  transferEquipmentToDatabase,
   type ConsumableRecord,
+  type EquipmentDbTransferAct,
+  type EquipmentDbTransferResult,
   type EquipmentDirectoryOption,
   type EquipmentOwnerOption,
   type EquipmentRecord,
@@ -33,7 +37,7 @@ import {
   type TransferResult,
 } from '../../api/databaseApi';
 import { formatApiError } from '../../api/formatError';
-import { downloadGeneratedTransferAct } from '../../database/nativeDatabaseFiles';
+import { downloadDbTransferAct, downloadGeneratedTransferAct } from '../../database/nativeDatabaseFiles';
 import { equipmentWorkKindLabel, equipmentWorkKinds, validateNativeTransferEmployeeName } from '../../database/nativeDatabaseModel';
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import type { FluentTokens } from '../../theme/fluentTokens';
@@ -42,7 +46,7 @@ import { NativeEquipmentOwnerPicker } from './NativeEquipmentOwnerPicker';
 
 type OwnerPickerKind = 'employee' | 'issuer' | 'recipient';
 
-type ActionKind = TransferMode | EquipmentWorkKind | 'delete' | null;
+type ActionKind = TransferMode | EquipmentWorkKind | 'delete' | 'db-transfer' | null;
 
 type PendingTransferJob = {
   jobId: string;
@@ -82,6 +86,21 @@ export type NativeEquipmentActionsHandle = {
 function operationId(): string {
   return Crypto.randomUUID?.()
     || `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+// Как в веб-экзекьюторе: общий seed попытки + позиционный суффикс, ≤ 64 символов
+// (backend принимает operation_id по шаблону [A-Za-z0-9.:-]+).
+function buildWorkOperationId(
+  seed: string,
+  kind: string,
+  invNo: string,
+  consumableId?: number | null,
+  componentType?: string,
+): string {
+  return [seed, kind, invNo, consumableId ?? '', String(componentType || '').trim()]
+    .filter(Boolean)
+    .join('-')
+    .slice(0, 64);
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -135,22 +154,30 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
   equipment: EquipmentRecord;
   targets?: EquipmentRecord[];
   databaseId?: string;
+  databases?: { id: string; name: string }[];
   canWrite: boolean;
   canDeleteEquipment: boolean;
+  /** Право database.delete_equipment_history — отдельное, как в вебе. */
+  canDeleteEquipmentHistory?: boolean;
+  /** Показать действия обслуживания (картридж/батарея/компонент/чистка) в общем списке. */
+  allowWorkActions?: boolean;
   offline: boolean;
   surface: 'general' | 'works';
   tokens: FluentTokens;
   onChanged: (kind: NativeEquipmentActionKind, result?: TransferResult, context?: NativeEquipmentTransferContext) => Promise<void> | void;
   onClosed?: (result: TransferResult | null) => void;
-  onDeleted: () => void;
+  onDeleted: (invNos: string[]) => void;
   testIDPrefix?: string;
   triggers?: 'grid' | 'none';
 }>(function NativeEquipmentActions({
   equipment,
   targets,
   databaseId,
+  databases,
   canWrite,
   canDeleteEquipment,
+  canDeleteEquipmentHistory = false,
+  allowWorkActions = false,
   offline,
   surface,
   tokens,
@@ -178,7 +205,7 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
   const [department, setDepartment] = useState('');
   const [issuer, setIssuer] = useState(equipment.employee_name || '');
   const [issuerPick, setIssuerPick] = useState<EquipmentOwnerOption | null>(null);
-  const [pickerKind, setPickerKind] = useState<'branch' | 'location' | 'department' | OwnerPickerKind | null>(null);
+  const [pickerKind, setPickerKind] = useState<'branch' | 'location' | 'department' | OwnerPickerKind | 'db-target' | 'db-branch' | 'db-location' | 'db-owner' | null>(null);
   const [comment, setComment] = useState('');
   const [consumables, setConsumables] = useState<ConsumableRecord[]>([]);
   const [selectedConsumable, setSelectedConsumable] = useState<ConsumableRecord | null>(null);
@@ -189,21 +216,60 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
   const [emailMode, setEmailMode] = useState<'old' | 'new' | 'manual' | 'employee'>('old');
   const [manualEmail, setManualEmail] = useState('');
   const [recipientPick, setRecipientPick] = useState<EquipmentOwnerOption | null>(null);
+  const [dbTargetId, setDbTargetId] = useState('');
+  const [dbOwner, setDbOwner] = useState<EquipmentOwnerOption | null>(null);
+  const [dbOwnerName, setDbOwnerName] = useState('');
+  const [dbBranchNo, setDbBranchNo] = useState<number | string | null>(null);
+  const [dbLocNo, setDbLocNo] = useState<number | string | null>(null);
+  const [dbBranches, setDbBranches] = useState<EquipmentDirectoryOption[]>([]);
+  const [dbLocations, setDbLocations] = useState<EquipmentDirectoryOption[]>([]);
+  const [dbBranchesLoading, setDbBranchesLoading] = useState(false);
+  const [dbLocationsLoading, setDbLocationsLoading] = useState(false);
+  const [dbResult, setDbResult] = useState<EquipmentDbTransferResult | null>(null);
+  const [dbEmail, setDbEmail] = useState('');
+  const [dbEmailBusy, setDbEmailBusy] = useState(false);
+  // Инв. номера, которые сервер отказался удалять без with_history (409) —
+  // предлагаются к повтору только с правом database.delete_equipment_history.
+  const [deleteRetryInvNos, setDeleteRetryInvNos] = useState<string[]>([]);
   const attemptRef = useRef<{ signature: string; key: string } | null>(null);
   const lastResultRef = useRef<TransferResult | null>(null);
   const mountedRef = useRef(true);
   const inFlightRef = useRef(false);
   const pollSeqRef = useRef(0);
+  const databaseScopeRef = useRef(databaseId);
   const [pendingJob, setPendingJob] = useState<PendingTransferJob | null>(null);
   const pendingJobRef = useRef<PendingTransferJob | null>(null);
-  const targetInvNos = useMemo(() => {
-    const values = targets?.length ? targets : [equipment];
-    return [...new Set(values.map((item) => item.inv_no.trim()).filter(Boolean))];
+  // Цели операции — записи, а не только инв. номера: у каждой карточки
+  // свой серийник/филиал/размещение, уходящие в payload работы.
+  const actionItems = useMemo(() => {
+    const seen = new Set<string>();
+    return (targets?.length ? targets : [equipment]).filter((item) => {
+      const invNo = String(item?.inv_no || '').trim();
+      if (!invNo || seen.has(invNo)) return false;
+      seen.add(invNo);
+      return true;
+    });
   }, [equipment, targets]);
+  const targetInvNos = useMemo(() => actionItems.map((item) => item.inv_no.trim()), [actionItems]);
   const multiple = targetInvNos.length > 1;
   const workKinds = useMemo(() => equipmentWorkKinds(equipment), [equipment]);
+  // Как в вебе: действие обслуживания в множественном выборе доступно,
+  // только если его поддерживает КАЖДАЯ выбранная карточка.
+  const bulkWorkKinds = useMemo(() => {
+    const sets = actionItems.map((item) => equipmentWorkKinds(item));
+    return (sets[0] || []).filter((kind) => sets.every((kinds) => kinds.includes(kind)));
+  }, [actionItems]);
+  const targetDatabases = useMemo(
+    () => (databases || []).filter((db) => db.id !== databaseId),
+    [databaseId, databases],
+  );
   const transferAction = action === 'owner' || action === 'location' || action === 'act-only';
   const workAction = action === 'cartridge' || action === 'battery' || action === 'component' || action === 'cleaning';
+  const dbTransferActive = action === 'db-transfer' && !dbResult;
+
+  useEffect(() => {
+    databaseScopeRef.current = databaseId;
+  }, [databaseId]);
 
   const usesLocationFields = (action === 'owner' || action === 'location') && !result && !pendingJob;
 
@@ -219,6 +285,14 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
       .finally(() => { if (active) setBranchesLoading(false); });
     return () => { active = false; };
   }, [databaseId, usesLocationFields, offline]);
+
+  // The card can refresh under an open or closed form (own transfer result or
+  // a detail reload): keep the transfer target in sync so the payload never
+  // sends the pre-transfer branch/location.
+  useEffect(() => {
+    setBranchNo(equipment.branch_no ?? null);
+    setLocationNo(equipment.loc_no ?? null);
+  }, [equipment.branch_no, equipment.loc_no]);
 
   useEffect(() => {
     if (!usesLocationFields || offline) return;
@@ -255,6 +329,35 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
     });
     return () => { active = false; };
   }, [action, databaseId, equipment.branch_no, equipment.loc_no]);
+
+  // Справочники переноса в другую базу читаются из ЦЕЛЕВОЙ базы (X-Database-ID),
+  // как в веб-диалоге «В другую базу». Филиал опционален: null = «как в источнике».
+  useEffect(() => {
+    if (!dbTransferActive || offline || !dbTargetId) { setDbBranches([]); return; }
+    let active = true;
+    setDbBranchesLoading(true);
+    void listEquipmentBranches(dbTargetId)
+      .then((next) => { if (active) setDbBranches(next); })
+      .catch((cause) => {
+        if (active) setError(formatApiError(cause, 'Не удалось загрузить справочники целевой базы.'));
+      })
+      .finally(() => { if (active) setDbBranchesLoading(false); });
+    return () => { active = false; };
+  }, [dbTargetId, dbTransferActive, offline]);
+
+  useEffect(() => {
+    if (!dbTransferActive || offline || !dbTargetId) { setDbLocations([]); return; }
+    let active = true;
+    setDbLocations([]);
+    setDbLocationsLoading(true);
+    void listEquipmentLocations(dbBranchNo, dbTargetId)
+      .then((next) => { if (active) setDbLocations(next); })
+      .catch((cause) => {
+        if (active) setError(formatApiError(cause, 'Не удалось загрузить справочники целевой базы.'));
+      })
+      .finally(() => { if (active) setDbLocationsLoading(false); });
+    return () => { active = false; };
+  }, [dbBranchNo, dbTargetId, dbTransferActive, offline]);
 
   const manualOwner = action === 'owner' && !employeePick && Boolean(employee.trim());
 
@@ -297,8 +400,14 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
       setAction(pending.mode);
       return;
     }
+    if (kind === 'db-transfer') {
+      if (!targetDatabases.length) return;
+      setDbTargetId((current) => targetDatabases.some((db) => db.id === current)
+        ? current
+        : targetDatabases[0].id);
+    }
     setAction(kind);
-  }, []);
+  }, [targetDatabases]);
 
   const close = useCallback(() => {
     if (busy && !pendingJobRef.current) return;
@@ -318,6 +427,20 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
     setPickerKind(null);
     setEmailMode('old');
     setManualEmail('');
+    setBranchNo(equipment.branch_no ?? null);
+    setLocationNo(equipment.loc_no ?? null);
+    setComment('');
+    setDbTargetId('');
+    setDbOwner(null);
+    setDbOwnerName('');
+    setDbBranchNo(null);
+    setDbLocNo(null);
+    setDbBranches([]);
+    setDbLocations([]);
+    setDbResult(null);
+    setDbEmail('');
+    setDbEmailBusy(false);
+    setDeleteRetryInvNos([]);
     if (!pendingJobRef.current) {
       setEmployee('');
       setEmployeePick(null);
@@ -328,7 +451,7 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
       setIssuerPick(null);
     }
     onClosed?.(lastResult);
-  }, [busy, equipment.employee_name, onClosed]);
+  }, [busy, equipment.branch_no, equipment.employee_name, equipment.loc_no, onClosed]);
 
   const finishTransferJob = useCallback(async (job: PendingTransferJob, next: TransferResult, seq: number) => {
     if (!mountedRef.current || pollSeqRef.current !== seq) return;
@@ -544,56 +667,226 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
 
   const runWork = useCallback(async () => {
     if (!workAction || busy || offline) return;
+    const items = actionItems;
+    if (!items.length) {
+      setError('Не выбрано оборудование для операции.');
+      return;
+    }
     setBusy(true);
     setError('');
+    const scopeDb = databaseId || '';
+    const seq = ++pollSeqRef.current;
     try {
       // Тот же подход, что у transfer attemptRef: идентичный повтор отправки
       // переиспользует operation_id — сервер возобновляет durable-операцию.
+      // Для каждой карточки свой operation_id (seed попытки + inv_no), как в вебе.
       const signature = JSON.stringify({
         kind: action,
-        invNo: equipment.inv_no,
+        invNos: items.map((item) => item.inv_no),
         consumableId: selectedConsumable?.id ?? null,
         componentType,
       });
       if (attemptRef.current?.signature !== signature) {
         attemptRef.current = { signature, key: operationId() };
       }
-      await recordEquipmentWork({
-        kind: action,
-        equipment,
-        databaseId,
-        consumable: selectedConsumable,
-        componentType,
-        componentName: componentType,
-        componentModel: selectedConsumable?.model_name,
-        operationId: attemptRef.current.key,
-      });
+      const seed = attemptRef.current.key;
+      const failed: { inv_no: string; error: string }[] = [];
+      let succeeded = 0;
+      // Как в вебе: позиции записываются по одной, у каждой свой payload.
+      for (const item of items) {
+        if (!mountedRef.current || pollSeqRef.current !== seq || databaseScopeRef.current !== scopeDb) return;
+        const invNo = String(item.inv_no || '').trim();
+        try {
+          await recordEquipmentWork({
+            kind: action,
+            equipment: item,
+            databaseId,
+            consumable: selectedConsumable,
+            componentType,
+            componentName: componentType,
+            componentModel: selectedConsumable?.model_name,
+            operationId: buildWorkOperationId(seed, action, invNo, selectedConsumable?.id ?? null, componentType),
+          });
+          succeeded += 1;
+        } catch (cause) {
+          failed.push({ inv_no: invNo || '—', error: formatApiError(cause, 'Ошибка записи работы') });
+        }
+      }
+      if (!mountedRef.current || pollSeqRef.current !== seq || databaseScopeRef.current !== scopeDb) return;
+      lastResultRef.current = {
+        success_count: succeeded,
+        failed_count: failed.length,
+        failed,
+        retry_inv_nos: failed.map((entry) => entry.inv_no),
+        acts: [],
+      };
+      if (failed.length) {
+        // Частичный результат — не успех: attemptRef сохраняет operation_id,
+        // повтор этой же попытки доиграет незаписанные позиции без дублей.
+        setError(`Записано: ${succeeded} из ${items.length}. ${failed.slice(0, 3).map((entry) => `${entry.inv_no}: ${entry.error}`).join('; ')}${failed.length > 3 ? `; ещё ${failed.length - 3}` : ''}`);
+        if (succeeded > 0) {
+          try { await onChanged(action); } catch { /* обновление не критично */ }
+        }
+        return;
+      }
       // Успех завершает попытку: следующее сознательное действие получит
       // новый operation_id, а не переиграет уже записанный результат.
       attemptRef.current = null;
-      setNotice(`${equipmentWorkKindLabel(action)} записана.`);
-      await onChanged(action);
+      setNotice(items.length > 1
+        ? `${equipmentWorkKindLabel(action)} записана: ${succeeded} из ${items.length}.`
+        : `${equipmentWorkKindLabel(action)} записана.`);
+      try {
+        await onChanged(action);
+      } catch {
+        setNotice('Операция завершена, но не удалось обновить данные.');
+      }
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось записать обслуживание.'));
     } finally {
       setBusy(false);
     }
-  }, [action, busy, componentType, databaseId, equipment, offline, onChanged, selectedConsumable, workAction]);
+  }, [action, actionItems, busy, componentType, databaseId, offline, onChanged, selectedConsumable, workAction]);
 
-  const confirmDelete = useCallback(async () => {
+  const confirmDelete = useCallback(async (withHistory = false, onlyInvNos?: Set<string>) => {
     if (action !== 'delete' || busy || offline || !canDeleteEquipment) return;
+    const items = onlyInvNos
+      ? actionItems.filter((item) => onlyInvNos.has(String(item.inv_no || '').trim()))
+      : actionItems;
+    if (!items.length) {
+      setError('Не выбрано оборудование для операции.');
+      return;
+    }
     setBusy(true);
     setError('');
-    try {
-      await deleteEquipment(equipment.inv_no, databaseId);
-      setAction(null);
-      onDeleted();
-    } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось удалить оборудование.'));
-    } finally {
-      setBusy(false);
+    setDeleteRetryInvNos([]);
+    const scopeDb = databaseId || '';
+    const seq = ++pollSeqRef.current;
+    const deleted: string[] = [];
+    const failed: { inv_no: string; error: string }[] = [];
+    const historyBlocked: string[] = [];
+    // Как одиночное удаление в вебе: один DELETE на каждую карточку,
+    // частичные ошибки собираются и показываются списком.
+    for (const item of items) {
+      if (!mountedRef.current || pollSeqRef.current !== seq || databaseScopeRef.current !== scopeDb) return;
+      const invNo = String(item.inv_no || '').trim();
+      try {
+        if (withHistory) await deleteEquipment(invNo, databaseId, { withHistory: true });
+        else await deleteEquipment(invNo, databaseId);
+        deleted.push(invNo);
+      } catch (cause) {
+        const status = Number((cause as { response?: { status?: unknown } })?.response?.status);
+        if (!withHistory && status === 409) historyBlocked.push(invNo);
+        failed.push({ inv_no: invNo, error: formatApiError(cause, 'Не удалось удалить.') });
+      }
     }
-  }, [action, busy, canDeleteEquipment, databaseId, equipment.inv_no, offline, onDeleted]);
+    if (!mountedRef.current || pollSeqRef.current !== seq || databaseScopeRef.current !== scopeDb) return;
+    const summary: TransferResult = {
+      success_count: deleted.length,
+      failed_count: failed.length,
+      failed,
+      retry_inv_nos: failed.map((entry) => entry.inv_no),
+      acts: [],
+    };
+    lastResultRef.current = summary;
+    try {
+      if (deleted.length) {
+        if (targets?.length) {
+          // Множественное удаление: экран сам снимет удалённые карточки
+          // со списка при закрытии диалога (recordTransferChange → flush).
+          try { await onChanged('delete', summary, { invNos: [...deleted], databaseId }); } catch { /* список обновит следующее чтение */ }
+        }
+        try { onDeleted(deleted); } catch { /* навигация/уведомление не критичны */ }
+      }
+      if (failed.length) {
+        // Как в веб-диалоге удаления: 409 (связанные акты/история) предлагает
+        // повтор с with_history — только при database.delete_equipment_history.
+        if (historyBlocked.length && canDeleteEquipmentHistory) {
+          setDeleteRetryInvNos(historyBlocked);
+        }
+        setError(`Удалено: ${deleted.length} из ${items.length}. ${failed.slice(0, 3).map((entry) => `${entry.inv_no}: ${entry.error}`).join('; ')}${failed.length > 3 ? `; ещё ${failed.length - 3}` : ''}`);
+        return;
+      }
+      close();
+    } finally {
+      if (pollSeqRef.current === seq) setBusy(false);
+    }
+  }, [action, actionItems, busy, canDeleteEquipment, canDeleteEquipmentHistory, close, databaseId, offline, onChanged, onDeleted, targets?.length]);
+
+  const runDbTransfer = useCallback(async () => {
+    if (action !== 'db-transfer' || busy || offline || inFlightRef.current || pendingJobRef.current) return;
+    const targetDb = dbTargetId.trim();
+    if (!targetDb) {
+      setError('Выберите целевую базу.');
+      return;
+    }
+    if (!dbOwner && !validateNativeTransferEmployeeName(dbOwnerName)) {
+      setError(dbOwnerName.trim().length < 2 ? 'Укажите сотрудника в целевой базе.' : 'Некорректное ФИО сотрудника.');
+      return;
+    }
+    const invNos = targetInvNos;
+    if (!invNos.length) {
+      setError('Не выбрано оборудование для операции.');
+      return;
+    }
+    const base = {
+      inv_nos: invNos,
+      target_db: targetDb,
+      target_owner_no: dbOwner?.owner_no ?? null,
+      new_owner_name: dbOwner ? null : dbOwnerName.trim(),
+      new_owner_dept: dbOwner?.department || null,
+      target_branch_no: dbBranchNo === null || dbBranchNo === undefined || String(dbBranchNo) === '' || Number.isNaN(Number(dbBranchNo)) ? null : Number(dbBranchNo),
+      target_loc_no: dbLocNo === null || dbLocNo === undefined || String(dbLocNo) === '' || Number.isNaN(Number(dbLocNo)) ? null : Number(dbLocNo),
+      task_assignee_user_ids: null,
+      task_due_at: null,
+      comment: comment.trim() || null,
+    };
+    const signature = JSON.stringify({ action, ...base });
+    if (attemptRef.current?.signature !== signature) {
+      attemptRef.current = { signature, key: operationId() };
+    }
+    inFlightRef.current = true;
+    setBusy(true);
+    setError('');
+    setNotice('Перенос выполняется…');
+    const seq = ++pollSeqRef.current;
+    const scopeDb = databaseId || '';
+    try {
+      const report = await transferEquipmentToDatabase(
+        { ...base, operation_id: attemptRef.current.key },
+        databaseId,
+      );
+      if (!mountedRef.current || pollSeqRef.current !== seq || databaseScopeRef.current !== scopeDb) return;
+      setDbResult(report);
+      const failedItems = report.items.filter((item) => item.status !== 'ok');
+      const summary: TransferResult = {
+        success_count: report.summary.ok,
+        failed_count: report.summary.failed || failedItems.length,
+        failed: failedItems.map((item) => ({ inv_no: item.inv_no_old || item.inv_no, error: item.message || 'Ошибка переноса' })),
+        retry_inv_nos: failedItems.map((item) => item.inv_no_old || item.inv_no),
+        acts: [],
+      };
+      lastResultRef.current = summary;
+      setNotice('');
+      // Успех завершает попытку: повторный submit с тем же operation_id
+      // вернул бы сохранённый результат (replayed), новый id нужен заново.
+      attemptRef.current = null;
+      try {
+        await onChanged('db-transfer', summary, { invNos: [...invNos], databaseId });
+      } catch {
+        if (mountedRef.current && pollSeqRef.current === seq) {
+          setNotice('Операция завершена, но не удалось обновить данные.');
+        }
+      }
+    } catch (cause) {
+      if (mountedRef.current && pollSeqRef.current === seq && databaseScopeRef.current === scopeDb) {
+        setNotice('');
+        setError(formatApiError(cause, 'Не удалось выполнить перенос в другую базу.'));
+      }
+    } finally {
+      inFlightRef.current = false;
+      if (mountedRef.current) setBusy(false);
+    }
+  }, [action, busy, comment, databaseId, dbBranchNo, dbLocNo, dbOwner, dbOwnerName, dbTargetId, offline, onChanged, targetInvNos]);
 
   const openAct = useCallback(async (act: TransferAct) => {
     if (fileBusy) return;
@@ -642,6 +935,46 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
     }
   }, [databaseId, emailBusy, emailMode, manualEmail, recipientPick, result?.acts]);
 
+  const openDbTransferAct = useCallback(async (act: EquipmentDbTransferAct) => {
+    if (fileBusy || act.file_no === null) return;
+    setFileBusy(act.act_id || String(act.file_no));
+    setError('');
+    try {
+      const file = await downloadDbTransferAct(act.db_id, act.file_no, {
+        fileName: act.file_name,
+        sourceDatabaseId: databaseId,
+      });
+      await openNativeFile(file, 'application/pdf');
+    } catch (cause) {
+      setError(formatApiError(cause, 'Не удалось открыть акт оприходования.'));
+    } finally {
+      setFileBusy('');
+    }
+  }, [databaseId, fileBusy]);
+
+  const sendDbTransferActs = useCallback(async () => {
+    const acts = (dbResult?.acts || []).filter((act) => act.file_no !== null);
+    if (!acts.length || dbEmailBusy) return;
+    const email = dbEmail.trim();
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      setError('Укажите корректный e-mail получателя.');
+      return;
+    }
+    setDbEmailBusy(true);
+    setError('');
+    try {
+      // Как в вебе: отдельная отправка по каждому сформированному акту.
+      for (const act of acts) {
+        await emailDbTransferAct(act.db_id, act.file_no as number, email, databaseId);
+      }
+      setNotice(acts.length > 1 ? `Акты отправлены на ${email}.` : `Акт отправлен на ${email}.`);
+    } catch (cause) {
+      setError(formatApiError(cause, 'Не удалось отправить акт по почте.'));
+    } finally {
+      setDbEmailBusy(false);
+    }
+  }, [databaseId, dbEmail, dbEmailBusy, dbResult?.acts]);
+
   useImperativeHandle(ref, () => ({
     open: (kind) => { openAction(kind); },
   }), [openAction]);
@@ -657,10 +990,24 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
               <ActionButton testID={`${testIDPrefix}-transfer-owner`} icon="account-arrow-right-outline" label="Передать сотруднику" onPress={() => openAction('owner')} disabled={offline} tokens={tokens} />
               <ActionButton testID={`${testIDPrefix}-transfer-location`} icon="map-marker-right-outline" label="Сменить размещение" onPress={() => openAction('location')} disabled={offline} tokens={tokens} />
               <ActionButton testID={`${testIDPrefix}-transfer-act-only`} icon="file-document-edit-outline" label="Сформировать акт" onPress={() => openAction('act-only')} disabled={offline} tokens={tokens} />
+              {allowWorkActions ? bulkWorkKinds.map((kind) => (
+                <ActionButton
+                  key={kind}
+                  testID={`${testIDPrefix}-record-work-${kind}`}
+                  icon={kind === 'cleaning' ? 'broom' : kind === 'battery' ? 'battery-sync-outline' : kind === 'cartridge' ? 'printer-pos-wrench-outline' : 'tools'}
+                  label={equipmentWorkKindLabel(kind)}
+                  onPress={() => openAction(kind)}
+                  disabled={offline}
+                  tokens={tokens}
+                />
+              )) : null}
+              {targetDatabases.length ? (
+                <ActionButton testID={`${testIDPrefix}-db-transfer`} icon="database-sync-outline" label="В другую базу" onPress={() => openAction('db-transfer')} disabled={offline} tokens={tokens} />
+              ) : null}
             </>
           ) : null}
-          {canDeleteEquipment && !multiple ? (
-            <ActionButton testID={`${testIDPrefix}-delete`} icon="delete-outline" label="Удалить карточку" onPress={() => openAction('delete')} disabled={offline} tokens={tokens} destructive />
+          {canDeleteEquipment ? (
+            <ActionButton testID={`${testIDPrefix}-delete`} icon="delete-outline" label={multiple ? 'Удалить карточки' : 'Удалить карточку'} onPress={() => openAction('delete')} disabled={offline} tokens={tokens} destructive />
           ) : null}
         </View>
       ) : (
@@ -757,6 +1104,55 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
               </>
             ) : null}
             {transferAction && !result ? <Field label="Комментарий (необязательно)" value={comment} onChange={setComment} tokens={tokens} multiline editable={!busy && !pendingJob} /> : null}
+
+            {action === 'db-transfer' && !dbResult ? (
+              <>
+                <Text style={[styles.context, { color: tokens.textSecondary }]}>
+                  {`Перенос удаляет карточки из текущей базы и создаёт их в выбранной. Филиал и размещение можно оставить «как в источнике».`}
+                </Text>
+                <PickerField
+                  testID="native-dbtransfer-target"
+                  label="Целевая база"
+                  value={targetDatabases.find((db) => db.id === dbTargetId)?.name || dbTargetId}
+                  hint="Выберите базу"
+                  disabled={busy || Boolean(pendingJob) || targetDatabases.length < 2}
+                  onPress={() => setPickerKind('db-target')}
+                  tokens={tokens}
+                />
+                <PickerField
+                  testID="native-dbtransfer-owner"
+                  label="Сотрудник в целевой базе"
+                  value={dbOwner?.name || dbOwnerName}
+                  hint="Выберите из списка или укажите ФИО"
+                  disabled={busy || Boolean(pendingJob)}
+                  onPress={() => setPickerKind('db-owner')}
+                  tokens={tokens}
+                />
+                <PickerField
+                  testID="native-dbtransfer-branch"
+                  label="Филиал в целевой базе"
+                  value={dbBranchNo === null || dbBranchNo === undefined || String(dbBranchNo) === ''
+                    ? 'Как в источнике'
+                    : directoryLabel(dbBranches, dbBranchNo)}
+                  hint={dbBranchesLoading ? 'Загрузка филиалов…' : undefined}
+                  disabled={busy || Boolean(pendingJob) || dbBranchesLoading}
+                  onPress={() => setPickerKind('db-branch')}
+                  tokens={tokens}
+                />
+                <PickerField
+                  testID="native-dbtransfer-location"
+                  label="Размещение в целевой базе"
+                  value={dbLocNo === null || dbLocNo === undefined || String(dbLocNo) === ''
+                    ? 'Как в источнике'
+                    : directoryLabel(dbLocations, dbLocNo)}
+                  hint={dbLocationsLoading ? 'Загрузка размещений…' : undefined}
+                  disabled={busy || Boolean(pendingJob) || dbLocationsLoading}
+                  onPress={() => setPickerKind('db-location')}
+                  tokens={tokens}
+                />
+                <Field label="Комментарий (необязательно)" value={comment} onChange={setComment} tokens={tokens} multiline editable={!busy && !pendingJob} />
+              </>
+            ) : null}
 
             {(action === 'cartridge' || action === 'component') ? (
               <View style={styles.fieldGroup}>
@@ -886,23 +1282,106 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
               </View>
             ) : null}
 
-            {action === 'delete' ? (
-              <View style={[styles.dangerBox, { backgroundColor: tokens.panelInset }]}> 
-                <Text style={[styles.dangerTitle, { color: tokens.error }]}>Удалить карточку без возможности восстановления?</Text>
-                <Text style={[styles.dangerText, { color: tokens.textSecondary }]}>Сервер отменит удаление, если с оборудованием связаны акты или история.</Text>
+            {action === 'db-transfer' && dbResult ? (
+              <View style={styles.resultActs}>
+                <Text accessibilityLiveRegion="polite" style={[styles.resultSummary, { color: dbResult.summary.failed ? tokens.warning : tokens.success }]}>
+                  {`Перенос завершён: ${dbResult.summary.ok} из ${dbResult.summary.total}.`}
+                  {dbResult.act_doc_no ? ` Акт оприходования № ${dbResult.act_doc_no} в базе ${dbResult.target_db}.` : ''}
+                </Text>
+                {dbResult.replayed ? (
+                  <Text style={[styles.notice, { color: tokens.textSecondary }]}>Показан сохранённый результат предыдущего запроса (повтор по operation_id).</Text>
+                ) : null}
+                {dbResult.items.map((item) => (
+                  <View key={item.inv_no_old || item.inv_no} style={styles.resultItemRow}>
+                    <Text style={[styles.resultItemText, { color: tokens.textPrimary }]}>
+                      {`инв. ${item.inv_no_old || item.inv_no}${item.inv_no_new ? ` → ${item.inv_no_new}` : ''}`}
+                    </Text>
+                    <Text style={[styles.resultItemStatus, { color: item.status === 'ok' ? tokens.success : item.status === 'partial' ? tokens.warning : tokens.error }]}>
+                      {item.status === 'ok' ? 'перенесено' : item.status === 'partial' ? 'частично' : `ошибка: ${item.message || 'не перенесено'}`}
+                    </Text>
+                  </View>
+                ))}
+                {dbResult.created_refs.length ? (
+                  <View style={styles.resultFailed}>
+                    <Text style={[styles.label, { color: tokens.textSecondary }]}>Создано в целевой базе</Text>
+                    {dbResult.created_refs.map((line, index) => (
+                      <Text key={`${line}-${index}`} style={[styles.resultItemStatus, { color: tokens.textSecondary }]}>{line}</Text>
+                    ))}
+                  </View>
+                ) : null}
+                {dbResult.acts.length ? (
+                  <View>
+                    <Text style={[styles.label, { color: tokens.textSecondary }]}>Сформированные акты</Text>
+                    {dbResult.acts.map((act) => (
+                      <View key={act.act_id || String(act.file_no)} style={[styles.actCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
+                        <View style={styles.actCardBody}>
+                          <Text style={[styles.actCardTitle, { color: tokens.textPrimary }]}>{`Акт оприходования № ${act.doc_no ?? dbResult.act_doc_no}`}</Text>
+                          <Text numberOfLines={1} style={[styles.actCardMeta, { color: tokens.textSecondary }]}>{act.file_name}</Text>
+                        </View>
+                        <Pressable
+                          testID={`native-dbtransfer-act-${act.file_no}`}
+                          disabled={Boolean(fileBusy) || act.file_no === null}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Открыть ${act.file_name}`}
+                          onPress={() => { void openDbTransferAct(act); }}
+                          style={[styles.actOpen, { borderColor: tokens.primary }]}
+                        >
+                          {fileBusy === act.act_id ? <ActivityIndicator color={tokens.primary} /> : <Text style={[styles.actOpenText, { color: tokens.primary }]}>Открыть</Text>}
+                        </Pressable>
+                      </View>
+                    ))}
+                    <View style={styles.emailBlock}>
+                      <Text style={[styles.label, { color: tokens.textSecondary }]}>Отправка акта по email</Text>
+                      <Field label="E-mail получателя" value={dbEmail} onChange={setDbEmail} tokens={tokens} testID="native-dbtransfer-email" editable={!dbEmailBusy} />
+                      <Pressable
+                        testID="native-dbtransfer-email-send"
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: dbEmailBusy || !dbResult.acts.some((act) => act.file_no !== null) }}
+                        disabled={dbEmailBusy || !dbResult.acts.some((act) => act.file_no !== null)}
+                        onPress={() => { void sendDbTransferActs(); }}
+                        style={[styles.secondary, { borderColor: tokens.primary }]}
+                      >
+                        {dbEmailBusy ? <ActivityIndicator color={tokens.primary} /> : <Text style={[styles.secondaryText, { color: tokens.primary }]}>Отправить акт</Text>}
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
+                {dbResult.task_id ? <Text style={[styles.resultItemStatus, { color: tokens.textSecondary }]}>{`Задача на приёмку создана: #${dbResult.task_id.slice(0, 8)}`}</Text> : null}
+                {dbResult.task_error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.warning }]}>{dbResult.task_error}</Text> : null}
+                {dbResult.act_error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.warning }]}>{dbResult.act_error}</Text> : null}
+                {dbResult.acts_error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.warning }]}>{dbResult.acts_error}</Text> : null}
               </View>
             ) : null}
 
-            {!result ? (
+            {action === 'delete' ? (
+              <View style={[styles.dangerBox, { backgroundColor: tokens.panelInset }]}> 
+                <Text style={[styles.dangerTitle, { color: tokens.error }]}>{multiple ? `Удалить выбранные карточки (${targetInvNos.length}) без возможности восстановления?` : 'Удалить карточку без возможности восстановления?'}</Text>
+                <Text style={[styles.dangerText, { color: tokens.textSecondary }]}>Сервер отменит удаление, если с оборудованием связаны акты или история.</Text>
+                {deleteRetryInvNos.length ? (
+                  <Pressable
+                    testID={`${testIDPrefix}-delete-with-history`}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: busy || offline }}
+                    disabled={busy || offline}
+                    onPress={() => { void confirmDelete(true, new Set(deleteRetryInvNos)); }}
+                    style={[styles.secondary, { borderColor: tokens.error }]}
+                  >
+                    <Text style={[styles.secondaryText, { color: tokens.error }]}>{`Удалить с историей (${deleteRetryInvNos.length})`}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+
+            {!result && !dbResult ? (
               <Pressable
                 testID={`${testIDPrefix}-action-confirm`}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: busy || offline }}
                 disabled={busy || offline}
-                onPress={() => { if (pendingJob) void refreshTransferJob(); else if (transferAction) void runTransfer(); else if (workAction) void runWork(); else void confirmDelete(); }}
+                onPress={() => { if (pendingJob) void refreshTransferJob(); else if (transferAction) void runTransfer(); else if (workAction) void runWork(); else if (action === 'db-transfer') void runDbTransfer(); else void confirmDelete(); }}
                 style={[styles.primary, { backgroundColor: action === 'delete' ? tokens.error : tokens.primary, opacity: busy || offline ? 0.55 : 1 }]}
               >
-                {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{pendingJob ? 'Проверить статус' : action === 'delete' ? 'Удалить' : 'Выполнить'}</Text>}
+                {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{pendingJob ? 'Проверить статус' : action === 'delete' ? 'Удалить' : action === 'db-transfer' ? 'Перенести' : 'Выполнить'}</Text>}
               </Pressable>
             ) : (
               <Pressable accessibilityRole="button" onPress={close} style={[styles.primary, { backgroundColor: tokens.primary }]}>
@@ -911,41 +1390,78 @@ export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
             )}
           </ScrollView>
           <NativeEquipmentOptionPicker
-            visible={pickerKind === 'branch' || pickerKind === 'location' || pickerKind === 'department'}
-            title={pickerKind === 'branch' ? 'Филиал' : pickerKind === 'department' ? 'Отдел нового сотрудника' : 'Размещение'}
-            options={pickerKind === 'branch' ? branches : pickerKind === 'department' ? departments.map((name) => ({ id: name, name })) : locations}
-            selectedId={pickerKind === 'branch' ? branchNo : pickerKind === 'department' ? department : locationNo}
+            visible={pickerKind === 'branch' || pickerKind === 'location' || pickerKind === 'department'
+              || pickerKind === 'db-target' || pickerKind === 'db-branch' || pickerKind === 'db-location'}
+            title={
+              pickerKind === 'branch' ? 'Филиал'
+                : pickerKind === 'department' ? 'Отдел нового сотрудника'
+                  : pickerKind === 'db-target' ? 'Целевая база'
+                    : pickerKind === 'db-branch' ? 'Филиал в целевой базе'
+                      : pickerKind === 'db-location' ? 'Размещение в целевой базе'
+                        : 'Размещение'
+            }
+            options={
+              pickerKind === 'branch' ? branches
+                : pickerKind === 'department' ? departments.map((name) => ({ id: name, name }))
+                  : pickerKind === 'db-target' ? targetDatabases.map((db) => ({ id: db.id, name: db.name || db.id }))
+                    : pickerKind === 'db-branch' ? [{ id: '', name: 'Как в источнике' }, ...dbBranches]
+                      : pickerKind === 'db-location' ? [{ id: '', name: 'Как в источнике' }, ...dbLocations]
+                        : locations
+            }
+            selectedId={
+              pickerKind === 'branch' ? branchNo
+                : pickerKind === 'department' ? department
+                  : pickerKind === 'db-target' ? dbTargetId
+                    : pickerKind === 'db-branch' ? dbBranchNo ?? ''
+                      : pickerKind === 'db-location' ? dbLocNo ?? ''
+                        : locationNo
+            }
             loading={
               pickerKind === 'department'
                 ? departmentStatus === 'loading'
-                : pickerKind === 'branch' ? branchesLoading : locationsLoading
+                : pickerKind === 'branch' ? branchesLoading
+                  : pickerKind === 'db-branch' ? dbBranchesLoading
+                    : pickerKind === 'db-location' ? dbLocationsLoading
+                      : locationsLoading
             }
             tokens={tokens}
-            testIDPrefix={pickerKind === 'branch' ? 'native-transfer-branch' : pickerKind === 'department' ? 'native-transfer-department' : 'native-transfer-location'}
+            testIDPrefix={
+              pickerKind === 'branch' ? 'native-transfer-branch'
+                : pickerKind === 'department' ? 'native-transfer-department'
+                  : pickerKind === 'db-target' ? 'native-dbtransfer-target'
+                    : pickerKind === 'db-branch' ? 'native-dbtransfer-branch'
+                      : pickerKind === 'db-location' ? 'native-dbtransfer-location'
+                        : 'native-transfer-location'
+            }
             onSelect={(id) => {
               if (pickerKind === 'branch') { setBranchNo(id); setLocationNo(null); }
               else if (pickerKind === 'department') setDepartment(String(id));
+              else if (pickerKind === 'db-target') { setDbTargetId(String(id)); setDbOwner(null); setDbOwnerName(''); setDbBranchNo(null); setDbLocNo(null); }
+              else if (pickerKind === 'db-branch') { setDbBranchNo(String(id) === '' ? null : id); setDbLocNo(null); }
+              else if (pickerKind === 'db-location') setDbLocNo(String(id) === '' ? null : id);
               else setLocationNo(id);
               setPickerKind(null);
             }}
             onClose={() => setPickerKind(null)}
           />
           <NativeEquipmentOwnerPicker
-            visible={pickerKind === 'employee' || pickerKind === 'issuer' || pickerKind === 'recipient'}
-            title={pickerKind === 'issuer' ? 'Передал оборудование' : pickerKind === 'recipient' ? 'Сотрудник-получатель' : 'Новый сотрудник'}
-            databaseId={databaseId}
-            selectedOwnerNo={pickerKind === 'issuer' ? issuerPick?.owner_no ?? null : pickerKind === 'recipient' ? recipientPick?.owner_no ?? null : employeePick?.owner_no ?? null}
+            visible={pickerKind === 'employee' || pickerKind === 'issuer' || pickerKind === 'recipient' || pickerKind === 'db-owner'}
+            title={pickerKind === 'issuer' ? 'Передал оборудование' : pickerKind === 'recipient' ? 'Сотрудник-получатель' : pickerKind === 'db-owner' ? 'Сотрудник в целевой базе' : 'Новый сотрудник'}
+            databaseId={pickerKind === 'db-owner' ? dbTargetId : databaseId}
+            selectedOwnerNo={pickerKind === 'issuer' ? issuerPick?.owner_no ?? null : pickerKind === 'recipient' ? recipientPick?.owner_no ?? null : pickerKind === 'db-owner' ? dbOwner?.owner_no ?? null : employeePick?.owner_no ?? null}
             allowManual={pickerKind !== 'recipient'}
-            initialQuery={pickerKind === 'issuer' ? issuer : pickerKind === 'employee' ? employee : ''}
+            initialQuery={pickerKind === 'issuer' ? issuer : pickerKind === 'employee' ? employee : pickerKind === 'db-owner' ? dbOwnerName : ''}
             tokens={tokens}
             onSelect={(owner) => {
               if (pickerKind === 'issuer') { setIssuerPick(owner); setIssuer(owner.name); }
               else if (pickerKind === 'recipient') setRecipientPick(owner);
+              else if (pickerKind === 'db-owner') { setDbOwner(owner); setDbOwnerName(owner.name); }
               else { setEmployeePick(owner); setEmployee(owner.name); setDepartment(''); }
               setPickerKind(null);
             }}
             onManual={(name) => {
               if (pickerKind === 'issuer') { setIssuer(name); setIssuerPick(null); }
+              else if (pickerKind === 'db-owner') { setDbOwnerName(name); setDbOwner(null); }
               else { setEmployee(name); setEmployeePick(null); setDepartment(''); }
               setPickerKind(null);
             }}
@@ -1016,6 +1532,7 @@ function actionTitle(action: ActionKind): string {
   if (action === 'owner') return 'Передача сотруднику';
   if (action === 'location') return 'Смена размещения';
   if (action === 'act-only') return 'Акт без перемещения';
+  if (action === 'db-transfer') return 'Перенос в другую базу';
   if (action === 'delete') return 'Удаление оборудования';
   return action ? equipmentWorkKindLabel(action) : 'Операция';
 }
@@ -1046,6 +1563,9 @@ const styles = StyleSheet.create({
   resultActs: { marginTop: 4, marginBottom: 14 },
   resultSummary: { marginBottom: 10, fontSize: 13, lineHeight: 18, fontWeight: '800' },
   resultFailed: { marginBottom: 12 },
+  resultItemRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 6 },
+  resultItemText: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  resultItemStatus: { flexShrink: 1, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   actCard: { borderWidth: 1, borderRadius: 12, padding: 11, marginBottom: 7, flexDirection: 'row', alignItems: 'center', gap: 9 },
   actCardBody: { flex: 1, minWidth: 0 },
   actCardTitle: { fontSize: 13, fontWeight: '800' },

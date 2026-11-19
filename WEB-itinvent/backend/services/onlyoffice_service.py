@@ -205,11 +205,17 @@ def build_editor_config(
 ) -> dict:
     can_edit = role in EDITING_ROLES
     can_comment = role in WRITING_ROLES
+    document_type = document_type_for(file_name)
+    permissions = {"edit": can_edit, "download": True, "print": True, "comment": can_comment}
+    if document_type == "cell":
+        # Local filters/sort per co-editor: the default ``true`` broadcasts one user's
+        # filter to the whole session and saves it into the file.
+        permissions["modifyFilter"] = False
     source_token = make_source_token(settings, file_id=file_id, blob_id=blob_id)
     callback_token = make_callback_token(settings, file_id=file_id)
     base = f"{settings.app_base_url}/api/v1/my-files/office"
     config = {
-        "documentType": document_type_for(file_name),
+        "documentType": document_type,
         "document": {
             "fileType": editable_extension(file_name).lstrip("."),
             # A running session owns one key (see AppMyFile.office_session_key): late joiners
@@ -217,7 +223,7 @@ def build_editor_config(
             "key": str(document_key or "") or build_document_key(file_id, revision),
             "title": file_name,
             "url": f"{base}/source?t={quote(source_token)}",
-            "permissions": {"edit": can_edit, "download": True, "print": True, "comment": can_comment},
+            "permissions": permissions,
         },
         "editorConfig": {
             # A commenter opens the editor in "edit" mode with edit=false/comment=true: Document Server limits it to comments.

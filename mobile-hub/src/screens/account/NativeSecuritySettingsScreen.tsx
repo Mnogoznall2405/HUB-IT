@@ -264,7 +264,9 @@ export function NativeSecuritySettingsScreen() {
               void (async () => {
                 try {
                   const nextTimeout = value
-                    ? (timeoutSeconds > 0 ? timeoutSeconds : 900)
+                    // 0 is a valid choice («блокировать сразу») — only a
+                    // missing/invalid stored value falls back to the default.
+                    ? (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0 ? timeoutSeconds : 900)
                     : timeoutSeconds;
                   const next = await execute('appLock.update', {
                     enabled: value,

@@ -7,9 +7,11 @@ import shutil
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
+
+from shared.upload_retry import UploadSchedule
 
 logger = logging.getLogger("fs_egress.spool")
 
@@ -51,6 +53,7 @@ class EgressSpool:
         *,
         server_url: str = "",
         api_key: str = "",
+        api_key_provider: Optional[Callable[[], str]] = None,
         max_pending: int = 5000,
         max_age_days: int = 14,
     ) -> None:
@@ -63,9 +66,13 @@ class EgressSpool:
             folder.mkdir(parents=True, exist_ok=True)
         self.server_url = str(server_url or "").rstrip("/")
         self.api_key = str(api_key or "").strip()
+        self._api_key_provider = api_key_provider
         self.max_pending = max_pending
         self.max_age_days = max_age_days
         self._session = requests.Session()
+        self._upload_schedule = UploadSchedule(
+            float(os.getenv("ITINV_FS_EGRESS_DRAIN_SEC", "3") or 3)
+        )
 
     def enqueue(self, event: Dict[str, Any]) -> Path:
         self._prune()
@@ -90,12 +97,22 @@ class EgressSpool:
         return count
 
     def drain(self, *, batch_size: int = 50) -> Dict[str, int]:
-        self.ingest_inbox()
         stats = {"sent": 0, "failed": 0, "dead": 0}
+        if self._api_key_provider is not None:
+            current_key = str(self._api_key_provider() or "").strip()
+            if current_key != self.api_key:
+                self.api_key = current_key
+                # A rejected old key must not delay delivery after successful rotation.
+                self._upload_schedule = UploadSchedule(self._upload_schedule.interval)
+        if not self._upload_schedule.ready():
+            return stats
+        self.ingest_inbox()
         if not self.server_url or not self.api_key:
+            self._upload_schedule.succeeded()
             return stats
         files = sorted(self.pending.glob("*.json"))[: max(1, batch_size)]
         if not files:
+            self._upload_schedule.succeeded()
             return stats
         events: List[Dict[str, Any]] = []
         paths: List[Path] = []
@@ -112,6 +129,7 @@ class EgressSpool:
                 events.append(payload)
                 paths.append(path)
         if not events:
+            self._upload_schedule.succeeded()
             return stats
         ok = self._post_batch(events)
         if ok:
@@ -139,12 +157,20 @@ class EgressSpool:
                 headers={"X-API-Key": self.api_key, "Content-Type": "application/json"},
                 timeout=max(60.0, len(body) / (256 * 1024) * 60.0),
             )
-            if response.status_code >= 400:
-                logger.warning("fs-egress POST %s → %s %s", url, response.status_code, response.text[:200])
+            if not 200 <= response.status_code < 300:
+                self._upload_schedule.failed(
+                    response.status_code, response.headers.get("Retry-After")
+                )
+                logger.warning("fs-egress upload HTTP %s; events kept for retry", response.status_code)
                 return False
+            ack = response.json()
+            if not isinstance(ack, dict) or ack.get("success") is not True:
+                raise ValueError("Missing fs-egress acknowledgement")
+            self._upload_schedule.succeeded()
             return True
         except Exception as exc:
-            logger.warning("fs-egress POST failed: %s", exc)
+            self._upload_schedule.failed()
+            logger.warning("fs-egress upload failed (%s); events kept for retry", type(exc).__name__)
             return False
 
     def _move(self, src: Path, dest_dir: Path) -> bool:

@@ -32,7 +32,15 @@ export function useNativeFormDraft<T extends object>(options: {
       loaded = true;
       setStatus(saved ? 'Открыт локальный черновик' : '');
       setRestored(true);
-    }).catch(() => { if (active) setStatus('Не удалось открыть черновик. Не закрывайте форму.'); });
+    }).catch(() => {
+      if (!active) return;
+      // A read failure must not block publish/create forever: treat it like
+      // an empty draft and warn that the previous blob is left behind.
+      previousOwner.current = userId;
+      loaded = true;
+      setStatus('Не удалось открыть черновик — он будет перезаписан новыми данными.');
+      setRestored(true);
+    });
     return () => {
       active = false;
       const lastOwned = ownerStates.current.get(ownerKey);

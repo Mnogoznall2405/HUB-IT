@@ -252,6 +252,7 @@ function routePathFromHref(href: NativeModuleHref): string {
     if (href.params?.q) query.set('q', href.params.q);
     if (href.params?.status) query.set('status', href.params.status);
     if (href.params?.focusMode) query.set('focus_mode', href.params.focusMode);
+    if (href.params?.taskMode) query.set('task_mode', href.params.taskMode);
     if (href.params?.taskView) query.set('task_view', href.params.taskView);
     if (href.params?.taskDue) query.set('task_due', href.params.taskDue);
     if (href.params?.taskFiles) query.set('task_files', href.params.taskFiles);
@@ -270,10 +271,12 @@ function routePathFromHref(href: NativeModuleHref): string {
   }
   if (href.pathname === '/(shell)/feed') return '/feed';
   if (href.pathname === '/(shell)/feed/[postId]') {
-    const query = href.params.commentId
-      ? `?post=${encodeURIComponent(href.params.postId)}#feed-comment-${encodeURIComponent(href.params.commentId)}`
-      : `?post=${encodeURIComponent(href.params.postId)}`;
-    return `/feed${query}`;
+    // Expo Router drops the `#fragment`: the comment anchor must travel as a
+    // real query param so feed/index can forward it to the post screen.
+    const query = new URLSearchParams();
+    query.set('post', String(href.params.postId));
+    if (href.params.commentId) query.set('commentId', String(href.params.commentId));
+    return `/feed?${query.toString()}`;
   }
   if (href.pathname === '/(shell)/mail') {
     const query = new URLSearchParams();

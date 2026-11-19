@@ -50,6 +50,13 @@ PUBLIC_ROUTES = {
     "POST /api/v1/my-files/public-folders/{token}/archive-grant",
     "POST /api/v1/my-files/public-folders/{token}/files/{file_id}/download-grant",
     "GET /api/v1/vcs/launch/{token}.vnc",
+    "GET /api/v1/my-files/public/{token}/editor",
+    # OnlyOffice Document Server callbacks: a signed short-lived `t` token is verified inside the handler
+    "GET /api/v1/my-files/office/source",
+    "GET /api/v1/my-files/office/history/source",
+    "POST /api/v1/my-files/office/callback",
+    # idempotent logout: revokes whichever credential is presented, anonymous call is a no-op
+    "POST /api/v1/auth/logout",
     # key-gated machine endpoints (API key checked inside the handler)
     "POST /api/v1/inventory",
     "POST /api/v1/debug/client-log",
@@ -59,10 +66,25 @@ PUBLIC_ROUTES = {
 }
 
 
+def _iter_app_routes():
+    """Flatten app.routes: FastAPI >=0.161 registers include_router() entries as
+    lazy _IncludedRouter objects whose concrete routes live in effective_candidates()."""
+    for route in app.routes:
+        candidates = getattr(route, "effective_candidates", None)
+        if callable(candidates):
+            yield from candidates()
+            continue
+        nested = getattr(route, "routes", None)
+        if nested:
+            yield from nested
+        else:
+            yield route
+
+
 def test_anonymous_callers_are_rejected_everywhere_except_the_reviewed_public_routes():
     client = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
     not_rejected: set[str] = set()
-    for route in app.routes:
+    for route in _iter_app_routes():
         methods = getattr(route, "methods", None)
         path = getattr(route, "path", None)
         if not methods or not path or not path.startswith("/api/"):

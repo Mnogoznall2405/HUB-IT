@@ -2130,6 +2130,7 @@ async def upsert_mail_draft_multipart(
     is_html: bool = Form(True),
     reply_to_message_id: str = Form(""),
     forward_message_id: str = Form(""),
+    forward_attachment_refs_json: str = Form(""),
     retain_existing_attachments_json: str = Form("[]"),
     files: list[UploadFile] = File(default=[]),
     inline_files: list[UploadFile] = File(default=[]),
@@ -2154,6 +2155,17 @@ async def upsert_mail_draft_multipart(
 
         retain_tokens = [_normalize_text(item) for item in retain_raw if _normalize_text(item)]
 
+        forward_attachment_refs: list[str] | None = None
+        forward_refs_text = _normalize_text(forward_attachment_refs_json)
+        if forward_refs_text:
+            try:
+                forward_refs_raw = json.loads(forward_refs_text)
+            except Exception as exc:
+                raise MailServiceError("forward_attachment_refs_json must contain valid JSON array") from exc
+            if not isinstance(forward_refs_raw, list):
+                raise MailServiceError("forward_attachment_refs_json must be a JSON array")
+            forward_attachment_refs = [_normalize_text(item) for item in forward_refs_raw if _normalize_text(item)]
+
         return await _run_mail_call(
             mail_service.save_draft,
             user_id=int(current_user.id),
@@ -2170,6 +2182,7 @@ async def upsert_mail_draft_multipart(
             forward_message_id=_normalize_text(forward_message_id),
             retain_existing_attachments=retain_tokens,
             attachments=attachments,
+            forward_attachment_refs=forward_attachment_refs,
         )
     except MailPayloadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc

@@ -73,6 +73,22 @@ describe('useChatSessionPersistenceEffects helpers', () => {
     ]);
   });
 
+  it('buildActiveThreadCachePayload keeps only the tail and flags it as older', () => {
+    const messages = Array.from({ length: 400 }, (_, index) => ({ id: `m${index + 1}` }));
+    const payload = buildActiveThreadCachePayload({
+      messages,
+      messagesHasMore: false,
+      messagesHasNewer: false,
+    });
+
+    expect(payload.items).toHaveLength(300);
+    expect(payload.items[0].id).toBe('m101');
+    expect(payload.items.at(-1).id).toBe('m400');
+    expect(payload.has_more).toBe(true);
+    expect(payload.has_older).toBe(true);
+    expect(payload.has_newer).toBe(false);
+  });
+
   it('resolveLastConversationSessionStorageAction chooses set or remove', () => {
     expect(resolveLastConversationSessionStorageAction(' c-42 ')).toEqual({
       action: 'set',

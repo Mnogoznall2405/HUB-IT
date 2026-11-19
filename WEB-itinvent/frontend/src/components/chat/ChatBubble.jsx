@@ -1,5 +1,5 @@
 import { keyframes } from '@emotion/react';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -42,7 +42,9 @@ import {
   getChatBubbleBodyLineHeight,
   resolveChatBubbleLinkColors,
 } from './chatUiTokens';
-import MarkdownRenderer from '../hub/MarkdownRenderer';
+// Markdown (~53 kB gzip with unified/micromark) is only needed when a chat page is
+// open; the plain-text fallback shows raw text for the first paint until it loads.
+const MarkdownRenderer = lazy(() => import('../hub/MarkdownRenderer'));
 import {
   detectChatBodyFormat,
   formatFullDate,
@@ -941,7 +943,9 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
         },
       }}
     >
-      <MarkdownRenderer value={value} variant="chat" linkColor={linkColor} />
+      <Suspense fallback={<Box component="span" sx={{ whiteSpace: 'pre-wrap' }}>{value}</Box>}>
+        <MarkdownRenderer value={value} variant="chat" linkColor={linkColor} />
+      </Suspense>
     </Box>
   );
 });

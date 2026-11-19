@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,11 @@ _sched_cache: Dict[str, Any] = {"expires": 0.0, "by_branch": {}}
 ZONE_WORK = "work"
 ZONE_LUNCH = "lunch"
 ZONE_OFF = "off"
+
+# Agent timestamps are wall-clock digits of the server site (Tyumen, UTC+05,
+# no DST). Anchor conversions to it explicitly so results do not depend on
+# the OS timezone the backend happens to run under.
+TYUMEN_TZ = timezone(timedelta(hours=5))
 
 
 def _norm_branch(value: Any) -> str:
@@ -69,7 +74,7 @@ def bucket_zone(schedule: Optional[Dict[str, Any]], bucket_start: datetime) -> s
     """Classify a 5-minute bucket (by midpoint) into work / lunch / off."""
     if not schedule:
         return ZONE_WORK
-    local = bucket_start + timedelta(minutes=int(schedule.get("tz_offset_minutes") or 0))
+    local = bucket_start.astimezone(TYUMEN_TZ) + timedelta(minutes=int(schedule.get("tz_offset_minutes") or 0))
     mask = int(schedule.get("workdays_mask") if schedule.get("workdays_mask") is not None else 31)
     if not ((mask >> local.weekday()) & 1):
         return ZONE_OFF
@@ -161,6 +166,7 @@ def apply_to_activity_payload(schedule: Optional[Dict[str, Any]], payload: Dict[
         return
     buckets = payload.get("buckets") or []
     totals = {"passive": 0.0, "away": 0.0, "locked": 0.0, "break": 0.0, "offshift": 0.0}
+    active_offshift = 0.0
     for bucket in buckets:
         try:
             start = datetime.fromisoformat(str(bucket.get("bucket_start") or ""))
@@ -182,6 +188,10 @@ def apply_to_activity_payload(schedule: Optional[Dict[str, Any]], payload: Dict[
         bucket["locked_sec"] = round(parts["locked"], 1)
         bucket["break_sec"] = round(parts["break"], 1)
         bucket["offshift_sec"] = round(parts["offshift"], 1)
+        if parts["zone"] == ZONE_OFF:
+            # Active seconds stay active even outside the shift — track the
+            # off-shift share separately so the UI can report it honestly.
+            active_offshift += float(bucket.get("active_sec") or 0.0)
         for key in totals:
             totals[key] += parts[key]
     summary = payload.get("summary")
@@ -191,6 +201,7 @@ def apply_to_activity_payload(schedule: Optional[Dict[str, Any]], payload: Dict[
         summary["locked_sec"] = round(totals["locked"], 1)
         summary["break_sec"] = round(totals["break"], 1)
         summary["offshift_sec"] = round(totals["offshift"], 1)
+        summary["active_offshift_sec"] = round(active_offshift, 1)
         active = float(summary.get("active_sec") or 0.0)
         awake = active + totals["passive"] + totals["away"]
         summary["activity_pct"] = round(active / awake * 100.0, 1) if awake > 0 else None

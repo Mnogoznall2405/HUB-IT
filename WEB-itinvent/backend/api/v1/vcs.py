@@ -477,7 +477,7 @@ async def update_vcs_config(
 @router.post("/computers/{computer_id}/launch-token", response_model=VcsLaunchToken)
 async def create_vcs_launch_token(
     computer_id: str,
-    current_user=Depends(require_permission(PERM_VCS_READ))
+    current_user=Depends(require_permission(PERM_VCS_MANAGE))
 ):
     """Create a short-lived one-time token for launching a VCS terminal."""
     computer = await run_in_threadpool(_find_vcs_computer, computer_id)

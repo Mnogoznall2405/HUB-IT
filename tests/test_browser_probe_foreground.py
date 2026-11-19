@@ -64,7 +64,7 @@ def clock(monkeypatch):
 def test_active_user_tab_change_reports_dwell_and_zero_idle(monkeypatch, clock):
     fg = _Foreground(_snap("Tab A", url="https://a.example"))
     monkeypatch.setattr(foreground, "get_foreground_browser", fg)
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
     tracker = foreground.ForegroundTracker()
 
     # Poll every 3 s (the production interval) — deltas above the blind-gap
@@ -89,7 +89,7 @@ def test_idle_beyond_threshold_moves_to_idle_not_dwell(monkeypatch, clock):
     fg = _Foreground(_snap("Tab", url="https://a.example"))
     monkeypatch.setattr(foreground, "get_foreground_browser", fg)
     idle = {"sec": 0.0}
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: idle["sec"])
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: idle["sec"])
     tracker = foreground.ForegroundTracker()
 
     # Same tab for 10 min, poll every 3 s; last input was at t=0 so idle
@@ -116,7 +116,7 @@ def test_periodic_flush_emits_minute_segments_with_running_session(monkeypatch, 
         foreground, "get_foreground_browser",
         _Foreground(_snap("Tab", url="https://a.example")),
     )
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
     # Production default is 300 s; minute segments keep the assertion readable.
     monkeypatch.setattr(foreground, "FLUSH_SEC", 60.0)
     tracker = foreground.ForegroundTracker()
@@ -143,7 +143,7 @@ def test_pure_idle_segment_flushes_on_the_slower_idle_interval(monkeypatch, cloc
     )
     # Always past the idle threshold: the machine is unattended (screen-locked
     # user, forgotten tab). Keeps the production FLUSH_SEC/IDLE_FLUSH_SEC.
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 100_000.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 100_000.0)
     tracker = foreground.ForegroundTracker()
 
     events = []
@@ -164,7 +164,7 @@ def test_pure_idle_segment_flushes_on_the_slower_idle_interval(monkeypatch, cloc
 def test_blind_gap_closes_at_last_observation_and_excludes_the_gap(monkeypatch, clock):
     fg = _Foreground(_snap("Tab", url="https://a.example"))
     monkeypatch.setattr(foreground, "get_foreground_browser", fg)
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
     tracker = foreground.ForegroundTracker()
 
     clock.t = 0.0
@@ -189,7 +189,7 @@ def test_blind_gap_closes_at_last_observation_and_excludes_the_gap(monkeypatch, 
 def test_late_omnibox_url_does_not_split_segment(monkeypatch, clock):
     fg = _Foreground(_snap("Tab", url=""))
     monkeypatch.setattr(foreground, "get_foreground_browser", fg)
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
     tracker = foreground.ForegroundTracker()
 
     for tick in range(0, 30, 3):
@@ -213,7 +213,7 @@ def test_late_omnibox_url_does_not_split_segment(monkeypatch, clock):
 def test_first_poll_emits_nothing(monkeypatch, clock):
     fg = _Foreground(_snap("Tab", url="https://a.example"))
     monkeypatch.setattr(foreground, "get_foreground_browser", fg)
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
     tracker = foreground.ForegroundTracker()
 
     clock.t = 10_000.0
@@ -226,7 +226,7 @@ def test_first_poll_emits_nothing(monkeypatch, clock):
 def test_zero_interval_close_emits_no_event(monkeypatch, clock):
     fg = _Foreground(_snap("Tab", url="https://a.example"))
     monkeypatch.setattr(foreground, "get_foreground_browser", fg)
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
     tracker = foreground.ForegroundTracker()
 
     clock.t = 0.0
@@ -240,7 +240,7 @@ def test_zero_interval_close_emits_no_event(monkeypatch, clock):
 def test_flush_returns_open_segment_once_then_none(monkeypatch, clock):
     fg = _Foreground(_snap("Tab", url="https://a.example"))
     monkeypatch.setattr(foreground, "get_foreground_browser", fg)
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
     tracker = foreground.ForegroundTracker()
 
     for tick in range(0, 31, 3):
@@ -256,6 +256,107 @@ def test_flush_returns_open_segment_once_then_none(monkeypatch, clock):
 
 
 def test_flush_without_segment_returns_none(monkeypatch, clock):
-    monkeypatch.setattr(foreground, "get_idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
     tracker = foreground.ForegroundTracker()
     assert tracker.flush() is None
+
+def test_sensor_failure_closes_focus_at_last_observation(monkeypatch, clock):
+    fg = _Foreground(_snap("Tab", url="https://a.example"))
+    monkeypatch.setattr(foreground, "get_foreground_browser", fg)
+    idle = {"sec": 0.0}
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: idle["sec"])
+    tracker = foreground.ForegroundTracker()
+
+    clock.t = 0.0
+    tracker.poll()
+    clock.t = 3.0
+    _, closed = tracker.poll()
+    assert closed is None
+
+    # Sensor read fails: the interval is unknown — close at the last real
+    # observation (t=3) instead of treating it as active dwell.
+    idle["sec"] = None
+    clock.t = 6.0
+    _, closed = tracker.poll()
+    assert closed is not None
+    assert closed["dwell_sec"] == pytest.approx(3.0)
+    assert closed["ended_at"] == pytest.approx(WALL0 + 3.0)
+
+    # The sensor recovers: a fresh segment/session starts from the recovery
+    # poll — the unknown interval must not be bridged into either counter.
+    idle["sec"] = 0.0
+    clock.t = 9.0
+    _, closed = tracker.poll()
+    assert closed is None
+    closed = tracker.flush()
+    assert closed is not None
+    assert closed["dwell_sec"] == pytest.approx(3.0)
+    assert closed["session_dwell_sec"] == pytest.approx(3.0)
+
+
+def test_omnibox_cache_refreshes_stale_url_after_30s(monkeypatch, clock):
+    urls = iter(("https://old.example", "https://new.example"))
+    calls = []
+    monkeypatch.setattr(
+        foreground, "read_omnibox_url",
+        lambda _hwnd: calls.append(clock.t) or next(urls),
+    )
+    foreground._omnibox_cache.clear()
+
+    assert foreground._omnibox_url_cached(1, "Tab") == "https://old.example"
+    clock.t = 3.0
+    assert foreground._omnibox_url_cached(1, "Tab") == "https://old.example"
+    clock.t = 29.0
+    assert foreground._omnibox_url_cached(1, "Tab") == "https://old.example"
+    assert calls == [0.0]  # positive URL: at most one UIA read per 30 s
+
+    clock.t = 30.0
+    assert foreground._omnibox_url_cached(1, "Tab") == "https://new.example"
+    assert calls == [0.0, 30.0]
+    clock.t = 31.0
+    assert foreground._omnibox_url_cached(1, "Tab") == "https://new.example"
+    assert calls == [0.0, 30.0]
+    foreground._omnibox_cache.clear()
+
+
+def test_same_title_spa_url_change_splits_segment_on_refresh(monkeypatch, clock):
+    fg = _Foreground(_snap("Same Title", url="https://old.example"))
+    monkeypatch.setattr(foreground, "get_foreground_browser", fg)
+    monkeypatch.setattr(foreground, "get_idle_seconds", lambda **_kwargs: 0.0)
+    tracker = foreground.ForegroundTracker()
+
+    clock.t = 0.0
+    tracker.poll()
+    clock.t = 3.0
+    _, closed = tracker.poll()
+    assert closed is None
+    clock.t = 6.0
+    _, closed = tracker.poll()
+    assert closed is None  # still the cached URL — no fabricated extra event
+
+    # The refresh exposes a same-title SPA navigation: the old segment closes
+    # at the observation point and a new one opens for the new URL.
+    fg.snap = _snap("Same Title", url="https://new.example")
+    clock.t = 9.0
+    _, closed = tracker.poll()
+    assert closed is not None
+    assert closed["url"] == "https://old.example"
+    assert closed["dwell_sec"] == pytest.approx(9.0)
+
+    clock.t = 12.0
+    tracker.poll()
+    closed = tracker.flush()
+    assert closed is not None
+    assert closed["url"] == "https://new.example"
+    assert closed["dwell_sec"] == pytest.approx(3.0)
+
+
+def test_get_idle_seconds_native_failure_returns_on_error_default_zero(monkeypatch):
+    import ctypes
+
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        pytest.skip("GetLastInputInfo is Windows-only")
+    monkeypatch.setattr(windll.user32, "GetLastInputInfo", lambda *_: 0, raising=False)
+    assert foreground.get_idle_seconds(on_error=None) is None
+    assert foreground.get_idle_seconds() == 0.0

@@ -9,7 +9,7 @@ const clearMobileOfflineCacheMock = vi.fn();
 const logoutMock = vi.fn();
 const loginMock = vi.fn();
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/auth', () => ({
   authAPI: {
     getCurrentUser: (...args) => getCurrentUserMock(...args),
     logout: (...args) => logoutMock(...args),

@@ -932,7 +932,7 @@ describe('ChatBubble', () => {
     expect(screen.getByText('Forwarded copied text')).toBeInTheDocument();
   });
 
-  it('renders markdown message bodies with markdown elements', () => {
+  it('renders markdown message bodies with markdown elements', async () => {
     const message = {
       id: 'msg-markdown',
       kind: 'text',
@@ -955,7 +955,7 @@ describe('ChatBubble', () => {
       />,
     );
 
-    expect(screen.getByRole('heading', { name: 'Markdown Title' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Markdown Title' }, { timeout: 10000 })).toBeInTheDocument();
     expect(screen.getByRole('table')).toBeInTheDocument();
     expect(screen.getByTestId('markdown-table-scroll')).toBeInTheDocument();
     expect(screen.getByRole('table').closest('[data-chat-table-layout="wide"]')).not.toBeNull();
@@ -1012,7 +1012,7 @@ describe('ChatBubble', () => {
     expect(document.querySelector('[data-chat-message-body="true"] ol')).toBeNull();
   });
 
-  it('renders explicit markdown ordered and unordered lists with visible markers', () => {
+  it('renders explicit markdown ordered and unordered lists with visible markers', async () => {
     renderWithTheme(
       <ChatBubble
         conversationKind="direct"
@@ -1034,6 +1034,7 @@ describe('ChatBubble', () => {
       />,
     );
 
+    await screen.findByText('First item', {}, { timeout: 10000 });
     const orderedList = document.querySelector('[data-testid="chat-markdown-body"] ol');
     const unorderedList = document.querySelector('[data-testid="chat-markdown-body"] ul');
     expect(orderedList).not.toBeNull();
@@ -1044,7 +1045,7 @@ describe('ChatBubble', () => {
     expect(screen.getByText('Bullet item')).toBeInTheDocument();
   });
 
-  it('renders forwarded markdown as markdown and keeps the preview attribution-only', () => {
+  it('renders forwarded markdown as markdown and keeps the preview attribution-only', async () => {
     renderWithTheme(
       <ChatBubble
         conversationKind="direct"
@@ -1076,7 +1077,7 @@ describe('ChatBubble', () => {
     expect(screen.getByTestId('chat-forward-preview')).toHaveTextContent('Переслано от AI');
     expect(screen.getByTestId('chat-forward-preview')).not.toHaveTextContent('Forwarded Title');
     expect(screen.getByTestId('chat-forward-preview')).not.toHaveTextContent('## Forwarded Title');
-    expect(screen.getByRole('heading', { name: 'Forwarded Title' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Forwarded Title' }, { timeout: 10000 })).toBeInTheDocument();
     expect(screen.getByRole('table')).toBeInTheDocument();
     expect(screen.getByTestId('markdown-table-scroll')).toBeInTheDocument();
   });
@@ -2257,7 +2258,7 @@ describe('ChatThread composer', () => {
       />,
     );
 
-    const panel = screen.getByTestId('chat-desktop-emoji-panel');
+    const panel = await screen.findByTestId('chat-desktop-emoji-panel');
     expect(panel).toHaveAttribute('role', 'dialog');
     expect(panel).toHaveAttribute('data-layout', 'popover');
     expect(panel).toHaveStyle({ position: 'absolute' });

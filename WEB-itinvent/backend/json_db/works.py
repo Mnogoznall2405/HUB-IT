@@ -299,6 +299,7 @@ class WorksManager:
         inv_no: Optional[str] = None,
         cartridge_color: Optional[str] = None,
         cartridge_model: Optional[str] = None,
+        db_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get cartridge replacement history for specific equipment with optional color filter."""
         try:
@@ -312,7 +313,8 @@ class WorksManager:
             normalized_model = str(cartridge_model or "").strip().lower()
             matches = [
                 rec for rec in data
-                if self._record_matches_serial(rec, serial_number, hw_serial_number, inv_no) and (
+                if self._record_matches_db_scope(rec, db_name)
+                and self._record_matches_serial(rec, serial_number, hw_serial_number, inv_no) and (
                     not normalized_color or str(rec.get('cartridge_color') or '').strip().lower() == normalized_color
                 ) and (
                     not normalized_model or str(rec.get('cartridge_model') or '').strip().lower() == normalized_model
@@ -988,6 +990,19 @@ class WorksManager:
         return False
 
     @staticmethod
+    def _record_matches_db_scope(record: Dict[str, Any], db_name: Optional[str]) -> bool:
+        """Check the record's database tag against the request scope.
+
+        Mirrors the cleaning-history rule: a record tagged with a different
+        database is excluded, while untagged legacy rows stay visible.
+        """
+        target_db = str(db_name or "").strip().casefold()
+        if not target_db:
+            return True
+        record_db = str(record.get("db_name") or "").strip().casefold()
+        return not record_db or record_db == target_db
+
+    @staticmethod
     def _history_from_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Build unified history summary from a list of records."""
         if not records:
@@ -1034,6 +1049,7 @@ class WorksManager:
         self,
         serial_number: str,
         hw_serial_number: Optional[str] = None,
+        db_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get battery replacement history for specific equipment."""
         try:
@@ -1042,7 +1058,8 @@ class WorksManager:
                 return self._history_from_records([])
             matches = [
                 rec for rec in data
-                if self._record_matches_serial(rec, serial_number, hw_serial_number)
+                if self._record_matches_db_scope(rec, db_name)
+                and self._record_matches_serial(rec, serial_number, hw_serial_number)
             ]
             return self._history_from_records(matches)
         except Exception as e:
@@ -1055,6 +1072,7 @@ class WorksManager:
         hw_serial_number: Optional[str] = None,
         component_type: Optional[str] = None,
         component_name: Optional[str] = None,
+        db_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get component replacement history for specific equipment and optional component filter."""
         try:
@@ -1076,7 +1094,9 @@ class WorksManager:
 
             matches = [
                 rec for rec in data
-                if self._record_matches_serial(rec, serial_number, hw_serial_number) and component_matches(rec)
+                if self._record_matches_db_scope(rec, db_name)
+                and self._record_matches_serial(rec, serial_number, hw_serial_number)
+                and component_matches(rec)
             ]
             result = self._history_from_records(matches)
             result.update({'component_type': component_type, 'component_name': component_name})

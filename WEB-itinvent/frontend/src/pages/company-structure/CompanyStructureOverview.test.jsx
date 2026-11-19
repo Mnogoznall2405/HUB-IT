@@ -3,10 +3,20 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 import CompanyStructureOverview, { OverviewNode } from './CompanyStructureOverview';
 
+const { elkLayoutSpy, reactFlowMocks } = vi.hoisted(() => ({
+  elkLayoutSpy: vi.fn(() => new Promise(() => {})),
+  reactFlowMocks: {
+    fitView: vi.fn(),
+    getNode: vi.fn(() => null),
+    getViewport: vi.fn(() => ({ x: 0, y: 0, zoom: 1 })),
+    setViewport: vi.fn(),
+  },
+}));
+
 vi.mock('elkjs/lib/elk.bundled.js', () => ({
   default: class ElkMock {
-    layout() {
-      return new Promise(() => {});
+    layout(...args) {
+      return elkLayoutSpy(...args);
     }
   },
 }));
@@ -23,12 +33,7 @@ vi.mock('@xyflow/react', () => ({
     </div>
   ),
   ReactFlowProvider: ({ children }) => children,
-  useReactFlow: () => ({
-    fitView: vi.fn(),
-    getNode: vi.fn(() => null),
-    getViewport: vi.fn(() => ({ x: 0, y: 0, zoom: 1 })),
-    setViewport: vi.fn(),
-  }),
+  useReactFlow: () => reactFlowMocks,
 }));
 
 describe('CompanyStructureOverview theme', () => {
@@ -58,6 +63,42 @@ describe('CompanyStructureOverview theme', () => {
     );
 
     expect(screen.getByTestId('company-structure-flow')).toHaveAttribute('data-color-mode', 'dark');
+  });
+
+  it('does not re-run elk.layout when callbacks or the selection change identity', () => {
+    const tree = [{
+      id: 'root',
+      node_type: 'root',
+      title: 'Генеральный директор',
+      children: [{
+        id: 'admin',
+        node_type: 'block',
+        title: 'Административный блок',
+        children: [],
+      }],
+    }];
+
+    const renderOverview = (selectedId) => (
+      <ThemeProvider theme={createTheme({ palette: { mode: 'dark' } })}>
+        <CompanyStructureOverview
+          tree={tree}
+          blockId="admin"
+          selectedId={selectedId}
+          onFocus={vi.fn()}
+          onRoot={vi.fn()}
+          onPeople={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    elkLayoutSpy.mockClear();
+    const { rerender } = render(renderOverview('admin'));
+    const initialCalls = elkLayoutSpy.mock.calls.length;
+
+    rerender(renderOverview('root'));
+    rerender(renderOverview('root'));
+
+    expect(elkLayoutSpy).toHaveBeenCalledTimes(initialCalls);
   });
 
   it('does not show the node type inside an overview card', () => {

@@ -13,6 +13,12 @@ const STORE = 'jobs';
 // Пауза перед автоповтором после обрыва (сам поток уже ждал по 1–30 с между попытками).
 export const AUTO_RETRY_MS = 30_000;
 
+// Отказавшее задание хранит blob ради ручного повтора — без срока и лимита такие снимки
+// копились бы в IndexedDB вечно. При следующем открытии вкладки протухшие и лишние
+// FAILED-задания выбрасываются вместе с файлом.
+export const FAILED_JOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const MAX_FAILED_JOBS = 20;
+
 export const STATUS = {
   QUEUED: 'queued',
   UPLOADING: 'uploading',
@@ -231,6 +237,7 @@ export function createPhotoUploadQueue({
       job.attempts = (job.attempts || 0) + 1;
       // Отказ сервера повтором не лечится; обрыв связи — лечится сам.
       job.status = isPermanentFailure(error) ? STATUS.FAILED : STATUS.WAITING;
+      job.failedAt = job.status === STATUS.FAILED ? now() : 0;
       job.progress = 0;
       await persist(job);
       emit();
@@ -264,12 +271,24 @@ export function createPhotoUploadQueue({
       restored = (async () => {
         let rows = [];
         try { rows = await store.getAll(); } catch { rows = []; }
+        // FE-067: FAILED-задания держат blob только ограниченное время и в ограниченном
+        // числе — устаревшие и вытесненные удаляются из хранилища при восстановлении.
+        const failedByAgeDesc = rows
+          .filter((row) => row?.status === STATUS.FAILED)
+          .sort((a, b) => (b.failedAt || b.createdAt || 0) - (a.failedAt || a.createdAt || 0));
+        const evictedIds = new Set(
+          failedByAgeDesc
+            .filter((row, index) => index >= MAX_FAILED_JOBS
+              || now() - (row.failedAt || row.createdAt || 0) > FAILED_JOB_TTL_MS)
+            .map((row) => row.id),
+        );
         rows.forEach((row) => {
-          if (!row?.id || !row.blob || jobs.has(row.id)) return;
+          if (!row?.id || !row.blob || jobs.has(row.id) || evictedIds.has(row.id)) return;
           // Закрытая вкладка оставила «загрузку» без исхода: сервер помнит принятые куски.
           const status = row.status === STATUS.FAILED ? STATUS.FAILED : STATUS.QUEUED;
           jobs.set(row.id, { ...row, status, progress: 0 });
         });
+        evictedIds.forEach((id) => { store.remove(id).catch(() => {}); });
         emit();
       })();
     }

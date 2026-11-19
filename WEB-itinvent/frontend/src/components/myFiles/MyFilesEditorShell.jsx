@@ -121,20 +121,21 @@ const MyFilesEditorShell = forwardRef(function MyFilesEditorShell({
           canRename={capabilities?.scope === scope && capabilities.canRename && auth?.hasPermission?.('my_files.write')}
           canManageAccess={capabilities?.scope === scope && capabilities.canManageAccess && auth?.hasPermission?.('my_files.share')}
           disabled={historyActive || editorStatus.offline || ['blocked', 'error', 'loading'].includes(editorStatus.phase)} onRenamed={handleTitle} />
-        {isMobile ? null : (
-          <Tooltip title="Передача правок серверу редактора ещё не означает сохранение файла в HUB. HUB получает файл после завершения совместной сессии.">
-            <Chip
-              size="small"
-              variant="outlined"
-              label={saveLabel}
-              color={editorStatus.offline || editorStatus.save === 'dirty' ? 'warning' : editorStatus.save === 'submitted' ? 'info' : 'default'}
-              data-testid="my-files-office-save-state"
-              role="status"
-              aria-live="polite"
-              sx={{ flexShrink: 0 }}
-            />
-          </Tooltip>
-        )}
+        <Tooltip title={isMobile ? saveLabel : 'Передача правок серверу редактора ещё не означает сохранение файла в HUB. HUB получает файл после завершения совместной сессии.'}>
+          <Chip
+            size="small"
+            variant="outlined"
+            label={isMobile ? (
+              <Box component="span" sx={{ display: 'block', width: 8, height: 8, borderRadius: '50%', bgcolor: 'currentColor' }} />
+            ) : saveLabel}
+            aria-label={saveLabel}
+            color={editorStatus.offline || editorStatus.save === 'dirty' ? 'warning' : editorStatus.save === 'submitted' ? 'info' : 'default'}
+            data-testid="my-files-office-save-state"
+            role="status"
+            aria-live="polite"
+            sx={{ flexShrink: 0, ...(isMobile ? { minWidth: 30, '& .MuiChip-label': { px: 0.6 } } : {}) }}
+          />
+        </Tooltip>
         {onDownload ? (
           <Tooltip title="Скачать копию, чтобы работать у себя. Правки в копии не попадут в общий файл: общий файл редактируется только онлайн">
             <Button

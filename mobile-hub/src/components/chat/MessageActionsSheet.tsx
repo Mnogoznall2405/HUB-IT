@@ -211,7 +211,7 @@ export function MessageActionsSheet({
           </View>
         ) : null}
         <View style={styles.cardScroll}>
-          {message.local_status && onRetry ? (
+          {message.local_status && message.local_status !== 'sending' && onRetry ? (
             <ActionButton label="Повторить" icon="refresh" onPress={() => run(onRetry)} />
           ) : null}
           {message.local_status && message.local_status !== 'sending' && onDiscardPending ? (

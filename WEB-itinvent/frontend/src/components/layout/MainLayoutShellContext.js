@@ -20,6 +20,8 @@ export const MainLayoutShellContext = createContext({
   onDatabaseChange: () => {},
 });
 
+export const MainLayoutRouteContext = createContext(null);
+
 export function useMainLayoutShell() {
   return useContext(MainLayoutShellContext);
 }

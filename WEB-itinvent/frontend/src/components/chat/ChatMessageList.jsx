@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useMemo, useState } from 'react';
+import { lazy, memo, Suspense, useEffect, useRef, useMemo, useState } from 'react';
 import {
   Avatar,
   Box,
@@ -19,7 +19,7 @@ import { motion } from 'framer-motion';
 
 import { MemoChatBubble } from './ChatBubble';
 import { AiConversationAvatar } from './ChatCommon';
-import MarkdownRenderer from '../hub/MarkdownRenderer';
+const MarkdownRenderer = lazy(() => import('../hub/MarkdownRenderer'));
 import ChatTypingIndicator from './ChatTypingIndicator';
 import { AI_RUN_STALE_AFTER_MS, AI_STAGE_LABELS } from './ChatThreadHeader';
 import { CHAT_FONT_FAMILY } from './chatUiTokens';
@@ -346,7 +346,9 @@ function AiRunFeedStatus({ aiStatus, messages = [], theme, ui, compactMobile, on
       }}
     >
       {/* Тот же рендер, что у итогового сообщения: без сырых **, ## и | во время набора. */}
-      <MarkdownRenderer value={partialText} variant="chat" linkColor={ui.bubbleOtherLinkText || accent} />
+      <Suspense fallback={<Box component="span" sx={{ whiteSpace: 'pre-wrap' }}>{partialText}</Box>}>
+        <MarkdownRenderer value={partialText} variant="chat" linkColor={ui.bubbleOtherLinkText || accent} />
+      </Suspense>
     </Box>
   );
 

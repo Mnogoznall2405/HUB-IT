@@ -235,6 +235,20 @@ function StatisticsContent() {
   }, [tab, periodDays, currentDatabase?.id]);
 
   useEffect(() => {
+    // statistics.read revoked while the screen is open: wipe the loaded
+    // payload and close sheets instead of leaving stale data visible.
+    if (canView) return;
+    setPayloads({});
+    setError('');
+    setLoading(false);
+    setRefreshing(false);
+    setSnapshotAt(null);
+    setDbPickerOpen(false);
+    setDbSwitching(false);
+    setRemainingBranch(null);
+  }, [canView]);
+
+  useEffect(() => {
     if (!canView || !currentDatabase) return;
     if (offlineMode) {
       generationRef.current += 1;
@@ -430,6 +444,8 @@ function StatisticsContent() {
         </Pressable>
       )}
     >
+      {canView ? (
+        <>
       {offlineMode ? (
         <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>
           {snapshotAt
@@ -683,6 +699,8 @@ function StatisticsContent() {
               </View>
             ))}
           </SectionCard>
+        </>
+      ) : null}
         </>
       ) : null}
 

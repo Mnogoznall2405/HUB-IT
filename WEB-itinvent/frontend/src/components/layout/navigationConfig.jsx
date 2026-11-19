@@ -51,7 +51,7 @@ export const navigationItems = [
   { path: '/it/objects', label: 'Объекты ИТ', shortLabel: 'Объекты ИТ', icon: <ApartmentOutlinedIcon />, permission: 'it_objects.read', group: 'it' },
   { path: '/address-book', label: 'Адресная книга', shortLabel: 'Адреса', icon: <ContactPhoneIcon />, permission: 'address_book.read', group: 'tools' },
   { path: '/company-structure', label: 'Структура компании', shortLabel: 'Структура', icon: <AccountTreeOutlinedIcon />, permission: 'company_structure.read', group: 'tools' },
-  { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read', group: 'tools' },
+  { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: <VpnKeyOutlinedIcon />, permissions: ['passwords.read', 'it_objects.read'], group: 'tools' },
   { path: '/groups-access', label: 'Доступ к папкам', shortLabel: 'Доступ', icon: <FolderSharedOutlinedIcon />, permission: 'groups_access.read', group: 'tools' },
   { path: '/my-files', label: 'Мой диск', shortLabel: 'Диск', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools' },
   { path: '/database', label: INVENTORY_SECTION_LABEL, shortLabel: 'Учёт', icon: <StorageIcon />, permission: 'database.read', group: 'tools' },
@@ -84,7 +84,8 @@ export function isAdminUser(user) {
 export function canAccessNavigationItem(item, { user, hasPermission }) {
   if (!item) return false;
   if (item.adminOnly) return isAdminUser(user);
-  return !item.permission || hasPermission(item.permission);
+  const required = Array.isArray(item.permissions) ? item.permissions : (item.permission ? [item.permission] : []);
+  return required.length === 0 || required.some((permission) => hasPermission(permission));
 }
 
 export function getVisibleNavigationItems({ user, hasPermission }) {

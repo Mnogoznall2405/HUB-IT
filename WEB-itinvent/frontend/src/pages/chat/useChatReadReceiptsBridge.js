@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 
 import { chatAPI } from '../../api/client';
 
@@ -15,6 +15,7 @@ export default function useChatReadReceiptsBridge({
   sidebarSearchActive,
   syncConversationUnreadState,
 }) {
+  const messageReadsRequestRef = useRef(0);
   const handleOptimisticRead = useCallback((readMessageId) => {
     const normalizedConversationId = String(activeConversationIdRef.current || '').trim();
     const normalizedReadMessageId = String(readMessageId || '').trim();
@@ -43,14 +44,17 @@ export default function useChatReadReceiptsBridge({
     setMessageReadsItems([]);
     setMessageReadsLoading(true);
     setMessageReadsOpen(true);
+    const requestId = ++messageReadsRequestRef.current;
     try {
       const data = await chatAPI.getMessageReads(messageId);
+      if (requestId !== messageReadsRequestRef.current) return;
       setMessageReadsItems(Array.isArray(data?.items) ? data.items : []);
     } catch (error) {
+      if (requestId !== messageReadsRequestRef.current) return;
       notifyApiError(error, 'Не удалось загрузить список прочитавших.');
       setMessageReadsOpen(false);
     } finally {
-      setMessageReadsLoading(false);
+      if (requestId === messageReadsRequestRef.current) setMessageReadsLoading(false);
     }
   }, [
     loadChatDialogsModule,

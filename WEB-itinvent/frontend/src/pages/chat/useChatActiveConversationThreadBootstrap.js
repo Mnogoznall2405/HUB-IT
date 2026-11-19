@@ -105,11 +105,14 @@ export default function useChatActiveConversationThreadBootstrap({
       applyLatestThreadPayload(activeConversationId, cachedThreadEntry.data);
       resolvePendingInitialAnchorFromPayload(activeConversationId, cachedThreadEntry.data);
       setMessagesLoading(false);
-      void loadThreadBootstrap(activeConversationId, {
-        silent: true,
-        reason: 'effect:activeConversation:revalidate',
-        force: true,
-      });
+      // Fresh SWR entries (<=30s) need no revalidation at all; stale ones go
+      // through getOrFetchSWR without force so in-flight dedup still applies.
+      if (!cachedThreadEntry.isFresh) {
+        void loadThreadBootstrap(activeConversationId, {
+          silent: true,
+          reason: 'effect:activeConversation:revalidate',
+        });
+      }
       setReplyMessage(null);
       setEditingMessage(null);
       resetMessageSearch();

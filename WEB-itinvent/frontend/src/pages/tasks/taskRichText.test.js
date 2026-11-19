@@ -32,4 +32,10 @@ describe('taskRichText', () => {
     expect(html).not.toContain('<a ');
     expect(html).toContain('javascript:alert(1)');
   });
+
+  it('does not let a quoted href break out of the anchor attribute', () => {
+    const html = markdownToEditorHtml('x [click](https://a"onmouseover="alert(1))');
+    expect(html).not.toContain('<a ');
+    expect(html).not.toMatch(/href="[^"]*"[^>]*onmouseover/);
+  });
 });

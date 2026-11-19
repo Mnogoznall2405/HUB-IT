@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // "Send later": text messages delivered by the server at the chosen time.
 // Needs CHAT_SCHEDULED_MESSAGES_ENABLED (GET /chat/config -> scheduled_messages_enabled).

@@ -1,4 +1,5 @@
 import { File, Paths } from 'expo-file-system';
+import { useEffect } from 'react';
 import { clearNativeFormDrafts } from '../../drafts/nativeFormDrafts';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -142,6 +143,25 @@ describe('NativeFeedInboxScreen', () => {
       fireEvent.press(view.getByTestId('feed-create'));
     });
     expect(router.push).toHaveBeenCalledWith('/(shell)/feed/editor');
+  });
+
+  it('refreshes the feed when the screen regains focus', async () => {
+    let focused = true;
+    const focus = jest.spyOn(require('expo-router') as typeof import('expo-router'), 'useFocusEffect')
+      .mockImplementation((callback: () => void | (() => void)) => {
+        useEffect(() => focused ? callback() : undefined, [callback, focused]);
+      });
+    try {
+      const view = await render(<NativeFeedInboxScreen />);
+      await waitFor(() => expect(feedApi.listFeedPosts).toHaveBeenCalledTimes(1));
+      focused = false;
+      await view.rerender(<NativeFeedInboxScreen />);
+      focused = true;
+      await view.rerender(<NativeFeedInboxScreen />);
+      await waitFor(() => expect(feedApi.listFeedPosts).toHaveBeenCalledTimes(2));
+    } finally {
+      focus.mockRestore();
+    }
   });
 
   it('opens the saved feed immediately offline without requesting the API', async () => {
@@ -679,6 +699,24 @@ it('late post A must not replace post B', async () => {
     await waitFor(() => expect(view.getByText('BODY-B')).toBeTruthy());
     await act(async () => {finishA({...samplePost,title:'TITLE-A',body:'BODY-A'});});
     expect(view.queryByText('BODY-B')).toBeTruthy();
+  });
+  it('refreshes the post when the screen regains focus', async () => {
+    let focused = true;
+    const focus = jest.spyOn(require('expo-router') as typeof import('expo-router'), 'useFocusEffect')
+      .mockImplementation((callback: () => void | (() => void)) => {
+        useEffect(() => focused ? callback() : undefined, [callback, focused]);
+      });
+    try {
+      const view = await render(<NativeFeedPostScreen />);
+      await waitFor(() => expect(feedApi.getFeedPost).toHaveBeenCalledTimes(1));
+      focused = false;
+      await view.rerender(<NativeFeedPostScreen />);
+      focused = true;
+      await view.rerender(<NativeFeedPostScreen />);
+      await waitFor(() => expect(feedApi.getFeedPost).toHaveBeenCalledTimes(2));
+    } finally {
+      focus.mockRestore();
+    }
   });
   it('loads a post with comments and sends a new comment', async () => {
     const view = await render(<NativeFeedPostScreen />);

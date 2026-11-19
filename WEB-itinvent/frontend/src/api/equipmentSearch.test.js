@@ -4,7 +4,7 @@ const { apiClientMock } = vi.hoisted(() => ({
   apiClientMock: { get: vi.fn() },
 }));
 
-vi.mock('./client', () => ({ default: apiClientMock }));
+vi.mock('./http', () => ({ default: apiClientMock }));
 
 import { equipmentSearchAPI } from './equipmentSearch';
 

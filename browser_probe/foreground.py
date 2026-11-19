@@ -104,11 +104,15 @@ _DOCUMENT_CLASS_NEEDLES = (
 _OMNIBOX_MAX_NODES = 1500
 _OMNIBOX_MAX_DEPTH = 16
 _OMNIBOX_MAX_ATTEMPTS = 2
+_OMNIBOX_REFRESH_SEC = 30.0
 _OMNIBOX_CACHE_LIMIT = 64
 
-# (hwnd, window_title) -> (url, attempts). One UIA read per foreground page,
-# plus a single retry — the omnibox fills in slightly after the window title.
-_omnibox_cache: "OrderedDict[tuple[int, str], tuple[str, int]]" = OrderedDict()
+# (hwnd, window_title) -> (url, attempts, read_at_monotonic). One UIA read per
+# foreground page, plus a bounded retry — the omnibox fills in slightly after
+# the window title. This is a window+title cache with a bounded refresh, not
+# an observation of the tab contents: a same-title SPA navigation becomes
+# visible at most _OMNIBOX_REFRESH_SEC later.
+_omnibox_cache: "OrderedDict[tuple[int, str], tuple[str, int, float]]" = OrderedDict()
 
 
 def _is_document_subtree(control_type: str, class_name: str) -> bool:
@@ -181,16 +185,20 @@ def read_omnibox_url(hwnd: int) -> str:
 
 def _omnibox_url_cached(hwnd: int, title: str) -> str:
     key = (int(hwnd), str(title or ""))
+    now = time.monotonic()
     cached = _omnibox_cache.get(key)
     if cached is not None:
-        url, attempts = cached
-        if url or attempts >= _OMNIBOX_MAX_ATTEMPTS:
-            _omnibox_cache.move_to_end(key)
-            return url
+        url, attempts, read_at = cached
+        if now - read_at < _OMNIBOX_REFRESH_SEC:
+            if url or attempts >= _OMNIBOX_MAX_ATTEMPTS:
+                _omnibox_cache.move_to_end(key)
+                return url
+        else:
+            attempts = 0
     else:
         attempts = 0
     url = read_omnibox_url(hwnd)
-    _omnibox_cache[key] = (url, attempts + 1)
+    _omnibox_cache[key] = (url, attempts + 1, now)
     _omnibox_cache.move_to_end(key)
     while len(_omnibox_cache) > _OMNIBOX_CACHE_LIMIT:
         _omnibox_cache.popitem(last=False)
@@ -279,8 +287,12 @@ IDLE_FLUSH_SEC = _env_float("ITINV_BROWSER_PROBE_IDLE_FLUSH_SEC", 900)
 FOCUS_EVENT_SCHEMA = 2
 
 
-def get_idle_seconds() -> float:
-    """Seconds since the last keyboard/mouse input (GetLastInputInfo)."""
+def get_idle_seconds(*, on_error: float | None = 0.0) -> float | None:
+    """Seconds since the last keyboard/mouse input (GetLastInputInfo).
+
+    A failed native read returns ``on_error`` — pass ``None`` to distinguish
+    a broken sensor from a user who just typed (idle 0.0).
+    """
     try:
         import ctypes
 
@@ -290,12 +302,12 @@ def get_idle_seconds() -> float:
         info = LASTINPUTINFO()
         info.cbSize = ctypes.sizeof(info)
         if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
-            return 0.0
+            return on_error
         tick = int(ctypes.windll.kernel32.GetTickCount()) & 0xFFFFFFFF
         idle_ms = (tick - int(info.dwTime)) & 0xFFFFFFFF
         return idle_ms / 1000.0
     except Exception:
-        return 0.0
+        return on_error
 
 
 class ForegroundTracker:
@@ -399,6 +411,11 @@ class ForegroundTracker:
             self._snapshot = snap
 
         blind_gap = prev_poll is not None and (now - prev_poll) > MAX_OBSERVED_GAP_SEC
+        idle = None
+        if self._key is not None and prev_poll is not None and not blind_gap:
+            idle = get_idle_seconds(on_error=None)
+            if idle is None:
+                blind_gap = True
 
         closed: dict[str, Any] | None = None
         if self._key is not None and self._started is not None and self._snapshot is not None:
@@ -408,7 +425,7 @@ class ForegroundTracker:
                 closed = self._close_segment(prev_poll, now)
             else:
                 if prev_poll is not None:
-                    self._accrue(now - prev_poll, get_idle_seconds())
+                    self._accrue(now - prev_poll, idle)
                 if self._key != new_key:
                     closed = self._close_segment(now, now)
                 else:

@@ -127,6 +127,10 @@ def _can_moderate_announcements(user: User) -> bool:
     return _is_admin_user(user) or _has_permission(user, PERM_ANNOUNCEMENTS_MODERATE)
 
 
+def _can_manage_all_tasks(user: User) -> bool:
+    return _is_admin_user(user) or _has_permission(user, PERM_TASKS_MANAGE_ALL)
+
+
 def _require_announcement_manager(user: User) -> None:
     if _has_permission(user, PERM_ANNOUNCEMENTS_WRITE) or _can_moderate_announcements(user):
         return
@@ -1013,7 +1017,7 @@ async def download_announcement_attachment(
         raise HTTPException(status_code=404, detail="Announcement attachment not found")
     file_path = Path(_normalize_text(item.get("file_abs_path")))
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Announcement attachment file is not available")
+        raise HTTPException(status_code=410, detail="Announcement attachment file is not available")
     return FileResponse(
         path=str(file_path),
         filename=_normalize_text(item.get("file_name"), file_path.name),
@@ -1272,7 +1276,7 @@ async def download_announcement_comment_attachment(
         raise HTTPException(status_code=404, detail="Comment attachment not found")
     file_path = Path(_normalize_text(item.get("file_abs_path")))
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Comment attachment file is not available")
+        raise HTTPException(status_code=410, detail="Comment attachment file is not available")
     return FileResponse(path=str(file_path), filename=_normalize_text(item.get("file_name"), file_path.name), media_type=_normalize_text(item.get("file_mime")) or "application/octet-stream")
 
 
@@ -1721,7 +1725,7 @@ async def get_task(
             hub_service.get_task,
             task_id,
             user_id=int(current_user.id),
-            is_admin=_can_moderate_announcements(current_user),
+            is_admin=_can_manage_all_tasks(current_user),
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -2162,7 +2166,7 @@ async def _get_authorized_task_attachment_preview(
             hub_service.get_task,
             task_id,
             user_id=int(current_user.id),
-            is_admin=_can_moderate_announcements(current_user),
+            is_admin=_can_manage_all_tasks(current_user),
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -2261,7 +2265,7 @@ async def download_task_report(
     try:
         task = await run_in_threadpool(hub_service.get_task, _normalize_text(item.get("task_id")),
             user_id=int(current_user.id),
-            is_admin=_can_moderate_announcements(current_user))
+            is_admin=_can_manage_all_tasks(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:

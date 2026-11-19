@@ -1,6 +1,7 @@
 import { peekPostAuthReturnPath } from './aboutOnboarding';
 
 export const DESKTOP_HANDOFF_PREFERENCE_KEY = 'hubit:desktop-handoff';
+export const DESKTOP_HANDOFF_SEEN_KEY = 'hubit:desktop-handoff-seen';
 export const DESKTOP_HANDOFF_SESSION_SKIP_KEY = 'hubit:desktop-handoff-skip';
 export const HUBIT_PROTOCOL_SCHEME = 'hubit';
 export const MAXIMUM_HANDOFF_ROUTE_LENGTH = 1024;
@@ -86,6 +87,26 @@ export function setDesktopHandoffPreference(
   }
   try {
     storage?.setItem(DESKTOP_HANDOFF_PREFERENCE_KEY, 'never');
+  } catch {
+    // Ignore quota/private-mode failures.
+  }
+}
+
+export function hasSeenDesktopHandoff(
+  storage = typeof window === 'undefined' ? null : window.localStorage,
+) {
+  try {
+    return storage?.getItem(DESKTOP_HANDOFF_SEEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function markDesktopHandoffSeen(
+  storage = typeof window === 'undefined' ? null : window.localStorage,
+) {
+  try {
+    storage?.setItem(DESKTOP_HANDOFF_SEEN_KEY, '1');
   } catch {
     // Ignore quota/private-mode failures.
   }
@@ -257,6 +278,7 @@ export function launchHubitProtocol(href, { click } = {}) {
 
 export function canOfferDesktopHandoff(options) {
   if (!isWindowsDesktopBrowser(options)) return false;
+  if (hasSeenDesktopHandoff(options?.localStorage)) return false;
   if (getDesktopHandoffPreference(options?.localStorage) === 'never') return false;
   if (isDesktopHandoffSkippedThisSession(options?.sessionStorage)) return false;
   return true;

@@ -6,7 +6,7 @@ const apiClientMocks = vi.hoisted(() => ({
   delete: vi.fn(),
 }));
 
-vi.mock('./client', () => ({ default: apiClientMocks }));
+vi.mock('./http', () => ({ default: apiClientMocks }));
 
 import { desktopPresenceAPI } from './desktopPresence';
 

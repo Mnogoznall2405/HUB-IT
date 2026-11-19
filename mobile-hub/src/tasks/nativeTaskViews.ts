@@ -1,16 +1,17 @@
 import type { HubTask, TaskListParams } from '../api/taskApi';
 
-export type NativeTaskPageMode = 'list' | 'board' | 'calendar' | 'gantt';
+export type NativeTaskPageMode = 'list' | 'board' | 'calendar' | 'gantt' | 'deadlines';
 
 export const NATIVE_TASK_PAGE_MODES: Array<{
   value: NativeTaskPageMode;
   label: string;
-  icon: 'format-list-bulleted' | 'view-column-outline' | 'calendar-month-outline' | 'chart-gantt';
+  icon: 'format-list-bulleted' | 'view-column-outline' | 'calendar-month-outline' | 'chart-gantt' | 'calendar-clock-outline';
 }> = [
   { value: 'list', label: 'Список', icon: 'format-list-bulleted' },
-  { value: 'board', label: 'Доска', icon: 'view-column-outline' },
+  { value: 'deadlines', label: 'Сроки', icon: 'calendar-clock-outline' },
   { value: 'calendar', label: 'Календарь', icon: 'calendar-month-outline' },
   { value: 'gantt', label: 'Гант', icon: 'chart-gantt' },
+  { value: 'board', label: 'Доска', icon: 'view-column-outline' },
 ];
 
 export const NATIVE_TASK_BOARD_COLUMNS = [
@@ -58,7 +59,7 @@ export function buildNativeTaskListParams({
   limit: number;
   offset: number;
 }): TaskListParams {
-  const deadlineMode = pageMode === 'calendar' || pageMode === 'gantt';
+  const deadlineMode = pageMode === 'calendar' || pageMode === 'gantt' || pageMode === 'deadlines';
   return {
     q: query.trim(),
     status,
@@ -236,6 +237,67 @@ export function buildNativeTaskCalendar(
   });
   days.forEach((day) => { day.items = sortTasksByDue(day.items); });
   return { days, monthStart, monthEnd, noDueItems: sortTasksByDue(noDueItems) };
+}
+
+export type NativeTaskDeadlineBucket = {
+  key: string;
+  label: string;
+  color: string;
+  items: HubTask[];
+  createDueAt: Date | '' | null;
+};
+
+const NATIVE_TASK_DEADLINE_BUCKETS = [
+  { key: 'overdue', label: 'Просрочены', color: '#ef4444' },
+  { key: 'today', label: 'На сегодня', color: '#84cc16' },
+  { key: 'this_week', label: 'На этой неделе', color: '#06b6d4' },
+  { key: 'next_week', label: 'На следующей неделе', color: '#22d3ee' },
+  { key: 'no_due', label: 'Без срока', color: '#94a3b8' },
+  { key: 'later', label: 'Больше двух недель', color: '#3b82f6' },
+  { key: 'done', label: 'Завершены', color: '#64748b' },
+] as const;
+
+function dateAtHour(value: Date, hour = 18): Date {
+  const result = startOfDay(value);
+  result.setHours(hour, 0, 0, 0);
+  return result;
+}
+
+export function buildNativeTaskDeadlines(tasks: HubTask[], now = new Date()): NativeTaskDeadlineBucket[] {
+  const todayStart = startOfDay(now);
+  const todayEnd = endOfDay(now);
+  const thisWeekEnd = endOfWeek(now);
+  const nextWeekEnd = endOfWeek(addDays(thisWeekEnd, 1));
+  const createDueByKey: Record<string, Date | '' | null> = {
+    overdue: null,
+    today: dateAtHour(todayStart),
+    this_week: dateAtHour(thisWeekEnd),
+    next_week: dateAtHour(nextWeekEnd),
+    no_due: '',
+    later: dateAtHour(addDays(nextWeekEnd, 1)),
+    done: null,
+  };
+  const grouped = new Map<string, HubTask[]>(NATIVE_TASK_DEADLINE_BUCKETS.map((bucket) => [bucket.key, []]));
+  (Array.isArray(tasks) ? tasks : []).forEach((task) => {
+    const dueAt = parseDate(task?.due_at);
+    const status = String(task?.status || '').trim().toLowerCase();
+    let bucketKey = 'no_due';
+    if (status === 'done') bucketKey = 'done';
+    else if (!dueAt) bucketKey = 'no_due';
+    else if (dueAt < todayStart) bucketKey = 'overdue';
+    else if (dueAt <= todayEnd) bucketKey = 'today';
+    else if (dueAt <= thisWeekEnd) bucketKey = 'this_week';
+    else if (dueAt <= nextWeekEnd) bucketKey = 'next_week';
+    else bucketKey = 'later';
+    grouped.get(bucketKey)?.push(task);
+  });
+  return NATIVE_TASK_DEADLINE_BUCKETS.map((bucket) => ({
+    key: bucket.key,
+    label: bucket.label,
+    color: bucket.color,
+    createDueAt: createDueByKey[bucket.key] ?? null,
+    items: sortTasksByDue(grouped.get(bucket.key) || []),
+  }));
 }
 
 export type NativeTaskGanttRow = {

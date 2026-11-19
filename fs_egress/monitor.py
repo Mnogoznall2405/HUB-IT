@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import ntpath
+import re
 import threading
 import time
 from collections import deque
@@ -25,28 +27,86 @@ logger = logging.getLogger("fs_egress.monitor")
 
 # Copy/download staging names: the real file arrives via the follow-up
 # move/rename event, so these are pure noise on egress channels (~30% of usb
-# volume in prod). Deletion channel is untouched — a deleted .tmp is still a
-# deletion signal there.
-_TEMP_EGRESS_SUFFIXES = (".tmp", ".crdownload", ".partial", ".part", ".download")
+# volume in prod). Since 1.4.22 the same list applies to the deletion channel
+# too — backup/lock churn (ОЗ_*.spr.bak/.lock, AutoSave) drowned real deletes.
+_TEMP_EGRESS_SUFFIXES = (
+    ".tmp", ".crdownload", ".partial", ".part", ".download",
+    ".bak", ".old", ".swp", ".swo", ".dmp", ".chk",
+    ".lock", ".autosave", ".dwl", ".dwl2", ".scadmodelcolor",
+)
 _TEMP_EGRESS_PREFIXES = ("~$", "~wrl", ".~lock.")
+_TEMP_EGRESS_EXACT_NAMES = {"thumbs.db", "desktop.ini", "ehthumbs.db", ".ds_store"}
+# SQLite journal sidecars and editor backups are suffix-based, not extensions:
+# "120.41.sqlitedb-wal", "черновик.pav~".
+_TEMP_NAME_ENDINGS = ("-wal", "-shm", "-journal", "~")
+# Lucene index segments (_2wn9.frq, _2wn3.cfs...) churn in app dirs under the
+# profile; the name shape avoids matching user files like "_notes.docx".
+_LUCENE_SEGMENT_RE = re.compile(
+    r"^_[0-9a-z]{3,}\."
+    r"(frq|fnm|tis|tii|prx|nrm|fdx|fdt|cfs|si|dvm|dvd|liv|tvx|tvf|del|vmx|lfd|kdd|kdi)$"
+)
+
+# Foreground app is captured as event context ("what was the user in"), not as
+# proof of which process performed the write — fs events don't carry a writer.
+# Cached briefly: watchdog bursts would otherwise hit psutil once per file.
+_FG_EXE_TTL_SEC = 2.0
+_fg_exe_lock = threading.Lock()
+_fg_exe_cache: Dict[str, object] = {"pid": 0, "name": "", "ts": 0.0}
+
+
+def _foreground_exe() -> str:
+    """Exe name of the foreground window ('1cv8.exe'), '' when unknown."""
+    try:
+        import win32gui
+        import win32process
+    except ImportError:
+        return ""
+    try:
+        hwnd = int(win32gui.GetForegroundWindow() or 0)
+        if not hwnd:
+            return ""
+        _tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+        pid = int(pid or 0)
+        if not pid:
+            return ""
+    except Exception:
+        return ""
+    now = time.monotonic()
+    with _fg_exe_lock:
+        if (
+            int(_fg_exe_cache.get("pid") or 0) == pid
+            and now - float(_fg_exe_cache.get("ts") or 0.0) < _FG_EXE_TTL_SEC
+        ):
+            return str(_fg_exe_cache.get("name") or "")
+        try:
+            import psutil
+
+            name = str(psutil.Process(pid).name() or "").strip().lower()
+        except Exception:
+            name = ""
+        _fg_exe_cache.update({"pid": pid, "name": name, "ts": now})
+        return name
 
 
 def _is_temp_copy_name(name: str) -> bool:
     n = str(name or "").lower()
     if not n:
         return False
-    if n.startswith(_TEMP_EGRESS_PREFIXES):
+    if n in _TEMP_EGRESS_EXACT_NAMES or n.startswith(_TEMP_EGRESS_PREFIXES):
         return True
-    return n.endswith(_TEMP_EGRESS_SUFFIXES)
+    if _LUCENE_SEGMENT_RE.match(n):
+        return True
+    return n.endswith(_TEMP_EGRESS_SUFFIXES) or n.endswith(_TEMP_NAME_ENDINGS)
 
 
 class _EgressHandler(FileSystemEventHandler):
     """USB / network: create+move = file left the PC."""
 
-    def __init__(self, monitor: "FsEgressMonitor", channel: str) -> None:
+    def __init__(self, monitor: "FsEgressMonitor", channel: str, root: Path) -> None:
         super().__init__()
         self.monitor = monitor
         self.channel = channel
+        self.root = ntpath.normcase(ntpath.normpath(str(root)))
 
     def on_created(self, event: FileSystemEvent) -> None:
         if event.is_directory:
@@ -56,9 +116,21 @@ class _EgressHandler(FileSystemEventHandler):
     def on_moved(self, event: FileSystemEvent) -> None:
         if event.is_directory:
             return
-        dest = getattr(event, "dest_path", None) or event.src_path
+        dest = str(getattr(event, "dest_path", "") or "")
         src = str(event.src_path)
-        self.monitor.offer(str(dest), channel=self.channel, kind="moved", src_path=src)
+        if not dest:
+            return
+        try:
+            if ntpath.commonpath((self.root, ntpath.normcase(ntpath.normpath(dest)))) != self.root:
+                return
+        except ValueError:
+            return
+        src_volume = ntpath.splitdrive(src)[0].lower()
+        dest_volume = ntpath.splitdrive(dest)[0].lower()
+        # In-place renames are not another transfer; temp-to-final is the completed copy.
+        if src_volume and src_volume == dest_volume and not _is_temp_copy_name(ntpath.basename(src)):
+            return
+        self.monitor.offer(dest, channel=self.channel, kind="moved", src_path=src)
 
 
 class _ProfileDeleteHandler(FileSystemEventHandler):
@@ -139,7 +211,7 @@ class FsEgressMonitor:
     ) -> None:
         if should_ignore_path(path):
             return
-        if channel in {"usb", "network"} and _is_temp_copy_name(Path(path).name):
+        if _is_temp_copy_name(Path(path).name):
             return
         now = time.monotonic()
         with self._lock:
@@ -150,31 +222,41 @@ class FsEgressMonitor:
                 return
             self._recent_ts.append(now)
             key = f"{channel}|{path.lower()}"
-            self._pending[key] = (now, channel, src_path, f"{kind}|{path}")
+            self._pending[key] = (
+                now,
+                channel,
+                src_path,
+                f"{kind}|{path}",
+                _foreground_exe(),
+            )
 
     def flush_due(self) -> int:
         now = time.monotonic()
-        due: list[tuple[str, str, str, str]] = []
+        due: list[tuple[str, str, str, str, str]] = []
         with self._lock:
-            for key, (ts, channel, src_path, payload) in list(self._pending.items()):
+            for key, entry in list(self._pending.items()):
+                ts, channel, src_path, payload, fg_exe = (tuple(entry) + ("",))[:5]
                 if (now - ts) >= self.debounce_sec:
                     kind, _, path = payload.partition("|")
-                    due.append((path, channel, src_path, kind))
+                    due.append((path, channel, src_path, kind, fg_exe))
                     del self._pending[key]
         count = 0
-        for path, channel, src_path, kind in due:
+        for path, channel, src_path, kind, fg_exe in due:
             resolved_channel = channel
             if channel not in {"usb", "network", "deleted", "telegram"}:
                 resolved_channel = classify_path(path)
                 if resolved_channel in {"local", "unknown"}:
                     continue
             try:
+                details = {"kind": kind or "fs_watch"}
+                if fg_exe:
+                    details["fg_exe"] = fg_exe
                 event = build_file_left(
                     channel=resolved_channel,
                     dest_path=path if resolved_channel != "deleted" else path,
                     src_path=src_path,
                     compute_hash=resolved_channel in {"usb", "network"},
-                    details={"kind": kind or "fs_watch"},
+                    details=details,
                 )
                 self.spool.enqueue(event.to_dict())
             except Exception as exc:
@@ -184,7 +266,10 @@ class FsEgressMonitor:
                 if attempts < 3:
                     self._flush_failures[key] = attempts
                     with self._lock:
-                        self._pending.setdefault(key, (time.monotonic(), channel, src_path, f"{kind}|{path}"))
+                        self._pending.setdefault(
+                            key,
+                            (time.monotonic(), channel, src_path, f"{kind}|{path}", fg_exe),
+                        )
                 else:
                     self._flush_failures.pop(key, None)
                     self._dropped += 1
@@ -228,7 +313,7 @@ class FsEgressMonitor:
                 if channel == "profile_delete":
                     handler: FileSystemEventHandler = _ProfileDeleteHandler(self)
                 else:
-                    handler = _EgressHandler(self, channel=channel)
+                    handler = _EgressHandler(self, channel=channel, root=path)
                 watch = self._observer.schedule(handler, str(path), recursive=True)
                 self._watched[key] = watch
                 logger.info("fs_egress watch %s (%s)", path, channel)

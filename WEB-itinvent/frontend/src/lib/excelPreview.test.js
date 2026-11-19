@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 import {
   columnLetter,
+  EXCEL_PREVIEW_MAX_BYTES,
+  EXCEL_PREVIEW_MAX_ROWS_PER_SHEET,
+  EXCEL_PREVIEW_MAX_SHEETS,
   parseExcelWorkbookFromBlob,
   sliceExcelRows,
 } from './excelPreview';
@@ -39,5 +42,37 @@ describe('excelPreview', () => {
     expect(parsed.sheets[0].rows[0]).toEqual(['Проект', 'Сумма']);
     expect(parsed.sheets[0].rows[1][0]).toBe('Арктика');
     expect(String(parsed.sheets[0].rows[1][1])).toBe('1000');
+    // HIGH-07: разбор не должен загрязнять Object.prototype.
+    expect({}.polluted).toBeUndefined();
+    expect(Object.prototype.polluted).toBeUndefined();
+  });
+
+  it('rejects workbooks above the byte limit before parsing', async () => {
+    const oversized = new Uint8Array(EXCEL_PREVIEW_MAX_BYTES + 1);
+    await expect(parseExcelWorkbookFromBlob(oversized)).rejects.toThrow(/size limit/i);
+  });
+
+  it('parses only the first sheets up to the sheet limit', async () => {
+    const workbook = XLSX.utils.book_new();
+    for (let i = 0; i < EXCEL_PREVIEW_MAX_SHEETS + 5; i += 1) {
+      const sheet = XLSX.utils.aoa_to_sheet([[`sheet-${i}`]]);
+      XLSX.utils.book_append_sheet(workbook, sheet, `S${i}`);
+    }
+    const bytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+    const parsed = await parseExcelWorkbookFromBlob(new Uint8Array(bytes));
+
+    expect(parsed.sheets).toHaveLength(EXCEL_PREVIEW_MAX_SHEETS);
+    expect(parsed.sheets.at(-1).name).toBe(`S${EXCEL_PREVIEW_MAX_SHEETS - 1}`);
+  });
+
+  it('caps parsed rows per sheet', async () => {
+    const workbook = XLSX.utils.book_new();
+    const aoa = [['id']];
+    for (let i = 0; i < EXCEL_PREVIEW_MAX_ROWS_PER_SHEET + 10; i += 1) aoa.push([i]);
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(aoa), 'Data');
+    const bytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+    const parsed = await parseExcelWorkbookFromBlob(new Uint8Array(bytes));
+
+    expect(parsed.sheets[0].rows.length).toBeLessThanOrEqual(EXCEL_PREVIEW_MAX_ROWS_PER_SHEET);
   });
 });

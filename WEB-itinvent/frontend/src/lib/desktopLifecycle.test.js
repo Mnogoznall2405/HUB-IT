@@ -9,7 +9,7 @@ const chatMocks = vi.hoisted(() => ({
   connect: vi.fn(),
 }));
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/auth', () => ({
   authAPI: {
     refresh: (...args) => authMocks.refresh(...args),
   },

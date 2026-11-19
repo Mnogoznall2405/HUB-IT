@@ -3,9 +3,7 @@
 Targets, in order:
   1. ``visit_dupes``    — browser visits duplicated by
      (computer_name, url, date_trunc('minute', visited_at)); keeps earliest created_at.
-  2. ``file_dupes``     — ``channel='deleted'`` file_left rows duplicated by
-     (computer_name, file_name); keeps earliest created_at.
-  3. ``noise_deleted``  — ``channel='deleted'`` rows whose file_name matches the
+  2. ``noise_deleted``  — ``channel='deleted'`` rows whose file_name matches the
      shared service-file regex (``dlp_categories.SERVICE_FILE_NAME_SQL_RE``).
 
 Deletes are batched (default 500) and runtime-bounded; dry-run is the default and
@@ -45,7 +43,7 @@ _STOP_ERROR = "error"
 _STOP_DISABLED = "disabled"
 _STOP_DRY_RUN = "dry_run"
 
-_TARGETS = ("visit_dupes", "file_dupes", "noise_deleted")
+_TARGETS = ("visit_dupes", "noise_deleted")
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -193,13 +191,6 @@ class DlpHistoryDedupeService:
                 (AppBrowserProbeVisit.computer_name, AppBrowserProbeVisit.url, bucket),
                 limit=limit,
             )
-        if target == "file_dupes":
-            return self._dup_ids_stmt(
-                AppFileLeftEvent,
-                (AppFileLeftEvent.computer_name, AppFileLeftEvent.file_name),
-                where=AppFileLeftEvent.channel == "deleted",
-                limit=limit,
-            )
         if target == "noise_deleted":
             return (
                 select(AppFileLeftEvent.id)
@@ -243,22 +234,6 @@ class DlpHistoryDedupeService:
                         AppBrowserProbeVisit.computer_name,
                         AppBrowserProbeVisit.url,
                         bucket,
-                    )
-                    .having(func.count() > 1)
-                    .subquery()
-                )
-                value = session.execute(
-                    select(func.coalesce(func.sum(grouped.c.cnt - 1), 0))
-                ).scalar()
-                return int(value or 0)
-            if target == "file_dupes":
-                grouped = (
-                    select(func.count().label("cnt"))
-                    .select_from(AppFileLeftEvent)
-                    .where(AppFileLeftEvent.channel == "deleted")
-                    .group_by(
-                        AppFileLeftEvent.computer_name,
-                        AppFileLeftEvent.file_name,
                     )
                     .having(func.count() > 1)
                     .subquery()

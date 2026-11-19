@@ -28,6 +28,12 @@ function mergeChatWorkspaceParam(path: string, workspace: string): string {
 export function portalPathFromNotificationResponse(response: NotificationResponse): string {
   const data = notificationData(response);
   const workspace = String(data.conversation_kind || '').trim().toLowerCase() === 'ai' ? 'ai' : '';
+  // Task pushes carry the id directly: a route like
+  // /tasks?task=<id>&task_detail_view=discussion&message=<id> is richer, but
+  // the native card has no message anchor yet — open the task itself instead
+  // of degrading to the plain list.
+  const taskId = String(data.task_id || data.taskId || '').trim();
+  if (taskId) return `/tasks?task=${encodeURIComponent(taskId)}`;
   const route = String(data.route || '').trim();
   if (route) {
     const normalized = normalizeNativeRoutePath(route);

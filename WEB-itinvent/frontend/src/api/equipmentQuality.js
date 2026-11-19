@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // Панель качества данных: счётчики правил и строки, нарушающие правило (текущая база).
 export const equipmentQualityAPI = {

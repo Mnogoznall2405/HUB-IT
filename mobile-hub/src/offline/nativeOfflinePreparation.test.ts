@@ -73,6 +73,7 @@ jest.mock('../api/myFilesApi', () => ({
 }));
 jest.mock('../api/companyStructureApi', () => ({ getCompanyStructureTree: jest.fn() }));
 jest.mock('../cache/nativeSnapshotCache', () => ({
+  ...jest.requireActual('../cache/nativeSnapshotCache'),
   readNativeSnapshot: jest.fn(async () => ({ savedAt: 1, data: {} })),
   writeNativeCollectionSnapshot: jest.fn(async () => true),
   writeNativeSnapshot: jest.fn(async () => true),

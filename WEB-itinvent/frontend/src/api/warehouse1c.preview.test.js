@@ -4,7 +4,7 @@ const { apiClientMock } = vi.hoisted(() => ({
   apiClientMock: { get: vi.fn() },
 }));
 
-vi.mock('./client', () => ({ default: apiClientMock }));
+vi.mock('./http', () => ({ default: apiClientMock }));
 
 import { WAREHOUSE_1C_QUERY_TIMEOUT_MS, warehouse1cAPI } from './warehouse1c';
 

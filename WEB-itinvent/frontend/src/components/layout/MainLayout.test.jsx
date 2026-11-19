@@ -13,6 +13,7 @@ const {
   mockNavigate,
   mockNotifyInfo,
   mockNotifyWarning,
+  mockNotifyApiError,
   mockToastHistory,
   mockClearToastHistory,
   mockMarkHubNotificationsSeen,
@@ -48,6 +49,7 @@ const {
   mockNavigate: vi.fn(),
   mockNotifyInfo: vi.fn(),
   mockNotifyWarning: vi.fn(),
+  mockNotifyApiError: vi.fn(),
   mockToastHistory: [],
   mockClearToastHistory: vi.fn(),
   mockMarkHubNotificationsSeen: vi.fn(),
@@ -101,7 +103,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 
 vi.mock('../../contexts/NotificationContext', () => ({
   useNotification: () => ({
-    notifyApiError: vi.fn(),
+    notifyApiError: mockNotifyApiError,
     notifyInfo: mockNotifyInfo,
     notifyWarning: mockNotifyWarning,
     toastHistory: mockToastHistory,
@@ -256,8 +258,8 @@ vi.mock('./ToastHistoryList', () => ({
   default: () => <div data-testid="toast-history-list" />,
 }));
 
-import MainLayout from './MainLayout';
-import { MainLayoutShellContext } from './MainLayoutShellContext';
+import MainLayout, { MainLayoutInner } from './MainLayout';
+import { MainLayoutRouteContext, MainLayoutShellContext } from './MainLayoutShellContext';
 
 const HUB_POLL_UNREAD_COUNTS = {
   notifications_unread_total: 1,
@@ -413,6 +415,7 @@ describe('MainLayout hub Windows notifications', () => {
     mockPrefetchRouteByPath.mockResolvedValue(undefined);
     mockNotifyInfo.mockReset();
     mockNotifyWarning.mockReset();
+    mockNotifyApiError.mockReset();
     mockToastHistory.length = 0;
     mockClearToastHistory.mockReset();
     mockMarkHubNotificationsSeen.mockReset();
@@ -2408,6 +2411,102 @@ describe('MainLayout hub Windows notifications', () => {
       restoreDesktopMatchMedia();
     }
   });
+
+  it('keeps the shell context value stable across identical unread updates and switches the database once', async () => {
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    mockApiGet.mockImplementation(async (url) => {
+      if (url === '/database/list') {
+        return { data: [{ id: 'default', name: 'Основная БД' }, { id: 'second', name: 'Вторая БД' }] };
+      }
+      if (url === '/database/current') {
+        return { data: { id: 'default', name: 'Основная БД', locked: false } };
+      }
+      if (url === '/hub/notifications/unread-counts') {
+        return { data: { notifications_unread_total: 0 } };
+      }
+      if (url === '/hub/notifications/poll') {
+        return { data: { items: [], unread_counts: { notifications_unread_total: 0 } } };
+      }
+      return { data: {} };
+    });
+    const shellSnapshots = [];
+    let shellApi = null;
+    function ShellProbe() {
+      const shell = React.useContext(MainLayoutShellContext);
+      shellApi = shell;
+      React.useEffect(() => {
+        shellSnapshots.push(shell);
+      }, [shell]);
+      return <div>Probe content</div>;
+    }
+    const dispatchUnreadSummary = (messagesUnreadTotal, conversationsUnread) => window.dispatchEvent(
+      new CustomEvent('chat-ws-unread-summary', {
+        detail: {
+          messages_unread_total: messagesUnreadTotal,
+          conversations_unread: conversationsUnread,
+        },
+      }),
+    );
+
+    try {
+      render(
+        <MainLayout>
+          <ShellProbe />
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(shellSnapshots.length).toBeGreaterThan(0);
+      const initialShell = shellSnapshots.at(-1);
+      const initialSnapshotCount = shellSnapshots.length;
+
+      // A summary identical to the current state must not produce a new shell value.
+      await act(async () => {
+        dispatchUnreadSummary(0, 0);
+        await Promise.resolve();
+      });
+      expect(shellSnapshots.at(-1)).toBe(initialShell);
+      expect(shellSnapshots).toHaveLength(initialSnapshotCount);
+
+      // A changed summary renders once and updates the /chat badge; shell value stays the same object.
+      await act(async () => {
+        dispatchUnreadSummary(7, 2);
+        await Promise.resolve();
+      });
+      const chatNav = screen.getByTestId('main-layout-sidebar-chat');
+      expect(chatNav.querySelector('.MuiBadge-badge')?.textContent).toBe('7');
+      expect(shellSnapshots.at(-1)).toBe(initialShell);
+
+      // Repeating the same summary is a no-op: no extra render, same shell value.
+      await act(async () => {
+        dispatchUnreadSummary(7, 2);
+        await Promise.resolve();
+      });
+      expect(shellSnapshots.at(-1)).toBe(initialShell);
+      expect(chatNav.querySelector('.MuiBadge-badge')?.textContent).toBe('7');
+
+      // Switching to the same database is a no-op; selecting another one switches exactly once.
+      await act(async () => {
+        await shellApi.onDatabaseChange({ target: { value: 'default' } });
+        await Promise.resolve();
+      });
+      expect(mockApiPost.mock.calls.filter(([url]) => url === '/database/switch')).toHaveLength(0);
+      await act(async () => {
+        await shellApi.onDatabaseChange({ target: { value: 'second' } });
+        await Promise.resolve();
+      });
+      expect(mockApiPost.mock.calls.filter(([url]) => url === '/database/switch')).toHaveLength(1);
+      expect(mockApiPost).toHaveBeenCalledWith('/database/switch', { database_id: 'second' });
+      expect(window.localStorage.getItem('selected_database')).toBe('second');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
 });
 
 describe('MainLayout mobile bottom navigation', () => {
@@ -2732,7 +2831,7 @@ describe('MainLayout desktop account navigation', () => {
     }
   });
 
-  it('loads a route only after click, not hover or keyboard focus', async () => {
+  it('prefetches a route on hover or keyboard focus before the click navigation', async () => {
     const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
     try {
       render(
@@ -2747,9 +2846,11 @@ describe('MainLayout desktop account navigation', () => {
       });
 
       const chat = screen.getByTestId('main-layout-sidebar-chat');
-      fireEvent.pointerEnter(chat);
+      fireEvent.mouseEnter(chat);
+      expect(mockPrefetchRouteByPath).toHaveBeenCalledWith('/chat');
+      mockPrefetchRouteByPath.mockClear();
       fireEvent.focus(chat);
-      expect(mockPrefetchRouteByPath).not.toHaveBeenCalled();
+      expect(mockPrefetchRouteByPath).toHaveBeenCalledWith('/chat');
 
       fireEvent.click(chat);
       expect(mockPrefetchRouteByPath).toHaveBeenCalledWith('/chat');
@@ -2864,5 +2965,140 @@ describe('MainLayout desktop account navigation', () => {
     } finally {
       restoreDesktopMatchMedia();
     }
+  });
+
+  it('registers shell props with the route context and renders children without the chrome', async () => {
+    const register = vi.fn();
+    const unregister = vi.fn();
+    const routeCtx = { register, unregister };
+
+    const view = render(
+      <MainLayoutRouteContext.Provider value={routeCtx}>
+        <MainLayout headerMode="integrated" pageTitle="T">
+          <div data-testid="route-shell-child">child</div>
+        </MainLayout>
+      </MainLayoutRouteContext.Provider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(register).toHaveBeenCalled();
+    const registeredProps = register.mock.calls.at(-1)[0];
+    expect(registeredProps).toEqual(expect.objectContaining({
+      headerMode: 'integrated',
+      pageTitle: 'T',
+    }));
+    expect(Object.keys(registeredProps).sort()).toEqual([
+      'contentMode',
+      'headerInlineContent',
+      'headerMode',
+      'mobileBottomNavMode',
+      'mobileBottomNavTransitionMs',
+      'pageTitle',
+      'showDatabaseSelector',
+    ]);
+    // The page yields to the shared route shell: children render, chrome does not.
+    expect(screen.getByTestId('route-shell-child')).toBeInTheDocument();
+    expect(screen.queryByTestId('main-layout-shell')).toBeNull();
+    expect(screen.queryByTestId('main-layout-sidebar-dashboard')).toBeNull();
+
+    view.unmount();
+    expect(unregister).toHaveBeenCalledWith(registeredProps);
+  });
+
+  it('still renders the shell chrome when no route shell provider is present', async () => {
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    try {
+      render(
+        <MainLayout>
+          <div data-testid="route-shell-child">child</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('main-layout-shell')).toBeInTheDocument();
+      expect(screen.getByTestId('route-shell-child')).toBeInTheDocument();
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
+});
+
+describe('MainLayoutInner bare (headless) mode for hubBare routes', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    window.localStorage.clear();
+    mockLocation.pathname = '/chat';
+    mockLocation.search = '';
+    mockApiGet.mockReset();
+    mockApiGet.mockResolvedValue({ data: {} });
+    mockGetChatUnreadSummary.mockResolvedValue({ messages_unread_total: 0, conversations_unread: 0 });
+    mockGetUnreadCount.mockResolvedValue({ unread: 0 });
+    mockGetNotificationFeed.mockResolvedValue({ items: [] });
+    mockGetMessages.mockResolvedValue({ items: [] });
+    mockGetNotificationPreferences.mockResolvedValue({ channels: {} });
+    mockHubRealtimeRetain.mockReturnValue(mockHubRealtimeRelease);
+    mockNotificationSurfaceVisible.mockReturnValue(false);
+    mockIsChatConversationMuted.mockReturnValue(false);
+    mockGetChatNotificationState.mockReturnValue({
+      enabled: true,
+      permission: 'granted',
+      pushSubscribed: false,
+      socketStatus: 'unknown',
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function ShellProbeButton() {
+    const shell = React.useContext(MainLayoutShellContext);
+    return <button type="button" data-testid="probe-open-drawer" onClick={shell.openDrawer}>menu</button>;
+  }
+
+  it('keeps notification polling and a working menu drawer without page chrome', async () => {
+    render(
+      <MainLayoutInner bare headerMode="hidden">
+        <ShellProbeButton />
+      </MainLayoutInner>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Runtime still works: a realtime notification event triggers a poll
+    // even though no chrome is rendered.
+    const pollCallsBeforeEvent = mockApiGet.mock.calls.filter(
+      ([url]) => url === '/hub/notifications/poll',
+    ).length;
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('hub-realtime-notification-created'));
+      vi.advanceTimersByTime(0);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const pollCallsAfterEvent = mockApiGet.mock.calls.filter(
+      ([url]) => url === '/hub/notifications/poll',
+    ).length;
+    expect(pollCallsAfterEvent).toBeGreaterThan(pollCallsBeforeEvent);
+    // No AppBar.
+    expect(screen.queryByTestId('main-layout-app-bar')).toBeNull();
+    expect(screen.getByTestId('main-layout-content')).toBeInTheDocument();
+
+    // openDrawer from shell context opens the menu overlay.
+    fireEvent.click(screen.getByTestId('probe-open-drawer'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(document.querySelector('.MuiDrawer-root .MuiDrawer-paper')).not.toBeNull();
   });
 });

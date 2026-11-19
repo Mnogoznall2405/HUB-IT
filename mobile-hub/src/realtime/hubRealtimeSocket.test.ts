@@ -172,7 +172,7 @@ describe('HubRealtimeSocketClient', () => {
     client.disconnect();
   });
 
-  it('reconnects after a 1008 slow-consumer close but stays dead on 4403 forbidden', async () => {
+  it('reconnects after 1008 slow-consumer and 4403 transient-forbidden closes, but stays dead on 4404', async () => {
     const client = new HubRealtimeSocketClient();
     await client.connect();
     const first = MockWebSocket.instances[0];
@@ -185,11 +185,19 @@ describe('HubRealtimeSocketClient', () => {
     await jest.advanceTimersByTimeAsync(1);
     expect(MockWebSocket.instances).toHaveLength(2);
 
+    // 4403 is a temporary network/policy rejection (e.g. IP allowlist flap):
+    // treating it as terminal used to kill realtime until the app restarted.
     MockWebSocket.instances[1].open();
     MockWebSocket.instances[1].close(4403);
+    expect(client.getStatus()).toBe('reconnecting');
+    await jest.advanceTimersByTimeAsync(30_001);
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    MockWebSocket.instances[2].open();
+    MockWebSocket.instances[2].close(4404);
     expect(client.getStatus()).toBe('offline');
     await jest.advanceTimersByTimeAsync(60_000);
-    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(MockWebSocket.instances).toHaveLength(3);
     client.disconnect();
   });
 

@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from jose import jwt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -41,6 +43,11 @@ def test_health_probes_answer_on_the_real_app(client):
         response = client.get(path)
         assert response.status_code == 200, f"{path} -> {response.status_code}"
         assert response.json()["status"] == "ok"
+
+
+def test_openapi_unavailable_when_debug_disabled(client):
+    assert app.debug is False
+    assert client.get("/openapi.json").status_code == 404
 
 
 def test_protected_routes_reject_anonymous_callers(client):
@@ -81,6 +88,12 @@ def _stub_auth_env(monkeypatch, *, closed_sessions=None):
     if closed_sessions is not None:
         monkeypatch.setattr(
             deps.session_service, "is_session_active", lambda sid: sid not in closed_sessions
+        )
+        monkeypatch.setattr(
+            deps.session_service,
+            "is_session_active_for_user",
+            lambda sid, uid: sid not in closed_sessions and int(uid or 0) == 7,
+            raising=False,
         )
         monkeypatch.setattr(deps.session_service, "touch_session", lambda sid: True)
         monkeypatch.setattr(
@@ -125,6 +138,25 @@ def test_login_then_auth_me_roundtrip(client, monkeypatch):
     me = client.get("/api/v1/auth/me")
     assert me.status_code == 200, me.text
     assert me.json()["username"] == "ivanov"
+
+
+def test_sessionless_access_token_rejected(client, monkeypatch):
+    """A correctly signed access JWT without session_id must not authenticate:
+    session binding is mandatory on every HTTP consumer (CRIT-01)."""
+    _stub_auth_env(monkeypatch, closed_sessions=set())
+
+    forged = jwt.encode(
+        {
+            "sub": "ivanov",
+            "user_id": 7,
+            "token_type": "access",
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        },
+        config.jwt.secret_key,
+        algorithm=config.jwt.algorithm,
+    )
+    response = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {forged}"})
+    assert response.status_code == 401, response.text
 
 
 def test_wrong_password_returns_401_without_session(client, monkeypatch):

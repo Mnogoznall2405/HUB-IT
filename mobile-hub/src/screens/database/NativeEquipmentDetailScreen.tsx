@@ -1,6 +1,7 @@
 import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { router, useLocalSearchParams } from 'expo-router';
+import * as Print from 'expo-print';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
@@ -37,7 +38,7 @@ import {
   readNativeSnapshot,
   writeNativeEntitySnapshot,
 } from '../../cache/nativeSnapshotCache';
-import { findNativeEquipmentCatalogItem } from '../../cache/nativeEquipmentCatalogSnapshot';
+import { findNativeEquipmentCatalogItem, patchNativeEquipmentCatalogItem } from '../../cache/nativeEquipmentCatalogSnapshot';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { openExternalUrl } from '../../addressBook/messengerLinks';
 import { NativeActionSheetDivider, NativeActionSheetItem, NativeEquipmentActionBar } from '../../components/database/NativeEquipmentActionBar';
@@ -70,6 +71,7 @@ import {
   type EquipmentStatusTone,
 } from '../../database/nativeDatabaseModel';
 import { nativeEquipmentDestination } from '../../database/nativeDatabaseFeature';
+import { buildNativeEquipmentQrPrintHtml } from '../../database/nativeEquipmentQrPrint';
 import {
   nativeEquipmentSnapshotKey,
   updateNativeEquipmentDetailSnapshot,
@@ -122,6 +124,7 @@ function EquipmentDetailContent() {
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('database.read');
   const requestRef = useRef(0);
+  const detailFocusLoadedRef = useRef(false);
   const tabRequests = useRef(new Map<EquipmentDetailTab, number>());
   const appliedDetailSnapshotRef = useRef('');
   const detailWriteChainRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -132,7 +135,9 @@ function EquipmentDetailContent() {
   }, []);
   const canWrite = hasPermission('database.write');
   const canViewWarehouse1C = hasPermission('warehouse_1c.read');
-  const canDeleteEquipment = String(user?.role || '').trim().toLowerCase() === 'admin';
+  // Как в вебе: отдельное право database.delete_equipment, а не только роль admin.
+  const canDeleteEquipment = hasPermission('database.delete_equipment');
+  const canDeleteEquipmentHistory = hasPermission('database.delete_equipment_history');
   const [tab, setTab] = useState<EquipmentDetailTab>(asDetailTab(first(params.tab)));
   const [databaseId, setDatabaseId] = useState(requestedDatabaseId);
   const [equipment, setEquipment] = useState<EquipmentRecord | null>(null);
@@ -168,6 +173,7 @@ function EquipmentDetailContent() {
   const [ownerOptions, setOwnerOptions] = useState<EquipmentOwnerOption[]>([]);
   const [employeeCompareOpen, setEmployeeCompareOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [qrPrinting, setQrPrinting] = useState(false);
   const [photosReloadKey, setPhotosReloadKey] = useState(0);
   const actionsRef = useRef<NativeEquipmentActionsHandle>(null);
 
@@ -256,6 +262,9 @@ function EquipmentDetailContent() {
       setEquipment(result);
       void touchRecentEquipmentCard(invNo, result, 'view', activeDatabaseId).catch(() => undefined);
       if (userId) {
+        // The fresh row also feeds the offline list/catalog so returning to the
+        // list does not show a stale status while the detail snapshot is newer.
+        void patchNativeEquipmentCatalogItem(userId, activeDatabaseId, result).catch(() => undefined);
         const snapshotKey = nativeEquipmentSnapshotKey(activeDatabaseId, invNo);
         await queueDetailSnapshotWrite(async () => {
           const latest = (await readNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
@@ -291,10 +300,14 @@ function EquipmentDetailContent() {
     }
   }, [allowed, applyCachedDetail, ensureDatabase, invNo, offlineMode, queueDetailSnapshotWrite, requestedDatabaseId, user?.id]);
 
-  useEffect(() => {
-    void loadEquipment();
+  // Focus-scoped: mount loads the card; returning from a stacked screen
+  // (edit form, photo viewer) refreshes it silently via refresh mode.
+  useFocusEffect(useCallback(() => {
+    const returning = detailFocusLoadedRef.current;
+    detailFocusLoadedRef.current = true;
+    void loadEquipment(returning);
     return () => { requestRef.current += 1; tabRequests.current.clear(); };
-  }, [loadEquipment]);
+  }, [loadEquipment]));
 
   const loadTab = useCallback(async (target: EquipmentDetailTab, force = false, silent = false) => {
     if (!invNo || target === 'general' || target === 'photos' || (target === 'works' && !equipment)
@@ -488,6 +501,21 @@ function EquipmentDetailContent() {
     void Share.share({ message: equipmentShareText(equipment), title: equipmentTitle(equipment) }).catch(() => undefined);
   }, [equipment]);
 
+  const printEquipmentQr = useCallback(async () => {
+    if (!equipment || qrPrinting) return;
+    setQrPrinting(true);
+    setMenuOpen(false);
+    setError('');
+    try {
+      const html = await buildNativeEquipmentQrPrintHtml(equipment, databaseId || requestedDatabaseId);
+      await Print.printAsync({ html });
+    } catch (cause) {
+      setError(formatApiError(cause, 'Не удалось напечатать QR-этикетку.'));
+    } finally {
+      setQrPrinting(false);
+    }
+  }, [equipment, qrPrinting, databaseId, requestedDatabaseId]);
+
   const requestDelete = useCallback(() => {
     setMenuOpen(false);
     actionsRef.current?.open('delete');
@@ -630,12 +658,24 @@ function EquipmentDetailContent() {
       equipmentRef.current = updated;
       setEquipment(updated);
       setEditOpen(false);
+      const userId = Number(user?.id || 0);
+      if (userId) {
+        // The saved row must reach both offline layers now: leaving for
+        // offline right after saving must not resurrect the pre-edit card.
+        void patchNativeEquipmentCatalogItem(userId, databaseId, updated).catch(() => undefined);
+        void queueDetailSnapshotWrite(() => updateNativeEquipmentDetailSnapshot(
+          userId,
+          databaseId,
+          invNo,
+          { equipment: updated },
+        ).catch(() => undefined)).catch(() => undefined);
+      }
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось сохранить карточку оборудования.'));
     } finally {
       setEditBusy(false);
     }
-  }, [databaseId, editBusy, editDirty, editDraft, editErrors, equipment, offlineMode]);
+  }, [databaseId, editBusy, editDirty, editDraft, editErrors, equipment, invNo, offlineMode, queueDetailSnapshotWrite, user?.id]);
 
   const pickerConfig = useMemo((): {
     title: string;
@@ -1030,6 +1070,7 @@ function EquipmentDetailContent() {
             databaseId={databaseId}
             canWrite={canWrite}
             canDeleteEquipment={canDeleteEquipment}
+            canDeleteEquipmentHistory={canDeleteEquipmentHistory}
             offline={offlineMode}
             surface="general"
             triggers="none"
@@ -1214,6 +1255,7 @@ function EquipmentDetailContent() {
             <ScrollView contentContainerStyle={styles.menuSheetContent}>
               <NativeActionSheetItem testID="native-equipment-copy-all" icon="content-copy" label="Скопировать всё" onPress={copyAllCard} tokens={tokens} />
               <NativeActionSheetItem testID="native-equipment-share" icon="share-variant-outline" label="Поделиться" onPress={shareCard} tokens={tokens} />
+              <NativeActionSheetItem testID="native-equipment-print-qr" icon="qrcode" label="Печать QR-этикетки" onPress={() => { void printEquipmentQr(); }} tokens={tokens} disabled={qrPrinting} />
               {canWrite && !offlineMode && equipment && isPrinterLikeEquipment(equipment) ? (
                 <>
                   <NativeActionSheetDivider tokens={tokens} />

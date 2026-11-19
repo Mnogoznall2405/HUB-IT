@@ -533,6 +533,11 @@ def test_logout_deletes_session_auth_context(monkeypatch):
 
     monkeypatch.setattr(auth.session_service, "close_session", lambda session_id: True)
     monkeypatch.setattr(
+        auth.session_service,
+        "is_session_active_for_user",
+        lambda session_id, user_id: True,
+    )
+    monkeypatch.setattr(
         auth.session_auth_context_service,
         "delete_session_context",
         lambda session_id: deleted_session_ids.append(session_id),
@@ -540,12 +545,14 @@ def test_logout_deletes_session_auth_context(monkeypatch):
     monkeypatch.setattr(
         auth,
         "decode_access_token",
-        lambda _token, **_kwargs: SimpleNamespace(session_id="logout-session", jti=None),
+        lambda _token, **_kwargs: SimpleNamespace(
+            session_id="logout-session", jti=None, user_id=99
+        ),
     )
 
     app = FastAPI()
     app.include_router(auth.router, prefix="/auth")
-    app.dependency_overrides[deps.get_current_user] = lambda: _make_user(permissions=[])
+    app.dependency_overrides[deps.get_current_user_optional] = lambda: _make_user(permissions=[])
 
     response = TestClient(app).post(
         "/auth/logout",

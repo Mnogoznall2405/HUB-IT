@@ -54,9 +54,9 @@ jest.mock('../../components/chat/SwipeableChatBubble', () => {
 const mockedChatApi = chatApi as jest.Mocked<typeof chatApi>;
 
 beforeEach(() => {
-  // M7: history starts from getThreadBootstrap; reject it so tests exercise
-  // the getMessagesPage fallback path.
-  mockedChatApi.getThreadBootstrap.mockRejectedValue(new Error('404'));
+  // M7: history starts from getThreadBootstrap; reject it as an older
+  // backend without the route so tests exercise the getMessagesPage fallback.
+  mockedChatApi.getThreadBootstrap.mockRejectedValue({ response: { status: 404 } });
 });
 
 it('does not rerender visible message bubbles for each composer keystroke', async () => {

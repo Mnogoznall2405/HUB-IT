@@ -140,8 +140,13 @@ export function resolveMobileNavigationItems({
     visibleItems.forEach((item) => addVisiblePath(item.path));
   }
 
+  const itemByPath = new Map(visibleItems.map((item) => [item.path, item]));
   return [
-    ...visibleItems.filter((item) => selectedPathSet.has(item.path)).slice(0, 4),
+    // The saved selection is ordered — honour it instead of catalog order.
+    ...[...selectedPathSet]
+      .map((path) => itemByPath.get(path))
+      .filter((item): item is MobileNavItem => Boolean(item))
+      .slice(0, 4),
     mobileMenuNavigationItem,
   ];
 }

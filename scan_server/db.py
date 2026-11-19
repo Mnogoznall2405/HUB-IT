@@ -31,6 +31,17 @@ def normalize_database_url(database_url: str) -> str:
     return url
 
 
+def _async_commit_enabled() -> bool:
+    """Scan runtime is agent telemetry; commits need not wait for WAL fsync.
+
+    Under datastore flush stalls every heartbeat/ingest COMMIT froze on
+    IO:WALSync for 20-30s. async commit removes that wait; a crash loses at
+    most sub-second acknowledged agent data, which agents re-report.
+    Set SCAN_DB_ASYNC_COMMIT=0 to restore durable commits without a redeploy.
+    """
+    return str(os.getenv("SCAN_DB_ASYNC_COMMIT", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def get_scan_engine(database_url: str, *, application_name: str = "itinvent-scan") -> Engine:
     resolved = normalize_database_url(database_url)
     if not resolved:
@@ -39,9 +50,12 @@ def get_scan_engine(database_url: str, *, application_name: str = "itinvent-scan
     if cached is not None:
         return cached
 
+    options = f"-csearch_path={SCAN_SCHEMA},public"
+    if _async_commit_enabled():
+        options += " -csynchronous_commit=off"
     connect_args = {
         "application_name": str(application_name or "itinvent-scan"),
-        "options": f"-csearch_path={SCAN_SCHEMA},public",
+        "options": options,
     }
     engine = create_engine(
         resolved,

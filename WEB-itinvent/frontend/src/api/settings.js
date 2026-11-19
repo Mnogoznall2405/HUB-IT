@@ -1,4 +1,4 @@
-import apiClient, { getCachedGet } from './client';
+import apiClient, { getCachedGet } from './http';
 
 const PUSH_CONFIG_STALE_TIME_MS = 60_000;
 

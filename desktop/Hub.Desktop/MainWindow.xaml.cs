@@ -18,6 +18,7 @@ using Hub.Desktop.DeepLinks;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Interop;
 using Hub.Desktop.Lifecycle;
+using Hub.Desktop.Native.Api;
 using Hub.Desktop.Notifications;
 using Hub.Desktop.Printing;
 using Hub.Desktop.Remote;
@@ -62,6 +63,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private readonly Forms.ToolStripMenuItem _aboutItem;
     private readonly Forms.ToolStripMenuItem _diagnosticsItem;
     private readonly Forms.ToolStripMenuItem _downloadsItem;
+    private readonly Forms.ToolStripMenuItem _nativeTasksItem;
     private readonly Forms.ToolStripMenuItem _openInBrowserItem;
     private readonly Forms.ToolStripMenuItem _printItem;
     private readonly Forms.ToolStripMenuItem _hardReloadItem;
@@ -112,6 +114,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private AboutWindow? _aboutWindow;
     private DiagnosticsWindow? _diagnosticsWindow;
     private DownloadsWindow? _downloadsWindow;
+    private IHubApiClient? _nativeApiClient;
+    private Native.Views.HubWindow? _hubWindow;
     private CancellationTokenSource? _navigationTimeout;
     private string _lastNavigationStatus = "NotStarted";
     private DateTimeOffset? _lastNavigationAtUtc;
@@ -156,6 +160,19 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _runtime = runtime;
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _windowManager = windowManager ?? throw new ArgumentNullException(nameof(windowManager));
+        // Нативное окно забирает свои маршруты из любых путей активации
+        // (тосты, fallback-окно, трей, MailCompose), а без маршрута — когда web-шелл скрыт.
+        _windowManager.RoutePreferenceHandler = TryNavigateNativeHub;
+        _windowManager.RoutelessActivationHandler = () =>
+        {
+            if (_hubWindow is null || IsVisible)
+            {
+                return false;
+            }
+
+            ActivateNativeWindow();
+            return true;
+        };
         _webViewEnvironmentProvider = webViewEnvironmentProvider
             ?? throw new ArgumentNullException(nameof(webViewEnvironmentProvider));
         _downloads = downloads ?? throw new ArgumentNullException(nameof(downloads));
@@ -257,6 +274,12 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             Padding = new Forms.Padding(2, 4, 8, 4),
         };
         _downloadsItem.Click += (_, _) => ShowDownloadsWindow();
+        _nativeTasksItem = new Forms.ToolStripMenuItem("HUB — нативный клиент")
+        {
+            AccessibleName = "Открыть нативное окно HUB (главная страница и задачи)",
+            Padding = new Forms.Padding(2, 4, 8, 4),
+        };
+        _nativeTasksItem.Click += (_, _) => ShowNativeHubWindow();
         _openInBrowserItem = new Forms.ToolStripMenuItem("Открыть текущую страницу в браузере")
         {
             AccessibleName = "Открыть текущую безопасную страницу HUB в браузере",
@@ -2661,6 +2684,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
         menu.Items.Add(showItem);
         menu.Items.Add(_commandPaletteItem);
+        menu.Items.Add(_nativeTasksItem);
         menu.Items.Add(_sectionsItem);
         menu.Items.Add(HubTrayContextMenu.CreateSeparator());
         menu.Items.Add(_updateItem);
@@ -3348,6 +3372,81 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         };
         _downloadsWindow = downloadsWindow;
         downloadsWindow.Show();
+    }
+
+    private void ShowNativeHubWindow()
+    {
+        // Только нативное окно — web-шелл попутно не поднимаем.
+        ShowNativeHub();
+    }
+
+    /// <summary>
+    /// Открывает (или активирует существующее) нативное окно HUB.
+    /// При запуске с --native вызывается без показа веб-шелла.
+    /// </summary>
+    public void ShowNativeHub(string? route = null)
+    {
+        if (_hubWindow is not null)
+        {
+            if (route is not null)
+            {
+                _hubWindow.NavigateToRoute(route);
+            }
+            ActivateNativeWindow();
+            return;
+        }
+
+        _nativeApiClient ??= new HubApiClient(
+            _options.BaseUri,
+            new DpapiNativeSessionStore());
+        var hubWindow = new Native.Views.HubWindow(_nativeApiClient, _notifications);
+        // Owner только если главное окно уже показывалось — WPF не принимает скрытый owner без hwnd.
+        if (new WindowInteropHelper(this).Handle != IntPtr.Zero)
+        {
+            hubWindow.Owner = this;
+        }
+
+        hubWindow.Closed += (_, _) => _hubWindow = null;
+        _hubWindow = hubWindow;
+        if (route is not null)
+        {
+            hubWindow.NavigateToRoute(route);
+        }
+        hubWindow.Show();
+    }
+
+    /// <summary>
+    /// Если открыто нативное окно и маршрут ведёт на нативный раздел —
+    /// навигирует его и возвращает true. Иначе false (маршрут обработает web-шелл).
+    /// </summary>
+    public bool TryNavigateNativeHub(string route)
+    {
+        if (_hubWindow is null
+            || Native.ViewModels.HubShellViewModel.TryMapWebRoute(route) is null)
+        {
+            return false;
+        }
+
+        _hubWindow.NavigateToRoute(route);
+        ActivateNativeWindow();
+        return true;
+    }
+
+    /// <summary>Activate() не восстанавливает свёрнутое окно — сначала WindowState.Normal.</summary>
+    private void ActivateNativeWindow()
+    {
+        if (_hubWindow is null)
+        {
+            return;
+        }
+
+        if (_hubWindow.WindowState == WindowState.Minimized)
+        {
+            _hubWindow.WindowState = WindowState.Normal;
+        }
+
+        _hubWindow.Activate();
+        _hubWindow.Focus();
     }
 
     private void DownloadsWindow_OpenRequested(

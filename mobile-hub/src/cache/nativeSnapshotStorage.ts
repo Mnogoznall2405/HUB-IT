@@ -363,6 +363,23 @@ export function readEncryptedNativeSnapshot(scope: string, userId: number): Prom
   }).finally(done);
 }
 
+/**
+ * Existence probe without decryption: `readEncryptedNativeSnapshot` returns
+ * `null` both for "no snapshot" and for transient read failures, so callers
+ * that cannot treat "empty" as authoritative need this check first.
+ */
+export async function hasEncryptedNativeSnapshot(scope: string, userId: number): Promise<boolean> {
+  const owner = normalizedUserId(userId);
+  if (!owner || Platform.OS === 'web') return false;
+  const exists = (file: File): boolean => {
+    try { return file.exists; } catch { return false; }
+  };
+  return exists(snapshotFile(scope, owner))
+    || exists(backupSnapshotFile(scope, owner))
+    || exists(legacySnapshotFile(scope, owner))
+    || exists(pendingSnapshotFile(scope, owner));
+}
+
 export async function deleteEncryptedNativeSnapshot(scope: string, userId: number): Promise<void> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web') return;

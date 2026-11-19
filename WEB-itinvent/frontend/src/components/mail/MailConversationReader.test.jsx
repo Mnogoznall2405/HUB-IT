@@ -74,7 +74,7 @@ describe('MailConversationReader', () => {
   it('renders the conversation body', () => {
     renderWithTheme(<MailConversationReader {...buildProps()} />);
 
-    expect(screen.getByText('Conversation body text')).toBeVisible();
+    expect(screen.getByTestId('mail-html-sandbox').getAttribute('srcdoc')).toContain('Conversation body text');
     expect(screen.getByText('Support Team')).toBeVisible();
   });
 
@@ -90,7 +90,8 @@ describe('MailConversationReader', () => {
 
     renderWithTheme(<MailConversationReader {...props} />);
 
-    fireEvent.click(screen.getByText('Selectable message body'));
+    expect(screen.getByTestId('mail-html-sandbox').getAttribute('srcdoc')).toContain('Selectable message body');
+    fireEvent.click(screen.getByTestId('mail-html-sandbox'));
 
     expect(props.onSelectMessage).toHaveBeenCalledTimes(1);
     expect(props.onSelectMessage).toHaveBeenCalledWith(selectedMessage);
@@ -152,7 +153,7 @@ describe('MailConversationReader', () => {
     });
 
     expect(renderCount.value).toBe(afterMount);
-    expect(screen.getByText('Conversation body text')).toBeVisible();
+    expect(screen.getByTestId('mail-html-sandbox').getAttribute('srcdoc')).toContain('Conversation body text');
   });
 
   it('opens and downloads attachments with message and attachment context', () => {
@@ -232,6 +233,6 @@ describe('MailConversationReader', () => {
     });
 
     expect(renderCount.value).toBe(afterMount);
-    expect(screen.getByText('Conversation body text')).toBeVisible();
+    expect(screen.getByTestId('mail-html-sandbox').getAttribute('srcdoc')).toContain('Conversation body text');
   });
 });

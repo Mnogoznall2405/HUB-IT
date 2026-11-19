@@ -52,6 +52,39 @@ def _default_output() -> Path:
     return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT" / "BrowserProbe"
 
 
+def _fallback_output() -> Path | None:
+    local = str(os.environ.get("LOCALAPPDATA", "") or "").strip()
+    if not local:
+        return None
+    return Path(local) / "HUB-IT" / "BrowserProbe"
+
+
+def _dir_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".wtest_{os.getpid()}"
+        with probe.open("wb"):
+            pass
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _resolve_output_dir(arg_output: Path | None) -> Path:
+    """ProgramData is ACL-hardened for the install-time user (audit H-7); any
+    other interactive user falls back to a per-user dir under %LOCALAPPDATA%."""
+    if arg_output:
+        return arg_output.resolve()
+    primary = _default_output()
+    if _dir_writable(primary):
+        return primary
+    fallback = _fallback_output()
+    if fallback is not None and _dir_writable(fallback):
+        return fallback
+    return primary
+
+
 def _configure_logging(verbose: bool, output_dir: Path) -> None:
     log_dir = output_dir / "Logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -109,19 +142,28 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logger = logging.getLogger("browser_probe_agent")
 
-    output_dir = (args.output or _default_output()).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = _resolve_output_dir(args.output)
     # The scheduled task and --sync-now can be started independently.
     import msvcrt
 
-    with (output_dir / "probe.lock").open("a+b") as lock:
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        lock_handle = (output_dir / "probe.lock").open("a+b")
+    except OSError as exc:
+        print(f"Browser probe cannot use output dir {output_dir}: {exc}", file=sys.stderr)
+        return 1
+    with lock_handle as lock:
         lock.seek(0)
         try:
             msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
-            logger.error("Browser probe cannot lock the queue. Check for another instance using this folder.")
+            print("Browser probe cannot lock the queue. Check for another instance using this folder.", file=sys.stderr)
             return 1
-        _configure_logging(args.verbose, output_dir)
+        try:
+            _configure_logging(args.verbose, output_dir)
+        except OSError as exc:
+            print(f"Browser probe cannot set up logging in {output_dir}: {exc}", file=sys.stderr)
+            return 1
         if not _env_truthy("ITINV_BROWSER_PROBE_ENABLED", True):
             logger.info("Browser probe disabled by ITINV_BROWSER_PROBE_ENABLED")
             return 0

@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { formatApiError } from '../../api/formatError';
 import {
   createFeedCategory,
@@ -256,6 +256,14 @@ export function NativeFeedInboxScreen() {
       }
     } catch (cause) {
       if (requestId !== requestRef.current) return;
+      if (reset && !cached) {
+        // A failed filter/search switch must not keep the old list: the
+        // stale serverOffset would otherwise page the NEW filter from the
+        // middle and append its posts to a foreign list.
+        setItems([]);
+        setTotal(0);
+        serverOffsetRef.current = 0;
+      }
       setError(formatApiError(cause, cached
         ? 'Показана сохранённая лента. Не удалось получить обновления.'
         : 'Не удалось загрузить ленту.'));
@@ -268,9 +276,12 @@ export function NativeFeedInboxScreen() {
     }
   }, [categoryId, debouncedQuery, filter, offlineMode, tag, user?.id]);
 
-  useEffect(() => {
+  // Focus-scoped: initial mount, filter changes and returning to this screen
+  // (stacked under a pushed post) all reload through the same callback.
+  // loadPage({ reset: true }) uses the refresh indicator when items exist.
+  useFocusEffect(useCallback(() => {
     if (allowed) void loadPage({ reset: true });
-  }, [allowed, loadPage]);
+  }, [allowed, loadPage]));
 
   useEffect(() => {
     if (!allowed || offlineMode) return;

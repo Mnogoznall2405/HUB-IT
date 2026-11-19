@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppEquipmentRecentAct
@@ -260,6 +261,47 @@ class EquipmentRecentActsService:
             not in stale_keys
         ]
 
+    def _touch_app_database(
+        self,
+        *,
+        user_id: int,
+        db_id: str,
+        doc_no: int,
+        doc_number: str,
+        action: str,
+        label: str,
+        snapshot: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        with app_session(self._database_url) as session:
+            row = session.execute(
+                select(AppEquipmentRecentAct).where(
+                    AppEquipmentRecentAct.user_id == user_id,
+                    AppEquipmentRecentAct.db_id == db_id,
+                    AppEquipmentRecentAct.doc_no == doc_no,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                row = AppEquipmentRecentAct(
+                    user_id=user_id,
+                    db_id=db_id,
+                    doc_no=doc_no,
+                    doc_number=doc_number,
+                    created_at=now,
+                    activity_count=0,
+                )
+                session.add(row)
+            row.doc_number = doc_number or _normalize_text(row.doc_number)
+            row.last_action = action
+            row.last_action_label = label
+            row.snapshot_json = json.dumps(snapshot, ensure_ascii=False, default=str)
+            row.activity_count = int(row.activity_count or 0) + 1
+            row.last_activity_at = now
+            session.flush()
+            self._prune_db_scope(session, user_id=user_id, db_id=db_id)
+            session.flush()
+            return self._row_to_dict(row)
+
     def touch(
         self,
         *,
@@ -293,34 +335,22 @@ class EquipmentRecentActsService:
         now = _utc_now()
 
         if self._use_app_database:
-            with app_session(self._database_url) as session:
-                row = session.execute(
-                    select(AppEquipmentRecentAct).where(
-                        AppEquipmentRecentAct.user_id == normalized_user_id,
-                        AppEquipmentRecentAct.db_id == normalized_db_id,
-                        AppEquipmentRecentAct.doc_no == normalized_doc_no,
-                    )
-                ).scalar_one_or_none()
-                if row is None:
-                    row = AppEquipmentRecentAct(
-                        user_id=normalized_user_id,
-                        db_id=normalized_db_id,
-                        doc_no=normalized_doc_no,
-                        doc_number=normalized_doc_number,
-                        created_at=now,
-                        activity_count=0,
-                    )
-                    session.add(row)
-                row.doc_number = normalized_doc_number or _normalize_text(row.doc_number)
-                row.last_action = normalized_action
-                row.last_action_label = label
-                row.snapshot_json = json.dumps(next_snapshot, ensure_ascii=False, default=str)
-                row.activity_count = int(row.activity_count or 0) + 1
-                row.last_activity_at = now
-                session.flush()
-                self._prune_db_scope(session, user_id=normalized_user_id, db_id=normalized_db_id)
-                session.flush()
-                return self._row_to_dict(row)
+            touch_args = {
+                "user_id": normalized_user_id,
+                "db_id": normalized_db_id,
+                "doc_no": normalized_doc_no,
+                "doc_number": normalized_doc_number,
+                "action": normalized_action,
+                "label": label,
+                "snapshot": next_snapshot,
+                "now": now,
+            }
+            try:
+                return self._touch_app_database(**touch_args)
+            except IntegrityError:
+                # A concurrent first touch inserted the same (user, db, doc) row
+                # after our select; the retry finds that row and updates it.
+                return self._touch_app_database(**touch_args)
 
         with self._file_lock:
             items = self._load_local_items_unlocked()

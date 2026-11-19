@@ -6,6 +6,7 @@ import {
   getDocflowAssignmentCommand,
   getDocflowFilePreviewState,
   getDocflowTask,
+  listDocflowAbsences,
   listDocflowTasks,
   normalizeDocflowOpenUrl,
   searchDocflowAssignmentAssignees,
@@ -120,6 +121,76 @@ it('searches assignment documents and assignees with bounded server queries', as
   expect(client.get).toHaveBeenNthCalledWith(1, '/docflow/assignments/documents', expect.objectContaining({ params: { q: 'договор', limit: 50 } }));
   expect(client.get).toHaveBeenNthCalledWith(2, '/docflow/assignments/assignees', expect.objectContaining({ params: { q: 'Иванов', limit: 50 } }));
   await expect(searchDocflowAssignmentDocuments('ab')).rejects.toThrow('не менее 3');
+});
+
+it('requests personal absences with the 1C timeout and drops malformed rows', async () => {
+  client.get.mockResolvedValue({
+    data: {
+      status: 'available',
+      source: 'docflow',
+      on: '2026-08-24',
+      items: [
+        {
+          id: 'docflow:abs-1',
+          employee_code: 'E-1',
+          matching_status: 'matched',
+          display_name: 'Иванов Иван',
+          starts_on: '2026-08-20',
+          ends_on: '2026-08-25',
+          kind: 'vacation',
+          label: 'Отпуск',
+          comment: 'Плановый',
+          will_handle_tasks: true,
+          differences: ['starts_on'],
+        },
+        { display_name: 'no id row' },
+      ],
+      count: '1',
+      unresolved_count: 0,
+      as_of: '2026-08-24T10:00:00+05:00',
+      zup_comparison: 'available',
+      zup_as_of: '2026-08-24T09:00:00+05:00',
+      unexpected_secret: 'dropped',
+    },
+  });
+  const controller = new AbortController();
+  await expect(listDocflowAbsences({ employeeCode: ' E-1 ', signal: controller.signal })).resolves.toEqual({
+    status: 'available',
+    items: [{
+      id: 'docflow:abs-1',
+      employee_code: 'E-1',
+      matching_status: 'matched',
+      display_name: 'Иванов Иван',
+      starts_on: '2026-08-20',
+      ends_on: '2026-08-25',
+      kind: 'vacation',
+      label: 'Отпуск',
+      comment: 'Плановый',
+      will_handle_tasks: true,
+      differences: ['starts_on'],
+    }],
+    count: 1,
+    unresolved_count: 0,
+    as_of: '2026-08-24T10:00:00+05:00',
+    zup_comparison: 'available',
+  });
+  expect(client.get).toHaveBeenCalledWith('/docflow/absences', expect.objectContaining({
+    params: { employee_code: 'E-1' },
+    signal: controller.signal,
+    timeout: DOCFLOW_QUERY_TIMEOUT_MS,
+  }));
+
+  // The unscoped dashboard call sends no employee filter at all.
+  client.get.mockResolvedValue({ data: { status: 'disabled', items: [], count: null } });
+  await expect(listDocflowAbsences()).resolves.toEqual({
+    status: 'disabled',
+    items: [],
+    count: null,
+    unresolved_count: 0,
+    as_of: '',
+    zup_comparison: 'unavailable',
+  });
+  expect(client.get).toHaveBeenLastCalledWith('/docflow/absences', expect.objectContaining({ params: {} }));
 });
 
 it('creates an assignment once and checks the resulting command by encoded id', async () => {

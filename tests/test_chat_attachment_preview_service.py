@@ -164,6 +164,47 @@ def test_file_message_persistence_enqueues_office_preview_in_same_transaction(pr
     assert preview.status == preview_module.PREVIEW_STATUS_QUEUED
 
 
+def test_repeated_enqueue_before_flush_preserves_processing_lease(preview_env):
+    attachment_id, message_id = _add_attachment(preview_env)
+    with preview_env["session_factory"]() as session:
+        original = session.get(models.ChatMessageAttachment, attachment_id)
+        session.get(models.ChatAttachmentPreview, attachment_id).status = preview_module.PREVIEW_STATUS_READY
+        attachment = models.ChatMessageAttachment(
+            id="pending-preview",
+            message_id=message_id,
+            conversation_id=original.conversation_id,
+            storage_name="pending-preview.png",
+            file_name="pending-preview.png",
+            mime_type="image/png",
+            file_size=128,
+            uploaded_by_user_id=1,
+        )
+        session.add(attachment)
+        session.flush()
+        session.autoflush = False
+        preview_env["service"].enqueue_in_session(session=session, attachment=attachment)
+        preview_env["service"].enqueue_in_session(
+            session=session, attachment=attachment, requeue_ready=True,
+        )
+    claimed = preview_env["service"].claim_next_job(worker_id="worker-with-lease")
+    assert claimed is not None and claimed.attachment_id == attachment.id
+    with preview_env["session_factory"]() as session:
+        lease_expires_at = session.get(models.ChatAttachmentPreview, attachment.id).lease_expires_at
+        preview_env["service"].enqueue_in_session(
+            session=session, attachment=session.get(models.ChatMessageAttachment, attachment.id),
+            requeue_ready=True,
+        )
+    with preview_env["session_factory"]() as session:
+        rows = list(session.scalars(select(models.ChatAttachmentPreview).where(
+            models.ChatAttachmentPreview.attachment_id == attachment.id,
+        )))
+    assert len(rows) == 1
+    assert rows[0].status == preview_module.PREVIEW_STATUS_PROCESSING
+    assert rows[0].attempt_count == 1
+    assert rows[0].lease_owner == "worker-with-lease"
+    assert rows[0].lease_expires_at == lease_expires_at
+
+
 def test_claim_uses_lease_and_expired_job_can_be_reclaimed(preview_env):
     attachment_id, _message_id = _add_attachment(preview_env)
     service = preview_env["service"]

@@ -3,13 +3,16 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
 import { chatAPI } from '../../api/client';
 import { useConfirmDialog } from '../feedback/ConfirmDialogProvider';
 import { canDeleteChatMessage, getMessagePreview } from './chatHelpers';
+import { restoreChatEditDraft } from './useChatMessageMenuActions';
 
 export default function useChatSelectedMessageActions({
   activeConversationIdRef,
   clearSelectedMessages,
   conversationKind,
+  editDraftSnapshotRef,
   viewerMemberRole,
   focusComposer,
+  latestDraftStorageKeyRef,
   loadChatDialogsModule,
   mergeMessageIntoThread,
   normalizeForwardMessageQueue,
@@ -23,6 +26,7 @@ export default function useChatSelectedMessageActions({
   setEditingMessage,
   setMessageMenuAnchor,
   setMessageMenuMessage,
+  setMessageText,
   setReplyMessage,
   setThreadMenuAnchor,
 }) {
@@ -37,11 +41,14 @@ export default function useChatSelectedMessageActions({
     if (selectedMessages.length !== 1) return;
     const [message] = selectedMessages;
     if (!message?.id) return;
+    if (editDraftSnapshotRef?.current) {
+      restoreChatEditDraft({ editDraftSnapshotRef, latestDraftStorageKeyRef, setMessageText });
+    }
     setEditingMessage?.(null);
     setReplyMessage(message);
     clearSelectedMessages();
     focusComposer({ forceMobile: true });
-  }, [clearSelectedMessages, focusComposer, selectedMessages, setEditingMessage, setReplyMessage]);
+  }, [clearSelectedMessages, editDraftSnapshotRef, focusComposer, latestDraftStorageKeyRef, selectedMessages, setEditingMessage, setMessageText, setReplyMessage]);
 
   const copySelectedMessages = useCallback(async () => {
     const generation = selectionGeneration.current;

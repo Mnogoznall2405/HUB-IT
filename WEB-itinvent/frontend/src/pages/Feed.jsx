@@ -162,7 +162,13 @@ export default function Feed() {
     try {
       const managementStatus = MANAGEMENT_STATUS_BY_FILTER[activeFilterRef.current];
       const payload = managementStatus
-        ? await hubAnnouncementsAPI.getManagedAnnouncements(managementStatus, { limit: 100 })
+        ? await hubAnnouncementsAPI.getManagedAnnouncements(managementStatus, {
+          q: queryRef.current.trim(),
+          category_id: categoryIdRef.current,
+          tag: tagRef.current,
+          limit: 100,
+          offset,
+        })
         : await hubAnnouncementsAPI.getAnnouncements({
           q: queryRef.current.trim(),
           unread_only: activeFilterRef.current === 'unread',
@@ -550,6 +556,7 @@ export default function Feed() {
           setTotal((current) => Math.max(0, current - 1));
           setFeedTotal((current) => Math.max(0, current - 1));
           notifySuccess('Публикация снята с ленты.', { source: 'feed' });
+          if (String(post.id) === String(deepLinkedPostId)) navigate('/feed', { replace: true });
         } catch (requestError) {
           notifyApiError(requestError, 'Не удалось снять публикацию с ленты.');
         }
@@ -571,6 +578,7 @@ export default function Feed() {
           setTotal((current) => Math.max(0, current - 1));
           setFeedTotal((current) => Math.max(0, current - 1));
           notifySuccess('Публикация удалена.', { source: 'feed' });
+          if (String(post.id) === String(deepLinkedPostId)) navigate('/feed', { replace: true });
         } catch (requestError) {
           notifyApiError(requestError, 'Не удалось удалить публикацию.');
         }

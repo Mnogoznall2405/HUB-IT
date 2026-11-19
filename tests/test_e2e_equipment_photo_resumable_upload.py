@@ -130,6 +130,32 @@ def test_resent_chunk_is_harmless_and_bad_chunks_are_rejected(ctx):
     ).status_code == 400
 
 
+def test_oversized_chunk_is_refused_before_the_body_is_buffered(ctx):
+    upload_id = open_session(ctx).json()["upload_id"]
+    oversized = ctx.client.put(
+        f"{BASE}/photo-uploads/{upload_id}/chunks/0",
+        content=b"x" * (CHUNK + 1),
+        headers={"content-type": "application/octet-stream"},
+    )
+    assert oversized.status_code == 413
+
+    # A chunked request carries no Content-Length: the streamed read must still stop at the limit.
+    def body_stream():
+        yield b"y" * CHUNK
+        yield b"extra"
+
+    streamed = ctx.client.put(
+        f"{BASE}/photo-uploads/{upload_id}/chunks/0",
+        content=body_stream(),
+        headers={"content-type": "application/octet-stream"},
+    )
+    assert streamed.status_code == 413
+
+    # Refused bytes were not stored as a chunk and the normal flow still works.
+    assert put_chunk(ctx, upload_id, 0).status_code == 200
+    assert ctx.client.get(f"{BASE}/photo-uploads/{upload_id}").json()["received"] == [0]
+
+
 def test_checksum_mismatch_inserts_nothing(ctx):
     upload_id = open_session(ctx, sha256="0" * 64).json()["upload_id"]
     for index in range(3):

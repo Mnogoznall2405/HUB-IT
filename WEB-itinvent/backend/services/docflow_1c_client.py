@@ -521,6 +521,40 @@ def _copy_docflow_volume_file(
         ) from None
 
 
+# mimetypes on Windows falls back to the registry and misses OOXML types on
+# hosts without Office installed — keep the common document set deterministic.
+_KNOWN_CONTENT_TYPES = {
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "docm": "application/vnd.ms-word.document.macroEnabled.12",
+    "dot": "application/msword",
+    "dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+    "rtf": "application/rtf",
+    "odt": "application/vnd.oasis.opendocument.text",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "xlt": "application/vnd.ms-excel",
+    "xltx": "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "pdf": "application/pdf",
+    "csv": "text/csv",
+    "txt": "text/plain",
+    "eml": "message/rfc822",
+}
+
+
+def _guess_content_type(filename: str) -> str:
+    extension = Path(filename).suffix.lower().lstrip(".")
+    return (
+        _KNOWN_CONTENT_TYPES.get(extension)
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
+
+
 def _preview_supported(filename: str, content_type: str) -> bool:
     extension = Path(filename).suffix.lower().lstrip(".")
     mime = str(content_type or "").lower()
@@ -957,7 +991,7 @@ class Docflow1CComClient:
                     or _connection_text(connection, getattr(selection, "Представление", ""))
                 )
                 filename = _safe_file_name(raw_name, extension)
-                content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                content_type = _guess_content_type(filename)
                 files.append(
                     {
                         "ref": _ref_uuid(connection, getattr(selection, "Ссылка", None)),
@@ -1244,7 +1278,7 @@ class Docflow1CComClient:
             return {
                 "temporary_path": str(temporary_path),
                 "name": filename,
-                "content_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                "content_type": _guess_content_type(filename),
                 "size": actual_size,
             }
         except Docflow1CError:

@@ -408,8 +408,7 @@ def lower_process_priority() -> bool:
         return False
 
 
-def _telegram_probe_process_running() -> bool:
-    names = {"itinventtelegramprobe", "itinventtelegramprobe.exe"}
+def _process_running_by_name(names: set) -> bool:
     for proc in psutil.process_iter(["name"]):
         try:
             name = str(proc.info.get("name") or "").strip().lower()
@@ -418,6 +417,32 @@ def _telegram_probe_process_running() -> bool:
         except Exception:
             continue
     return False
+
+
+def _telegram_probe_process_running() -> bool:
+    return _process_running_by_name({"itinventtelegramprobe", "itinventtelegramprobe.exe"})
+
+
+def _browser_probe_process_running() -> bool:
+    return _process_running_by_name({"itinventbrowserprobe", "itinventbrowserprobe.exe"})
+
+
+_BROWSER_PROBE_LIVENESS_MAX_AGE_SEC = 600
+
+
+def _browser_probe_liveness_stale() -> bool:
+    """True when the probe's tick loop stopped writing liveness.ts.
+
+    A missing file means the probe predates liveness marks (or just started):
+    treat it as undecidable rather than hung.
+    """
+    try:
+        mtime = (
+            agent_installer.DEFAULT_BROWSER_PROBE_RUNTIME_ROOT / "liveness.ts"
+        ).stat().st_mtime
+    except OSError:
+        return False
+    return (time.time() - mtime) > _BROWSER_PROBE_LIVENESS_MAX_AGE_SEC
 
 
 _SIDECAR_THREADS: Dict[str, threading.Thread] = {}
@@ -443,6 +468,14 @@ def collect_sidecar_health() -> Dict[str, Any]:
     health["telegram_probe"] = {
         "enabled": probe_enabled,
         "running": _telegram_probe_process_running() if probe_enabled else False,
+    }
+    browser_probe_enabled = _is_truthy(
+        os.getenv("ITINV_BROWSER_PROBE_ENABLED", "1"), default=True
+    )
+    health["browser_probe"] = {
+        "enabled": browser_probe_enabled,
+        "running": _browser_probe_process_running() if browser_probe_enabled else False,
+        "liveness_stale": _browser_probe_liveness_stale() if browser_probe_enabled else False,
     }
     return health
 
@@ -479,6 +512,59 @@ def _ensure_telegram_probe_task(now_ts: int, *, last_check_ts: int) -> int:
             )
     except Exception as exc:
         logging.debug("Telegram probe task watchdog error: %s", exc)
+    return now_ts
+
+
+def _run_probe_task(task_name: str, *args: str) -> int:
+    result = subprocess.run(
+        ["schtasks.exe", *args, "/TN", task_name],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        creationflags=CREATE_NO_WINDOW,
+        check=False,
+    )
+    return int(result.returncode or 0)
+
+
+def _ensure_browser_probe_task(now_ts: int, *, last_check_ts: int) -> int:
+    """Best-effort self-heal: restart the browser probe when dead or hung.
+
+    Dead  → schtasks /Run (killed by MSI updates / logon races).
+    Hung  → process exists but liveness.ts is stale → /End then /Run.
+    No interactive session → /Run simply fails; retried next check.
+    """
+    if not _is_truthy(os.getenv("ITINV_BROWSER_PROBE_ENABLED", "1"), default=True):
+        return last_check_ts
+    # Don't thrash Task Scheduler.
+    if last_check_ts and (now_ts - last_check_ts) < 300:
+        return last_check_ts
+    task_name = str(
+        os.getenv("ITINV_BROWSER_PROBE_TASK_NAME", "") or agent_installer.BROWSER_PROBE_TASK_NAME
+    ).strip() or agent_installer.BROWSER_PROBE_TASK_NAME
+    try:
+        running = _browser_probe_process_running()
+        if running and not _browser_probe_liveness_stale():
+            return now_ts
+        if running:
+            # Process alive but tick loop wedged (blocking WinAPI/UIA call):
+            # end the stale instance, then let the task start fresh.
+            if _run_probe_task(task_name, "/End") != 0:
+                logging.debug("Browser probe task '%s' end failed (not running?)", task_name)
+            time.sleep(2)
+        if _run_probe_task(task_name, "/Run") == 0:
+            logging.info(
+                "Started Browser probe task '%s' (running=%s)",
+                task_name,
+                running,
+            )
+        else:
+            logging.debug(
+                "Browser probe task '%s' start skipped/failed (no interactive session?)",
+                task_name,
+            )
+    except Exception as exc:
+        logging.debug("Browser probe task watchdog error: %s", exc)
     return now_ts
 
 
@@ -4081,6 +4167,7 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
     browser_history_restart_attempt = 0
     next_browser_history_restart_ts = 0
     last_telegram_probe_check_ts = 0
+    last_browser_probe_check_ts = 0
     last_inventory_ok_at: Optional[int] = None
     last_error = ""
     last_status_write_ts = 0
@@ -4176,6 +4263,9 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
         ensure_browser_history_alive(now_ts)
         last_telegram_probe_check_ts = _ensure_telegram_probe_task(
             now_ts, last_check_ts=last_telegram_probe_check_ts
+        )
+        last_browser_probe_check_ts = _ensure_browser_probe_task(
+            now_ts, last_check_ts=last_browser_probe_check_ts
         )
         include_full_snapshot = now_ts >= next_full_snapshot_ts
         report_type = "full_snapshot" if include_full_snapshot else "heartbeat"

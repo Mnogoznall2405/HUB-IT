@@ -13,7 +13,7 @@ import {
 import type { FeedAttachment } from './feedFormat';
 import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
-import { sanitizeNativeFileName, selectCacheEvictions } from '../files/filePolicy';
+import { fitNativeFileName, sanitizeNativeFileName, selectCacheEvictions } from '../files/filePolicy';
 import { nativeImageCacheKey } from '../files/nativeImageCache';
 import { resolveAttachmentUrl } from '../utils/attachmentUrl';
 
@@ -42,7 +42,7 @@ function feedCacheDirectory(): Directory {
 async function feedCacheFile(fileName: string): Promise<File> {
   const userId = Number(await getSessionUserId());
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
-  return new File(feedCacheDirectory(), `${userId}-${fileName}`);
+  return new File(feedCacheDirectory(), fitNativeFileName(`${userId}-${fileName}`));
 }
 
 export function clearNativeFeedFileCache(): void {

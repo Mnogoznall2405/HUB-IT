@@ -3,6 +3,7 @@ import conftest
 
 import sys
 import threading
+import time
 from pathlib import Path
 
 
@@ -218,3 +219,64 @@ def test_mail_preferences_write_through_updates_bootstrap_without_refreshing_its
     )
     assert after["payload"]["preferences"]["preferences"]["folder_pane_width"] == 260
     assert after["as_of"] == before["as_of"]
+
+
+def test_mail_snapshot_identical_rewrite_is_skipped_until_near_expiry(tmp_path):
+    database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-snapshot-noop.db').as_posix()}"
+    conftest.copy_app_schema_for_url(database_url)
+    service = MailRuntimeSnapshotService(database_url)
+
+    service.write_success(
+        user_id=60,
+        mailbox_id=None,
+        snapshot_type="unread",
+        payload={"unread_count": 3},
+        ttl_seconds=90,
+    )
+    first = service.read(user_id=60, mailbox_id=None, snapshot_type="unread")
+
+    service.write_success(
+        user_id=60,
+        mailbox_id=None,
+        snapshot_type="unread",
+        payload={"unread_count": 3},
+        ttl_seconds=90,
+    )
+    again = service.read(user_id=60, mailbox_id=None, snapshot_type="unread")
+    # Identical payload must not rewrite the row: the no-op upsert was the hot
+    # WAL generator behind the periodic commit stalls.
+    assert again["as_of"] == first["as_of"]
+    assert again["expires_at"] == first["expires_at"]
+
+    service.write_success(
+        user_id=60,
+        mailbox_id=None,
+        snapshot_type="unread",
+        payload={"unread_count": 5},
+        ttl_seconds=90,
+    )
+    changed = service.read(user_id=60, mailbox_id=None, snapshot_type="unread")
+    assert changed["payload"] == {"unread_count": 5}
+    assert changed["as_of"] != first["as_of"]
+
+    # Same payload but the stored row is about to expire: the write must fire to
+    # slide expires_at, otherwise the snapshot would go stale while the worker is healthy.
+    service.write_success(
+        user_id=61,
+        mailbox_id=None,
+        snapshot_type="unread",
+        payload={"unread_count": 1},
+        ttl_seconds=1,
+    )
+    stale_as_of = service.read(user_id=61, mailbox_id=None, snapshot_type="unread")["as_of"]
+    time.sleep(1.1)
+    service.write_success(
+        user_id=61,
+        mailbox_id=None,
+        snapshot_type="unread",
+        payload={"unread_count": 1},
+        ttl_seconds=90,
+    )
+    refreshed = service.read(user_id=61, mailbox_id=None, snapshot_type="unread")
+    assert refreshed["state"] == "ok"
+    assert refreshed["as_of"] != stale_as_of

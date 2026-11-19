@@ -106,7 +106,8 @@ describe('MailMessageReader', () => {
 
     renderWithTheme(<MailMessageReader {...props} />);
 
-    expect(screen.getByText('Latest reply')).toBeVisible();
+    const frame = screen.getByTestId('mail-html-sandbox');
+    expect(frame.getAttribute('srcdoc') || frame.getAttribute('srcDoc') || '').toContain('Latest reply');
     expect(screen.queryByText('Previous reply')).toBeNull();
 
     const toggleButton = screen.getByRole('button');
@@ -146,5 +147,15 @@ describe('MailMessageReader', () => {
     const frame = screen.getByTestId('mail-html-sandbox');
     expect(frame.getAttribute('sandbox') || '').not.toContain('allow-scripts');
     expect(frame.getAttribute('srcdoc') || frame.getAttribute('srcDoc') || '').toContain('Current message body');
+  });
+
+  it('keeps the sandbox iframe even when the legacy flag is off', () => {
+    setMailHtmlSandboxEnabled(false);
+    renderWithTheme(<MailMessageReader {...buildProps()} />);
+
+    const frame = screen.getByTestId('mail-html-sandbox');
+    expect(frame.getAttribute('sandbox') || '').not.toContain('allow-scripts');
+    expect(frame.getAttribute('srcdoc') || frame.getAttribute('srcDoc') || '').toContain('Current message body');
+    expect(screen.queryByText('Current message body')).toBeNull();
   });
 });

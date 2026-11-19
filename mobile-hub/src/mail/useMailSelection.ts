@@ -9,7 +9,7 @@ import {
 } from '../api/mailApi';
 import { formatApiError } from '../api/formatError';
 import { mailFolderLabel } from './nativeMailModel';
-import type { NativeMailUndo } from './nativeMailUndo';
+import { hasUnconfirmedMailResult, type NativeMailUndo } from './nativeMailUndo';
 import type { MailListItem, MailViewMode } from './useMailList';
 
 const CONVERSATION_FETCH_BATCH = 4;
@@ -44,7 +44,7 @@ export function useMailSelection(options: {
   listScope: string;
   listGeneration: number;
   listGenerationRef: MutableRefObject<number>;
-  applyUnreadDelta: (delta: number, mailboxId: string) => void;
+  applyUnreadDelta: (delta: number, mailboxId: string, targetFolder?: string) => void;
   load: (options: { reset: boolean; refresh?: boolean; silent?: boolean }) => Promise<void>;
   setError: (value: string) => void;
   setUndo: (value: NativeMailUndo | null) => void;
@@ -131,6 +131,13 @@ export function useMailSelection(options: {
       let selectedMessages = items.filter((entry): entry is Extract<MailListItem, { kind: 'message' }> => (
         entry.kind === 'message' && selected.has(entry.value.id)
       ));
+      // Never send ids that are not rendered: a scope change can leave stale
+      // entries in `selected`, and acting on hidden messages is silent damage.
+      if (view !== 'conversations') ids = selectedMessages.map((entry) => entry.value.id);
+      if (!ids.length) {
+        setSelected(new Set());
+        return;
+      }
       let skippedConversationIds: string[] = [];
       let byConversation = new Map<string, string[]>();
       if (view === 'conversations') {
@@ -149,7 +156,30 @@ export function useMailSelection(options: {
         }
       }
       if (listGeneration !== listGenerationRef.current) return;
-      const result = await bulkMailMessageAction({ mailboxId, action, messageIds: ids, targetFolder, permanent });
+      // «Все папки»: permanence follows each message's own folder — items
+      // already in Trash are erased permanently, the rest move to Trash.
+      const trashIdSet = action === 'delete'
+        ? new Set(selectedMessages.filter((entry) => (folder === 'trash' ? 'trash' : String(entry.value.folder || folder)) === 'trash').map((entry) => entry.value.id))
+        : new Set<string>();
+      let result: { ok?: boolean; failed?: number; results?: unknown[]; errors?: unknown[] };
+      if (action === 'delete' && !permanent && trashIdSet.size) {
+        const parts: typeof result[] = [];
+        if (trashIdSet.size) {
+          parts.push(await bulkMailMessageAction({ mailboxId, action, messageIds: [...trashIdSet], targetFolder, permanent: true }));
+        }
+        const restIds = ids.filter((id) => !trashIdSet.has(id));
+        if (restIds.length) {
+          parts.push(await bulkMailMessageAction({ mailboxId, action, messageIds: restIds, targetFolder, permanent: false }));
+        }
+        result = {
+          ok: parts.every((part) => part.ok !== false),
+          failed: parts.reduce((sum, part) => sum + Math.max(0, Number(part.failed || 0)), 0),
+          results: parts.flatMap((part) => (Array.isArray(part.results) ? part.results : [])),
+          errors: parts.flatMap((part) => (Array.isArray(part.errors) ? part.errors : [])),
+        };
+      } else {
+        result = await bulkMailMessageAction({ mailboxId, action, messageIds: ids, targetFolder, permanent });
+      }
       if (listGeneration !== listGenerationRef.current) return;
       const failed = Math.max(0, Number(result.failed || 0));
       if (result.ok === false || failed > 0) {
@@ -175,28 +205,45 @@ export function useMailSelection(options: {
         setError(failed ? `Не удалось применить действие к ${failed} ${failed === 1 ? 'письму' : 'письмам'}.` : 'Не удалось применить действие к выбранным письмам.');
         return;
       }
-      const selectedUnread = selectedMessages.filter((entry) => entry.value.is_read === false).length;
-      const selectedRead = selectedMessages.length - selectedUnread;
-      let appliedUnreadDelta = 0;
-      if (action === 'read') appliedUnreadDelta = -selectedUnread;
-      else if (action === 'unread') appliedUnreadDelta = selectedRead;
-      else if (folder === 'inbox' && (action === 'delete' || action === 'move')) appliedUnreadDelta = -selectedUnread;
-      if (appliedUnreadDelta) applyUnreadDelta(appliedUnreadDelta, mailboxId);
-      if (permanent) {
+      // Counters are per real folder: in «все папки» the selection spans
+      // folders, so deltas must be grouped by each message's own folder.
+      const unreadByFolder = new Map<string, number>();
+      const readByFolder = new Map<string, number>();
+      selectedMessages.forEach((entry) => {
+        const messageFolder = String(entry.value.folder || folder);
+        const bucket = entry.value.is_read === false ? unreadByFolder : readByFolder;
+        bucket.set(messageFolder, (bucket.get(messageFolder) || 0) + 1);
+      });
+      const unreadDeltas: Record<string, number> = {};
+      const bumpDelta = (target: string, delta: number) => {
+        unreadDeltas[target] = (unreadDeltas[target] || 0) + delta;
+      };
+      if (action === 'read') unreadByFolder.forEach((count, target) => bumpDelta(target, -count));
+      else if (action === 'unread') readByFolder.forEach((count, target) => bumpDelta(target, count));
+      else if (action === 'delete' || action === 'move') {
+        unreadByFolder.forEach((count, target) => bumpDelta(target, -count));
+      }
+      const appliedUnreadDelta = Object.values(unreadDeltas).reduce((sum, delta) => sum + delta, 0);
+      Object.entries(unreadDeltas).forEach(([target, delta]) => {
+        if (delta) applyUnreadDelta(delta, mailboxId, target);
+      });
+      if (permanent || (action === 'delete' && trashIdSet.size === ids.length)) {
         setUndo(null);
       } else {
         const undoIds = (Array.isArray(result.results) ? result.results : [])
           .map((entry) => String((entry as { result?: { message_id?: unknown } })?.result?.message_id || ''))
-          .filter(Boolean);
+          .filter((id) => id && !trashIdSet.has(id));
+        const restorableIds = ids.filter((id) => !trashIdSet.has(id));
         setUndo({
           kind: 'bulk',
           scope: listScope,
           mailboxId,
           action,
-          messageIds: ids,
-          undoIds: undoIds.length === ids.length ? undoIds : ids,
+          messageIds: restorableIds,
+          undoIds: undoIds.length === restorableIds.length ? undoIds : restorableIds,
           sourceFolder: folder,
           unreadDelta: appliedUnreadDelta,
+          unreadDeltas,
           label: bulkUndoLabel(action, ids.length, targetFolder),
         });
       }
@@ -207,7 +254,16 @@ export function useMailSelection(options: {
         setError(`Действие не применено к ${skippedConversationIds.length} ${skippedConversationIds.length === 1 ? 'цепочке' : 'цепочкам'} — они остались выбранными.`);
       }
     } catch (cause) {
-      if (listGeneration === listGenerationRef.current) setError(formatApiError(cause, 'Не удалось применить действие к письмам.'));
+      if (hasUnconfirmedMailResult(cause)) {
+        // The server may have applied some items — resync before allowing a
+        // blind repeat of the bulk action.
+        await load({ reset: true });
+        if (listGeneration === listGenerationRef.current) {
+          setError('Результат действия не подтверждён. Проверьте список писем и подключение перед повтором.');
+        }
+      } else if (listGeneration === listGenerationRef.current) {
+        setError(formatApiError(cause, 'Не удалось применить действие к письмам.'));
+      }
     } finally {
       bulkBusyRef.current = false;
       setBulkBusy(false);
@@ -215,12 +271,25 @@ export function useMailSelection(options: {
   }, [listGeneration, view, applyUnreadDelta, bulkBusy, expandConversationSelection, folder, items, listScope, load, mailboxId, offlineMode, selected, setError, setSelected, setUndo]);
 
   const confirmDelete = useCallback(() => {
-    const permanent = folder === 'trash';
-    Alert.alert(permanent ? 'Удалить выбранные письма навсегда?' : 'Удалить выбранные письма?', permanent ? 'Это действие нельзя отменить.' : 'Письма будут перемещены в папку «Удалённые».', [
-      { text: 'Отмена', style: 'cancel' },
-      { text: permanent ? 'Удалить навсегда' : 'Удалить', style: 'destructive', onPress: () => { if (selectionGeneration === selectionGenerationRef.current) void runBulk('delete', '', permanent); } },
-    ]);
-  }, [folder, runBulk, selectionGeneration]);
+    const selectedMessages = items.filter((entry): entry is Extract<MailListItem, { kind: 'message' }> => (
+      entry.kind === 'message' && selected.has(entry.value.id)
+    ));
+    const trashCount = selectedMessages.filter((entry) => (folder === 'trash' ? 'trash' : String(entry.value.folder || folder)) === 'trash').length;
+    const allTrash = trashCount > 0 && trashCount === selectedMessages.length;
+    const mixed = trashCount > 0 && !allTrash;
+    Alert.alert(
+      allTrash ? 'Удалить выбранные письма навсегда?' : 'Удалить выбранные письма?',
+      allTrash
+        ? 'Это действие нельзя отменить.'
+        : mixed
+          ? `Письма из «Удалённых» (${trashCount}) будут удалены навсегда, остальные — перемещены в папку «Удалённые».`
+          : 'Письма будут перемещены в папку «Удалённые».',
+      [
+        { text: 'Отмена', style: 'cancel' },
+        { text: allTrash ? 'Удалить навсегда' : 'Удалить', style: 'destructive', onPress: () => { if (selectionGeneration === selectionGenerationRef.current) void runBulk('delete', '', allTrash); } },
+      ],
+    );
+  }, [folder, items, runBulk, selected, selectionGeneration]);
 
   const markAllRead = useCallback(async (currentFolderUnread: number) => {
     if (bulkBusy || offlineMode) return;

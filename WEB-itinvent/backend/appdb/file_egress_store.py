@@ -14,11 +14,21 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from sqlalchemy import and_, case, func, or_, select, text, tuple_
+from sqlalchemy import String, Text, and_, case, column, func, or_, select, text, true, tuple_, values
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from backend.appdb.db import app_session, ensure_app_schema_initialized, is_app_database_configured
+from backend.appdb.db import app_session as _db_app_session, ensure_app_schema_initialized, is_app_database_configured
+
+
+def app_session(*args, **kwargs):
+    """Egress/probe telemetry store: async commit on every transaction.
+
+    All rows here are agent-reported telemetry (file events, probe chats,
+    visits, media) — a lost sub-second commit on DB crash is acceptable and
+    beats 20-30s commit stalls whenever the datastore stalls fsync.
+    """
+    return _db_app_session(*args, relax_commit=True, **kwargs)
 from backend.appdb.models import (
     AppBranchWorkSchedule,
     AppBrowserProbeFocusEvent,
@@ -35,6 +45,7 @@ from backend.appdb.models import (
     AppTelegramProbeReport,
 )
 from backend.services.dlp_categories import (
+    CATEGORY_META as DLP_CATEGORY_META,
     SERVICE_FILE_NAME_SQL_RE,
     category_meta as dlp_category_meta,
     classify_visit as dlp_classify_visit,
@@ -81,6 +92,22 @@ def _utcnow() -> datetime:
 
 def _chunked(seq: List[Any], size: int = 250) -> List[List[Any]]:
     return [seq[i : i + size] for i in range(0, len(seq), size)]
+
+
+# Evidence fields kept on grouped file_left rows (agent → server signal honesty).
+_GROUPED_DETAIL_KEYS = (
+    "kind",
+    "source",
+    "send_state",
+    "chat_name",
+    "chat_id",
+    "message_key",
+    "access_source",
+    "media",
+    "media_kind",
+    "url",
+    "browser",
+)
 
 
 _EXT_BY_TYPE = {
@@ -440,49 +467,8 @@ class AppFileEgressStore:
         if not rows:
             return 0
         with app_session(database_url=self.database_url) as session:
-            # 'deleted' rows are re-emitted by the watcher on every scan: keep only the
-            # first sighting of (computer_name, file_name) — one EXISTS prefetch, not per row.
-            deleted_pairs = {
-                (row["computer_name"], row["file_name"])
-                for row in rows
-                if row["channel"] == "deleted"
-            }
-            # Bound the prefetch to a ±7d window around the batch's own ts range:
-            # (channel, ts)/(computer_name, ts) indexes are used, and the same file
-            # deleted again after a week is a genuinely new event, not a re-send.
-            deleted_ts = [row["ts"] for row in rows if row["channel"] == "deleted"]
-            existing_deleted: set[tuple] = set()
-            for chunk in _chunked(sorted(deleted_pairs)):
-                existing_deleted.update(
-                    session.execute(
-                        select(
-                            AppFileLeftEvent.computer_name,
-                            AppFileLeftEvent.file_name,
-                        ).where(
-                            AppFileLeftEvent.channel == "deleted",
-                            AppFileLeftEvent.ts >= min(deleted_ts) - 7 * 86400,
-                            AppFileLeftEvent.ts <= max(deleted_ts) + 7 * 86400,
-                            tuple_(
-                                AppFileLeftEvent.computer_name,
-                                AppFileLeftEvent.file_name,
-                            ).in_(chunk),
-                        )
-                    ).all()
-                )
-            if deleted_pairs:
-                kept: List[Dict[str, Any]] = []
-                batch_seen: set[tuple] = set()
-                for row in rows:
-                    if row["channel"] == "deleted":
-                        pair = (row["computer_name"], row["file_name"])
-                        # First sighting only: drop pairs already stored or queued in this batch.
-                        if pair in existing_deleted or pair in batch_seen:
-                            continue
-                        batch_seen.add(pair)
-                    kept.append(row)
-                rows = kept
-            if not rows:
-                return 0
+            # The event ID is the retry key. Filename-based dedupe loses distinct
+            # deletions of same-named files (or a later delete after recreation).
             ids = [row["id"] for row in rows]
             existing_ids: set[str] = set()
             for chunk in _chunked(ids):
@@ -507,6 +493,10 @@ class AppFileEgressStore:
                 )
         return len(to_add)
 
+    _SEND_STATES = frozenset(
+        {"sent", "selected", "observed", "draft", "failed", "queued", "unknown"}
+    )
+
     @staticmethod
     def _file_left_conditions(
         *,
@@ -514,6 +504,7 @@ class AppFileEgressStore:
         channel: str = "",
         include_noise: bool = True,
         noise_only: bool = False,
+        send_state: str = "",
         dialect_name: str = "postgresql",
     ) -> List[Any]:
         conditions: List[Any] = []
@@ -526,6 +517,10 @@ class AppFileEgressStore:
             conditions.append(noise_cond)
         elif not include_noise:
             conditions.append(~noise_cond)
+        if send_state in AppFileEgressStore._SEND_STATES:
+            conditions.append(
+                AppFileLeftEvent.details_json.like(f'%"send_state": "{send_state}"%')
+            )
         return conditions
 
     @staticmethod
@@ -592,6 +587,7 @@ class AppFileEgressStore:
         offset: int = 0,
         group: bool = False,
         include_noise: bool = True,
+        send_state: str = "",
     ) -> List[Dict[str, Any]]:
         ensure_app_schema_initialized(self.database_url)
         page_limit = max(1, min(limit, 500))
@@ -601,6 +597,7 @@ class AppFileEgressStore:
                 computer_name=computer_name,
                 channel=channel,
                 include_noise=include_noise,
+                send_state=send_state,
                 dialect_name=session.connection().dialect.name,
             )
             if group:
@@ -661,6 +658,26 @@ class AppFileEgressStore:
                             "created_at": int(created_at.timestamp()) if created_at else None,
                         }
                     )
+                # Attach the representative row's evidence fields so the UI can
+                # show send_state/source/chat without losing the grouping.
+                detail_by_id: Dict[str, str] = {}
+                for chunk in _chunked([r["id"] for r in out]):
+                    for row_id, raw in session.execute(
+                        select(AppFileLeftEvent.id, AppFileLeftEvent.details_json).where(
+                            AppFileLeftEvent.id.in_(chunk)
+                        )
+                    ):
+                        detail_by_id[row_id] = raw or "{}"
+                for item in out:
+                    try:
+                        details = json.loads(detail_by_id.get(item["id"]) or "{}")
+                    except Exception:
+                        details = {}
+                    item["details"] = {
+                        key: details[key]
+                        for key in _GROUPED_DETAIL_KEYS
+                        if details.get(key) is not None
+                    }
                 return out
             stmt = (
                 select(AppFileLeftEvent)
@@ -1187,15 +1204,53 @@ class AppFileEgressStore:
                 {(f["browser"], f["url"]) for f in surviving if f["url"]}
             )
             for chunk in _chunked(hist_pairs):
-                stmt = (
-                    select(AppBrowserProbeVisit)
-                    .where(
-                        AppBrowserProbeVisit.computer_name == host,
-                        AppBrowserProbeVisit.profile != "focus",
-                        tuple_(AppBrowserProbeVisit.browser, AppBrowserProbeVisit.url).in_(chunk),
+                if is_postgres:
+                    focus_pairs = values(
+                        column("browser", String(32)),
+                        column("url", Text()),
+                        name="focus_pairs",
+                    ).data(chunk).alias("focus_pairs")
+                    latest_id = (
+                        select(AppBrowserProbeVisit.id.label("row_id"))
+                        .where(
+                            AppBrowserProbeVisit.computer_name == host,
+                            AppBrowserProbeVisit.profile != "focus",
+                            AppBrowserProbeVisit.browser == focus_pairs.c.browser,
+                            func.md5(AppBrowserProbeVisit.url) == func.md5(focus_pairs.c.url),
+                            AppBrowserProbeVisit.url == focus_pairs.c.url,
+                        )
+                        .correlate(focus_pairs)
+                        .order_by(AppBrowserProbeVisit.visited_at.desc().nullslast())
+                        .limit(1)
+                        .lateral("latest_id")
                     )
-                    .order_by(AppBrowserProbeVisit.visited_at.desc().nullslast())
-                )
+                    stmt = (
+                        select(AppBrowserProbeVisit)
+                        .select_from(focus_pairs)
+                        .join(latest_id, true())
+                        .join(AppBrowserProbeVisit, AppBrowserProbeVisit.id == latest_id.c.row_id)
+                    )
+                else:
+                    ranked_ids = (
+                        select(
+                            AppBrowserProbeVisit.id.label("row_id"),
+                            func.row_number().over(
+                                partition_by=(AppBrowserProbeVisit.browser, AppBrowserProbeVisit.url),
+                                order_by=AppBrowserProbeVisit.visited_at.desc().nullslast(),
+                            ).label("visit_rank"),
+                        )
+                        .where(
+                            AppBrowserProbeVisit.computer_name == host,
+                            AppBrowserProbeVisit.profile != "focus",
+                            tuple_(AppBrowserProbeVisit.browser, AppBrowserProbeVisit.url).in_(chunk),
+                        )
+                        .subquery()
+                    )
+                    stmt = (
+                        select(AppBrowserProbeVisit)
+                        .join(ranked_ids, ranked_ids.c.row_id == AppBrowserProbeVisit.id)
+                        .where(ranked_ids.c.visit_rank == 1)
+                    )
                 for row in session.execute(stmt).scalars():
                     hist_map.setdefault((row.browser, row.url), row)
 
@@ -1370,19 +1425,29 @@ class AppFileEgressStore:
                 count += len(chunk)
         return count
 
-    def _day_range(self, day: str) -> tuple[datetime, datetime]:
+    def _day_range(self, day: str, *, tz_offset_minutes: Optional[int] = None) -> tuple[datetime, datetime]:
+        """Day bounds. ``tz_offset_minutes=None`` keeps the server-local day
+        (attention rollups); an offset selects the branch-local day —
+        bounds come back in +05 so they compare correctly both as SQLite
+        wall digits and as PostgreSQL instants."""
         parsed = _parse_day_key(day)
-        base = parsed if parsed is not None else datetime.now().astimezone().date()
-        day_start = datetime.combine(base, datetime.min.time()).astimezone()
-        return day_start, day_start + timedelta(days=1)
+        if tz_offset_minutes is None:
+            base = parsed if parsed is not None else datetime.now().astimezone().date()
+            day_start = datetime.combine(base, datetime.min.time()).astimezone()
+            return day_start, day_start + timedelta(days=1)
+        tyumen_tz = timezone(timedelta(hours=5))
+        branch_tz = timezone(timedelta(minutes=300 + int(tz_offset_minutes)))
+        base = parsed if parsed is not None else datetime.now(branch_tz).date()
+        branch_start = datetime.combine(base, datetime.min.time(), tzinfo=branch_tz)
+        return branch_start.astimezone(tyumen_tz), (branch_start + timedelta(days=1)).astimezone(tyumen_tz)
 
-    def list_dlp_activity(self, *, computer_name: str, day: str = "") -> Dict[str, Any]:
+    def list_dlp_activity(self, *, computer_name: str, day: str = "", tz_offset_minutes: Optional[int] = None) -> Dict[str, Any]:
         """Day's 5-minute buckets for a host, all users merged by bucket_start."""
         ensure_app_schema_initialized(self.database_url)
         host = str(computer_name or "").strip()
         if not host:
             return {"buckets": [], "summary": {}, "apps_top": []}
-        day_start, day_end = self._day_range(day)
+        day_start, day_end = self._day_range(day, tz_offset_minutes=tz_offset_minutes)
         with app_session(database_url=self.database_url) as session:
             rows = session.execute(
                 select(
@@ -1497,36 +1562,61 @@ class AppFileEgressStore:
         updated_by: str = "",
     ) -> Dict[str, Any]:
         ensure_app_schema_initialized(self.database_url)
+
+        def _to_int(value: Any, label: str) -> int:
+            if isinstance(value, bool) or not isinstance(value, (int, str)):
+                raise ValueError(f"{label} must be an integer")
+            if isinstance(value, str) and not value.strip().lstrip("+-").isdigit():
+                raise ValueError(f"{label} must be an integer")
+            try:
+                return int(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"{label} must be an integer") from exc
+
         name = str(branch_name or "").strip()
-        if not name:
-            raise ValueError("branch_name is required")
-        if not (0 <= int(work_start_min) < int(work_end_min) <= 24 * 60):
+        if not name or len(name) > 255:
+            raise ValueError("branch_name must be 1..255 characters")
+        work_start = _to_int(work_start_min, "work_start_min")
+        work_end = _to_int(work_end_min, "work_end_min")
+        if not (0 <= work_start < work_end <= 24 * 60):
             raise ValueError("work_start/work_end must be a valid day interval")
-        lunch_set = lunch_start_min is not None and lunch_end_min is not None
-        if lunch_set and not (int(work_start_min) <= int(lunch_start_min) < int(lunch_end_min) <= int(work_end_min)):
-            raise ValueError("lunch must lie inside the workday")
+        lunch_start: Optional[int] = None
+        lunch_end: Optional[int] = None
+        if lunch_start_min is not None or lunch_end_min is not None:
+            if lunch_start_min is None or lunch_end_min is None:
+                raise ValueError("lunch_start_min and lunch_end_min must both be set or both empty")
+            lunch_start = _to_int(lunch_start_min, "lunch_start_min")
+            lunch_end = _to_int(lunch_end_min, "lunch_end_min")
+            if not (work_start <= lunch_start < lunch_end <= work_end):
+                raise ValueError("lunch must lie inside the workday")
+        tz_offset = _to_int(tz_offset_minutes, "tz_offset_minutes")
+        if not (-14 * 60 <= tz_offset <= 14 * 60):
+            raise ValueError("tz_offset_minutes must be between -840 and 840")
+        mask = _to_int(workdays_mask, "workdays_mask")
+        if not (0 <= mask <= 0x7F):
+            raise ValueError("workdays_mask must be between 0 and 127")
         with app_session(database_url=self.database_url) as session:
             row = session.get(AppBranchWorkSchedule, name)
             if row is None:
-                row = AppBranchWorkSchedule(branch_name=name[:255])
+                row = AppBranchWorkSchedule(branch_name=name)
                 session.add(row)
-            row.work_start_min = int(work_start_min)
-            row.work_end_min = int(work_end_min)
-            row.lunch_start_min = int(lunch_start_min) if lunch_set else None
-            row.lunch_end_min = int(lunch_end_min) if lunch_set else None
-            row.tz_offset_minutes = int(tz_offset_minutes)
-            row.workdays_mask = int(workdays_mask) & 0x7F
+            row.work_start_min = work_start
+            row.work_end_min = work_end
+            row.lunch_start_min = lunch_start
+            row.lunch_end_min = lunch_end
+            row.tz_offset_minutes = tz_offset
+            row.workdays_mask = mask
             row.updated_by = str(updated_by or "")[:255]
             row.updated_at = _utcnow()
             session.commit()
         return {
-            "branch_name": name[:255],
-            "work_start_min": int(work_start_min),
-            "work_end_min": int(work_end_min),
-            "lunch_start_min": int(lunch_start_min) if lunch_set else None,
-            "lunch_end_min": int(lunch_end_min) if lunch_set else None,
-            "tz_offset_minutes": int(tz_offset_minutes),
-            "workdays_mask": int(workdays_mask) & 0x7F,
+            "branch_name": name,
+            "work_start_min": work_start,
+            "work_end_min": work_end,
+            "lunch_start_min": lunch_start,
+            "lunch_end_min": lunch_end,
+            "tz_offset_minutes": tz_offset,
+            "workdays_mask": mask,
         }
 
     def delete_branch_work_schedule(self, *, branch_name: str) -> bool:
@@ -1979,6 +2069,9 @@ class AppFileEgressStore:
 
     def list_browser_hosts(self) -> List[Dict[str, Any]]:
         ensure_app_schema_initialized(self.database_url)
+        # Same 30-day window as list_dlp_host_stats: the page needs recency, not
+        # a lifetime Seq Scan over ~1M rows on every cold open.
+        visits_cutoff = _utcnow() - timedelta(days=30)
         stmt = (
             select(
                 AppBrowserProbeVisit.computer_name.label("computer_name"),
@@ -1995,6 +2088,7 @@ class AppFileEgressStore:
                 ).label("with_screenshot"),
                 func.max(AppBrowserProbeVisit.visited_at).label("last_visited_at"),
             )
+            .where(AppBrowserProbeVisit.visited_at >= visits_cutoff)
             .group_by(AppBrowserProbeVisit.computer_name)
             .order_by(func.max(AppBrowserProbeVisit.visited_at).desc().nullslast())
         )
@@ -2009,6 +2103,7 @@ class AppFileEgressStore:
                         "visits": int(row.visits or 0),
                         "focus_visits": int(row.focus_visits or 0),
                         "with_screenshot": int(row.with_screenshot or 0),
+                        "visits_window_days": 30,
                         "last_visited_at": last.isoformat().replace("+00:00", "Z")
                         if last
                         else None,
@@ -2026,7 +2121,6 @@ class AppFileEgressStore:
             return []
         day_col = func.date(AppBrowserProbeVisit.visited_at)
         cat = AppBrowserProbeVisit.category
-        other_cond = ~cat.in_(["work", "entertainment"])
         dwell = AppBrowserProbeVisit.dwell_sec
         conditions = [
             AppBrowserProbeVisit.computer_name == host,
@@ -2040,31 +2134,21 @@ class AppFileEgressStore:
         stmt = (
             select(
                 day_col.label("day"),
+                cat.label("category"),
                 func.count().label("visits"),
-                func.coalesce(func.sum(case((cat == "work", 1), else_=0)), 0).label("work"),
-                func.coalesce(func.sum(case((cat == "entertainment", 1), else_=0)), 0).label(
-                    "entertainment"
-                ),
-                func.coalesce(func.sum(case((other_cond, 1), else_=0)), 0).label("other"),
-                func.coalesce(func.sum(case((cat == "work", dwell), else_=0)), 0).label(
-                    "work_dwell"
-                ),
-                func.coalesce(
-                    func.sum(case((cat == "entertainment", dwell), else_=0)), 0
-                ).label("entertainment_dwell"),
-                func.coalesce(func.sum(case((other_cond, dwell), else_=0)), 0).label(
-                    "other_dwell"
-                ),
+                func.coalesce(func.sum(dwell), 0).label("dwell"),
                 func.coalesce(func.sum(AppBrowserProbeVisit.idle_sec), 0).label(
                     "idle_dwell"
                 ),
             )
             .where(*conditions)
-            .group_by(day_col)
+            .group_by(day_col, cat)
             .order_by(day_col.desc())
         )
+        # Buckets are rolled up in Python so the day also carries a per-category
+        # breakdown (UI summary chips) on top of the classic work/fun/other split.
+        days: Dict[str, Dict[str, Any]] = {}
         with app_session(database_url=self.database_url) as session:
-            out: List[Dict[str, Any]] = []
             for row in session.execute(stmt):
                 day_value = row.day
                 key = (
@@ -2072,20 +2156,38 @@ class AppFileEgressStore:
                     if hasattr(day_value, "isoformat")
                     else str(day_value or "")
                 )
-                out.append(
-                    {
+                entry = days.get(key)
+                if entry is None:
+                    entry = days[key] = {
                         "day": key,
-                        "visits": int(row.visits or 0),
-                        "work": int(row.work or 0),
-                        "entertainment": int(row.entertainment or 0),
-                        "other": int(row.other or 0),
-                        "work_dwell": float(row.work_dwell or 0),
-                        "entertainment_dwell": float(row.entertainment_dwell or 0),
-                        "other_dwell": float(row.other_dwell or 0),
-                        "idle_dwell": float(row.idle_dwell or 0),
+                        "visits": 0,
+                        "work": 0,
+                        "entertainment": 0,
+                        "other": 0,
+                        "work_dwell": 0.0,
+                        "entertainment_dwell": 0.0,
+                        "other_dwell": 0.0,
+                        "idle_dwell": 0.0,
+                        "categories": {},
                     }
+                cat_key = str(row.category or "other")
+                # Agent-supplied categories outside the known set fold into
+                # 'other' — display rows fall back the same way.
+                if cat_key not in DLP_CATEGORY_META:
+                    cat_key = "other"
+                visits = int(row.visits or 0)
+                cat_dwell = float(row.dwell or 0)
+                entry["visits"] += visits
+                entry["idle_dwell"] += float(row.idle_dwell or 0)
+                cat_entry = entry["categories"].setdefault(
+                    cat_key, {"visits": 0, "dwell": 0.0}
                 )
-            return out
+                cat_entry["visits"] += visits
+                cat_entry["dwell"] += cat_dwell
+                bucket = cat_key if cat_key in ("work", "entertainment") else "other"
+                entry[bucket] += visits
+                entry[f"{bucket}_dwell"] += cat_dwell
+        return [days[key] for key in sorted(days, reverse=True)]
 
     def list_dlp_host_stats(self) -> List[Dict[str, Any]]:
         """Per-computer aggregates over file_left + browser visits + inventory join.
@@ -2113,6 +2215,43 @@ class AppFileEgressStore:
                     func.coalesce(
                         func.sum(case((channel == "max", 1), else_=0)), 0
                     ).label("max_events"),
+                    func.coalesce(
+                        func.sum(case((channel == "browser", 1), else_=0)), 0
+                    ).label("browser_events"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    and_(
+                                        channel == "telegram",
+                                        AppFileLeftEvent.details_json.like(
+                                            '%"send_state": "sent"%'
+                                        ),
+                                    ),
+                                    1,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("telegram_sent"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    and_(
+                                        channel == "max",
+                                        AppFileLeftEvent.details_json.like(
+                                            '%"send_state": "sent"%'
+                                        ),
+                                    ),
+                                    1,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("max_sent"),
                     func.coalesce(
                         func.sum(case((channel == "deleted", 1), else_=0)), 0
                     ).label("deleted_events"),
@@ -2143,6 +2282,9 @@ class AppFileEgressStore:
                     "usb_events": int(row.usb_events or 0),
                     "telegram_events": int(row.telegram_events or 0),
                     "max_events": int(row.max_events or 0),
+                    "browser_events": int(row.browser_events or 0),
+                    "telegram_sent": int(row.telegram_sent or 0),
+                    "max_sent": int(row.max_sent or 0),
                     "deleted_events": int(row.deleted_events or 0),
                     "visits": 0,
                     "visits_window_days": 30,
@@ -2160,6 +2302,9 @@ class AppFileEgressStore:
                         "usb_events": 0,
                         "telegram_events": 0,
                         "max_events": 0,
+                        "browser_events": 0,
+                        "telegram_sent": 0,
+                        "max_sent": 0,
                         "deleted_events": 0,
                         "visits": 0,
                         "visits_window_days": 30,
@@ -2250,38 +2395,25 @@ class AppFileEgressStore:
         start = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
         start_ts = int(start.timestamp())
         with app_session(database_url=self.database_url) as session:
-            file_hosts = set(
-                session.execute(
-                    select(AppFileLeftEvent.computer_name).distinct()
-                ).scalars()
-            )
-            visit_hosts = set(
-                session.execute(
-                    select(AppBrowserProbeVisit.computer_name).distinct()
-                ).scalars()
-            )
-            today_file_hosts = set(
-                session.execute(
-                    select(AppFileLeftEvent.computer_name)
-                    .where(AppFileLeftEvent.ts >= start_ts)
-                    .distinct()
-                ).scalars()
-            )
-            today_visit_hosts = set(
-                session.execute(
-                    select(AppBrowserProbeVisit.computer_name)
-                    .where(AppBrowserProbeVisit.visited_at >= start)
-                    .distinct()
-                ).scalars()
-            )
-            file_events_today = int(
-                session.execute(
-                    select(func.count())
-                    .select_from(AppFileLeftEvent)
-                    .where(AppFileLeftEvent.ts >= start_ts)
-                ).scalar()
-                or 0
-            )
+            # Lifetime hosts are needed anyway. Reuse each covering-index pass
+            # for today's counters instead of scanning the histories again.
+            file_rows = session.execute(
+                select(
+                    AppFileLeftEvent.computer_name,
+                    func.sum(case((AppFileLeftEvent.ts >= start_ts, 1), else_=0)),
+                ).group_by(AppFileLeftEvent.computer_name)
+            ).all()
+            visit_rows = session.execute(
+                select(
+                    AppBrowserProbeVisit.computer_name,
+                    func.max(case((AppBrowserProbeVisit.visited_at >= start, 1), else_=0)),
+                ).group_by(AppBrowserProbeVisit.computer_name)
+            ).all()
+            file_hosts = {host for host, _ in file_rows}
+            visit_hosts = {host for host, _ in visit_rows}
+            today_file_hosts = {host for host, count in file_rows if count}
+            today_visit_hosts = {host for host, has_today in visit_rows if has_today}
+            file_events_today = sum(int(count or 0) for _, count in file_rows)
             category_rows = session.execute(
                 select(
                     AppBrowserProbeVisit.domain,

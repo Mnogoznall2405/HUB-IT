@@ -612,7 +612,32 @@ describe('in-flight request accounting', () => {
     await expect(apiClient.post('/profile/avatar', { value: 'x' })).rejects.toMatchObject({
       code: 'HUBIT_OFFLINE_READ_ONLY',
     });
-    expect(getApiInflightSummary().started).toBe(0);
-    expect(getApiInflightSummary().current).toBe(0);
+    // The request-interceptor rejection still lands in the response error
+    // handler — it must not be booked as a completed request.
+    expect(getApiInflightSummary()).toMatchObject({ started: 0, completed: 0, current: 0 });
+  });
+
+  it('ignores responses that complete after the counter epoch was reset', async () => {
+    await tokenStore.setTokens('access', 'refresh');
+    let adapterReached!: () => void;
+    const reached = new Promise<void>((resolve) => { adapterReached = resolve; });
+    let finishOld!: () => void;
+    apiClient.defaults.adapter = ((config: InternalAxiosRequestConfig) => new Promise((resolve) => {
+      finishOld = () => resolve(response(config, { ok: true }));
+      adapterReached();
+    })) as never;
+
+    const old = apiClient.get('/inflight-old');
+    await reached;
+    expect(getApiInflightSummary().current).toBe(1);
+
+    resetApiInflight();
+    finishOld();
+    await old;
+    expect(getApiInflightSummary()).toMatchObject({ started: 0, completed: 0, current: 0 });
+
+    apiClient.defaults.adapter = (async (config: InternalAxiosRequestConfig) => response(config, { ok: true })) as never;
+    await apiClient.get('/inflight-new');
+    expect(getApiInflightSummary()).toMatchObject({ started: 1, completed: 1, current: 0 });
   });
 });

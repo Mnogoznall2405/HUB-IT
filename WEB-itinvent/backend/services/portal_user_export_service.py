@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 import os
 import subprocess
 import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from backend.services.address_book_service import (
@@ -46,6 +48,17 @@ PORTAL_CSV_HEADER = [
 ]
 
 DEFAULT_REMOTE_PATH = "/var/www/bitrix/data/www/zsgp.corp/upload/import/users.csv"
+
+# Ниже этого порога файл считается усечённым и не доставляется:
+# пустой/обрезанный CSV деактивирует всех пользователей портала.
+DEFAULT_MIN_ROWS = 500
+
+
+def _state_path() -> Path:
+    env_path = normalize_text(os.getenv("PORTAL_EXPORT_STATE_PATH"))
+    if env_path:
+        return Path(env_path)
+    return Path(__file__).resolve().parents[3] / "data" / "portal_export_state.json"
 
 
 def employee_names_query() -> str:
@@ -212,8 +225,93 @@ class PortalUserExportService:
         }
 
     @staticmethod
-    def deliver(local_path: str) -> dict[str, Any]:
+    def _last_good_rows() -> int | None:
+        try:
+            data = json.loads(_state_path().read_text(encoding="utf-8"))
+            value = int(data.get("last_good_rows") or 0)
+            return value if value > 0 else None
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    @classmethod
+    def min_required_rows(cls) -> int:
+        """Delivery floor: max(PORTAL_EXPORT_MIN_ROWS, 80% of the last good feed)."""
+        base = int(normalize_text(os.getenv("PORTAL_EXPORT_MIN_ROWS")) or DEFAULT_MIN_ROWS)
+        last_good = cls._last_good_rows()
+        if last_good:
+            base = max(base, int(last_good * 0.8))
+        return base
+
+    @classmethod
+    def _save_last_good(cls, rows: int) -> None:
+        try:
+            path = _state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "last_good_rows": rows,
+                        "saved_at": datetime.now().isoformat(timespec="seconds"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.exception("Portal export: failed to persist last-good row count")
+
+    @staticmethod
+    def send_alert(subject: str, body: str) -> bool:
+        """Best-effort e-mail alert via SMTP_* env vars; never raises."""
+        recipients = normalize_text(os.getenv("PORTAL_EXPORT_ALERT_EMAIL"))
+        server = normalize_text(os.getenv("SMTP_SERVER"))
+        if not recipients or not server:
+            logger.warning(
+                "Portal export alert skipped (no PORTAL_EXPORT_ALERT_EMAIL/SMTP_SERVER): %s",
+                subject,
+            )
+            return False
+        try:
+            import smtplib
+            from email.message import EmailMessage
+
+            message = EmailMessage()
+            message["Subject"] = subject
+            message["From"] = normalize_text(os.getenv("SMTP_FROM_EMAIL")) or normalize_text(
+                os.getenv("SMTP_USERNAME")
+            )
+            message["To"] = recipients
+            message.set_content(body)
+            port = int(normalize_text(os.getenv("SMTP_PORT")) or 587)
+            use_tls = normalize_text(os.getenv("SMTP_USE_TLS")).lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            username = normalize_text(os.getenv("SMTP_USERNAME"))
+            with smtplib.SMTP(server, port, timeout=30) as smtp:
+                if use_tls:
+                    smtp.starttls()
+                if username:
+                    smtp.login(username, os.getenv("SMTP_PASSWORD") or "")
+                smtp.send_message(message)
+            return True
+        except Exception:
+            logger.exception("Portal export: failed to send alert")
+            return False
+
+    @classmethod
+    def deliver(cls, local_path: str, row_count: int | None = None) -> dict[str, Any]:
         """Atomic delivery to the portal: scp to a temp name + remote mv."""
+        if row_count is not None:
+            required = cls.min_required_rows()
+            if row_count < required:
+                raise RuntimeError(
+                    f"Portal export guard: {row_count} rows is below the required "
+                    f"minimum {required}; refusing to deliver a truncated feed"
+                )
         target = normalize_text(os.getenv("PORTAL_EXPORT_SSH_TARGET"))
         if not target:
             raise RuntimeError(
@@ -231,6 +329,8 @@ class PortalUserExportService:
             check=True,
             timeout=60,
         )
+        if row_count is not None:
+            cls._save_last_good(row_count)
         return {"delivered_to": f"{target}:{remote_path}"}
 
 

@@ -970,7 +970,8 @@ def transfer_items_to_db(*, source_db_id, target_db_id, inv_nos, target_owner_no
                                 for doc in bundle["docs"].values() for row in doc["files"]})
             acts = transfer_service.generate_transfer_acts(act_items, owner_name,
                     (owner_row or {}).get("OWNER_DEPT") or target_owner_dept or "", None, target_db_id,
-                    operation_id=operation_id)
+                    operation_id=operation_id,
+                    created_by_user_id=(request_context or {}).get("user_id"))
             generated = []
             for act in acts:
                 record = transfer_service.get_act_record(act["act_id"])

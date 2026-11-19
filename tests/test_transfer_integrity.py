@@ -745,3 +745,80 @@ def test_transfer_job_response_retries_only_explicit_failed_items(monkeypatch):
     )
 
     assert service.response_payload(job["id"])["retry_inv_nos"] == ["1002"]
+
+
+@pytest.mark.asyncio
+async def test_bot_refuses_confirmation_after_switching_hub_database(monkeypatch):
+    handler = importlib.import_module("bot.handlers.transfer")
+    transfer_db = _HandlerTransferDb()
+    monkeypatch.setattr(handler.database_manager, "get_user_database", lambda user_id: "other-db")
+    monkeypatch.setattr(handler.database_manager, "create_database_connection", lambda user_id: transfer_db)
+    monkeypatch.setattr(handler, "transfer_operation_store", _MemoryOperationStore())
+
+    bot = _HandlerBot()
+    update = SimpleNamespace(callback_query=_HandlerQuery(), effective_user=SimpleNamespace(id=1), message=None)
+    context = SimpleNamespace(
+        bot=bot,
+        user_data={
+            "grouped_equipment": {"Old Owner": [{"serial": "SN-OK", "item_id": 101, "equipment": {}}]},
+            "new_employee": "New Owner",
+            "new_employee_dept": "IT",
+            "new_branch": "Branch",
+            "new_location": "Office",
+            handler.TRANSFER_SOURCE_DB_KEY: "main-db",
+        },
+    )
+
+    await handler.handle_transfer_confirmation.__wrapped__(update, context)
+
+    assert transfer_db.calls == []
+    assert "собрано оборудование" in bot.messages[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_bot_marks_docx_fallback_act_in_caption(monkeypatch, tmp_path):
+    handler = importlib.import_module("bot.handlers.transfer")
+    pdf_generator = importlib.import_module("bot.services.pdf_generator")
+    docx_path = tmp_path / "act.docx"
+    docx_path.write_bytes(b"PK")
+    sent_documents = []
+
+    async def fake_generate(**kwargs):
+        return [
+            {
+                "success": True,
+                "pdf_path": str(docx_path),
+                "filename": "act.docx",
+                "old_employee": "Old Owner",
+                "equipment_count": 1,
+            }
+        ]
+
+    async def fake_send_document(**kwargs):
+        sent_documents.append(kwargs)
+        return True
+
+    monkeypatch.setattr(pdf_generator, "generate_multiple_transfer_acts", fake_generate)
+    monkeypatch.setattr(handler.database_manager, "get_user_database", lambda user_id: "main")
+    monkeypatch.setattr(handler.database_manager, "create_database_connection", lambda user_id: _HandlerTransferDb())
+    monkeypatch.setattr(handler, "send_document_with_retry", fake_send_document)
+    monkeypatch.setattr(handler.equipment_manager, "add_equipment_transfer", lambda **kwargs: None)
+    monkeypatch.setattr(handler, "transfer_operation_store", _MemoryOperationStore())
+
+    update = SimpleNamespace(callback_query=_HandlerQuery(), effective_user=SimpleNamespace(id=1), message=None)
+    context = SimpleNamespace(
+        bot=_HandlerBot(),
+        user_data={
+            "grouped_equipment": {"Old Owner": [{"serial": "SN-OK", "item_id": 101, "equipment": {}}]},
+            "new_employee": "New Owner",
+            "new_employee_dept": "IT",
+            "new_branch": "Branch",
+            "new_location": "Office",
+            handler.TRANSFER_SOURCE_DB_KEY: "main",
+        },
+    )
+
+    await handler.handle_transfer_confirmation.__wrapped__(update, context)
+
+    assert [doc["filename"] for doc in sent_documents] == ["act.docx"]
+    assert "PDF не получился" in sent_documents[0]["caption"]

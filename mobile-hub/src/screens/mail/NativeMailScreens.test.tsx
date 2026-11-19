@@ -87,6 +87,8 @@ jest.mock('../../api/mailApi', () => ({
   deleteMailDraft: jest.fn(),
   sendMailMessage: jest.fn(),
   summarizeMailMessage: jest.fn(),
+  listMailTemplates: jest.fn(),
+  sendMailItRequest: jest.fn(),
 }));
 
 jest.mock('../../mail/nativeMailFiles', () => ({
@@ -147,6 +149,48 @@ it('does not carry hidden recipients from a restored reply into another source m
   await fireEvent.press(view.getByLabelText('Добавить копию'));
   expect(view.getByLabelText('Скрытая копия').props.value).toBe('');
   expect((await createMailComposeDraftSession(scope).read())?.bcc).toBe('private@example.test');
+});
+
+it('restores the server draft instead of a stale local copy for a linked reply (MB-12)', async () => {
+  const scope = { userId: 1, mailboxId: 'box-1', sourceId: 'message-1', mode: 'reply' };
+  await createMailComposeDraftSession(scope).write({
+    draftId: 'server-draft-1', to: 'ivan@example.com', cc: '', bcc: '', subject: 'Re: Старый', body: 'Устаревший локальный текст',
+    quoteHtml: '', replyToMessageId: 'message-1', forwardMessageId: '', retainedAttachments: [], files: [],
+  });
+  (mailApi.getMailMessage as jest.Mock).mockImplementation(async (id: string) => (
+    id === 'server-draft-1'
+      ? {
+        ...message,
+        id: 'server-draft-1',
+        folder: 'drafts',
+        subject: 'Re: Свежий',
+        body_text: 'Серверный черновик с другого устройства',
+        draft_context: { reply_to_message_id: 'message-1' },
+      }
+      : message
+  ));
+  mockedParams.mockReturnValue({ mode: 'reply', mailboxId: 'box-1', sourceMessageId: 'message-1' });
+  const view = await render(<NativeMailComposeScreen />);
+
+  await waitFor(() => expect(view.getByTestId('native-mail-body').props.value).toBe('Серверный черновик с другого устройства'));
+  expect(view.getByTestId('native-mail-subject').props.value).toBe('Re: Свежий');
+  expect(mailApi.getMailMessage).toHaveBeenCalledWith('server-draft-1', 'box-1');
+});
+
+it('falls back to the local reply draft when the linked server draft is gone', async () => {
+  const scope = { userId: 1, mailboxId: 'box-1', sourceId: 'message-1', mode: 'reply' };
+  await createMailComposeDraftSession(scope).write({
+    draftId: 'server-draft-gone', to: 'ivan@example.com', cc: '', bcc: '', subject: 'Re: Локальный', body: 'Единственная копия ответа',
+    quoteHtml: '', replyToMessageId: 'message-1', forwardMessageId: '', retainedAttachments: [], files: [],
+  });
+  (mailApi.getMailMessage as jest.Mock).mockImplementation(async (id: string) => {
+    if (id === 'server-draft-gone') throw new Error('not found');
+    return message;
+  });
+  mockedParams.mockReturnValue({ mode: 'reply', mailboxId: 'box-1', sourceMessageId: 'message-1' });
+  const view = await render(<NativeMailComposeScreen />);
+
+  await waitFor(() => expect(view.getByTestId('native-mail-body').props.value).toBe('Единственная копия ответа'));
 });
 
 it.each(['reply', 'reply_all', 'forward'])('ignores a late previous source while typing a %s for the current source', async (mode) => {
@@ -315,6 +359,8 @@ beforeEach(async () => {
     mailApi.saveMailDraft,
     mailApi.sendMailMessage,
     mailApi.summarizeMailMessage,
+    mailApi.listMailTemplates,
+    mailApi.sendMailItRequest,
   ].forEach((mock) => (mock as jest.Mock).mockReset());
   mockPermissions = ['mail.access'];
   mockOfflineMode = false;
@@ -363,6 +409,8 @@ beforeEach(async () => {
   (mailApi.saveMailDraft as jest.Mock).mockResolvedValue({ draft_id: 'draft-1', attachments: [] });
   (mailApi.sendMailMessage as jest.Mock).mockResolvedValue({ ok: true });
   (mailApi.summarizeMailMessage as jest.Mock).mockResolvedValue({ summary: 'Короткий пересказ письма.' });
+  (mailApi.listMailTemplates as jest.Mock).mockResolvedValue([]);
+  (mailApi.sendMailItRequest as jest.Mock).mockResolvedValue({ ok: true });
 });
 
 it('loads native mail rows and opens the exact mailbox-scoped message', async () => {
@@ -2555,4 +2603,135 @@ it('drops the inbox unread badge right after a read elsewhere and does not resto
   await act(async () => { view.getByTestId('native-mail-list').props.onRefresh(); });
   await waitFor(() => expect(mailApi.getMailFolderSummary).toHaveBeenCalledTimes(3));
   expect(view.queryByTestId('native-mail-folder-unread-count')).toBeNull();
+});
+
+const itTemplates = [
+  {
+    id: 'tpl-access',
+    code: 'access',
+    title: 'Доступ к системе',
+    category: 'Доступы',
+    fields: [
+      { key: 'system', label: 'Система', type: 'text', default_value: '1С', required: true },
+      { key: 'comment', label: 'Комментарий', type: 'text', default_value: ['первая строка', 'вторая строка'], required: false },
+    ],
+  },
+  { id: 'tpl-hardware', code: 'hardware', title: '', category: '', fields: [] },
+];
+
+it('sends an IT request with template defaults after one lazy template fetch', async () => {
+  (mailApi.listMailTemplates as jest.Mock).mockResolvedValue(itTemplates);
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await view.findByTestId('native-mail-message-message-1');
+
+  expect(mailApi.listMailTemplates).not.toHaveBeenCalled();
+  await fireEvent.press(view.getByTestId('native-mail-view-menu'));
+  await fireEvent.press(await view.findByTestId('native-mail-it-request'));
+
+  await view.findByTestId('native-mail-it-request-sheet');
+  await waitFor(() => expect(mailApi.listMailTemplates).toHaveBeenCalledTimes(1));
+
+  await fireEvent.press(await view.findByTestId('native-mail-it-template-tpl-access'));
+  await waitFor(() => expect(view.getByTestId('native-mail-it-field-system').props.value).toBe('1С'));
+  expect(view.getByTestId('native-mail-it-field-comment').props.value).toBe('первая строка, вторая строка');
+
+  await fireEvent.changeText(view.getByTestId('native-mail-it-field-system'), 'CRM');
+  await fireEvent.press(view.getByTestId('native-mail-it-submit'));
+
+  await waitFor(() => expect(mailApi.sendMailItRequest).toHaveBeenCalledTimes(1));
+  expect(mailApi.sendMailItRequest).toHaveBeenCalledWith({
+    template_id: 'tpl-access',
+    fields: { system: 'CRM', comment: 'первая строка, вторая строка' },
+  });
+  await waitFor(() => expect(view.queryByTestId('native-mail-it-request-sheet')).toBeNull());
+  expect(await view.findByText('IT-заявка отправлена.')).toBeTruthy();
+});
+
+it('blocks the IT request submit until a template is chosen', async () => {
+  (mailApi.listMailTemplates as jest.Mock).mockResolvedValue(itTemplates);
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await fireEvent.press(await view.findByTestId('native-mail-view-menu'));
+  await fireEvent.press(await view.findByTestId('native-mail-it-request'));
+  await view.findByTestId('native-mail-it-template-tpl-access');
+
+  await fireEvent.press(view.getByTestId('native-mail-it-submit'));
+
+  expect(await view.findByText('Выберите шаблон IT-заявки.')).toBeTruthy();
+  expect(mailApi.sendMailItRequest).not.toHaveBeenCalled();
+});
+
+it('sends the IT request exactly once while the submit is in flight', async () => {
+  (mailApi.listMailTemplates as jest.Mock).mockResolvedValue(itTemplates);
+  let finishSend!: (value: Record<string, unknown>) => void;
+  (mailApi.sendMailItRequest as jest.Mock).mockImplementation(() => new Promise((resolve) => { finishSend = resolve; }));
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await fireEvent.press(await view.findByTestId('native-mail-view-menu'));
+  await fireEvent.press(await view.findByTestId('native-mail-it-request'));
+  await fireEvent.press(await view.findByTestId('native-mail-it-template-tpl-access'));
+
+  const submit = view.getByTestId('native-mail-it-submit');
+  await fireEvent.press(submit);
+  await fireEvent.press(submit);
+
+  await act(async () => { finishSend({ ok: true }); });
+  expect(mailApi.sendMailItRequest).toHaveBeenCalledTimes(1);
+  expect(await view.findByText('IT-заявка отправлена.')).toBeTruthy();
+});
+
+it('disables the IT request action offline and never queries templates', async () => {
+  mockOfflineMode = true;
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+
+  await fireEvent.press(await view.findByTestId('native-mail-view-menu'));
+  const action = await view.findByTestId('native-mail-it-request');
+  expect(action.props.accessibilityState.disabled).toBe(true);
+
+  await fireEvent.press(action);
+  expect(view.queryByTestId('native-mail-it-request-sheet')).toBeNull();
+  expect(mailApi.listMailTemplates).not.toHaveBeenCalled();
+  expect(mailApi.sendMailItRequest).not.toHaveBeenCalled();
+});
+
+it('keeps the IT request sheet on a template fetch failure and retries inline', async () => {
+  (mailApi.listMailTemplates as jest.Mock).mockRejectedValueOnce(new Error('Сеть недоступна'));
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await fireEvent.press(await view.findByTestId('native-mail-view-menu'));
+  await fireEvent.press(await view.findByTestId('native-mail-it-request'));
+
+  expect(await view.findByText('Сеть недоступна')).toBeTruthy();
+  expect(view.getByTestId('native-mail-it-request-sheet')).toBeTruthy();
+
+  (mailApi.listMailTemplates as jest.Mock).mockResolvedValue(itTemplates);
+  await fireEvent.press(view.getByTestId('native-mail-it-templates-retry'));
+
+  await view.findByTestId('native-mail-it-template-tpl-access');
+  expect(mailApi.listMailTemplates).toHaveBeenCalledTimes(2);
+});
+
+it('routes managers from the view menu to the IT-template editor', async () => {
+  mockPermissions = ['mail.access', 'settings.users.manage'];
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+
+  await fireEvent.press(await view.findByTestId('native-mail-view-menu'));
+  const action = await view.findByTestId('native-mail-templates');
+  expect(action.props.accessibilityLabel).toBe('Шаблоны заявок');
+
+  await fireEvent.press(action);
+  expect(router.push).toHaveBeenCalledWith('/(shell)/mail/templates');
+});
+
+it('hides the template manager entry without settings.users.manage', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+
+  await fireEvent.press(await view.findByTestId('native-mail-view-menu'));
+
+  expect(view.queryByTestId('native-mail-templates')).toBeNull();
+  expect(await view.findByTestId('native-mail-it-request')).toBeTruthy();
 });

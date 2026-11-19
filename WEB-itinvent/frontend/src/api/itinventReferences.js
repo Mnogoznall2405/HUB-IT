@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const withDb = (dbId, config = {}) => {
   const id = String(dbId || '').trim();

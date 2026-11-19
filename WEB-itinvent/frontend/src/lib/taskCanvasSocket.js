@@ -1,4 +1,5 @@
-import { API_V1_BASE, authAPI } from '../api/client';
+import { API_V1_BASE } from '../api/http';
+import { authAPI } from '../api/auth';
 import { getWsTicket } from '../api/chatWsAuth';
 
 const HEARTBEAT_MS = 25_000;
@@ -8,7 +9,12 @@ const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const STABLE_CONNECTION_MS = 5_000;
 // The server uses 1008 for rate limits; retry it with the normal backoff.
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([4000, 4400, 4403, 4404]);
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([4400, 4403, 4404]);
+// 4000: the server evicted this connection for a newer one (per-user connection
+// limit). Transient by nature — but an immediate reconnect would start a tab
+// war, so retry once on a long delay.
+const EVICTED_CLOSE_CODE = 4000;
+const EVICTED_RECONNECT_DELAY_MS = 120_000;
 const AUTH_TOKEN_REFRESHED_EVENT = 'auth-token-refreshed';
 const browserWindow = typeof globalThis.window === 'undefined' ? null : globalThis.window;
 
@@ -122,7 +128,7 @@ export class TaskCanvasSocketClient {
       }
       this.setStatus('disconnected');
       if (!this.manualClose && !NON_RECONNECTABLE_CLOSE_CODES.has(closeCode)) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(closeCode === EVICTED_CLOSE_CODE ? EVICTED_RECONNECT_DELAY_MS : 0);
       }
     };
   }
@@ -147,7 +153,7 @@ export class TaskCanvasSocketClient {
     this.connect();
   }
 
-  scheduleReconnect() {
+  scheduleReconnect(minDelayMs = 0) {
     if (this.reconnectTimer || this.manualClose || this.authBlocked) return;
     const index = Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1);
     const baseDelay = RECONNECT_DELAYS_MS[index];
@@ -157,7 +163,7 @@ export class TaskCanvasSocketClient {
     this.reconnectTimer = browserWindow.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, baseDelay + jitter);
+    }, Math.max(baseDelay + jitter, Number(minDelayMs) || 0));
   }
 
   startHeartbeat() {

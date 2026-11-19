@@ -124,6 +124,8 @@ def decode_access_token(
             token_type = str(payload.get("token_type") or "access").strip().lower() or "access"
             if expected_token_type and token_type != str(expected_token_type).strip().lower():
                 return None
+            if token_type == "access" and not str(payload.get("session_id") or "").strip():
+                return None
             username: str = payload.get("sub")
             if username is None:
                 return None

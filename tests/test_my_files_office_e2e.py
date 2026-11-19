@@ -420,6 +420,14 @@ def test_callbacks_must_be_signed_and_addressed_to_the_file(env):
     assert env.content(file_id) == b"sheet"
 
 
+def test_spreadsheet_filters_stay_private_to_each_editor(env):
+    # modifyFilter=false keeps each co-editor's filters and sort local: a global one would
+    # hide/reorder rows under everybody else's cursor and be saved into the file.
+    file_id = env.upload("book.xlsx", b"sheet")
+    config = env.editor_config(file_id)
+    assert config["document"]["permissions"]["modifyFilter"] is False
+
+
 def test_only_owner_and_collaborators_can_open_a_document(env):
     file_id = env.upload("secret.docx", b"private")
     env.as_user(STRANGER)
@@ -1645,9 +1653,32 @@ def test_library_file_sharing_belongs_to_managers_not_the_author(env, monkeypatc
     assert env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"user_ids": []}).status_code == 404
     assert env.client.post(f"/api/v1/my-files/{file_id}/share").status_code == 200
     folder = env.client.post("/api/v1/my-files/folders", json={"name": "Subfolder", "library_id": library}).json()
+    # Folder links follow the same rule as file links: library ``manage``/admins may publish.
+    env.as_user(COLLAB)
     assert env.client.post(f"/api/v1/my-files/folders/{folder['id']}/share").status_code == 404
+    env.as_user(OWNER)
+    assert env.client.post(f"/api/v1/my-files/folders/{folder['id']}/share").status_code == 200
     _as_global_admin(env)
     assert env.client.get(f"/api/v1/my-files/{file_id}/office/collaborators").status_code == 200
+
+
+def test_library_uploader_keeps_edit_rights_when_demoted_to_viewer(env):
+    """A uploader demoted to ``view`` still edits their own upload; library-wide rights stay ``view``."""
+    library = _make_library(env, members=[_member("user", COLLAB, "edit")])
+    file_id = _library_upload(env, COLLAB, library, "authored.docx", b"original")
+    env.current = _admin(OWNER)
+    env.client.put(
+        f"/api/v1/my-files/libraries/{library}/members",
+        json={"members": [_member("user", OWNER, "manage"), _member("user", COLLAB, "view")]},
+    )
+    env.as_user(COLLAB)
+    config = env.client.get(f"/api/v1/my-files/{file_id}/office/config").json()
+    assert config["role"] == "edit" and config["can_manage_access"] is True
+    assert env.callback(env.editor_config(file_id), status_code=2, document=b"by author", users=[str(COLLAB)]).json() == {"error": 0}
+    assert env.content(file_id) == b"by author"
+    # The library role is unchanged: still no uploading, folder creation or public links.
+    assert env.client.post("/api/v1/my-files/folders", json={"name": "Нет прав", "library_id": library}).status_code == 404
+    assert env.client.post(f"/api/v1/my-files/{file_id}/share").status_code == 404
 
 
 def test_library_file_invitation_does_not_grant_the_library_and_revocation_stops_download_and_save(env):

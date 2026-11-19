@@ -263,6 +263,21 @@ describe('Dashboard today page', () => {
     expect(mocks.getDashboard).toHaveBeenCalledTimes(2);
   });
 
+  it('does not duplicate requests when the realtime socket connects right after mount', async () => {
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(mocks.getDashboard).toHaveBeenCalledTimes(1);
+      expect(mocks.getDocflowSummary).toHaveBeenCalledTimes(1);
+    });
+
+    window.dispatchEvent(new CustomEvent('hub-realtime-connected'));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(mocks.getDashboard).toHaveBeenCalledTimes(1);
+    expect(mocks.getDocflowSummary).toHaveBeenCalledTimes(1);
+  });
+
   it('does not let a slow older dashboard response overwrite a newer one', async () => {
     let resolveOld;
     mocks.getDashboard.mockReset();
@@ -443,5 +458,27 @@ describe('Dashboard today page', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location')).toHaveTextContent('/feed?post=ann-1');
     });
+  });
+
+  it('shows a stale warning in the attention section instead of a false calm state when the hub load fails', async () => {
+    mocks.getDashboard.mockReset();
+    mocks.getDashboard.mockRejectedValue(new Error('hub down'));
+    renderDashboard();
+
+    const attention = await screen.findByTestId('dashboard-section-attention');
+    await waitFor(() => expect(attention).toHaveAttribute('data-state', 'error'));
+    expect(within(attention).getByText('Не удалось проверить события, требующие внимания. Повторите загрузку главной страницы.')).toBeInTheDocument();
+    expect(within(attention).queryByText('Всё спокойно')).toBeNull();
+
+    mocks.getDashboard.mockResolvedValue({
+      announcements: { items: [], total: 0 },
+      my_tasks: { items: [], total: 0 },
+      unread_counts: {},
+      summary: {},
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Обновить главную' }));
+
+    await waitFor(() => expect(screen.getByTestId('dashboard-section-attention')).toHaveAttribute('data-state', 'calm'));
+    expect(within(screen.getByTestId('dashboard-section-attention')).getByText('Всё спокойно')).toBeInTheDocument();
   });
 });

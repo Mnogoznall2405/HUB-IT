@@ -65,6 +65,7 @@ def _build_store(temp_dir: str):
                 reply_to_message_id TEXT NULL,
                 forward_message_id TEXT NULL,
                 compose_mailbox_id TEXT NULL,
+                forward_attachment_refs_json TEXT NULL,
                 updated_at TEXT NOT NULL
             )
             """

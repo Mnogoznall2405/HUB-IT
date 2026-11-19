@@ -132,35 +132,66 @@ class ChatAttachmentPreviewService:
         requeue_ready: bool = False,
     ) -> ChatAttachmentPreview | None:
         """Create one idempotent queue row inside the caller's transaction."""
+        rows = self.enqueue_many_in_session(
+            session=session, attachments=[attachment], now=now, requeue_ready=requeue_ready,
+        )
+        return rows[0] if rows else None
 
-        preview_kind = self._preview_kind(attachment)
-        if not preview_kind:
-            return None
-        attachment_id = _normalize_text(getattr(attachment, "id", None))
-        if not attachment_id:
-            raise ValueError("attachment.id is required")
-        row = session.get(ChatAttachmentPreview, attachment_id)
-        if row is not None:
-            if requeue_ready and preview_kind in {"image", "video"} and row.status == PREVIEW_STATUS_READY:
-                queued_at = now or _utc_now()
+    def enqueue_many_in_session(
+        self,
+        *,
+        session,
+        attachments: list[ChatMessageAttachment],
+        now: datetime | None = None,
+        requeue_ready: bool = False,
+    ) -> list[ChatAttachmentPreview]:
+        """Queue a message's previews with one lookup, without committing."""
+        kinds: dict[str, str] = {}
+        for attachment in attachments:
+            preview_kind = self._preview_kind(attachment)
+            if not preview_kind:
+                continue
+            attachment_id = _normalize_text(getattr(attachment, "id", None))
+            if not attachment_id:
+                raise ValueError("attachment.id is required")
+            kinds.setdefault(attachment_id, preview_kind)
+        if not kinds:
+            return []
+        # A second enqueue in an autoflush=False transaction must reuse pending rows.
+        rows = {
+            row.attachment_id: row for row in session.new
+            if isinstance(row, ChatAttachmentPreview) and row.attachment_id in kinds
+        }
+        missing = [attachment_id for attachment_id in kinds if attachment_id not in rows]
+        if missing:
+            rows.update({
+                row.attachment_id: row
+                for row in session.scalars(select(ChatAttachmentPreview).where(
+                    ChatAttachmentPreview.attachment_id.in_(missing),
+                ))
+            })
+        queued_at = now or _utc_now()
+        for attachment_id, preview_kind in kinds.items():
+            row = rows.get(attachment_id)
+            if row is None:
+                row = ChatAttachmentPreview(
+                    attachment_id=attachment_id,
+                    status=PREVIEW_STATUS_QUEUED,
+                    attempt_count=0,
+                    next_attempt_at=queued_at,
+                    created_at=queued_at,
+                    updated_at=queued_at,
+                )
+                session.add(row)
+                rows[attachment_id] = row
+            elif requeue_ready and preview_kind in {"image", "video"} and row.status == PREVIEW_STATUS_READY:
                 row.status = PREVIEW_STATUS_QUEUED
                 row.next_attempt_at = queued_at
                 row.lease_owner = None
                 row.lease_expires_at = None
                 row.last_error = "Published media preview is missing; queued for rebuild"
                 row.updated_at = queued_at
-            return row
-        queued_at = now or _utc_now()
-        row = ChatAttachmentPreview(
-            attachment_id=attachment_id,
-            status=PREVIEW_STATUS_QUEUED,
-            attempt_count=0,
-            next_attempt_at=queued_at,
-            created_at=queued_at,
-            updated_at=queued_at,
-        )
-        session.add(row)
-        return row
+        return [rows[attachment_id] for attachment_id in kinds]
 
     def _artifact_path(self, artifact_rel_path: str) -> Path:
         root = Path(self._artifacts_root()).resolve()

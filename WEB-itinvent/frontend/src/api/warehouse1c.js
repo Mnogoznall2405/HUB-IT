@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // Covers the deployed 90 s COM deadline plus bounded queue/HTTP overhead.
 export const WAREHOUSE_1C_QUERY_TIMEOUT_MS = 120_000;

@@ -112,6 +112,24 @@ _CHAT_REQUIRED_INDEX_ALIASES = {
 }
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default) or default).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _async_commit_enabled() -> bool:
+    """Chat write-pool async commit opt-in (CHAT_DB_ASYNC_COMMIT=1).
+
+    COMMITs stop waiting for WAL fsync, so a stalled datastore no longer
+    freezes sends and the chat_conversations row-lock convoy behind them.
+    Trade-off: a PostgreSQL crash can lose already-acknowledged commits —
+    nominally ~3*wal_writer_delay (~0.6s), unbounded while storage stalls.
+    client_message_id dedup does NOT recover such messages: the client
+    drops the retry once acked. Enable only with that loss accepted.
+    Same precedent as APP_DB_ASYNC_COMMIT (backend/appdb/db.py).
+    """
+    return _env_flag("CHAT_DB_ASYNC_COMMIT")
+
+
 def is_chat_enabled() -> bool:
     return bool(config.chat.enabled)
 
@@ -288,6 +306,10 @@ def _build_engine(database_url: str, *, pool_class: str = "write"):
         # `SET LOCAL statement_timeout`: two network round trips to a remote PostgreSQL per
         # request. As connection-level defaults they cost nothing per transaction.
         engine_kwargs["connect_args"]["options"] = _read_connection_options()
+    elif _async_commit_enabled():
+        # Commit returns before WAL fsync: sends stop stalling 10-30 s behind
+        # datastore stalls, and the row lock held until commit stops convoying.
+        engine_kwargs["connect_args"]["options"] = "-c synchronous_commit=off"
     engine = create_engine(database_url, **engine_kwargs)
     attach_slow_sql_logging(engine, source=f"chat-{pool_class}")
     _attach_chat_pool_audit_listeners(engine, pool_class=pool_class)

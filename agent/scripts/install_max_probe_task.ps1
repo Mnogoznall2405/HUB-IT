@@ -30,18 +30,6 @@ $envPath = if ($EnvFilePath) { $EnvFilePath } else { Join-Path $defaultRuntimeRo
 New-Item -ItemType Directory -Force -Path $probeRuntime | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $probeRuntime "Logs") | Out-Null
 
-# Interactive user must write state/chats/media under ProgramData.
-try {
-    $acl = Get-Acl -LiteralPath $probeRuntime
-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "Users", "Modify", "ContainerInherit,ObjectInherit", "None", "Allow"
-    )
-    $acl.SetAccessRule($rule)
-    Set-Acl -LiteralPath $probeRuntime -AclObject $acl
-} catch {
-    Write-Warning "Failed to grant Users modify on MaxProbe runtime: $($_.Exception.Message)"
-}
-
 # Prefer interactive user for UIA; fall back to Users group AtLogOn.
 $interactiveUser = $null
 try {
@@ -58,6 +46,39 @@ try {
     }
 } catch {
     $interactiveUser = $null
+}
+
+# Least-privilege runtime ACL (audit H-7): the probe task user writes
+# state/chats/media here; SYSTEM (agent service) and Administrators keep full
+# control. Other local users must not read intercepted data or plant files, so
+# BUILTIN\Users gets nothing. The tree is sanitized for upgrades: explicit
+# Users grants are removed, inherited ACEs are dropped at the root and the
+# hardened ACL is reset onto all existing children.
+try {
+    $taskUserSid = $null
+    if ($interactiveUser) {
+        try {
+            $taskUserSid = (New-Object System.Security.Principal.NTAccount($interactiveUser)).Translate(
+                [System.Security.Principal.SecurityIdentifier]
+            ).Value
+        } catch {
+            Write-Warning "Could not resolve SID for '$interactiveUser': $($_.Exception.Message)"
+        }
+    }
+    & icacls.exe $probeRuntime /remove:g "*S-1-5-32-545" /T /C /Q | Out-Null
+    & icacls.exe $probeRuntime /grant "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /C /Q | Out-Null
+    if ($taskUserSid) {
+        & icacls.exe $probeRuntime /grant "*${taskUserSid}:(OI)(CI)M" /C /Q | Out-Null
+    } else {
+        Write-Warning "No interactive user resolved; MaxProbe runtime is writable only by SYSTEM/Administrators. Re-run this installer from the target user session so the probe task account is granted Modify."
+    }
+    & icacls.exe $probeRuntime /inheritance:r /C /Q | Out-Null
+    Get-ChildItem -LiteralPath $probeRuntime -Force | ForEach-Object {
+        & icacls.exe $_.FullName /reset /T /C /Q | Out-Null
+    }
+    Write-Host "[OK] MaxProbe runtime ACL hardened: SYSTEM/Administrators full, task user modify, no BUILTIN\Users access."
+} catch {
+    Write-Warning "Failed to harden ACL on MaxProbe runtime: $($_.Exception.Message)"
 }
 
 $action = New-ScheduledTaskAction -Execute $ExecutablePath -WorkingDirectory $workDir

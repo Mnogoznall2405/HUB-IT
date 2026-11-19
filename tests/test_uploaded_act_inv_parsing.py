@@ -381,3 +381,43 @@ def test_act_parser_respects_total_llm_timeout_budget(monkeypatch):
     assert len(captured_timeouts) == 1
     assert 0 < captured_timeouts[0] <= 45
     assert any("лимит времени LLM-парсинга" in w for w in warnings)
+
+def test_stamp_pdf_doc_no_merges_overlay_with_pypdf7():
+    """DOC_NO stamp must actually change bytes under pypdf>=7 (writer-owned page)."""
+    pytest = __import__("pytest")
+    pytest.importorskip("pypdf")
+    pytest.importorskip("reportlab")
+    import io
+    from pypdf import PdfReader
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(595, 842))
+    c.drawString(100, 400, "act page")
+    c.save()
+    pdf = buf.getvalue()
+
+    stamped = act_upload_service._stamp_pdf_doc_no(pdf, 4242)
+    assert stamped != pdf
+    assert len(PdfReader(io.BytesIO(stamped)).pages) == 1
+
+
+def test_stamp_pdf_annulled_merges_overlay_with_pypdf7():
+    """ANNULLED stamp must render the label on page 1 under pypdf>=7."""
+    pytest = __import__("pytest")
+    pytest.importorskip("pypdf")
+    pytest.importorskip("reportlab")
+    import io
+    from pypdf import PdfReader
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(595, 842))
+    c.drawString(100, 400, "act page")
+    c.save()
+    pdf = buf.getvalue()
+
+    stamped = act_upload_service._stamp_pdf_annulled(pdf, 4242)
+    assert stamped != pdf
+    text = PdfReader(io.BytesIO(stamped)).pages[0].extract_text() or ""
+    assert "DOC_NO: 4242" in text

@@ -22,6 +22,12 @@ def refresh_client(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, '_enforce_rate_limit', lambda **kwargs: None)
     monkeypatch.setattr(security_module.session_service, 'is_session_active', lambda _id: True)
     monkeypatch.setattr(security_module.session_service, 'touch_session', lambda _id: True)
+    # /auth/refresh verifies the session row is still active before delivering
+    # tokens (added after this fixture): emulate an active row for user 7.
+    monkeypatch.setattr(
+        security_module.session_service, 'get_session',
+        lambda _id: {'is_active': True, 'status': 'active', 'user_id': 7},
+    )
     monkeypatch.setattr(auth.auth_security_service, '_build_public_user', lambda value, **kwargs: value)
     issued = auth.auth_security_service.issue_tokens(user=user, session_id='session-1', device_id='session:session-1')
     app = FastAPI()

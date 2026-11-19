@@ -1,4 +1,4 @@
-import { API_V1_BASE } from '../api/client';
+import { API_V1_BASE } from '../api/http';
 
 export const SCAN_EVENTS_CONNECTED_EVENT = 'scan-sse-connected';
 export const SCAN_EVENTS_INVALIDATE_EVENT = 'scan-sse-invalidate';

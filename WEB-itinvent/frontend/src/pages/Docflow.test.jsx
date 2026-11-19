@@ -856,6 +856,79 @@ describe('Docflow page', () => {
     }
   });
 
+  it('shows an error and clears the wait state when 1C rejects the command', async () => {
+    const taskRef = '11111111-1111-1111-1111-111111111197';
+    docflowAPI.getProfile.mockResolvedValue({
+      configured: true,
+      login: 'personal.login',
+      status: 'valid',
+    });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{
+        ref: taskRef,
+        title: 'Согласовать договор',
+        task_type: 'ЗадачаИсполнителя',
+        task_type_label: 'Задача исполнителя',
+        completed: false,
+      }],
+      returned: 1,
+      scope: 'inbox',
+      source: 'live_1c',
+      truncated: false,
+    });
+    const action = {
+      code: 'approve',
+      label: 'Согласовать',
+      tone: 'success',
+      comment_mode: 'optional',
+    };
+    const actionTask = {
+      ref: taskRef,
+      title: 'Согласовать договор',
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Задача исполнителя',
+      completed: false,
+      state_token: 'signed-state-token-rejected',
+      available_actions: [action],
+      files: [],
+    };
+    docflowAPI.getTask.mockResolvedValue(actionTask);
+    docflowAPI.applyTaskAction.mockResolvedValue({
+      command_id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      status: 'state_unknown',
+      correlation_id: 'corr-unknown',
+      task: null,
+      error_code: 'DOCFLOW_ACTION_STATE_UNKNOWN',
+    });
+    docflowAPI.getCommand.mockResolvedValue({
+      command_id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      status: 'rejected',
+      correlation_id: 'corr-check',
+      task: actionTask,
+      error_code: 'DOCFLOW_ACTION_FAILED',
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText('Согласовать договор')).closest('[role="button"]'));
+    const approve = await screen.findByRole('button', { name: 'Согласовать' });
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(approve);
+      await act(async () => fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1)));
+      await act(async () => vi.advanceTimersByTimeAsync(300));
+      expect(screen.getByText(/Подтверждаем выполнение в 1С/)).toBeInTheDocument();
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Проверить' })));
+      expect(screen.getByText(/1С отклонила действие/)).toBeInTheDocument();
+      // The wait state is cleared: further timer ticks must not poll getCommand again.
+      await act(async () => vi.advanceTimersByTimeAsync(60000));
+      expect(docflowAPI.getCommand).toHaveBeenCalledTimes(1);
+      expect(docflowAPI.applyTaskAction).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('button', { name: 'Согласовать' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('confirms an unknown command automatically and removes the completed task from inbox', async () => {
     const taskRef = '11111111-1111-1111-1111-111111111198';
     const title = 'HUB-IT TEST · Приглашение Козловскому';

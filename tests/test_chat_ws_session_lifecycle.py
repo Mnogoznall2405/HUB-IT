@@ -83,10 +83,14 @@ def test_periodic_validation_preserves_idle_deadline_but_commands_touch_session(
     tree = ast.parse(source.read_text(encoding="utf-8-sig"))
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                     and node.name == "assert_access_token_still_valid")
-    session_service = SimpleNamespace(is_session_active=lambda _: True, touch_session=Mock())
+    session_service = SimpleNamespace(
+        is_session_active=lambda _: True,
+        is_session_active_for_user=lambda sid, uid: int(uid or 0) == 7,
+        touch_session_nowait=Mock(),
+    )
     namespace = {
         "HTTPException": HTTPException, "status": SimpleNamespace(HTTP_401_UNAUTHORIZED=401),
-        "decode_access_token": lambda *a, **kw: SimpleNamespace(jti="j", session_id="s"),
+        "decode_access_token": lambda *a, **kw: SimpleNamespace(jti="j", session_id="s", user_id=7),
         "auth_runtime_store_service": SimpleNamespace(is_jti_revoked=lambda _: False),
         "session_service": session_service,
     }
@@ -94,9 +98,9 @@ def test_periodic_validation_preserves_idle_deadline_but_commands_touch_session(
     exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
     validate = namespace["assert_access_token_still_valid"]
     validate("test", touch_session=False)
-    session_service.touch_session.assert_not_called()
+    session_service.touch_session_nowait.assert_not_called()
     validate("test")
-    session_service.touch_session.assert_called_once_with("s")
+    session_service.touch_session_nowait.assert_called_once_with("s")
 
 
 def test_endpoint_cancels_watchdog_when_peer_disconnects():

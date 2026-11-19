@@ -1,7 +1,7 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const fsEgressAPI = {
-  listEvents({ computerName = '', channel = '', limit = 100, offset = 0, group = 0, includeNoise = 0 } = {}) {
+  listEvents({ computerName = '', channel = '', limit = 100, offset = 0, group = 0, includeNoise = 0, sendState = '' } = {}) {
     return apiClient.get('/inventory/fs-egress', {
       params: {
         computer_name: computerName,
@@ -10,6 +10,7 @@ export const fsEgressAPI = {
         offset,
         group,
         include_noise: includeNoise,
+        send_state: sendState,
       },
     });
   },

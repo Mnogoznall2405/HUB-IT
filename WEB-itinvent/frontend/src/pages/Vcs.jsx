@@ -28,18 +28,16 @@ import {
     Typography,
     useTheme
 } from '@mui/material';
-import {
-    Add as AddIcon,
-    Computer as ComputerIcon,
-    ContentCopy as CopyIcon,
-    Delete as DeleteIcon,
-    Dns as IpIcon,
-    Download as DownloadIcon,
-    Edit as EditIcon,
-    ExpandMore as ExpandMoreIcon,
-    LocationOn as LocationIcon,
-    Monitor as VncIcon
-} from '@mui/icons-material';
+import AddIcon from '@mui/icons-material/Add';
+import ComputerIcon from '@mui/icons-material/Computer';
+import CopyIcon from '@mui/icons-material/ContentCopy';
+import DeleteIcon from '@mui/icons-material/Delete';
+import IpIcon from '@mui/icons-material/Dns';
+import DownloadIcon from '@mui/icons-material/Download';
+import EditIcon from '@mui/icons-material/Edit';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import LocationIcon from '@mui/icons-material/LocationOn';
+import VncIcon from '@mui/icons-material/Monitor';
 import { useAuth } from '../contexts/AuthContext';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';

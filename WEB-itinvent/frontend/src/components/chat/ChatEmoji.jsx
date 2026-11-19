@@ -29,6 +29,8 @@ export const ChatEmojiImage = memo(function ChatEmojiImage({ emoji, size, style 
       data-chat-emoji="true"
       src={emojiImageUrl(candidates[attempt])}
       alt={emoji}
+      loading="lazy"
+      decoding="async"
       draggable={false}
       onError={() => setFailed({ emoji, count: attempt + 1 })}
       style={{

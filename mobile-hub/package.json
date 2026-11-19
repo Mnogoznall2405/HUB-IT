@@ -1,8 +1,8 @@
 {
   "name": "mobile-hub",
-  "version": "1.1.81",
+  "version": "1.1.82",
   "hubit": {
-    "androidVersionCode": 83
+    "androidVersionCode": 84
   },
   "main": "expo-router/entry",
   "scripts": {
@@ -30,7 +30,7 @@
     "@expo/vector-icons": "^15.0.3",
     "@noble/hashes": "^2.4.0",
     "@react-navigation/native": "^7.0.14",
-    "axios": "^1.19.0",
+    "axios": "1.21.0",
     "decode-uri-component": "file:./vendor/decode-uri-component-compat",
     "decode-uri-component-safe": "npm:decode-uri-component@0.5.0",
     "expo": "~57.0.19",

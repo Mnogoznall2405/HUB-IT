@@ -71,6 +71,16 @@ def _append_section_title(worksheet, title: str) -> None:
     worksheet.cell(worksheet.max_row, 1).font = Font(bold=True, size=12)
 
 
+_FORMULA_PREFIX_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _excel_safe(value: Any) -> Any:
+    """Neutralize spreadsheet formula injection for text cells from user data."""
+    if isinstance(value, str) and value[:1] in _FORMULA_PREFIX_CHARS:
+        return "'" + value
+    return value
+
+
 def _append_table(worksheet, headers: list[str], rows: Iterable[list[Any]], *, empty_message: str = "Нет данных") -> None:
     worksheet.append(headers)
     for cell in worksheet[worksheet.max_row]:
@@ -79,7 +89,7 @@ def _append_table(worksheet, headers: list[str], rows: Iterable[list[Any]], *, e
     has_rows = False
     for row in rows:
         has_rows = True
-        worksheet.append(list(row))
+        worksheet.append([_excel_safe(cell) for cell in row])
 
     if not has_rows:
         worksheet.append([empty_message])

@@ -41,7 +41,7 @@ const SUPPORTED_LIST_PARAMS = new Set([
   'task_date_sort',
 ]);
 
-const NATIVE_TASK_DATA_MODES = new Set(['list']);
+const NATIVE_TASK_DATA_MODES = new Set(['list', 'board', 'calendar', 'gantt', 'deadlines']);
 
 export function parseNativeTasksEnabled(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
@@ -74,7 +74,9 @@ export function nativeTasksDestinationFromPortalPath(path: string): NativeTasksD
     parsed.searchParams.get('task') || parsed.searchParams.get('task_id') || '',
   ).trim();
   if (taskId) {
-    if (keys.some((key) => !['task', 'task_id'].includes(key))) return null;
+    // task_detail_view/message accompany web discussion links: the native
+    // card has no message anchor, so they are tolerated and dropped.
+    if (keys.some((key) => !['task', 'task_id', 'task_detail_view', 'message'].includes(key))) return null;
     return {
       pathname: '/(shell)/tasks/[taskId]',
       params: { taskId },

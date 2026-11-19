@@ -3,7 +3,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import axios from 'axios';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import {
   ActivityIndicator,
@@ -51,6 +51,7 @@ import {
 } from '../../api/databaseApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
+import { getSessionGeneration } from '../../auth/tokenStore';
 import {
   readNativeCollectionSnapshot,
   readNativeEntitySnapshot,
@@ -81,6 +82,7 @@ import { NativeEquipmentRow } from '../../components/database/NativeEquipmentRow
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
 import { nativeEquipmentDestination } from '../../database/nativeDatabaseFeature';
+import { buildNativeConsumableQrPrintHtml, CONSUMABLE_QR_BATCH_LIMIT, type ConsumableQrPrintFormat } from '../../database/nativeConsumableQrPrint';
 import { equipmentTitle, filterConsumables, isCartridgeLikeConsumable, isPrinterLikeEquipment, parseInventoryQrPayload, type DatabaseViewMode, type InventoryQrPayload } from '../../database/nativeDatabaseModel';
 import { useNativeScanBatch } from '../../database/useNativeScanBatch';
 import { rotateLocalPhoto } from '../../database/photoRotate';
@@ -100,6 +102,7 @@ import {
   type BatteryOptimizationState,
 } from '../../network/batteryOptimization';
 import * as ImagePicker from 'expo-image-picker';
+import * as Print from 'expo-print';
 import { useNativeScanPhotoSession, type ScanPhotoTarget } from '../../database/useNativeScanPhotoSession';
 import { NativeScanPhotoPanel } from '../../components/database/NativeScanPhotoPanel';
 import type { CameraView } from 'expo-camera';
@@ -230,6 +233,9 @@ export function NativeDatabaseScreen() {
   const allowed = hasPermission('database.read');
   const canWrite = hasPermission('database.write');
   const canDelete = hasPermission('database.delete');
+  // Как в вебе: удаление карточек оборудования — отдельное право database.delete_equipment.
+  const canDeleteEquipment = hasPermission('database.delete_equipment');
+  const canDeleteEquipmentHistory = hasPermission('database.delete_equipment_history');
   const [query, setQuery] = useState(first(params.q));
   const initialMode = first(params.mode);
   const [mode, setMode] = useState<DatabaseViewMode>(initialMode === 'acts' || initialMode === 'consumables' ? initialMode : 'equipment');
@@ -271,6 +277,11 @@ export function NativeDatabaseScreen() {
   const scanCardMfuSearchSeq = useRef(0);
   const debouncedMfuQuery = useDebouncedValue(scanCardMfuQuery);
   const [scanCardDbId, setScanCardDbId] = useState('');
+  const [selectedConsumableIds, setSelectedConsumableIds] = useState<Set<number>>(() => new Set());
+  const [consumableSelectionOpen, setConsumableSelectionOpen] = useState(false);
+  const [qrPrintBusy, setQrPrintBusy] = useState(false);
+  const qrPrintBusyRef = useRef(false);
+  const canPrintQrRef = useRef(false);
   // Пара «расходник ↔ МФУ»: сканер в этом режиме собирает оба QR в любом
   // порядке и открывает карточку расходника уже с выбранной МФУ.
   const [pairScan, setPairScan] = useState<PairScanState>(EMPTY_PAIR_SCAN);
@@ -288,12 +299,14 @@ export function NativeDatabaseScreen() {
   const scanDupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [quantityDatabaseId, setQuantityDatabaseId] = useState('');
   const requestRef = useRef(0);
+  const listFocusLoadedRef = useRef(false);
   const equipmentPageRef = useRef(1);
   const equipmentRowsRef = useRef<EquipmentRecord[]>([]);
   const totalRef = useRef(0);
   const busyActRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const qrScopeRef = useRef({ userId: 0, databaseId: '' });
+  const databaseSwitchGenerationRef = useRef(0);
   const viewScopeRef = useRef({ userId: 0, databaseId: '', mode: 'equipment' as DatabaseViewMode, query: '' });
   const bulkChangesRef = useRef<TransferChangeQueue | null>(null);
   const scanChangesRef = useRef<TransferChangeQueue | null>(null);
@@ -305,6 +318,9 @@ export function NativeDatabaseScreen() {
   useEffect(() => {
     qrScopeRef.current = { userId: Number(user?.id || 0), databaseId: currentDatabase?.id || '' };
   }, [user?.id, currentDatabase?.id]);
+  // Re-evaluated every render so a revoked database.read or a database switch
+  // that started mid-build still vetoes the print dialog before it opens.
+  canPrintQrRef.current = allowed && !switchingDatabase;
   const debouncedQuery = useDebouncedValue(query.trim());
   const contentQuery = mode === 'consumables' ? '' : debouncedQuery;
   useEffect(() => {
@@ -323,6 +339,23 @@ export function NativeDatabaseScreen() {
     () => filterConsumables(consumables, debouncedQuery),
     [consumables, debouncedQuery],
   );
+  const selectedConsumables = useMemo(
+    () => visibleConsumables.filter((item) => selectedConsumableIds.has(item.id)),
+    [selectedConsumableIds, visibleConsumables],
+  );
+  // A new user, database or tab must never inherit the previous owner's picks.
+  useEffect(() => {
+    setSelectedConsumableIds(new Set());
+    setConsumableSelectionOpen(false);
+  }, [user?.id, currentDatabase?.id, mode]);
+  useEffect(() => {
+    setSelectedConsumableIds((current) => {
+      if (!current.size) return current;
+      const visibleIds = new Set(visibleConsumables.map((item) => item.id));
+      const next = new Set([...current].filter((id) => visibleIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [visibleConsumables]);
   const selectedEquipment = useMemo(
     () => equipment.filter((item) => selectedInvNos.has(item.inv_no)),
     [equipment, selectedInvNos],
@@ -566,7 +599,20 @@ export function NativeDatabaseScreen() {
     } catch (cause) {
       if (requestId === requestRef.current) {
         if (cached) setNotice('Показаны сохранённые данные. Обновить их не удалось.');
-        else setError(formatApiError(cause, mode === 'acts' ? 'Не удалось загрузить акты.' : mode === 'consumables' ? 'Не удалось загрузить расходники.' : 'Не удалось найти оборудование.'));
+        else {
+          setError(formatApiError(cause, mode === 'acts' ? 'Не удалось загрузить акты.' : mode === 'consumables' ? 'Не удалось загрузить расходники.' : 'Не удалось найти оборудование.'));
+          // A failed filter/mode switch must not keep the previous scope's
+          // rows and offset — onEndReached would otherwise append the new
+          // scope's page 2 onto a stale list.
+          if (!append) {
+            setEquipment([]);
+            setConsumables([]);
+            setActs([]);
+            setTotal(0);
+            equipmentPageRef.current = 1;
+            setHasMoreEquipment(false);
+          }
+        }
       }
     } finally {
       if (requestId === requestRef.current) {
@@ -577,10 +623,17 @@ export function NativeDatabaseScreen() {
     }
   }, [allowed, bootstrapReady, contentQuery, currentDatabase?.id, mode, offlineMode, user?.id]);
 
-  useEffect(() => { void loadContent(); }, [loadContent]);
+  // Focus-scoped: mount loads the section; returning from a pushed card/edit
+  // screen refreshes silently (refresh flag keeps the list visible).
+  useFocusEffect(useCallback(() => {
+    const returning = listFocusLoadedRef.current;
+    listFocusLoadedRef.current = true;
+    void loadContent(returning);
+  }, [loadContent]));
 
   const changeDatabase = useCallback(async (databaseId: string) => {
     if (!databaseId || databaseId === currentDatabase?.id || currentDatabase?.locked || switchingDatabase) return false;
+    databaseSwitchGenerationRef.current += 1;
     requestRef.current += 1;
     setSwitchingDatabase(databaseId);
     setError('');
@@ -813,6 +866,16 @@ export function NativeDatabaseScreen() {
     setScanCardBusy(true);
     setError('');
     const targetDatabaseId = scanCardDbId || currentDatabase?.id;
+    // One consume intent = one operation_id for as long as the card shows the
+    // same stock level: a retry after a lost response hits the durable-job
+    // idempotency instead of decrementing the stock a second time. A
+    // successful consume changes the displayed qty, so the next tap gets a
+    // fresh id and is a real second write-off.
+    const opKey = `${scanCard.id}:${scanCard.qty}`;
+    if (consumeOpRef.current.key !== opKey) {
+      consumeOpRef.current = { key: opKey, id: `consume-${scanCard.id}-${scanCard.qty}-${Date.now().toString(36)}` };
+    }
+    const operationId = consumeOpRef.current.id;
     try {
       let nextQty: number;
       if (cartridgeLike && scanCardMfu) {
@@ -821,11 +884,12 @@ export function NativeDatabaseScreen() {
           equipment: scanCardMfu,
           consumable: scanCard,
           databaseId: targetDatabaseId,
+          operationId,
         });
         nextQty = typeof result?.qty_new === 'number' ? result.qty_new : Math.max(0, scanCard.qty - 1);
         setNotice(`Списано: ${scanCard.model_name || scanCard.type_name || 'расходник'} → ${scanCardMfu.model_name || 'МФУ'} (инв. ${scanCardMfu.inv_no}). Остаток: ${nextQty}.`);
       } else {
-        const result = await consumeConsumableStock(scanCard, 1, targetDatabaseId);
+        const result = await consumeConsumableStock(scanCard, 1, targetDatabaseId, { operationId });
         nextQty = typeof result.qty_new === 'number' ? result.qty_new : Math.max(0, scanCard.qty - 1);
         setNotice(`Списано: ${scanCard.model_name || scanCard.type_name || 'расходник'}. Остаток: ${nextQty}.`);
       }
@@ -1098,6 +1162,7 @@ export function NativeDatabaseScreen() {
 
   // «Быстрые фото»: QR выбирает технику, затвор снимает кадр той же камерой,
   // отправка идёт фоновой очередью.
+  const consumeOpRef = useRef({ key: '', id: '' });
   const scanCameraRef = useRef<CameraView | null>(null);
   const [scanPhotoCapturing, setScanPhotoCapturing] = useState(false);
   // Кадр ждёт подтверждения, пока его не повернули/приняли/переснимут.
@@ -1418,7 +1483,8 @@ export function NativeDatabaseScreen() {
     result?: TransferResult,
     context?: NativeEquipmentTransferContext,
   ) => {
-    if (kind !== 'owner' && kind !== 'location' && kind !== 'act-only') return;
+    const removing = kind === 'delete' || kind === 'db-transfer';
+    if (!removing && kind !== 'owner' && kind !== 'location' && kind !== 'act-only') return;
     if (!result || !((result.success_count || 0) > 0 || result.acts.length > 0)) return;
     const userId = Number(user?.id || 0);
     const databaseId = context?.databaseId || currentDatabase?.id || '';
@@ -1437,7 +1503,7 @@ export function NativeDatabaseScreen() {
       return;
     }
     queue.invalidatedTabs.add('history');
-    if (kind === 'owner') queue.invalidatedTabs.add('acts');
+    if (kind === 'owner' || removing) queue.invalidatedTabs.add('acts');
     if ((result.success_count || 0) > 0) {
       for (const invNo of context?.invNos || []) {
         const normalized = String(invNo || '').trim();
@@ -1653,7 +1719,9 @@ export function NativeDatabaseScreen() {
 
   const saveQuantity = useCallback(async () => {
     if (!quantityItem || quantityBusy || offlineMode) return;
-    const qty = Number(quantityDraft.trim());
+    const draft = quantityDraft.trim();
+    // Number('') === 0 — an empty field must not silently zero the stock.
+    const qty = draft ? Number(draft) : Number.NaN;
     if (!Number.isInteger(qty) || qty < 0) {
       setError('Количество должно быть целым неотрицательным числом.');
       return;
@@ -1736,14 +1804,73 @@ export function NativeDatabaseScreen() {
     setDeleteItem(item);
   }, []);
 
+  const printConsumableQr = useCallback(async (
+    items: readonly ConsumableRecord[],
+    databaseId: string,
+    format: ConsumableQrPrintFormat,
+  ) => {
+    if (qrPrintBusyRef.current || switchingDatabase || !allowed || !items.length) return;
+    const lease = getSessionGeneration();
+    const switchLease = databaseSwitchGenerationRef.current;
+    const scope = qrScopeRef.current;
+    qrPrintBusyRef.current = true;
+    setQrPrintBusy(true);
+    setError('');
+    try {
+      const html = await buildNativeConsumableQrPrintHtml(items, databaseId, format);
+      // A logout/account or database switch while the page was being built
+      // must not open the system print dialog against the stale scope.
+      if (lease !== getSessionGeneration()
+        || switchLease !== databaseSwitchGenerationRef.current
+        || !canPrintQrRef.current
+        || qrScopeRef.current.userId !== scope.userId
+        || qrScopeRef.current.databaseId !== scope.databaseId) return;
+      await Print.printAsync({ html });
+    } catch (cause) {
+      setError(formatApiError(cause, 'Не удалось напечатать QR расходника.'));
+    } finally {
+      qrPrintBusyRef.current = false;
+      setQrPrintBusy(false);
+    }
+  }, [allowed, switchingDatabase]);
+
+  const printConsumableQrLabel = useCallback((item: ConsumableRecord) => {
+    void printConsumableQr([item], currentDatabase?.id || '', 'label');
+  }, [currentDatabase?.id, printConsumableQr]);
+
+  const printScanCardQr = useCallback(() => {
+    if (!scanCard) return;
+    void printConsumableQr([scanCard], scanCardDbId || currentDatabase?.id || '', 'label');
+  }, [currentDatabase?.id, printConsumableQr, scanCard, scanCardDbId]);
+
+  const toggleConsumableSelection = useCallback((item: ConsumableRecord) => {
+    if (!selectedConsumableIds.has(item.id) && selectedConsumableIds.size >= CONSUMABLE_QR_BATCH_LIMIT) {
+      setError(`Можно выбрать не больше ${CONSUMABLE_QR_BATCH_LIMIT} расходников для печати QR.`);
+      return;
+    }
+    setError('');
+    setSelectedConsumableIds((current) => {
+      // Batched presses can bypass the outer stale-closure check, so the cap
+      // is enforced again against the freshest state inside the updater.
+      if (!current.has(item.id) && current.size >= CONSUMABLE_QR_BATCH_LIMIT) return current;
+      const next = new Set(current);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+  }, [selectedConsumableIds]);
+
   const renderConsumableRow = useCallback(({ item }: ListRenderItemInfo<ConsumableRecord>) => (
     <NativeConsumableRow
       item={item}
       tokens={tokens}
+      onPrintQr={printConsumableQrLabel}
+      onSelect={consumableSelectionOpen ? toggleConsumableSelection : undefined}
+      selected={selectedConsumableIds.has(item.id)}
       onEditQuantity={canWrite && !offlineMode ? editConsumableQuantity : undefined}
       onDelete={canDelete && !offlineMode ? requestConsumableDelete : undefined}
     />
-  ), [canDelete, canWrite, editConsumableQuantity, offlineMode, requestConsumableDelete, tokens]);
+  ), [canDelete, canWrite, consumableSelectionOpen, editConsumableQuantity, offlineMode, printConsumableQrLabel, requestConsumableDelete, selectedConsumableIds, toggleConsumableSelection, tokens]);
 
   const renderEquipmentAct = useCallback(({ item }: ListRenderItemInfo<EquipmentAct>) => (
     <NativeEquipmentActCard
@@ -1869,6 +1996,11 @@ export function NativeDatabaseScreen() {
             </Pressable>
           ) : null}
           {canWrite && !offlineMode && mode === 'equipment' ? <Pressable testID="native-database-select" accessibilityRole="button" accessibilityState={{ selected: selectionMode }} onPress={() => { setSelectionRequested(!selectionMode); setSelectedInvNos(new Set()); }} style={({ pressed }) => [styles.resultAction, styles.toolbarAction, { borderColor: tokens.border, opacity: pressed ? 0.75 : 1 }]}><Text style={[styles.resultActionText, { color: accentColor }]}>{selectionMode ? 'Отмена' : 'Выбрать'}</Text></Pressable> : null}
+          {mode === 'consumables' ? (
+            <Pressable testID="native-consumable-select-mode" accessibilityRole="button" accessibilityState={{ selected: consumableSelectionOpen }} onPress={() => { setConsumableSelectionOpen(!consumableSelectionOpen); setSelectedConsumableIds(new Set()); }} style={({ pressed }) => [styles.resultAction, styles.toolbarAction, { borderColor: tokens.border, opacity: pressed ? 0.75 : 1 }]}>
+              <Text style={[styles.resultActionText, { color: accentColor }]}>{consumableSelectionOpen ? 'Отмена' : 'Выбрать QR'}</Text>
+            </Pressable>
+          ) : null}
           <Pressable testID="native-database-more" accessibilityRole="button" accessibilityLabel="Ещё действия с инвентарём" accessibilityState={{ expanded: moreOpen }} onPress={() => setMoreOpen(!moreOpen)} style={({ pressed }) => [styles.resultAction, styles.moreAction, { borderColor: tokens.border, backgroundColor: moreOpen ? tokens.panelInset : 'transparent', opacity: pressed ? 0.75 : 1 }]}>
             <MaterialCommunityIcons name="dots-horizontal" size={22} color={accentColor} />
           </Pressable>
@@ -1900,6 +2032,52 @@ export function NativeDatabaseScreen() {
           </Pressable>
         ) : null}
       </View>
+      {mode === 'consumables' && consumableSelectionOpen && selectedConsumables.length > 0 ? (
+        <View testID="native-consumable-qr-selection" style={styles.countActions}>
+          <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Выбрано: {selectedConsumables.length}</Text>
+          <Pressable
+            testID="native-consumable-qr-print-label"
+            disabled={qrPrintBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Печать QR на этикетках 56 на 50 мм"
+            accessibilityState={{ disabled: qrPrintBusy }}
+            onPress={() => { void printConsumableQr(selectedConsumables, currentDatabase?.id || '', 'label'); }}
+            style={[styles.resultAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border, opacity: qrPrintBusy ? 0.5 : 1 }]}
+          >
+            <Text style={[styles.resultActionText, { color: accentColor }]}>56×50</Text>
+          </Pressable>
+          <Pressable
+            testID="native-consumable-qr-print-small"
+            disabled={qrPrintBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Печать QR на этикетках 28 на 25 мм"
+            accessibilityState={{ disabled: qrPrintBusy }}
+            onPress={() => { void printConsumableQr(selectedConsumables, currentDatabase?.id || '', 'label_small'); }}
+            style={[styles.resultAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border, opacity: qrPrintBusy ? 0.5 : 1 }]}
+          >
+            <Text style={[styles.resultActionText, { color: accentColor }]}>28×25</Text>
+          </Pressable>
+          <Pressable
+            testID="native-consumable-qr-print-a4"
+            disabled={qrPrintBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Печать QR сеткой 6 на 6 на листе A4"
+            accessibilityState={{ disabled: qrPrintBusy }}
+            onPress={() => { void printConsumableQr(selectedConsumables, currentDatabase?.id || '', 'a4'); }}
+            style={[styles.resultAction, { backgroundColor: tokens.panelSolid, borderColor: tokens.border, opacity: qrPrintBusy ? 0.5 : 1 }]}
+          >
+            <Text style={[styles.resultActionText, { color: accentColor }]}>A4 6×6</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Отменить выбор расходников"
+            onPress={() => { setConsumableSelectionOpen(false); setSelectedConsumableIds(new Set()); }}
+            style={styles.resultAction}
+          >
+            <Text style={[styles.resultActionText, { color: tokens.textSecondary }]}>Отмена</Text>
+          </Pressable>
+        </View>
+      ) : null}
       {!query.trim() && !selectionMode && mode !== 'consumables' && (mode === 'acts' ? recentActs.length : recentCards.length) && recentOpen ? (
         <View style={styles.recentSection}>
             <ScrollView
@@ -2004,8 +2182,11 @@ export function NativeDatabaseScreen() {
               equipment={selectedEquipment[0]}
               targets={selectedEquipment}
               databaseId={currentDatabase?.id}
+              databases={databases}
               canWrite={canWrite}
-              canDeleteEquipment={false}
+              canDeleteEquipment={canDeleteEquipment}
+              canDeleteEquipmentHistory={canDeleteEquipmentHistory}
+              allowWorkActions
               offline={offlineMode}
               surface="general"
               tokens={tokens}
@@ -2020,7 +2201,9 @@ export function NativeDatabaseScreen() {
                 }
                 flushTransferChanges(queue);
               }}
-              onDeleted={() => undefined}
+              onDeleted={(invNos) => {
+                setNotice(invNos.length > 1 ? `Удалено карточек: ${invNos.length}.` : `Оборудование ${invNos[0]} удалено.`);
+              }}
             />
           </ScrollView>
         </View>
@@ -2065,7 +2248,7 @@ export function NativeDatabaseScreen() {
             />
             <View style={styles.dialogActions}>
               <Pressable disabled={quantityBusy} accessibilityRole="button" onPress={() => setQuantityItem(null)} style={styles.dialogButton}><Text style={[styles.dialogButtonText, { color: tokens.textSecondary }]}>Отмена</Text></Pressable>
-              <Pressable testID="native-consumable-quantity-save" disabled={quantityBusy} accessibilityRole="button" accessibilityState={{ disabled: quantityBusy }} onPress={() => { void saveQuantity(); }} style={[styles.dialogButton, { backgroundColor: tokens.primary }]}>
+              <Pressable testID="native-consumable-quantity-save" disabled={quantityBusy || !quantityDraft.trim()} accessibilityRole="button" accessibilityState={{ disabled: quantityBusy || !quantityDraft.trim() }} onPress={() => { void saveQuantity(); }} style={[styles.dialogButton, { backgroundColor: tokens.primary }]}>
                 {quantityBusy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={[styles.dialogButtonText, { color: '#fff' }]}>Сохранить</Text>}
               </Pressable>
             </View>
@@ -2218,6 +2401,17 @@ export function NativeDatabaseScreen() {
                 <View style={styles.dialogActions}>
                   <Pressable disabled={scanCardBusy} accessibilityRole="button" onPress={() => { setScanCard(null); setScanCardDbId(''); }} style={styles.dialogButton}>
                     <Text style={[styles.dialogButtonText, { color: tokens.textSecondary }]}>Закрыть</Text>
+                  </Pressable>
+                  <Pressable
+                    testID="native-consumable-scan-print-qr"
+                    disabled={scanCardBusy || qrPrintBusy}
+                    accessibilityRole="button"
+                    accessibilityLabel="Печать QR расходника"
+                    accessibilityState={{ disabled: scanCardBusy || qrPrintBusy }}
+                    onPress={printScanCardQr}
+                    style={styles.dialogButton}
+                  >
+                    <Text style={[styles.dialogButtonText, { color: accentColor }]}>Печать QR</Text>
                   </Pressable>
                   {canWrite ? (
                     <Pressable

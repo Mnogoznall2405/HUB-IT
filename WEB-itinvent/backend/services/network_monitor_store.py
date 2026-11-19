@@ -335,14 +335,15 @@ class MonitoringStore:
             return [self.event_data(row) for row in session.scalars(query.order_by(MonitoringEvent.opened_at.desc()).limit(limit))]
 
     @staticmethod
-    def _samples(session, target_id, series, now, duration=60, *, merge_device=False):
+    def _samples(session, target_id, series, now, duration=60, *, merge_device=False, icmp=None):
         # Deterministic identifiers make sample retries and aggregate updates idempotent.
         sample_at = utc(now).replace(second=0, microsecond=0)
+        icmp_handled = False
         if merge_device and "" in series:
-            MonitoringStore._merge_device_sample(session, target_id, series[""], sample_at)
+            icmp_handled = MonitoringStore._merge_device_sample(session, target_id, series[""], sample_at, icmp=icmp, now=now)
             series = {iid: values for iid, values in series.items() if iid}
             if not series:
-                return
+                return icmp_handled
         new = []
         identifiers = {iid: str(uuid5(NAMESPACE_URL, f"monitor:{target_id}:{iid}:{sample_at.isoformat()}")) for iid in series}
         existing = set(session.scalars(select(MonitoringSample.id).where(MonitoringSample.id.in_(list(identifiers.values())))))
@@ -373,16 +374,18 @@ class MonitoringStore:
                     session.add(row)
                     index[key] = row
                 row.values = aggregate_values(row.values, values, interval)
+        return icmp_handled
 
     @staticmethod
-    def _merge_device_sample(session, target_id, values, sample_at):
+    def _merge_device_sample(session, target_id, values, sample_at, *, icmp=None, now=None):
         """Replace one minute's rollup contribution; never add it a second time."""
+        now = utc(now) if now is not None else sample_at
         identifier = str(uuid5(NAMESPACE_URL, f"monitor:{target_id}::{sample_at.isoformat()}"))
         row = session.scalar(select(MonitoringSample).where(MonitoringSample.target_id == target_id,
             MonitoringSample.interface_id == "", MonitoringSample.observed_at == sample_at))
         if row is not None and "_stats" not in row.values:
             # Preserve the transition minute: the old writer did not save trustworthy packet counts/weights.
-            return
+            return False
         prior = (row.values.get("_stats") or aggregate_values({}, row.values)) if row else {}
         weights = values.get("_weights", {})
         stats = prior
@@ -390,13 +393,67 @@ class MonitoringStore:
             if not key.startswith("_"):
                 stats = merge_aggregates(stats, aggregate_values({}, {key: value}, weights.get(key, 60)))
         metrics = {key: value for key, value in chart_values(stats, True).items() if not key.endswith(("_min", "_max"))}
+        icmp_slots = None
+        if icmp is not None:
+            slot_time, slot_key, slot = MonitoringStore._icmp_slot(
+                icmp["ping"], icmp["now"], icmp["scheduled_at"], icmp["backoff_until"])
+            if slot_time.replace(second=0, microsecond=0) == sample_at:
+                # Fold the 10s slot into this flush: otherwise every poll writes
+                # the minute row twice (stats, then slots).
+                slots = dict((row.values or {}).get("_icmp_10s") or {}) if row else {}
+                prior_slot = slots.get(slot_key) or {}
+                if icmp["scheduled_at"] or prior_slot.get("source") != "scheduled":
+                    slots[slot_key] = slot
+                    icmp_slots = slots
         if row is None:
             row = MonitoringSample(id=identifier, target_id=target_id, interface_id="", observed_at=sample_at, values={})
             session.add(row)
-        row.values = {**(row.values or {}), **metrics, "_stats": stats}
+            apply_rollups = True
+            applied_stats = {}
+        else:
+            # Rollups feed only >7d history: applying them at most ~once per
+            # minute row keeps 10s probes from rewriting both buckets per poll.
+            # A pending delta is finalized when the next minute's record lands.
+            applied_at = timestamp((row.values or {}).get("_agg_applied_at"))
+            apply_rollups = applied_at is None or (now - applied_at).total_seconds() >= 55
+            marked = (row.values or {}).get("_agg_applied")
+            applied_stats = marked if isinstance(marked, dict) else prior
+        updated = {**(row.values or {}), **metrics, "_stats": stats,
+                   **({"_icmp_10s": icmp_slots} if icmp_slots is not None else {})}
+        if apply_rollups:
+            updated["_agg_applied"] = stats
+            updated["_agg_applied_at"] = now.isoformat()
+            updated.pop("_agg_pending", None)
+        elif stats != applied_stats:
+            updated["_agg_pending"] = True
+        row.values = updated
         session.flush()
-        hour = sample_at.replace(minute=0)
-        minute5 = sample_at.replace(minute=sample_at.minute // 5 * 5)
+        if apply_rollups:
+            MonitoringStore._apply_device_rollups(session, target_id, sample_at, stats, applied_stats)
+            # A minute row may hold an unapplied tail (probes every 10s leave
+            # before the 55s refresh): finalize recent pending rows so rollups
+            # lose at most an open minute, never a closed one.
+            cutoff = sample_at - timedelta(minutes=15)
+            for older in session.scalars(select(MonitoringSample).where(
+                    MonitoringSample.target_id == target_id, MonitoringSample.interface_id == "",
+                    MonitoringSample.observed_at >= cutoff, MonitoringSample.observed_at < sample_at)):
+                older_values = older.values or {}
+                if not older_values.get("_agg_pending"):
+                    continue
+                older_stats = older_values.get("_stats") or {}
+                older_applied = older_values.get("_agg_applied")
+                MonitoringStore._apply_device_rollups(
+                    session, target_id, utc(older.observed_at), older_stats,
+                    older_applied if isinstance(older_applied, dict) else {})
+                older.values = {**older_values, "_agg_applied": older_stats,
+                                "_agg_applied_at": now.isoformat(), "_agg_pending": False}
+        return icmp_slots is not None
+
+    @staticmethod
+    def _apply_device_rollups(session, target_id, observed_at, stats, applied_stats):
+        """Add a minute row's unapplied delta to its 5m/1h rollup buckets."""
+        hour = observed_at.replace(minute=0)
+        minute5 = observed_at.replace(minute=observed_at.minute // 5 * 5)
         rollups = {(r.resolution, utc(r.bucket_at)): r for r in session.scalars(select(MonitoringAggregate).where(
             MonitoringAggregate.target_id == target_id, MonitoringAggregate.interface_id == "",
             MonitoringAggregate.resolution.in_((300, 3600)), MonitoringAggregate.bucket_at.in_((hour, minute5))))}
@@ -416,7 +473,7 @@ class MonitoringStore:
             else:
                 combined = {key: dict(value) for key, value in aggregate.values.items()}
                 for key, after in stats.items():
-                    before = prior.get(key, {})
+                    before = applied_stats.get(key, {})
                     previous = combined.get(key, {})
                     combined[key] = {"sum": previous.get("sum", 0) + after["sum"] - before.get("sum", 0),
                         "weight": previous.get("weight", 0) + after["weight"] - before.get("weight", 0),
@@ -441,27 +498,13 @@ class MonitoringStore:
         return stored_at is None or (now - stored_at).total_seconds() >= interval - INTERFACE_WRITE_TOLERANCE_SECONDS
 
     @staticmethod
-    def _icmp_sample(session, target_id, ping, now, scheduled_at=None, backoff_until=None):
-        # Six bounded slots share the existing minute row; no new table or row rate.
-        session.flush()
+    def _icmp_slot(ping, now, scheduled_at, backoff_until):
         scheduled = timestamp(scheduled_at)
         slot_time = scheduled if scheduled and scheduled <= now < scheduled + timedelta(seconds=10) else now
-        minute = slot_time.replace(second=0, microsecond=0)
-        row = session.scalar(select(MonitoringSample).where(MonitoringSample.target_id == target_id,
-            MonitoringSample.interface_id == "", MonitoringSample.observed_at == minute))
-        if row is None:
-            row = MonitoringSample(id=str(uuid5(NAMESPACE_URL, f"monitor:{target_id}::{minute.isoformat()}")),
-                target_id=target_id, interface_id="", observed_at=minute, values={"_stats": {}})
-            session.add(row)
-        slots = dict((row.values or {}).get("_icmp_10s") or {})
-        key = str(slot_time.second // 10 * 10)
-        prior = slots.get(key) or {}
-        # Manual refresh must not erase the evidence of an automatic check.
-        if not scheduled and prior.get("source") == "scheduled":
-            return
         error = ping.get("error")
         error = error if error in {"collector_timeout", "process_error"} else ("collector_error" if error else None)
-        slots[key] = {"observed_at": now.isoformat(), "started_at": ping.get("started_at") or now.isoformat(),
+        return slot_time, str(slot_time.second // 10 * 10), {
+            "observed_at": now.isoformat(), "started_at": ping.get("started_at") or now.isoformat(),
             "completed_at": ping.get("completed_at"), "scheduled_at": scheduled_at,
             "source": "scheduled" if scheduled else "manual", "status": ping.get("status", "unknown"),
             "error": error, "sent": number(ping.get("sent")), "received": number(ping.get("received")),
@@ -469,6 +512,32 @@ class MonitoringStore:
             "latency_ms": number(ping.get("latency_ms")) if ping.get("status") == "online" and not error else None,
             "partial_latency_ms": number(ping.get("latency_ms")) if error else None,
             "backoff_until": backoff_until}
+
+    @staticmethod
+    def _icmp_sample(session, target_id, ping, now, scheduled_at=None, backoff_until=None):
+        # Six bounded slots share the existing minute row; no new table or row rate.
+        slot_time, key, slot = MonitoringStore._icmp_slot(ping, now, scheduled_at, backoff_until)
+        minute = slot_time.replace(second=0, microsecond=0)
+        identifier = str(uuid5(NAMESPACE_URL, f"monitor:{target_id}::{minute.isoformat()}"))
+        # Reuse a minute row _samples already staged in this transaction; a
+        # flush-then-update turns every poll into INSERT plus UPDATE on it.
+        row = next((obj for obj in session.new
+                    if isinstance(obj, MonitoringSample) and obj.id == identifier), None)
+        if row is None:
+            # Older rows can carry a non-deterministic id; match by the minute key.
+            row = session.scalar(select(MonitoringSample).where(
+                MonitoringSample.target_id == target_id, MonitoringSample.interface_id == "",
+                MonitoringSample.observed_at == minute))
+        if row is None:
+            row = MonitoringSample(id=identifier, target_id=target_id, interface_id="", observed_at=minute,
+                values={"_stats": {}})
+            session.add(row)
+        slots = dict((row.values or {}).get("_icmp_10s") or {})
+        prior = slots.get(key) or {}
+        # Manual refresh must not erase the evidence of an automatic check.
+        if not timestamp(scheduled_at) and prior.get("source") == "scheduled":
+            return
+        slots[key] = slot
         row.values = {**(row.values or {}), "_icmp_10s": slots}
 
     @staticmethod
@@ -685,9 +754,7 @@ class MonitoringStore:
                         rules.pop(key)
             current["rules"] = rules
             current["open_events"] = len(opened)
-            sample_age = (now - (timestamp(previous.get("sample_at")) or datetime.min.replace(tzinfo=timezone.utc))).total_seconds()
-            if split or (full and sample_age >= 55):
-                self._samples(session, row.id, series, now, min(sample_age, 60), merge_device=split)
+            icmp = None
             if has_ping:
                 scheduled = timestamp(snapshot.get("scheduled_at"))
                 first_check = scheduled if scheduled and scheduled <= now < scheduled + timedelta(seconds=10) else now
@@ -695,6 +762,12 @@ class MonitoringStore:
                 if scheduled:
                     current["icmp_schedule_phase"] = scheduled.timestamp() % 10
                 backoff = (now + timedelta(seconds=min(60, 30 * failures))).isoformat() if current["status"] == "offline" else None
+                icmp = {"ping": ping, "now": now, "scheduled_at": snapshot.get("scheduled_at"), "backoff_until": backoff}
+            sample_age = (now - (timestamp(previous.get("sample_at")) or datetime.min.replace(tzinfo=timezone.utc))).total_seconds()
+            icmp_handled = False
+            if split or (full and sample_age >= 55):
+                icmp_handled = self._samples(session, row.id, series, now, min(sample_age, 60), merge_device=split, icmp=icmp)
+            if has_ping and not icmp_handled:
                 self._icmp_sample(session, row.id, ping, now, snapshot.get("scheduled_at"), backoff)
             if split or has_ping or (full and sample_age >= 55):
                 current["sample_at"] = max(now, timestamp(previous.get("sample_at")) or now).isoformat()

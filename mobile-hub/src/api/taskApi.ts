@@ -390,12 +390,18 @@ export async function searchTaskControllers(q = '', limit = 50): Promise<TaskAss
   return Array.isArray(data) ? data : data.items || [];
 }
 
+// Backend returns is_active as INTEGER 0/1 — `0 !== false` is true, so every
+// truthiness check must see a real boolean.
+function normalizeActiveFlag<T extends { is_active?: boolean }>(item: T): T {
+  return item.is_active === undefined ? item : { ...item, is_active: Boolean(item.is_active) };
+}
+
 export async function getTaskProjects(options: { includeInactive?: boolean } = {}): Promise<TaskProject[]> {
   const request = options.includeInactive
     ? apiClient.get<{ items?: TaskProject[] } | TaskProject[]>('/hub/task-projects', { params: { include_inactive: true } })
     : apiClient.get<{ items?: TaskProject[] } | TaskProject[]>('/hub/task-projects');
   const { data } = await request;
-  const items = Array.isArray(data) ? data : data.items || [];
+  const items = (Array.isArray(data) ? data : data.items || []).map(normalizeActiveFlag);
   return options.includeInactive ? items : items.filter((item) => item.is_active !== false);
 }
 
@@ -405,18 +411,18 @@ export async function getTaskObjects(options: { includeInactive?: boolean; proje
   (options.projectIds || []).forEach((projectId) => query.append('project_id', projectId));
   const suffix = query.toString();
   const { data } = await apiClient.get<{ items?: TaskObject[] } | TaskObject[]>(`/hub/task-objects${suffix ? `?${suffix}` : ''}`);
-  const items = Array.isArray(data) ? data : data.items || [];
+  const items = (Array.isArray(data) ? data : data.items || []).map(normalizeActiveFlag);
   return options.includeInactive ? items : items.filter((item) => item.is_active !== false);
 }
 
 export async function createTaskProject(payload: TaskProjectCreatePayload): Promise<TaskProject> {
   const { data } = await apiClient.post<TaskProject>('/hub/task-projects', payload);
-  return data;
+  return normalizeActiveFlag(data);
 }
 
 export async function createTaskObject(payload: TaskObjectCreatePayload): Promise<TaskObject> {
   const { data } = await apiClient.post<TaskObject>('/hub/task-objects', payload);
-  return data;
+  return normalizeActiveFlag(data);
 }
 
 export async function updateTaskProject(
@@ -427,7 +433,7 @@ export async function updateTaskProject(
     `/hub/task-projects/${encodeURIComponent(projectId)}`,
     payload,
   );
-  return data;
+  return normalizeActiveFlag(data);
 }
 
 export async function updateTaskObject(
@@ -438,7 +444,7 @@ export async function updateTaskObject(
     `/hub/task-objects/${encodeURIComponent(objectId)}`,
     payload,
   );
-  return data;
+  return normalizeActiveFlag(data);
 }
 
 export async function createTask(payload: TaskCreatePayload): Promise<TaskCreateResult> {

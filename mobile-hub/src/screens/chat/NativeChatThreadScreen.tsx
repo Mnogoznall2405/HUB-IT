@@ -211,6 +211,9 @@ type ChatThreadSnapshot = NativeChatThreadSnapshot;
 
 const CHAT_LIST_MAINTAIN_VISIBLE_POSITION = { minIndexForVisible: 0 };
 const CHAT_LIST_VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 10 };
+// The backend watch set is global: the newest focused thread owns it. A stale
+// blur/unmount cleanup must not clear the watch a newer screen just set.
+let presenceWatchToken = 0;
 
 function chatMessageKey(message: ChatMessage): string {
   return chatMessageMotionKey(message);
@@ -476,14 +479,22 @@ export function NativeChatThreadScreen({
     return [...ids].sort((left, right) => left - right).join(',');
   }, [conversation?.direct_peer?.id, conversation?.peer_user_id, conversation?.members]);
 
-  useEffect(() => {
-    if (offlineMode) return;
+  // Focus-scoped, not mount-scoped: a stacked thread stays mounted while the
+  // pushed-over screen owns the global watch set. Blur clears it; returning
+  // focus re-arms it — a mount-only effect never re-ran and left watch [].
+  useFocusEffect(useCallback(() => {
+    if (offlineMode) return undefined;
+    const watchToken = ++presenceWatchToken;
     const ids = presenceWatchIdsKey ? presenceWatchIdsKey.split(',').map(Number) : [];
-    if (ids.length) chatSocket.watchPresence(ids);
-    // Leaving the thread clears the watch set so a later reconnect does not
-    // replay a stale subscription for a conversation the user left.
-    return () => { chatSocket.watchPresence([]); };
-  }, [presenceWatchIdsKey, offlineMode]);
+    // Focus owns the set even with no ids: an older screen's watch must be
+    // cleared, not left alive while this thread is visible.
+    chatSocket.watchPresence(ids);
+    // Losing focus clears the watch only while this effect still owns it, so a
+    // late cleanup cannot wipe the watch a newer focused screen just set.
+    return () => {
+      if (presenceWatchToken === watchToken) chatSocket.watchPresence([]);
+    };
+  }, [conversationId, presenceWatchIdsKey, offlineMode]));
 
 
 
@@ -495,6 +506,11 @@ export function NativeChatThreadScreen({
     // actually seen. markedReadRef stays clear so the 'active' transition or
     // the next scroll re-issues the call.
     if (AppState.currentState !== 'active') return;
+    // A stacked (pushed-over) thread screen stays mounted and receives realtime
+    // events; marking its messages read would consume unread state the user has
+    // not seen. Only the focused thread may issue receipts — this also covers
+    // the AppState/history/scroll callers below.
+    if (getActiveNativeChatConversationId() !== conversationId) return;
     markedReadRef.current = latest.id;
     void chatApi.markConversationRead(conversationId, latest.id).then(() => {
       notifyNativeChatConversationRead(conversationId);
@@ -878,6 +894,8 @@ export function NativeChatThreadScreen({
     leaveInFlightRef,
     requestLeave,
     messagesRef,
+    markReadRef,
+    nearBottomRef,
     actionMessage,
     setActionMessage,
     voiceRecording,

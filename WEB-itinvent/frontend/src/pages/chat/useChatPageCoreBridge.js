@@ -67,6 +67,7 @@ export default function useChatPageCoreBridge({
     aiBotsCacheHydratedRef,
     suppressDraftSyncRef,
     draftWriteTimeoutRef,
+    editDraftSnapshotRef,
     latestDraftStorageKeyRef,
     latestMessageTextRef,
     loadConversationsRef,
@@ -158,6 +159,7 @@ export default function useChatPageCoreBridge({
     drafts: {
       activeConversationId,
       draftWriteTimeoutRef,
+      editDraftSnapshotRef,
       latestDraftStorageKeyRef,
       latestMessageTextRef,
       messageText,

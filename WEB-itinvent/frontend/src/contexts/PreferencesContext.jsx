@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ThemeProvider, CssBaseline } from '@mui/material';
 import { alpha, createTheme } from '@mui/material/styles';
-import { settingsAPI } from '../api/client';
+import { settingsAPI } from '../api/settings';
 import { syncDesktopTheme } from '../lib/desktopBridge';
 import {
   DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,

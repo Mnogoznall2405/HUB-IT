@@ -84,6 +84,38 @@ describe('useChatPreviewController Office preview cancellation', () => {
     expect(chatAttachmentsAPIMock.downloadAttachmentPreviewPdf).not.toHaveBeenCalled();
   });
 
+  it('revokes the document preview blob URL on unmount', async () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    const revoke = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:chat-doc-preview') });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+    try {
+      chatAttachmentsAPIMock.downloadAttachment.mockResolvedValue({
+        data: new Blob(['%PDF'], { type: 'application/pdf' }),
+        headers: { 'content-type': 'application/pdf' },
+      });
+      const { result, unmount } = renderHook(() => useChatPreviewController(createControllerArgs()));
+
+      await act(async () => {
+        await result.current.openDocumentPreview('message-1', {
+          id: 'attachment-1',
+          file_name: 'doc.pdf',
+          mime_type: 'application/pdf',
+        });
+      });
+      expect(result.current.documentPreview?.objectUrl).toBe('blob:chat-doc-preview');
+
+      unmount();
+      expect(revoke).toHaveBeenCalledWith('blob:chat-doc-preview');
+    } finally {
+      if (originalCreate) Object.defineProperty(URL, 'createObjectURL', originalCreate);
+      else delete URL.createObjectURL;
+      if (originalRevoke) Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
+      else delete URL.revokeObjectURL;
+    }
+  });
+
   it('aborts the previous attachment before opening the next one', async () => {
     chatAttachmentsAPIMock.getAttachmentPreview
       .mockImplementationOnce((_messageId, _attachmentId, options) => (

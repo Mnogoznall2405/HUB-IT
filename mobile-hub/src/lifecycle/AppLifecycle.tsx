@@ -21,6 +21,8 @@ import {
   notificationOpenHrefFromResponse,
   rememberNotificationDestination,
 } from '../notifications/notificationNavigation';
+import { runPendingLogoutCleanup } from '../auth/pendingLogoutCleanup';
+import { runPendingBiometricRevocation } from '../auth/pendingBiometricRevocation';
 import { drainOfflineCommandQueue } from '../offline/offlineCommandQueue';
 import { refreshStaleNativeOfflineData } from '../offline/nativeOfflineBackgroundRefresh';
 import { refreshNativeReadCaches } from '../offline/nativeReadCacheRefresh';
@@ -198,6 +200,12 @@ export function AppLifecycle() {
       hubRealtimeSocket.disconnect();
       void clearNativeBadge();
       void unregisterMobileBackgroundSync();
+      // Отложенный тап по уведомлению ушедшего пользователя не должен
+      // открывать его чат/задачу после входа другого.
+      pendingNotificationResponseRef.current = null;
+      // An offline logout may have left the server session/push registration
+      // alive; replay it once a launch reaches this effect with connectivity.
+      void runPendingLogoutCleanup();
       return;
     }
     const pending = pendingNotificationResponseRef.current;
@@ -212,6 +220,7 @@ export function AppLifecycle() {
       void syncNativePushToken({ requestPermission: false });
       void drainOfflineCommandQueue(user.id);
       void syncPendingNotificationReplies(user.id);
+      void runPendingBiometricRevocation(user.id);
       refreshReadCaches();
     });
     // По id, не по объекту: refreshUser() отдаёт новый объект и не должен
@@ -243,9 +252,13 @@ export function AppLifecycle() {
   useEffect(() => {
     const wasOffline = previousOfflineModeRef.current;
     previousOfflineModeRef.current = offlineMode;
+    // Connectivity is back: replay queued logouts even while another account
+    // is signed in — the deferred record carries only its own refresh token.
+    if (wasOffline && !offlineMode) void runPendingLogoutCleanup();
     if (!user || !wasOffline || offlineMode) return;
     void drainOfflineCommandQueue(user.id);
     void syncPendingNotificationReplies(user.id);
+    void runPendingBiometricRevocation(user.id);
     refreshReadCaches();
   }, [offlineMode, user?.id]);
 
@@ -268,13 +281,16 @@ export function AppLifecycle() {
       if (suspendTimer !== null) { clearTimeout(suspendTimer); suspendTimer = null; }
     };
     const subscription = AppState.addEventListener('change', (nextState) => {
-      if (!user) return;
+      const currentUser = userRef.current;
+      if (!currentUser) return;
       if (nextState === 'active') {
         cancelSuspend();
+        void runPendingLogoutCleanup();
         void syncNativePushToken({ requestPermission: false });
         void reconcileNativeBadge({ force: true });
-        void drainOfflineCommandQueue(user.id);
-        void syncPendingNotificationReplies(user.id);
+        void drainOfflineCommandQueue(currentUser.id);
+        void syncPendingNotificationReplies(currentUser.id);
+        void runPendingBiometricRevocation(currentUser.id);
         refreshReadCaches();
         if (nativeChatActive) void chatSocket.resume();
         void hubRealtimeSocket.resume();
@@ -288,7 +304,9 @@ export function AppLifecycle() {
       }
     });
     return () => { cancelSuspend(); subscription.remove(); };
-  }, [nativeChatActive, user]);
+    // По id, не по объекту: refreshUser() заменяет объект и отменял бы
+    // suspend-таймер, оставляя сокеты открытыми в фоне.
+  }, [nativeChatActive, user?.id]);
 
   return null;
 }

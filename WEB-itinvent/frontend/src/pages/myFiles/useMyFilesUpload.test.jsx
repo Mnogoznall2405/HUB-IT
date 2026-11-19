@@ -252,6 +252,27 @@ describe('useMyFilesUpload', () => {
     expect(result.current.uploadProgress).toEqual({});
   });
 
+  it('aborts the in-flight upload on unmount and skips late state updates', async () => {
+    let signalRef;
+    mockUploadFile.mockImplementation(({ signal }) => new Promise((_resolve, reject) => {
+      signalRef = signal;
+      signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    const { result, unmount } = renderUpload();
+
+    act(() => result.current.openUploadDialog([makeFile('a.txt')]));
+    await act(async () => { result.current.confirmUpload(); });
+    await waitFor(() => expect(mockUploadFile).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => {});
+
+    expect(signalRef.aborted).toBe(true);
+    expect(mockNotifySuccess).not.toHaveBeenCalled();
+    expect(mockNotifyWarning).not.toHaveBeenCalled();
+    expect(mockLoadData).not.toHaveBeenCalled();
+  });
+
   it('reports folder-structure creation progress', async () => {
     const resolvers = [];
     mockCreateFolder.mockImplementation(({ name, parentId }) => new Promise((resolve) => {
@@ -272,6 +293,48 @@ describe('useMyFilesUpload', () => {
     }
     await waitFor(() => expect(mockUploadFile).toHaveBeenCalled());
     expect(result.current.prepareStats).toEqual({ total: 0, done: 0 });
+  });
+
+  it('resets upload state when folder prepare is cancelled and allows retry', async () => {
+    const resolvers = [];
+    mockCreateFolder.mockImplementation(({ name, parentId }) => new Promise((resolve) => {
+      resolvers.push(() => resolve({ id: `created-${name}`, name, parent_id: parentId }));
+    }));
+    const { result } = renderUpload({ allFolders: [] });
+
+    const files = [
+      makeFile('f1.txt', { path: 'Docs/Sub/f1.txt' }),
+      makeFile('f2.txt', { path: 'Docs/Other/f2.txt' }),
+    ];
+    act(() => result.current.openUploadDialog(files, { asFolder: true }));
+    await act(async () => { result.current.confirmUpload(); });
+    await waitFor(() => expect(mockCreateFolder).toHaveBeenCalledTimes(1));
+    expect(result.current.uploading).toBe(true);
+    expect(result.current.prepareStats.total).toBeGreaterThan(0);
+
+    act(() => { result.current.cancelUpload(); });
+    await act(async () => { resolvers.splice(0).forEach((resolve) => resolve()); });
+
+    await waitFor(() => expect(result.current.uploading).toBe(false));
+    expect(result.current.prepareStats).toEqual({ total: 0, done: 0 });
+    expect(result.current.uploadStats).toEqual({ total: 0, done: 0 });
+    expect(result.current.uploadProgress).toEqual({});
+    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(mockNotifyWarning).toHaveBeenCalledTimes(1);
+    expect(mockNotifyWarning).toHaveBeenCalledWith(
+      'Загрузка отменена.',
+      expect.objectContaining({ source: 'my-files-upload-cancelled' }),
+    );
+
+    act(() => result.current.openUploadDialog(files, { asFolder: true }));
+    await act(async () => { result.current.confirmUpload(); });
+    for (let guard = 0; guard < 20 && mockUploadFile.mock.calls.length === 0; guard += 1) {
+      resolvers.splice(0).forEach((resolve) => resolve());
+      await act(async () => {});
+    }
+    await waitFor(() => expect(mockUploadFile).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.uploading).toBe(false));
+    expect(mockNotifyWarning).toHaveBeenCalledTimes(1);
   });
 
   it('notifies on upload failure and still closes the upload state', async () => {

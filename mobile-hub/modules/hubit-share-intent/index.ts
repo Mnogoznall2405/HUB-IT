@@ -27,6 +27,8 @@ type HubitShareIntentNativeModule = {
   copySharedFilesAsync(shareId: string): Promise<HubitNativeCopiedShareFile[]>;
   /** Forgets a share (and any copied files) the user cancelled. */
   discardSharedFilesAsync(shareId: string): Promise<void>;
+  /** Drops the unread intent and all pending/copied streams — used at logout. */
+  clearPendingShareAsync(): Promise<void>;
   addListener(
     eventName: 'onShareIntent',
     listener: (event: { available: boolean }) => void,

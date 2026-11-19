@@ -1,6 +1,7 @@
 from __future__ import annotations
 import conftest
 
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
@@ -11,7 +12,7 @@ from backend.api.v1 import desktop_presence as desktop_presence_api
 from backend.appdb.db import app_session, initialize_app_schema
 from backend.appdb.models import AppDesktopPresence
 from backend.models.auth import User
-from backend.services.desktop_presence_service import DesktopPresenceService
+from backend.services.desktop_presence_service import DesktopPresenceIdentityError, DesktopPresenceService
 
 
 def _sqlite_url(tmp_path) -> str:
@@ -50,6 +51,60 @@ def test_heartbeat_upserts_one_row_per_authenticated_session(tmp_path):
         assert rows[0].user_id == 7
         assert rows[0].session_id == "session-a"
         assert rows[0].last_seen_at.replace(tzinfo=timezone.utc) == clock[0]
+
+
+def test_concurrent_first_heartbeat_writes_one_row_atomically(tmp_path, monkeypatch):
+    # Two parallel first heartbeats must not turn into INSERT+UniqueViolation:
+    # both reads can see "missing" before either insert commits.
+    import threading
+    from sqlalchemy.orm import Session
+
+    database_url = _sqlite_url(tmp_path)
+    conftest.copy_app_schema_for_url(database_url)
+    service = DesktopPresenceService(database_url=database_url, ttl_seconds=180)
+    gate = threading.Barrier(2)
+    original_get = Session.get
+
+    def slow_get(self, entity, ident, **kwargs):
+        row = original_get(self, entity, ident, **kwargs)
+        if entity is AppDesktopPresence and row is None:
+            gate.wait(timeout=5)
+        return row
+
+    monkeypatch.setattr(Session, "get", slow_get)
+    errors: list[BaseException] = []
+
+    def beat():
+        try:
+            service.heartbeat(user_id=7, session_id="shared-session")
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=beat) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    with app_session(database_url) as session:
+        rows = session.query(AppDesktopPresence).all()
+        assert len(rows) == 1 and rows[0].user_id == 7
+
+
+def test_heartbeat_never_overwrites_another_users_presence_row(tmp_path):
+    database_url = _sqlite_url(tmp_path)
+    conftest.copy_app_schema_for_url(database_url)
+    service = DesktopPresenceService(database_url=database_url)
+    service.heartbeat(user_id=7, session_id="session-a")
+
+    with pytest.raises(DesktopPresenceIdentityError):
+        service.heartbeat(user_id=8, session_id="session-a")
+
+    with app_session(database_url) as session:
+        row = session.get(AppDesktopPresence, "session-a")
+        assert row.user_id == 7
 
 
 def test_presence_keeps_multiple_sessions_for_one_user_independent(tmp_path):

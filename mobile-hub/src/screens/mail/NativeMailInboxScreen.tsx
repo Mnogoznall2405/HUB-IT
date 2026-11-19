@@ -18,11 +18,14 @@ import { initialWindowMetrics, SafeAreaInsetsContext, SafeAreaView } from 'react
 import {
   bulkMailMessageAction,
   deleteMailMessage,
+  listMailTemplates,
   markMailMessageRead,
   markMailMessageUnread,
   moveMailMessage,
   restoreMailMessage,
+  sendMailItRequest,
   type MailConversationPreview,
+  type MailItTemplate,
   type MailMessagePreview,
 } from '../../api/mailApi';
 import { listMailboxes } from '../../api/mailMailboxesApi';
@@ -87,6 +90,19 @@ function folderIcon(id: string): React.ComponentProps<typeof MaterialCommunityIc
   if (normalized.includes('trash') || normalized.includes('deleted')) return 'trash-can-outline';
   if (normalized.includes('flag') || normalized.includes('star')) return 'star-outline';
   return 'folder-outline';
+}
+
+// Mirrors the web dialog (useMailItRequest.buildItRequestFieldDefaults): each
+// field is a plain text input, array defaults join with ', '.
+function buildMailItRequestFieldDefaults(template: MailItTemplate | null | undefined): Record<string, string> {
+  const defaults: Record<string, string> = {};
+  (Array.isArray(template?.fields) ? template.fields : []).forEach((field) => {
+    const key = String(field?.key || '');
+    if (!key) return;
+    const defaultValue = field?.default_value;
+    defaults[key] = Array.isArray(defaultValue) ? defaultValue.join(', ') : String(defaultValue ?? '');
+  });
+  return defaults;
 }
 
 function useDebouncedValue(value: string): string {
@@ -161,6 +177,7 @@ export function NativeMailInboxScreen() {
   const sheetTopInset = Math.max(safeInsets?.top || 0, 0);
   const sheetBottomInset = Math.max(safeInsets?.bottom || 0, 0);
   const allowed = hasPermission('mail.access');
+  const canManageTemplates = hasPermission('settings.users.manage');
   const [mailboxId, setMailboxId] = useState(firstParam(params.mailboxId));
   const [folder, setFolder] = useState(firstParam(params.folder) || 'inbox');
   const [query, setQuery] = useState(firstParam(params.q));
@@ -184,6 +201,16 @@ export function NativeMailInboxScreen() {
   const [folderMenuOpen, setFolderMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [itRequestOpen, setItRequestOpen] = useState(false);
+  const [itTemplates, setItTemplates] = useState<MailItTemplate[] | null>(null);
+  const [itTemplatesLoading, setItTemplatesLoading] = useState(false);
+  const [itTemplatesError, setItTemplatesError] = useState('');
+  const [itTemplateId, setItTemplateId] = useState('');
+  const [itFieldValues, setItFieldValues] = useState<Record<string, string>>({});
+  const [itSending, setItSending] = useState(false);
+  const [itError, setItError] = useState('');
+  const itTemplatesRequestRef = useRef(false);
+  const itSendInFlightRef = useRef(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [swipeBusyId, setSwipeBusyId] = useState('');
   const swipeBusyRef = useRef(false);
@@ -282,6 +309,15 @@ export function NativeMailInboxScreen() {
     advancedFilters.folderScope === 'all' ? 'all' : '',
   ].filter(Boolean).length, [advancedFilters]);
   const filtersActive = Boolean(debouncedQuery || unreadOnly || hasAttachments || advancedFilterCount);
+  // A custom folder can be deleted on the folders screen; once the refreshed
+  // tree no longer lists it, fall back to inbox instead of querying a dead
+  // folder id forever.
+  useEffect(() => {
+    if (!folderTree.length) return;
+    if (folderOptions.some((entry) => entry.id === folder)) return;
+    setFolder('inbox');
+    setSelected(new Set());
+  }, [folder, folderOptions, folderTree.length]);
   useEffect(() => { setUndo(null); }, [listScope]);
   useEffect(() => {
     if (!undo) return undefined;
@@ -353,7 +389,7 @@ export function NativeMailInboxScreen() {
   }, [setError, setMailboxes]);
 
   const deleteMessageForever = useCallback(async (item: MailMessagePreview) => {
-    if (swipeBusyRef.current || swipeBusyId || offlineMode || selectionMode || folder !== 'trash') return;
+    if (swipeBusyRef.current || swipeBusyId || offlineMode || selectionMode || String(item.folder || folder) !== 'trash') return;
     const scopedMailboxId = String(item.mailbox_id || mailboxId);
     swipeBusyRef.current = true;
     setSwipeBusyId(item.id);
@@ -364,6 +400,7 @@ export function NativeMailInboxScreen() {
       if (listScope !== listScopeRef.current) return;
       setItems((current) => current.filter((entry) => entry.kind !== 'message' || entry.value.id !== item.id));
       setTotal((current) => Math.max(0, current - 1));
+      if (item.is_read === false) applyUnreadDelta(-1, scopedMailboxId, String(item.folder || folder));
     } catch (cause) {
       if (listScope !== listScopeRef.current) return;
       if (hasUnconfirmedMailResult(cause)) {
@@ -377,15 +414,15 @@ export function NativeMailInboxScreen() {
       swipeBusyRef.current = false;
       setSwipeBusyId('');
     }
-  }, [folder, listScope, listScopeRef, load, mailboxId, offlineMode, selectionMode, setError, setItems, setTotal, swipeBusyId]);
+  }, [applyUnreadDelta, folder, listScope, listScopeRef, load, mailboxId, offlineMode, selectionMode, setError, setItems, setTotal, swipeBusyId]);
 
   const runSwipeAction = useCallback(async (
     item: MailMessagePreview,
     action: Exclude<NativeMailSwipeAction, null>,
   ) => {
     if (swipeBusyRef.current || swipeBusyId || offlineMode || selectionMode || (action === 'delete' && folder === 'trash')) return;
-    if (action === 'delete-forever') {
-      if (folder !== 'trash') return;
+    if (action === 'delete-forever' || (action === 'delete' && String(item.folder || folder) === 'trash')) {
+      if (String(item.folder || folder) !== 'trash') return;
       Alert.alert('Удалить письмо навсегда?', 'Это действие нельзя отменить.', [
         { text: 'Отмена', style: 'cancel' },
         { text: 'Удалить навсегда', style: 'destructive', onPress: () => { void deleteMessageForever(item); } },
@@ -413,7 +450,7 @@ export function NativeMailInboxScreen() {
             ? { ...entry, value: { ...entry.value, is_read: nextRead } }
             : entry));
         }
-        applyUnreadDelta(nextRead ? -1 : 1, scopedMailboxId);
+        applyUnreadDelta(nextRead ? -1 : 1, scopedMailboxId, String(item.folder || folder));
         setUndo({
           kind: 'read',
           scope: listScope,
@@ -429,12 +466,15 @@ export function NativeMailInboxScreen() {
         if (listScope !== listScopeRef.current) return;
         setItems((current) => current.filter((entry) => entry.kind !== 'message' || entry.value.id !== item.id));
         setTotal((current) => Math.max(0, current - 1));
+        if (item.is_read === false) applyUnreadDelta(-1, scopedMailboxId, String(item.folder || folder));
         setUndo({
           kind: 'archive',
           scope: listScope,
           messageId: item.id,
           mailboxId: scopedMailboxId,
-          targetFolder: folder,
+          // «Во всех папках» the undo must return the message to its own
+          // folder, not to whichever folder the list is showing.
+          targetFolder: String(item.folder || folder),
           label: 'Письмо перемещено в архив.',
         });
       } else {
@@ -443,13 +483,14 @@ export function NativeMailInboxScreen() {
         const restoreId = extractNativeMailTrashRestoreId(result);
         setItems((current) => current.filter((entry) => entry.kind !== 'message' || entry.value.id !== item.id));
         setTotal((current) => Math.max(0, current - 1));
+        if (item.is_read === false) applyUnreadDelta(-1, scopedMailboxId, String(item.folder || folder));
         if (restoreId) {
           setUndo({
             kind: 'delete',
             scope: listScope,
             messageId: restoreId,
             mailboxId: scopedMailboxId,
-            targetFolder: folder,
+            targetFolder: String(item.folder || folder),
             label: 'Письмо перемещено в удалённые.',
           });
         }
@@ -470,7 +511,7 @@ export function NativeMailInboxScreen() {
   }, [applyUnreadDelta, deleteMessageForever, folder, items, listScope, listScopeRef, load, mailboxId, offlineMode, selectionMode, setError, setItems, setTotal, swipeBusyId, unreadOnly]);
 
   const undoLastAction = useCallback(async () => {
-    if (!undo || swipeBusyRef.current || swipeBusyId || offlineMode) return;
+    if (!undo || undo.kind === 'notice' || swipeBusyRef.current || swipeBusyId || offlineMode) return;
     swipeBusyRef.current = true;
     const pending = undo;
     setUndo(null);
@@ -491,7 +532,8 @@ export function NativeMailInboxScreen() {
           });
         }
         if (pending.scope !== listScopeRef.current) return;
-        if (pending.unreadDelta) applyUnreadDelta(-pending.unreadDelta, pending.mailboxId);
+        Object.entries(pending.unreadDeltas || (pending.unreadDelta ? { [pending.sourceFolder]: pending.unreadDelta } : {}))
+          .forEach(([targetFolder, delta]) => applyUnreadDelta(-delta, pending.mailboxId, targetFolder));
         await load({ reset: true });
         return;
       }
@@ -524,7 +566,7 @@ export function NativeMailInboxScreen() {
             ? { ...entry, value: { ...entry.value, is_read: pending.previousRead } }
             : entry));
         }
-        applyUnreadDelta(pending.previousRead ? -1 : 1, pending.mailboxId);
+        applyUnreadDelta(pending.previousRead ? -1 : 1, pending.mailboxId, String(pending.item?.folder || folder));
       }
     } catch (cause) {
       if (pending.scope !== listScopeRef.current) return;
@@ -574,6 +616,79 @@ export function NativeMailInboxScreen() {
     setAdvancedFilters(reset);
     setError('');
   }, [setError]);
+
+  const activeItTemplate = useMemo(
+    () => (itTemplates || []).find((item) => String(item.id) === itTemplateId) || null,
+    [itTemplateId, itTemplates],
+  );
+
+  const loadItTemplates = useCallback(async () => {
+    if (itTemplatesRequestRef.current || offlineMode) return;
+    itTemplatesRequestRef.current = true;
+    setItTemplatesLoading(true);
+    setItTemplatesError('');
+    const scope = listScope;
+    try {
+      const items = await listMailTemplates();
+      if (scope !== listScopeRef.current) return;
+      setItTemplates(items);
+    } catch (cause) {
+      if (scope !== listScopeRef.current) return;
+      setItTemplatesError(formatApiError(cause, 'Не удалось загрузить шаблоны IT-заявок.'));
+    } finally {
+      itTemplatesRequestRef.current = false;
+      if (scope === listScopeRef.current) setItTemplatesLoading(false);
+    }
+  }, [listScope, listScopeRef, offlineMode]);
+
+  const openItRequest = useCallback(() => {
+    setItError('');
+    setItRequestOpen(true);
+    // Templates are fetched lazily once per screen session; a failed load is
+    // retried via «Повторить» or the next open.
+    if (itTemplates === null) void loadItTemplates();
+  }, [itTemplates, loadItTemplates]);
+
+  const selectItTemplate = useCallback((template: MailItTemplate) => {
+    setItTemplateId(String(template.id));
+    setItFieldValues(buildMailItRequestFieldDefaults(template));
+    setItError('');
+  }, []);
+
+  const changeItFieldValue = useCallback((key: string, value: string) => {
+    setItFieldValues((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const clearItRequest = useCallback(() => {
+    setItFieldValues(buildMailItRequestFieldDefaults(activeItTemplate));
+    setItError('');
+  }, [activeItTemplate]);
+
+  const submitItRequest = useCallback(async () => {
+    if (!itTemplateId) {
+      setItError('Выберите шаблон IT-заявки.');
+      return;
+    }
+    if (itSendInFlightRef.current || itSending || offlineMode) return;
+    itSendInFlightRef.current = true;
+    setItSending(true);
+    setItError('');
+    const scope = listScope;
+    try {
+      await sendMailItRequest({ template_id: itTemplateId, fields: itFieldValues });
+      if (scope !== listScopeRef.current) return;
+      setItRequestOpen(false);
+      setItTemplateId('');
+      setItFieldValues({});
+      setUndo({ kind: 'notice', scope, label: 'IT-заявка отправлена.' });
+    } catch (cause) {
+      if (scope !== listScopeRef.current) return;
+      setItError(formatApiError(cause, 'Не удалось отправить IT-заявку.'));
+    } finally {
+      itSendInFlightRef.current = false;
+      if (scope === listScopeRef.current) setItSending(false);
+    }
+  }, [itFieldValues, itSending, itTemplateId, listScope, listScopeRef, offlineMode]);
 
   if (!allowed) {
     return (
@@ -783,9 +898,11 @@ export function NativeMailInboxScreen() {
       {undo ? (
         <View accessibilityLiveRegion="polite" accessibilityRole="summary" style={[styles.undoBar, { bottom: bottomInset + 14, backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
           <Text style={[styles.undoText, { color: tokens.textPrimary }]}>{undo.label}</Text>
-          <Pressable testID="native-mail-undo" accessibilityRole="button" accessibilityLabel="Отменить последнее действие с письмом" disabled={Boolean(swipeBusyId) || offlineMode} onPress={() => { void undoLastAction(); }} style={styles.undoAction}>
-            <Text style={[styles.undoActionText, { color: tokens.primary }]}>Отменить</Text>
-          </Pressable>
+          {undo.kind !== 'notice' ? (
+            <Pressable testID="native-mail-undo" accessibilityRole="button" accessibilityLabel="Отменить последнее действие с письмом" disabled={Boolean(swipeBusyId) || offlineMode} onPress={() => { void undoLastAction(); }} style={styles.undoAction}>
+              <Text style={[styles.undoActionText, { color: tokens.primary }]}>Отменить</Text>
+            </Pressable>
+          ) : null}
           <Pressable accessibilityRole="button" accessibilityLabel="Скрыть отмену действия" disabled={Boolean(swipeBusyId)} onPress={() => setUndo(null)} style={{ minWidth: 44, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>
             <MaterialCommunityIcons name="close" size={20} color={tokens.textSecondary} />
           </Pressable>
@@ -860,6 +977,8 @@ export function NativeMailInboxScreen() {
             </View>
             {currentFolderUnread ? <MenuAction testID="native-mail-mark-all-read" icon="email-open-outline" label="Прочитать все в папке" tokens={tokens} disabled={bulkBusy || offlineMode} onPress={() => { setViewMenuOpen(false); void markAllRead(currentFolderUnread); }} /> : null}
             {folder === 'trash' ? <MenuAction testID="native-mail-empty-trash" icon="delete-sweep-outline" label="Очистить корзину" tokens={tokens} disabled={bulkBusy || offlineMode} onPress={() => { setViewMenuOpen(false); emptyTrash(); }} /> : null}
+            <MenuAction testID="native-mail-it-request" icon="clipboard-list-outline" label="Заявка в IT" tokens={tokens} disabled={offlineMode} onPress={() => { setViewMenuOpen(false); openItRequest(); }} />
+            {canManageTemplates ? <MenuAction testID="native-mail-templates" icon="file-document-edit-outline" label="Шаблоны заявок" tokens={tokens} onPress={() => { setViewMenuOpen(false); router.push('/(shell)/mail/templates' as never); }} /> : null}
             <MenuAction testID="native-mail-settings" icon="cog-outline" label="Настройки почты" tokens={tokens} onPress={() => { setViewMenuOpen(false); router.push({ pathname: '/(shell)/mail/settings', params: { mailboxId } } as never); }} />
           </View>
         </View>
@@ -942,6 +1061,76 @@ export function NativeMailInboxScreen() {
             </ScrollView>
           </View>
         </View>
+      </Modal>
+      <Modal visible={itRequestOpen} transparent animationType="slide" onRequestClose={() => setItRequestOpen(false)}>
+        <KeyboardAvoidingView style={styles.modalBackdrop} {...chatKeyboardAvoidingProps()}>
+          <Pressable style={styles.backdropDismissLayer} accessibilityRole="button" accessibilityLabel="Закрыть заявку в IT" onPress={() => setItRequestOpen(false)} />
+          <View
+            testID="native-mail-it-request-sheet"
+            accessibilityViewIsModal
+            style={[styles.filterSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, paddingBottom: 24 + sheetBottomInset }]}
+          >
+            <SheetHeader title="Заявка в IT" subtitle="Поля заявки заполняются по шаблону, настроенному администратором." tokens={tokens} onClose={() => setItRequestOpen(false)} />
+            {itTemplatesLoading ? (
+              <View style={styles.itTemplatesState}>
+                <ActivityIndicator color={tokens.primary} />
+                <Text style={[styles.footerText, { color: tokens.textSecondary }]}>Загружаем шаблоны…</Text>
+              </View>
+            ) : itTemplatesError ? (
+              <View style={styles.itTemplatesState}>
+                <Text accessibilityRole="alert" style={[styles.stateBody, { color: tokens.error }]}>{itTemplatesError}</Text>
+                <Pressable testID="native-mail-it-templates-retry" accessibilityRole="button" onPress={() => { void loadItTemplates(); }} style={[styles.retryButton, { backgroundColor: tokens.primary }]}><Text style={styles.retryText}>Повторить</Text></Pressable>
+              </View>
+            ) : (
+              <ScrollView style={styles.moveList} contentContainerStyle={styles.itRequestContent} keyboardShouldPersistTaps="handled">
+                {(itTemplates || []).length ? (itTemplates || []).map((template) => {
+                  const id = String(template.id);
+                  const active = id === itTemplateId;
+                  return (
+                    <Pressable
+                      key={id}
+                      testID={`native-mail-it-template-${id}`}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      onPress={() => selectItTemplate(template)}
+                      style={[styles.itTemplateRow, { borderColor: active ? tokens.selectedBorder : tokens.borderSoft, backgroundColor: active ? tokens.selected : 'transparent' }]}
+                    >
+                      <MaterialCommunityIcons name={active ? 'radiobox-marked' : 'radiobox-blank'} size={20} color={active ? tokens.primary : tokens.iconMuted} />
+                      <View style={styles.itTemplateText}>
+                        <Text numberOfLines={2} style={[styles.itTemplateTitle, { color: active ? tokens.primary : tokens.textPrimary }]}>{String(template.title || template.code || id)}</Text>
+                        {template.category ? <Text numberOfLines={1} style={[styles.itTemplateCategory, { color: tokens.textSecondary }]}>{template.category}</Text> : null}
+                      </View>
+                    </Pressable>
+                  );
+                }) : <Text style={[styles.stateBody, { color: tokens.textSecondary }]}>Шаблоны не настроены</Text>}
+                {activeItTemplate && Array.isArray(activeItTemplate.fields) ? activeItTemplate.fields.map((field) => {
+                  const key = String(field?.key || '');
+                  if (!key) return null;
+                  const label = String(field?.label || key);
+                  return (
+                    <View key={key} style={styles.advancedField}>
+                      <Text style={[styles.fieldLabel, { color: tokens.textSecondary }]}>{label}</Text>
+                      <TextInput
+                        testID={`native-mail-it-field-${key}`}
+                        value={itFieldValues[key] || ''}
+                        onChangeText={(value) => changeItFieldValue(key, value)}
+                        accessibilityLabel={label}
+                        placeholder={String(field?.placeholder || label)}
+                        placeholderTextColor={tokens.textTertiary}
+                        style={[styles.fieldInput, { color: tokens.textPrimary, borderColor: tokens.borderSoft, backgroundColor: tokens.panelInset }]}
+                      />
+                    </View>
+                  );
+                }) : null}
+              </ScrollView>
+            )}
+            {itError ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error, marginHorizontal: 0 }]}>{itError}</Text> : null}
+            <View style={styles.filterActions}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Очистить поля заявки" accessibilityState={{ disabled: itSending }} disabled={itSending} onPress={clearItRequest} style={[styles.secondaryFilterAction, { borderColor: tokens.borderSoft, opacity: itSending ? 0.5 : 1 }]}><Text style={[styles.filterActionText, { color: tokens.textSecondary }]}>Очистить</Text></Pressable>
+              <Pressable testID="native-mail-it-submit" accessibilityRole="button" accessibilityLabel="Отправить заявку в IT" accessibilityState={{ disabled: itSending || offlineMode }} disabled={itSending || offlineMode} onPress={() => { void submitItRequest(); }} style={[styles.primaryFilterAction, { backgroundColor: tokens.primary, opacity: itSending || offlineMode ? 0.5 : 1 }]}><Text style={[styles.filterActionText, { color: '#fff' }]}>{itSending ? 'Отправка…' : 'Отправить'}</Text></Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1103,4 +1292,10 @@ const styles = StyleSheet.create({
   moveTarget: { minHeight: 54, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   moveTargetLabel: { flex: 1, minWidth: 0, fontSize: 13, lineHeight: 18, fontWeight: '800' },
   moveTargetCount: { fontSize: 11, fontWeight: '800' },
+  itTemplatesState: { minHeight: 140, alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 16 },
+  itRequestContent: { gap: 10, paddingBottom: 16 },
+  itTemplateRow: { minHeight: 48, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  itTemplateText: { flex: 1, minWidth: 0 },
+  itTemplateTitle: { fontSize: 14, lineHeight: 19, fontWeight: '800' },
+  itTemplateCategory: { marginTop: 2, fontSize: 12, lineHeight: 16 },
 });

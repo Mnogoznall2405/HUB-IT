@@ -44,6 +44,9 @@ INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS = _env_positive_int(
     ),
     minimum=15,
 )
+# Agent clock is not authoritative: a forged future timestamp would freeze the
+# host card forever (every real report would be dropped as "stale").
+INVENTORY_MAX_CLOCK_SKEW_SECONDS = 300
 
 
 
@@ -111,11 +114,73 @@ def _load_agent_api_keys() -> List[str]:
     return keys
 
 
+def _load_bound_agent_keys() -> Dict[str, str]:
+    """Per-computer bindings: ``INVENTORY_AGENT_API_KEYS="host-a=keyA, host-b=keyB"``.
+
+    A bound key is accepted only for its own ``hostname``/``computer_name``; the shared
+    ring keys stay valid for every computer until the fleet is migrated and the ring
+    is removed.
+    """
+    bound: Dict[str, str] = {}
+    raw = str(os.getenv("INVENTORY_AGENT_API_KEYS", "") or "").strip()
+    for row in raw.split(","):
+        row = row.strip()
+        if not row or "=" not in row:
+            continue
+        name, _, key = row.partition("=")
+        name = name.strip()
+        key = key.strip()
+        if name and key:
+            bound[name] = key
+    return bound
+
+
+def _bound_agent_name_for_key(
+    candidate: Optional[str], *, raise_on_error: bool = False
+) -> str:
+    """The computer a per-agent key is bound to; ``""`` for ring/invalid keys."""
+    token = str(candidate or "").strip()
+    if not token:
+        return ""
+    for name, bound_key in _load_bound_agent_keys().items():
+        if bound_key == token:
+            return name
+    # DB store (app.agent_api_keys) holds auto-enrolled bindings beyond the env map.
+    try:
+        from backend.appdb import agent_api_keys
+        from backend.appdb.db import get_app_engine
+
+        if is_app_database_configured():
+            return agent_api_keys.lookup_name_by_key(
+                get_app_engine(), token, raise_on_error=raise_on_error
+            )
+    except Exception:
+        if raise_on_error:
+            raise
+    return ""
+
+
 def _is_valid_agent_api_key(candidate: Optional[str]) -> bool:
     token = str(candidate or "").strip()
     if not token:
         return False
-    return token in _load_agent_api_keys()
+    return token in _load_agent_api_keys() or bool(_bound_agent_name_for_key(token))
+
+
+def _bound_identity_matches(bound_name: str, claimed_name: Optional[str]) -> bool:
+    """Case-insensitive hostname match — Windows computer names are case-insensitive.
+
+    Agents report ``COMPUTERNAME`` (NetBIOS, truncated to 15 chars) while
+    enrollment binds ``socket.gethostname()`` (full DNS hostname). A 15-char
+    claimed name equal to the bound name's prefix is the same machine.
+    """
+    bound = str(bound_name or "").strip().casefold()
+    claimed = str(claimed_name or "").strip().casefold()
+    if not bound or not claimed:
+        return False
+    if bound == claimed:
+        return True
+    return len(bound) > 15 and bound[:15] == claimed
 
 
 def _model_dump(payload: InventoryPayload) -> Dict[str, Any]:
@@ -866,7 +931,9 @@ def process_inventory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     report_type = _normalize_report_type(incoming_payload.get("report_type"))
     now_ts = int(time.time())
     current_ts = _to_int(incoming_payload.get("timestamp") or now_ts, default=now_ts)
+    current_ts = min(current_ts, now_ts + INVENTORY_MAX_CLOCK_SKEW_SECONDS)
     last_seen_at = _to_int(incoming_payload.get("last_seen_at") or current_ts, default=current_ts)
+    last_seen_at = min(last_seen_at, now_ts + INVENTORY_MAX_CLOCK_SKEW_SECONDS)
 
     mac_key = _normalize_text(incoming_payload.get("mac_address"))
     if not mac_key:
@@ -996,8 +1063,11 @@ __all__ = [
     "_extract_mac_candidates",
     "_get_inventory_host",
     "_inventory_database_url",
+    "_bound_agent_name_for_key",
+    "_bound_identity_matches",
     "_is_valid_agent_api_key",
     "_load_agent_api_keys",
+    "_load_bound_agent_keys",
     "_load_changes",
     "_load_inventory_snapshot",
     "_merge_payload",

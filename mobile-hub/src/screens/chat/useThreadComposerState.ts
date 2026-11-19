@@ -65,6 +65,7 @@ export function useThreadComposerState({
   const cancelVoiceRef = useRef<(() => void) | null>(null);
   const typingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingActiveRef = useRef(false);
+  const typingSentAtRef = useRef(0);
 
   useEffect(() => {
     setDraftHydrated(false);
@@ -83,7 +84,13 @@ export function useThreadComposerState({
       }
       setDraftHydrated(true);
     }).catch(() => {
-      if (active) setDraftError('Не удалось прочитать черновик. Откройте диалог снова, чтобы повторить.');
+      if (!active) return;
+      setDraftError('Не удалось прочитать черновик. Откройте диалог снова, чтобы повторить.');
+      // Hydration failure must not leave autosave disabled forever with no
+      // visible way out: mark hydrated so the autosave path reports save
+      // failures loudly (and shows the retry affordance) instead of silently
+      // dropping every typed message.
+      setDraftHydrated(true);
     });
     return () => { active = false; };
   }, [conversationId, userId, setAttachmentDraftFiles, setComposerMode]);
@@ -106,8 +113,11 @@ export function useThreadComposerState({
       stopOutgoingTyping();
       return;
     }
-    if (!typingActiveRef.current) {
+    // The server-side typing lease is ~5s: a single `true` goes stale while
+    // the user keeps typing, so refresh it before it expires.
+    if (!typingActiveRef.current || Date.now() - typingSentAtRef.current >= 4_000) {
       typingActiveRef.current = true;
+      typingSentAtRef.current = Date.now();
       chatSocket.sendTyping(conversationId, true);
     }
     if (typingIdleRef.current) clearTimeout(typingIdleRef.current);

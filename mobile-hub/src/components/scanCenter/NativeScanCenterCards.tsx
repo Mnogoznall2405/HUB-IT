@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { memo, type ReactNode } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import type {
   ScanAgent,
   ScanHost,
@@ -39,16 +39,30 @@ function Meta({ children, tokens }: { children: ReactNode; tokens: FluentTokens 
 export const NativeScanIncidentCard = memo(function NativeScanIncidentCard({
   item,
   tokens,
+  onToggleSelect,
+  selectionMode = false,
+  selected = false,
+  onAck,
+  ackBusy = false,
 }: {
   item: ScanIncident;
   tokens: FluentTokens;
+  onToggleSelect?: () => void;
+  selectionMode?: boolean;
+  selected?: boolean;
+  onAck?: () => void;
+  ackBusy?: boolean;
 }) {
   const severityColor = toneForSeverity(item.severity, tokens);
+  const accentColor = tokens.scheme === 'dark' ? tokens.primaryLight : tokens.primary;
   const title = item.file_name || 'Файл без имени';
   const host = item.hostname || 'Неизвестный компьютер';
   const isNew = String(item.status || '').toLowerCase() === 'new';
-  return (
-    <View accessible accessibilityLabel={`${title}. ${scanSeverityLabel(item.severity)} важность. ${scanIncidentStatusLabel(item.status)}.`} style={[styles.card, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+  const baseLabel = `${title}. ${scanSeverityLabel(item.severity)} важность. ${scanIncidentStatusLabel(item.status)}.`;
+  const interactive = Boolean(onToggleSelect);
+  const showAck = Boolean(onAck) && isNew && !selectionMode;
+  const body = (
+    <>
       <View style={styles.rowBetween}>
         <Badge label={scanSeverityLabel(item.severity)} color={severityColor} tokens={tokens} />
         <Text style={[styles.date, { color: tokens.textTertiary }]}>{formatScanDate(item.created_at)}</Text>
@@ -61,6 +75,63 @@ export const NativeScanIncidentCard = memo(function NativeScanIncidentCard({
         <Text style={[styles.footerText, { color: isNew ? tokens.warning : tokens.success }]}>{scanIncidentStatusLabel(item.status)}</Text>
         {item.user ? <Text numberOfLines={1} style={[styles.footerTail, { color: tokens.textTertiary }]}>{item.user}</Text> : null}
       </View>
+    </>
+  );
+  return (
+    <View style={[styles.card, {
+      backgroundColor: selected ? tokens.selected : tokens.panelSolid,
+      borderColor: selected ? accentColor : tokens.borderSoft,
+    }]}
+    >
+      <View style={styles.cardRow}>
+        {interactive ? (
+          <Pressable
+            testID={`native-scan-incident-${item.id}`}
+            onPress={selectionMode ? onToggleSelect : undefined}
+            onLongPress={!selectionMode ? onToggleSelect : undefined}
+            delayLongPress={420}
+            accessibilityRole="button"
+            accessibilityState={selectionMode ? { selected } : undefined}
+            accessibilityLabel={selectionMode ? `${selected ? 'Выбрано. ' : 'Не выбрано. '}${baseLabel}` : baseLabel}
+            accessibilityHint={selectionMode ? 'Нажмите, чтобы изменить выбор' : 'Удерживайте, чтобы выбрать инцидент для групповой отметки'}
+            style={({ pressed }) => [styles.cardBody, { opacity: pressed ? 0.85 : 1 }]}
+          >
+            {body}
+          </Pressable>
+        ) : (
+          <View accessible accessibilityLabel={baseLabel} style={styles.cardBody}>
+            {body}
+          </View>
+        )}
+        {selectionMode && interactive ? (
+          <MaterialCommunityIcons
+            name={selected ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline'}
+            size={24}
+            color={selected ? accentColor : tokens.iconMuted}
+            style={styles.checkIcon}
+          />
+        ) : null}
+      </View>
+      {showAck ? (
+        <Pressable
+          testID={`native-scan-incident-ack-${item.id}`}
+          onPress={onAck}
+          disabled={ackBusy}
+          accessibilityRole="button"
+          accessibilityLabel={`Подтвердить просмотр инцидента: ${title}`}
+          accessibilityState={{ disabled: ackBusy, busy: ackBusy }}
+          style={({ pressed }) => [
+            styles.ackButton,
+            { backgroundColor: accentColor },
+            { opacity: ackBusy ? 0.65 : pressed ? 0.85 : 1 },
+          ]}
+        >
+          {ackBusy
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <MaterialCommunityIcons name="check-circle-outline" size={18} color="#fff" />}
+          <Text style={styles.ackButtonText}>{ackBusy ? 'Отмечаем…' : 'Подтвердить'}</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 });
@@ -154,6 +225,11 @@ export const NativeScanHostCard = memo(function NativeScanHostCard({
 
 const styles = StyleSheet.create({
   card: { borderWidth: 1, borderRadius: 16, padding: 14, gap: 8 },
+  cardRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  cardBody: { flex: 1, minWidth: 0, gap: 8 },
+  checkIcon: { marginTop: 2 },
+  ackButton: { alignSelf: 'flex-start', minHeight: 44, minWidth: 160, borderRadius: 12, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  ackButtonText: { color: '#fff', fontSize: 14, lineHeight: 19, fontWeight: '800' },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   iconTitle: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   iconBox: { width: 42, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },

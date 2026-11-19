@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getCurrentUserMock = vi.fn();
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/auth', () => ({
   authAPI: {
     getCurrentUser: (...args) => getCurrentUserMock(...args),
     logout: vi.fn(),

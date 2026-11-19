@@ -11,9 +11,9 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.api.deps import ensure_user_permission, get_current_active_user
+from backend.api.deps import ensure_user_permission, get_current_active_user, require_permission
 from backend.models.auth import User
-from backend.services.authorization_service import PERM_NETWORKS_WRITE
+from backend.services.authorization_service import PERM_NETWORKS_READ, PERM_NETWORKS_WRITE
 from backend.services.network_service import NetworkConflictError, network_service
 from backend.utils.upload_limits import read_upload_limited
 
@@ -175,7 +175,7 @@ class BranchUpdateRequest(BaseModel):
 @router.get("/branches")
 async def get_branches(
     city: str = Query("tmn", min_length=1),
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     return {"branches": (await run_in_threadpool(network_service.list_branches, city))}
 
@@ -269,7 +269,7 @@ async def delete_branch(
 @router.get("/branches/{branch_id}/overview")
 async def get_branch_overview(
     branch_id: int,
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     try:
         return await run_in_threadpool(network_service.get_branch_overview, branch_id)
@@ -280,7 +280,7 @@ async def get_branch_overview(
 @router.get("/branches/{branch_id}/devices")
 async def get_devices(
     branch_id: int,
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     return {"devices": (await run_in_threadpool(network_service.list_devices, branch_id))}
 
@@ -292,7 +292,7 @@ async def get_ports(
     vlan: str = Query("", min_length=0),
     occupied: Optional[bool] = Query(None),
     location: str = Query("", min_length=0),
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     return {
         "ports": (await run_in_threadpool(network_service.list_ports, device_id,
@@ -311,7 +311,7 @@ async def get_branch_ports(
     occupied: Optional[bool] = Query(None),
     location: str = Query("", min_length=0),
     limit: int = Query(5000, ge=1, le=10000),
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     return {
         "ports": (await run_in_threadpool(network_service.list_ports_by_branch, branch_id,
@@ -328,7 +328,7 @@ async def get_branch_sockets(
     branch_id: int,
     search: str = Query("", min_length=0),
     limit: int = Query(5000, ge=1, le=10000),
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     return {
         "sockets": (await run_in_threadpool(network_service.list_sockets, branch_id,
@@ -459,7 +459,7 @@ async def import_branch_equipment_excel(
 @router.get("/branches/{branch_id}/db-mapping")
 async def get_branch_db_mapping(
     branch_id: int,
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     try:
         return await run_in_threadpool(network_service.get_branch_db_mapping, branch_id)
@@ -504,7 +504,7 @@ async def resolve_branch_socket_fio(
 @router.get("/branches/{branch_id}/maps")
 async def get_maps(
     branch_id: int,
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     return {"maps": (await run_in_threadpool(network_service.list_maps, branch_id))}
 
@@ -513,7 +513,7 @@ async def get_maps(
 async def get_map_points(
     branch_id: int,
     map_id: Optional[int] = Query(None),
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     return {"points": (await run_in_threadpool(network_service.list_map_points, branch_id=branch_id, map_id=map_id))}
 
@@ -522,7 +522,7 @@ async def get_map_points(
 async def download_map_file(
     map_id: int,
     render: str = Query("auto"),
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     try:
         data = await run_in_threadpool(network_service.get_map_file_for_view, map_id, render_mode=render)
@@ -545,7 +545,7 @@ async def download_map_file(
 @router.get("/maps/{map_id}/export-pdf")
 async def export_map_pdf(
     map_id: int,
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     try:
         data = await run_in_threadpool(network_service.export_map_pdf, map_id)
@@ -565,7 +565,7 @@ async def export_map_pdf(
 async def get_audit(
     branch_id: Optional[int] = Query(None),
     limit: int = Query(100, ge=1, le=500),
-    _: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_NETWORKS_READ)),
 ):
     return {"items": (await run_in_threadpool(network_service.list_audit, branch_id=branch_id, limit=limit))}
 

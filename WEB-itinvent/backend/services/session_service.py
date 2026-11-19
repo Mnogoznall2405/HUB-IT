@@ -153,8 +153,8 @@ class SessionService:
         # arrive on a cold auth cache at the same time.
         self._maintenance_lock = Lock()
         self._active_cache_lock = Lock()
-        # session_id -> (expires_mono, is_active, last_touch_mono)
-        self._active_cache: dict[str, tuple[float, bool, float]] = {}
+        # session_id -> (expires_mono, is_active, last_touch_mono, owner_user_id)
+        self._active_cache: dict[str, tuple[float, bool, float, Optional[int]]] = {}
         self._active_flight = SingleFlight()
         self._touch_inflight_lock = Lock()
         self._touch_inflight: set[str] = set()
@@ -451,13 +451,36 @@ class SessionService:
             cached = self._active_cache.get(key)
             if cached is None:
                 return None
-            expires_mono, is_active, _last_touch_mono = cached
+            expires_mono, is_active, _last_touch_mono, _owner_user_id = cached
             if now_mono >= expires_mono:
                 self._active_cache.pop(key, None)
                 return None
             return bool(is_active)
 
-    def _cache_put_active(self, session_id: str, *, is_active: bool, touched: bool = False) -> None:
+    def _cache_get_active_owner(self, session_id: str) -> Optional[tuple[bool, Optional[int]]]:
+        """Unexpired ``(is_active, owner_user_id)`` pair for ownership checks."""
+        key = str(session_id or "").strip()
+        if not key:
+            return None
+        now_mono = monotonic()
+        with self._active_cache_lock:
+            cached = self._active_cache.get(key)
+            if cached is None:
+                return None
+            expires_mono, is_active, _last_touch_mono, owner_user_id = cached
+            if now_mono >= expires_mono:
+                self._active_cache.pop(key, None)
+                return None
+            return bool(is_active), owner_user_id
+
+    def _cache_put_active(
+        self,
+        session_id: str,
+        *,
+        is_active: bool,
+        touched: bool = False,
+        owner_user_id: Optional[int] = None,
+    ) -> None:
         key = str(session_id or "").strip()
         if not key:
             return
@@ -467,8 +490,18 @@ class SessionService:
             if not is_active:
                 self._flight_generation += 1
             prev = self._active_cache.get(key)
+            resolved_owner = owner_user_id
+            if resolved_owner is None and prev is not None and now_mono < prev[0]:
+                resolved_owner = prev[3]
+            if not is_active:
+                resolved_owner = None
             last_touch_mono = now_mono if touched else (prev[2] if prev else 0.0)
-            self._active_cache[key] = (now_mono + ttl, bool(is_active), float(last_touch_mono))
+            self._active_cache[key] = (
+                now_mono + ttl,
+                bool(is_active),
+                float(last_touch_mono),
+                int(resolved_owner) if resolved_owner else None,
+            )
 
     def _cache_invalidate(self, session_id: Optional[str] = None) -> None:
         with self._active_cache_lock:
@@ -488,7 +521,7 @@ class SessionService:
             cached = self._active_cache.get(key)
             if cached is None:
                 return False
-            expires_mono, is_active, last_touch_mono = cached
+            expires_mono, is_active, last_touch_mono, _owner_user_id = cached
             if now_mono >= expires_mono or not is_active:
                 return False
             if last_touch_mono <= 0:
@@ -686,7 +719,9 @@ class SessionService:
                     db_session=session,
                 )
             actual_session_id = str(item.get("session_id") or session_id)
-            self._cache_put_active(actual_session_id, is_active=True, touched=True)
+            self._cache_put_active(
+                actual_session_id, is_active=True, touched=True, owner_user_id=int(user_id)
+            )
             result = dict(item)
             result["_session_reused"] = session_reused
             if closed_ids:
@@ -721,7 +756,9 @@ class SessionService:
         )
         self._save_sessions(sessions)
         actual_session_id = str(item.get("session_id") or session_id)
-        self._cache_put_active(actual_session_id, is_active=True, touched=True)
+        self._cache_put_active(
+            actual_session_id, is_active=True, touched=True, owner_user_id=int(user_id)
+        )
         result = dict(item)
         result["_session_reused"] = session_reused
         if closed_ids:
@@ -763,7 +800,11 @@ class SessionService:
         if normalized_id and self._cache_touch_fresh(normalized_id):
             return True
         if self._use_app_database:
-            with app_session(self._database_url) as session:
+            # Touch only advances the idle anchor; losing it in a crash moves
+            # expiry earlier (fail-closed), never later. The relaxed commit
+            # releases the session-row lock without waiting for WAL fsync so
+            # heartbeat writers stop serialising behind stalled commits.
+            with app_session(self._database_url, relax_commit=True) as session:
                 row = session.get(AppSessionRecord, normalized_id)
                 if row is None:
                     self._cache_put_active(normalized_id, is_active=False)
@@ -840,6 +881,68 @@ class SessionService:
             lambda: self._is_session_active_uncached(session_id),
         )
 
+    @staticmethod
+    def _session_owner_user_id(session: dict) -> Optional[int]:
+        try:
+            owner = int(session.get("user_id") or 0)
+        except (TypeError, ValueError):
+            return None
+        return owner if owner > 0 else None
+
+    def is_session_active_for_user(self, session_id: Optional[str], user_id: int) -> bool:
+        """Active check bound to the session owner: a token or ticket is honored
+        only when its session_id belongs to the user it claims to act for."""
+        normalized_id = str(session_id or "").strip()
+        try:
+            expected_owner = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        if not normalized_id or expected_owner <= 0:
+            return False
+        cached = self._cache_get_active_owner(normalized_id)
+        if cached is not None:
+            is_active, cached_owner = cached
+            if not is_active:
+                return False
+            if cached_owner is not None:
+                return cached_owner == expected_owner
+        # cached active with unknown owner: load and cache the verified owner
+        active = self._active_flight.do(
+            (normalized_id, self._flight_generation),
+            lambda: self._is_session_active_uncached(normalized_id),
+        )
+        if not active:
+            return False
+        cached = self._cache_get_active_owner(normalized_id)
+        if cached is None:
+            return False
+        is_active, cached_owner = cached
+        return bool(is_active) and cached_owner == expected_owner
+
+    def _trusted_device_still_valid(self, item: dict) -> bool:
+        """False when the session is bound to a revoked/expired trusted device.
+
+        Device revocation must reach every surface the session still serves:
+        REST, WebSocket revalidation and refresh all funnel through the
+        session-active check, so the device check lives here. Non-trusted
+        sessions (no ``trusted_device_id``) are unaffected.
+        """
+        trusted_id = str(item.get("trusted_device_id") or "").strip()
+        if not trusted_id:
+            return True
+        try:
+            user_id = int(item.get("user_id") or 0)
+        except (TypeError, ValueError):
+            return False
+        if user_id <= 0:
+            return False
+        from backend.services.trusted_device_service import trusted_device_service
+
+        return trusted_device_service.is_token_device_valid(
+            user_id=user_id,
+            token_device_id=f"trusted:{trusted_id}",
+        )
+
     def _is_session_active_uncached(self, session_id: str) -> bool:
         # This is the hot authentication path used by every REST request and
         # WebSocket revalidation. Validating one session below is sufficient
@@ -852,10 +955,18 @@ class SessionService:
                     self._cache_put_active(str(session_id), is_active=False)
                     return False
                 item = self._normalize_db_row(row, now=_utc_now(), db_session=session)
-                active = item.get("status") == "active" and bool(item.get("is_active", True))
+                active = (
+                    item.get("status") == "active"
+                    and bool(item.get("is_active", True))
+                    and self._trusted_device_still_valid(item)
+                )
                 # A read must not mark the session as touched: touch_session() would
                 # then skip the write and last_seen_at (idle anchor) would never move.
-                self._cache_put_active(str(session_id), is_active=active)
+                self._cache_put_active(
+                    str(session_id),
+                    is_active=active,
+                    owner_user_id=self._session_owner_user_id(item) or 0,
+                )
                 return active
         sessions = self._load_sessions()
         changed = False
@@ -867,8 +978,16 @@ class SessionService:
             changed = self._normalize_session(session, now=now) or changed
             if changed:
                 self._save_sessions(sessions)
-            active = session.get("status") == "active" and bool(session.get("is_active", True))
-            self._cache_put_active(str(session_id), is_active=active)
+            active = (
+                session.get("status") == "active"
+                and bool(session.get("is_active", True))
+                and self._trusted_device_still_valid(session)
+            )
+            self._cache_put_active(
+                str(session_id),
+                is_active=active,
+                owner_user_id=self._session_owner_user_id(session) or 0,
+            )
             return active
 
         self._cache_put_active(str(session_id), is_active=False)
@@ -980,6 +1099,100 @@ class SessionService:
         closed_ids: list[str] = []
         for session in sessions:
             if int(session.get("user_id", 0) or 0) != int(user_id):
+                continue
+            closed_ids.append(str(session.get("session_id") or ""))
+            if self._close_session_record(session, reason="terminated"):
+                changed = True
+            closed += 1
+        if changed:
+            self._save_sessions(sessions)
+        for sid in closed_ids:
+            self._cache_invalidate(sid)
+        return closed
+
+    def close_user_device_sessions(self, user_id: int, client_device_id: str) -> int:
+        """Close active sessions bound to one mobile client device (biometric revoke)."""
+        device_hash = str(hash_client_device_id(client_device_id) or "").strip()
+        if not device_hash:
+            return 0
+        if self._use_app_database:
+            closed = 0
+            closed_ids: list[str] = []
+            with app_session(self._database_url) as session:
+                rows = session.scalars(
+                    select(AppSessionRecord).where(
+                        AppSessionRecord.user_id == int(user_id),
+                        AppSessionRecord.client_device_key_hash == device_hash,
+                    )
+                ).all()
+                for row in rows:
+                    if not bool(row.is_active):
+                        continue
+                    item = self._row_to_session_dict(row)
+                    closed_ids.append(str(item.get("session_id") or row.session_id or ""))
+                    if self._close_session_record(item, reason="terminated", db_session=session):
+                        self._apply_session_payload(row, item)
+                    closed += 1
+            for sid in closed_ids:
+                self._cache_invalidate(sid)
+            return closed
+        sessions = self._load_sessions()
+        changed = False
+        closed = 0
+        closed_ids: list[str] = []
+        for session in sessions:
+            if int(session.get("user_id", 0) or 0) != int(user_id):
+                continue
+            if str(session.get("client_device_key_hash") or "").strip() != device_hash:
+                continue
+            if not bool(session.get("is_active", True)):
+                continue
+            closed_ids.append(str(session.get("session_id") or ""))
+            if self._close_session_record(session, reason="terminated"):
+                changed = True
+            closed += 1
+        if changed:
+            self._save_sessions(sessions)
+        for sid in closed_ids:
+            self._cache_invalidate(sid)
+        return closed
+
+    def close_sessions_by_trusted_device(self, user_id: int, trusted_device_id: str) -> int:
+        """Close active sessions bound to one trusted device (trusted-device revoke)."""
+        device_id = str(trusted_device_id or "").strip()
+        if not device_id:
+            return 0
+        if self._use_app_database:
+            closed = 0
+            closed_ids: list[str] = []
+            with app_session(self._database_url) as session:
+                rows = session.scalars(
+                    select(AppSessionRecord).where(
+                        AppSessionRecord.user_id == int(user_id),
+                        AppSessionRecord.trusted_device_id == device_id,
+                    )
+                ).all()
+                for row in rows:
+                    if not bool(row.is_active):
+                        continue
+                    item = self._row_to_session_dict(row)
+                    closed_ids.append(str(item.get("session_id") or row.session_id or ""))
+                    if self._close_session_record(item, reason="terminated", db_session=session):
+                        self._apply_session_payload(row, item)
+                    closed += 1
+            for sid in closed_ids:
+                self._cache_invalidate(sid)
+            return closed
+        sessions = self._load_sessions()
+        changed = False
+        closed = 0
+        closed_ids: list[str] = []
+        for session in sessions:
+            if int(session.get("user_id", 0) or 0) != int(user_id):
+                continue
+            if str(session.get("trusted_device_id") or "").strip() != device_id:
+                continue
+            if not bool(session.get("is_active", True)):
                 continue
             closed_ids.append(str(session.get("session_id") or ""))
             if self._close_session_record(session, reason="terminated"):

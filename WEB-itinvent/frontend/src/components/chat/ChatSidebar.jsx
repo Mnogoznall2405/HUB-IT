@@ -266,9 +266,19 @@ function ChatSidebar({
   const aiCreatePending = Boolean(String(openingAiBotId || '').trim());
   // R18: workspace tab badges — all chats folders except AI/archive; muted conversations
   // are already excluded server-side and by the effective-mute filter in buildFolderUnreadCounts.
+  // Custom folders arrive under their own folderId keys: a conversation in a
+  // custom folder is already counted under personal/groups/tasks, so summing
+  // those keys would count it twice.
+  const customFolderIdSet = useMemo(
+    () => new Set((Array.isArray(customFolders) ? customFolders : [])
+      .map((folder) => String(folder?.id || '').trim()).filter(Boolean)),
+    [customFolders],
+  );
   const chatsUnreadCount = Math.max(0,
     Object.entries(folderUnreadCounts || {}).reduce((total, [key, value]) => (
-      key === 'ai' || key === 'archived' ? total : total + (Number(value) || 0)
+      key === 'ai' || key === 'archived' || key === 'all' || key === 'custom' || customFolderIdSet.has(key)
+        ? total
+        : total + (Number(value) || 0)
     ), 0));
   const availableAiAgents = useMemo(
     () => aiAgents.filter(isAiAgentAvailableForNewChat),

@@ -9,6 +9,7 @@ import { NativeMailInboxScreen } from './NativeMailInboxScreen';
 const mockMailMessageRowRender = jest.fn();
 let mockOfflineMode = false;
 jest.mock('../../cache/nativeSnapshotCache', () => ({
+  ...jest.requireActual('../../cache/nativeSnapshotCache'),
   readNativeCollectionSnapshot: jest.fn(async () => null),
   writeNativeCollectionSnapshot: jest.fn(async () => true),
 }));

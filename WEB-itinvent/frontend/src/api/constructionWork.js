@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const scope = (objectId, groupRef) => `/construction/objects/${encodeURIComponent(objectId)}${groupRef ? `/directions/${encodeURIComponent(groupRef)}` : ''}`;
 

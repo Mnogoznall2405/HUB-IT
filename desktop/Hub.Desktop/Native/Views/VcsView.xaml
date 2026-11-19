@@ -1,0 +1,191 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.VcsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Верхняя панель: поиск по терминалам, обновить -->
+        <Border Grid.Row="0" Padding="20,16,20,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Grid VerticalAlignment="Center">
+                        <TextBox x:Name="SearchInput"
+                                 Width="340"
+                                 HorizontalAlignment="Left"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="Поиск терминала ВКС по имени, адресу или расположению" />
+                        <TextBlock Margin="13,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="Имя, адрес или расположение…">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=SearchInput}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                    <ProgressBar Margin="10,0,0,0"
+                                 Width="80"
+                                 Height="3"
+                                 VerticalAlignment="Center"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор загрузки терминалов ВКС" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Обновить"
+                        AutomationProperties.Name="Обновить список терминалов ВКС" />
+            </Grid>
+        </Border>
+
+        <!-- Баннер ошибки -->
+        <Border Grid.Row="1"
+                Margin="20,10,20,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}"
+                AutomationProperties.Name="Ошибка терминалов ВКС">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{DynamicResource HubErrorTextBrush}"
+                           Text="{Binding BannerErrorText}"
+                           TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <Button Grid.Column="1"
+                        Margin="12,0,8,0"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Повторить"
+                        AutomationProperties.Name="Повторить загрузку терминалов ВКС" />
+                <Button Grid.Column="2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DismissBannerCommand}"
+                        Content="✕"
+                        AutomationProperties.Name="Скрыть ошибку" />
+            </Grid>
+        </Border>
+
+        <!-- Список терминалов -->
+        <Grid Grid.Row="2" Margin="20,14,20,10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <DockPanel Grid.Row="0" Margin="0,0,0,6">
+                <TextBlock DockPanel.Dock="Left"
+                           Style="{StaticResource HubMutedTextStyle}"
+                           FontSize="12"
+                           Text="{Binding TotalText}"
+                           Visibility="{Binding TotalText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                <TextBlock DockPanel.Dock="Right"
+                           HorizontalAlignment="Right"
+                           Style="{StaticResource HubMutedTextStyle}"
+                           FontSize="12"
+                           Text="{Binding LastUpdatedText}"
+                           Visibility="{Binding LastUpdatedText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+            </DockPanel>
+            <Grid Grid.Row="1">
+                <ListBox Style="{StaticResource HubListBoxStyle}"
+                         ItemsSource="{Binding Items}"
+                         AutomationProperties.Name="Список терминалов ВКС">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock FontSize="14"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding Title}"
+                                               TextWrapping="Wrap"
+                                               AutomationProperties.Name="{Binding Title}" />
+                                    <TextBlock Margin="0,3,0,0"
+                                               FontSize="12"
+                                               FontFamily="Consolas, Courier New"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding AddressText}" />
+                                    <TextBlock Margin="0,2,0,0"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding LocationText}"
+                                               Visibility="{Binding HasLocation, Converter={StaticResource BoolToVisibility}}" />
+                                </StackPanel>
+                                <Button Grid.Column="1"
+                                        Margin="12,0,0,0"
+                                        VerticalAlignment="Center"
+                                        MinWidth="128"
+                                        Padding="20,9"
+                                        Style="{StaticResource HubPrimaryButtonStyle}"
+                                        Command="{Binding DataContext.ConnectCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                        CommandParameter="{Binding}"
+                                        Content="Подключиться"
+                                        AutomationProperties.Name="{Binding Title, StringFormat='Подключиться к терминалу {0}'}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <!-- Пустое состояние списка -->
+                <StackPanel HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Text="Терминалов нет" />
+                    <TextBlock Margin="0,6,0,0"
+                               HorizontalAlignment="Center"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               Text="По текущему поиску терминалы ВКС не найдены." />
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</UserControl>

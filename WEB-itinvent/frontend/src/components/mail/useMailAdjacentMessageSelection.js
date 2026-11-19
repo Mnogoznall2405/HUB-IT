@@ -19,6 +19,7 @@ export default function useMailAdjacentMessageSelection({
       items: listData?.items,
       selectedId,
       delta,
+      mode: viewMode,
     });
     if (!resolved) return;
     selectedIdRef.current = resolved.nextId;

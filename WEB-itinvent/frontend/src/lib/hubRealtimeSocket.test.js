@@ -4,8 +4,11 @@ const authHarness = vi.hoisted(() => ({
   refresh: vi.fn(),
 }));
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/http', () => ({
   API_V1_BASE: '/api/v1',
+}));
+
+vi.mock('../api/auth', () => ({
   authAPI: authHarness,
 }));
 
@@ -169,6 +172,20 @@ describe('HubRealtimeSocketClient', () => {
     MockWebSocket.instances[1].emitClose({ code: 4403 });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(MockWebSocket.instances).toHaveLength(2);
+    release();
+  });
+
+  it('reconnects on a long delay after a 4000 eviction close', async () => {
+    const { HubRealtimeSocketClient } = await loadHubRealtimeSocket();
+    const client = new HubRealtimeSocketClient();
+    const release = client.retain();
+
+    MockWebSocket.instances[0].emitClose({ code: 4000, reason: 'connection limit exceeded' });
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(authHarness.refresh).not.toHaveBeenCalled();
     release();
   });
 

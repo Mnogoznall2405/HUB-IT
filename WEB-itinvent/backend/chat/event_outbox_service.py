@@ -325,9 +325,9 @@ class ChatEventOutboxService:
                         stmt = stmt.on_conflict_do_nothing(constraint="uq_chat_event_outbox_dedupe_key")
                     else:
                         stmt = stmt.on_conflict_do_nothing(index_elements=["dedupe_key"])
-                    result = session.execute(stmt)
-                    # rowcount is 1 on insert, 0 on conflict for both dialects when supported
-                    if int(getattr(result, "rowcount", 0) or 0) > 0:
+                    # psycopg may report rowcount=-1 even when INSERT returned a new ID.
+                    inserted_id = session.execute(stmt.returning(ChatEventOutbox.id)).scalar_one_or_none()
+                    if inserted_id is not None:
                         inserted += 1
                 else:
                     session.add(ChatEventOutbox(**values))
@@ -587,6 +587,18 @@ class ChatEventOutboxService:
                 seen_at = _utc_now()
         else:
             seen_at = _utc_now()
+        mentioned_user_ids = list(payload.get("mentioned_user_ids") or [])
+        if "mention_body" in payload:
+            from backend.chat.chat_mentions import resolve_mentioned_member_user_ids
+
+            # Directory/permission lookups must not hold the delivery write transaction.
+            mentioned_user_ids = sorted(resolve_mentioned_member_user_ids(
+                member_user_ids=list(payload.get("member_user_ids") or []),
+                sender_user_id=int(payload.get("sender_user_id") or job.target_user_id or 0),
+                body=payload["mention_body"],
+                conversation_id=job.conversation_id,
+                mention_all_allowed=bool(payload.get("mention_all_allowed")),
+            ))
         with _aux_write_session() as session:
             apply_message_delivery_state_after_commit(
                 session=session,
@@ -596,7 +608,7 @@ class ChatEventOutboxService:
                 member_user_ids=list(payload.get("member_user_ids") or []),
                 conversation_seq=int(payload.get("conversation_seq") or 0),
                 seen_at=seen_at,
-                mentioned_user_ids=list(payload.get("mentioned_user_ids") or []),
+                mentioned_user_ids=mentioned_user_ids,
             )
 
     async def process_job(self, job: ChatEventOutboxJob) -> str:

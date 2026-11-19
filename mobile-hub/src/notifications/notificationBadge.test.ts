@@ -55,3 +55,10 @@ it('does not clear a known badge when every source is unavailable', async () => 
   await expect(reconcileNativeBadge()).resolves.toBeNull();
   expect(Notifications.setBadgeCountAsync).not.toHaveBeenCalled();
 });
+
+it('does not show a partial badge on cold start without a prior complete snapshot', async () => {
+  (notificationApi.getNotificationUnreadCounts as jest.Mock).mockRejectedValueOnce(new Error('hub down'));
+
+  await expect(reconcileNativeBadge()).resolves.toBeNull();
+  expect(Notifications.setBadgeCountAsync).not.toHaveBeenCalled();
+});

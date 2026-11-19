@@ -142,6 +142,16 @@ def _fit_columns(worksheet) -> None:
         worksheet.column_dimensions[column_letter].width = min(max(max_length + 2, 12), 60)
 
 
+_FORMULA_PREFIX_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_cell_value(value: Any) -> Any:
+    """LOW-05: строка, начинающаяся с формульного префикса, становится текстом."""
+    if isinstance(value, str) and value[:1] in _FORMULA_PREFIX_CHARS:
+        return "'" + value
+    return value
+
+
 def _write_rows(worksheet, headers: List[str], rows: List[Dict[str, Any]]) -> None:
     worksheet.append(headers)
     for cell in worksheet[1]:
@@ -149,7 +159,7 @@ def _write_rows(worksheet, headers: List[str], rows: List[Dict[str, Any]]) -> No
 
     if rows:
         for row in rows:
-            worksheet.append([row.get(column, "") for column in headers])
+            worksheet.append([_sanitize_cell_value(row.get(column, "")) for column in headers])
     else:
         worksheet.append(["За выбранный период записей нет"])
 

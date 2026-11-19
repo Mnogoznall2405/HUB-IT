@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../api/client', () => ({ API_V1_BASE: '/api/v1' }));
+vi.mock('../api/http', () => ({ API_V1_BASE: '/api/v1' }));
 
 class MockEventSource {
   static instances = [];

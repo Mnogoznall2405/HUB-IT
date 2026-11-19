@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-import { authAPI } from '../../api/client';
+import { authAPI } from '../../api/auth';
 import { useAuth } from '../../contexts/AuthContext';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';

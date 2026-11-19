@@ -18,6 +18,7 @@ from typing import Any, Optional
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import app_session, ensure_app_schema_initialized, is_app_database_configured
 from backend.appdb.models import AppNativePushToken
@@ -150,6 +151,9 @@ class NativePushService:
         self._access_token: str = ""
         self._access_token_expires_at: float = 0.0
         self._access_token_lock = threading.Lock()
+        self._service_account_error_lock = threading.Lock()
+        self._service_account_error_path = ""
+        self._service_account_error_logged_at = 0.0
 
     def _service_account(self) -> dict[str, Any] | None:
         raw_json = _normalize_text(config.fcm_push.service_account_json)
@@ -160,11 +164,21 @@ class NativePushService:
         raw_file = _normalize_text(config.fcm_push.service_account_file)
         if raw_file:
             try:
-                parsed = _json_loads(Path(raw_file).read_text(encoding="utf-8"), None)
-                return parsed if isinstance(parsed, dict) else None
-            except Exception:
-                logger.warning("FCM service account file could not be read: %s", raw_file, exc_info=True)
+                raw = Path(raw_file).read_text(encoding="utf-8")
+            except Exception as exc:
+                now = time.monotonic()
+                with self._service_account_error_lock:
+                    if (self._service_account_error_path != raw_file or
+                            now - self._service_account_error_logged_at >= 300):
+                        self._service_account_error_path = raw_file
+                        self._service_account_error_logged_at = now
+                        logger.warning("FCM service account file unavailable: %s", type(exc).__name__)
                 return None
+            with self._service_account_error_lock:
+                self._service_account_error_path = ""
+                self._service_account_error_logged_at = 0.0
+            parsed = _json_loads(raw, None)
+            return parsed if isinstance(parsed, dict) else None
 
         return None
 
@@ -187,10 +201,12 @@ class NativePushService:
 
     def get_runtime_status(self) -> dict[str, Any]:
         service_account = self._service_account()
+        configured = bool(service_account and self._project_id(service_account))
+        storage_available = self.storage_available
         return {
-            "enabled": bool(self.configured and self.storage_available),
-            "configured": bool(self.configured),
-            "storage_available": bool(self.storage_available),
+            "enabled": bool(configured and storage_available),
+            "configured": configured,
+            "storage_available": bool(storage_available),
             "project_id_present": bool(self._project_id(service_account)),
             "service_account_present": bool(service_account),
         }
@@ -220,63 +236,74 @@ class NativePushService:
         normalized_app_version = _normalize_text(app_version) or None
         now = _utc_now()
 
-        with app_session() as session:
-            row = session.execute(
-                select(AppNativePushToken).where(AppNativePushToken.token_hash == token_hash)
-            ).scalar_one_or_none()
-            if row is None:
-                row = AppNativePushToken(
-                    user_id=normalized_user_id,
-                    provider="fcm",
-                    platform=normalized_platform,
-                    token_hash=token_hash,
-                    token_text=normalized_token,
-                    created_at=now,
-                    updated_at=now,
-                )
-                session.add(row)
-
-            row.user_id = normalized_user_id
-            row.provider = "fcm"
-            row.platform = normalized_platform
-            row.token_hash = token_hash
-            row.token_text = normalized_token
-            row.device_id = normalized_device_id
-            row.device_label = normalized_device_label
-            row.app_version = normalized_app_version
-            row.is_active = True
-            row.failure_count = 0
-            row.updated_at = now
-            row.last_seen_at = now
-            row.revoked_at = None
-            row.last_error_at = None
-            row.last_error_text = None
-
-            if normalized_device_id:
-                stale_tokens = list(
-                    session.execute(
-                        select(AppNativePushToken).where(
-                            AppNativePushToken.user_id == normalized_user_id,
-                            AppNativePushToken.provider == "fcm",
-                            AppNativePushToken.platform == normalized_platform,
-                            AppNativePushToken.device_id == normalized_device_id,
-                            AppNativePushToken.token_hash != token_hash,
-                            AppNativePushToken.is_active.is_(True),
+        # Конкурирующие регистрации одного токена не защищены select-then-insert
+        # (autoflush=False): проигравший гонку получает IntegrityError на коммите —
+        # повтор проходит по пути update уже существующей строки.
+        for attempt in range(2):
+            try:
+                with app_session() as session:
+                    row = session.execute(
+                        select(AppNativePushToken).where(AppNativePushToken.token_hash == token_hash)
+                    ).scalar_one_or_none()
+                    if row is None:
+                        row = AppNativePushToken(
+                            user_id=normalized_user_id,
+                            provider="fcm",
+                            platform=normalized_platform,
+                            token_hash=token_hash,
+                            token_text=normalized_token,
+                            created_at=now,
+                            updated_at=now,
                         )
-                    ).scalars()
-                )
-                for stale_token in stale_tokens:
-                    stale_token.is_active = False
-                    stale_token.revoked_at = now
-                    stale_token.updated_at = now
-                    stale_token.last_error_text = "Superseded by newer native push token on the same device"
+                        session.add(row)
 
-        return {
-            "ok": True,
-            "registered": True,
-            "push_enabled": bool(self.configured),
-            "configured": bool(self.configured),
-        }
+                    row.user_id = normalized_user_id
+                    row.provider = "fcm"
+                    row.platform = normalized_platform
+                    row.token_hash = token_hash
+                    row.token_text = normalized_token
+                    row.device_id = normalized_device_id
+                    row.device_label = normalized_device_label
+                    row.app_version = normalized_app_version
+                    row.is_active = True
+                    row.failure_count = 0
+                    row.updated_at = now
+                    row.last_seen_at = now
+                    row.revoked_at = None
+                    row.last_error_at = None
+                    row.last_error_text = None
+
+                    if normalized_device_id:
+                        # Одно устройство — одна активная регистрация: протухшие
+                        # токены прежнего аккаунта на этом же device_id гасим тоже,
+                        # иначе его уведомления продолжают приходить после выхода.
+                        stale_tokens = list(
+                            session.execute(
+                                select(AppNativePushToken).where(
+                                    AppNativePushToken.provider == "fcm",
+                                    AppNativePushToken.platform == normalized_platform,
+                                    AppNativePushToken.device_id == normalized_device_id,
+                                    AppNativePushToken.token_hash != token_hash,
+                                    AppNativePushToken.is_active.is_(True),
+                                )
+                            ).scalars()
+                        )
+                        for stale_token in stale_tokens:
+                            stale_token.is_active = False
+                            stale_token.revoked_at = now
+                            stale_token.updated_at = now
+                            stale_token.last_error_text = "Superseded by newer native push token on the same device"
+
+                    return {
+                        "ok": True,
+                        "registered": True,
+                        "push_enabled": bool(self.configured),
+                        "configured": bool(self.configured),
+                    }
+            except IntegrityError:
+                if attempt:
+                    raise
+        raise RuntimeError("native push token upsert failed")
 
     def delete_token(self, *, user_id: int, token: str) -> dict[str, Any]:
         normalized_token = _normalize_text(token)
@@ -309,6 +336,37 @@ class NativePushService:
             "removed": bool(removed),
             "push_enabled": bool(self.configured),
         }
+
+    def revoke_device_tokens(self, *, user_id: int, device_id: str) -> dict[str, Any]:
+        """Deactivate all active push tokens the user registered on one device.
+
+        Called from ``/auth/logout`` for mobile clients: revoking only the
+        session/refresh token leaves ``native_push_tokens`` rows active, so the
+        device keeps receiving pushes of a logged-out account (shared phone).
+        """
+        normalized_device_id = _normalize_text(device_id)
+        removed = 0
+        if not normalized_device_id or not self.storage_available:
+            return {"ok": True, "removed": 0}
+        ensure_app_schema_initialized()
+        now = _utc_now()
+        with app_session() as session:
+            rows = list(
+                session.execute(
+                    select(AppNativePushToken).where(
+                        AppNativePushToken.user_id == int(user_id),
+                        AppNativePushToken.device_id == normalized_device_id,
+                        AppNativePushToken.provider == "fcm",
+                        AppNativePushToken.is_active.is_(True),
+                    )
+                ).scalars()
+            )
+            for row in rows:
+                row.is_active = False
+                row.revoked_at = now
+                row.updated_at = now
+                removed += 1
+        return {"ok": True, "removed": removed}
 
     def _active_tokens(self, *, user_id: int) -> list[AppNativePushToken]:
         if not self.storage_available:

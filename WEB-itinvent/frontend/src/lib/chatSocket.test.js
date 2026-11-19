@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/http', () => ({
   API_V1_BASE: '/api/v1',
 }));
 
@@ -528,16 +528,56 @@ describe('chatSocket client lifecycle', () => {
     }
   });
 
-  it('does not reconnect after connection limit eviction close code 4000', async () => {
+  it('reconnects after connection limit eviction close code 4000 on a long delay', async () => {
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
     const { chatSocket } = await loadChatSocket();
     const release = chatSocket.retain();
     const socket = MockWebSocket.instances[0];
 
     socket.emitOpen();
     socket.emitClose({ code: 4000 });
+
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    // jitter is 0 with Math.random() === 0.5, so the eviction floor wins.
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 120_000);
+
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    release();
+    chatSocket.close(true);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it('reconnects an evicted socket immediately on a connectivity probe', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 4000 });
+    chatSocket.probeSocketConnection();
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('reconnects after transient close code 4503 with normal backoff', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 4503 });
     await vi.runOnlyPendingTimersAsync();
 
-    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(MockWebSocket.instances.length).toBeGreaterThan(1);
 
     release();
     chatSocket.close(true);

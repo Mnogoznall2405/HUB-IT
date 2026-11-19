@@ -84,7 +84,10 @@ export const getMailRenderedContentSx = ({ ui, theme, variant = 'message', mine 
       height: 'auto !important',
       objectFit: 'contain',
     },
-    '& video, & iframe': {
+    // The mail body renders inside MailHtmlBody's sandboxed iframe, which owns
+    // its height via the measured inline style. A descendant `& iframe` rule
+    // here used to pin it at `height: auto !important` (150px + inner scroll).
+    '& video': {
       maxWidth: '100% !important',
       height: 'auto !important',
     },

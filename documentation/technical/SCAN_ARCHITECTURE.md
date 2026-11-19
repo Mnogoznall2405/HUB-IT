@@ -15,6 +15,17 @@
 - While a scan task is active, server CPU, memory, disk and network counters are sampled every 5 seconds into
   `scan_task_system_metrics`; use `GET /api/v1/scan/tasks/{task_id}/system-metrics` for the timeline and summary.
 - On worker restart, interrupted `processing` jobs are immediately requeued without deleting their transient spool.
+- PDF-spool reconciliation runs in the worker, not the API startup path. A nonblocking OS file lock
+  in the shared spool prevents overlapping sweeps by processes on this host. File handles release
+  the lock on failure or process exit; the lock file is not deleted.
+- Reconciliation looks up existing spool IDs in batches of 400 and pages only active PDF/image/office
+  jobs. It does not fetch completed job history. Filesystem work happens outside database transactions;
+  missing-payload updates compare the observed status and start time so a concurrent completion/claim
+  is not overwritten. Existing orphan grace and terminal-file cleanup rules remain unchanged.
+- Legacy JSON ingest classifies incomplete/disconnected uploads as HTTP 408 before queuing a job.
+  `SCAN_INGEST_BODY_IDLE_TIMEOUT_SEC` defaults to 60 seconds between body chunks; progressing uploads
+  may take longer overall. TCP resets are normalized at the ASGI receive boundary, before middleware
+  can wrap them in exception groups. Existing 413 size and 422 JSON-validation contracts are unchanged.
 - Repeat a real-folder measurement with
   `python scripts\benchmark_scan_ocr.py <path> --require-prefix dsp_ --json-output <report.json>`.
 - Repeat the large-sheet control with
@@ -75,7 +86,11 @@
 - При poll доставляются по FIFO.
 - TTL по умолчанию: 7 дней (`SCAN_TASK_TTL_DAYS`).
 - Повторная доставка: backoff до 15 минут при отсутствии результата.
-- Нагрузка от опроса (≈2 запроса в минуту на агента): `GET /tasks/poll` сначала делает read-only проверку и не открывает write-транзакцию, если для агента нет задач; sweep истечения/возврата `delivered → queued` выполняется не чаще раза в `SCAN_TASK_MAINTENANCE_INTERVAL_SEC` (15 с, 1–60) на процесс. `POST /heartbeat` без изменений в payload (кроме `last_seen_at`) пишется в БД не чаще раза в `SCAN_HEARTBEAT_WRITE_MIN_SEC` (120 с, 0 отключает); окно «онлайн» — `SCAN_SERVER_AGENT_ONLINE_TIMEOUT_SEC` (1800 с).
+- Нагрузка от опроса (≈2 запроса в минуту на агента): `GET /tasks/poll` сначала делает read-only проверку и не открывает write-транзакцию, если для агента нет задач; sweep истечения/возврата `delivered → queued` выполняется не чаще раза в `SCAN_TASK_MAINTENANCE_INTERVAL_SEC` (15 с, 1–60) на процесс.
+- `POST /heartbeat` сохраняет ресурсные показатели с интервалом `SCAN_HEARTBEAT_WRITE_MIN_SEC` (120 с, 0 отключает): CPU, RSS, свободное место, возраст outbox и размер серверной очереди сами по себе не вызывают новую запись. Смена версии, идентичности, очереди агента, ошибки, `low_disk`/`outbox_stale` и состояния MSI сохраняется сразу; неизвестные поля не исключаются из сравнения.
+- После промаха локального кэша heartbeat сверяется с сохранённым JSON. Условная запись не позволяет запоздавшему ресурсному снимку затереть более новое состояние очереди. Лёгкий presence использует сохранённое время и compare-and-set, поэтому несколько процессов и соседние маршруты не дублируют свежую запись и не перезаписывают новый heartbeat старой идентичностью. Неудачная запись не запускает окно подавления повторов.
+- Heartbeat и presence ограничены также половиной окна «онлайн» (`SCAN_SERVER_AGENT_ONLINE_TIMEOUT_SEC`, 1800 с по умолчанию). Лёгкий presence не продлевает срок хранения полного ресурсного снимка.
+- Базовый замер, изолированные проверки и следующие этапы разделения нагрузки: [DATABASE_WORKLOAD_ISOLATION.md](./DATABASE_WORKLOAD_ISOLATION.md). Исправление выложено 2026-11-18 после отдельного разрешения: два production-интервала показали 441/413 UPDATE вместо 798 за 45 с при сопоставимом трафике. Это не подтверждает устранение всех задержек WAL или достижение целевых p95/p99 чата.
 
 ## Retention
 

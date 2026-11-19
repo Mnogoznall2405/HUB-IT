@@ -43,7 +43,7 @@ describe('ChatPageMessageChrome', () => {
     expect(screen.getByText('AI data is stale')).toBeInTheDocument();
   });
 
-  it('opens mail action editor dialog when editor state is set', () => {
+  it('opens mail action editor dialog when editor state is set', async () => {
     render(
       <ChatPageMessageChrome
         fileInputRef={{ current: null }}
@@ -56,6 +56,6 @@ describe('ChatPageMessageChrome', () => {
       />,
     );
 
-    expect(screen.getByTestId('mail-action-edit-dialog')).toBeInTheDocument();
+    expect(await screen.findByTestId('mail-action-edit-dialog')).toBeInTheDocument();
   });
 });

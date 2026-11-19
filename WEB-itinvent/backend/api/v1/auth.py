@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.api.deps import ensure_admin_ip_allowed, get_current_active_user, get_current_admin_user, get_current_session_id, get_current_user, require_permission
+from backend.api.deps import ensure_admin_ip_allowed, get_current_active_user, get_current_admin_user, get_current_session_id, get_current_user, get_current_user_optional, require_permission
 from backend.config import config
 from backend.models.auth import (
     User,
@@ -46,6 +46,7 @@ from backend.models.auth import (
     TwoFactorSetupVerifyRequest,
     TwoFactorSetupVerifyResponse,
     TwoFactorLoginVerifyRequest,
+    TwoFactorStepUpRequest,
     BackupCodesResponse,
     TrustedDeviceInfo,
     TrustedDeviceRegistrationOptionsRequest,
@@ -78,6 +79,7 @@ from backend.services.mobile_biometric_session_service import (
     MobileBiometricSessionError,
     mobile_biometric_session_service,
 )
+from backend.services.native_push_service import native_push_service
 from backend.services.adfs_sso_service import WindowsSsoError, adfs_sso_service
 from backend.services.ad_sync_service import run_ad_sync
 from backend.services.authorization_service import (
@@ -90,6 +92,7 @@ from backend.database.connection import set_user_database
 from backend.services.auth_session_metrics import note as note_auth_session_metric
 from backend.utils.client_geo import resolve_client_geo
 from backend.utils.request_network import build_request_network_context, resolve_twofa_policy
+from backend.utils.rate_limit_guard import INTERNAL_RATE_LIMIT_MULTIPLIER as _AUTH_INTERNAL_RATE_LIMIT_MULTIPLIER
 from backend.utils.upload_limits import read_upload_limited
 
 
@@ -120,6 +123,16 @@ _LOGIN_ESCALATION_RESET_SECONDS = 86400
 _LOGIN_FAILURE_STATE_NAMESPACE = "auth_login_failures"
 _LOGIN_BAN_STATE_NAMESPACE = "auth_login_bans"
 _LOGIN_ESCALATION_STATE_NAMESPACE = "auth_login_escalation"
+# M-5: the (IP, username) pair alone misses distributed brute force (one
+# account, many IPs) and password spray (one IP, many accounts), so every
+# failure is mirrored into per-IP and per-account scopes with the same
+# thresholds/windows/ban sequence.
+_LOGIN_SCOPE_PAIR = "pair"
+_LOGIN_SCOPE_IP = "ip"
+_LOGIN_SCOPE_ACCOUNT = "account"
+# M-6: the first grace serve covers racing first-party clients (mobile+web);
+# serving the same rotated payload again means the old token was replayed.
+_REFRESH_GRACE_MAX_HITS = 1
 
 
 def _request_is_https(request: Request) -> bool:
@@ -176,6 +189,30 @@ def _login_lockout_key(*, client_ip: str, username: str) -> str:
     return f"{normalized_ip}:{normalized_username}"
 
 
+def _login_state_namespace(base: str, scope: str) -> str:
+    # The pair scope keeps the legacy namespace so deployed bans/counters survive.
+    if scope == _LOGIN_SCOPE_PAIR:
+        return base
+    normalized_scope = str(scope or "").strip() or _LOGIN_SCOPE_PAIR
+    return f"{base}_{normalized_scope}"
+
+
+def _login_lockout_scopes(*, client_ip: str, username: str) -> tuple[tuple[str, str], ...]:
+    return (
+        (_LOGIN_SCOPE_PAIR, _login_lockout_key(client_ip=client_ip, username=username)),
+        (_LOGIN_SCOPE_IP, str(client_ip or "").strip() or "unknown"),
+        (_LOGIN_SCOPE_ACCOUNT, _normalize_login_username(username)),
+    )
+
+
+def _challenge_log_ref(challenge_id: Any) -> str:
+    """Correlation ref for logs; the raw id must not leak (M-4)."""
+    raw = str(challenge_id or "").strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
 def _request_user_agent_bucket(request: Request) -> str:
     user_agent = str(request.headers.get("user-agent", "") or "").strip().lower()
     if not user_agent:
@@ -227,18 +264,22 @@ def _auth_store_set_dict(namespace: str, key: str, payload: dict[str, Any], *, t
     )
 
 
-def _delete_login_failure_state(lockout_key: str) -> None:
-    auth_runtime_store_service.delete(_LOGIN_FAILURE_STATE_NAMESPACE, lockout_key)
+def _delete_login_failure_state(lockout_key: str, *, scope: str = _LOGIN_SCOPE_PAIR) -> None:
+    auth_runtime_store_service.delete(
+        _login_state_namespace(_LOGIN_FAILURE_STATE_NAMESPACE, scope),
+        lockout_key,
+    )
 
 
-def _active_login_ban(lockout_key: str) -> dict[str, Any] | None:
-    payload = _auth_store_get_dict(_LOGIN_BAN_STATE_NAMESPACE, lockout_key)
+def _active_login_ban(lockout_key: str, *, scope: str = _LOGIN_SCOPE_PAIR) -> dict[str, Any] | None:
+    ban_namespace = _login_state_namespace(_LOGIN_BAN_STATE_NAMESPACE, scope)
+    payload = _auth_store_get_dict(ban_namespace, lockout_key)
     if not payload:
         return None
     now_ts = int(_auth_lockout_now_utc().timestamp())
     expires_at = int(payload.get("expires_at", 0) or 0)
     if expires_at <= now_ts:
-        auth_runtime_store_service.delete(_LOGIN_BAN_STATE_NAMESPACE, lockout_key)
+        auth_runtime_store_service.delete(ban_namespace, lockout_key)
         return None
     return {
         "ban_level": max(0, int(payload.get("ban_level", 0) or 0)),
@@ -247,13 +288,14 @@ def _active_login_ban(lockout_key: str) -> dict[str, Any] | None:
     }
 
 
-def _login_escalation_state(lockout_key: str, *, now_ts: int) -> dict[str, Any] | None:
-    payload = _auth_store_get_dict(_LOGIN_ESCALATION_STATE_NAMESPACE, lockout_key)
+def _login_escalation_state(lockout_key: str, *, now_ts: int, scope: str = _LOGIN_SCOPE_PAIR) -> dict[str, Any] | None:
+    escalation_namespace = _login_state_namespace(_LOGIN_ESCALATION_STATE_NAMESPACE, scope)
+    payload = _auth_store_get_dict(escalation_namespace, lockout_key)
     if not payload:
         return None
     last_failed_at = int(payload.get("last_failed_at", 0) or 0)
     if last_failed_at <= 0 or last_failed_at + _LOGIN_ESCALATION_RESET_SECONDS <= now_ts:
-        auth_runtime_store_service.delete(_LOGIN_ESCALATION_STATE_NAMESPACE, lockout_key)
+        auth_runtime_store_service.delete(escalation_namespace, lockout_key)
         return None
     max_level = max(0, len(_LOGIN_BAN_SEQUENCE_SECONDS) - 1)
     return {
@@ -262,10 +304,10 @@ def _login_escalation_state(lockout_key: str, *, now_ts: int) -> dict[str, Any] 
     }
 
 
-def _save_login_escalation_state(lockout_key: str, *, ban_level: int, now_ts: int) -> None:
+def _save_login_escalation_state(lockout_key: str, *, ban_level: int, now_ts: int, scope: str = _LOGIN_SCOPE_PAIR) -> None:
     max_level = max(0, len(_LOGIN_BAN_SEQUENCE_SECONDS) - 1)
     _auth_store_set_dict(
-        _LOGIN_ESCALATION_STATE_NAMESPACE,
+        _login_state_namespace(_LOGIN_ESCALATION_STATE_NAMESPACE, scope),
         lockout_key,
         {
             "ban_level": min(max_level, max(0, int(ban_level))),
@@ -275,17 +317,21 @@ def _save_login_escalation_state(lockout_key: str, *, ban_level: int, now_ts: in
     )
 
 
-def _record_failed_login_attempt(*, lockout_key: str, client_ip: str, username: str) -> dict[str, Any]:
+def _record_failed_login_attempt(*, lockout_key: str, client_ip: str, username: str, scope: str = _LOGIN_SCOPE_PAIR) -> dict[str, Any]:
     now_ts = int(_auth_lockout_now_utc().timestamp())
-    escalation_state = _login_escalation_state(lockout_key, now_ts=now_ts)
+    escalation_state = _login_escalation_state(lockout_key, now_ts=now_ts, scope=scope)
     if escalation_state is not None:
         _save_login_escalation_state(
             lockout_key,
             ban_level=int(escalation_state.get("ban_level", 0) or 0),
             now_ts=now_ts,
+            scope=scope,
         )
 
-    attempts_payload = _auth_store_get_dict(_LOGIN_FAILURE_STATE_NAMESPACE, lockout_key)
+    attempts_payload = _auth_store_get_dict(
+        _login_state_namespace(_LOGIN_FAILURE_STATE_NAMESPACE, scope),
+        lockout_key,
+    )
     attempts = [
         int(item)
         for item in list(attempts_payload.get("attempts") or [])
@@ -297,7 +343,7 @@ def _record_failed_login_attempt(*, lockout_key: str, client_ip: str, username: 
     attempts.append(now_ts)
     if len(attempts) < _LOGIN_FAILURE_LIMIT:
         _auth_store_set_dict(
-            _LOGIN_FAILURE_STATE_NAMESPACE,
+            _login_state_namespace(_LOGIN_FAILURE_STATE_NAMESPACE, scope),
             lockout_key,
             {"attempts": attempts},
             ttl_seconds=_LOGIN_FAILURE_WINDOW_SECONDS,
@@ -313,15 +359,16 @@ def _record_failed_login_attempt(*, lockout_key: str, client_ip: str, username: 
     ban_seconds = int(_LOGIN_BAN_SEQUENCE_SECONDS[next_level])
     expires_at = now_ts + ban_seconds
     _auth_store_set_dict(
-        _LOGIN_BAN_STATE_NAMESPACE,
+        _login_state_namespace(_LOGIN_BAN_STATE_NAMESPACE, scope),
         lockout_key,
         {"ban_level": next_level, "expires_at": expires_at},
         ttl_seconds=ban_seconds,
     )
-    _save_login_escalation_state(lockout_key, ban_level=next_level, now_ts=now_ts)
-    _delete_login_failure_state(lockout_key)
+    _save_login_escalation_state(lockout_key, ban_level=next_level, now_ts=now_ts, scope=scope)
+    _delete_login_failure_state(lockout_key, scope=scope)
     logger.warning(
-        "Auth login lockout activated username=%s client_ip=%s ban_level=%s expires_at=%s",
+        "Auth login lockout activated scope=%s username=%s client_ip=%s ban_level=%s expires_at=%s",
+        str(scope or _LOGIN_SCOPE_PAIR),
         _normalize_login_username(username),
         str(client_ip or "").strip() or "unknown",
         next_level,
@@ -333,6 +380,45 @@ def _record_failed_login_attempt(*, lockout_key: str, client_ip: str, username: 
         "expires_at": expires_at,
         "retry_after": ban_seconds,
     }
+
+
+def _active_login_ban_for_scopes(scopes: tuple[tuple[str, str], ...]) -> dict[str, Any] | None:
+    """Longest active ban across the pair/ip/account lockout scopes."""
+    active: dict[str, Any] | None = None
+    for scope, lockout_key in scopes:
+        ban = _active_login_ban(lockout_key, scope=scope)
+        if ban is None:
+            continue
+        if active is None or int(ban.get("retry_after", 0) or 0) > int(active.get("retry_after", 0) or 0):
+            active = ban
+    return active
+
+
+def _record_failed_login_for_scopes(
+    scopes: tuple[tuple[str, str], ...],
+    *,
+    client_ip: str,
+    username: str,
+) -> dict[str, Any]:
+    """Mirror one failed login into every lockout scope (M-5)."""
+    banned_results = []
+    for scope, lockout_key in scopes:
+        result = _record_failed_login_attempt(
+            lockout_key=lockout_key,
+            client_ip=client_ip,
+            username=username,
+            scope=scope,
+        )
+        if bool(result.get("banned")):
+            banned_results.append(result)
+    if not banned_results:
+        return {"banned": False}
+    return max(banned_results, key=lambda item: int(item.get("retry_after", 0) or 0))
+
+
+def _delete_login_failure_states(scopes: tuple[tuple[str, str], ...]) -> None:
+    for scope, lockout_key in scopes:
+        _delete_login_failure_state(lockout_key, scope=scope)
 
 
 def _raise_login_lockout(*, retry_after: int) -> None:
@@ -581,6 +667,41 @@ def _revoke_token_if_present(token: str | None) -> None:
         auth_runtime_store_service.revoke_jti(jti, ttl_seconds=token_ttl_seconds(token_data))
 
 
+def _revoke_refresh_token_family(
+    session_id: str,
+    grace_payload: dict[str, Any] | None,
+    old_jti: str,
+) -> None:
+    """Close the whole token family after a rotated refresh token is replayed (M-6).
+
+    Closing the session kills every descendant access/refresh token, the same
+    way a forced logout does; the grace row and the successor refresh are
+    removed so the replayed chain cannot be served again.
+    """
+    normalized_session = str(session_id or "").strip()
+    if normalized_session:
+        session_service.close_session(normalized_session)
+        session_auth_context_service.delete_session_context(normalized_session)
+    normalized_old = str(old_jti or "").strip()
+    if normalized_old:
+        auth_runtime_store_service.delete("refresh_grace", normalized_old)
+    successor = decode_access_token(
+        str((grace_payload or {}).get("refresh_token") or ""),
+        expected_token_type="refresh",
+    )
+    successor_jti = str(getattr(successor, "jti", "") or "").strip() if successor else ""
+    if successor_jti:
+        auth_runtime_store_service.delete("refresh", successor_jti)
+        auth_runtime_store_service.revoke_jti(
+            successor_jti,
+            ttl_seconds=token_ttl_seconds(successor),
+        )
+    logger.warning(
+        "Refresh token family revoked after rotation reuse session_id=%s",
+        normalized_session or "unknown",
+    )
+
+
 def _close_sessions_and_contexts(user_id: int) -> int:
     closed = session_service.close_user_sessions(int(user_id))
     for item in session_service.list_sessions_by_user_ids({int(user_id)}):
@@ -619,8 +740,6 @@ def _enforce_rate_limit(
     window_seconds: int,
     request: Optional[Request] = None,
 ) -> None:
-    if _request_is_internal(request):
-        return
     normalized_key = str(key or "").strip().lower()
     if not normalized_key:
         normalized_key = "anonymous"
@@ -630,13 +749,17 @@ def _enforce_rate_limit(
             network_zone = str(build_request_network_context(request).network_zone or "unknown").strip().lower()
         except Exception:
             network_zone = "unknown"
+    effective_limit = int(limit)
+    if network_zone == "internal":
+        # LOW-04: internal-зона получает высокий отдельный лимит, не bypass.
+        effective_limit *= _AUTH_INTERNAL_RATE_LIMIT_MULTIPLIER
     storage_key = f"{namespace}:{network_zone}:{normalized_key}"
     counter = auth_runtime_store_service.increment_counter(
         "rate_limit",
         storage_key,
         window_seconds=max(1, int(window_seconds)),
     )
-    if int(counter.get("count", 0) or 0) > int(limit):
+    if int(counter.get("count", 0) or 0) > effective_limit:
         raise HTTPException(status_code=429, detail="Too many requests, try again later")
 
 
@@ -648,11 +771,11 @@ async def login(payload: LoginRequest, request: Request, response: Response):
     network_context = build_request_network_context(request)
     client_device_id = _resolve_client_device_id(request)
     ip_address = network_context.client_ip
-    lockout_key = _login_lockout_key(client_ip=ip_address, username=payload.username)
+    lockout_scopes = _login_lockout_scopes(client_ip=ip_address, username=payload.username)
     remote_host = str(request.client.host).strip() if request.client and request.client.host else ""
     forwarded_for = str(request.headers.get("x-forwarded-for") or "").strip()
     forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").strip()
-    active_ban = await run_in_threadpool(_active_login_ban, lockout_key)
+    active_ban = await run_in_threadpool(_active_login_ban_for_scopes, lockout_scopes)
     if active_ban is not None:
         _raise_login_lockout(retry_after=int(active_ban.get("retry_after", 1) or 1))
     await run_in_threadpool(
@@ -666,8 +789,8 @@ async def login(payload: LoginRequest, request: Request, response: Response):
     user = await run_in_threadpool(user_service.authenticate, payload.username, payload.password)
     if not user:
         failed_attempt = await run_in_threadpool(
-            _record_failed_login_attempt,
-            lockout_key=lockout_key,
+            _record_failed_login_for_scopes,
+            lockout_scopes,
             client_ip=ip_address,
             username=payload.username,
         )
@@ -679,7 +802,7 @@ async def login(payload: LoginRequest, request: Request, response: Response):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    await run_in_threadpool(_delete_login_failure_state, lockout_key)
+    await run_in_threadpool(_delete_login_failure_states, lockout_scopes)
 
     if not user.get("is_active", True):
         raise HTTPException(
@@ -733,7 +856,7 @@ async def login(payload: LoginRequest, request: Request, response: Response):
             forwarded_proto,
             resolve_twofa_policy(),
             str(login_result.get("status") or ""),
-            str(login_result.get("login_challenge_id") or ""),
+            _challenge_log_ref(login_result.get("login_challenge_id")),
             bool(login_result.get("status") == "authenticated"),
         )
         return _build_login_response(request, response, login_result)
@@ -746,6 +869,18 @@ async def handle_safari_password_beacon_form(request: Request) -> HTMLResponse:
     Accept a same-origin form POST so Safari can offer to save the password.
     Validates credentials against the active login challenge; does not persist them.
     """
+    # M-4: unauthenticated endpoint bound to a credential check; cap it per IP
+    # so a leaked challenge_id cannot be farmed as a password oracle. Once the
+    # limit is hit the 429 is identical for valid and invalid credentials.
+    network_context = build_request_network_context(request)
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_safari_password_beacon",
+        key=str(network_context.client_ip or "unknown"),
+        limit=10,
+        window_seconds=60,
+        request=request,
+    )
     form = await request.form()
     challenge_id = str(form.get("login_challenge_id") or "").strip()
     username = str(form.get("username") or "").strip()
@@ -1090,14 +1225,15 @@ async def passkey_login_verify(payload: PasskeyLoginVerifyRequest, request: Requ
 async def logout(
     request: Request,
     response: Response,
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_current_user_optional),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
     access_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_cookie_name),
     refresh_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_refresh_cookie_name),
     payload: Optional[LogoutRequest] = Body(None),
 ):
     """
-    Logout endpoint.
+    Logout endpoint. Access token may already be expired: the refresh token
+    from cookie/body is still consumed so the session really ends.
     """
     token = None
     if credentials and credentials.credentials:
@@ -1105,30 +1241,81 @@ async def logout(
     elif access_token_cookie:
         token = str(access_token_cookie).strip() or None
 
-    token_data = decode_access_token(token or "")
-    if token_data and token_data.session_id:
-        await run_in_threadpool(session_service.close_session, token_data.session_id)
-        await run_in_threadpool(session_auth_context_service.delete_session_context, token_data.session_id)
-    await run_in_threadpool(_revoke_token_if_present, token)
+    token_data = decode_access_token(token or "", expected_token_type="access")
+    access_user_id = int(current_user.id) if current_user is not None else 0
+    access_session_id = (
+        str(token_data.session_id)
+        if token_data is not None and access_user_id
+        and int(token_data.user_id or 0) == access_user_id
+        and token_data.session_id
+        and await run_in_threadpool(
+            session_service.is_session_active_for_user, token_data.session_id, access_user_id
+        )
+        else ""
+    )
     refresh_token_value = str(refresh_token_cookie or "").strip()
     if not refresh_token_value and payload is not None:
         refresh_token_value = str(payload.refresh_token or "").strip()
-    await run_in_threadpool(_revoke_token_if_present, refresh_token_value or None)
-    if refresh_token_value:
-        refresh_data = decode_access_token(refresh_token_value, expected_token_type="refresh")
-        if refresh_data and refresh_data.jti:
-            await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, refresh_data.jti)
+    refresh_data = decode_access_token(refresh_token_value, expected_token_type="refresh")
+    refresh_matches_access = bool(
+        refresh_data is not None and (
+            not access_session_id or (
+                str(refresh_data.user_id or "") == str(access_user_id)
+                and str(refresh_data.session_id or "") == access_session_id
+            )
+        )
+    )
+    refresh_user_id = 0
+    refresh_session_id = ""
+    if refresh_matches_access and refresh_data.jti and refresh_data.session_id:
+        consumed = await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, refresh_data.jti)
+        if (
+            isinstance(consumed, dict)
+            and await run_in_threadpool(
+                session_service.is_session_active_for_user, refresh_data.session_id, refresh_data.user_id
+            )
+            and int(consumed.get("user_id") or 0) == int(refresh_data.user_id)
+            and str(consumed.get("session_id") or "") == str(refresh_data.session_id)
+            and str(consumed.get("device_id") or "") == str(refresh_data.device_id or "")
+        ):
+            refresh_user_id = int(refresh_data.user_id)
+            refresh_session_id = str(refresh_data.session_id)
+            await run_in_threadpool(session_service.close_session, refresh_session_id)
+            await run_in_threadpool(session_auth_context_service.delete_session_context, refresh_session_id)
+    await run_in_threadpool(_revoke_token_if_present, token)
+    if refresh_matches_access:
+        await run_in_threadpool(_revoke_token_if_present, refresh_token_value)
+    if access_session_id and access_session_id != refresh_session_id:
+        await run_in_threadpool(session_service.close_session, access_session_id)
+        await run_in_threadpool(session_auth_context_service.delete_session_context, access_session_id)
+    logout_user_id = access_user_id or refresh_user_id
     if _is_mobile_auth_client(request):
         client_device_id = normalize_client_device_id(request.headers.get(_CLIENT_DEVICE_HEADER_NAME))
-        if client_device_id:
+        if client_device_id and logout_user_id:
             await run_in_threadpool(
                 mobile_biometric_session_service.revoke_device,
-                user_id=int(current_user.id),
+                user_id=logout_user_id,
                 client_device_id=client_device_id,
             )
+            # Active push rows are not tied to the session: without this the
+            # device keeps receiving notifications of the logged-out account.
+            # The revocation is best-effort: its failure must not break logout
+            # after the session itself has already been closed.
+            try:
+                await run_in_threadpool(
+                    native_push_service.revoke_device_tokens,
+                    user_id=logout_user_id,
+                    device_id=client_device_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Push token revocation failed on logout: user_id=%s",
+                    logout_user_id,
+                    exc_info=True,
+                )
     if not _is_mobile_auth_client(request):
         _clear_auth_cookies(response)
-    return {"message": "Successfully logged out", "username": current_user.username}
+    return {"message": "Successfully logged out", "username": current_user.username if current_user is not None else ""}
 
 
 @router.get("/me", response_model=User)
@@ -1376,6 +1563,13 @@ async def revoke_mobile_biometric_session(
         user_id=int(current_user.id),
         client_device_id=client_device_id,
     )
+    if revoked:
+        # Sessions issued through the revoked credential die with it.
+        await run_in_threadpool(
+            session_service.close_user_device_sessions,
+            int(current_user.id),
+            client_device_id,
+        )
     return {"revoked": int(revoked)}
 
 
@@ -1422,6 +1616,14 @@ async def refresh_auth_tokens(
                 or session_row.get("status") != "active"
                 or int(session_row.get("user_id") or 0) != int(token_data.user_id)):
             raise HTTPException(status_code=401, detail="Session is not active")
+        # A revoked trusted device must kill refresh too — REST-only checks left
+        # this path (and thus newly minted pairs) alive after revocation.
+        if not await run_in_threadpool(
+            trusted_device_service.is_token_device_valid,
+            user_id=int(token_data.user_id),
+            token_device_id=str(token_data.device_id or ""),
+        ):
+            raise HTTPException(status_code=401, detail="Session is not active")
         body_access, body_refresh = _apply_auth_delivery(
             request,
             response,
@@ -1443,6 +1645,7 @@ async def refresh_auth_tokens(
             session_id=payload.get("session_id"),
         )
 
+    grace_ttl = max(1, int(config.session.refresh_rotation_grace_seconds or 15))
     refresh_state = await run_in_threadpool(auth_runtime_store_service.get_json, "refresh", token_data.jti)
     if not refresh_state:
         grace_payload = await run_in_threadpool(
@@ -1450,6 +1653,26 @@ async def refresh_auth_tokens(
             token_data.jti,
         )
         if grace_payload:
+            # M-6: the first grace serve covers the parallel-client race; serving
+            # the same rotated pair again means the old token was replayed, so
+            # the whole family (session) is closed like a forced logout.
+            grace_hits = await run_in_threadpool(
+                auth_runtime_store_service.note_refresh_rotation_grace_hit,
+                token_data.jti,
+                ttl_seconds=grace_ttl,
+            )
+            if grace_hits > _REFRESH_GRACE_MAX_HITS:
+                await run_in_threadpool(
+                    _revoke_refresh_token_family,
+                    str(token_data.session_id or ""),
+                    grace_payload,
+                    token_data.jti,
+                )
+                note_auth_session_metric(
+                    "refresh_reuse_detected",
+                    network_zone=network_context.network_zone,
+                )
+                raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
             return await _deliver_refresh_payload(grace_payload, metric_name="refresh_grace_hit")
         if await run_in_threadpool(auth_runtime_store_service.is_jti_revoked, token_data.jti):
             note_auth_session_metric(
@@ -1501,7 +1724,6 @@ async def refresh_auth_tokens(
             note_auth_session_metric("refresh_other_error", detail=detail)
         raise HTTPException(status_code=401, detail=detail) from exc
 
-    grace_ttl = max(1, int(config.session.refresh_rotation_grace_seconds or 15))
     committed = await run_in_threadpool(
         auth_runtime_store_service.complete_refresh_rotation,
         token_data.jti,
@@ -1512,7 +1734,28 @@ async def refresh_auth_tokens(
     if not committed:
         note_auth_session_metric("refresh_expired_or_already_used", network_zone=network_context.network_zone)
         raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
-    metric_name = "refresh_success" if committed["refresh_token"] == refreshed["refresh_token"] else "refresh_grace_hit"
+    served_via_grace = committed["refresh_token"] != refreshed["refresh_token"]
+    if served_via_grace:
+        # A lost commit race serves the winner's pair through grace; that serve
+        # counts toward the same reuse limit as an explicit old-jti replay (M-6).
+        grace_hits = await run_in_threadpool(
+            auth_runtime_store_service.note_refresh_rotation_grace_hit,
+            token_data.jti,
+            ttl_seconds=grace_ttl,
+        )
+        if grace_hits > _REFRESH_GRACE_MAX_HITS:
+            await run_in_threadpool(
+                _revoke_refresh_token_family,
+                str(token_data.session_id or ""),
+                committed,
+                token_data.jti,
+            )
+            note_auth_session_metric(
+                "refresh_reuse_detected",
+                network_zone=network_context.network_zone,
+            )
+            raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
+    metric_name = "refresh_success" if not served_via_grace else "refresh_grace_hit"
     return await _deliver_refresh_payload(committed, metric_name=metric_name)
 
 
@@ -1817,9 +2060,26 @@ async def get_session_policy(
 
 @router.post("/backup-codes/regenerate", response_model=BackupCodesResponse)
 async def regenerate_backup_codes(
+    payload: TwoFactorStepUpRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
 ):
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_backup_codes_regenerate",
+        key=str(int(current_user.id)),
+        limit=5,
+        window_seconds=60,
+        request=request,
+    )
     try:
+        await run_in_threadpool(
+            auth_security_service.require_step_up_auth,
+            user_id=int(current_user.id),
+            password=payload.password,
+            totp_code=payload.totp_code,
+            backup_code=payload.backup_code,
+        )
         return BackupCodesResponse(
             backup_codes=(await run_in_threadpool(auth_security_service.regenerate_backup_codes, int(current_user.id)))
         )
@@ -2030,6 +2290,11 @@ async def revoke_trusted_device(
     device = await run_in_threadpool(trusted_device_service.revoke_device, user_id=int(current_user.id), device_id=device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Trusted device not found")
+    await run_in_threadpool(
+        session_service.close_sessions_by_trusted_device,
+        int(current_user.id),
+        device_id,
+    )
     return {"success": True, "device_id": device_id}
 
 
@@ -2046,13 +2311,30 @@ async def admin_reset_twofa(
 
 @router.post("/reset-2fa-self")
 async def reset_own_twofa(
+    payload: TwoFactorStepUpRequest,
     response: Response,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
     access_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_cookie_name),
     refresh_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_refresh_cookie_name),
 ):
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_reset_twofa_self",
+        key=str(int(current_user.id)),
+        limit=5,
+        window_seconds=60,
+        request=request,
+    )
     try:
+        await run_in_threadpool(
+            auth_security_service.require_step_up_auth,
+            user_id=int(current_user.id),
+            password=payload.password,
+            totp_code=payload.totp_code,
+            backup_code=payload.backup_code,
+        )
         result = await run_in_threadpool(auth_security_service.reset_user_twofa, user_id=int(current_user.id))
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2250,12 +2532,30 @@ async def search_users(
     )
 
 
+_DELEGATED_USER_EDIT_FIELDS = frozenset({"email", "full_name", "department", "job_title"})
+
+
 @router.post("/users", response_model=User, status_code=status.HTTP_201_CREATED)
 async def create_user(
     payload: UserCreateRequest,
-    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+    current_user: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
 ):
     """Create a web user."""
+    if current_user.role != "admin" and (
+        payload.role != "viewer"
+        or payload.use_custom_permissions
+        or payload.custom_permissions
+        or payload.auth_source != "local"
+        or payload.telegram_id is not None
+        or payload.assigned_database is not None
+        or payload.mailbox_email is not None
+        or payload.mailbox_login is not None
+        or payload.mailbox_password is not None
+        or payload.mail_signature_html is not None
+        or payload.my_files_quota_bytes is not None
+        or payload.is_active is not True
+    ):
+        raise HTTPException(status_code=403, detail="Admin role required for privileged user creation")
     try:
         assigned_database = _validate_assigned_database_or_raise(payload.assigned_database)
         created = await run_in_threadpool(user_service.create_user, username=payload.username,
@@ -2292,6 +2592,14 @@ async def update_user(
         raise HTTPException(status_code=400, detail="Cannot deactivate current admin user")
 
     payload_data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
+    if current_user.id == user_id and {"role", "use_custom_permissions", "custom_permissions"} & payload_data.keys():
+        raise HTTPException(status_code=403, detail="Cannot change own role or permissions")
+    if current_user.role != "admin":
+        if payload_data.keys() - _DELEGATED_USER_EDIT_FIELDS:
+            raise HTTPException(status_code=403, detail="Admin role required for privileged user changes")
+        target = await run_in_threadpool(user_service.get_by_id, user_id)
+        if target and str(target.get("role") or "").lower() == "admin":
+            raise HTTPException(status_code=403, detail="Admin role required to update admin user")
     if "assigned_database" in payload_data:
         payload_data["assigned_database"] = _validate_assigned_database_or_raise(payload_data.get("assigned_database"))
     try:
@@ -2301,9 +2609,8 @@ async def update_user(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="User not found")
-    if payload_data.get("is_active") is False:
-        await run_in_threadpool(_close_sessions_and_contexts, int(user_id))
     if payload_data.get("password") is not None or payload_data.get("is_active") is False:
+        await run_in_threadpool(_close_sessions_and_contexts, int(user_id))
         await run_in_threadpool(mobile_biometric_session_service.revoke_all_user_credentials, int(user_id))
     return User(**updated)
 
@@ -2316,6 +2623,8 @@ async def delete_user(
     """Delete a user. Cannot delete the default admin (id=1)."""
     if str(user_id) == str(current_user.id):
         raise HTTPException(status_code=400, detail="Cannot delete your own account.")
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required to delete users")
 
     await run_in_threadpool(mobile_biometric_session_service.revoke_all_user_credentials, int(user_id))
     deleted = await run_in_threadpool(user_service.delete_user, user_id)

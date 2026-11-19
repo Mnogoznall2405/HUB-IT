@@ -21,12 +21,10 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import {
-  Close as CloseIcon,
-  ContentCopyOutlined as ContentCopyOutlinedIcon,
-  Download as DownloadIcon,
-  ExpandMore as ExpandMoreIcon,
-} from '@mui/icons-material';
+import CloseIcon from '@mui/icons-material/Close';
+import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
+import DownloadIcon from '@mui/icons-material/Download';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { formatIncidentUncPath } from '../../lib/scanIncidentInbox';
 import { scanTasksAPI } from '../../api/scanTasks';
 

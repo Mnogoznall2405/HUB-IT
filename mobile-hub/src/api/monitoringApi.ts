@@ -155,3 +155,39 @@ export async function fetchMonitoringLatency(
   });
   return { ...data, points: Array.isArray(data?.points) ? data.points : [] };
 }
+
+/**
+ * Cross-target events feed (`GET /monitoring/events`). Available to every
+ * `monitoring.read` holder — no manage right, unlike target writes.
+ * Without `limit` the backend applies its default (100, same as the web feed).
+ */
+export async function getMonitoringEvents(
+  options: RequestOptions & { targetId?: string; limit?: number } = {},
+): Promise<MonitoringEvent[]> {
+  const { data } = await apiClient.get('/monitoring/events', {
+    params: { target_id: options.targetId || undefined, limit: options.limit ?? undefined },
+    signal: options.signal,
+  });
+  return Array.isArray(data) ? data : [];
+}
+
+/**
+ * Manual probe (`POST /monitoring/targets/{id}/probe`, `monitoring.manage`).
+ * Resolves with the full target detail once the collection is recorded — same
+ * payload shape as `fetchMonitoringTarget`, so the screen can swap it in.
+ */
+export async function probeMonitoringTarget(
+  targetId: string,
+  options: RequestOptions = {},
+): Promise<MonitoringTargetDetail> {
+  const { data } = await apiClient.post(
+    `/monitoring/targets/${encodeURIComponent(targetId)}/probe`,
+    null,
+    { signal: options.signal, timeout: 30_000 },
+  );
+  return {
+    ...data,
+    interfaces: Array.isArray(data?.interfaces) ? data.interfaces : [],
+    events: Array.isArray(data?.events) ? data.events : [],
+  };
+}

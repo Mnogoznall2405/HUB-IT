@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Alert,
   Autocomplete,
+  Box,
   Button,
   CircularProgress,
   Dialog,
@@ -17,7 +18,9 @@ import {
   Typography,
   useMediaQuery,
 } from '@mui/material';
+import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import GroupsOutlinedIcon from '@mui/icons-material/GroupsOutlined';
 import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded';
 import { useTheme } from '@mui/material/styles';
@@ -79,6 +82,7 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
   const [userQuery, setUserQuery] = useState('');
   const [departments, setDepartments] = useState([]);
   const [department, setDepartment] = useState(null);
+  const [expandedGroups, setExpandedGroups] = useState({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -98,6 +102,7 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
     setConfirmDelete(false);
     setDepartment(null);
     setUserQuery('');
+    setExpandedGroups({});
   }, [library, open]);
 
   useEffect(() => {
@@ -166,6 +171,20 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
       members_count: Number(department.members_count || 0),
     });
     setDepartment(null);
+  };
+
+  const toggleGroup = (item) => {
+    const id = String(item.principal_id);
+    const entry = expandedGroups[id] || {};
+    setExpandedGroups((map) => ({ ...map, [id]: { ...entry, open: !entry.open } }));
+    if (entry.open || entry.items || entry.loading) return;
+    setExpandedGroups((map) => ({ ...map, [id]: { ...(map[id] || {}), open: true, loading: true } }));
+    myFilesOfficeAPI.listGroupMembers(id)
+      .then((data) => setExpandedGroups((map) => ({
+        ...map,
+        [id]: { ...(map[id] || {}), loading: false, items: Array.isArray(data?.items) ? data.items : [] },
+      })))
+      .catch(() => setExpandedGroups((map) => ({ ...map, [id]: { ...(map[id] || {}), loading: false, error: true } })));
   };
 
   const create = async () => {
@@ -294,29 +313,65 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
                 Подразделение подключается целиком: кто в него придёт или уйдёт, тот сразу получит или потеряет доступ.
               </Typography>
               <Stack spacing={0.5} data-testid="my-files-library-members">
-                {members.map((item) => (
-                  <Stack key={keyOf(item)} direction="row" spacing={1} alignItems="center">
-                    {item.principal_type === 'department'
-                      ? <GroupsOutlinedIcon fontSize="small" color="action" />
-                      : <PersonOutlineRoundedIcon fontSize="small" color="action" />}
-                    <Typography variant="body2" noWrap title={item.name} sx={{ minWidth: 0, flex: 1 }}>
-                      {item.name}
-                      {item.principal_type === 'department' ? ` · ${item.members_count} чел.` : ''}
-                    </Typography>
-                    <RoleSelect
-                      value={item.role}
-                      label={`Роль: ${item.name}`}
-                      onChange={(role) => setMembers((list) => list.map((entry) => (keyOf(entry) === keyOf(item) ? { ...entry, role } : entry)))}
-                    />
-                    <IconButton
-                      size="small"
-                      aria-label={`Убрать ${item.name}`}
-                      onClick={() => setMembers((list) => list.filter((entry) => keyOf(entry) !== keyOf(item)))}
-                    >
-                      <CloseRoundedIcon fontSize="small" />
-                    </IconButton>
-                  </Stack>
-                ))}
+                {members.map((item) => {
+                  const isDepartment = item.principal_type === 'department';
+                  const group = expandedGroups[String(item.principal_id)] || {};
+                  return (
+                    <Stack key={keyOf(item)} spacing={0}>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        {isDepartment ? (
+                          <IconButton
+                            size="small"
+                            sx={{ p: 0.25 }}
+                            aria-label={`Состав подразделения ${item.name}`}
+                            data-testid={`my-files-library-expand-${item.principal_id}`}
+                            onClick={() => toggleGroup(item)}
+                          >
+                            {group.open
+                              ? <ExpandMoreRoundedIcon fontSize="small" />
+                              : <ChevronRightRoundedIcon fontSize="small" />}
+                          </IconButton>
+                        ) : <Box sx={{ width: 25 }} />}
+                        {isDepartment
+                          ? <GroupsOutlinedIcon fontSize="small" color="action" />
+                          : <PersonOutlineRoundedIcon fontSize="small" color="action" />}
+                        <Typography variant="body2" noWrap title={item.name} sx={{ minWidth: 0, flex: 1 }}>
+                          {item.name}
+                          {isDepartment ? ` · ${item.members_count} чел.` : ''}
+                        </Typography>
+                        <RoleSelect
+                          value={item.role}
+                          label={`Роль: ${item.name}`}
+                          onChange={(role) => setMembers((list) => list.map((entry) => (keyOf(entry) === keyOf(item) ? { ...entry, role } : entry)))}
+                        />
+                        <IconButton
+                          size="small"
+                          aria-label={`Убрать ${item.name}`}
+                          onClick={() => setMembers((list) => list.filter((entry) => keyOf(entry) !== keyOf(item)))}
+                        >
+                          <CloseRoundedIcon fontSize="small" />
+                        </IconButton>
+                      </Stack>
+                      {isDepartment && group.open ? (
+                        <Stack sx={{ pl: 6.5, pb: 0.5 }} spacing={0.25} data-testid={`my-files-library-group-users-${item.principal_id}`}>
+                          {group.loading ? <CircularProgress size={14} /> : null}
+                          {!group.loading && group.error ? (
+                            <Typography variant="caption" color="error">Не удалось загрузить состав</Typography>
+                          ) : null}
+                          {!group.loading && !group.error && Array.isArray(group.items)
+                            ? (group.items.length
+                              ? group.items.map((user) => (
+                                <Typography key={user.user_id} variant="caption" color="text.secondary" noWrap>
+                                  {userLabel(user)}
+                                </Typography>
+                              ))
+                              : <Typography variant="caption" color="text.secondary">В подразделении никого нет</Typography>)
+                            : null}
+                        </Stack>
+                      ) : null}
+                    </Stack>
+                  );
+                })}
               </Stack>
               {confirmDelete ? (
                 <Alert

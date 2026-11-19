@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import json
 from pathlib import Path
 import re
+
+import pytest
 
 import scan_agent.agent as scan_agent
 from agent_version import AGENT_VERSION as SHARED_AGENT_VERSION
@@ -122,7 +125,7 @@ def test_send_ingest_uses_multipart_endpoint_for_pdf_slice(monkeypatch):
 
     def fake_send(method, url, **kwargs):
         calls.append((method, url, kwargs))
-        return _DummyResponse(data={"job_id": "job-1", "deduped": False})
+        return _DummyResponse(data={"success": True, "job_id": "job-1", "deduped": False})
 
     monkeypatch.setattr(agent, "_send", fake_send)
 
@@ -153,7 +156,7 @@ def test_send_ingest_falls_back_to_json_when_pdf_slice_endpoint_is_missing(monke
         calls.append((method, url, kwargs))
         if url.endswith("/ingest/pdf-slice"):
             return _DummyResponse(status_code=404)
-        return _DummyResponse(data={"job_id": "job-1", "deduped": True})
+        return _DummyResponse(data={"success": True, "job_id": "job-1", "deduped": True})
 
     monkeypatch.setattr(agent, "_send", fake_send)
 
@@ -808,6 +811,127 @@ def test_last_outbox_upload_sends_ingest_complete_before_removing_item(monkeypat
     assert task_results[0][2]["ingest_complete"] is True
 
 
+@pytest.mark.parametrize("failure", ["timeout", "disconnect", "408"])
+def test_upload_failure_keeps_persisted_outbox_until_ack(monkeypatch, tmp_path, failure):
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    monkeypatch.setattr(scan_agent, "OUTBOX_PENDING_PATH", pending)
+    monkeypatch.setattr(scan_agent, "_load_state", lambda: {"files": {}, "hashes": {}})
+    agent = scan_agent.ScanAgent(_make_config())
+    payload = {
+        "event_id": "interrupted-upload", "source_kind": "text",
+        "file_path": "report.txt", "file_hash": "isolated-hash",
+    }
+    path = agent._outbox_enqueue(payload)
+    assert path is not None
+
+    def failed_send(*args, **kwargs):
+        if failure == "timeout":
+            raise scan_agent.requests.ReadTimeout()
+        if failure == "disconnect":
+            raise scan_agent.requests.ConnectionError()
+        return _DummyResponse(status_code=408)
+
+    monkeypatch.setattr(agent, "_send", failed_send)
+    assert agent._drain_outbox() == 0
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["payload"] == payload
+    assert persisted["attempts"] == 1
+    assert persisted["next_attempt_at"] > persisted["created_at"]
+    assert not agent.state["files"]
+
+    persisted["next_attempt_at"] = 0
+    agent._outbox_write(path, persisted)
+    monkeypatch.setattr(agent, "_send", lambda *args, **kwargs: _DummyResponse(
+        data={"success": True, "deduped": True}
+    ))
+    assert agent._drain_outbox() == 1
+    assert not path.exists()
+    assert agent.state["files"][scan_agent._norm_path(Path("report.txt"))]["event_id"] == payload["event_id"]
+
+
+@pytest.mark.parametrize("source", ["text", "pdf_slice", "office"])
+@pytest.mark.parametrize("reply", [
+    b'{"success":false}', b'{"success":1}', b'{"success":"true"}',
+    b'{}', b'null', b'[]', b'', b'not-json',
+])
+def test_outbox_requires_explicit_scan_ack(tmp_path, monkeypatch, source, reply):
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    monkeypatch.setattr(scan_agent, "OUTBOX_PENDING_PATH", pending)
+    monkeypatch.setattr(scan_agent, "_load_state", lambda: {"files": {}, "hashes": {}})
+    agent = scan_agent.ScanAgent(_make_config())
+    payload = {
+        "event_id": "unconfirmed-scan", "source_kind": source,
+        "file_path": "isolated.txt", "file_hash": "isolated-hash",
+    }
+    if source == "pdf_slice":
+        payload["pdf_slice_b64"] = "JVBERi0xLjQK"
+    if source == "office":
+        payload["document_b64"] = "aXNvbGF0ZWQ="
+    replies = [reply, b'{"success":true,"deduped":true}']
+    uploads = []
+
+    class Endpoint(scan_agent.requests.adapters.BaseAdapter):
+        def send(self, request, **kwargs):
+            uploads.append(request.url)
+            response = scan_agent.requests.Response()
+            response.status_code = 200
+            response._content = replies.pop(0)
+            return response
+
+        def close(self):
+            pass
+
+    agent.session.mount("https://hubit.zsgp.ru/", Endpoint())
+    path = agent._outbox_enqueue(payload)
+    assert agent._drain_outbox() == 0
+    assert len(uploads) == 1
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["payload"] == payload
+    assert persisted["attempts"] == 1
+    assert not agent.state["files"]
+    assert agent._last_ingest_ok_at is None
+    persisted["next_attempt_at"] = 0
+    agent._outbox_write(path, persisted)
+    assert agent._drain_outbox() == 1
+    assert not path.exists()
+    assert agent.state["files"]
+
+
+@pytest.mark.parametrize("error", [
+    scan_agent.requests.ReadTimeout, scan_agent.requests.ConnectionError,
+])
+def test_pdf_transport_failure_defers_without_json_fallback(tmp_path, monkeypatch, error):
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    monkeypatch.setattr(scan_agent, "OUTBOX_PENDING_PATH", pending)
+    monkeypatch.setattr(scan_agent, "_load_state", lambda: {"files": {}, "hashes": {}})
+    agent = scan_agent.ScanAgent(_make_config())
+    uploads = []
+
+    class Endpoint(scan_agent.requests.adapters.BaseAdapter):
+        def send(self, request, **kwargs):
+            uploads.append(request.url)
+            raise error("isolated transport failure")
+
+        def close(self):
+            pass
+
+    agent.session.mount("https://hubit.zsgp.ru/", Endpoint())
+    payload = {
+        "event_id": "retry-pdf", "source_kind": "pdf_slice",
+        "file_path": "isolated.pdf", "file_hash": "isolated-hash",
+        "pdf_slice_b64": "JVBERi0xLjQK",
+    }
+    path = agent._outbox_enqueue(payload)
+    assert agent._drain_outbox() == 0
+    assert len(uploads) == 1
+    assert uploads[0].endswith("/ingest/pdf-slice")
+    assert json.loads(path.read_text(encoding="utf-8"))["payload"] == payload
+    assert not agent.state["files"]
+
+
 def test_heartbeat_reports_shared_agent_version(monkeypatch):
     agent = scan_agent.ScanAgent(_make_config())
     sent_payloads = []
@@ -979,7 +1103,7 @@ def test_document_upload_uses_multipart_endpoint(monkeypatch):
 
     def fake_send(method, url, **kwargs):
         calls.append((method, url, kwargs))
-        return _DummyResponse(data={"job_id": "job-1", "deduped": False})
+        return _DummyResponse(data={"success": True, "job_id": "job-1", "deduped": False})
 
     monkeypatch.setattr(agent, "_send", fake_send)
 
@@ -1020,3 +1144,85 @@ def test_analysis_version_invalidates_old_scan_state(temp_dir):
     }
 
     assert agent._already_scanned(path, stat_result) is False
+
+
+def test_rotate_key_persists_env_and_switches_session(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("ITINV_AGENT_API_KEY=old-inv\nSCAN_AGENT_API_KEY=old-scan\nOTHER=keep\n", encoding="utf-8")
+    monkeypatch.setenv("ITINV_AGENT_ENV_FILE", str(env_file))
+    monkeypatch.delenv("SCAN_AGENT_ENV_FILE", raising=False)
+    # run_rotate_key writes os.environ directly; give monkeypatch a baseline to restore.
+    monkeypatch.setenv("ITINV_AGENT_API_KEY", "old-inv")
+    monkeypatch.setenv("SCAN_AGENT_API_KEY", "old-scan")
+
+    agent = scan_agent.ScanAgent(_make_config())
+    stats = agent.run_rotate_key(
+        {"itinv_api_key": "new-inv-key-0123456789abcdef0123456789", "scan_api_key": "new-scan-key-0123456789abcdef01234567"}
+    )
+
+    text = env_file.read_text(encoding="utf-8")
+    assert "ITINV_AGENT_API_KEY=new-inv-key-0123456789abcdef0123456789" in text
+    assert "SCAN_AGENT_API_KEY=new-scan-key-0123456789abcdef01234567" in text
+    assert "OTHER=keep" in text
+    assert agent.config["api_key"] == "new-scan-key-0123456789abcdef01234567"
+    assert agent.session.headers["X-API-Key"] == "new-scan-key-0123456789abcdef01234567"
+    assert scan_agent.os.environ["ITINV_AGENT_API_KEY"] == "new-inv-key-0123456789abcdef0123456789"
+    assert stats["phase"] == "rotated"
+    assert stats["keys_updated"] == ["ITINV_AGENT_API_KEY", "SCAN_AGENT_API_KEY"]
+
+
+def test_rotate_key_requires_a_key_and_rejects_short_values(tmp_path):
+    monkeypatch_file = tmp_path / ".env"
+    agent = scan_agent.ScanAgent(_make_config())
+    with pytest.raises(ValueError, match="must contain"):
+        agent.run_rotate_key({})
+    with pytest.raises(ValueError, match="too short"):
+        agent.run_rotate_key({"scan_api_key": "short"})
+    assert not monkeypatch_file.exists()
+
+
+def test_poll_tasks_rotate_key_reports_then_schedules_restart(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    monkeypatch.setenv("ITINV_AGENT_ENV_FILE", str(env_file))
+    monkeypatch.delenv("SCAN_AGENT_ENV_FILE", raising=False)
+    monkeypatch.setenv("SCAN_AGENT_API_KEY", "old-scan")
+    agent = scan_agent.ScanAgent(_make_config())
+    results = []
+    monkeypatch.setattr(agent, "_task_result", lambda tid, status, **kw: results.append((tid, status)))
+    restarts = []
+    monkeypatch.setattr(agent, "_schedule_agent_restart", lambda: restarts.append(1))
+    monkeypatch.setattr(
+        agent,
+        "_send",
+        lambda *a, **kw: _DummyResponse(
+            data={"tasks": [{"task_id": "t9", "command": "rotate_key", "payload": {"scan_api_key": "rotated-scan-key-0123456789abcdef0"}}]}
+        ),
+    )
+
+    agent.poll_tasks()
+
+    assert results == [("t9", "acknowledged"), ("t9", "completed")]
+    assert restarts == [1]
+    assert agent.config["api_key"] == "rotated-scan-key-0123456789abcdef0"
+
+
+def test_poll_tasks_rotate_key_failure_reports_failed_without_restart(monkeypatch):
+    agent = scan_agent.ScanAgent(_make_config())
+    results = []
+    monkeypatch.setattr(agent, "_task_result", lambda tid, status, **kw: results.append((tid, status)))
+    monkeypatch.setattr(
+        agent,
+        "_schedule_agent_restart",
+        lambda: pytest.fail("restart must not be scheduled on failure"),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_send",
+        lambda *a, **kw: _DummyResponse(
+            data={"tasks": [{"task_id": "t8", "command": "rotate_key", "payload": {}}]}
+        ),
+    )
+
+    agent.poll_tasks()
+
+    assert results == [("t8", "acknowledged"), ("t8", "failed")]

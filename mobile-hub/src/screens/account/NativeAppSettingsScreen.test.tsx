@@ -369,3 +369,58 @@ it('marks a written copy as failed when final inventory cannot read its scope', 
   expect(view.getByText('Копия не прошла итоговую проверку. Повторите подготовку.')).toBeTruthy();
   expect(view.getByTestId('native-offline-retry-incomplete')).toBeTruthy();
 });
+
+it('renders the diagnostic summary sections and refreshes them on demand', async () => {
+  const original = mockExecute.getMockImplementation()!;
+  const diagnosticState = {
+    eventCount: 2,
+    summary: {
+      schemaVersion: 1,
+      sections: [
+        { id: 'network', title: 'Сеть и API', lines: ['Запросы: 2 выполняются.'] },
+        { id: 'android', title: 'Завершения Android', lines: ['История недоступна.'] },
+      ],
+    },
+    releaseHealth: { queueDepth: { total: 3 } },
+  };
+  let finishDiag!: () => void;
+  let diagSeen = 0;
+  mockExecute.mockImplementation((command: string, ...args: unknown[]) => {
+    if (command !== 'diagnostics.getState') return original(command, ...args);
+    diagSeen += 1;
+    return diagSeen === 1
+      ? new Promise((resolve) => { finishDiag = () => resolve(diagnosticState); })
+      : Promise.resolve(diagnosticState);
+  });
+
+  const view = await render(<NativeAppSettingsScreen />);
+  await fireEvent.press(view.getByRole('button', { name: 'Диагностика' }));
+
+  // While the read is pending the refresh control keeps its accessible name
+  // and is marked busy/disabled, so it cannot trigger a duplicate call.
+  const diagCalls = () => mockExecute.mock.calls.filter(([command]) => command === 'diagnostics.getState').length;
+  const pendingRefresh = view.getByRole('button', { name: 'Обновить сводку' });
+  expect(pendingRefresh.props.accessibilityState).toEqual({ busy: true, disabled: true });
+  expect(diagCalls()).toBe(1);
+
+  await act(async () => finishDiag());
+  expect(view.getByTestId('diagnostic-summary-network')).toBeTruthy();
+  expect(view.getByTestId('diagnostic-summary-android')).toBeTruthy();
+  expect(view.getByRole('header', { name: 'Сеть и API' })).toBeTruthy();
+  expect(view.getByRole('header', { name: 'Завершения Android' })).toBeTruthy();
+  expect(view.getByText('Запросы: 2 выполняются.')).toBeTruthy();
+  expect(view.getByText('История недоступна.')).toBeTruthy();
+  expect(view.getByText('В очереди офлайн-действий: 3.')).toBeTruthy();
+
+  // The share action must stay reachable before the destructive clear.
+  const orderedButtons = view.getAllByRole('button', {
+    name: /Поделиться отчётом|Обновить сводку|Очистить диагностику/,
+  });
+  const shareIndex = orderedButtons.indexOf(view.getByRole('button', { name: 'Поделиться отчётом' }));
+  expect(shareIndex).toBeGreaterThanOrEqual(0);
+  expect(shareIndex).toBeLessThan(orderedButtons.indexOf(view.getByRole('button', { name: 'Очистить диагностику' })));
+  expect(view.getByRole('button', { name: 'Поделиться отчётом' }).props.accessibilityState.disabled).toBe(false);
+
+  await fireEvent.press(view.getByRole('button', { name: 'Обновить сводку' }));
+  await waitFor(() => expect(diagCalls()).toBe(2));
+});

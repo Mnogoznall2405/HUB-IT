@@ -82,7 +82,10 @@ export const sanitizeMailHtmlFragment = (html) => {
   if (!source) return '';
   return DOMPurify.sanitize(source, {
     USE_PROFILES: { html: true },
-    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta'],
+    FORBID_TAGS: [
+      'script', 'style', 'iframe', 'object', 'embed', 'link', 'meta',
+      'form', 'input', 'button', 'select', 'textarea',
+    ],
     FORBID_ATTR: ['srcdoc'],
     ADD_ATTR: MAIL_PRESENTATION_ATTRS,
   });
@@ -386,6 +389,16 @@ const normalizeDarkMailColors = (documentNode) => {
   });
 };
 
+const stripMailOverlayStyles = (documentNode) => {
+  documentNode.querySelectorAll('[style]').forEach((node) => {
+    const position = String(node.style?.getPropertyValue?.('position') || '').trim().toLowerCase();
+    if (position === 'fixed' || position === 'absolute') {
+      node.style.removeProperty('position');
+    }
+    node.style?.removeProperty?.('z-index');
+  });
+};
+
 const wrapMailTableForScroll = (documentNode, tableNode) => {
   const parentElement = tableNode?.parentElement;
   if (!parentElement) return;
@@ -490,6 +503,7 @@ export const buildRenderedMailHtml = (html, attachments = [], { allowExternalIma
     if (blockRemoteMailResources(documentNode, { allowExternalImages })) {
       hasBlockedExternalImages = true;
     }
+    stripMailOverlayStyles(documentNode);
     normalizeRenderedMailLayout(documentNode);
     normalizeReadableMailTypography(documentNode);
     if (colorScheme === 'dark') {

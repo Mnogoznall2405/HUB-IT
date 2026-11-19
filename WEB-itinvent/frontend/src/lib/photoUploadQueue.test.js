@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createIndexedDbStore, createMemoryStore, createPhotoUploadQueue, STATUS } from './photoUploadQueue';
+import {
+  createIndexedDbStore,
+  createMemoryStore,
+  createPhotoUploadQueue,
+  FAILED_JOB_TTL_MS,
+  MAX_FAILED_JOBS,
+  STATUS,
+} from './photoUploadQueue';
 
 // Очередь — конечный автомат поверх хранилища: поведение при обрыве, перезапуске вкладки и
 // возврате связи через интерфейс страницы не воспроизвести, поэтому проверяем её напрямую.
@@ -130,6 +137,59 @@ describe('photo upload queue', () => {
     expect(upload).not.toHaveBeenCalled();
     expect(second.queue.getJobs()).toEqual([]);
     expect(await store.getAll()).toHaveLength(1);
+  });
+
+  it('drops week-old FAILED shots on reopen and keeps the fresh ones', async () => {
+    const store = createMemoryStore();
+    let now = 1_000_000;
+    const refusedAlways = vi.fn().mockRejectedValue(refused('нет'));
+    const first = makeQueue({ store, now: () => now, upload: refusedAlways });
+    first.queue.setUser(15);
+    await first.queue.enqueue({ itemId: 10, userId: 15, files: [photo('old.jpg')] });
+    await flush();
+    expect(first.queue.getJobs()[0].status).toBe(STATUS.FAILED);
+
+    now += FAILED_JOB_TTL_MS + 1_000;
+    const second = makeQueue({ store, now: () => now, upload: vi.fn().mockRejectedValue(refused('нет')) });
+    second.queue.setUser(15);
+    await second.queue.enqueue({ itemId: 11, userId: 15, files: [photo('fresh.jpg')] });
+    await flush();
+    await second.queue.restore();
+    await flush();
+
+    expect(second.queue.getJobs().map((job) => job.fileName)).toEqual(['fresh.jpg']);
+    expect((await store.getAll()).map((row) => row.fileName)).toEqual(['fresh.jpg']);
+  });
+
+  it('keeps at most the newest FAILED shots when reopening', async () => {
+    const store = createMemoryStore();
+    const now = 5_000_000;
+    for (let index = 0; index < MAX_FAILED_JOBS + 5; index += 1) {
+      await store.put({
+        id: `job-${index}`,
+        itemId: 10,
+        userId: 15,
+        fileName: `f-${index}.jpg`,
+        blob: photo(`f-${index}.jpg`),
+        createdAt: now - index,
+        failedAt: now - index,
+        status: STATUS.FAILED,
+        progress: 0,
+        attempts: 1,
+        error: 'x',
+      });
+    }
+
+    const { queue } = makeQueue({ store, now: () => now, upload: vi.fn() });
+    queue.setUser(15);
+    await queue.restore();
+    await flush();
+
+    const names = queue.getJobs().map((job) => job.fileName);
+    expect(names).toHaveLength(MAX_FAILED_JOBS);
+    expect(names).toContain('f-0.jpg');
+    expect(names).not.toContain(`f-${MAX_FAILED_JOBS + 4}.jpg`);
+    expect(await store.getAll()).toHaveLength(MAX_FAILED_JOBS);
   });
 
   it('lets the user drop a shot that is not being sent', async () => {

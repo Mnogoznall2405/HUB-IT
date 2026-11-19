@@ -629,4 +629,106 @@ describe('AuthProvider offline session', () => {
     await waitFor(() => expect(view.queryByTestId('app-lock-scroll')).toBeNull());
     expect(view.getByTestId('app-lock-pending').props.children).toBe('clear');
   });
+
+  it('abandons a suspended probe after a background resume and ignores its late resolution', async () => {
+    jest.useFakeTimers();
+    let resolveFirst: ((user: typeof cachedUser) => void) | undefined;
+    jest.mocked(authApi.fetchMe).mockResolvedValue(cachedUser);
+    jest.mocked(authApi.fetchMe).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirst = resolve;
+    }));
+
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(view.getByTestId('offline-mode').props.children).toBe('offline');
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(1);
+    const firstOptions = jest.mocked(authApi.fetchMe).mock.calls[0][0] as
+      { timeoutMs?: number; signal?: AbortSignal };
+    expect(firstOptions.signal?.aborted).toBe(false);
+
+    // Android suspends the pending request while the app is off screen: the OS
+    // keeps the socket open, so neither the timeout nor the promise fire.
+    await act(async () => emitAppState('background'));
+    await act(async () => { await jest.advanceTimersByTimeAsync(6_000); });
+    await act(async () => emitAppState('active'));
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+
+    // A fresh probe starts immediately instead of waiting on the suspended one.
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(2);
+    expect(firstOptions.signal?.aborted).toBe(true);
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+
+    // The abandoned attempt cannot expire the session or switch the identity
+    // when the OS finally lets it resolve with a different user.
+    const foreignUser = { ...cachedUser, id: 9, username: 'other-user' };
+    await act(async () => resolveFirst?.(foreignUser));
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(view.getByText('mobile-test')).toBeTruthy();
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+    expect(tokenStore.clearTokens).not.toHaveBeenCalled();
+  });
+
+  it('aborts a never-settling foreground probe at the watchdog deadline and retries', async () => {
+    jest.useFakeTimers();
+    let rejectFirst: ((error: unknown) => void) | undefined;
+    jest.mocked(authApi.fetchMe).mockResolvedValue(cachedUser);
+    jest.mocked(authApi.fetchMe).mockImplementationOnce(() => new Promise((_, reject) => {
+      rejectFirst = reject;
+    }));
+
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(1);
+    const firstOptions = jest.mocked(authApi.fetchMe).mock.calls[0][0] as
+      { timeoutMs?: number; signal?: AbortSignal };
+
+    // At the 5 s deadline the watchdog abandons the dead probe and queues the
+    // regular 2 s retry from the existing backoff ladder.
+    await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+    expect(firstOptions.signal?.aborted).toBe(true);
+    await act(async () => { await jest.advanceTimersByTimeAsync(2_000); });
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(2);
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+
+    // A late rejection from the abandoned attempt must not expire the session
+    // that recovered in the meantime.
+    await act(async () => rejectFirst?.(TRANSPORT_ERROR));
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(view.getByText('mobile-test')).toBeTruthy();
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+    expect(tokenStore.clearTokens).not.toHaveBeenCalled();
+  });
+
+  it('blocks recovery probes while a terminal session teardown is pending', async () => {
+    jest.useFakeTimers();
+    let finishClear: (() => void) | undefined;
+    jest.mocked(tokenStore.clearTokens).mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishClear = () => resolve();
+    }));
+    jest.mocked(authApi.fetchMe).mockResolvedValue({ ...cachedUser, id: 9 });
+
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(1);
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(tokenStore.clearTokens).toHaveBeenCalledWith({ clearOfflineData: false });
+
+    // The 5 s watchdog plus a connectivity/foreground signal must not abandon
+    // the attempt or start a fresh probe while the foreign-identity teardown
+    // is still erasing the session.
+    await act(async () => { await jest.advanceTimersByTimeAsync(6_000); });
+    await act(async () => emitConnectivity({ ...WIFI_SNAPSHOT, changedAtMs: 40 }));
+    await act(async () => emitAppState('background'));
+    await act(async () => emitAppState('active'));
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishClear?.());
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(view.getByText('locked')).toBeTruthy();
+    expect(view.getByTestId('restore-state').props.children).toBe('expired');
+    expect(tokenStore.clearTokens).toHaveBeenCalledTimes(1);
+    expect(authApi.fetchMe).toHaveBeenCalledTimes(1);
+  });
 });

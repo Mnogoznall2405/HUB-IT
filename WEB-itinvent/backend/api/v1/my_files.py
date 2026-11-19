@@ -68,6 +68,7 @@ from backend.services.my_files_service import (
     UPLOAD_CHUNK_MAX_SIZE_BYTES,
     MyFilesCapacityError,
     MyFilesConfigurationError,
+    MyFilesGrantConsumedError,
     MyFilesNotFoundError,
     MyFilesRequestMeta,
     MyFilesValidationError,
@@ -121,6 +122,8 @@ def _service_error_to_http(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     if isinstance(exc, MyFilesNotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(exc, MyFilesGrantConsumedError):
+        return HTTPException(status_code=status.HTTP_410_GONE, detail=str(exc))
     if isinstance(exc, MyFilesValidationError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     if isinstance(exc, MyFilesCapacityError):

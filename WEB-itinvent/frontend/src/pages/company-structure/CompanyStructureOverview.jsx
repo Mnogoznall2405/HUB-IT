@@ -18,7 +18,6 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import GroupsOutlinedIcon from '@mui/icons-material/GroupsOutlined';
 import HomeOutlinedIcon from '@mui/icons-material/HomeOutlined';
 import { useTheme } from '@mui/material/styles';
-import ELK from 'elkjs/lib/elk.bundled.js';
 import {
   Background,
   BaseEdge,
@@ -41,7 +40,16 @@ import {
   wrapSemanticBands,
 } from './companyStructureLayout';
 
-const elk = new ELK();
+// ELK (~490 kB gzip) is only needed when the overview actually lays out a graph;
+// load it on demand so the React Flow shell stops depending on it at parse time.
+let elkInstancePromise = null;
+const getElk = () => {
+  if (!elkInstancePromise) {
+    elkInstancePromise = import('elkjs/lib/elk.bundled.js')
+      .then((module) => new (module.default || module)());
+  }
+  return elkInstancePromise;
+};
 const COMPACT_WIDTH = 224;
 const COMPACT_HEIGHT = 108;
 const LEADER_WIDTH = 252;
@@ -275,6 +283,18 @@ function OverviewCanvas({ tree, blockId, selectedId, onFocus, onRoot, onPeople }
     [blockId, expandedIds, tree],
   );
 
+  // The parent creates onFocus/onRoot/onPeople inline, so their identity
+  // changes on every parent render. Mirror them into refs: node callbacks and
+  // the ELK layout effect must not restart just because a prop was recreated.
+  const onFocusRef = useRef(onFocus);
+  const onRootRef = useRef(onRoot);
+  const onPeopleRef = useRef(onPeople);
+  onFocusRef.current = onFocus;
+  onRootRef.current = onRoot;
+  onPeopleRef.current = onPeople;
+  const handleFocusNode = useCallback((nodeId) => onFocusRef.current?.(nodeId), []);
+  const handlePeopleNode = useCallback((nodeId) => onPeopleRef.current?.(nodeId), []);
+
   const toggleNode = useCallback((nodeId) => {
     const currentNode = getNode(nodeId);
     const viewport = getViewport();
@@ -297,7 +317,7 @@ function OverviewCanvas({ tree, blockId, selectedId, onFocus, onRoot, onPeople }
     const version = layoutVersionRef.current + 1;
     layoutVersionRef.current = version;
     setLayoutLoading(true);
-    elk.layout(buildElkInput(graph)).then((layout) => {
+    getElk().then((elkInstance) => elkInstance.layout(buildElkInput(graph))).then((layout) => {
       if (layoutVersionRef.current !== version) return;
       const positioned = new Map((layout.children || []).map((item) => [String(item.id), item]));
       const wrapped = wrapSemanticBands(graph.nodes.map(({ node, nodeId, level }) => {
@@ -325,8 +345,8 @@ function OverviewCanvas({ tree, blockId, selectedId, onFocus, onRoot, onPeople }
             level,
             expanded: expandedIds.has(nodeId),
             onToggle: toggleNode,
-            onFocus,
-            onPeople,
+            onFocus: handleFocusNode,
+            onPeople: handlePeopleNode,
             ...dimensions,
           },
         };
@@ -359,11 +379,19 @@ function OverviewCanvas({ tree, blockId, selectedId, onFocus, onRoot, onPeople }
     }).catch(() => {
       if (layoutVersionRef.current === version) setLayoutLoading(false);
     });
-  }, [expandedIds, fitView, graph, onFocus, onPeople, selectedId, setViewport, toggleNode]);
+  }, [fitView, graph, setViewport, toggleNode]);
+
+  // Selection changes patch node flags only — they must not re-run ELK.
+  useEffect(() => {
+    setNodes((current) => current.map((item) => {
+      const selected = String(selectedId) === item.id;
+      return item.selected === selected ? item : { ...item, selected };
+    }));
+  }, [selectedId]);
 
   const resetToRoot = () => {
     setExpandedIds(initialExpandedIdsForBlock(tree, blockId));
-    (onRoot || onFocus)(graph.rootId);
+    (onRootRef.current || onFocusRef.current)?.(graph.rootId);
   };
 
   return (

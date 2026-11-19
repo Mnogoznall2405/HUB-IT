@@ -1,5 +1,7 @@
 import apiClient from './client';
 import {
+  ackScanIncident,
+  bulkAckScanIncidents,
   getScanDashboard,
   listScanAgents,
   listScanHosts,
@@ -9,10 +11,10 @@ import {
 
 jest.mock('./client', () => ({
   __esModule: true,
-  default: { get: jest.fn() },
+  default: { get: jest.fn(), post: jest.fn() },
 }));
 
-const client = apiClient as unknown as { get: jest.Mock };
+const client = apiClient as unknown as { get: jest.Mock; post: jest.Mock };
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -97,4 +99,26 @@ it('uses the requested offset when table responses omit page metadata', async ()
     has_more: false,
     next_offset: null,
   });
+});
+
+it('posts a bare acknowledge for a single incident like the web client', async () => {
+  client.post.mockResolvedValue({
+    data: { success: true, incident: { id: 'incident-1', status: 'ack', ack_at: 5, changed: true } },
+  });
+  const signal = new AbortController().signal;
+  await expect(ackScanIncident(' incident/1 A ', { signal })).resolves.toEqual({
+    success: true,
+    incident: { id: 'incident-1', status: 'ack', changed: true },
+  });
+  expect(client.post).toHaveBeenCalledWith('/scan/incidents/incident%2F1%20A/ack', {}, { signal });
+});
+
+it('posts a bulk acknowledge with incident_ids verbatim and numeric counts', async () => {
+  client.post.mockResolvedValue({ data: { success: true, acked_count: '3', total_matched: '4' } });
+  await expect(bulkAckScanIncidents([' a ', '', 'b', 'c'])).resolves.toEqual({
+    success: true,
+    acked_count: 3,
+    total_matched: 4,
+  });
+  expect(client.post).toHaveBeenCalledWith('/scan/incidents/bulk-ack', { incident_ids: ['a', 'b', 'c'] }, { signal: undefined });
 });

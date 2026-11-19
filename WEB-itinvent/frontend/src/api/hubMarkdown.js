@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const hubMarkdownAPI = {
   transformMarkdown: async ({ text, context }) => {

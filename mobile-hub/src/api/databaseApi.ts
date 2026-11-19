@@ -562,6 +562,7 @@ export async function consumeConsumableStock(
   item: Pick<ConsumableRecord, 'id' | 'inv_no'>,
   qty: number,
   databaseId?: string,
+  options: { operationId?: string } = {},
 ): Promise<{ qty_old?: number; qty_new?: number; message?: string }> {
   if (!Number.isInteger(qty) || qty <= 0) throw new Error('Количество должно быть целым числом больше 0');
   const { data } = await apiClient.post('/equipment/consumables/consume', {
@@ -569,6 +570,10 @@ export async function consumeConsumableStock(
     inv_no: item.inv_no || undefined,
     qty,
     reason: 'qr_scan',
+    // With an operation_id the request runs through the durable-job path — a
+    // retry after a lost response replays the stored result instead of
+    // decrementing the stock a second time.
+    operation_id: asText(options.operationId) || undefined,
   }, databaseHeaders(databaseId));
   return asRecord(data) as { qty_old?: number; qty_new?: number; message?: string };
 }
@@ -1038,10 +1043,18 @@ export async function createEquipment(
   };
 }
 
-export async function deleteEquipment(invNo: string, databaseId?: string): Promise<void> {
+export async function deleteEquipment(
+  invNo: string,
+  databaseId?: string,
+  options?: { withHistory?: boolean },
+): Promise<void> {
   const normalized = asText(invNo);
   if (!normalized) throw new Error('Не указан инвентарный номер');
-  await apiClient.delete(`/equipment/${encodeURIComponent(normalized)}`, databaseHeaders(databaseId));
+  const config = databaseHeaders(databaseId) || {};
+  await apiClient.delete(`/equipment/${encodeURIComponent(normalized)}`, {
+    ...config,
+    ...(options?.withHistory ? { params: { with_history: true } } : {}),
+  });
 }
 
 export async function createConsumable(
@@ -1614,5 +1627,141 @@ export async function deleteEquipmentPhoto(
   await apiClient.delete(
     `/equipment/${encodeURIComponent(String(normalizedItem))}/photos/${encodeURIComponent(String(normalizedFile))}`,
     databaseHeaders(databaseId),
+  );
+}
+
+// Перенос оборудования в другую базу: один запрос на весь выбранный набор,
+// как в веб-диалоге «В другую базу». Долгая операция — таймаут 180 с.
+const DB_TRANSFER_TIMEOUT_MS = 180_000;
+
+export type EquipmentDbTransferRequest = {
+  operation_id?: string;
+  inv_nos: string[];
+  target_db: string;
+  target_owner_no?: number | null;
+  new_owner_name?: string | null;
+  new_owner_dept?: string | null;
+  target_branch_no?: number | null;
+  target_loc_no?: number | null;
+  task_assignee_user_ids?: number[] | null;
+  task_due_at?: string | null;
+  comment?: string | null;
+};
+
+export type EquipmentDbTransferItem = {
+  inv_no: string;
+  inv_no_old: string;
+  inv_no_new: string;
+  status: string;
+  message: string;
+};
+
+export type EquipmentDbTransferAct = {
+  act_id: string;
+  db_id: string;
+  file_no: number | null;
+  doc_no: number | null;
+  file_name: string;
+};
+
+export type EquipmentDbTransferResult = {
+  target_db: string;
+  act_doc_no: string;
+  replayed: boolean;
+  summary: { ok: number; total: number; failed: number };
+  items: EquipmentDbTransferItem[];
+  acts: EquipmentDbTransferAct[];
+  created_refs: string[];
+  task_id: string;
+  task_error: string;
+  act_error: string;
+  acts_error: string;
+};
+
+function normalizeDbTransferResult(value: unknown): EquipmentDbTransferResult {
+  const row = asRecord(value);
+  const items = (Array.isArray(row.items) ? row.items : []).map((entry) => {
+    const item = asRecord(entry);
+    return {
+      inv_no: asText(item.inv_no) || asText(item.inv_no_old),
+      inv_no_old: asText(item.inv_no_old) || asText(item.inv_no),
+      inv_no_new: asText(item.inv_no_new),
+      status: asText(item.status) || 'ok',
+      message: asText(item.message),
+    };
+  });
+  const acts = (Array.isArray(row.acts) ? row.acts : []).map((entry) => {
+    const item = asRecord(entry);
+    const fileNo = asNumber(item.file_no);
+    return {
+      act_id: asText(item.act_id) || (fileNo !== null ? String(fileNo) : ''),
+      db_id: asText(item.db_id) || asText(row.target_db),
+      file_no: fileNo,
+      doc_no: asNumber(item.doc_no),
+      file_name: asText(item.file_name) || 'transfer_act.pdf',
+    };
+  });
+  const summary = asRecord(row.summary);
+  const task = asRecord(row.task);
+  return {
+    target_db: asText(row.target_db),
+    act_doc_no: asText(row.act_doc_no),
+    replayed: asBoolean(row.replayed),
+    summary: {
+      ok: Math.max(0, asNumber(summary.ok) ?? items.length),
+      total: Math.max(0, asNumber(summary.total) ?? items.length),
+      failed: Math.max(0, asNumber(summary.failed) ?? 0),
+    },
+    items,
+    acts,
+    created_refs: (Array.isArray(row.created_refs) ? row.created_refs : []).map(asText).filter(Boolean),
+    task_id: asText(task.id),
+    task_error: asText(row.task_error),
+    act_error: asText(row.act_error),
+    acts_error: asText(row.acts_error),
+  };
+}
+
+export async function transferEquipmentToDatabase(
+  payload: EquipmentDbTransferRequest,
+  databaseId?: string,
+): Promise<EquipmentDbTransferResult> {
+  const invNos = (Array.isArray(payload.inv_nos) ? payload.inv_nos : []).map(asText).filter(Boolean);
+  const targetDb = asText(payload.target_db);
+  if (!invNos.length) throw new Error('Не выбрано оборудование для операции.');
+  if (!targetDb) throw new Error('Не выбрана целевая база.');
+  const { data } = await apiClient.post('/equipment/transfer/to-db', {
+    operation_id: asText(payload.operation_id) || undefined,
+    inv_nos: invNos,
+    target_db: targetDb,
+    target_owner_no: payload.target_owner_no ?? null,
+    new_owner_name: asText(payload.new_owner_name) || null,
+    new_owner_dept: asText(payload.new_owner_dept) || null,
+    target_branch_no: payload.target_branch_no ?? null,
+    target_loc_no: payload.target_loc_no ?? null,
+    task_assignee_user_ids: Array.isArray(payload.task_assignee_user_ids) && payload.task_assignee_user_ids.length
+      ? payload.task_assignee_user_ids
+      : null,
+    task_due_at: asText(payload.task_due_at) || null,
+    comment: asText(payload.comment) || null,
+  }, { ...databaseHeaders(databaseId), timeout: DB_TRANSFER_TIMEOUT_MS });
+  return normalizeDbTransferResult(data);
+}
+
+export async function emailDbTransferAct(
+  dbId: string,
+  fileNo: number,
+  recipientEmail: string,
+  sourceDatabaseId?: string,
+): Promise<void> {
+  const db = asText(dbId);
+  const email = asText(recipientEmail);
+  if (!db || !Number.isInteger(fileNo) || fileNo <= 0 || !email) {
+    throw new Error('Некорректные параметры отправки акта');
+  }
+  await apiClient.post(
+    `/equipment/transfer/to-db/${encodeURIComponent(db)}/files/${encodeURIComponent(String(fileNo))}/email`,
+    { recipient_email: email },
+    databaseHeaders(sourceDatabaseId),
   );
 }

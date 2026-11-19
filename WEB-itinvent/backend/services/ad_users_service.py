@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, List, Dict, Literal
 from uuid import UUID
 
-from ldap3 import Server, Connection, ALL, SUBTREE, LEVEL, BASE, MODIFY_REPLACE, SIMPLE, SASL, NTLM
+from ldap3 import Connection, SUBTREE, LEVEL, BASE, MODIFY_REPLACE, SIMPLE, SASL, NTLM
 from ldap3.utils.conv import escape_filter_chars
 from sqlalchemy import select
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
@@ -14,6 +14,7 @@ from backend.appdb.models import AppAdUserBranchOverride
 from backend.config import config
 from backend.database.connection import get_db
 from backend.services.ad_expiry_cache import ad_expiry_cache, cache_metadata
+from backend.services.ldap_security import open_ldap_connection
 from local_store import get_local_store
 
 logger = logging.getLogger(__name__)
@@ -201,11 +202,10 @@ def _open_ad_connection() -> Connection | None:
 
     sync_user = os.getenv("LDAP_SYNC_USER", "")
     sync_password = os.getenv("LDAP_SYNC_PASSWORD", "")
-    server = Server(server_host, get_info=ALL)
     if sync_user and sync_password:
-        return Connection(server, user=sync_user, password=sync_password, auto_bind=True)
+        return open_ldap_connection(server_host, user=sync_user, password=sync_password)
     try:
-        return Connection(server, auto_bind=True)
+        return open_ldap_connection(server_host)
     except Exception as e:
         logger.error(f"Failed to bind anonymously. Set LDAP_SYNC_USER and LDAP_SYNC_PASSWORD: {e}")
         return None

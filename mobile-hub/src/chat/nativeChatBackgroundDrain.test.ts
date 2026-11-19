@@ -1,3 +1,4 @@
+import * as SecureStore from 'expo-secure-store';
 import type { ChatMessage } from '../api/types';
 import {
   clearNativeChatOutbox,
@@ -5,6 +6,7 @@ import {
   readNativeChatOutbox,
 } from './nativeChatOutbox';
 import { drainNativeChatOutboxInBackground } from './nativeChatBackgroundDrain';
+import { buildDiagnosticReport, clearDiagnosticEvents } from '../diagnostics/diagnostics';
 
 const userId = 7;
 const pending: ChatMessage = {
@@ -32,6 +34,7 @@ it('drains a queued message through the runner semantics', async () => {
 });
 
 it('returns after a transient failure leaves a durable retry deadline', async () => {
+  await clearDiagnosticEvents();
   await createNativeChatOutbox(userId, 'chat-x').queue(pending);
   const transport = jest.fn(async () => {
     throw Object.assign(new Error('server busy'), { isAxiosError: true, response: { status: 503 } });
@@ -41,6 +44,17 @@ it('returns after a transient failure leaves a durable retry deadline', async ()
   const rows = await readNativeChatOutbox(userId);
   expect(rows[0]?.delivery?.state).toBe('retry');
   expect(rows[0]?.delivery?.notBefore).toBeGreaterThan(Date.now());
+
+  // A transport-level 503 is a delivery failure, not local file corruption:
+  // the report must carry the delivery code with the background stage.
+  const stored = JSON.parse((await SecureStore.getItemAsync('hubit_diagnostics_v1')) || '[]');
+  const report = buildDiagnosticReport(stored);
+  expect(report.events).toContainEqual({
+    code: 'native_chat_delivery_error',
+    at: expect.any(String),
+    context: { source: 'chat-delivery', stage: 'background' },
+  });
+  expect(report.events.some((event) => event.code === 'native_file_error')).toBe(false);
 });
 
 it('delivers around a paused row without retrying it', async () => {

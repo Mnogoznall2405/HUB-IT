@@ -62,3 +62,31 @@ def test_build_outgoing_html_preserves_native_formatted_quote_marker():
 def test_extract_reply_new_body_html_keeps_plain_reply_without_quote():
     body = outgoing_html.build_outgoing_html_body("<p>Только ответ</p>", "")
     assert "Только ответ" in outgoing_html.extract_reply_new_body_html(body)
+
+
+def test_signature_html_to_text_renders_lines_and_strips_markup():
+    signature = (
+        '<p style="margin:0 0 4px 0;line-height:1.35;"><span style="color: rgb(31, 78, 121);">'
+        "______________________________________</span></p>"
+        '<p style="margin:0 0 4px 0;line-height:1.35;"><span style="color: rgb(31, 78, 121);">С уважением,</span></p>'
+        '<p style="margin:0 0 4px 0;line-height:1.35;"><span style="color: rgb(31, 78, 121);">Максим Козловский</span></p>'
+        '<p style="margin:0 0 4px 0;line-height:1.35;"><span style="color: rgb(31, 78, 121);">'
+        "Управление связи и&nbsp;автоматизации</span></p>"
+        '<p style="margin:0 0 4px 0;line-height:1.35;"><span style="color: rgb(31, 78, 121);">e-mail: </span>'
+        '<a href="mailto:kozlovskii.me@zsgp.ru" style="color: rgb(31, 78, 121);">kozlovskii.me@zsgp.ru</a></p>'
+    )
+
+    text = outgoing_html.signature_html_to_text(signature)
+
+    assert text == (
+        "______________________________________\n"
+        "С уважением,\n"
+        "Максим Козловский\n"
+        "Управление связи и автоматизации\n"
+        "e-mail: kozlovskii.me@zsgp.ru"
+    )
+
+
+def test_signature_html_to_text_handles_plain_and_skipped_content():
+    assert outgoing_html.signature_html_to_text("Plain signature") == "Plain signature"
+    assert outgoing_html.signature_html_to_text("<p>A</p><script>bad()</script><p>B</p>") == "A\nB"

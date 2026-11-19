@@ -123,15 +123,15 @@ class NotificationPushSubscriptionStatusResponse(BaseModel):
 
 
 class NativePushTokenPayload(BaseModel):
-    token: str = Field(..., min_length=1)
-    platform: str = "android"
-    device_id: Optional[str] = None
-    device_label: Optional[str] = None
-    app_version: Optional[str] = None
+    token: str = Field(..., min_length=1, max_length=4096)
+    platform: str = Field(default="android", max_length=32)
+    device_id: Optional[str] = Field(default=None, max_length=128)
+    device_label: Optional[str] = Field(default=None, max_length=255)
+    app_version: Optional[str] = Field(default=None, max_length=64)
 
 
 class NativePushTokenDeletePayload(BaseModel):
-    token: str = Field(..., min_length=1)
+    token: str = Field(..., min_length=1, max_length=4096)
 
 
 class NativePushTokenStatusResponse(BaseModel):

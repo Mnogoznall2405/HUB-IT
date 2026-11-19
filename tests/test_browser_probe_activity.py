@@ -19,7 +19,7 @@ def clock(monkeypatch):
     """Control monotonic + wall clock + session inputs for the tracker."""
     state = {"mono": 0.0, "idle": 0.0, "locked": False, "exe": "msedge.exe"}
     monkeypatch.setattr(activity.time, "monotonic", lambda: state["mono"])
-    monkeypatch.setattr(activity, "get_idle_seconds", lambda: state["idle"])
+    monkeypatch.setattr(activity, "get_idle_seconds", lambda **_: state["idle"])
     monkeypatch.setattr(activity, "_session_locked", lambda: state["locked"])
     monkeypatch.setattr(activity, "_foreground_exe", lambda: state["exe"])
     wall = datetime(2026, 11, 11, 14, 0, 0).astimezone()
@@ -112,6 +112,26 @@ def test_bucket_boundary_closes_previous_bucket(clock, monkeypatch):
     assert closed[0]["bucket_start"].startswith("2026-11-11T14:00:00")
     remaining = tracker.flush()
     assert [b["bucket_start"] for b in remaining] and remaining[0]["bucket_start"].startswith("2026-11-11T14:05:00")
+
+
+def test_idle_sensor_failure_does_not_count_as_work(clock):
+    state, _ = clock
+    tracker = activity.ActivityTracker()
+    tracker.poll()  # primes prev_mono
+    state["mono"] += 3.0
+    state["idle"] = 0.0
+    tracker.poll()  # 3 s with input -> active
+    state["mono"] += 3.0
+    state["idle"] = None  # GetLastInputInfo failed -> tick not credited
+    tracker.poll()
+    state["mono"] += 3.0
+    state["idle"] = 0.0
+    tracker.poll()
+    buckets = tracker.flush()
+    # Only the two observed ticks count; the sensor-failure tick adds nothing.
+    assert _sum(buckets, "active_sec") == pytest.approx(6.0, abs=0.1)
+    assert _sum(buckets, "passive_sec") == 0.0
+    assert _sum(buckets, "away_sec") == 0.0
 
 
 def test_away_and_locked_seconds_have_no_app(clock):

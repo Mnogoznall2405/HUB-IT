@@ -241,7 +241,7 @@ public partial class App : Application
             new DesktopShellIntegrationService().EnsureIntegration(executablePath);
 
             // Only show window if not starting in background (autostart with hidden tray)
-            if (!startInBackground)
+            if (!startInBackground && !launchRequest.OpenNativeHub)
             {
                 window.Show();
                 DesktopPerfBench.MarkOnce("window_show_returned");
@@ -251,7 +251,10 @@ public partial class App : Application
                 DesktopPerfBench.MarkOnce("window_start_hidden_background");
             }
 
-            if (launchRequest.Route is not null || launchRequest.OpenDownloads || launchRequest.HasSharedFiles)
+            if (launchRequest.Route is not null
+                || launchRequest.OpenDownloads
+                || launchRequest.OpenNativeHub
+                || launchRequest.HasSharedFiles)
             {
                 HandleLaunchRequest(window, launchRequest);
             }
@@ -328,6 +331,7 @@ public partial class App : Application
 
         Dispatcher.BeginInvoke(() =>
         {
+            // RoutePreferenceHandler в менеджере сам отдаёт маршрут нативному окну.
             _windowManager?.ActivateLastOrPrimary(e.Route);
         });
     }
@@ -342,9 +346,22 @@ public partial class App : Application
             return;
         }
 
+        if (request.OpenNativeHub)
+        {
+            mainWindow.ShowNativeHub(request.Route);
+            return;
+        }
+
         if (request.OpenDownloads)
         {
             mainWindow.ShowDownloads();
+            return;
+        }
+
+        // Если пользователь живёт в нативном окне и раздел есть в нём — навигируем его,
+        // не поднимая web-шелл. Веб-разделы (почта, документы…) как раньше — в web.
+        if (request.Route is not null && mainWindow.TryNavigateNativeHub(request.Route))
+        {
             return;
         }
 

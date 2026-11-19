@@ -1,4 +1,4 @@
-import { settingsAPI } from '../api/client';
+import { settingsAPI } from '../api/settings';
 import { CHAT_WS_ENABLED } from './chatFeature';
 import { chatSocket } from './chatSocket';
 import { emitAgentDebugLog } from './debugClientLog';

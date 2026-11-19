@@ -232,6 +232,10 @@ export function consumePendingPortalPath(): string {
   return path;
 }
 
-export function clearPendingPortalPathForTests(): void {
+export function clearPendingPortalPath(): void {
   pendingPortalPath = '';
+}
+
+export function clearPendingPortalPathForTests(): void {
+  clearPendingPortalPath();
 }

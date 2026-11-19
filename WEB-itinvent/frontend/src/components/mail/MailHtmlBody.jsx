@@ -1,19 +1,24 @@
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { Box } from '@mui/material';
 import {
   MAIL_HTML_SANDBOX_PERMISSIONS,
   buildMailSandboxSrcDoc,
   measureMailSandboxFrameHeight,
 } from './mailHtmlSandboxDocument';
-import { sanitizeMailHtmlFragment } from './mailHtmlContent';
-import { isMailHtmlSandboxEnabled } from './mailHtmlSandboxFlags';
 
 const EMPTY_MAIL_HTML = '<p style="color:#999">Нет содержимого</p>';
 
 function syncSandboxHeight(iframe) {
+  if (!iframe) return;
   const height = measureMailSandboxFrameHeight(iframe);
-  if (!iframe || height <= 0) return;
-  iframe.style.height = `${height}px`;
+  if (height <= 0) return;
+  const next = `${height}px`;
+  // `!important` keeps the measured value authoritative: wrapper sx rules may
+  // carry `height: auto !important` for embedded media, which would otherwise
+  // pin the frame at the 150px default and re-introduce an inner scrollbar.
+  if (iframe.style.getPropertyValue('height') !== next) {
+    iframe.style.setProperty('height', next, 'important');
+  }
 }
 
 export default function MailHtmlBody({
@@ -33,25 +38,38 @@ export default function MailHtmlBody({
 } = {}) {
   const iframeRef = useRef(null);
   const bodyHtml = html || EMPTY_MAIL_HTML;
-  const sandboxEnabled = isMailHtmlSandboxEnabled();
-  // Without the iframe sandbox the markup lands in the page DOM, so it is sanitized here as well
-  // (callers already sanitize; this keeps the component safe on its own).
-  const inlineHtml = useMemo(
-    () => (sandboxEnabled ? '' : sanitizeMailHtmlFragment(bodyHtml)),
-    [sandboxEnabled, bodyHtml],
-  );
   const resolvedColor = color || (colorScheme === 'dark' ? '#f3f2f1' : '#242424');
   const resolvedLinkColor = linkColor || (colorScheme === 'dark' ? '#8cc8ff' : '#1976d2');
 
   useLayoutEffect(() => {
-    if (!sandboxEnabled) return undefined;
     const iframe = iframeRef.current;
     if (!iframe) return undefined;
     let clickHandler;
+    let resizeObserver = null;
+    let frameObserver = null;
+    let rafId = 0;
+    const resyncTimers = [];
 
     const bind = () => {
       syncSandboxHeight(iframe);
       const doc = iframe.contentDocument;
+      // Images/fonts can finish loading after `load` and grow the document:
+      // keep the frame fitted instead of clipping or nesting a scrollbar.
+      if (doc?.documentElement && typeof ResizeObserver === 'function') {
+        resizeObserver?.disconnect();
+        resizeObserver = new ResizeObserver(() => syncSandboxHeight(iframe));
+        resizeObserver.observe(doc.documentElement);
+        if (doc.body && doc.body !== doc.documentElement) {
+          resizeObserver.observe(doc.body);
+        }
+      }
+      // Late layout passes (web fonts, async images, reflow after pane resize)
+      // can escape the inner observers; re-measure on a short settle chain.
+      rafId = requestAnimationFrame(() => syncSandboxHeight(iframe));
+      resyncTimers.push(
+        setTimeout(() => syncSandboxHeight(iframe), 200),
+        setTimeout(() => syncSandboxHeight(iframe), 800),
+      );
       if (!doc || typeof onActivate !== 'function') return;
       if (clickHandler) {
         doc.removeEventListener('click', clickHandler);
@@ -63,26 +81,43 @@ export default function MailHtmlBody({
       doc.addEventListener('click', clickHandler);
     };
 
-    iframe.addEventListener('load', bind);
-    bind();
+    // The `load` event of a srcdoc iframe is unreliable in several engines
+    // (WebKit may fire it before listeners attach or not at all), so binding
+    // must not wait for it: retry until the inner document exists.
+    let bindAttempts = 0;
+    const tryBind = () => {
+      const doc = iframe.contentDocument;
+      if (!doc || !doc.body) {
+        if (bindAttempts < 40) {
+          bindAttempts += 1;
+          resyncTimers.push(setTimeout(tryBind, 100));
+        }
+        return;
+      }
+      bindAttempts = 40;
+      bind();
+    };
+
+    iframe.addEventListener('load', tryBind);
+    // Safety net: resync when the frame element itself resizes (pane/window),
+    // even if the inner-document observer was lost on a srcdoc navigation.
+    if (typeof ResizeObserver === 'function') {
+      frameObserver = new ResizeObserver(() => syncSandboxHeight(iframe));
+      frameObserver.observe(iframe);
+    }
+    tryBind();
     return () => {
       iframe.removeEventListener('load', bind);
+      resizeObserver?.disconnect();
+      frameObserver?.disconnect();
+      cancelAnimationFrame(rafId);
+      resyncTimers.forEach((timer) => clearTimeout(timer));
       const doc = iframe.contentDocument;
       if (doc && clickHandler) {
         doc.removeEventListener('click', clickHandler);
       }
     };
-  }, [sandboxEnabled, bodyHtml, onActivate]);
-
-  if (!sandboxEnabled) {
-    return (
-      <Box
-        className={className}
-        sx={sx}
-        dangerouslySetInnerHTML={{ __html: inlineHtml }}
-      />
-    );
-  }
+  }, [bodyHtml, onActivate]);
 
   return (
     <Box className={className} sx={{ ...sx, p: 0, overflow: 'hidden' }}>

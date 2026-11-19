@@ -182,12 +182,13 @@ export function useMobileUpdaterController() {
       } catch (error) {
         return updateState((current) => ({
           ...current,
-          status: current.feed && ['available', 'paused', 'ready'].includes(current.status)
-            ? current.status
-            : 'error',
+          // A cached feed must not mask the failed check as «Готово.»: the
+          // menu's «Повторить» re-fetches instead of installing a stale
+          // version silently.
+          status: 'error',
           lastCheckedAt: checkedAt,
           message: current.feed
-            ? current.message
+            ? `${getMobileUpdateErrorMessage(error)} Ранее найденная версия ${current.feed.version} остаётся доступной для установки.`
             : getMobileUpdateErrorMessage(error),
         }));
       }

@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { withPreservedMailboxUnreadCount } from './mailMailboxModel';
 
 const PRIMARY_CREDENTIALS_MODE = 'primary_credentials';
 const PRIMARY_SESSION_MODE = 'primary_session';
@@ -147,7 +148,7 @@ export default function useMailCredentialsController({
         mailbox_password: password,
         mailbox_email: mailboxEmail || undefined,
       });
-      setMailboxInfo?.(data || null);
+      setMailboxInfo?.((prev) => withPreservedMailboxUnreadCount(data || null, prev));
       setMailboxes?.((prev) => mergeMailboxEntries?.(prev, data || null) || prev);
       const resolvedMailboxId = getMailboxEntryId?.(data);
       if (resolvedMailboxId) {

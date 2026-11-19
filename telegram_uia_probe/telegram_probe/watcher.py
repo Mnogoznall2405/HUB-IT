@@ -630,6 +630,7 @@ class TelegramUiaWatcher:
                 windows_user=self.windows_user,
                 computer_name=self.computer_name,
                 channel=self.profile.channel,
+                chat_id=safe_chat_id(chat_name),
             )
             queued = 0
             for left in left_events:

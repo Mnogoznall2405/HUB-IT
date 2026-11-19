@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // Очередь проверки фото: отклонённые и ещё не проверенные (нужно право database.photo_verify).
 export const equipmentPhotoReviewAPI = {

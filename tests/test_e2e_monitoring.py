@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, event, func, select, text
 
 from backend.api import deps
 from backend.api.v1 import monitoring
@@ -188,11 +188,113 @@ def test_independent_protocols_merge_minute_and_rollups_without_duplicate_packet
     assert point["latency_ms"] == pytest.approx(44)
     assert point["ping_up"] == pytest.approx(2 / 3)
     assert point["snmp_up"] == 1
+    # Rollups for the open minute lag until the next record finalizes it;
+    # the pending tail must land exactly once, not per skipped poll.
+    now[0] = start + timedelta(seconds=120)
+    device.value = {"protocol": "icmp", "ping": {"status": "online", "sent": 3, "received": 3,
+                    "loss_pct": 0, "latency_ms": 30}}
+    assert client.post(path + "/probe").status_code == 200
     with svc.store.session() as session:
         for rollup in session.scalars(select(MonitoringAggregate).where(MonitoringAggregate.target_id == target["id"], MonitoringAggregate.interface_id == "")):
-            assert rollup.values["icmp_sent_packets"]["sum"] == 9
+            assert rollup.values["icmp_sent_packets"]["sum"] == 12
+            assert rollup.values["icmp_received_packets"]["sum"] == 8
             assert rollup.values["latency_ms"]["min"] == 20
             assert rollup.values["latency_ms"]["max"] == 80
+
+
+def test_split_icmp_rewrites_minute_sample_row_once_per_probe(environment):
+    # A split-protocol ICMP record must persist metrics and its 10s slot in one
+    # row write; a flush between the two turns every poll into two UPDATEs.
+    from backend.appdb.db import get_app_engine
+
+    client, svc, device, now, _ = environment
+    target = create_target(client)
+    path = f"/api/v1/monitoring/targets/{target['id']}"
+    start = now[0]
+    updates, inserts = [], []
+    engine = get_app_engine(svc.store.database_url)
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def count_writes(_conn, _cursor, statement, _params, _ctx, _many):
+        head = statement.lstrip().upper()
+        if "MONITORING_SAMPLES" not in head:
+            return
+        if head.startswith("UPDATE"):
+            updates.append(1)
+        elif head.startswith("INSERT"):
+            inserts.append(1)
+
+    def probe(seconds, received, latency):
+        now[0] = start + timedelta(seconds=seconds)
+        device.value = {"protocol": "icmp", "ping": {"status": "online" if received else "offline",
+                        "sent": 3, "received": received, "loss_pct": 100 * (3 - received) / 3,
+                        "latency_ms": latency}}
+        assert client.post(path + "/probe").status_code == 200
+
+    try:
+        probe(0, 3, 20)
+        assert len(inserts) == 1 and not updates
+        probe(10, 2, 40)
+        assert len(inserts) == 1 and len(updates) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", count_writes)
+
+    with svc.store.session() as session:
+        row = session.scalar(select(MonitoringSample).where(MonitoringSample.target_id == target["id"],
+                             MonitoringSample.interface_id == ""))
+        slots = row.values["_icmp_10s"]
+        assert set(slots) == {"0", "10"}
+        assert slots["0"]["latency_ms"] == 20 and slots["10"]["latency_ms"] == 40
+        assert row.values["icmp_sent_packets"] == 6 and row.values["icmp_received_packets"] == 5
+
+
+def test_split_icmp_defers_device_rollups_to_one_write_per_minute(environment):
+    # Rollup buckets only serve >7d history: a 10s poll must not rewrite both
+    # buckets per record. One write per minute row plus finalizing the previous
+    # minute keeps totals exact while cutting ~2/3 of the aggregate UPDATEs.
+    from backend.appdb.db import get_app_engine
+
+    client, svc, device, now, _ = environment
+    target = create_target(client)
+    path = f"/api/v1/monitoring/targets/{target['id']}"
+    start = now[0]
+    updates = []
+    engine = get_app_engine(svc.store.database_url)
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def count_writes(_conn, _cursor, statement, _params, _ctx, _many):
+        head = statement.lstrip().upper()
+        if head.startswith(("UPDATE", "INSERT")) and "MONITORING_AGGREGATES" in head:
+            updates.append(1)
+
+    def probe(seconds, received, latency):
+        now[0] = start + timedelta(seconds=seconds)
+        device.value = {"protocol": "icmp", "ping": {"status": "online" if received else "offline",
+                        "sent": 3, "received": received, "loss_pct": 100 * (3 - received) / 3,
+                        "latency_ms": latency}}
+        assert client.post(path + "/probe").status_code == 200
+
+    try:
+        probe(0, 3, 20)
+        # Statements may batch both buckets into one executemany.
+        assert len(updates) <= 2
+        for second in (10, 20, 30, 40, 50):
+            probe(second, 3, 20)
+        assert len(updates) <= 2
+        probe(60, 3, 20)
+        # New minute applies itself and finalizes the pending one.
+        assert len(updates) <= 6
+    finally:
+        event.remove(engine, "before_cursor_execute", count_writes)
+
+    with svc.store.session() as session:
+        sent = received = 0
+        for rollup in session.scalars(select(MonitoringAggregate).where(
+                MonitoringAggregate.target_id == target["id"],
+                MonitoringAggregate.interface_id == "", MonitoringAggregate.resolution == 300)):
+            sent += rollup.values["icmp_sent_packets"]["sum"]
+            received += rollup.values["icmp_received_packets"]["sum"]
+        assert sent == 21 and received == 21
 
 
 def test_fast_icmp_preserves_failure_confirmation_and_collector_errors_are_unknown(environment):

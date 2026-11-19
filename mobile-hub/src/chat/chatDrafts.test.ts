@@ -1,5 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
-import { File, Paths } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 jest.mock('expo-crypto', () => ({ ...jest.requireActual('expo-crypto'), randomUUID: () => 'synthetic-draft-file' }));
 import {
   clearAllNativeChatDrafts,
@@ -233,6 +233,54 @@ it('does not block outbox writes behind a long draft attachment copy', async () 
     await clearNativeChatDraft(7, 'chat-z');
   } finally {
     copySpy.mockRestore();
+  }
+});
+
+it('does not resurrect a draft whose file copy finished after logout cleared storage', async () => {
+  await clearAllNativeChatDrafts();
+  const source = new File(Paths.cache, 'draft-logout-copy');
+  source.write('Скрытые байты черновика');
+  const picked = {
+    uri: source.uri,
+    name: 'Файл.txt',
+    mimeType: 'text/plain',
+    size: source.size,
+    source: 'document' as const,
+  };
+  let releaseCopy!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+  const originalCopy = File.prototype.copy;
+  const copySpy = jest.spyOn(File.prototype, 'copy').mockImplementation(function (this: File, destination) {
+    return gate.then(async () => {
+      // Logout may have removed the draft directory while the copy waited;
+      // a racing native copy can still land, so recreate the parent it needs.
+      new Directory(destination.uri.slice(0, destination.uri.lastIndexOf('/')))
+        .create({ intermediates: true, idempotent: true });
+      await originalCopy.call(this, destination);
+    });
+  });
+  // expo-crypto is mocked to a constant above, so the durable copy uri is deterministic.
+  const durableCopy = new File(
+    new Directory(new Directory(Paths.document, 'hubit-chat-draft-files'), '7'),
+    'synthetic-draft-file',
+  );
+  try {
+    const write = setNativeChatDraft(7, 'chat-a', 'old', { files: [picked] });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(copySpy).toHaveBeenCalled();
+    // Logout while the durable copy is still in flight.
+    await clearAllNativeChatDrafts();
+    expect(await SecureStore.getItemAsync('hubit_native_chat_drafts_v1')).toBeNull();
+    releaseCopy();
+    await expect(write).rejects.toThrow('Сеанс сохранения черновика завершён');
+    expect(await getNativeChatDraftState(7, 'chat-a')).toBeNull();
+    expect(await SecureStore.getItemAsync('hubit_native_chat_drafts_v1')).toBeNull();
+    // A late successful copy must not remain as an unreferenced app-private file.
+    expect(durableCopy.exists).toBe(false);
+  } finally {
+    copySpy.mockRestore();
+    if (source.exists) source.delete();
   }
 });
 

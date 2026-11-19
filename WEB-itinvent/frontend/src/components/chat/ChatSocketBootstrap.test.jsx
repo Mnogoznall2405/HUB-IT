@@ -33,7 +33,7 @@ vi.mock('../../lib/chatSocket', () => ({
   chatSocket: chatMocks,
 }));
 
-vi.mock('../../api/client', () => ({
+vi.mock('../../api/auth', () => ({
   authAPI: {
     refresh: (...args) => authMocks.refresh(...args),
   },

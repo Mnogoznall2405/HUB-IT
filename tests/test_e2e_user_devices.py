@@ -5,13 +5,16 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from jose import jwt
 
 from test_e2e_smoke import app, auth, deps, config, _stub_auth_env, _USER_PAYLOAD
 from backend.appdb.db import app_session
 from backend.appdb.models import AppMobileBiometricCredential, AppUser, AppSessionRecord
 from backend.services.session_service import SessionService, hash_client_device_id, SessionCredentialRevokedError
 from backend.services.user_device_service import UserDeviceService
+from backend.utils.security import decode_access_token
 
 
 @pytest.fixture
@@ -189,6 +192,167 @@ def test_remove_dormant_android_device_without_an_active_session(devices_env):
     response = anonymous.post("/api/v1/auth/mobile-biometric/session", json={"renewal_token": renewal},
                               headers={"X-Auth-Client": "mobile", "X-Client-Device-ID": "dormant-android-installation"})
     assert response.status_code == 401
+
+
+def test_forged_token_cannot_borrow_another_users_session(devices_env, monkeypatch):
+    """An access JWT claiming another user's live session_id must never
+    authenticate: session owner binding applies on HTTP loaders and WS lease."""
+    login, _, service, _ = devices_env
+    client, data = login("installation-one")
+    borrowed_sid = data["session_id"]
+
+    def _get_by_id(uid):
+        uid = int(uid or 0)
+        return dict(_USER_PAYLOAD, id=uid, username=f"user{uid}")
+
+    monkeypatch.setattr(auth.user_service, "get_by_id", _get_by_id)
+
+    forged = jwt.encode(
+        {
+            "sub": "user8",
+            "user_id": 8,
+            "token_type": "access",
+            "session_id": borrowed_sid,
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        },
+        config.jwt.secret_key,
+        algorithm=config.jwt.algorithm,
+    )
+
+    deleted_contexts = []
+    monkeypatch.setattr(
+        deps.session_auth_context_service, "delete_session_context", deleted_contexts.append
+    )
+
+    forged_client = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+    response = forged_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {forged}"})
+    assert response.status_code == 401, response.text
+    # A borrowed-session rejection must not invalidate the victim's session context.
+    assert deleted_contexts == []
+
+    assert deps._load_optional_user_from_token(forged) is None
+    with pytest.raises(HTTPException) as caught:
+        deps._load_session_id_from_token(forged)
+    assert caught.value.status_code == 401
+    with pytest.raises(HTTPException) as caught:
+        deps.assert_access_token_still_valid(forged, touch_session=False)
+    assert caught.value.status_code == 401
+
+    from backend.chat.ws_auth import WsSessionLease
+    assert WsSessionLease(forged, user_id=8).revalidate() == "dead"
+
+    # The legitimate session owner keeps working on every path.
+    assert client.get("/api/v1/auth/me").status_code == 200
+    assert deps._load_session_id_from_token(data["access_token"]) == borrowed_sid
+
+    # A session created for user 8 authenticates that same user normally.
+    service.create_session(session_id="sess-u8", user_id=8, username="user8", role="viewer",
+                           ip_address="10.0.0.1", user_agent="Other", client_device_id="dev-u8",
+                           expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat())
+    own = jwt.encode(
+        {"sub": "user8", "user_id": 8, "token_type": "access", "session_id": "sess-u8",
+         "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
+        config.jwt.secret_key, algorithm=config.jwt.algorithm)
+    own_client = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+    assert own_client.get(
+        "/api/v1/auth/me", headers={"Authorization": f"Bearer {own}"}
+    ).status_code == 200
+
+
+def _spy_device_revocation(monkeypatch):
+    biometric_calls, push_calls = [], []
+    monkeypatch.setattr(
+        auth.mobile_biometric_session_service,
+        "revoke_device",
+        lambda **kwargs: biometric_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        auth.native_push_service,
+        "revoke_device_tokens",
+        lambda **kwargs: push_calls.append(kwargs),
+    )
+    return biometric_calls, push_calls
+
+
+_MOBILE_HEADERS = {"X-Auth-Client": "mobile", "X-Client-Device-ID": "installation-one"}
+
+
+def test_refresh_only_logout_closes_the_bound_session_and_device(devices_env, monkeypatch):
+    """Deferred mobile cleanup sends only the refresh token: the server must
+    still close the session bound to it and revoke push/biometric for its owner."""
+    login, _, service, _ = devices_env
+    client, data = login("installation-one")
+    biometric_calls, push_calls = _spy_device_revocation(monkeypatch)
+
+    anonymous = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+    response = anonymous.post(
+        "/api/v1/auth/logout",
+        json={"refresh_token": data["refresh_token"]},
+        headers=_MOBILE_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert service.is_session_active(data["session_id"]) is False
+    assert client.get("/api/v1/auth/me").status_code == 401
+    assert biometric_calls == [{"user_id": 7, "client_device_id": "installation-one"}]
+    assert push_calls == [{"user_id": 7, "device_id": "installation-one"}]
+
+
+def test_forged_access_token_logout_cannot_close_another_users_session(devices_env, monkeypatch):
+    """A signed access JWT borrowing another user's session_id must not close
+    that session or revoke the victim's device bindings."""
+    login, _, service, _ = devices_env
+    client, data = login("installation-one")
+
+    def _get_by_id(uid):
+        uid = int(uid or 0)
+        return dict(_USER_PAYLOAD, id=uid, username=f"user{uid}")
+
+    monkeypatch.setattr(auth.user_service, "get_by_id", _get_by_id)
+    forged = jwt.encode(
+        {
+            "sub": "user8",
+            "user_id": 8,
+            "token_type": "access",
+            "session_id": data["session_id"],
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        },
+        config.jwt.secret_key,
+        algorithm=config.jwt.algorithm,
+    )
+    biometric_calls, push_calls = _spy_device_revocation(monkeypatch)
+
+    forged_client = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+    response = forged_client.post(
+        "/api/v1/auth/logout",
+        headers={"Authorization": f"Bearer {forged}", **_MOBILE_HEADERS},
+    )
+    assert response.status_code == 200, response.text
+    assert service.is_session_active(data["session_id"]) is True
+    assert client.get("/api/v1/auth/me").status_code == 200
+    assert biometric_calls == [] and push_calls == []
+
+
+def test_consumed_refresh_logout_is_idempotent_without_closing_session(devices_env, monkeypatch):
+    """A refresh token whose JTI was already consumed must get an idempotent
+    200: it cannot close the session or revoke device bindings."""
+    login, _, service, _ = devices_env
+    client, data = login("installation-one")
+
+    refresh_data = decode_access_token(data["refresh_token"], expected_token_type="refresh")
+    assert refresh_data is not None and refresh_data.jti
+    assert auth.auth_runtime_store_service.consume_refresh_token(refresh_data.jti) is not None
+    biometric_calls, push_calls = _spy_device_revocation(monkeypatch)
+
+    anonymous = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
+    response = anonymous.post(
+        "/api/v1/auth/logout",
+        json={"refresh_token": data["refresh_token"]},
+        headers=_MOBILE_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert service.is_session_active(data["session_id"]) is True
+    assert client.get("/api/v1/auth/me").status_code == 200
+    assert biometric_calls == [] and push_calls == []
 
 
 def test_revocation_between_biometric_authentication_and_session_creation_is_rejected(devices_env):

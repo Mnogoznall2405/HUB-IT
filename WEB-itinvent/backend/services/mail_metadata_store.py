@@ -141,20 +141,27 @@ class MailMetadataStore:
         reply_to_message_id: str | None = None,
         forward_message_id: str | None = None,
         compose_mailbox_id: str | None = None,
+        forward_attachment_refs: list[str] | None = None,
     ) -> None:
         scoped_draft_exchange_id = self._scoped_key(mailbox_id=mailbox_id, value=draft_exchange_id)
+        forward_refs_json = (
+            json.dumps([_normalize_text(item) for item in forward_attachment_refs if _normalize_text(item)])
+            if forward_attachment_refs is not None
+            else None
+        )
         with self._lock, self._connect() as conn:
             conn.execute(
                 f"""
                 INSERT INTO {self._draft_context_table}
-                (draft_exchange_id, user_id, compose_mode, reply_to_message_id, forward_message_id, compose_mailbox_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (draft_exchange_id, user_id, compose_mode, reply_to_message_id, forward_message_id, compose_mailbox_id, forward_attachment_refs_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_exchange_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     compose_mode = excluded.compose_mode,
                     reply_to_message_id = excluded.reply_to_message_id,
                     forward_message_id = excluded.forward_message_id,
                     compose_mailbox_id = excluded.compose_mailbox_id,
+                    forward_attachment_refs_json = excluded.forward_attachment_refs_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -164,6 +171,7 @@ class MailMetadataStore:
                     _normalize_text(reply_to_message_id) or None,
                     _normalize_text(forward_message_id) or None,
                     _normalize_text(compose_mailbox_id) or None,
+                    forward_refs_json,
                     _utc_now_iso(),
                 ),
             )
@@ -178,7 +186,7 @@ class MailMetadataStore:
     ) -> dict[str, Any] | None:
         row = self._get_by_scoped_or_legacy_key(
             table=self._draft_context_table,
-            columns="compose_mode, reply_to_message_id, forward_message_id, updated_at, compose_mailbox_id",
+            columns="compose_mode, reply_to_message_id, forward_message_id, updated_at, compose_mailbox_id, forward_attachment_refs_json",
             user_id=int(user_id),
             mailbox_id=mailbox_id,
             key_column="draft_exchange_id",
@@ -186,12 +194,22 @@ class MailMetadataStore:
         )
         if row is None:
             return None
+        forward_refs_raw = _normalize_text(row["forward_attachment_refs_json"])
+        forward_attachment_refs: list[str] | None = None
+        if forward_refs_raw:
+            try:
+                parsed = json.loads(forward_refs_raw)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                forward_attachment_refs = [item for item in (_normalize_text(ref) for ref in parsed) if item]
         return {
             "compose_mode": _normalize_text(row["compose_mode"], "draft"),
             "reply_to_message_id": _normalize_text(row["reply_to_message_id"]) or None,
             "forward_message_id": _normalize_text(row["forward_message_id"]) or None,
             "updated_at": _normalize_text(row["updated_at"]) or None,
             "mailbox_id": _normalize_text(row["compose_mailbox_id"]) or None,
+            "forward_attachment_refs": forward_attachment_refs,
         }
 
     def delete_draft_context(

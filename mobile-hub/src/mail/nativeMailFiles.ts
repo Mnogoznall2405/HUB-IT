@@ -5,7 +5,7 @@ import { getMailAttachmentPreview, type MailAttachment, type MailUploadFile } fr
 import { API_V1_BASE } from '../api/config';
 import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
-import { sanitizeNativeFileName, validateUploadFile } from '../files/filePolicy';
+import { fitNativeFileName, sanitizeNativeFileName, selectCacheEvictions, validateUploadFile } from '../files/filePolicy';
 import {
   getNativeMailAttachmentKind,
   resolveNativeMailAttachmentMimeType,
@@ -118,10 +118,51 @@ export function getNativeMailCacheSize(): number {
   ), 0);
 }
 
+// The attachment cache is server-reproducible content: bound it by age and
+// total size instead of growing until logout. Eviction is throttled like the
+// chat attachment cache so directory scans stay rare.
+const MAIL_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAIL_CACHE_MAX_BYTES = 256 * 1024 * 1024;
+const MAIL_CACHE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const MAIL_CACHE_CLEANUP_SIZE_DELTA_BYTES = 16 * 1024 * 1024;
+let lastMailCacheCleanupAt = 0;
+let mailCacheBytesAddedSinceCleanup = 0;
+
+function maintainMailCache(preserveUri?: string, addedBytes = 0): void {
+  mailCacheBytesAddedSinceCleanup = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    mailCacheBytesAddedSinceCleanup + Math.max(0, Number(addedBytes || 0)),
+  );
+  const now = Date.now();
+  const intervalElapsed = lastMailCacheCleanupAt <= 0
+    || now < lastMailCacheCleanupAt
+    || now - lastMailCacheCleanupAt >= MAIL_CACHE_CLEANUP_INTERVAL_MS;
+  if (!intervalElapsed && mailCacheBytesAddedSinceCleanup < MAIL_CACHE_CLEANUP_SIZE_DELTA_BYTES) return;
+  try {
+    const files = mailCacheDirectory().list()
+      .filter((entry): entry is File => entry instanceof File && entry.exists);
+    const evictions = new Set(selectCacheEvictions(
+      files.map((entry) => ({
+        uri: entry.uri,
+        size: Math.max(0, Number(entry.size || 0)),
+        modifiedAt: Number(entry.lastModified || entry.creationTime || 0),
+      })),
+      { preserveUri, maxAgeMs: MAIL_CACHE_MAX_AGE_MS, maxBytes: MAIL_CACHE_MAX_BYTES },
+    ));
+    for (const entry of files) {
+      if (evictions.has(entry.uri) && entry.exists) entry.delete();
+    }
+  } catch {
+    // Cache maintenance must never block a valid attachment open/download.
+  }
+  lastMailCacheCleanupAt = now;
+  mailCacheBytesAddedSinceCleanup = 0;
+}
+
 async function mailCacheFile(fileName: string): Promise<File> {
   const userId = Number(await getSessionUserId());
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
-  return new File(mailCacheDirectory(), `${userId}-${fileName}`);
+  return new File(mailCacheDirectory(), fitNativeFileName(`${userId}-${fileName}`));
 }
 
 function attachmentReference(attachment: MailAttachment): string {
@@ -155,10 +196,12 @@ async function authenticatedMailDownload(
   }
   if (destination.exists) destination.delete();
   try {
-    return await downloadAuthenticatedFile(sourceUrl, destination, {
+    const downloaded = await downloadAuthenticatedFile(sourceUrl, destination, {
       idempotent: true,
       signal: options.signal,
     });
+    maintainMailCache(downloaded.uri, downloaded.size);
+    return downloaded;
   } catch (error) {
     if (destination.exists) destination.delete();
     throw error;
@@ -270,7 +313,12 @@ export async function downloadMailAttachment(
   const key = buildMailCacheKey({ messageId: normalizedMessageId, reference });
   const destination = await mailCacheFile(`${key}-${safeName}`);
   const expectedSize = Math.max(0, Number(attachment.size || 0));
-  if (destination.exists && Number(destination.size || 0) > 0) return destination;
+  // Exchange metadata size is unreliable — a non-empty cached/downloaded file
+  // is trusted regardless of the declared size (see the size-mismatch test).
+  if (destination.exists && Number(destination.size || 0) > 0) {
+    maintainMailCache(destination.uri);
+    return destination;
+  }
   if (destination.exists) destination.delete();
   try {
     const downloaded = await downloadAuthenticatedFile(sourceUrl, destination, {

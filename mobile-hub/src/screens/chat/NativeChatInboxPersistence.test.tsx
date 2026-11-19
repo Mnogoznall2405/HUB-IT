@@ -25,6 +25,7 @@ jest.mock('expo-router', () => {
 
 jest.mock('../../api/chatApi', () => ({
   getConversationPage: jest.fn(),
+  listAllConversations: jest.fn(),
   listChatFolders: jest.fn(),
   searchMessagesGlobal: jest.fn(),
 }));
@@ -152,6 +153,9 @@ beforeEach(() => {
   jest.mocked(readNativeSnapshot).mockResolvedValue(null);
   jest.mocked(getActiveChatFolderKey).mockResolvedValue('personal');
   api.getConversationPage.mockResolvedValue(page);
+  api.listAllConversations.mockImplementation(async (query?: string) => (
+    (await api.getConversationPage(query ? { query, limit: 50 } : { limit: 50 })).items
+  ));
   api.listChatFolders.mockResolvedValue({ items: [], conversation_ids_by_folder: {}, folder_unread_counts: {} });
 });
 

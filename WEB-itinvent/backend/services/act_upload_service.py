@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 import base64
 from datetime import datetime, timedelta
@@ -33,6 +34,7 @@ ROOT_ENV_PATH = PROJECT_ROOT / ".env"
 ROOT_ENV = dotenv_values(str(ROOT_ENV_PATH)) if ROOT_ENV_PATH.exists() else {}
 
 _ACT_DRAFTS: dict[str, dict[str, Any]] = {}
+_DRAFTS_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
@@ -457,6 +459,8 @@ def _stamp_pdf_overlay(file_bytes: bytes, label: str, draw_fn) -> bytes:
 
         writer = PdfWriter()
         for index, page in enumerate(reader.pages):
+            # pypdf>=7: merge only works on pages already owned by the writer.
+            out_page = writer.add_page(page)
             if index == 0:
                 width = float(page.mediabox.width)
                 height = float(page.mediabox.height)
@@ -467,9 +471,7 @@ def _stamp_pdf_overlay(file_bytes: bytes, label: str, draw_fn) -> bytes:
                 overlay_stream.seek(0)
 
                 overlay_reader = PdfReader(overlay_stream)
-                page.merge_page(overlay_reader.pages[0])
-
-            writer.add_page(page)
+                out_page.merge_page(overlay_reader.pages[0])
 
         out = io.BytesIO()
         writer.write(out)
@@ -887,6 +889,7 @@ def create_uploaded_act_draft(
     db_id: Optional[str],
     created_by: str,
     skip_llm: bool = False,
+    created_by_user_id: Optional[int] = None,
 ) -> dict:
     _cleanup_expired_drafts()
     warnings: list[str] = []
@@ -980,6 +983,7 @@ def create_uploaded_act_draft(
         "draft_id": draft_id,
         "db_id": str(db_id or "").strip() or None,
         "created_by": str(created_by or "IT-WEB"),
+        "created_by_user_id": created_by_user_id,
         "created_at": datetime.now(),
         "expires_at": datetime.now()
         + timedelta(minutes=int(_read_env("ACT_UPLOAD_DRAFT_TTL_MINUTES", "30") or "30")),
@@ -994,6 +998,13 @@ def create_uploaded_act_draft(
     }
     _ACT_DRAFTS[draft_id] = draft_payload
     return _build_draft_response_payload(draft_payload)
+
+
+def get_uploaded_act_draft_owner_id(draft_id: str) -> Optional[int]:
+    draft = _ACT_DRAFTS.get(str(draft_id or "").strip())
+    if not draft:
+        raise DraftNotFoundError("Черновик не найден или срок его действия истек.")
+    return draft.get("created_by_user_id")
 
 
 def get_uploaded_act_draft(
@@ -1014,7 +1025,43 @@ def get_uploaded_act_draft(
     return _build_draft_response_payload(draft)
 
 
+def _claim_draft_for_commit(draft_id: str) -> None:
+    key = str(draft_id or "").strip()
+    with _DRAFTS_LOCK:
+        draft = _ACT_DRAFTS.get(key)
+        if not draft:
+            raise DraftNotFoundError("Черновик не найден или срок его действия истек.")
+        if draft.get("committing"):
+            raise DuplicateActError("Этот черновик уже сохраняется. Дождитесь результата.")
+        draft["committing"] = True
+
+
 def commit_uploaded_act_draft(
+    *,
+    draft_id: str,
+    payload: dict,
+    db_id: Optional[str],
+    committed_by: str,
+) -> dict:
+    _claim_draft_for_commit(draft_id)
+    try:
+        return _commit_claimed_draft(
+            draft_id=draft_id,
+            payload=payload,
+            db_id=db_id,
+            committed_by=committed_by,
+        )
+    except Exception:
+        # A failed create_uploaded_transfer_act leaves nothing stored, so the
+        # draft may be committed again.
+        with _DRAFTS_LOCK:
+            draft = _ACT_DRAFTS.get(str(draft_id or "").strip())
+            if draft is not None:
+                draft["committing"] = False
+        raise
+
+
+def _commit_claimed_draft(
     *,
     draft_id: str,
     payload: dict,

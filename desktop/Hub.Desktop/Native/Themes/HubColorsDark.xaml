@@ -1,0 +1,70 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Палитра нативного шелла, тёмная тема в духе Windows 11 / Fluent (WinUI 3):
+         слои поверхностей поверх Mica-базы #202020, нейтральные границы,
+         акцент фирменного «sky» в светлом варианте для тёмной темы.
+         Набор ключей зеркалит HubColorsLight.xaml — менять только парой. -->
+    <Color x:Key="HubBackgroundColor">#202020</Color>
+    <Color x:Key="HubSurfaceColor">#2C2C2C</Color>
+    <Color x:Key="HubSurfaceAltColor">#262626</Color>
+    <Color x:Key="HubSurfaceRaisedColor">#333333</Color>
+    <Color x:Key="HubBorderColor">#404040</Color>
+    <Color x:Key="HubBorderDimColor">#303030</Color>
+    <Color x:Key="HubTextColor">#E7E7E7</Color>
+    <Color x:Key="HubTextSecondaryColor">#B0B0B0</Color>
+    <Color x:Key="HubAccentColor">#1EA7EC</Color>
+    <Color x:Key="HubAccentHoverColor">#3FB9F4</Color>
+    <Color x:Key="HubAccentPressedColor">#0E8FD0</Color>
+    <Color x:Key="HubFocusColor">#7DD3FC</Color>
+    <Color x:Key="HubDangerColor">#C42B1C</Color>
+    <Color x:Key="HubErrorTextColor">#FF99A4</Color>
+    <Color x:Key="HubSuccessColor">#34D399</Color>
+    <Color x:Key="HubWarningColor">#F59E0B</Color>
+    <Color x:Key="HubStatusNewColor">#38BDF8</Color>
+    <Color x:Key="HubStatusInProgressColor">#F59E0B</Color>
+    <Color x:Key="HubStatusReviewColor">#A78BFA</Color>
+    <Color x:Key="HubStatusDoneColor">#34D399</Color>
+    <Color x:Key="HubStatusOverdueColor">#F87171</Color>
+    <Color x:Key="HubHoverColor">#333333</Color>
+    <Color x:Key="HubPressedColor">#2A2A2A</Color>
+    <Color x:Key="HubSelectionColor">#37434D</Color>
+    <Color x:Key="HubScrollThumbColor">#565656</Color>
+    <Color x:Key="HubScrollThumbHoverColor">#676767</Color>
+    <Color x:Key="HubScrollThumbPressedColor">#7A7A7A</Color>
+    <Color x:Key="HubLoginGradientStartColor">#1E2836</Color>
+    <Color x:Key="HubLoginGradientEndColor">#10131A</Color>
+
+    <SolidColorBrush x:Key="HubBackgroundBrush" Color="{StaticResource HubBackgroundColor}" />
+    <SolidColorBrush x:Key="HubSurfaceBrush" Color="{StaticResource HubSurfaceColor}" />
+    <SolidColorBrush x:Key="HubSurfaceAltBrush" Color="{StaticResource HubSurfaceAltColor}" />
+    <SolidColorBrush x:Key="HubSurfaceRaisedBrush" Color="{StaticResource HubSurfaceRaisedColor}" />
+    <SolidColorBrush x:Key="HubBorderBrush" Color="{StaticResource HubBorderColor}" />
+    <SolidColorBrush x:Key="HubBorderDimBrush" Color="{StaticResource HubBorderDimColor}" />
+    <SolidColorBrush x:Key="HubTextBrush" Color="{StaticResource HubTextColor}" />
+    <SolidColorBrush x:Key="HubTextSecondaryBrush" Color="{StaticResource HubTextSecondaryColor}" />
+    <SolidColorBrush x:Key="HubAccentBrush" Color="{StaticResource HubAccentColor}" />
+    <!-- Текст на акцентной заливке (как TextOnAccentFillColorPrimary в WinUI):
+         белый на #60CDFF даёт ~2.7:1, тёмный — ~5.6:1. -->
+    <SolidColorBrush x:Key="HubOnAccentBrush" Color="#10222E" />
+    <SolidColorBrush x:Key="HubOnAccentSecondaryBrush" Color="#23404F" />
+    <SolidColorBrush x:Key="HubAccentHoverBrush" Color="{StaticResource HubAccentHoverColor}" />
+    <SolidColorBrush x:Key="HubAccentPressedBrush" Color="{StaticResource HubAccentPressedColor}" />
+    <SolidColorBrush x:Key="HubFocusBrush" Color="{StaticResource HubFocusColor}" />
+    <SolidColorBrush x:Key="HubDangerBrush" Color="{StaticResource HubDangerColor}" />
+    <SolidColorBrush x:Key="HubErrorTextBrush" Color="{StaticResource HubErrorTextColor}" />
+    <SolidColorBrush x:Key="HubSuccessBrush" Color="{StaticResource HubSuccessColor}" />
+    <SolidColorBrush x:Key="HubWarningBrush" Color="{StaticResource HubWarningColor}" />
+    <SolidColorBrush x:Key="HubStatusNewBrush" Color="{StaticResource HubStatusNewColor}" />
+    <SolidColorBrush x:Key="HubStatusInProgressBrush" Color="{StaticResource HubStatusInProgressColor}" />
+    <SolidColorBrush x:Key="HubStatusReviewBrush" Color="{StaticResource HubStatusReviewColor}" />
+    <SolidColorBrush x:Key="HubStatusDoneBrush" Color="{StaticResource HubStatusDoneColor}" />
+    <SolidColorBrush x:Key="HubStatusOverdueBrush" Color="{StaticResource HubStatusOverdueColor}" />
+    <SolidColorBrush x:Key="HubHoverBrush" Color="{StaticResource HubHoverColor}" />
+    <SolidColorBrush x:Key="HubPressedBrush" Color="{StaticResource HubPressedColor}" />
+    <SolidColorBrush x:Key="HubSelectionBrush" Color="{StaticResource HubSelectionColor}" />
+    <SolidColorBrush x:Key="HubScrollThumbBrush" Color="{StaticResource HubScrollThumbColor}" />
+    <SolidColorBrush x:Key="HubScrollThumbHoverBrush" Color="{StaticResource HubScrollThumbHoverColor}" />
+    <SolidColorBrush x:Key="HubScrollThumbPressedBrush" Color="{StaticResource HubScrollThumbPressedColor}" />
+
+</ResourceDictionary>

@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 function buildComputerFilterParams(options = {}) {
   const scope = String(options?.scope || 'selected').toLowerCase() === 'all' ? 'all' : 'selected';

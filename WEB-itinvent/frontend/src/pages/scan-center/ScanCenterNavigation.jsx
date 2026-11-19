@@ -7,13 +7,11 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import {
-  ComputerOutlined as ComputerOutlinedIcon,
-  DashboardOutlined as DashboardOutlinedIcon,
-  GppMaybeOutlined as GppMaybeOutlinedIcon,
-  ReportProblemOutlined as ReportProblemOutlinedIcon,
-  SensorsOutlined as SensorsOutlinedIcon,
-} from '@mui/icons-material';
+import ComputerOutlinedIcon from '@mui/icons-material/ComputerOutlined';
+import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
+import GppMaybeOutlinedIcon from '@mui/icons-material/GppMaybeOutlined';
+import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
+import SensorsOutlinedIcon from '@mui/icons-material/SensorsOutlined';
 
 const NAV_ITEMS = [
   { id: 'overview', label: 'Обзор', helper: 'Что требует внимания', icon: DashboardOutlinedIcon },

@@ -1,4 +1,4 @@
-import apiClient, { API_V1_BASE } from './client';
+import apiClient, { API_V1_BASE } from './http';
 
 const callPath = (callId, action) => `/chat/calls/${encodeURIComponent(callId)}/${action}`;
 

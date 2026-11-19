@@ -9,6 +9,7 @@ class MockWebSocket {
   static instances: MockWebSocket[] = [];
 
   readyState = 0;
+  bufferedAmount = 0;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: ((event?: { code?: number }) => void) | null = null;
@@ -376,6 +377,139 @@ describe('ChatSocketClient lifecycle', () => {
     const second = MockWebSocket.instances[1];
     second.open();
     expect(watchFrames(second)).toHaveLength(0);
+    client.disconnect();
+  });
+});
+
+const countFrames = (socket: MockWebSocket, type: string, conversationId?: string) => socket.send.mock.calls
+  .map(([raw]) => JSON.parse(String(raw)) as { type?: string; conversation_id?: string })
+  .filter((message) => message.type === type
+    && (conversationId === undefined || message.conversation_id === conversationId))
+  .length;
+
+describe('ChatSocketClient subscription delivery', () => {
+  it('sends inbox and room subscriptions exactly once per socket when screens re-arm on status', async () => {
+    const client = new ChatSocketClient();
+    // The screens re-declare their desired subscriptions on every 'connected'.
+    client.on('status', (status) => {
+      if (status === 'connected') {
+        client.subscribeInbox();
+        client.subscribeConversation('room-1');
+      }
+    });
+    // The inbox/thread were already desired before the socket connected.
+    client.subscribeInbox();
+    client.subscribeConversation('room-1');
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+
+    expect(countFrames(first, 'chat.subscribe_inbox')).toBe(1);
+    expect(countFrames(first, 'chat.subscribe_conversation', 'room-1')).toBe(1);
+
+    first.close();
+    await jest.advanceTimersByTimeAsync(1_000);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    expect(countFrames(second, 'chat.subscribe_inbox')).toBe(1);
+    expect(countFrames(second, 'chat.subscribe_conversation', 'room-1')).toBe(1);
+
+    client.disconnect({ reconnect: false, clearSubscriptions: true });
+    await client.connect();
+    const third = MockWebSocket.instances[2];
+    third.open();
+    expect(countFrames(third, 'chat.subscribe_inbox')).toBe(1);
+    expect(countFrames(third, 'chat.subscribe_conversation', 'room-1')).toBe(1);
+    client.disconnect();
+  });
+
+  it('abandons a flooded socket instead of silently dropping a new room subscription', async () => {
+    const client = new ChatSocketClient();
+    client.subscribeConversation('room-1');
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    expect(client.getStatus()).toBe('connected');
+    first.send.mockClear();
+
+    Object.defineProperty(first, 'bufferedAmount', { value: 300 * 1024, configurable: true });
+    client.subscribeConversation('room-2');
+
+    expect(first.send).not.toHaveBeenCalled();
+    expect(first.readyState).toBe(MockWebSocket.CLOSED);
+    expect(client.getStatus()).not.toBe('connected');
+
+    // Late events and a later buffer drain on the dead socket change nothing.
+    first.onmessage?.({ data: JSON.stringify({ type: 'chat.message.created', payload: {} }) });
+    Object.defineProperty(first, 'bufferedAmount', { value: 0, configurable: true });
+    expect(client.getStatus()).not.toBe('connected');
+
+    await jest.advanceTimersByTimeAsync(1_000);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    expect(countFrames(second, 'chat.subscribe_conversation', 'room-1')).toBe(1);
+    expect(countFrames(second, 'chat.subscribe_conversation', 'room-2')).toBe(1);
+    client.disconnect();
+  });
+
+  it('does not replay a room unsubscribed while its subscribe was stranded on a flooded socket', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    Object.defineProperty(first, 'bufferedAmount', { value: 300 * 1024, configurable: true });
+    client.subscribeConversation('room-2');
+    expect(client.getStatus()).not.toBe('connected');
+
+    client.unsubscribeConversation('room-2');
+    await jest.advanceTimersByTimeAsync(1_000);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    const room2Frames = second.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as { conversation_id?: string })
+      .filter((message) => message.conversation_id === 'room-2');
+    expect(room2Frames).toHaveLength(0);
+    client.disconnect();
+  });
+
+  it('a flooded unsubscribe abandons the socket and the stale room is absent after reconnect', async () => {
+    const client = new ChatSocketClient();
+    client.subscribeConversation('room-3');
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    expect(client.getStatus()).toBe('connected');
+    expect(countFrames(first, 'chat.subscribe_conversation', 'room-3')).toBe(1);
+
+    Object.defineProperty(first, 'bufferedAmount', { value: 300 * 1024, configurable: true });
+    client.unsubscribeConversation('room-3');
+    expect(first.readyState).toBe(MockWebSocket.CLOSED);
+    expect(client.getStatus()).not.toBe('connected');
+
+    await jest.advanceTimersByTimeAsync(1_000);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    const room3Frames = second.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as { conversation_id?: string })
+      .filter((message) => message.conversation_id === 'room-3');
+    expect(room3Frames).toHaveLength(0);
+    client.disconnect();
+  });
+
+  it('drops noncritical typing on a flooded buffer without closing the socket', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    first.send.mockClear();
+    Object.defineProperty(first, 'bufferedAmount', { value: 300 * 1024, configurable: true });
+    const closeSpy = jest.spyOn(first, 'close');
+
+    client.sendTyping('room-1', true);
+
+    expect(first.send).not.toHaveBeenCalled();
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(client.getStatus()).toBe('connected');
     client.disconnect();
   });
 });

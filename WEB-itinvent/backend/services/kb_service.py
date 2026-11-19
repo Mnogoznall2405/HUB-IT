@@ -25,6 +25,24 @@ from backend.services.department_service import department_service
 
 KB_ARTICLES_FILE = "kb_articles.json"
 KB_CARDS_FILE = "kb_cards.json"
+
+# Uploads are buffered in memory before writing: cap the body so one request
+# cannot exhaust process RAM (IIS limits are a net boundary, not a backstop).
+_ATTACHMENT_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _read_upload_bounded(source: Any, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = source.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("Attachment exceeds the 64 MB limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
 KB_DEFAULT_CATEGORIES = [
     {"id": "mail", "title": "Почта", "description": "Exchange/почтовые сценарии", "order": 10},
     {"id": "trueconf", "title": "TrueConf", "description": "ВКС, клиенты, диагностика", "order": 20},
@@ -595,7 +613,7 @@ class KnowledgeBaseService:
         article_dir = self._attachments_root / target
         article_dir.mkdir(parents=True, exist_ok=True)
         full_path = article_dir / stored_name
-        payload = upload.file.read()
+        payload = _read_upload_bounded(upload.file, _ATTACHMENT_MAX_BYTES)
         full_path.write_bytes(payload)
 
         attachment = {
@@ -667,9 +685,15 @@ class KnowledgeBaseService:
             if str(attachment.get("id") or "") != str(attachment_id or ""):
                 continue
             storage_name = str(attachment.get("storage_name") or "").strip()
-            if not storage_name:
+            # storage_name is a stored file name only — anything else would make
+            # the JSON row an arbitrary file-read primitive.
+            if not storage_name or Path(storage_name).name != storage_name:
                 return None
-            path = self._attachments_root / str(article_id) / storage_name
+            path = (self._attachments_root / str(article_id) / storage_name).resolve()
+            try:
+                path.relative_to(self._attachments_root.resolve())
+            except ValueError:
+                return None
             if not path.exists() or not path.is_file():
                 return None
             result = dict(attachment)
@@ -734,12 +758,17 @@ class KnowledgeBaseService:
                 self._save_articles(rows)
 
                 storage_name = str(removed.get("storage_name") or "").strip()
-                if storage_name:
-                    path = self._attachments_root / target_article / storage_name
+                if storage_name and Path(storage_name).name == storage_name:
+                    path = (self._attachments_root / target_article / storage_name).resolve()
                     try:
-                        path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                        path.relative_to(self._attachments_root.resolve())
+                    except ValueError:
+                        path = None
+                    if path is not None:
+                        try:
+                            path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
                 return True
         return False
 

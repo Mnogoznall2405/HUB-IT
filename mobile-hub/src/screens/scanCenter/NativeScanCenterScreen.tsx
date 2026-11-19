@@ -3,6 +3,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   Pressable,
@@ -14,6 +15,8 @@ import {
   View,
 } from 'react-native';
 import {
+  ackScanIncident,
+  bulkAckScanIncidents,
   getScanDashboard,
   listScanAgents,
   listScanHosts,
@@ -28,6 +31,7 @@ import {
 } from '../../api/scanCenterApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
+import { getSessionGeneration } from '../../auth/tokenStore';
 import {
   NativeScanAgentCard,
   NativeScanHostCard,
@@ -88,6 +92,9 @@ export function NativeScanCenterScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState<Record<Exclude<ScanCenterSection, 'overview'>, boolean>>({ incidents: false, review: false, agents: false, hosts: false });
   const [error, setError] = useState('');
+  // Action feedback (partial bulk counts) is kept apart from `error`: a notice
+  // must not flip an empty list into the «Список не загрузился» retry state.
+  const [notice, setNotice] = useState('');
   const requestRef = useRef(0);
   const focusedRef = useRef(false);
   const mountedRef = useRef(true);
@@ -96,6 +103,21 @@ export function NativeScanCenterScreen() {
   const abortRef = useRef<AbortController | null>(null);
   const lengthsRef = useRef({ incidents: 0, review: 0, agents: 0, hosts: 0 });
   lengthsRef.current = { incidents: incidents.length, review: reviewItems.length, agents: agents.length, hosts: hosts.length };
+  const [selectionRequested, setSelectionRequested] = useState(false);
+  const [selectedIncidentIds, setSelectedIncidentIds] = useState<Set<string>>(new Set());
+  const [ackBusyIds, setAckBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const ackBusyRef = useRef<Set<string>>(new Set());
+  const [bulkAckBusy, setBulkAckBusy] = useState(false);
+  const bulkAckBusyRef = useRef(false);
+  const canAckRef = useRef(canAck);
+  canAckRef.current = canAck;
+  const selectionMode = section === 'incidents' && canAck && (selectionRequested || selectedIncidentIds.size > 0);
+  const accentColor = tokens.scheme === 'dark' ? tokens.primaryLight : tokens.primary;
+
+  const clearIncidentSelection = useCallback(() => {
+    setSelectionRequested(false);
+    setSelectedIncidentIds(new Set());
+  }, []);
 
   const clearScanData = useCallback(() => {
     setDashboard(null);
@@ -106,6 +128,13 @@ export function NativeScanCenterScreen() {
     setHosts([]);
     setTotals({ incidents: 0, review: 0, agents: 0, hosts: 0 });
     setHasMore({ incidents: false, review: false, agents: false, hosts: false });
+    setSelectionRequested(false);
+    setSelectedIncidentIds(new Set());
+    ackBusyRef.current.clear();
+    setAckBusyIds(new Set());
+    bulkAckBusyRef.current = false;
+    setBulkAckBusy(false);
+    setNotice('');
   }, []);
 
   const loadOverview = useCallback(async ({ refresh = false, silent = false } = {}) => {
@@ -147,7 +176,7 @@ export function NativeScanCenterScreen() {
     busyRef.current = false;
   }, [canRead, offlineMode]);
 
-  const loadRows = useCallback(async ({ reset = false, refresh = false }: { reset?: boolean; refresh?: boolean } = {}) => {
+  const loadRows = useCallback(async ({ reset = false, refresh = false, silent = false }: { reset?: boolean; refresh?: boolean; silent?: boolean } = {}) => {
     if (!canRead || offlineMode || section === 'overview') {
       requestRef.current += 1;
       abortRef.current?.abort();
@@ -165,36 +194,37 @@ export function NativeScanCenterScreen() {
     abortRef.current = controller;
     busyRef.current = true;
     const currentLength = lengthsRef.current[section];
-    const offset = reset ? 0 : currentLength;
+    const offset = reset || silent ? 0 : currentLength;
+    const replace = reset && !silent;
     if (refresh) setRefreshing(true);
     else if (reset) setLoading(true);
-    else setLoadingMore(true);
+    else if (!silent) setLoadingMore(true);
     setError('');
     try {
       if (section === 'incidents') {
         const result = await listScanIncidents({ status: incidentStatus, q: query, limit: PAGE_SIZE, offset, signal: controller.signal });
         if (requestId !== requestRef.current || controller.signal.aborted || !mountedRef.current) return;
-        setIncidents((current) => (reset ? result.items : mergeScanPage(current, result.items, (item) => item.id)));
+        setIncidents((current) => (replace ? result.items : mergeScanPage(current, result.items, (item) => item.id)));
         setTotals((current) => ({ ...current, incidents: result.total }));
-        setHasMore((current) => ({ ...current, incidents: result.has_more && result.items.length > 0 }));
+        setHasMore((current) => ({ ...current, incidents: silent ? (current.incidents || result.has_more) : result.has_more && result.items.length > 0 }));
       } else if (section === 'review') {
         const result = await listScanReviewItems({ limit: PAGE_SIZE, offset, signal: controller.signal });
         if (requestId !== requestRef.current || controller.signal.aborted || !mountedRef.current) return;
-        setReviewItems((current) => (reset ? result.items : mergeScanPage(current, result.items, (item) => item.id)));
+        setReviewItems((current) => (replace ? result.items : mergeScanPage(current, result.items, (item) => item.id)));
         setTotals((current) => ({ ...current, review: result.total }));
-        setHasMore((current) => ({ ...current, review: result.has_more && result.items.length > 0 }));
+        setHasMore((current) => ({ ...current, review: silent ? (current.review || result.has_more) : result.has_more && result.items.length > 0 }));
       } else if (section === 'agents') {
         const result = await listScanAgents({ online: agentOnline, q: query, limit: PAGE_SIZE, offset, signal: controller.signal });
         if (requestId !== requestRef.current || controller.signal.aborted || !mountedRef.current) return;
-        setAgents((current) => (reset ? result.items : mergeScanPage(current, result.items, (item) => item.agent_id)));
+        setAgents((current) => (replace ? result.items : mergeScanPage(current, result.items, (item) => item.agent_id)));
         setTotals((current) => ({ ...current, agents: result.total }));
-        setHasMore((current) => ({ ...current, agents: result.has_more && result.items.length > 0 }));
+        setHasMore((current) => ({ ...current, agents: silent ? (current.agents || result.has_more) : result.has_more && result.items.length > 0 }));
       } else {
         const result = await listScanHosts({ status: hostStatus, severity: hostSeverity, q: query, limit: PAGE_SIZE, offset, signal: controller.signal });
         if (requestId !== requestRef.current || controller.signal.aborted || !mountedRef.current) return;
-        setHosts((current) => (reset ? result.items : mergeScanPage(current, result.items, (item) => item.hostname.toLowerCase())));
+        setHosts((current) => (replace ? result.items : mergeScanPage(current, result.items, (item) => item.hostname.toLowerCase())));
         setTotals((current) => ({ ...current, hosts: result.total }));
-        setHasMore((current) => ({ ...current, hosts: result.has_more && result.items.length > 0 }));
+        setHasMore((current) => ({ ...current, hosts: silent ? (current.hosts || result.has_more) : result.has_more && result.items.length > 0 }));
       }
     } catch (cause) {
       if (requestId === requestRef.current && !controller.signal.aborted && mountedRef.current) {
@@ -209,6 +239,129 @@ export function NativeScanCenterScreen() {
       }
     }
   }, [agentOnline, canRead, hostSeverity, hostStatus, incidentStatus, offlineMode, query, section]);
+
+  const applyAckedIncidents = useCallback((ids: readonly string[], ackedCount: number, nextStatus = 'ack') => {
+    const ackedSet = new Set(ids);
+    if (incidentStatus === 'new') {
+      // Mirrors the web inbox: an acknowledged incident leaves the «Новые» list.
+      setIncidents((current) => current.filter((item) => !ackedSet.has(item.id)));
+      if (ackedCount > 0) {
+        setTotals((current) => ({ ...current, incidents: Math.max(0, current.incidents - ackedCount) }));
+      }
+    } else {
+      setIncidents((current) => current.map((item) => (ackedSet.has(item.id) ? { ...item, status: nextStatus } : item)));
+    }
+    if (ackedCount > 0) {
+      setDashboard((current) => {
+        if (!current) return current;
+        const totals = { ...(current.totals || {}) };
+        totals.incidents_new = Math.max(0, Number(totals.incidents_new || 0) - ackedCount);
+        return { ...current, totals };
+      });
+    }
+  }, [incidentStatus]);
+
+  const toggleIncidentSelection = useCallback((id: string) => {
+    setSelectedIncidentIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const ackIncident = useCallback((incident: ScanIncident) => {
+    const id = String(incident?.id || '').trim();
+    if (!canAck || offlineMode || !id || String(incident?.status || '').toLowerCase() !== 'new') return;
+    if (ackBusyRef.current.has(id)) return;
+    ackBusyRef.current.add(id);
+    setAckBusyIds(new Set(ackBusyRef.current));
+    setError('');
+    setNotice('');
+    const sessionLease = getSessionGeneration();
+    const requestId = requestRef.current;
+    // A user/permission switch or a fresh list load makes the result irrelevant.
+    const stale = () => sessionLease !== getSessionGeneration() || requestId !== requestRef.current || !canAckRef.current || !mountedRef.current;
+    void (async () => {
+      try {
+        const result = await ackScanIncident(id);
+        if (stale()) return;
+        applyAckedIncidents([id], 1, String(result?.incident?.status || '').trim() || 'ack');
+        void loadRows({ silent: true });
+      } catch (cause) {
+        if (stale()) return;
+        setError(formatApiError(cause, 'Не удалось отметить инцидент просмотренным.'));
+      } finally {
+        ackBusyRef.current.delete(id);
+        if (mountedRef.current) setAckBusyIds(new Set(ackBusyRef.current));
+      }
+    })();
+  }, [applyAckedIncidents, canAck, loadRows, offlineMode]);
+
+  const runBulkAck = useCallback(async (ids: readonly string[]) => {
+    const requestedIds = [...ids];
+    if (!requestedIds.length || bulkAckBusyRef.current || !canAck || offlineMode) return;
+    bulkAckBusyRef.current = true;
+    setBulkAckBusy(true);
+    setError('');
+    setNotice('');
+    const sessionLease = getSessionGeneration();
+    const requestId = requestRef.current;
+    const stale = () => sessionLease !== getSessionGeneration() || requestId !== requestRef.current || !canAckRef.current || !mountedRef.current;
+    try {
+      const result = await bulkAckScanIncidents(requestedIds);
+      if (stale()) return;
+      if (result.success === false) {
+        // The resync clears `error` on start, so set the message after kicking it.
+        void loadRows({ silent: true });
+        setError('Scan Center не подтвердил массовую отметку. Проверьте список инцидентов и повторите.');
+        return;
+      }
+      const acked = Math.max(0, Number(result.acked_count || 0));
+      // Requested ids that were not transitioned are already non-new on the
+      // server (acked by someone else, resolved or removed), so they can leave
+      // the «Новые» list even on a partial result.
+      applyAckedIncidents(requestedIds, acked);
+      clearIncidentSelection();
+      void loadRows({ silent: true });
+      if (acked < requestedIds.length) {
+        setNotice(`Отмечено просмотренными ${acked} из ${requestedIds.length} инцидентов. Остальные уже обработаны или недоступны — проверьте список.`);
+      }
+    } catch (cause) {
+      if (stale()) return;
+      // The server applies the whole UPDATE in one transaction, but a dropped
+      // connection can hide a completed write — resync before a blind retry.
+      void loadRows({ silent: true });
+      setError(formatApiError(cause, 'Не удалось отметить инциденты просмотренными.'));
+    } finally {
+      bulkAckBusyRef.current = false;
+      if (mountedRef.current) setBulkAckBusy(false);
+    }
+  }, [applyAckedIncidents, canAck, clearIncidentSelection, loadRows, offlineMode]);
+
+  const selectedNewIncidentIds = useMemo(
+    () => incidents
+      .filter((item) => selectedIncidentIds.has(item.id) && String(item.status || '').toLowerCase() === 'new')
+      .map((item) => item.id),
+    [incidents, selectedIncidentIds],
+  );
+
+  const requestBulkAck = useCallback(() => {
+    if (!canAck || offlineMode || bulkAckBusyRef.current) return;
+    const ids = selectedNewIncidentIds;
+    if (!ids.length) {
+      clearIncidentSelection();
+      return;
+    }
+    Alert.alert(
+      'Подтвердить массовую отметку',
+      `Будут отмечены просмотренными ${ids.length} выбранных инцидентов.`,
+      [
+        { text: 'Отмена', style: 'cancel' },
+        { text: 'Отметить просмотренными', onPress: () => { void runBulkAck(ids); } },
+      ],
+    );
+  }, [canAck, clearIncidentSelection, offlineMode, runBulkAck, selectedNewIncidentIds]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -231,7 +384,7 @@ export function NativeScanCenterScreen() {
     const timer = setInterval(() => {
       if (!focusedRef.current || !appActiveRef.current || busyRef.current || offlineMode) return;
       if (section === 'overview') void loadOverview({ silent: true });
-      else void loadRows({ reset: true });
+      else void loadRows({ silent: true });
     }, AUTO_REFRESH_MS);
     return () => {
       focusedRef.current = false;
@@ -257,6 +410,21 @@ export function NativeScanCenterScreen() {
   }, [clearScanData, offlineMode]);
 
   useEffect(() => {
+    clearIncidentSelection();
+  }, [clearIncidentSelection, incidentStatus, query, section]);
+
+  // Selection may only target rendered incidents: after a refresh drops rows
+  // from the list the stale ids must not leak into a bulk request.
+  useEffect(() => {
+    const visible = new Set(incidents.map((item) => item.id));
+    setSelectedIncidentIds((current) => {
+      if (!current.size) return current;
+      const next = new Set([...current].filter((id) => visible.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [incidents]);
+
+  useEffect(() => {
     appActiveRef.current = AppState.currentState === 'active';
     const subscription = AppState.addEventListener('change', (nextState) => {
       const wasActive = appActiveRef.current;
@@ -270,7 +438,7 @@ export function NativeScanCenterScreen() {
       }
       if (wasActive || !focusedRef.current || busyRef.current || offlineMode) return;
       if (section === 'overview') void loadOverview({ silent: true });
-      else void loadRows({ reset: true });
+      else void loadRows({ silent: true });
     });
     return () => subscription.remove();
   }, [clearScanData, loadOverview, loadRows, offlineMode, section]);
@@ -293,6 +461,12 @@ export function NativeScanCenterScreen() {
     return [];
   }, [agents, hosts, incidents, reviewItems, section]);
   const currentTotal = section === 'overview' ? 0 : totals[section];
+  // FlatList skips renderItem while `data` keeps identity — key it on the
+  // interactive incident state so selection/busy changes repaint visible rows.
+  const incidentUiKey = useMemo(
+    () => `${selectionMode ? 'sel' : 'act'}|${[...selectedIncidentIds].sort().join(',')}|${[...ackBusyIds].sort().join(',')}`,
+    [ackBusyIds, selectedIncidentIds, selectionMode],
+  );
   const hasListFilter = Boolean(query || (section === 'incidents' && incidentStatus)
     || (section === 'agents' && agentOnline) || (section === 'hosts' && (hostStatus || hostSeverity)));
   const resetListFilters = () => {
@@ -357,6 +531,7 @@ export function NativeScanCenterScreen() {
         <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Показана сохранённая сводка{dashboard.cache_age_sec > 0 ? `, возраст ${Math.round(dashboard.cache_age_sec)} с` : ''}. Часть актуальных данных может быть недоступна.</Text>
       ) : null}
       {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{error}</Text> : null}
+      {notice ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>{notice}</Text> : null}
     </>
   );
 
@@ -432,6 +607,7 @@ export function NativeScanCenterScreen() {
           windowSize={7}
           testID={`native-scan-list-${section}`}
           data={rows}
+          extraData={section === 'incidents' ? incidentUiKey : ''}
           keyExtractor={scanRowKey}
           contentContainerStyle={rows.length ? [styles.list, { paddingBottom: navInset }] : [styles.emptyList, { paddingBottom: navInset }]}
           refreshing={refreshing}
@@ -493,14 +669,71 @@ export function NativeScanCenterScreen() {
                   <NativeFilterChip label="Высокая важность" selected={hostSeverity === 'high'} onPress={() => setHostSeverity(hostSeverity === 'high' ? '' : 'high')} tokens={tokens} />
                 </View>
               ) : null}
+              {selectionMode ? (
+                <View testID="native-scan-selection-bar" style={[styles.selectionBar, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+                  <Pressable
+                    testID="native-scan-selection-cancel"
+                    onPress={clearIncidentSelection}
+                    accessibilityRole="button"
+                    accessibilityLabel="Отменить выбор"
+                    style={styles.selectionIcon}
+                  >
+                    <MaterialCommunityIcons name="close" size={22} color={tokens.iconMuted} />
+                  </Pressable>
+                  <Text accessibilityLiveRegion="polite" style={[styles.selectionCount, { color: tokens.textPrimary }]}>Выбрано: {selectedNewIncidentIds.length}</Text>
+                  <Pressable
+                    testID="native-scan-bulk-ack"
+                    onPress={requestBulkAck}
+                    disabled={bulkAckBusy || offlineMode || !selectedNewIncidentIds.length}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Отметить просмотренными ${selectedNewIncidentIds.length} инцидентов`}
+                    accessibilityState={{ disabled: bulkAckBusy || offlineMode || !selectedNewIncidentIds.length, busy: bulkAckBusy }}
+                    style={({ pressed }) => [
+                      styles.bulkAckButton,
+                      { backgroundColor: accentColor },
+                      { opacity: bulkAckBusy || offlineMode || !selectedNewIncidentIds.length ? 0.55 : pressed ? 0.85 : 1 },
+                    ]}
+                  >
+                    {bulkAckBusy
+                      ? <ActivityIndicator size="small" color="#fff" />
+                      : <MaterialCommunityIcons name="check-all" size={18} color="#fff" />}
+                    <Text style={styles.bulkAckText}>{bulkAckBusy ? 'Отмечаем…' : 'Подтвердить'}</Text>
+                  </Pressable>
+                </View>
+              ) : null}
               <View style={styles.listMeta}>
                 <Text style={[styles.metaText, { color: tokens.textSecondary }]}>Найдено: {formatScanCount(currentTotal)}</Text>
-                {(section === 'incidents' && canAck) || (section === 'agents' && canRunTasks) ? <Text style={[styles.metaText, { color: tokens.textSecondary }]}>Действия для этого раздела пока недоступны на мобильном устройстве</Text> : null}
+                {section === 'incidents' && canAck && !offlineMode && !selectionMode ? (
+                  <Pressable
+                    testID="native-scan-select-incidents"
+                    onPress={() => setSelectionRequested(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Выбрать инциденты для отметки"
+                    style={({ pressed }) => [styles.metaAction, { borderColor: tokens.border, opacity: pressed ? 0.75 : 1 }]}
+                  >
+                    <Text style={[styles.metaActionText, { color: accentColor }]}>Выбрать</Text>
+                  </Pressable>
+                ) : null}
+                {section === 'agents' && canRunTasks ? <Text style={[styles.metaText, { color: tokens.textSecondary }]}>Действия для этого раздела пока недоступны на мобильном устройстве</Text> : null}
               </View>
             </View>
           )}
           renderItem={({ item: row }) => {
-            if (row.kind === 'incident') return <NativeScanIncidentCard item={row.item} tokens={tokens} />;
+            if (row.kind === 'incident') {
+              const isNew = String(row.item.status || '').toLowerCase() === 'new';
+              const actionsEnabled = canAck && !offlineMode && isNew;
+              return (
+                <NativeScanIncidentCard
+                  item={row.item}
+                  tokens={tokens}
+                  selectionMode={selectionMode}
+                  selected={selectedIncidentIds.has(row.item.id)}
+                  onToggleSelect={actionsEnabled ? () => toggleIncidentSelection(row.item.id) : undefined}
+                  onAck={actionsEnabled ? () => ackIncident(row.item) : undefined}
+                  ackBusy={ackBusyIds.has(row.item.id)}
+                />
+              );
+            }
             if (row.kind === 'review') return <NativeScanReviewCard item={row.item} tokens={tokens} />;
             if (row.kind === 'agent') return <NativeScanAgentCard item={row.item} tokens={tokens} />;
             return <NativeScanHostCard item={row.item} tokens={tokens} />;
@@ -569,6 +802,13 @@ const styles = StyleSheet.create({
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   listMeta: { minHeight: 28, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   metaText: { flexShrink: 1, fontSize: 11, lineHeight: 16 },
+  metaAction: { minHeight: 44, minWidth: 44, paddingHorizontal: 12, borderWidth: 1, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  metaActionText: { fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  selectionBar: { minHeight: 52, borderWidth: 1, borderRadius: 14, paddingLeft: 4, paddingRight: 6, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  selectionIcon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  selectionCount: { flex: 1, minWidth: 0, fontSize: 14, lineHeight: 19, fontWeight: '800' },
+  bulkAckButton: { minHeight: 44, borderRadius: 12, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  bulkAckText: { color: '#fff', fontSize: 14, lineHeight: 19, fontWeight: '800' },
   separator: { height: 8 },
   loading: { minHeight: 180, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 20 },
   emptyTitle: { fontSize: 16, lineHeight: 21, fontWeight: '800', textAlign: 'center' },

@@ -1,7 +1,12 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { Appearance } from 'react-native';
 import { MONITORING_REFRESH_MS } from '../../monitoring/monitoringModel';
 import * as monitoringApi from '../../api/monitoringApi';
+import { getFluentTokens, resolveFluentScheme } from '../../theme/fluentTokens';
+import { NativeMonitoringDetail } from './NativeMonitoringDetail';
 import { NativeMonitoringScreen } from './NativeMonitoringScreen';
+
+const tokens = getFluentTokens(resolveFluentScheme('system', Appearance.getColorScheme() || 'light'));
 
 let mockPermissions = ['monitoring.read'];
 let mockOfflineMode = false;
@@ -21,6 +26,8 @@ jest.mock('../../api/monitoringApi', () => ({
   fetchMonitoringTarget: jest.fn(),
   fetchMonitoringHistory: jest.fn(),
   fetchMonitoringLatency: jest.fn(),
+  getMonitoringEvents: jest.fn(),
+  probeMonitoringTarget: jest.fn(),
 }));
 
 const api = monitoringApi as jest.Mocked<typeof monitoringApi>;
@@ -52,6 +59,8 @@ beforeEach(() => {
   api.fetchMonitoringTarget.mockResolvedValue(detail());
   api.fetchMonitoringHistory.mockResolvedValue({ points: [{ at: recent(), rx_bps: 4_000_000, cpu_pct: 20 }] });
   api.fetchMonitoringLatency.mockResolvedValue({ points: [{ at: recent(), latency_ms: 12 }] });
+  api.getMonitoringEvents.mockResolvedValue([]);
+  api.probeMonitoringTarget.mockResolvedValue(detail());
 });
 
 describe('NativeMonitoringScreen', () => {
@@ -103,6 +112,91 @@ describe('NativeMonitoringScreen', () => {
 
     await fireEvent.press(screen.getByTestId('account-header-back'));
     expect(await screen.findByTestId('native-monitoring-target-ok')).toBeTruthy();
+  });
+
+  it('lists the events feed with severity states and target names', async () => {
+    api.getMonitoringEvents.mockResolvedValue([
+      { id: 'e1', target_id: 'down', kind: 'unreachable', title: 'Устройство недоступно', severity: 'critical', opened_at: recent() },
+      { id: 'e2', target_id: 'ok', kind: 'link', title: 'Линк на порту восстановлен', severity: 'warning', opened_at: recent(), closed_at: recent() },
+    ]);
+    const screen = await render(<NativeMonitoringScreen />);
+    await screen.findByTestId('native-monitoring-target-ok');
+
+    await fireEvent.press(screen.getByTestId('native-monitoring-section-events'));
+
+    const open = await screen.findByTestId('native-monitoring-feed-event-e1');
+    expect(open).toHaveTextContent(/Устройство недоступно/);
+    expect(open).toHaveTextContent(/Москва/);
+    expect(open).toHaveTextContent(/Открыто/);
+    expect(screen.getByTestId('native-monitoring-feed-event-e2')).toHaveTextContent(/Завершено/);
+    // Severity mapping: an open critical event uses the error tone, a finished one the success tone.
+    expect(screen.getByTestId('native-monitoring-feed-status-e1')).toHaveStyle({ color: tokens.error });
+    expect(screen.getByTestId('native-monitoring-feed-status-e2')).toHaveStyle({ color: tokens.success });
+    expect(api.getMonitoringEvents).toHaveBeenCalledWith(expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
+  it('shows an inline error instead of crashing when the events feed fails', async () => {
+    api.getMonitoringEvents.mockRejectedValue(new Error('Лента событий недоступна'));
+    const screen = await render(<NativeMonitoringScreen />);
+    await screen.findByTestId('native-monitoring-target-ok');
+
+    await fireEvent.press(screen.getByTestId('native-monitoring-section-events'));
+
+    expect(await screen.findByText('Лента событий недоступна')).toBeTruthy();
+  });
+
+  it('hides the probe action without the monitoring.manage permission', async () => {
+    const screen = await render(<NativeMonitoringScreen />);
+    await fireEvent.press(await screen.findByTestId('native-monitoring-target-down'));
+    await screen.findByTestId('native-monitoring-detail-status');
+
+    expect(screen.queryByTestId('native-monitoring-probe')).toBeNull();
+    expect(api.probeMonitoringTarget).not.toHaveBeenCalled();
+  });
+
+  it('probes the selected target and reports the collected status with latency', async () => {
+    mockPermissions = ['monitoring.read', 'monitoring.manage'];
+    api.probeMonitoringTarget.mockResolvedValue({
+      ...detail(),
+      current: { checked_at: recent(), status: 'online', snmp_status: 'ok', ping: { status: 'online', latency_ms: 12 } },
+    });
+    const screen = await render(<NativeMonitoringScreen />);
+    await fireEvent.press(await screen.findByTestId('native-monitoring-target-down'));
+    await screen.findByTestId('native-monitoring-detail-status');
+
+    await fireEvent.press(await screen.findByTestId('native-monitoring-probe'));
+
+    await waitFor(() => expect(api.probeMonitoringTarget).toHaveBeenCalledWith('down'));
+    const result = await screen.findByTestId('native-monitoring-probe-result');
+    expect(result).toHaveTextContent(/В сети/);
+    expect(result).toHaveTextContent(/12 мс/);
+    // The collected snapshot replaces the stale detail, like on the web.
+    await waitFor(() => expect(screen.getByTestId('native-monitoring-detail-status')).toHaveTextContent(/В сети/));
+  });
+
+  it('sends a single request when the probe button is tapped twice', async () => {
+    mockPermissions = ['monitoring.read', 'monitoring.manage'];
+    let release: (value: monitoringApi.MonitoringTargetDetail) => void = () => {};
+    api.probeMonitoringTarget.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const screen = await render(<NativeMonitoringScreen />);
+    await fireEvent.press(await screen.findByTestId('native-monitoring-target-down'));
+    await screen.findByTestId('native-monitoring-detail-status');
+
+    const button = await screen.findByTestId('native-monitoring-probe');
+    await fireEvent.press(button);
+    await fireEvent.press(button);
+    expect(api.probeMonitoringTarget).toHaveBeenCalledTimes(1);
+    await act(async () => { release(detail()); });
+  });
+
+  it('keeps the probe disabled in offline mode', async () => {
+    const view = await render(
+      <NativeMonitoringDetail target={targets()[0]} tokens={tokens} canManage offline />,
+    );
+    const button = await view.findByTestId('native-monitoring-probe');
+    expect(button.props.accessibilityState?.disabled).toBe(true);
+    await fireEvent.press(button);
+    expect(api.probeMonitoringTarget).not.toHaveBeenCalled();
   });
 
   it('warns when the collector heartbeat is stale', async () => {

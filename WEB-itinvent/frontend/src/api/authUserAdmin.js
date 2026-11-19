@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const TASK_DELEGATE_BULK_CHUNK_SIZE = 80;
 

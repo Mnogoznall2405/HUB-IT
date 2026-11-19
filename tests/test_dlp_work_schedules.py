@@ -6,7 +6,7 @@ frontend shows «перерыв»/«вне смены» instead of inflating «�
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,6 +36,10 @@ def app_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     appdb_db._session_factories.clear()
     appdb_db._initialized_schema_urls.clear()
     schedules_service.invalidate_schedules_cache()
+    # Keep the attention cache isolated between tests (it has a 60 s TTL).
+    with svc._dlp_cache_lock:
+        svc._dlp_cache["attention_expires"] = 0.0
+        svc._dlp_cache.pop("attention", None)
     clear = getattr(svc.get_egress_store, "cache_clear", None)
     if callable(clear):
         clear()
@@ -163,6 +167,41 @@ def test_split_bucket_weekend_and_tz_offset():
     assert svc.bucket_zone(moscow, server_10) == "off"
 
 
+def test_bucket_zone_converts_aware_bucket_to_server_local_before_offset():
+    """The same instant must classify identically in UTC and local tz.
+
+    The agent sends aware ``bucket_start`` (+05:00); adding tz_offset to the
+    aware value directly misclassifies whenever the offset notation differs.
+    """
+    from backend.services import dlp_work_schedule_service as svc
+
+    moscow = {**SCHEDULE, "tz_offset_minutes": -120}
+    server_15 = datetime(2026, 11, 11, 15, 0).astimezone()
+    utc_same = server_15.astimezone(timezone.utc)
+    assert svc.bucket_zone(moscow, server_15) == "lunch"
+    assert svc.bucket_zone(moscow, utc_same) == "lunch"
+    assert svc.bucket_zone(moscow, datetime(2026, 11, 11, 10, 0).astimezone()) == "off"
+
+
+TZ5 = timezone(timedelta(hours=5))
+
+
+def test_bucket_zone_anchor_is_fixed_server_tz():
+    """The +05 anchor is fixed, not "whatever OS zone the server runs in":
+    the same instant classifies identically in any aware notation."""
+    from backend.services import dlp_work_schedule_service as svc
+
+    vilyuchinsk = {**SCHEDULE, "tz_offset_minutes": 420, "workdays_mask": 0x3F}
+    # 2026-11-10 17:30 +05 == 12:30 UTC == 2026-11-11 00:30 branch — off-shift.
+    ts = datetime(2026, 11, 10, 17, 30, tzinfo=TZ5)
+    assert svc.bucket_zone(vilyuchinsk, ts) == "off"
+    assert svc.bucket_zone(vilyuchinsk, ts.astimezone(timezone.utc)) == "off"
+    # 2026-11-11 03:00 +05 == 10:00 branch — inside the 09:00-18:00 shift.
+    work = datetime(2026, 11, 11, 3, 0, tzinfo=TZ5)
+    assert svc.bucket_zone(vilyuchinsk, work) == "work"
+    assert svc.bucket_zone(vilyuchinsk, work.astimezone(timezone.utc)) == "work"
+
+
 # --- store CRUD -------------------------------------------------------------
 
 def test_store_upsert_list_delete_roundtrip(store):
@@ -215,6 +254,33 @@ def test_api_crud_and_validation(client):
     assert _put_schedule(client, work_start_min=700, work_end_min=100).status_code == 400
     assert client.delete(f"/dlp/work-schedules/{BRANCH}").status_code == 200
     assert client.delete(f"/dlp/work-schedules/{BRANCH}").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"work_start_min": None},
+        {"lunch_start_min": 780, "lunch_end_min": None},
+        {"tz_offset_minutes": 841},
+        {"workdays_mask": 128},
+        {"work_start_min": 540.5},
+        {"tz_offset_minutes": 1.5},
+        {"workdays_mask": True},
+    ],
+)
+def test_api_rejects_invalid_schedule_payload(client, overrides):
+    assert _put_schedule(client).status_code == 200
+    assert _put_schedule(client, branch="Плохой", **overrides).status_code == 400
+    items = client.get("/dlp/work-schedules").json()["items"]
+    names = {r["branch_name"] for r in items}
+    assert "Плохой" not in names and BRANCH in names
+
+
+def test_api_rejects_overlong_branch_name(client):
+    assert _put_schedule(client).status_code == 200
+    assert _put_schedule(client, branch="Ф" * 256).status_code == 400
+    items = client.get("/dlp/work-schedules").json()["items"]
+    assert [r["branch_name"] for r in items] == [BRANCH]
 
 
 def test_api_requires_schedule_permission(client):
@@ -291,3 +357,113 @@ def test_attention_rows_carry_break_and_offshift(client, monkeypatch):
     assert row["away_sec"] == pytest.approx(0.0)
     assert row["break_sec"] == pytest.approx(200.0)
     assert row["offshift_sec"] == pytest.approx(0.0)
+
+
+def test_attention_refresh_after_schedule_update(client, monkeypatch):
+    """Saving a schedule must invalidate the cached attention rows immediately."""
+    day, day_start = _past_day()
+    _probe(client, activity=[_bucket(day_start, 13 * 60 + 15, away_sec=200)])
+    _patch_hosts(
+        monkeypatch,
+        {"computer_name": "PC-SCHED", "branch_name": BRANCH, "windows_user": "alice"},
+    )
+    assert _put_schedule(client).status_code == 200
+    hosts = {h["computer_name"]: h for h in client.get("/dlp/attention", params={"day": day}).json()["hosts"]}
+    assert hosts["PC-SCHED"]["break_sec"] == pytest.approx(200.0)
+
+    # Removing lunch must be visible on the next request, not ~60 s later.
+    assert _put_schedule(client, lunch_start_min=None, lunch_end_min=None).status_code == 200
+    hosts = {h["computer_name"]: h for h in client.get("/dlp/attention", params={"day": day}).json()["hosts"]}
+    assert hosts["PC-SCHED"]["break_sec"] == pytest.approx(0.0)
+    assert hosts["PC-SCHED"]["away_sec"] == pytest.approx(200.0)
+
+
+# --- branch-local day ---------------------------------------------------------
+
+VILYUCHINSK = {
+    "work_start_min": 9 * 60,
+    "work_end_min": 18 * 60,
+    "lunch_start_min": 13 * 60,
+    "lunch_end_min": 13 * 60 + 45,
+    "tz_offset_minutes": 420,
+    "workdays_mask": 0x3F,
+}
+
+
+def _aware_bucket(moment: datetime, **values) -> dict:
+    row = {
+        "bucket_start": moment.replace(second=0, microsecond=0).isoformat(),
+        "active_sec": 0.0,
+        "passive_sec": 0.0,
+        "away_sec": 0.0,
+        "locked_sec": 0.0,
+    }
+    row.update(values)
+    return row
+
+
+def _at(day, hh, mm):
+    return datetime(day.year, day.month, day.day, hh, mm, tzinfo=TZ5)
+
+
+def test_activity_day_follows_branch_timezone(client, monkeypatch):
+    """A UTC+12 branch day spans 17:00->17:00 of the server's +05 wall clock."""
+    selected = datetime.now(TZ5).date() - timedelta(days=2)
+    prev = selected - timedelta(days=1)
+
+    _probe(client, activity=[
+        _aware_bucket(_at(prev, 17, 30), active_sec=100.0),      # branch 00:30
+        _aware_bucket(_at(selected, 16, 55), active_sec=50.0),   # branch 23:55
+        _aware_bucket(_at(selected, 17, 0), active_sec=25.0),    # next branch day
+    ])
+    assert _put_schedule(client, **VILYUCHINSK).status_code == 200
+    _patch_hosts(
+        monkeypatch,
+        {"computer_name": "PC-SCHED", "branch_name": BRANCH, "windows_user": "alice"},
+    )
+
+    day_key = selected.isoformat()
+    data = client.get("/dlp/activity", params={"computer_name": "PC-SCHED", "day": day_key}).json()
+    assert len(data["buckets"]) == 2  # branch-local midnight bounds both sides
+    local = data["local_time"]
+    assert local["day"] == day_key
+    assert local["utc_offset_minutes"] == 720
+    assert local["branch_name"] == BRANCH
+    assert local["work_start_min"] == 540
+    # Both buckets sit outside the 09:00-18:00 branch shift but carry input:
+    # active seconds stay active and are also reported as off-shift input.
+    assert {b["zone"] for b in data["buckets"]} == {"off"}
+    assert data["summary"]["active_sec"] == pytest.approx(150.0)
+    assert data["summary"]["active_offshift_sec"] == pytest.approx(150.0)
+
+
+def test_activity_default_day_is_branch_local(client, monkeypatch):
+    """With no ?day= the server resolves the branch-local day, not Tyumen's."""
+    from backend.services import fs_egress_store_service as svc
+
+    frozen = (datetime.now(TZ5) - timedelta(days=2)).replace(hour=20, minute=0, second=0, microsecond=0)
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is not None:
+                return frozen.astimezone(tz)
+            return frozen.replace(tzinfo=None)
+
+    monkeypatch.setattr(svc, "datetime", _FrozenDateTime, raising=False)
+
+    # 20:00 +05 is already 03:00 of the next day at UTC+12 — the day the
+    # branch considers "today" is one ahead of the server's.
+    branch_day = (frozen + timedelta(hours=7)).date()
+    bucket_at = datetime(branch_day.year, branch_day.month, branch_day.day, 1, 0,
+                         tzinfo=timezone(timedelta(hours=12)))
+    _probe(client, activity=[_aware_bucket(bucket_at, active_sec=60.0)])
+    assert _put_schedule(client, **VILYUCHINSK).status_code == 200
+    _patch_hosts(
+        monkeypatch,
+        {"computer_name": "PC-SCHED", "branch_name": BRANCH, "windows_user": "alice"},
+    )
+
+    data = client.get("/dlp/activity", params={"computer_name": "PC-SCHED"}).json()
+    assert data["local_time"]["day"] == branch_day.isoformat()
+    assert len(data["buckets"]) == 1

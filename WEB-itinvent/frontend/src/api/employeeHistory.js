@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const employeeHistoryAPI = {
   getHistory: async (ownerNo, { signal, dbId, ...params } = {}) => {

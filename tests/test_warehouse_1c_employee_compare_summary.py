@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +48,38 @@ def _patch_inputs(monkeypatch, *, owners, counts, warehouses, balances, balance_
         "get_balances_for_warehouses",
         fake_balances,
     )
+
+
+async def test_balance_indexing_keeps_event_loop_responsive(monkeypatch):
+    indexing = threading.Event()
+    loop_progressed = threading.Event()
+    observed = []
+
+    class SlowBalance(dict):
+        def get(self, key, default=None):
+            if key == "warehouse_ref":
+                indexing.set()
+                observed.append(loop_progressed.wait(2))
+            return super().get(key, default)
+
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Smith John"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 2}],
+        warehouses=[{"ref": "wh-1", "name": "Smith John"}],
+        balances=[SlowBalance(warehouse_ref="wh-1", nomenclature_code="pn-1", qty_balance=2)],
+    )
+
+    async def other_request():
+        assert await asyncio.to_thread(indexing.wait, 3)
+        loop_progressed.set()
+
+    payload, _ = await asyncio.gather(
+        warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT"),
+        other_request(),
+    )
+    assert observed == [True]
+    assert payload["items"][0]["status"] == "match"
 
 
 def test_compare_summary_marks_full_match(monkeypatch):
@@ -278,6 +313,49 @@ def test_compare_summary_queued_refresh_shares_inflight_rebuild(monkeypatch):
         warehouse_1c_service._employee_compare_cache.clear()
 
 
+@pytest.mark.parametrize("cached_db", ["ITINVENT", "MSK-ITINVENT"])
+def test_compare_summary_fresh_cached_get_does_not_wait_for_refresh(monkeypatch, cached_db):
+    cache = warehouse_1c_service._employee_compare_cache
+    cache.clear()
+    monkeypatch.setattr(warehouse_1c_service, "_employee_compare_snapshot_store", None)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_build(db_id=None):
+        started.set()
+        await release.wait()
+        return {"generation": 2, "meta": {"status": "ok"}, "items": []}
+
+    monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", fake_build)
+
+    async def scenario():
+        monkeypatch.setattr(warehouse_1c_service, "_employee_compare_lock", asyncio.Lock())
+        cache[cached_db.casefold()] = {
+            "at": time.monotonic(),
+            "payload": {"generation": 1, "meta": {"status": "ok"}, "items": []},
+        }
+        refreshing = asyncio.create_task(
+            warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT", refresh=True)
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        try:
+            cached = await asyncio.wait_for(
+                warehouse_1c_service.get_employee_compare_summary(db_id=cached_db),
+                timeout=0.2,
+            )
+            assert cached["generation"] == 1
+        finally:
+            release.set()
+            await asyncio.wait_for(refreshing, timeout=1)
+        if cached_db == "ITINVENT":
+            assert (await warehouse_1c_service.get_employee_compare_summary(db_id=cached_db))["generation"] == 2
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        cache.clear()
+
+
 def test_compare_summary_incomplete_clears_part_quantities(monkeypatch):
     _patch_inputs(
         monkeypatch,
@@ -456,7 +534,10 @@ def test_compare_summary_serves_last_good_snapshot_when_1c_fails_and_backs_off(m
         good, first, second = asyncio.run(scenario())
     warehouse_1c_service._employee_compare_failures.clear()
     failure_logs = [r for r in caplog.records if "build failed" in r.getMessage()]
-    assert len(failure_logs) == 1 and "1C bridge timed out" in failure_logs[0].getMessage()
+    # The warning deliberately logs only the error type/code — exception text
+    # can carry bridge connection details, so it must not appear in the log.
+    assert len(failure_logs) == 1 and "error_type=RuntimeError" in failure_logs[0].getMessage()
+    assert "1C bridge timed out" not in failure_logs[0].getMessage()
     assert good["items"] and not good.get("stale")
     assert first["items"] == good["items"] and first["stale"] is True
     assert second["stale"] is True

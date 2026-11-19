@@ -25,7 +25,7 @@ from backend.api.v1 import hub as hub_api
 from backend.api.v1 import json_operations as json_operations_api
 from backend.api.v1 import vcs as vcs_api
 from backend.models.auth import User
-from backend.services.authorization_service import PERM_SETTINGS_READ
+from backend.services.authorization_service import PERM_DATABASE_READ, PERM_SETTINGS_READ
 
 SLOW_SECONDS = 0.4
 MAX_ALLOWED_LOOP_GAP = 0.2
@@ -167,7 +167,15 @@ def test_works_manager_storage_calls_do_not_block_the_event_loop():
 
     app = FastAPI()
     app.include_router(json_operations_api.router, prefix="/json")
-    app.dependency_overrides[deps.get_current_active_user] = _user
+    app.dependency_overrides[deps.get_current_active_user] = lambda: User(
+        id=77,
+        username="loop-probe",
+        role="viewer",
+        is_active=True,
+        permissions=[PERM_DATABASE_READ],
+        use_custom_permissions=True,
+        custom_permissions=[PERM_DATABASE_READ],
+    )
     app.dependency_overrides[json_operations_api.get_works_manager] = lambda: SimpleNamespace(
         get_all_works=_slow({"cartridge": [], "battery": [], "component": [], "cleaning": []}),
     )

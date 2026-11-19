@@ -493,11 +493,24 @@ vi.mock('../components/mail/MailTemplatesDialog', () => ({
   ) : null),
 }));
 vi.mock('../components/mail/MailToolbar', () => ({
-  default: ({ mobile, onOpenNavigation, onOpenMailboxList, onOpenAdvancedSearch, onOpenToolsMenu, showNavigationButton }) => (
+  default: ({ mobile, mailboxes, onOpenNavigation, onOpenMailboxList, onSelectMailbox, onOpenAdvancedSearch, onOpenToolsMenu, showNavigationButton }) => (
     <div data-testid="mail-toolbar" data-mobile={mobile ? 'true' : 'false'} data-show-navigation={showNavigationButton ? 'true' : 'false'}>
       <button type="button" data-testid="mail-toolbar-open-mailboxes" onClick={() => onOpenMailboxList?.()}>
         open-mailboxes
       </button>
+      {(Array.isArray(mailboxes) ? mailboxes : []).map((mailbox) => {
+        const mailboxKey = mailbox?.mailbox_id || mailbox?.id || '';
+        return (
+          <button
+            key={mailboxKey}
+            type="button"
+            data-testid={`mail-toolbar-select-${mailboxKey}`}
+            onClick={() => onSelectMailbox?.(mailboxKey)}
+          >
+            select-{mailboxKey}
+          </button>
+        );
+      })}
       <button type="button" data-testid="mail-toolbar-open-advanced-search" onClick={() => onOpenAdvancedSearch?.()}>
         open-advanced-search
       </button>
@@ -821,6 +834,22 @@ function buildBootstrapPayload(overrides = {}) {
     },
   };
 }
+
+// jsdom cannot see inside MailHtmlBody's sandboxed <iframe srcdoc>: body
+// text assertions check the srcdoc document instead of rendered nodes.
+const mailBodyDocuments = () => screen
+  .queryAllByTestId('mail-html-sandbox')
+  .map((f) => String(f.getAttribute('srcdoc') || ''));
+
+const expectMailBodyText = (text) => {
+  const docs = mailBodyDocuments();
+  expect(docs.length).toBeGreaterThan(0);
+  expect(docs.join('\n')).toContain(text);
+};
+
+const expectMailBodyAbsent = (text) => {
+  expect(mailBodyDocuments().join('\n')).not.toContain(text);
+};
 
 describe('Mail read-state behavior', () => {
   beforeEach(() => {
@@ -1377,6 +1406,68 @@ describe('Mail read-state behavior', () => {
 
     expect(screen.queryByTestId('mail-item-msg-inbox')).toBeNull();
     expectGetMessagesCalledWith({ folder: 'custom-empty' });
+  });
+
+  it('clears previous mailbox rows while an uncached mailbox is loading', async () => {
+    const secondMailboxDeferred = createDeferred();
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      mailboxInfo: {
+        mailbox_id: 'mbox-1',
+      },
+      mailboxes: [
+        {
+          id: 'mbox-1',
+          mailbox_id: 'mbox-1',
+          label: 'Primary',
+          mailbox_email: 'user@example.com',
+          is_active: true,
+          is_primary: true,
+          unread_count: 1,
+          unread_count_state: 'fresh',
+        },
+        {
+          id: 'mbox-2',
+          mailbox_id: 'mbox-2',
+          label: 'Ops',
+          mailbox_email: 'ops@example.com',
+          is_active: true,
+          unread_count: 0,
+          unread_count_state: 'fresh',
+        },
+      ],
+    }));
+    mockGetMessages.mockImplementation((params = {}) => {
+      if (String(params?.mailbox_id || '') === 'mbox-2') {
+        return secondMailboxDeferred.promise;
+      }
+      return Promise.resolve(buildMessagePage(['msg-42'], {
+        total: 1,
+        offset: 0,
+        has_more: false,
+        next_offset: null,
+      }));
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-msg-42')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-toolbar-select-mbox-2'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('mail-item-msg-42')).toBeNull();
   });
 
   it('clears inbox rows immediately when switching to conversations and restores messages from cache', async () => {
@@ -1963,7 +2054,7 @@ describe('Mail read-state behavior', () => {
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
     expect(screen.getByTestId('mail-preview-panel')).toBeVisible();
     expect(screen.getByTestId('preview-back')).toBeTruthy();
-    expect(screen.getByText('Hello')).toBeTruthy();
+    expectMailBodyText('Hello');
     expect(screen.getByTestId('mail-mobile-navigation-drawer')).not.toBeVisible();
     act(() => {
       window.dispatchEvent(new PopStateEvent('popstate', {
@@ -2288,7 +2379,7 @@ describe('Mail read-state behavior', () => {
 
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
-    const horizontalScroller = await screen.findByText('Wide content');
+    const horizontalScroller = await screen.findByTestId('mail-html-sandbox');
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
 
     fireEvent.touchStart(horizontalScroller, {
@@ -2306,7 +2397,7 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
-    expect(screen.getByText('Wide content')).toBeTruthy();
+    expectMailBodyText('Wide content');
   });
 
   it('keeps conversation bodies visible inside the fullscreen mobile preview shell', async () => {
@@ -2358,8 +2449,8 @@ describe('Mail read-state behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
-      expect(screen.getByText('Conversation body')).toBeTruthy();
-      expect(screen.getByText('Follow-up body')).toBeTruthy();
+      expectMailBodyText('Conversation body');
+      expectMailBodyText('Follow-up body');
     });
 
     expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
@@ -2433,7 +2524,7 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
     await waitFor(() => {
-      expect(screen.getByText('Cached body')).toBeTruthy();
+      expectMailBodyText('Cached body');
     });
 
     act(() => {
@@ -2446,7 +2537,7 @@ describe('Mail read-state behavior', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('Fresh body')).toBeTruthy();
+      expectMailBodyText('Fresh body');
     });
   });
 
@@ -2480,7 +2571,7 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
     await waitFor(() => {
-      expect(screen.getByText('Cached body')).toBeTruthy();
+      expectMailBodyText('Cached body');
     });
 
     await act(async () => {
@@ -2515,8 +2606,8 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
     await waitFor(() => {
-      expect(screen.getByText(/Plain text body/)).toBeTruthy();
-      expect(screen.getByText(/Second line/)).toBeTruthy();
+      expectMailBodyText('Plain text body');
+      expectMailBodyText('Second line');
     });
   });
 
@@ -2543,7 +2634,7 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
     await waitFor(() => {
-      expect(screen.getByText('Loaded full body')).toBeTruthy();
+      expectMailBodyText('Loaded full body');
     });
 
     mockGetMessage.mockClear();
@@ -2553,7 +2644,7 @@ describe('Mail read-state behavior', () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText('Loaded full body')).toBeTruthy();
+    expectMailBodyText('Loaded full body');
     expect(mockGetMessage).not.toHaveBeenCalled();
   });
 
@@ -2581,7 +2672,7 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
     await waitFor(() => {
-      expect(screen.getByText('Fresh body')).toBeTruthy();
+      expectMailBodyText('Fresh body');
       expect(mockGetMessage).toHaveBeenCalledTimes(1);
     });
 
@@ -4042,15 +4133,15 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
     await waitFor(() => {
-      expect(screen.getByText('Fresh body')).toBeTruthy();
+      expectMailBodyText('Fresh body');
     });
 
-    expect(screen.queryByText('Quoted history')).toBeNull();
+    expectMailBodyAbsent('Quoted history');
 
     fireEvent.click(screen.getByRole('button', { name: 'Показать историю переписки' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Quoted history')).toBeTruthy();
+      expectMailBodyText('Quoted history');
     });
   });
 
@@ -4077,7 +4168,7 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
     await waitFor(() => {
-      expect(screen.getByText('Main body stays visible')).toBeTruthy();
+      expectMailBodyText('Main body stays visible');
     });
 
     expect(screen.queryByRole('button', { name: 'Показать историю переписки' })).toBeNull();

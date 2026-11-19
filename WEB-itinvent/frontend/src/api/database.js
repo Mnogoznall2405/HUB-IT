@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { buildCacheKey, getOrFetchSWR, invalidateSWRCacheByPrefix } from '../lib/swrCache';
 
 const DATABASE_META_STALE_TIME_MS = 5 * 60 * 1000;

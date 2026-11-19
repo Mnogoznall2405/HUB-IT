@@ -17,14 +17,16 @@ export type HubRealtimeStatus =
 
 const HEARTBEAT_MS = 25_000;
 const MAX_MISSED_PONGS = 3;
+const CONNECT_TIMEOUT_MS = 15_000;
 const MAX_BUFFERED_BYTES = 256 * 1024;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const INITIAL_RECONNECT_SPREAD_MS = 5_000;
 const RECENT_EVENT_IDS_LIMIT = 512;
-// 1008 (slow consumer / rate limit) must reconnect with backoff — only
-// session/auth-class closes stay non-reconnectable.
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([4000, 4400, 4403, 4404]);
+// 1008 (slow consumer / rate limit) and 4403 (temporary network/policy 403,
+// e.g. IP allowlist flap) must reconnect with backoff — only session/auth-class
+// closes stay non-reconnectable.
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([4000, 4400, 4404]);
 
 let pingSequence = 0;
 function createPingRequestId(): string {
@@ -78,6 +80,7 @@ export class HubRealtimeSocketClient {
   private handlers = new Map<string, Set<SocketHandler>>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private reconnectEnabled = false;
   private suspended = false;
@@ -211,8 +214,7 @@ export class HubRealtimeSocketClient {
       const socket = this.socket;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
       if (this.missedPongs >= MAX_MISSED_PONGS) {
-        this.emitStatus('error');
-        socket.close(1011, 'hub realtime heartbeat timeout');
+        this.abandonSocket(socket);
         return;
       }
       this.missedPongs += 1;
@@ -294,12 +296,14 @@ export class HubRealtimeSocketClient {
       return;
     }
     this.socket = socket;
+    this.armConnectWatchdog(socket);
 
     socket.onopen = () => {
       if (this.socket !== socket || !this.reconnectEnabled || this.suspended) {
         socket.close();
         return;
       }
+      this.clearConnectWatchdog();
       this.lastAuthPushedToken = token;
       this.startHeartbeat();
     };
@@ -363,6 +367,7 @@ export class HubRealtimeSocketClient {
       if (this.socket !== socket) return;
       this.socket = null;
       this.connectionId = '';
+      this.clearConnectWatchdog();
       this.stopHeartbeat();
       const closeCode = Number(event.code || 0);
       if (closeCode === 4401) this.forceTokenRefresh = true;
@@ -373,8 +378,42 @@ export class HubRealtimeSocketClient {
       this.scheduleReconnect();
     };
     socket.onerror = () => {
-      if (this.socket === socket) this.emitStatus('error');
+      // Native transports do not always follow an error with onclose. Release
+      // the failed socket now so a CLOSED/CLOSING handle cannot pin reconnect.
+      this.abandonSocket(socket);
     };
+  }
+
+  private clearConnectWatchdog(): void {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
+  private abandonSocket(socket: WebSocket): void {
+    if (this.socket !== socket) return;
+    this.socket = null;
+    this.connectionId = '';
+    this.clearConnectWatchdog();
+    this.stopHeartbeat();
+    // Native close is asynchronous and may never deliver onclose on a dead link.
+    socket.onclose = null;
+    try { socket.close(); } catch { /* Reconnect still proceeds. */ }
+    this.emitStatus('error');
+    this.scheduleReconnect();
+  }
+
+  private armConnectWatchdog(socket: WebSocket): void {
+    this.clearConnectWatchdog();
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      // A stalled TCP/TLS handshake fires neither onopen nor onerror and would
+      // otherwise pin the client in 'connecting' until the OS gives up.
+      if (this.socket === socket && socket.readyState === WebSocket.CONNECTING) {
+        this.abandonSocket(socket);
+      }
+    }, CONNECT_TIMEOUT_MS);
   }
 
   suspend(): void {
@@ -383,6 +422,7 @@ export class HubRealtimeSocketClient {
     this.connectGeneration += 1;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.clearConnectWatchdog();
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;
@@ -407,6 +447,7 @@ export class HubRealtimeSocketClient {
     this.connectGeneration += 1;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.clearConnectWatchdog();
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;

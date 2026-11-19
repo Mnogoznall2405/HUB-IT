@@ -688,6 +688,11 @@ export function NativeFeedEditorScreen() {
         const targetId = postId || createdPostId;
         saved = await updateFeedPost(targetId, payload);
         await syncAttachments(targetId, prepared);
+        // A draft left by a previous failed publish stays a draft after PATCH —
+        // the publish call must be retried too.
+        if (createdPostId && !postId && mode === 'published') {
+          saved = await publishFeedPost(targetId);
+        }
       } else if (mode === 'draft') {
         saved = await createFeedDraft({ ...payload, status: 'draft', client_request_id: requestId });
         setCreatedPostId(saved.id);

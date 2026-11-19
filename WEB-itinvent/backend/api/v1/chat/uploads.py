@@ -4,9 +4,10 @@ from __future__ import annotations
 from backend.api.v1.chat._shim import chat_api
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from backend.api.deps import get_current_database_id, require_permission
+from backend.utils.upload_limits import read_body_limited
 from backend.chat.schemas import (
     ChatMessageResponse,
     ChatUploadSessionCancelResponse,
@@ -45,11 +46,15 @@ async def upload_chat_upload_session_chunk(
     session_id: str,
     file_id: str,
     chunk_index: int,
+    request: Request,
     offset: int = Query(..., ge=0),
-    payload: bytes = Body(default=b"", media_type="application/octet-stream"),
     current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
 ):
     try:
+        payload = await read_body_limited(
+            request,
+            chat_api().chat_service.upload_session_chunk_size_bytes,
+        )
         return await chat_api()._run_chat_call(
             chat_api().chat_service.upload_session_chunk,
             current_user_id=int(current_user.id),
@@ -57,7 +62,7 @@ async def upload_chat_upload_session_chunk(
             file_id=file_id,
             chunk_index=int(chunk_index),
             offset=int(offset),
-            payload=bytes(payload or b""),
+            payload=payload,
         )
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)

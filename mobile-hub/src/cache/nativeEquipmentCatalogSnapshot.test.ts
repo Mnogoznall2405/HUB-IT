@@ -1,6 +1,7 @@
 import {
   findNativeEquipmentCatalogItem,
   invalidateNativeEquipmentCatalogCache,
+  patchNativeEquipmentCatalogItem,
   readNativeEquipmentCatalogSnapshot,
   writeNativeEquipmentCatalogSnapshot,
 } from './nativeEquipmentCatalogSnapshot';
@@ -239,7 +240,8 @@ it('deduplicates concurrent reads so the catalog loads once', async () => {
   ]);
 
   for (const result of results) expect(result?.data.equipment).toEqual(items);
-  expect(countScopeReads(false)).toBe(1);
+  // Root manifest + the row-patch scope load once for all concurrent readers.
+  expect(countScopeReads(false)).toBe(2);
   expect(countScopeReads(true)).toBeGreaterThan(0);
   const shardScopes = [...mockSnapshots.keys()].filter((key) => key.includes('database-catalog-shard-'));
   for (const key of shardScopes) {
@@ -466,4 +468,52 @@ it('serves the new dataset when a warm catalog revision changes on disk', async 
   const snap = await readNativeEquipmentCatalogSnapshot(17, 'ITINVENT');
   expect(snap?.data.equipment).toEqual(replacement);
   expect(snap?.data.total).toBe(replacement.length);
+});
+
+it('serves a card-refreshed row through the patch overlay without re-sharding (MB-14)', async () => {
+  const items = equipment(1_500, 256);
+  await writeCatalog(17, 'ITINVENT', items);
+  await readNativeEquipmentCatalogSnapshot(17, 'ITINVENT');
+
+  const refreshed = { ...items[42], status_name: 'В работе', location_name: 'Кабинет 214' };
+  await expect(patchNativeEquipmentCatalogItem(17, 'ITINVENT', refreshed)).resolves.toBe(true);
+
+  mockReadSnapshot.mockClear();
+  const snap = await readNativeEquipmentCatalogSnapshot(17, 'ITINVENT');
+  expect(snap?.data.equipment[42]).toEqual(refreshed);
+  expect(snap?.data.equipment.length).toBe(items.length);
+  // The memory slot was folded in place — no shard re-reads for a single row.
+  expect(countScopeReads(true)).toBe(0);
+  await expect(findNativeEquipmentCatalogItem(17, 'ITINVENT', items[42].inv_no)).resolves.toEqual(refreshed);
+});
+
+it('applies the patch overlay on a cold read and bounds the patch map', async () => {
+  const items = equipment(5);
+  await writeCatalog(17, 'ITINVENT', items);
+  const refreshed = { ...items[0], status_name: 'Списано' };
+  await expect(patchNativeEquipmentCatalogItem(17, 'ITINVENT', refreshed)).resolves.toBe(true);
+
+  // Unknown inventory numbers are ignored rather than appended mid-catalog.
+  await expect(patchNativeEquipmentCatalogItem(17, 'ITINVENT', {
+    ...items[0], inv_no: 'INV-NOT-IN-CATALOG',
+  })).resolves.toBe(true);
+
+  invalidateNativeEquipmentCatalogCache(17);
+  const snap = await readNativeEquipmentCatalogSnapshot(17, 'ITINVENT');
+  expect(snap?.data.equipment[0]).toEqual(refreshed);
+  expect(snap?.data.equipment.filter((item) => item.inv_no === 'INV-NOT-IN-CATALOG')).toHaveLength(0);
+});
+
+it('drops the patch overlay after a full catalog rewrite', async () => {
+  const items = equipment(5);
+  await writeCatalog(17, 'ITINVENT', items);
+  await patchNativeEquipmentCatalogItem(17, 'ITINVENT', { ...items[0], status_name: 'Списано' });
+
+  const fresh = equipment(5);
+  await writeCatalog(17, 'ITINVENT', fresh);
+  invalidateNativeEquipmentCatalogCache(17);
+
+  const snap = await readNativeEquipmentCatalogSnapshot(17, 'ITINVENT');
+  expect(snap?.data.equipment).toEqual(fresh);
+  expect([...mockSnapshots.keys()].filter((key) => key.includes('database-catalog-patch-'))).toHaveLength(0);
 });

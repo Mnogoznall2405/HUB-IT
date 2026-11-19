@@ -9,11 +9,17 @@ export const NativeConsumableRow = memo(function NativeConsumableRow({
   tokens,
   onEditQuantity,
   onDelete,
+  onPrintQr,
+  onSelect,
+  selected,
 }: {
   item: ConsumableRecord;
   tokens: FluentTokens;
   onEditQuantity?: (item: ConsumableRecord) => void;
   onDelete?: (item: ConsumableRecord) => void;
+  onPrintQr?: (item: ConsumableRecord) => void;
+  onSelect?: (item: ConsumableRecord) => void;
+  selected?: boolean;
 }) {
   const accentColor = tokens.scheme === 'dark' ? tokens.primaryLight : tokens.primary;
   const title = item.model_name || item.type_name || item.inv_no || `Расходник ${item.id}`;
@@ -38,8 +44,31 @@ export const NativeConsumableRow = memo(function NativeConsumableRow({
         <Text numberOfLines={2} style={[styles.location, { color: tokens.textTertiary }]}>{location}</Text>
         {item.description ? <Text numberOfLines={2} style={[styles.description, { color: tokens.textSecondary }]}>{item.description}</Text> : null}
       </View>
-      {onEditQuantity || onDelete ? (
+      {onEditQuantity || onDelete || onPrintQr || onSelect ? (
         <View style={styles.actions}>
+          {onSelect ? (
+            <Pressable
+              testID={`native-consumable-select-${item.id}`}
+              onPress={() => onSelect(item)}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: Boolean(selected) }}
+              accessibilityLabel={`Выбрать расходник ${title}`}
+              style={styles.action}
+            >
+              <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={22} color={accentColor} />
+            </Pressable>
+          ) : null}
+          {onPrintQr ? (
+            <Pressable
+              testID={`native-consumable-print-qr-${item.id}`}
+              onPress={() => onPrintQr(item)}
+              accessibilityRole="button"
+              accessibilityLabel={`Печать QR расходника ${title}`}
+              style={styles.action}
+            >
+              <MaterialCommunityIcons name="qrcode" size={20} color={accentColor} />
+            </Pressable>
+          ) : null}
           {onEditQuantity ? (
             <Pressable
               testID={`native-consumable-edit-${item.id}`}

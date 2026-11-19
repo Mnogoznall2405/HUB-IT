@@ -218,6 +218,75 @@ def test_old_docx_conversion_failure_returns_error_without_downloading_docx(tran
     assert ctx.moves == [] and docx.exists()
 
 
+def test_act_download_is_limited_to_owner_or_admin(transfer_http):
+    from pypdf import PdfWriter
+
+    from backend.api import deps
+
+    ctx = transfer_http
+    acts_dir = ctx.directory
+    acts_dir.mkdir(parents=True, exist_ok=True)
+    act_id = "11111111-2222-3333-4444-555555555555"
+    pdf = acts_dir / f"transfer_act_{act_id}_owner.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=595, height=842)
+    with pdf.open("wb") as stream:
+        writer.write(stream)
+    ctx.acts.register_act_records([{
+        "act_id": act_id, "file_path": str(pdf), "file_name": pdf.name,
+        "file_type": "pdf", "created_by_user_id": 15,
+    }])
+
+    def _as(user_id, role):
+        ctx.client.app.dependency_overrides[deps.get_current_active_user] = lambda: SimpleNamespace(
+            id=user_id, username=f"user-{user_id}", role=role,
+            permissions=["database.read", "database.write"], is_active=True,
+        )
+
+    _as(42, "operator")
+    denied = ctx.client.get(f"/api/v1/equipment/transfer/act/{act_id}")
+    assert denied.status_code == 404
+
+    _as(15, "operator")
+    allowed = ctx.client.get(f"/api/v1/equipment/transfer/act/{act_id}")
+    assert allowed.status_code == 200
+    assert allowed.headers["content-type"] == "application/pdf"
+
+    _as(77, "admin")
+    admin_response = ctx.client.get(f"/api/v1/equipment/transfer/act/{act_id}")
+    assert admin_response.status_code == 200
+
+
+def test_act_download_denies_unknown_owner_to_non_admin(transfer_http):
+    from pypdf import PdfWriter
+
+    from backend.api import deps
+
+    ctx = transfer_http
+    acts_dir = ctx.directory
+    acts_dir.mkdir(parents=True, exist_ok=True)
+    act_id = "22222222-3333-4444-5555-666666666666"
+    pdf = acts_dir / f"transfer_act_{act_id}_legacy.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=595, height=842)
+    with pdf.open("wb") as stream:
+        writer.write(stream)
+    ctx.acts.register_act_records([{
+        "act_id": act_id, "file_path": str(pdf), "file_name": pdf.name, "file_type": "pdf",
+    }])
+
+    ctx.client.app.dependency_overrides[deps.get_current_active_user] = lambda: SimpleNamespace(
+        id=42, username="other-op", role="operator",
+        permissions=["database.read", "database.write"], is_active=True,
+    )
+    assert ctx.client.get(f"/api/v1/equipment/transfer/act/{act_id}").status_code == 404
+
+    ctx.client.app.dependency_overrides[deps.get_current_active_user] = lambda: SimpleNamespace(
+        id=77, username="admin-2", role="admin", permissions=[], is_active=True,
+    )
+    assert ctx.client.get(f"/api/v1/equipment/transfer/act/{act_id}").status_code == 200
+
+
 def test_document_only_conversion_failure_is_not_a_successful_empty_act(transfer_http, monkeypatch):
     ctx = transfer_http
     monkeypatch.setattr(ctx.acts, "resolve_soffice_path", lambda: Path("test-soffice.exe"))

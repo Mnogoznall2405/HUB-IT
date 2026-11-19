@@ -40,6 +40,14 @@ MSI custom actions больше не используют `ITInventAgent.exe` к
 
 Ручной вызов `agent/scripts/install_agent_task.ps1` больше не обязателен. Скрипт остаётся fallback/admin tool.
 
+## 1.4.25 delivery fixes
+
+- Scan outbox entries require an explicit JSON `success: true` acknowledgement before removal.
+- PDF transport failures stay in the outbox for a delayed retry; JSON fallback is reserved for
+  unsupported multipart endpoints.
+- The running file-egress sidecar refreshes its inventory key after in-process rotation and
+  resets the old key's authentication backoff without discarding queued events.
+
 ## Runtime layout
 
 Канонический runtime root после MSI:

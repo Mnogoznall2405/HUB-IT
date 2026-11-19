@@ -34,6 +34,11 @@ describe('native-only route registry', () => {
     });
     expect(hrefForPortalPath('/tasks?create=1')).toEqual({ pathname: '/(shell)/tasks/create' });
     expect(hrefForPortalPath('/tasks?view=analytics')).toEqual({ pathname: '/(shell)/tasks/analytics' });
+    expect(hrefForPortalPath('/tasks?task_mode=board&task_view=department')).toEqual({
+      pathname: '/(shell)/tasks',
+      params: { taskMode: 'board', taskView: 'department' },
+    });
+    expect(routePathForPortalPath('/tasks?task_mode=board')).toBe('/tasks?task_mode=board');
     expect(hrefForPortalPath('/mail?compose=new')).toEqual({
       pathname: '/(shell)/mail/compose',
       params: { mode: 'new' },

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import apiClient from './client';
+import apiClient from './http';
 import { chatUploadSessionsAPI } from './chatUploadSessions';
 
 const CHAT_UPLOAD_SESSION_FALLBACK_STATUSES = new Set([404, 405, 500, 501, 502, 503, 504]);

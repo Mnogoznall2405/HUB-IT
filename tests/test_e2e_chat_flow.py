@@ -15,12 +15,15 @@ import json
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import event, select, text
+from sqlalchemy.orm import Session
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -494,3 +497,316 @@ def test_existing_dialog_with_the_support_user_is_relabelled_and_stays_writable(
         assert bodies == ["before support", "after support", "support reply"]
     finally:
         support_chat.reset_support_user_cache()
+
+
+@pytest.fixture
+def locked_preview_reads(chat_env, monkeypatch):
+    service = chat.chat_service
+    original = service._lock_conversation_for_write
+    current = {}
+    reads = []
+
+    def lock(**kwargs):
+        conversation = original(**kwargs)
+        session = kwargs["session"]
+        current.update(session=session, connection=session.connection())
+        return conversation
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        session = current.get("session")
+        if (
+            session is not None
+            and session.in_transaction()
+            and connection is current["connection"]
+            and statement.lstrip().upper().startswith("SELECT")
+            and "chat_attachment_previews" in statement
+        ):
+            reads.append(statement)
+
+    engine = chat_db_module.get_chat_write_engine()
+    monkeypatch.setattr(service, "_lock_conversation_for_write", lock)
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        yield reads
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+
+def _file_send_request(client, conversation_id, client_id, source_id=None):
+    if source_id:
+        return client.post(
+            f"/chat/conversations/{conversation_id}/messages/forward",
+            json={"source_message_id": source_id, "client_message_id": client_id},
+        )
+    return client.post(
+        f"/chat/conversations/{conversation_id}/messages/files",
+        data={"client_message_id": client_id},
+        files=[("files", (f"image-{i}.png", _png_bytes(), "image/png")) for i in range(5)],
+    )
+
+
+@pytest.mark.parametrize("kind", ["files", "forward"])
+def test_file_preview_queue_is_batched_and_retries_preserve_message_order(chat_env, locked_preview_reads, kind):
+    client, set_user, drain = chat_env
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 2}).json()["id"]
+    source_id = None
+    if kind == "forward":
+        source = _file_send_request(client, conversation, "source")
+        assert source.status_code == 200, source.text
+        source_id = source.json()["id"]
+        drain()
+    reads = locked_preview_reads
+    reads.clear()
+    sent = _file_send_request(client, conversation, "batch-1", source_id)
+    assert sent.status_code == 200, sent.text
+    message = sent.json()
+    assert len(message["attachments"]) == 5
+    assert len(reads) == 1
+
+    retried = _file_send_request(client, conversation, "batch-1", source_id)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["id"] == message["id"]
+    assert {a["id"] for a in retried.json()["attachments"]} == {a["id"] for a in message["attachments"]}
+    drain()
+    models = importlib.import_module("backend.chat.models")
+    with chat_db_module.chat_session() as session:
+        previews = list(session.scalars(select(models.ChatAttachmentPreview).where(
+            models.ChatAttachmentPreview.attachment_id.in_([a["id"] for a in message["attachments"]]),
+        )))
+        messages = list(session.scalars(select(models.ChatMessage).where(
+            models.ChatMessage.conversation_id == conversation,
+        ).order_by(models.ChatMessage.conversation_seq)))
+    assert len(previews) == 5
+    assert all(p.status == "queued" for p in previews)
+    assert [m.conversation_seq for m in messages] == list(range(1, len(messages) + 1))
+    assert [m.id for m in messages].count(message["id"]) == 1
+
+    set_user(2)
+    listed = client.get(f"/chat/conversations/{conversation}/messages")
+    assert listed.status_code == 200, listed.text
+    assert {message["id"]} <= {m["id"] for m in listed.json()["items"]}
+    set_user(3)
+    assert _file_send_request(client, conversation, "outsider", source_id).status_code in {403, 404}
+
+
+@pytest.mark.parametrize("kind", ["files", "forward"])
+def test_preview_queue_failure_rolls_back_message_attachments_and_sequence(chat_env, kind):
+    client, _set_user, drain = chat_env
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 2}).json()["id"]
+    source_id = None
+    if kind == "forward":
+        source = _file_send_request(client, conversation, "source")
+        assert source.status_code == 200, source.text
+        source_id = source.json()["id"]
+        drain()
+    models = importlib.import_module("backend.chat.models")
+    service = chat.chat_service
+    before_files = {p for p in service._attachments_root.rglob("*") if p.is_file()}
+
+    def fail_preview_insert(session, flush_context, instances):
+        if any(isinstance(row, models.ChatAttachmentPreview) for row in session.new):
+            raise RuntimeError("isolated preview persistence failure")
+
+    event.listen(Session, "before_flush", fail_preview_insert)
+    try:
+        response = _file_send_request(TestClient(client.app, raise_server_exceptions=False), conversation, "retry-after-failure", source_id)
+        assert response.status_code == 500, response.text
+    finally:
+        event.remove(Session, "before_flush", fail_preview_insert)
+    with chat_db_module.chat_session() as session:
+        stored = list(session.scalars(select(models.ChatMessage).where(
+            models.ChatMessage.conversation_id == conversation,
+        )))
+        attachments = list(session.scalars(select(models.ChatMessageAttachment)))
+        previews = list(session.scalars(select(models.ChatAttachmentPreview)))
+    assert {m.id for m in stored} == ({source_id} if source_id else set())
+    assert len(attachments) == len(previews) == (5 if source_id else 0)
+    assert {p for p in service._attachments_root.rglob("*") if p.is_file()} == before_files
+
+    retried = _file_send_request(client, conversation, "retry-after-failure", source_id)
+    assert retried.status_code == 200, retried.text
+    with chat_db_module.chat_session() as session:
+        seq = session.scalar(select(models.ChatMessage.conversation_seq).where(
+            models.ChatMessage.id == retried.json()["id"],
+        ))
+    assert seq == (2 if source_id else 1)
+    drain()
+
+
+def test_forward_response_failure_keeps_committed_files_and_retry_reuses_them(chat_env, monkeypatch):
+    client, set_user, drain = chat_env
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 2}).json()["id"]
+    source = _file_send_request(client, conversation, "source")
+    assert source.status_code == 200, source.text
+    source_id = source.json()["id"]
+    drain()
+    service = chat.chat_service
+    original = service._build_message_payload_for_members
+    fail_once = {"armed": True}
+
+    def fail_response(**kwargs):
+        if fail_once["armed"] and kwargs["message"].forward_from_message_id == source_id:
+            fail_once["armed"] = False
+            raise RuntimeError("isolated response failure after commit")
+        return original(**kwargs)
+
+    monkeypatch.setattr(service, "_build_message_payload_for_members", fail_response)
+    failed = _file_send_request(
+        TestClient(client.app, raise_server_exceptions=False), conversation, "forward-retry", source_id,
+    )
+    assert failed.status_code == 500, failed.text
+    listed = client.get(f"/chat/conversations/{conversation}/messages")
+    assert listed.status_code == 200, listed.text
+    messages = listed.json()["items"]
+    assert len(messages) == 2
+    forwarded = next(m for m in messages if m["id"] != source_id)
+    assert len(forwarded["attachments"]) == 5
+
+    set_user(2)
+    for attachment in forwarded["attachments"]:
+        downloaded = client.get(attachment["download_url"].removeprefix("/api/v1"))
+        assert downloaded.status_code == 200, downloaded.text
+        assert downloaded.content == _png_bytes()
+    owned_paths = {p for p in service._attachments_root.rglob("*") if p.is_file()}
+
+    set_user(1)
+    retried = _file_send_request(client, conversation, "forward-retry", source_id)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["id"] == forwarded["id"]
+    assert {a["id"] for a in retried.json()["attachments"]} == {a["id"] for a in forwarded["attachments"]}
+    assert {p for p in service._attachments_root.rglob("*") if p.is_file()} == owned_paths
+    set_user(3)
+    assert client.get(forwarded["attachments"][0]["download_url"].removeprefix("/api/v1")).status_code in {403, 404}
+    drain()
+
+
+@pytest.fixture
+def replay_lock_probe(chat_env, monkeypatch):
+    service = chat.chat_service
+    original = service._lock_conversation_for_write
+    probe = {}
+
+    def lock(**kwargs):
+        session = kwargs["session"]
+        if session.get_bind().dialect.name == "sqlite":
+            # SQLite ignores FOR UPDATE; make its lifetime observable in the HTTP race.
+            session.execute(text("BEGIN IMMEDIATE"))
+        conversation = original(**kwargs)
+        probe["transaction"] = session.get_transaction()
+        return conversation
+
+    monkeypatch.setattr(service, "_lock_conversation_for_write", lock)
+    return probe
+
+
+@pytest.mark.parametrize("kind", ["files", "forward"])
+def test_slow_file_replay_response_does_not_block_another_send(chat_env, replay_lock_probe, monkeypatch, kind):
+    client, set_user, drain = chat_env
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 2}).json()["id"]
+    source_id = None
+    if kind == "forward":
+        source = _file_send_request(client, conversation, "source")
+        assert source.status_code == 200, source.text
+        source_id = source.json()["id"]
+    first = _file_send_request(client, conversation, "replay", source_id)
+    assert first.status_code == 200, first.text
+    message = first.json()
+    drain()
+    service = chat.chat_service
+    owned_paths = {p for p in service._attachments_root.rglob("*") if p.is_file()}
+    original = service._build_message_payload_for_members
+    entered = threading.Event()
+    release = threading.Event()
+    contender_finished = threading.Event()
+    lock_active = []
+
+    def slow_response(**kwargs):
+        if kwargs["message"].id == message["id"] and not entered.is_set():
+            lock_active.append(replay_lock_probe["transaction"].is_active)
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError("Isolated replay response gate was not released")
+        return original(**kwargs)
+
+    def send_contender():
+        try:
+            return client.post(
+                f"/chat/conversations/{conversation}/messages",
+                json={"body": "sent while replay response is paused", "client_message_id": "contender"},
+            )
+        finally:
+            contender_finished.set()
+
+    monkeypatch.setattr(service, "_build_message_payload_for_members", slow_response)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        replay = executor.submit(_file_send_request, client, conversation, "replay", source_id)
+        try:
+            assert entered.wait(10), "Replay never reached response serialization"
+            contender = executor.submit(send_contender)
+            progressed = contender_finished.wait(2)
+        finally:
+            release.set()
+        replay_response = replay.result(timeout=10)
+        contender_response = contender.result(timeout=10)
+    assert replay_response.status_code == 200, replay_response.text
+    assert contender_response.status_code == 200, contender_response.text
+    assert progressed, f"Another send waited for replay serialization; original transaction active={lock_active}"
+    assert lock_active == [False]
+    assert replay_response.json()["id"] == message["id"]
+    assert {a["id"] for a in replay_response.json()["attachments"]} == {a["id"] for a in message["attachments"]}
+    assert {p for p in service._attachments_root.rglob("*") if p.is_file()} == owned_paths
+    drain()
+    listed = client.get(f"/chat/conversations/{conversation}/messages")
+    assert listed.status_code == 200, listed.text
+    expected = ([source_id] if source_id else []) + [message["id"], contender_response.json()["id"]]
+    assert [m["id"] for m in listed.json()["items"]] == expected
+    set_user(3)
+    assert _file_send_request(client, conversation, "replay", source_id).status_code in {403, 404}
+
+
+@pytest.mark.parametrize("kind", ["files", "forward"])
+def test_failed_file_replay_response_discards_only_unused_retry_files(chat_env, replay_lock_probe, monkeypatch, kind):
+    client, set_user, drain = chat_env
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 2}).json()["id"]
+    source_id = None
+    if kind == "forward":
+        source = _file_send_request(client, conversation, "source")
+        assert source.status_code == 200, source.text
+        source_id = source.json()["id"]
+    first = _file_send_request(client, conversation, "replay", source_id)
+    assert first.status_code == 200, first.text
+    message = first.json()
+    drain()
+    service = chat.chat_service
+    owned_paths = {p for p in service._attachments_root.rglob("*") if p.is_file()}
+    original = service._build_message_payload_for_members
+    lock_active = []
+
+    def fail_once(**kwargs):
+        if kwargs["message"].id == message["id"] and not lock_active:
+            lock_active.append(replay_lock_probe["transaction"].is_active)
+            raise RuntimeError("Isolated replay response failure")
+        return original(**kwargs)
+
+    monkeypatch.setattr(service, "_build_message_payload_for_members", fail_once)
+    failed = _file_send_request(
+        TestClient(client.app, raise_server_exceptions=False), conversation, "replay", source_id,
+    )
+    assert failed.status_code == 500, failed.text
+    assert {p for p in service._attachments_root.rglob("*") if p.is_file()} == owned_paths
+    set_user(2)
+    for attachment in message["attachments"]:
+        downloaded = client.get(attachment["download_url"].removeprefix("/api/v1"))
+        assert downloaded.status_code == 200, downloaded.text
+        assert downloaded.content == _png_bytes()
+    set_user(1)
+    retried = _file_send_request(client, conversation, "replay", source_id)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["id"] == message["id"]
+    assert {a["id"] for a in retried.json()["attachments"]} == {a["id"] for a in message["attachments"]}
+    assert {p for p in service._attachments_root.rglob("*") if p.is_file()} == owned_paths
+    drain()
+    listed = client.get(f"/chat/conversations/{conversation}/messages")
+    assert listed.status_code == 200, listed.text
+    assert [m["id"] for m in listed.json()["items"]] == ([source_id] if source_id else []) + [message["id"]]
+    assert lock_active == [False]

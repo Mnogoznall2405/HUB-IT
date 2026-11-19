@@ -53,9 +53,9 @@ export function ShareChatPicker({
         }
       }
       try {
-        const page = await chatApi.getConversationPage({ limit: 50 });
+        const conversations = await chatApi.listAllConversations();
         if (!active) return;
-        setItems(page.items);
+        setItems(conversations);
         setFailed(false);
       } catch {
         if (active) setFailed(true);

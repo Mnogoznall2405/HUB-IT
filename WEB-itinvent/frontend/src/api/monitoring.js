@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const root = '/monitoring';
 // Чтение мониторинга в рамках объекта ИТ: те же ответы, но только устройства этого объекта

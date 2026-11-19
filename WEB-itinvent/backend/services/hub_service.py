@@ -2061,6 +2061,22 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         except Exception:
             return int(default)
 
+    def _attachment_abs_path(self, rel_path: Any) -> str:
+        """Resolve a stored relative path, refusing anything outside data_dir.
+
+        file_path is DB data: a tampered row must not turn attachment download
+        into an arbitrary file read.
+        """
+        text = _normalize_text(rel_path)
+        if not text:
+            return ""
+        try:
+            resolved = (self.data_dir / text).resolve()
+            resolved.relative_to(self.data_dir.resolve())
+        except (OSError, ValueError):
+            return ""
+        return str(resolved)
+
     @staticmethod
     def _coerce_limit(value: Any, *, default: int, minimum: int, maximum: int) -> int:
         try:
@@ -6755,7 +6771,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if row is None:
                 return None
             item = dict(row)
-            item["file_abs_path"] = str((self.data_dir / _normalize_text(item.get("file_path"))).resolve())
+            item["file_abs_path"] = self._attachment_abs_path(item.get("file_path"))
             return item
 
     def get_announcement_attachment(self, *, announcement_id: str, attachment_id: str) -> Optional[dict[str, Any]]:
@@ -6775,8 +6791,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if row is None:
                 return None
             item = dict(row)
-            rel_path = _normalize_text(item.get("file_path"))
-            item["file_abs_path"] = str((self.data_dir / rel_path).resolve()) if rel_path else ""
+            item["file_abs_path"] = self._attachment_abs_path(item.get("file_path"))
             item["file_size"] = self._as_int(item.get("file_size"))
             return item
 
@@ -6945,8 +6960,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if row is None:
                 return None
             item = dict(row)
-            rel_path = _normalize_text(item.get("file_path"))
-            item["file_abs_path"] = str((self.data_dir / rel_path).resolve()) if rel_path else ""
+            item["file_abs_path"] = self._attachment_abs_path(item.get("file_path"))
             item["file_size"] = self._as_int(item.get("file_size"))
             return item
 
@@ -9743,8 +9757,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if row is None:
                 return None
             item = dict(row)
-            rel_path = _normalize_text(item.get("file_path"))
-            item["file_abs_path"] = str((self.data_dir / rel_path).resolve()) if rel_path else ""
+            item["file_abs_path"] = self._attachment_abs_path(item.get("file_path"))
             return item
 
     def mark_notification_read(self, *, notification_id: str, user_id: int) -> bool:

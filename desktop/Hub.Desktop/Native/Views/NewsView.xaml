@@ -1,0 +1,563 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.NewsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
+            <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+
+            <Style x:Key="ChipRadioStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}" />
+
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+            <Style x:Key="MetaValueStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Верхняя панель: поиск, обновить -->
+        <Border Grid.Row="0" Padding="20,16,20,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid>
+                    <TextBox x:Name="SearchInput"
+                             MaxWidth="460"
+                             HorizontalAlignment="Left"
+                             MinWidth="240"
+                             Style="{StaticResource HubTextBoxStyle}"
+                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                             KeyDown="SearchInput_KeyDown"
+                             AutomationProperties.Name="Поиск по новостям" />
+                    <TextBlock Margin="13,0,0,0"
+                               VerticalAlignment="Center"
+                               IsHitTestVisible="False"
+                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                               Text="Поиск новости…">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text, ElementName=SearchInput}" Value="">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+                <Button Grid.Column="1"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Обновить"
+                        AutomationProperties.Name="Обновить список новостей" />
+            </Grid>
+        </Border>
+
+        <!-- Фильтры-чипы -->
+        <StackPanel Grid.Row="1"
+                    Margin="20,12,20,0"
+                    Orientation="Horizontal">
+            <RadioButton GroupName="NewsFilter"
+                         Style="{StaticResource ChipRadioStyle}"
+                         IsChecked="{Binding IsFilterAll, Mode=TwoWay}"
+                         Command="{Binding SelectFilterCommand}"
+                         CommandParameter="all"
+                         Content="Все"
+                         AutomationProperties.Name="Фильтр: все новости" />
+            <RadioButton GroupName="NewsFilter"
+                         Style="{StaticResource ChipRadioStyle}"
+                         IsChecked="{Binding IsFilterUnread, Mode=TwoWay}"
+                         Command="{Binding SelectFilterCommand}"
+                         CommandParameter="unread"
+                         Content="Непрочитанные"
+                         AutomationProperties.Name="Фильтр: непрочитанные новости" />
+        </StackPanel>
+
+        <!-- Порядок списка: серверная сортировка (sort_by/sort_dir) -->
+        <StackPanel Grid.Row="2"
+                    Margin="20,8,20,0"
+                    Orientation="Horizontal">
+            <TextBlock Margin="0,0,10,0"
+                       VerticalAlignment="Center"
+                       Style="{StaticResource HubMutedTextStyle}"
+                       FontSize="12"
+                       Text="Порядок:" />
+            <RadioButton GroupName="NewsSort"
+                         Style="{StaticResource ChipRadioStyle}"
+                         IsChecked="{Binding IsSortNewest, Mode=TwoWay}"
+                         Command="{Binding SelectSortCommand}"
+                         CommandParameter="published_desc"
+                         Content="Сначала новые"
+                         AutomationProperties.Name="Сортировка новостей: сначала новые" />
+            <RadioButton GroupName="NewsSort"
+                         Style="{StaticResource ChipRadioStyle}"
+                         IsChecked="{Binding IsSortOldest, Mode=TwoWay}"
+                         Command="{Binding SelectSortCommand}"
+                         CommandParameter="published_asc"
+                         Content="Сначала старые"
+                         AutomationProperties.Name="Сортировка новостей: сначала старые" />
+            <RadioButton GroupName="NewsSort"
+                         Style="{StaticResource ChipRadioStyle}"
+                         IsChecked="{Binding IsSortUpdated, Mode=TwoWay}"
+                         Command="{Binding SelectSortCommand}"
+                         CommandParameter="updated_desc"
+                         Content="Недавно обновлённые"
+                         AutomationProperties.Name="Сортировка новостей: недавно обновлённые" />
+            <RadioButton GroupName="NewsSort"
+                         Style="{StaticResource ChipRadioStyle}"
+                         IsChecked="{Binding IsSortPriority, Mode=TwoWay}"
+                         Command="{Binding SelectSortCommand}"
+                         CommandParameter="priority_desc"
+                         Content="По важности"
+                         AutomationProperties.Name="Сортировка новостей: по важности" />
+        </StackPanel>
+
+        <!-- Баннер ошибки -->
+        <Border Grid.Row="3"
+                Margin="20,10,20,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{DynamicResource HubErrorTextBrush}"
+                           Text="{Binding BannerErrorText}"
+                           TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <Button Grid.Column="1"
+                        Margin="12,0,8,0"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Повторить"
+                        AutomationProperties.Name="Повторить загрузку новостей" />
+                <Button Grid.Column="2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DismissBannerCommand}"
+                        Content="✕"
+                        AutomationProperties.Name="Скрыть ошибку" />
+            </Grid>
+        </Border>
+
+        <!-- Список + детали -->
+        <Grid Grid.Row="4" Margin="20,14,20,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="380" MinWidth="300" />
+                <ColumnDefinition Width="6" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <ProgressBar Grid.Row="0"
+                             Height="3"
+                             Margin="0,0,0,6"
+                             IsIndeterminate="True"
+                             Foreground="{DynamicResource HubAccentBrush}"
+                             Background="{DynamicResource HubSurfaceRaisedBrush}"
+                             Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                             AutomationProperties.Name="Индикатор загрузки новостей" />
+                <Grid Grid.Row="1">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <ListBox Style="{StaticResource HubListBoxStyle}"
+                                 ItemsSource="{Binding Items}"
+                                 SelectedItem="{Binding SelectedItem}"
+                                 AutomationProperties.Name="Список новостей">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel VerticalAlignment="Center"
+                                                    Orientation="Horizontal">
+                                            <!-- Точка непрочитанной: цвет + текст «Новая» рядом -->
+                                            <Ellipse Width="8"
+                                                     Height="8"
+                                                     Margin="0,0,6,0"
+                                                     Fill="{DynamicResource HubAccentBrush}"
+                                                     Visibility="{Binding IsUnread, Converter={StaticResource BoolToVisibility}}" />
+                                            <TextBlock Margin="0,0,6,0"
+                                                       FontSize="12"
+                                                       Text="{Binding PinnedMarker}"
+                                                       Visibility="{Binding PinnedMarker, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1"
+                                                   FontSize="14"
+                                                   Text="{Binding Title}"
+                                                   TextWrapping="Wrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   MaxHeight="40">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsUnread}" Value="True">
+                                                            <Setter Property="FontWeight" Value="Bold" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <StackPanel Grid.Column="2"
+                                                    Margin="10,1,0,0"
+                                                    VerticalAlignment="Top"
+                                                    Orientation="Horizontal">
+                                            <Border Margin="0,0,6,0"
+                                                    Style="{StaticResource HubStatusPillStyle}"
+                                                    BorderBrush="{DynamicResource HubAccentBrush}"
+                                                    Visibility="{Binding IsUnread, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource HubAccentBrush}"
+                                                           Text="Новая" />
+                                            </Border>
+                                            <Border Style="{StaticResource HubStatusPillStyle}"
+                                                    BorderBrush="{DynamicResource HubWarningBrush}"
+                                                    Visibility="{Binding IsHighPriority, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource HubWarningBrush}"
+                                                           Text="{Binding PriorityText}" />
+                                            </Border>
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Grid.Row="1"
+                                               Margin="0,4,0,0"
+                                               Style="{StaticResource HubMutedTextStyle}"
+                                               FontSize="12"
+                                               Text="{Binding Preview}"
+                                               TextTrimming="CharacterEllipsis"
+                                               MaxHeight="34" />
+                                    <Grid Grid.Row="2" Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding DateText}" />
+                                            <TextBlock Margin="8,0,0,0"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding CategoryText}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Visibility="{Binding CategoryText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            <TextBlock Margin="8,0,0,0"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding UpdatedBadgeText}"
+                                                       Visibility="{Binding UpdatedBadgeText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            <TextBlock Margin="8,0,0,0"
+                                                       FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubWarningBrush}"
+                                                       Text="{Binding AckPendingText}"
+                                                       Visibility="{Binding AckPendingText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1"
+                                                    Margin="8,0,0,0"
+                                                    Orientation="Horizontal">
+                                            <TextBlock FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding AttachmentsText}"
+                                                       Visibility="{Binding AttachmentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            <TextBlock Margin="8,0,0,0"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding CommentsText}"
+                                                       Visibility="{Binding CommentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- Пустое состояние -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Новостей нет" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Под текущий фильтр ничего не подходит. Измените фильтр или поиск." />
+                    </StackPanel>
+                    </Grid>
+                    <Button Grid.Row="1"
+                            Margin="0,8,0,0"
+                            Style="{StaticResource HubSecondaryButtonStyle}"
+                            Command="{Binding LoadMoreCommand}"
+                            Content="{Binding MoreButtonText}"
+                            Visibility="{Binding HasMore, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Показать следующую порцию новостей" />
+                </Grid>
+            </Grid>
+
+            <GridSplitter Grid.Column="1"
+                          Width="6"
+                          HorizontalAlignment="Stretch"
+                          Background="Transparent"
+                          AutomationProperties.Name="Разделитель списка и деталей"
+                          AutomationProperties.HelpText="Стрелки влево и вправо изменяют ширину панелей" />
+
+            <!-- Детали новости -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Ошибка детали/действия -->
+                    <Border Grid.Row="0"
+                            Margin="18,14,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasDetailError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   Text="{Binding DetailErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <Grid Grid.Row="1">
+                        <!-- Пустая деталь -->
+                        <StackPanel HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Visibility="{Binding ShowDetailEmpty, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock HorizontalAlignment="Center"
+                                       FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="Выберите новость" />
+                            <TextBlock Margin="0,6,0,0"
+                                       HorizontalAlignment="Center"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Карточка слева откроет полный текст объявления." />
+                        </StackPanel>
+
+                        <!-- Загрузка детали -->
+                        <StackPanel HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Visibility="{Binding ShowDetailLoading, Converter={StaticResource BoolToVisibility}}">
+                            <ProgressBar Width="18"
+                                         Height="18"
+                                         HorizontalAlignment="Center"
+                                         IsIndeterminate="True" />
+                            <TextBlock Margin="0,8,0,0"
+                                       HorizontalAlignment="Center"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Загружаю объявление…" />
+                        </StackPanel>
+
+                        <Grid Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <ScrollViewer Padding="22,18"
+                                          VerticalScrollBarVisibility="Auto"
+                                          DataContext="{Binding Detail}">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock FontSize="20"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding Title}"
+                                                   TextWrapping="Wrap" />
+                                        <Border Grid.Column="1"
+                                                Margin="14,2,0,0"
+                                                VerticalAlignment="Top"
+                                                Style="{StaticResource HubStatusPillStyle}"
+                                                BorderBrush="{DynamicResource HubWarningBrush}"
+                                                Visibility="{Binding IsHighPriority, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubWarningBrush}"
+                                                       Text="{Binding PriorityText}" />
+                                        </Border>
+                                    </Grid>
+
+                                    <Grid Margin="0,16,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource MetaLabelStyle}" Text="Автор" />
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MetaValueStyle}" Text="{Binding AuthorText}" />
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Опубликовано" />
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,8,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding DateText}" />
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Обновлено"
+                                                   Visibility="{Binding UpdatedText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,8,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding UpdatedText}"
+                                                   Visibility="{Binding UpdatedText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Категория"
+                                                   Visibility="{Binding CategoryText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,8,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding CategoryText}"
+                                                   Visibility="{Binding CategoryText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Вложения"
+                                                   Visibility="{Binding AttachmentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Grid.Row="4" Grid.Column="1" Margin="0,8,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding AttachmentsText}"
+                                                   Visibility="{Binding AttachmentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Grid.Row="5" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Комментарии"
+                                                   Visibility="{Binding CommentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Grid.Row="5" Grid.Column="1" Margin="0,8,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding CommentsText}"
+                                                   Visibility="{Binding CommentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </Grid>
+
+                                    <TextBlock Margin="0,18,0,6"
+                                               Style="{StaticResource HubSectionTitleStyle}"
+                                               FontSize="14"
+                                               Text="Текст объявления" />
+                                    <local:MarkdownTextBlock MarkdownText="{Binding Body}"
+                                                             TextWrapping="Wrap"
+                                                             Visibility="{Binding HasBody, Converter={StaticResource BoolToVisibility}}" />
+                                    <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                               Text="Текст объявления отсутствует."
+                                               Visibility="{Binding HasBody, Converter={StaticResource InverseBoolToVisibility}}" />
+                                </StackPanel>
+                            </ScrollViewer>
+
+                            <!-- Подтверждение прочтения -->
+                            <Border Grid.Row="1"
+                                    Padding="22,14"
+                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                    BorderThickness="0,1,0,0"
+                                    DataContext="{Binding Detail}"
+                                    Visibility="{Binding RequiresAck, Converter={StaticResource BoolToVisibility}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource HubWarningBrush}"
+                                                   Text="Требует подтверждения прочтения"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{Binding IsAckPending, Converter={StaticResource BoolToVisibility}}" />
+                                        <TextBlock FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource HubSuccessBrush}"
+                                                   Text="✓ Подтверждено"
+                                                   Visibility="{Binding ShowAckDone, Converter={StaticResource BoolToVisibility}}" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            Margin="16,0,0,0"
+                                            Style="{StaticResource HubPrimaryButtonStyle}"
+                                            Command="{Binding DataContext.AckCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            IsEnabled="{Binding CanAck}"
+                                            Content="{Binding AckButtonText}"
+                                            Visibility="{Binding IsAckPending, Converter={StaticResource BoolToVisibility}}"
+                                            AutomationProperties.Name="Подтвердить прочтение новости" />
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Статус-бар -->
+        <Border Grid.Row="5"
+                Padding="20,8"
+                Background="{DynamicResource HubSurfaceAltBrush}"
+                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                BorderThickness="0,1,0,0">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock FontSize="12"
+                           Foreground="{DynamicResource HubTextSecondaryBrush}">
+                    <Run Text="Всего:" />
+                    <Run Text="{Binding TotalText, Mode=OneWay}" />
+                </TextBlock>
+                <TextBlock Margin="14,0,0,0"
+                           FontSize="12"
+                           Foreground="{DynamicResource HubTextSecondaryBrush}">
+                    <Run Text="Непрочитанных:" />
+                    <Run Text="{Binding UnreadText, Mode=OneWay}" />
+                </TextBlock>
+                <TextBlock Margin="14,0,0,0"
+                           FontSize="12"
+                           Foreground="{DynamicResource HubTextSecondaryBrush}">
+                    <Run Text="Требуют подтверждения:" />
+                    <Run Text="{Binding AckPendingText, Mode=OneWay}" />
+                </TextBlock>
+                <TextBlock Margin="14,0,0,0"
+                           FontSize="12"
+                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                           Text="{Binding LastUpdatedText}" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

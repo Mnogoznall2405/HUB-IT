@@ -1,10 +1,11 @@
 import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -32,8 +33,10 @@ import {
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
 import { resolveNativeDocflowError } from '../../docflow/docflowError';
 import {
+  DOCFLOW_COMMAND_AUTO_CHECK_LIMIT,
   docflowActionRequiresComment,
   docflowCommandIsWaiting,
+  isForegroundAppState,
   docflowTaskStatus,
   formatDocflowDate,
   formatDocflowFileSize,
@@ -103,6 +106,9 @@ function DocflowDetailContent({ taskRef }: { taskRef: string }) {
   const fileLockRef = useRef(false);
   const fileAbortRef = useRef<AbortController | null>(null);
   const actionAttemptRef = useRef<ActionAttempt | null>(null);
+  // Timestamp of the last locally applied command: silent refreshes skip the
+  // stale snapshot while the server side catches up (MB4-17).
+  const lastAppliedCommandAtRef = useRef(0);
   const commandCheckRef = useRef(false);
 
   const goBack = useCallback(() => {
@@ -144,7 +150,10 @@ function DocflowDetailContent({ taskRef }: { taskRef: string }) {
       )
       : null;
     if (requestId !== requestRef.current) return;
-    if (snapshot) {
+    // A silent refresh spawned by our own applied-command realtime event must
+    // not roll the card back to the pre-action snapshot.
+    const recentApplied = Date.now() - lastAppliedCommandAtRef.current < 10_000;
+    if (snapshot && !recentApplied) {
       setTask(snapshot.data);
       if (!refresh) setLoading(false);
     }
@@ -256,7 +265,18 @@ function DocflowDetailContent({ taskRef }: { taskRef: string }) {
   }, [offlineMode, taskRef]);
 
   const finalizeAppliedCommand = useCallback((result: DocflowCommand) => {
-    setTask((current) => current ? mergeAppliedDocflowTask(current, result) : current);
+    lastAppliedCommandAtRef.current = Date.now();
+    const userId = Number(user?.id || 0);
+    setTask((current) => {
+      const merged = current ? mergeAppliedDocflowTask(current, result) : current;
+      // Persist the post-action state at once: the realtime event this action
+      // just spawned triggers a silent refresh that otherwise re-reads the
+      // stale pre-action snapshot and flashes the card back to actionable.
+      if (merged && userId) {
+        void writeNativeEntitySnapshot('docflow-task-details', userId, taskRef, merged);
+      }
+      return merged;
+    });
     setCommand(null);
     setSelectedAction(null);
     setActionComment('');
@@ -264,11 +284,13 @@ function DocflowDetailContent({ taskRef }: { taskRef: string }) {
     setActionNotice('1С подтвердила выполнение задания.');
     actionAttemptRef.current = null;
     void getDocflowTask(taskRef, true).then((fresh) => {
-      setTask(mergeAppliedDocflowTask(fresh, result));
+      const merged = mergeAppliedDocflowTask(fresh, result);
+      setTask(merged);
+      if (userId) void writeNativeEntitySnapshot('docflow-task-details', userId, taskRef, merged);
     }).catch(() => {
       // Optimistic completed state remains visible when the enrichment refresh fails.
     });
-  }, [taskRef]);
+  }, [taskRef, user?.id]);
 
   const handleCommandResult = useCallback((result: DocflowCommand) => {
     if (result.status === 'applied' || result.status === 'already_applied') {
@@ -288,9 +310,25 @@ function DocflowDetailContent({ taskRef }: { taskRef: string }) {
     setActionNotice('');
   }, [finalizeAppliedCommand]);
 
-  const checkCommand = useCallback(async () => {
+  const autoChecksLeft = useRef(DOCFLOW_COMMAND_AUTO_CHECK_LIMIT);
+  const [autoCheckStopped, setAutoCheckStopped] = useState(false);
+  useEffect(() => {
+    autoChecksLeft.current = DOCFLOW_COMMAND_AUTO_CHECK_LIMIT;
+    setAutoCheckStopped(false);
+  }, [command?.command_id]);
+
+  const checkCommand = useCallback(async (options?: { manual?: boolean }) => {
     const commandId = command?.command_id.trim();
     if (!commandId || commandCheckRef.current || offlineMode) return;
+    if (!options?.manual) {
+      // Automatic checks are bounded like the web polling loop; the explicit
+      // «Проверить» button below stays available after the budget is spent.
+      if (autoChecksLeft.current <= 0) {
+        setAutoCheckStopped(true);
+        return;
+      }
+      autoChecksLeft.current -= 1;
+    }
     commandCheckRef.current = true;
     setActionBusy(true);
     setActionError('');
@@ -306,15 +344,21 @@ function DocflowDetailContent({ taskRef }: { taskRef: string }) {
     }
   }, [command?.command_id, handleCommandResult, offlineMode]);
 
-  useEffect(() => {
-    if (!docflowCommandIsWaiting(command) || offlineMode) return undefined;
-    const firstCheck = setTimeout(() => { void checkCommand(); }, 750);
-    const interval = setInterval(() => { void checkCommand(); }, 3_000);
+  // Focus-scoped and foreground-only: stacked-over screens and a backgrounded
+  // app must not keep calling 1С every 3 s — the same gate as chat polling.
+  const commandWaiting = docflowCommandIsWaiting(command);
+  useFocusEffect(useCallback(() => {
+    if (!commandWaiting || offlineMode || autoCheckStopped) return undefined;
+    const runCheck = () => {
+      if (isForegroundAppState(AppState.currentState)) void checkCommand();
+    };
+    const firstCheck = setTimeout(runCheck, 750);
+    const interval = setInterval(runCheck, 3_000);
     return () => {
       clearTimeout(firstCheck);
       clearInterval(interval);
     };
-  }, [checkCommand, command, offlineMode]);
+  }, [autoCheckStopped, checkCommand, commandWaiting, offlineMode]));
 
   const openAction = useCallback((action: DocflowAvailableAction) => {
     if (!canAct || offlineMode || actionBusy || command) return;
@@ -422,10 +466,10 @@ function DocflowDetailContent({ taskRef }: { taskRef: string }) {
                   <ActivityIndicator color={tokens.primary} />
                   <View style={styles.commandBody}>
                     <Text style={[styles.commandTitle, { color: tokens.textPrimary }]}>Подтверждаем выполнение в 1С</Text>
-                    <Text style={[styles.commandText, { color: tokens.textSecondary }]}>Обычно это занимает несколько секунд.</Text>
+                    <Text style={[styles.commandText, { color: tokens.textSecondary }]}>{autoCheckStopped ? 'Автопроверка остановлена — нажмите «Проверить».' : 'Обычно это занимает несколько секунд.'}</Text>
                     {command?.correlation_id ? <Text selectable style={[styles.correlation, { color: tokens.textSecondary }]}>Код обращения: {command.correlation_id}</Text> : null}
                   </View>
-                  <Pressable testID="native-docflow-command-check" onPress={() => { void checkCommand(); }} disabled={actionBusy || offlineMode} accessibilityRole="button" accessibilityLabel="Проверить состояние команды в 1С" style={[styles.checkAction, { borderColor: tokens.border }]}>
+                  <Pressable testID="native-docflow-command-check" onPress={() => { void checkCommand({ manual: true }); }} disabled={actionBusy || offlineMode} accessibilityRole="button" accessibilityLabel="Проверить состояние команды в 1С" style={[styles.checkAction, { borderColor: tokens.border }]}>
                     <Text style={[styles.checkActionText, { color: tokens.primary }]}>Проверить</Text>
                   </Pressable>
                 </View>

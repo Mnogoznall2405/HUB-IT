@@ -209,13 +209,15 @@ function notifyAppLockSettings(settings: AppLockSettings): void {
 }
 
 async function getAppLockSettingsInternal(): Promise<AppLockSettings> {
-  if (Platform.OS === 'web' || !(await isBiometricLoginEnabledInternal())) {
-    return { enabled: false, timeoutSeconds: 60 };
-  }
-  const [enabledValue, timeoutValue] = await Promise.all([
-    SecureStore.getItemAsync(APP_LOCK_ENABLED_KEY).catch(() => null),
-    SecureStore.getItemAsync(APP_LOCK_TIMEOUT_KEY).catch(() => null),
+  if (Platform.OS === 'web') return { enabled: false, timeoutSeconds: 60 };
+  // Storage errors must propagate, not collapse into «enabled: false»: the
+  // app-lock gate fails closed, and a swallowed read would open the app.
+  const [biometricValue, enabledValue, timeoutValue] = await Promise.all([
+    SecureStore.getItemAsync(BIOMETRIC_ENABLED_KEY),
+    SecureStore.getItemAsync(APP_LOCK_ENABLED_KEY),
+    SecureStore.getItemAsync(APP_LOCK_TIMEOUT_KEY),
   ]);
+  if (biometricValue !== '1') return { enabled: false, timeoutSeconds: 60 };
   return {
     // Existing installs without an explicit key stay unlocked; users opt into app lock.
     enabled: enabledValue === '1',

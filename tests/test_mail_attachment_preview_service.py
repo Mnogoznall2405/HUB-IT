@@ -170,6 +170,81 @@ def test_write_single_sheet_workbook_preserves_rich_xlsx_parts(tmp_path: Path):
     assert b'firstSheet="1"' in patched_workbook
 
 
+def _write_xlsx(path: Path, parts: dict[str, bytes]) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in parts.items():
+            archive.writestr(name, payload)
+
+
+_MINIMAL_WORKBOOK_XML = b'''<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheets><sheet name="Data" sheetId="1" r:id="rId1"
+   xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></sheets>
+</workbook>'''
+
+
+def test_excel_sheet_descriptors_rejects_overexpanded_entry(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("MAIL_OFFICE_PREVIEW_MAX_ENTRY_BYTES", "256")
+    source_path = tmp_path / "bomb.xlsx"
+    _write_xlsx(source_path, {
+        "xl/workbook.xml": _MINIMAL_WORKBOOK_XML,
+        "xl/worksheets/sheet1.xml": b"x" * 1000,
+    })
+    with pytest.raises(preview_service.MailAttachmentPreviewError):
+        preview_service._excel_sheet_descriptors(source_path)
+
+
+def test_write_single_sheet_workbook_rejects_overexpanded_archive(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("MAIL_OFFICE_PREVIEW_MAX_DECOMPRESSED_BYTES", "400")
+    source_path = tmp_path / "bomb.xlsx"
+    target_path = tmp_path / "sheet.xlsx"
+    _write_xlsx(source_path, {
+        "xl/workbook.xml": _MINIMAL_WORKBOOK_XML,
+        "xl/worksheets/sheet1.xml": b"a" * 300,
+        "xl/worksheets/sheet2.xml": b"b" * 300,
+    })
+    with pytest.raises(preview_service.MailAttachmentPreviewError):
+        preview_service._write_single_sheet_workbook(
+            source_path, sheet_index=0, target_path=target_path,
+        )
+
+
+def test_excel_workbook_metadata_read_is_capped(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(preview_service, "_EXCEL_WORKBOOK_XML_MAX_BYTES", 64)
+    source_path = tmp_path / "meta-bomb.xlsx"
+    _write_xlsx(source_path, {"xl/workbook.xml": _MINIMAL_WORKBOOK_XML + b" " * 200})
+    with pytest.raises(preview_service.MailAttachmentPreviewError):
+        preview_service._excel_sheet_descriptors(source_path)
+
+
+def test_excel_sheet_metadata_caps_visible_sheet_count(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("MAIL_OFFICE_PREVIEW_MAX_SHEETS", "1")
+    monkeypatch.setattr(
+        preview_service,
+        "_excel_sheet_descriptors",
+        lambda _path: [
+            {"index": 0, "name": "A", "hidden": False},
+            {"index": 1, "name": "B", "hidden": False},
+        ],
+    )
+    monkeypatch.setattr(
+        preview_service,
+        "_write_single_sheet_workbook",
+        lambda *a, **k: pytest.fail("conversion must not start over the sheet cap"),
+    )
+    source_path = tmp_path / "source.xlsx"
+    source_path.write_bytes(b"xlsx")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    with pytest.raises(preview_service.MailAttachmentPreviewError):
+        preview_service._excel_sheet_metadata(
+            source_path=source_path,
+            work_dir=work_dir,
+            soffice=tmp_path / "soffice.exe",
+            timeout_sec=5,
+        )
+
+
 def test_preview_cache_enforces_total_size_and_entry_limits(monkeypatch):
     preview_service._PREVIEW_CACHE.clear()
     monkeypatch.setenv("MAIL_OFFICE_PREVIEW_CACHE_MAX_ENTRIES", "2")

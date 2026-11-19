@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +59,12 @@ def client(app_db_url: str, monkeypatch: pytest.MonkeyPatch):
 def _local_day() -> tuple[str, datetime]:
     day_start = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
     return day_start.strftime("%Y-%m-%d"), day_start
+
+
+def _anchor(hours_back: float = 2) -> datetime:
+    """Timestamp guaranteed in the past, so ingest never trips the
+    >10-minutes-future drop whatever wall-clock time the test runs at."""
+    return (datetime.now().astimezone() - timedelta(hours=hours_back)).replace(second=0, microsecond=0)
 
 
 def _bucket(day_start: datetime, minutes: int, **values) -> dict:
@@ -134,9 +139,14 @@ def test_activity_reingest_overwrites_not_sums(client):
 
 
 def test_activity_ingest_clamps_and_drops_garbage(client):
-    day, day_start = _local_day()
-    good = _bucket(day_start, 300)
-    oversized = _bucket(day_start, 305, active_sec=900, passive_sec=300, away_sec=0)
+    anchor = _anchor()
+    day = anchor.strftime("%Y-%m-%d")
+    day_start = anchor.replace(hour=0, minute=0)
+    minutes = anchor.hour * 60 + anchor.minute
+    # "good" may slide a bucket into the previous day near midnight — only
+    # "oversized" is read back below, so the drop count is unaffected.
+    good = _bucket(day_start, minutes - 5)
+    oversized = _bucket(day_start, minutes, active_sec=900, passive_sec=300, away_sec=0)
     future = _bucket(day_start + timedelta(days=1), 60)
     stale = {
         **_bucket(day_start, 60),
@@ -159,15 +169,19 @@ def test_activity_ingest_clamps_and_drops_garbage(client):
 
 
 def test_dlp_attention_aggregates_two_hosts_and_skips_empty(client):
-    day, day_start = _local_day()
-    ts_now = int(time.time())
+    # All timestamps share one anchor instant so the whole scenario stays on
+    # the same day and past the ingest future-guard at any wall-clock time.
+    anchor = _anchor(hours_back=3)
+    day = anchor.strftime("%Y-%m-%d")
+    day_start = anchor.replace(hour=0, minute=0)
+    ts_now = int(anchor.timestamp())
 
     # PC-A: activity + focus work/entertainment + usb (+service-file noise) + telegram.
     _post_probe(
         client,
         computer_name="PC-A",
         activity=[
-            _bucket(day_start, 480, active_sec=240, passive_sec=0, away_sec=60)
+            _bucket(day_start, anchor.hour * 60 + anchor.minute, active_sec=240, passive_sec=0, away_sec=60)
         ],
         focus_events=[
             {
@@ -181,7 +195,7 @@ def test_dlp_attention_aggregates_two_hosts_and_skips_empty(client):
                 "browser": "chrome", "profile": "focus", "visit_id": "va1",
                 "url": "https://jira.example.com/a", "title": "Jira",
                 "category": "work",
-                "visited_at": (day_start + timedelta(hours=9)).isoformat(),
+                "visited_at": anchor.isoformat(),
                 "dwell_sec": 120,
             },
         ],

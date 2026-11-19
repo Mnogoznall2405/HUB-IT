@@ -1,6 +1,7 @@
 """Shared HTTP rate-limit enforcement for API routes."""
 from __future__ import annotations
 
+import os
 import time
 from typing import Optional
 
@@ -8,6 +9,12 @@ from fastapi import HTTPException, Request
 
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.utils.request_network import build_request_network_context
+
+# LOW-04: internal-зона больше не bypass'ит лимит — применяется отдельный
+# высокий потолок (умножитель) в своём собственном bucket (zone входит в ключ).
+INTERNAL_RATE_LIMIT_MULTIPLIER = max(
+    1, int(os.getenv("RATE_LIMIT_INTERNAL_MULTIPLIER", "10") or 10)
+)
 
 
 def request_is_internal(request: Optional[Request]) -> bool:
@@ -40,8 +47,6 @@ def enforce_rate_limit(
     include_retry_after: bool = False,
     allow_internal_bypass: bool = True,
 ) -> None:
-    if allow_internal_bypass and request_is_internal(request):
-        return
     normalized_key = str(key or "").strip().lower()
     if not normalized_key:
         normalized_key = "anonymous"
@@ -51,6 +56,9 @@ def enforce_rate_limit(
             network_zone = str(build_request_network_context(request).network_zone or "unknown").strip().lower()
         except Exception:
             network_zone = "unknown"
+    effective_limit = int(limit)
+    if allow_internal_bypass and network_zone == "internal":
+        effective_limit *= INTERNAL_RATE_LIMIT_MULTIPLIER
     storage_key = f"{namespace}:{network_zone}:{normalized_key}"
     window = max(1, int(window_seconds))
     counter = auth_runtime_store_service.increment_counter(
@@ -58,7 +66,7 @@ def enforce_rate_limit(
         storage_key,
         window_seconds=window,
     )
-    if int(counter.get("count", 0) or 0) > int(limit):
+    if int(counter.get("count", 0) or 0) > effective_limit:
         headers = {}
         if include_retry_after:
             headers["Retry-After"] = str(_retry_after_seconds(counter, window))

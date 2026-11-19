@@ -19,6 +19,7 @@ export default function useChatComposerSending({
   createOptimisticTextMessage,
   draftWriteTimeoutRef,
   editingMessage,
+  editDraftSnapshotRef,
   failedThreadMessagesRef,
   flushDraftToStorage,
   focusComposer,
@@ -185,13 +186,19 @@ export default function useChatComposerSending({
       const messageId = String(draftEditingMessage.id || '').trim();
       if (!messageId) return false;
       const previousBody = String(draftEditingMessage.body || '').trim();
+      // FE-004: leaving edit mode returns the pre-edit draft to the composer —
+      // but only the snapshot taken for this conversation's draft key.
+      const editSnapshot = editDraftSnapshotRef?.current;
+      const editDraftKey = buildChatDraftKey(userId, conversationId);
+      const restoredDraftText = editSnapshot?.key === editDraftKey ? editSnapshot.text : '';
       if (previousBody === body) {
         setEditingMessage(null);
-        setMessageText('');
+        setMessageText(restoredDraftText);
+        if (editDraftSnapshotRef?.current === editSnapshot) editDraftSnapshotRef.current = null;
         focusComposer({ forceMobile: true });
         return true;
       }
-      setMessageText('');
+      setMessageText(restoredDraftText);
       setEditingMessage(null);
       focusComposer({ forceMobile: true });
       try {
@@ -201,12 +208,13 @@ export default function useChatComposerSending({
         if (updated?.id) {
           mergeMessageIntoThread(updated);
         }
+        if (editDraftSnapshotRef?.current === editSnapshot) editDraftSnapshotRef.current = null;
         return true;
       } catch (error) {
         if (activeConversationIdRef.current === conversationId
           && composerGenerationRef.current === editGeneration
           && !latestComposerModeRef.current.editingId && !latestComposerModeRef.current.replyId
-          && !String(latestMessageTextRef.current || '').trim()) {
+          && String(latestMessageTextRef.current || '') === restoredDraftText) {
           setMessageText(body);
           setEditingMessage(draftEditingMessage);
           focusComposer({ forceMobile: true });
@@ -314,6 +322,7 @@ export default function useChatComposerSending({
     createOptimisticTextMessage,
     draftWriteTimeoutRef,
     editingMessage,
+    editDraftSnapshotRef,
     flushDraftToStorage,
     focusComposer,
     latestMessageTextRef,

@@ -36,6 +36,9 @@ export function useThreadForward({
   // dropped acknowledgement replays against the server dedup instead of
   // posting a duplicate forward.
   const forwardClientIdsRef = useRef(new Map<string, string>());
+  // Serial number of the latest flight: a stale flight must not release flags
+  // belonging to a forward that started after the scope switch.
+  const forwardFlightRef = useRef(0);
   useEffect(() => {
     setForwardSource(null);
     setForwardQueue([]);
@@ -47,7 +50,7 @@ export function useThreadForward({
   const openForward = useCallback(async (message: ChatMessage | ChatMessage[]) => {
     if (!isCurrentSendScope() || forwardInFlightRef.current) return;
     try {
-      const conversations = await chatApi.getConversations();
+      const conversations = await chatApi.listAllConversations();
       if (!isCurrentSendScope()) return;
       setForwardConversations(conversations);
       setForwardProgress(null);
@@ -68,6 +71,7 @@ export function useThreadForward({
     if (!isCurrentSendScope() || !queue.length || forwardInFlightRef.current || forwarding) return;
     if (forwardProgress && forwardProgress.target.id !== target.id) return;
     forwardInFlightRef.current = true;
+    const flight = ++forwardFlightRef.current;
     setForwarding(true);
     setForwardError('');
     const completedBefore = forwardProgress?.completed || 0;
@@ -109,7 +113,10 @@ export function useThreadForward({
         setForwardError('Не получено подтверждение следующего сообщения. Проверьте диалог перед повтором: оно могло быть доставлено. Уже подтверждённые сообщения повторно не отправятся.');
       }
     } finally {
-      if (isCurrentSendScope()) {
+      // Scope may have switched mid-flight: the inflight flag still must be
+      // released (otherwise forwarding stays dead until remount), but only the
+      // newest flight may clear it — an older flight must not unlock a newer one.
+      if (forwardFlightRef.current === flight) {
         forwardInFlightRef.current = false;
         setForwarding(false);
       }

@@ -230,6 +230,7 @@ describe('MyFiles page', () => {
     expect(screen.queryByTestId('document-preview-dialog')).not.toBeInTheDocument();
   });
   beforeEach(() => {
+    localStorage.clear();
     localStorage.setItem('user', JSON.stringify({ id: 7, username: 'files-test' }));
     mockListFiles.mockReset();
     mockGetQuota.mockReset();
@@ -330,6 +331,13 @@ describe('MyFiles page', () => {
 
     await waitFor(() => expect(mockUploadFile).toHaveBeenCalledWith(expect.objectContaining({ file })));
     expect(mockNotifyWarning).not.toHaveBeenCalledWith(expect.stringContaining('1 ГБ'), expect.anything());
+  });
+
+  it('requests the libraries list only once when a library view is opened', async () => {
+    renderPage('/?library=lib-1');
+    await screen.findByRole('heading', { name: 'Общая папка' });
+    await waitFor(() => expect(mockListFiles).toHaveBeenCalledWith(expect.objectContaining({ libraryId: 'lib-1' })));
+    expect(mockListLibraries).toHaveBeenCalledTimes(1);
   });
 
   it('treats a dropped folder as a real folder upload', async () => {
@@ -526,6 +534,28 @@ describe('MyFiles page', () => {
     expect(screen.queryByText('Загрузить файлы')).not.toBeInTheDocument();
   });
 
+  const libraryFolders = [{ id: 'fold-1', name: 'Дистрибутивы', parent_id: null, file_count: 2 }];
+
+  it('lets a library manager share a folder by link', async () => {
+    mockListLibraries.mockResolvedValue({ items: [{ ...bookkeeping, my_role: 'manage' }], can_manage: false });
+    mockListFiles.mockResolvedValue({
+      items: [], folders: libraryFolders, library: { id: 'lib-1', name: 'Бухгалтерия', my_role: 'manage' },
+    });
+    renderPage('/?library=lib-1');
+
+    expect(await screen.findByTestId('my-files-share-folder-fold-1')).toBeEnabled();
+  });
+
+  it('keeps a view-only library member from sharing a folder', async () => {
+    mockListLibraries.mockResolvedValue({ items: [{ ...bookkeeping, my_role: 'view' }], can_manage: false });
+    mockListFiles.mockResolvedValue({
+      items: [], folders: libraryFolders, library: { id: 'lib-1', name: 'Бухгалтерия', my_role: 'view' },
+    });
+    renderPage('/?library=lib-1');
+
+    expect(await screen.findByTestId('my-files-share-folder-fold-1')).toBeDisabled();
+  });
+
   it('lets a library manager open the library trash and administrators set the library up', async () => {
     mockListLibraries.mockResolvedValue({ items: [{ ...bookkeeping, my_role: 'manage' }], can_manage: true });
     mockListFiles.mockResolvedValue({
@@ -678,6 +708,54 @@ describe('MyFiles page', () => {
 
     fireEvent.click(screen.getByTestId('my-files-view-list'));
     await waitFor(() => expect(screen.queryByTestId('my-files-grid')).not.toBeInTheDocument());
+  });
+
+  it('revokes a thumbnail blob URL that resolves after the folder changed', async () => {
+    Object.defineProperty(window, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        constructor(callback) { this.callback = callback; }
+        observe(node) { this.callback([{ isIntersecting: true, target: node }]); }
+        unobserve() {}
+        disconnect() {}
+      },
+    });
+    let resolveThumb;
+    mockDownloadPreviewContent.mockImplementation(() => new Promise((resolve) => { resolveThumb = resolve; }));
+    const imageFile = {
+      ...readyFile,
+      id: 'img-1',
+      original_file_name: 'pic.png',
+      download_file_name: 'pic.png',
+      mime_type: 'image/png',
+      download_mime_type: 'image/png',
+      preview_kind: 'image',
+      preview_available: true,
+      preview_status: 'ready',
+    };
+    mockListFiles.mockImplementation(({ folderId } = {}) => Promise.resolve(
+      folderId === 'folder-1'
+        ? { items: [], folders: [], breadcrumbs: [{ id: 'folder-1', name: 'Документы' }], folder: { id: 'folder-1', name: 'Документы' } }
+        : {
+          items: [imageFile],
+          folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+          breadcrumbs: [],
+          folder: null,
+        },
+    ));
+    renderPage();
+    await screen.findByText('pic.png');
+    fireEvent.click(screen.getByTestId('my-files-view-toggle'));
+    await screen.findByTestId('my-files-grid');
+    await waitFor(() => expect(mockDownloadPreviewContent).toHaveBeenCalledWith('img-1', { variant: 'thumb' }));
+
+    fireEvent.click(screen.getByTestId('my-files-folder-folder-1'));
+    await waitFor(() => expect(screen.queryByText('pic.png')).not.toBeInTheDocument());
+
+    await act(async () => resolveThumb({ data: new Blob(['png'], { type: 'image/png' }), headers: {} }));
+
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:my-file-preview');
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
   });
 
   it('purges a trashed file after confirmation', async () => {
@@ -893,6 +971,60 @@ describe('MyFiles page', () => {
     expect(screen.getByTestId('my-files-favorite-mine-1')).toBeInTheDocument();
     expect(screen.queryByTestId('my-files-favorite-lib-1-file')).not.toBeInTheDocument();
     expect(within(screen.getByTestId('my-files-card-lib-1-file')).getByText('Бухгалтерия')).toBeInTheDocument();
+  });
+
+  it('clears the selection when the type filter changes so bulk delete only touches visible files', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [
+        { ...readyFile, id: 'f-doc', original_file_name: 'letter.docx', download_file_name: 'letter.docx' },
+        { ...readyFile, id: 'f-sheet', original_file_name: 'budget.xlsx', download_file_name: 'budget.xlsx' },
+      ],
+      folders: [],
+      breadcrumbs: [],
+      folder: null,
+    });
+    renderPage();
+    await screen.findByText('letter.docx');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    expect(await screen.findByTestId('my-files-selection-bar')).toHaveTextContent('Выбрано: 2');
+
+    fireEvent.click(screen.getByTestId('my-files-filter-type'));
+    fireEvent.click(await screen.findByTestId('my-files-filter-option-sheet'));
+
+    await waitFor(() => expect(screen.queryByTestId('my-files-selection-bar')).not.toBeInTheDocument());
+    expect(screen.queryByText('letter.docx')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByTestId('my-files-bulk-delete'));
+    fireEvent.click(await screen.findByTestId('my-files-confirm-action'));
+
+    await waitFor(() => expect(mockDeleteFile).toHaveBeenCalledWith('f-sheet'));
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockDeleteFile).not.toHaveBeenCalledWith('f-doc');
+  });
+
+  it('clears the selection when the search query changes', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [
+        readyFile,
+        { ...readyFile, id: 'file-2', original_file_name: 'photo.png', download_file_name: 'photo.png' },
+      ],
+      folders: [],
+      breadcrumbs: [],
+      folder: null,
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    expect(await screen.findByTestId('my-files-selection-bar')).toHaveTextContent('Выбрано: 2');
+
+    fireEvent.change(screen.getByTestId('my-files-search-input'), { target: { value: 'photo' } });
+
+    await waitFor(() => expect(screen.queryByTestId('my-files-selection-bar')).not.toBeInTheDocument());
+    expect(screen.queryByText('report.txt')).not.toBeInTheDocument();
+    expect(screen.getByText('photo.png')).toBeInTheDocument();
   });
 
 });

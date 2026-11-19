@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageGrab
+from PIL import Image, ImageGrab, ImageStat
 
 logger = logging.getLogger("browser_probe.screenshot")
 
@@ -32,6 +32,17 @@ def _shot_max_width() -> int:
         return max(0, int(os.getenv("ITINV_BROWSER_PROBE_SHOT_MAX_WIDTH", "1600") or "1600"))
     except ValueError:
         return 1600
+
+
+def _looks_blank(image: Image.Image) -> bool:
+    """Near-uniform frame: a still-loading page (white body or a lone spinner,
+    stddev ~0-5), or a black captured window. Real pages carry chrome, text and
+    coloured blocks and land far above (measured 40+ on synthetic layouts)."""
+    try:
+        thumb = image.convert("L").resize((64, 64))
+        return float(ImageStat.Stat(thumb).stddev[0]) < 10.0
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _downscale(image: Image.Image) -> Image.Image:
@@ -72,6 +83,10 @@ def capture_window(
         return None, "window_rect_unavailable"
 
     left, top, right, bottom = rect
+    # A minimizing/animating or mostly-covered window yields useless strips
+    # (observed: 400x48 address-bar slivers, 190x32 black frames).
+    if (right - left) < 240 or (bottom - top) < 160:
+        return None, "window_too_small"
     try:
         image = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
     except TypeError:
@@ -83,6 +98,9 @@ def capture_window(
     except Exception as exc:  # noqa: BLE001
         logger.warning("screenshot failed: %s", exc)
         return None, f"screenshot_failed: {exc}"
+
+    if _looks_blank(image):
+        return None, "blank_frame"
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     shot_format = _shot_format()

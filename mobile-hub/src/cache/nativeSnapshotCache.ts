@@ -26,6 +26,7 @@ export const NATIVE_SNAPSHOT_SCOPES = [
   'mail-conversation-details',
   'task-details',
   'docflow-inbox',
+  'docflow-absences',
   'docflow-task-details',
   'database-bootstrap',
   'database-inbox',
@@ -53,7 +54,7 @@ export type NativeEntitySnapshotScope = Extract<NativeSnapshotScope,
   'construction-details' | 'feed-post-details' | 'chat-thread-details' | 'address-book-chat-links' | 'address-book-favorites' | 'mail-message-details' | 'mail-conversation-details' | 'task-details' | 'docflow-task-details' | 'database-item-details' | 'my-file-details' | 'company-structure-people'>;
 
 export type NativeCollectionSnapshotScope = Extract<NativeSnapshotScope,
-  'feed-inbox' | 'tasks-inbox' | 'chat-inbox' | 'mail-inbox' | 'docflow-inbox' | 'database-inbox' | 'statistics-inbox' | 'my-files-lists'>;
+  'feed-inbox' | 'tasks-inbox' | 'chat-inbox' | 'mail-inbox' | 'docflow-inbox' | 'docflow-absences' | 'database-inbox' | 'statistics-inbox' | 'my-files-lists'>;
 
 export type NativeCollectionSnapshot<T> = NativeSnapshot<T> & { key: string };
 
@@ -408,6 +409,57 @@ export async function writeNativeSnapshot<T>(
   }
 }
 
+// A collection snapshot is identified by its filters, not by pagination:
+// `limit`/`offset` differ between offline preparation (200-item pages) and the
+// screens (40/50-item pages), so they must not take part in the key.
+export function nativeCollectionSignature(request: Record<string, unknown>): string {
+  return JSON.stringify({ ...request, limit: undefined, offset: 0 });
+}
+
+// Snapshots written before `limit` was dropped from the signature stay
+// readable: keys that differ only by pagination map to the same collection.
+// Field-wise comparison keeps this independent of JSON key order.
+function collectionKeysEquivalent(storedKey: string, requestedKey: string): boolean {
+  if (storedKey === requestedKey) return true;
+  try {
+    const stored = JSON.parse(storedKey) as Record<string, unknown> | null;
+    const requested = JSON.parse(requestedKey) as Record<string, unknown> | null;
+    if (
+      !stored || !requested
+      || typeof stored !== 'object' || typeof requested !== 'object'
+      || Array.isArray(stored) || Array.isArray(requested)
+    ) return false;
+    const storedFields = Object.keys(stored).filter((field) => field !== 'limit' && field !== 'offset');
+    const requestedFields = Object.keys(requested).filter((field) => field !== 'limit' && field !== 'offset');
+    if (storedFields.length !== requestedFields.length) return false;
+    return storedFields.every((field) => (
+      field in requested && JSON.stringify(stored[field]) === JSON.stringify(requested[field])
+    ));
+  } catch {
+    return false;
+  }
+}
+
+function freshestEquivalentEntry<T extends { key: string; savedAt: number }>(
+  entries: T[],
+  requestedKey: string,
+): T | undefined {
+  const exact = entries.find((entry) => entry.key === requestedKey);
+  if (exact) return exact;
+  return entries
+    .filter((entry) => collectionKeysEquivalent(entry.key, requestedKey))
+    .sort((a, b) => Number(b.savedAt || 0) - Number(a.savedAt || 0))[0];
+}
+
+// Payloads carry their own `signature` field; when an equivalent (legacy
+// pagination) entry serves the request it is re-signed so consumer-side
+// `data.signature === signature` checks still hold.
+function resignCollectionData<T>(data: T, storedKey: string, requestedKey: string): T {
+  if (storedKey === requestedKey || !data || typeof data !== 'object') return data;
+  if (!('signature' in (data as Record<string, unknown>))) return data;
+  return { ...(data as Record<string, unknown>), signature: requestedKey } as T;
+}
+
 export async function readNativeCollectionSnapshot<T>(
   scope: NativeCollectionSnapshotScope,
   userId: number,
@@ -426,26 +478,33 @@ export async function readNativeCollectionSnapshot<T>(
   if (!snapshot) return null;
 
   if (isCollectionManifest(snapshot.data)) {
-    const manifestEntry = snapshot.data.collectionKeys.find((item) => item.key === key);
+    const manifestEntry = freshestEquivalentEntry(snapshot.data.collectionKeys, key);
     if (
       !isCollectionManifestEntry(manifestEntry)
       || Date.now() - manifestEntry.savedAt > Math.max(0, maxAgeMs)
     ) return null;
     const manifestData = await readCollectionManifestEntry<T>(manifestEntry, userId);
-    return manifestData == null ? null : { savedAt: manifestEntry.savedAt, data: manifestData };
+    return manifestData == null ? null : {
+      savedAt: manifestEntry.savedAt,
+      data: resignCollectionData(manifestData, manifestEntry.key, key),
+    };
   }
 
   const data = snapshot.data as (NativeEntitySnapshotBundle<T> & T & { signature?: string }) | null;
   if (!data || typeof data !== 'object') return null;
   const entry = Array.isArray(data.entries)
-    ? data.entries.find((item) => item.key === key)
-    : null;
+    ? freshestEquivalentEntry(data.entries, key)
+    : undefined;
   if (entry && Date.now() - entry.savedAt <= Math.max(0, maxAgeMs)) {
-    return { savedAt: entry.savedAt, data: entry.data };
+    return { savedAt: entry.savedAt, data: resignCollectionData(entry.data, entry.key, key) };
   }
   // Backward compatibility with the single-filter snapshots used before 1.1.18.
-  if (!Array.isArray(data.entries) && data.signature === key) {
-    return { savedAt: snapshot.savedAt, data: snapshot.data as T };
+  if (
+    !Array.isArray(data.entries)
+    && typeof data.signature === 'string'
+    && collectionKeysEquivalent(data.signature, key)
+  ) {
+    return { savedAt: snapshot.savedAt, data: resignCollectionData(snapshot.data as T, data.signature, key) };
   }
   // Chat inbox used to persist one unkeyed page directly under chat-inbox.
   if (!Array.isArray(data.entries) && key === legacyDefaultCollectionKey(scope, data)) {
@@ -533,13 +592,13 @@ export async function writeNativeCollectionSnapshot<T>(
       data: legacyData as T,
     }] : [];
     const retainedManifestEntries = previousManifestEntries.filter((entry) => (
-      entry.key !== key && now - Number(entry.savedAt || 0) <= DEFAULT_MAX_AGE_MS
+      !collectionKeysEquivalent(entry.key, key) && now - Number(entry.savedAt || 0) <= DEFAULT_MAX_AGE_MS
     )).slice(0, MAX_COLLECTION_ENTRIES - 1);
     const remainingSlots = MAX_COLLECTION_ENTRIES - 1 - retainedManifestEntries.length;
     const retainedInlineEntries = [...inlineEntries, ...legacyEntries].filter((entry, index, entries) => (
-      entry.key !== key
+      !collectionKeysEquivalent(entry.key, key)
       && now - Number(entry.savedAt || 0) <= DEFAULT_MAX_AGE_MS
-      && entries.findIndex((candidate) => candidate.key === entry.key) === index
+      && entries.findIndex((candidate) => collectionKeysEquivalent(candidate.key, entry.key)) === index
     )).slice(0, remainingSlots);
 
     const target = await writeCollectionEntry(scope, owner, key, now, data);

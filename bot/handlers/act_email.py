@@ -137,12 +137,12 @@ async def handle_act_action_callback(update: Update, context: ContextTypes.DEFAU
                 for act in acts_info['acts']:
                     pdf_path = act.get('pdf_path')  # Исправлено: было 'path'
                     if pdf_path and os.path.exists(pdf_path):
-                        remove_file_with_retry(pdf_path, max_attempts=3, delay=0.3)
+                        await asyncio.to_thread(remove_file_with_retry, pdf_path, max_attempts=3, delay=0.3)
                         # Также удаляем временные файлы Word если это DOCX
                         if pdf_path.endswith('.docx'):
                             remove_word_temp_files(pdf_path)
             elif act_info and act_info.get('path') and os.path.exists(act_info['path']):
-                remove_file_with_retry(act_info['path'], max_attempts=3, delay=0.3)
+                await asyncio.to_thread(remove_file_with_retry, act_info['path'], max_attempts=3, delay=0.3)
                 if act_info['path'].endswith('.docx'):
                     remove_word_temp_files(act_info['path'])
             
@@ -292,7 +292,7 @@ async def handle_act_action_callback(update: Update, context: ContextTypes.DEFAU
                 for act in acts_list:
                     pdf_path = act.get('pdf_path')
                     if pdf_path and os.path.exists(pdf_path):
-                        remove_file_with_retry(pdf_path, max_attempts=3, delay=0.3)
+                        await asyncio.to_thread(remove_file_with_retry, pdf_path, max_attempts=3, delay=0.3)
                         # Удаляем временные файлы Word если это DOCX
                         if pdf_path.endswith('.docx'):
                             remove_word_temp_files(pdf_path)
@@ -531,7 +531,7 @@ async def handle_act_action_callback(update: Update, context: ContextTypes.DEFAU
                             f"✅ Акт {filename} успешно отправлен на {owner_email}!"
                         )
                         # Удаляем файл с механизмом повторных попыток
-                        remove_file_with_retry(act_info['path'], max_attempts=3, delay=0.3)
+                        await asyncio.to_thread(remove_file_with_retry, act_info['path'], max_attempts=3, delay=0.3)
                         if act_info['path'].endswith('.docx'):
                             remove_word_temp_files(act_info['path'])
                         
@@ -646,7 +646,7 @@ async def handle_email_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 for act in acts_info['acts']:
                     pdf_path = act.get('pdf_path')  # Исправлено: было 'path'
                     if pdf_path and os.path.exists(pdf_path):
-                        remove_file_with_retry(pdf_path, max_attempts=3, delay=0.3)
+                        await asyncio.to_thread(remove_file_with_retry, pdf_path, max_attempts=3, delay=0.3)
                         if pdf_path.endswith('.docx'):
                             remove_word_temp_files(pdf_path)
                 
@@ -729,7 +729,7 @@ async def handle_email_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"✅ Акт {filename} успешно отправлен на {email_text}!"
             )
             # Удаляем файл с механизмом повторных попыток
-            remove_file_with_retry(email_file_info['path'], max_attempts=3, delay=0.3)
+            await asyncio.to_thread(remove_file_with_retry, email_file_info['path'], max_attempts=3, delay=0.3)
             if email_file_info['path'].endswith('.docx'):
                 remove_word_temp_files(email_file_info['path'])
             

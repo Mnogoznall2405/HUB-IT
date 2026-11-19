@@ -236,7 +236,7 @@ export default function ConstructionObjectDetail() {
                   aria-live="polite"
                   sx={{ display: { xs: 'none', md: 'block' }, whiteSpace: 'nowrap' }}
                 >
-                  {asOf ? `Обновлено ${formatConstructionDate(asOf, true)}` : 'Данные ещё не загружены'}
+                  {asOf ? `Обновлено ${formatConstructionDate(asOf, true)}` : objectLoading ? <Skeleton variant="text" width={170} /> : 'Данные ещё не загружены'}
                 </Typography>
                 {canWrite && object ? (
                   <Tooltip title={object.managed ? 'Настройки объекта' : 'Вести отдельно'}>

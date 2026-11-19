@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
+import RootErrorBoundary from './components/feedback/RootErrorBoundary'
 import { NotificationProvider } from './contexts/NotificationContext'
 import { ConfirmDialogProvider } from './components/feedback/ConfirmDialogProvider'
 import { PreferencesProvider } from './contexts/PreferencesContext'
@@ -93,13 +94,15 @@ const startApplication = async () => {
 
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
-      <PreferencesProvider>
-        <NotificationProvider>
-          <ConfirmDialogProvider>
-            <App />
-          </ConfirmDialogProvider>
-        </NotificationProvider>
-      </PreferencesProvider>
+      <RootErrorBoundary>
+        <PreferencesProvider>
+          <NotificationProvider>
+            <ConfirmDialogProvider>
+              <App />
+            </ConfirmDialogProvider>
+          </NotificationProvider>
+        </PreferencesProvider>
+      </RootErrorBoundary>
     </React.StrictMode>,
   );
 };

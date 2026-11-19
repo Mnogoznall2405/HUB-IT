@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import apiClient from './client';
+import apiClient from './http';
 import { hubTaskCanvasAPI } from './hubTaskCanvas';
 
-vi.mock('./client', () => ({
+vi.mock('./http', () => ({
   default: {
     get: vi.fn(),
     put: vi.fn(),

@@ -20,12 +20,10 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import {
-  ContentCopyOutlined as ContentCopyOutlinedIcon,
-  DoneOutlined as DoneOutlinedIcon,
-  ExpandMore as ExpandMoreIcon,
-  FactCheckOutlined as FactCheckOutlinedIcon,
-} from '@mui/icons-material';
+import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
+import DoneOutlinedIcon from '@mui/icons-material/DoneOutlined';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import FactCheckOutlinedIcon from '@mui/icons-material/FactCheckOutlined';
 import { FixedSizeList as VirtualList } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
 import {

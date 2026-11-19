@@ -211,6 +211,9 @@ function MobileUpdateMenuRow({
       disabled={busy}
       onPress={() => {
         if (state.canOpenInstallerSettings) void updater.openInstallerSettings();
+        // "Повторить" after a failed check must re-fetch the feed: installing
+        // `state.feed` here would deploy the stale cached version.
+        else if (state.status === 'error') void updater.checkForUpdate();
         else void updater.installUpdate();
       }}
       style={({ pressed }) => [styles.updateRow, pressed && { backgroundColor: tokens.actionHover }]}

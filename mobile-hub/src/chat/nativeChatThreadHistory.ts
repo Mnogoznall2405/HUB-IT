@@ -109,7 +109,7 @@ export function scheduleNativeChatThreadSnapshotWrite(
     await writeNativeEntitySnapshot('chat-thread-details', job.userId, job.conversationId, next);
     return true;
   }).catch(() => {
-    void recordDiagnosticEvent('native_file_error');
+    void recordDiagnosticEvent('native_file_error', undefined, { source: 'chat-thread', stage: 'persist' });
     return false;
   });
   writeChain = operation.then(() => undefined, () => undefined);

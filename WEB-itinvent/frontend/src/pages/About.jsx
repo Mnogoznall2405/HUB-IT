@@ -157,6 +157,7 @@ function ProductShot({
   const triggerRef = useRef(null);
   const titleId = useId();
   const [zoom, setZoom] = useState('fit');
+  const toWebp = (src) => (src?.endsWith('.png') ? `${src.slice(0, -4)}.webp` : src);
   const desktopOneXSrc = desktopSrc.endsWith('@2x.png')
     ? desktopSrc.replace('@2x.png', '.png')
     : desktopSrc;
@@ -166,6 +167,9 @@ function ProductShot({
   const desktopSrcSet = desktopMediumSrc
     ? `${desktopOneXSrc} 1440w, ${desktopMediumSrc} 1920w, ${desktopSrc} ${desktopWidth}w`
     : `${desktopSrc} ${desktopWidth}w`;
+  const desktopWebpSrcSet = desktopMediumSrc
+    ? `${toWebp(desktopOneXSrc)} 1440w, ${toWebp(desktopMediumSrc)} 1920w, ${toWebp(desktopSrc)} ${desktopWidth}w`
+    : `${toWebp(desktopSrc)} ${desktopWidth}w`;
 
   const openViewer = () => {
     setZoom('fit');
@@ -188,12 +192,25 @@ function ProductShot({
       {mobileSrc ? (
         <source
           media="(max-width: 719px)"
+          type="image/webp"
+          srcSet={`${toWebp(mobileSrc)} ${mobileWidth}w`}
+          sizes={viewer ? '100vw' : '(max-width: 719px) calc(100vw - 32px)'}
+        />
+      ) : null}
+      {mobileSrc ? (
+        <source
+          media="(max-width: 719px)"
           srcSet={`${mobileSrc} ${mobileWidth}w`}
           sizes={viewer ? '100vw' : '(max-width: 719px) calc(100vw - 32px)'}
           width={mobileWidth}
           height={mobileHeight}
         />
       ) : null}
+      <source
+        type="image/webp"
+        srcSet={desktopWebpSrcSet}
+        sizes={viewer ? '100vw' : '(max-width: 719px) calc(100vw - 32px), (max-width: 1480px) calc(100vw - 40px), 1440px'}
+      />
       <img
         src={desktopSrc}
         srcSet={desktopSrcSet}

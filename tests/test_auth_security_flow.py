@@ -1885,6 +1885,8 @@ def test_trusted_device_register_verify_marks_new_device_discoverable(monkeypatc
 
 def test_reset_own_twofa_clears_auth_cookies(monkeypatch):
     current_user = User(**_sample_public_user(is_2fa_enabled=True, trusted_devices_count=1))
+    monkeypatch.setattr(auth, "_enforce_rate_limit", lambda **kwargs: None)
+    monkeypatch.setattr(auth.auth_security_service, "require_step_up_auth", lambda **kwargs: None)
     monkeypatch.setattr(
         auth.auth_security_service,
         "reset_user_twofa",
@@ -1912,6 +1914,7 @@ def test_reset_own_twofa_clears_auth_cookies(monkeypatch):
 
     response = TestClient(app).post(
         "/auth/reset-2fa-self",
+        json={"password": "secret", "totp_code": "123456"},
         cookies={
             config_cookie_name(): "access-token-1",
             refresh_cookie_name(): "refresh-token-1",
@@ -1925,6 +1928,146 @@ def test_reset_own_twofa_clears_auth_cookies(monkeypatch):
     assert f"{refresh_cookie_name()}=" in set_cookie
     assert any(item[0] == "token-jti" for item in revoked)
     assert consumed == ["token-jti"]
+
+
+def test_reset_own_twofa_requires_step_up_credentials(monkeypatch):
+    current_user = User(**_sample_public_user(is_2fa_enabled=True))
+    monkeypatch.setattr(auth, "_enforce_rate_limit", lambda **kwargs: None)
+    called = []
+    monkeypatch.setattr(
+        auth.auth_security_service,
+        "require_step_up_auth",
+        lambda **kwargs: called.append(kwargs),
+    )
+    monkeypatch.setattr(
+        auth.auth_security_service,
+        "reset_user_twofa",
+        lambda *, user_id: {"success": True, "user_id": user_id},
+    )
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: current_user
+    client = TestClient(app)
+
+    assert client.post("/auth/reset-2fa-self").status_code == 422
+    assert called == []
+
+    response = client.post(
+        "/auth/reset-2fa-self",
+        json={"password": "secret", "totp_code": "123456"},
+    )
+    assert response.status_code == 200
+    assert called == [{
+        "user_id": int(current_user.id),
+        "password": "secret",
+        "totp_code": "123456",
+        "backup_code": None,
+    }]
+
+
+def test_reset_own_twofa_rejects_failed_step_up(monkeypatch):
+    current_user = User(**_sample_public_user(is_2fa_enabled=True))
+    monkeypatch.setattr(auth, "_enforce_rate_limit", lambda **kwargs: None)
+
+    def _deny(**kwargs):
+        raise auth.AuthSecurityError("Неверный пароль")
+
+    monkeypatch.setattr(auth.auth_security_service, "require_step_up_auth", _deny)
+    monkeypatch.setattr(
+        auth.auth_security_service,
+        "reset_user_twofa",
+        lambda *, user_id: pytest.fail("reset must not run without step-up"),
+    )
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: current_user
+
+    response = TestClient(app).post("/auth/reset-2fa-self", json={"password": "bad"})
+    assert response.status_code == 400
+
+
+def test_regenerate_backup_codes_requires_step_up(monkeypatch):
+    current_user = User(**_sample_public_user(is_2fa_enabled=True))
+    monkeypatch.setattr(auth, "_enforce_rate_limit", lambda **kwargs: None)
+    called = []
+    monkeypatch.setattr(
+        auth.auth_security_service,
+        "require_step_up_auth",
+        lambda **kwargs: called.append(kwargs),
+    )
+    monkeypatch.setattr(
+        auth.auth_security_service,
+        "regenerate_backup_codes",
+        lambda user_id: ["AAAA-BBBB"],
+    )
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: current_user
+    client = TestClient(app)
+
+    assert client.post("/auth/backup-codes/regenerate").status_code == 422
+    assert called == []
+
+    response = client.post(
+        "/auth/backup-codes/regenerate",
+        json={"password": "secret", "backup_code": "AAAA-BBBB"},
+    )
+    assert response.status_code == 200
+    assert response.json()["backup_codes"] == ["AAAA-BBBB"]
+    assert called == [{
+        "user_id": int(current_user.id),
+        "password": "secret",
+        "totp_code": None,
+        "backup_code": "AAAA-BBBB",
+    }]
+
+
+def test_step_up_auth_password_and_second_factor(monkeypatch):
+    svc = auth_security_module.AuthSecurityService()
+    user = {"id": 7, "username": "ivanov", "is_2fa_enabled": True, "totp_secret_enc": "enc"}
+    monkeypatch.setattr(auth_security_module.user_service, "get_by_id", lambda user_id: dict(user))
+    monkeypatch.setattr(
+        auth_security_module.user_service,
+        "authenticate",
+        lambda username, password: dict(user) if password == "secret" else None,
+    )
+    monkeypatch.setattr(auth_security_module.twofa_service, "decrypt_secret", lambda enc: "totp-secret")
+    monkeypatch.setattr(
+        auth_security_module.twofa_service,
+        "verify_totp",
+        lambda *, secret, code, valid_window=1: code == "123456",
+    )
+    monkeypatch.setattr(
+        svc,
+        "_consume_backup_code",
+        lambda *, user_id, backup_code: backup_code == "AAAA-BBBB",
+    )
+
+    with pytest.raises(auth_security_module.AuthSecurityError):
+        svc.require_step_up_auth(user_id=7, password="wrong")
+    with pytest.raises(auth_security_module.AuthSecurityError):
+        svc.require_step_up_auth(user_id=7, password="secret")
+    with pytest.raises(auth_security_module.AuthSecurityError):
+        svc.require_step_up_auth(user_id=7, password="secret", totp_code="000000")
+    svc.require_step_up_auth(user_id=7, password="secret", totp_code="123456")
+    svc.require_step_up_auth(user_id=7, password="secret", backup_code="AAAA-BBBB")
+
+
+def test_step_up_auth_password_only_when_2fa_disabled(monkeypatch):
+    svc = auth_security_module.AuthSecurityService()
+    user = {"id": 7, "username": "ivanov", "is_2fa_enabled": False}
+    monkeypatch.setattr(auth_security_module.user_service, "get_by_id", lambda user_id: dict(user))
+    monkeypatch.setattr(
+        auth_security_module.user_service,
+        "authenticate",
+        lambda username, password: dict(user) if password == "secret" else None,
+    )
+    svc.require_step_up_auth(user_id=7, password="secret")
+    with pytest.raises(auth_security_module.AuthSecurityError):
+        svc.require_step_up_auth(user_id=7, password="bad")
 
 
 def config_cookie_name():

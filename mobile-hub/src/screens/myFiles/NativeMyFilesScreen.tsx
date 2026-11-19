@@ -68,6 +68,7 @@ import {
 } from '../../components/myFiles/NativeMyFilesSheets';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
 import { openNativeFile, shareNativeFile } from '../../files/nativeAttachmentDownloads';
+import { sanitizeNativeFileName } from '../../files/filePolicy';
 import {
   buildMyFileDownloadGrantUrl,
   buildMyFilePublicFolderUrl,
@@ -83,6 +84,7 @@ import {
 import {
   downloadNativeMyFile,
   downloadNativeMyFilePreview,
+  hasPendingMyFileUploadReservation,
   pickNativeMyFiles,
   pickNativeMyFilesFolder,
   readNativeMyFileTextPreview,
@@ -172,6 +174,7 @@ function NativeMyFilesContent() {
   const [packingFolder, setPackingFolder] = useState(false);
   const [busyFile, setBusyFile] = useState<BusyFile>(null);
   const [busyFolderId, setBusyFolderId] = useState<string | null>(null);
+  const [emptyingTrash, setEmptyingTrash] = useState(false);
   const [preview, setPreview] = useState<NativeMyFilePreviewState>(null);
   const [fileActionsTarget, setFileActionsTarget] = useState<MyFileRecord | null>(null);
   const [folderActionsTarget, setFolderActionsTarget] = useState<MyFileFolder | null>(null);
@@ -192,6 +195,8 @@ function NativeMyFilesContent() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const loadRequestRef = useRef(0);
   const loadedScopeRef = useRef('');
+  const offlineModeRef = useRef(offlineMode);
+  offlineModeRef.current = offlineMode;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -205,7 +210,11 @@ function NativeMyFilesContent() {
   useLayoutEffect(() => {
     uploadGeneration.current += 1;
     uploadAbortRef.current?.abort();
-  }, [userId, canWrite, offlineMode]);
+    // offlineMode is deliberately excluded: aborting on a connectivity drop
+    // would classify the upload as cancelled and destroy the server-side
+    // resume state. A dead network fails the request as retriable instead,
+    // keeping the resume record and the upload session for the next attempt.
+  }, [userId, canWrite]);
 
   const loadData = useCallback(async ({ refresh = false, silent = false, poll = false } = {}) => {
     if (poll && (!focusedRef.current || loadAbortRef.current)) return;
@@ -416,12 +425,22 @@ function NativeMyFilesContent() {
       const files = source === 'folder'
         ? [await pickNativeMyFilesFolder()].filter((file): file is NonNullable<typeof file> => Boolean(file))
         : await pickNativeMyFiles();
-      if (!current()) return;
+      // Поздний ответ пикера в офлайне не запускает загрузку: резервировать
+      // серверную сессию без сети всё равно нельзя.
+      if (!current() || offlineModeRef.current) return;
       setPackingFolder(false);
       if (!files.length) return;
       const selectedBytes = files.reduce((sum, file) => sum + file.size, 0);
       if (quota && selectedBytes > quota.remaining_bytes) {
-        throw new Error(`Недостаточно места: выбрано ${formatMyFileSize(selectedBytes)}, свободно ${formatMyFileSize(quota.remaining_bytes)}`);
+        // A file with a live upload reservation is already charged to the
+        // quota server-side; charging it again would block resuming it.
+        let reservedBytes = 0;
+        for (const file of files) {
+          if (await hasPendingMyFileUploadReservation(file, uploadFolderId)) reservedBytes += file.size;
+        }
+        if (selectedBytes - reservedBytes > quota.remaining_bytes) {
+          throw new Error(`Недостаточно места: выбрано ${formatMyFileSize(selectedBytes)}, свободно ${formatMyFileSize(quota.remaining_bytes)}`);
+        }
       }
       const controller = new AbortController();
       uploadAbortRef.current = controller;
@@ -442,6 +461,26 @@ function NativeMyFilesContent() {
           progress: Math.min(1, (completedBytes + sent) / totalBytes),
         });
       };
+      // Two different files with the same name+size in one batch would share
+      // the server-side upload reservation (reuse_existing): both write chunks
+      // into one session, and the loser's cancel then aborts the winner's
+      // committed file. Serialize same-key uploads; distinct keys still run
+      // in parallel.
+      const sameKeyChain = new Map<string, Promise<unknown>>();
+      const uploadSerialized = async (file: (typeof files)[number], index: number) => {
+        const key = `${sanitizeNativeFileName(file.name)} ${file.size}`;
+        const previous = sameKeyChain.get(key) || Promise.resolve();
+        const run = previous.then(() => uploadNativeMyFile(file, retentionDays, {
+          signal: controller.signal,
+          folderId: uploadFolderId,
+          onProgress: ({ loaded }) => {
+            inflightBytes.set(index, Math.max(0, Number(loaded) || 0));
+            reportProgress();
+          },
+        }));
+        sameKeyChain.set(key, run.catch(() => undefined));
+        return run;
+      };
       const runNext = async (): Promise<void> => {
         while (current() && !controller.signal.aborted) {
           const index = nextIndex;
@@ -451,14 +490,7 @@ function NativeMyFilesContent() {
           inflightNames.set(index, file.name);
           reportProgress();
           try {
-            await uploadNativeMyFile(file, retentionDays, {
-              signal: controller.signal,
-              folderId: uploadFolderId,
-              onProgress: ({ loaded }) => {
-                inflightBytes.set(index, Math.max(0, Number(loaded) || 0));
-                reportProgress();
-              },
-            });
+            await uploadSerialized(file, index);
             uploaded += 1;
             completedBytes += file.size;
           } catch (cause) {
@@ -728,9 +760,49 @@ function NativeMyFilesContent() {
       if (mountedRef.current) {
         setItems((current) => current.filter((entry) => entry.id !== item.id));
         setNotice('Файл восстановлен.');
+        await loadData({ silent: true });
       }
     });
-  }, [runFileAction]);
+  }, [loadData, runFileAction]);
+
+  // Server purges a folder cascade-style; offline copies under it (incl.
+  // nested subfolders) must go too or they linger in «На устройстве».
+  const removeOfflineCopiesInFolder = useCallback(async (
+    folderId: string,
+    trashScope?: { allFolders: Array<{ id: string; parentId: string | null }> } | null,
+  ) => {
+    if (!userId) return;
+    const subtree = new Set([String(folderId)]);
+    const byParent = new Map<string, string[]>();
+    const addFolderLink = (id: string, parentId: string | null | undefined) => {
+      const parent = parentId ? String(parentId) : '';
+      if (!parent) return;
+      const list = byParent.get(parent) || [];
+      if (!list.includes(String(id))) list.push(String(id));
+      byParent.set(parent, list);
+    };
+    for (const entry of [...allFolders, ...folders]) {
+      addFolderLink(String(entry.id), entry.parent_id);
+    }
+    // Deleted folders never show up in the active folder list — the full
+    // trash scope carries parent links for nested deleted folders too. For a
+    // purge the scope must be captured BEFORE the server cascade, so callers
+    // pass it in; a standalone call fetches it here.
+    const trash = trashScope !== undefined ? trashScope : await listMyFilesTrash().catch(() => null);
+    if (trash) {
+      for (const entry of trash.allFolders) addFolderLink(entry.id, entry.parentId);
+    }
+    const queue = [String(folderId)];
+    while (queue.length) {
+      for (const child of byParent.get(queue.pop() || '') || []) {
+        if (!subtree.has(child)) { subtree.add(child); queue.push(child); }
+      }
+    }
+    const offline = await listNativeMyFilesOffline(userId).catch(() => [] as MyFileRecord[]);
+    await Promise.all(offline
+      .filter((record) => record.folder_id && subtree.has(String(record.folder_id)))
+      .map((record) => removeNativeMyFileOffline(userId, record.id).catch(() => undefined)));
+  }, [allFolders, folders, userId]);
 
   const confirmPurgeFile = useCallback((item: MyFileRecord) => {
     Alert.alert('Удалить навсегда?', `${myFileName(item)} будет удалён без возможности восстановления.`, [
@@ -745,6 +817,7 @@ function NativeMyFilesContent() {
             if (mountedRef.current) {
               setItems((current) => current.filter((entry) => entry.id !== item.id));
               setNotice('Файл удалён навсегда.');
+              await loadData({ silent: true });
             }
           });
         },
@@ -758,9 +831,10 @@ function NativeMyFilesContent() {
       if (mountedRef.current) {
         setFolders((current) => current.filter((entry) => entry.id !== folder.id));
         setNotice('Папка восстановлена.');
+        await loadData({ silent: true });
       }
     });
-  }, [runFolderAction]);
+  }, [loadData, runFolderAction]);
 
   const confirmPurgeFolder = useCallback((folder: MyFileFolder) => {
     Alert.alert('Удалить папку навсегда?', `«${folder.name}» и всё её содержимое будет удалено без восстановления.`, [
@@ -770,16 +844,22 @@ function NativeMyFilesContent() {
         style: 'destructive',
         onPress: () => {
           void runFolderAction(folder, 'purge', async () => {
+            // Capture the trash scope before the purge: the server cascade
+            // removes the folder and all descendants, after which the trash
+            // no longer carries their parent links for the subtree build.
+            const trashScope = await listMyFilesTrash().catch(() => null);
             await purgeMyFileFolder(folder.id);
+            await removeOfflineCopiesInFolder(folder.id, trashScope);
             if (mountedRef.current) {
               setFolders((current) => current.filter((entry) => entry.id !== folder.id));
               setNotice('Папка удалена навсегда.');
+              await loadData({ silent: true });
             }
           });
         },
       },
     ]);
-  }, [runFolderAction]);
+  }, [loadData, removeOfflineCopiesInFolder, runFolderAction]);
 
   const confirmEmptyTrash = useCallback(() => {
     Alert.alert('Очистить корзину?', 'Все файлы и папки в корзине будут удалены навсегда.', [
@@ -789,21 +869,48 @@ function NativeMyFilesContent() {
         style: 'destructive',
         onPress: () => {
           void (async () => {
+            // The same lock as restore/purge: a file restored while the
+            // server empties the trash would be deleted server-side anyway,
+            // and a restore queued behind the purge must not resurrect it.
+            if (!mountedRef.current || offlineMode || fileActionLockRef.current) return;
+            fileActionLockRef.current = true;
+            setEmptyingTrash(true);
+            setError('');
+            setNotice('');
             try {
+              // The visible page may be a fraction of the trash — fetch the
+              // full listing so every pinned offline copy is released too.
+              const trash = await listMyFilesTrash();
+              const purgedIds = new Set([
+                ...items.map((entry) => entry.id),
+                ...trash.items.map((entry) => entry.id),
+                // Files nested inside trashed folders are not in `items` —
+                // the full scope id set covers them.
+                ...trash.allFileIds,
+              ]);
               await emptyMyFilesTrash();
+              if (userId) {
+                await Promise.all([...purgedIds].map((fileId) => (
+                  removeNativeMyFileOffline(userId, fileId).catch(() => undefined)
+                )));
+              }
               if (mountedRef.current) {
                 setItems([]);
                 setFolders([]);
                 setNotice('Корзина очищена.');
+                await loadData({ silent: true });
               }
             } catch (cause) {
               if (mountedRef.current) setError(formatApiError(cause, 'Не удалось очистить корзину.'));
+            } finally {
+              fileActionLockRef.current = false;
+              if (mountedRef.current) setEmptyingTrash(false);
             }
           })();
         },
       },
     ]);
-  }, []);
+  }, [items, loadData, offlineMode, userId]);
 
   const toggleFolderFavorite = useCallback((folder: MyFileFolder) => {
     const next = !folder.is_favorite;
@@ -827,16 +934,34 @@ function NativeMyFilesContent() {
           void runFolderAction(folder, 'delete', async () => {
             await deleteMyFileFolder(folder.id);
             if (mountedRef.current) {
-              setFolders((current) => current.filter((entry) => entry.id !== folder.id));
-              setAllFolders((current) => current.filter((entry) => entry.id !== folder.id));
-              if (currentFolderId === folder.id) setCurrentFolderId(null);
+              // The cascade trashes the whole subtree — dropping only the
+              // root would leave nested folders selectable as move targets.
+              const subtree = new Set([String(folder.id)]);
+              const queue = [String(folder.id)];
+              while (queue.length) {
+                const parent = queue.pop() || '';
+                for (const entry of [...allFolders, ...folders]) {
+                  const id = String(entry.id);
+                  if (String(entry.parent_id || '') === parent && !subtree.has(id)) {
+                    subtree.add(id);
+                    queue.push(id);
+                  }
+                }
+              }
+              setFolders((current) => current.filter((entry) => !subtree.has(String(entry.id))));
+              setAllFolders((current) => current.filter((entry) => !subtree.has(String(entry.id))));
+              if (currentFolderId && subtree.has(String(currentFolderId))) setCurrentFolderId(null);
               setNotice('Папка перемещена в корзину.');
             }
+            // The server freed the trashed files' quota immediately — refresh
+            // it plus the folder list so the next upload/move sees real data.
+            await loadAllFolders();
+            await loadData({ silent: true });
           });
         },
       },
     ]);
-  }, [currentFolderId, runFolderAction]);
+  }, [allFolders, currentFolderId, folders, loadAllFolders, loadData, runFolderAction]);
 
   const deliverFolderShareLink = useCallback(async (folder: MyFileFolder, rotate: boolean) => {
     const share = await createMyFileFolderShare(folder.id, rotate);
@@ -974,6 +1099,8 @@ function NativeMyFilesContent() {
         label: 'Сохранить офлайн',
         icon: 'cloud-download-outline',
         testID: `native-my-file-save-offline-${item.id}`,
+        // Pinning needs the server copy — the download cannot start offline.
+        disabled: offlineMode,
         onPress: () => { setFileActionsTarget(null); saveOffline(item); },
       });
     }
@@ -1266,13 +1393,15 @@ function NativeMyFilesContent() {
         <Pressable
           testID="native-my-files-empty-trash"
           onPress={confirmEmptyTrash}
-          disabled={offlineMode}
+          disabled={offlineMode || emptyingTrash}
           accessibilityRole="button"
           accessibilityLabel="Очистить корзину"
-          accessibilityState={{ disabled: offlineMode }}
-          style={[styles.emptyTrashButton, { borderColor: tokens.error, opacity: offlineMode ? 0.55 : 1 }]}
+          accessibilityState={{ disabled: offlineMode || emptyingTrash }}
+          style={[styles.emptyTrashButton, { borderColor: tokens.error, opacity: offlineMode || emptyingTrash ? 0.55 : 1 }]}
         >
-          <MaterialCommunityIcons name="delete-sweep-outline" size={19} color={tokens.error} />
+          {emptyingTrash
+            ? <ActivityIndicator size="small" color={tokens.error} />
+            : <MaterialCommunityIcons name="delete-sweep-outline" size={19} color={tokens.error} />}
           <Text style={{ color: tokens.error, fontWeight: '800', fontSize: 13 }}>Очистить корзину</Text>
         </Pressable>
       ) : null}

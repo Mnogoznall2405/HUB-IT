@@ -4,7 +4,7 @@ import type { KbAttachment } from '../api/kbApi';
 import { API_V1_BASE } from '../api/config';
 import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
-import { sanitizeNativeFileName } from '../files/filePolicy';
+import { fitNativeFileName, sanitizeNativeFileName } from '../files/filePolicy';
 
 const CACHE_DIRECTORY_NAME = 'hubit-kb';
 
@@ -17,12 +17,18 @@ function kbCacheDirectory(): Directory {
 async function kbCacheFile(fileName: string): Promise<File> {
   const userId = Number(await getSessionUserId());
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
-  return new File(kbCacheDirectory(), `${userId}-${fileName}`);
+  return new File(kbCacheDirectory(), fitNativeFileName(`${userId}-${fileName}`));
 }
 
 export function clearNativeKbCache(): void {
   const directory = kbCacheDirectory();
   for (const entry of directory.list()) entry.delete();
+}
+
+export function getNativeKbCacheSize(): number {
+  return kbCacheDirectory().list().reduce((total, entry) => (
+    entry instanceof File && entry.exists ? total + Math.max(0, Number(entry.size || 0)) : total
+  ), 0);
 }
 
 function cacheKeyFor(articleId: string, attachmentId: string): string {

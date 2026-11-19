@@ -76,3 +76,51 @@ def test_deliver_uses_batch_mode_and_env_target(monkeypatch):
     assert calls[0][-1] == f"bitrix@host:{export_module.DEFAULT_REMOTE_PATH}.part"
     assert calls[1][:4] == ["ssh", "-o", "BatchMode=yes", "bitrix@host"]
     assert result["delivered_to"] == f"bitrix@host:{export_module.DEFAULT_REMOTE_PATH}"
+
+
+def test_deliver_refuses_rows_below_absolute_floor(monkeypatch, tmp_path):
+    """A truncated feed must never ship: it deactivates portal users."""
+    monkeypatch.setenv("PORTAL_EXPORT_SSH_TARGET", "bitrix@host")
+    monkeypatch.setenv("PORTAL_EXPORT_MIN_ROWS", "500")
+    monkeypatch.setenv("PORTAL_EXPORT_STATE_PATH", str(tmp_path / "state.json"))
+    calls = []
+    monkeypatch.setattr(export_module.subprocess, "run", lambda *a, **kw: calls.append(a[0]))
+
+    with pytest.raises(RuntimeError, match="below the required"):
+        export_module.PortalUserExportService.deliver("x.csv", row_count=120)
+    assert calls == []
+
+
+def test_deliver_refuses_rows_below_relative_floor(monkeypatch, tmp_path):
+    """80% of the last good feed raises the floor above the absolute minimum."""
+    state_file = tmp_path / "state.json"
+    state_file.write_text('{"last_good_rows": 1000}', encoding="utf-8")
+    monkeypatch.setenv("PORTAL_EXPORT_SSH_TARGET", "bitrix@host")
+    monkeypatch.setenv("PORTAL_EXPORT_STATE_PATH", str(state_file))
+    calls = []
+    monkeypatch.setattr(export_module.subprocess, "run", lambda *a, **kw: calls.append(a[0]))
+
+    assert export_module.PortalUserExportService.min_required_rows() == 800
+    with pytest.raises(RuntimeError):
+        export_module.PortalUserExportService.deliver("x.csv", row_count=700)
+    assert calls == []
+
+
+def test_deliver_saves_last_good_rows_after_success(monkeypatch, tmp_path):
+    state_file = tmp_path / "state.json"
+    monkeypatch.setenv("PORTAL_EXPORT_SSH_TARGET", "bitrix@host")
+    monkeypatch.setenv("PORTAL_EXPORT_STATE_PATH", str(state_file))
+    monkeypatch.setattr(export_module.subprocess, "run", lambda *a, **kw: None)
+
+    export_module.PortalUserExportService.deliver("x.csv", row_count=930)
+
+    import json
+
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved["last_good_rows"] == 930
+
+
+def test_send_alert_skips_when_unconfigured(monkeypatch, caplog):
+    monkeypatch.delenv("PORTAL_EXPORT_ALERT_EMAIL", raising=False)
+    monkeypatch.delenv("SMTP_SERVER", raising=False)
+    assert export_module.PortalUserExportService.send_alert("s", "b") is False

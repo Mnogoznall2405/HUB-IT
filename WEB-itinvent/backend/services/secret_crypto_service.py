@@ -17,6 +17,7 @@ _PRODUCTION_PLACEHOLDER_KEYS = frozenset({
     "change_me",
     "changeme",
     "change-me",
+    "change_me_to_secure_random_value",
     "placeholder",
     "your_key_here",
     "secret",
@@ -37,12 +38,37 @@ def _reject_production_placeholder(raw_key: str, env_var: str) -> None:
         raise SecretCryptoError(f"{env_var} uses a placeholder value")
 
 
+_PASSPHRASE_DERIVATION_OPT_OUT = "SECRET_CRYPTO_ALLOW_PASSPHRASE_DERIVATION"
+
+
+def _env_flag(name: str) -> bool:
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _passphrase_derivation_rejected(env_var: str, strict: bool) -> bool:
+    """Whether silent SHA-256 passphrase derivation is disallowed.
+
+    Derivation stays allowed outside production so dev setups keep working.
+    In production a non-canonical key is rejected by default (fail closed);
+    ``strict`` callers reject it unconditionally. Escape hatch for legacy
+    passphrases: per-key ``<ENV_VAR>_ALLOW_PASSPHRASE=1`` or the global
+    ``SECRET_CRYPTO_ALLOW_PASSPHRASE_DERIVATION=1``.
+    """
+    if not _is_production_env():
+        return False
+    if strict:
+        return True
+    if _env_flag(f"{env_var}_ALLOW_PASSPHRASE"):
+        return False
+    return not _env_flag(_PASSPHRASE_DERIVATION_OPT_OUT)
+
+
 def _as_fernet_key(raw_key: str, env_var: str, *, strict: bool = False) -> bytes:
     """
     Accept either:
     - canonical Fernet key (urlsafe base64, 32-byte payload)
     - arbitrary passphrase (derived via SHA-256 to Fernet key; dev only —
-      rejected in production when ``strict`` is set)
+      rejected in production unless an opt-out flag is set)
     """
     value = str(raw_key or "").strip()
     if not value:
@@ -56,7 +82,7 @@ def _as_fernet_key(raw_key: str, env_var: str, *, strict: bool = False) -> bytes
     except Exception:
         pass
 
-    if strict and _is_production_env():
+    if _passphrase_derivation_rejected(env_var, strict):
         raise SecretCryptoError(
             f"{env_var} must be a canonical Fernet key (32-byte urlsafe base64) in production"
         )
@@ -88,11 +114,20 @@ def decrypt_secret(token: str | None) -> str:
     encoded = str(token or "").strip()
     if not encoded:
         return ""
-    try:
-        plain = _build_fernet().decrypt(encoded.encode("utf-8"))
-    except Exception as exc:
-        raise SecretCryptoError("Failed to decrypt secret value") from exc
-    return plain.decode("utf-8")
+    last_error: Exception | None = None
+    # MAIL_CREDENTIALS_KEY_LEGACY keeps ciphertexts written before a key
+    # rotation readable; remove it once stored values are re-encrypted.
+    for env_var in ("MAIL_CREDENTIALS_KEY", "MAIL_CREDENTIALS_KEY_LEGACY"):
+        if not str(os.getenv(env_var, "") or "").strip():
+            continue
+        try:
+            return _decrypt_with_env_key(encoded, env_var)
+        except SecretCryptoError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise SecretCryptoError("Failed to decrypt secret value") from last_error
+    raise SecretCryptoError("MAIL_CREDENTIALS_KEY is not configured")
 
 
 def _encrypt_with_env_key(value: str | None, env_var: str, *, strict: bool = False) -> str:

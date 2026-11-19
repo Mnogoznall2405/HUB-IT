@@ -82,6 +82,21 @@ export type ScanList<T> = {
   next_offset: number | null;
 };
 
+export type ScanIncidentAckResult = {
+  success: boolean;
+  incident: {
+    id: string;
+    status: string;
+    changed: boolean;
+  } | null;
+};
+
+export type ScanBulkAckResult = {
+  success: boolean;
+  acked_count: number;
+  total_matched: number;
+};
+
 function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {};
 }
@@ -315,4 +330,35 @@ export async function listScanHosts(options: {
     signal: options.signal,
   });
   return normalizePage(response.data, normalizeHost, { limit, offset });
+}
+
+export async function ackScanIncident(incidentId: string, options: { signal?: AbortSignal } = {}): Promise<ScanIncidentAckResult> {
+  const id = asString(incidentId);
+  if (!id) throw new Error('Не указан инцидент Scan Center.');
+  const response = await apiClient.post(`/scan/incidents/${encodeURIComponent(id)}/ack`, {}, { signal: options.signal });
+  const source = asRecord(response.data);
+  const incident = asRecord(source.incident);
+  return {
+    success: source.success !== false,
+    incident: asString(incident.id)
+      ? {
+        id: asString(incident.id),
+        status: asString(incident.status) || 'ack',
+        changed: incident.changed !== false,
+      }
+      : null,
+  };
+}
+
+export async function bulkAckScanIncidents(incidentIds: readonly string[], options: { signal?: AbortSignal } = {}): Promise<ScanBulkAckResult> {
+  const ids = (Array.isArray(incidentIds) ? incidentIds : [])
+    .map((id) => asString(id))
+    .filter(Boolean);
+  const response = await apiClient.post('/scan/incidents/bulk-ack', { incident_ids: ids }, { signal: options.signal });
+  const source = asRecord(response.data);
+  return {
+    success: source.success !== false,
+    acked_count: Math.max(0, asNumber(source.acked_count)),
+    total_matched: Math.max(0, asNumber(source.total_matched ?? source.acked_count)),
+  };
 }

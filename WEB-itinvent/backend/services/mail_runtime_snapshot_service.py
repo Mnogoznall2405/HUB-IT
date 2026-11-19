@@ -188,6 +188,11 @@ class MailRuntimeSnapshotService:
         ttl_seconds: int,
         now: datetime,
     ) -> None:
+        ttl = max(1, int(ttl_seconds or 90))
+        # Re-poll cycles mostly persist byte-identical snapshots: skip the write
+        # unless content changed or the row is within `ttl // 3` of expiry,
+        # otherwise every worker poll rewrites hundreds of rows (WAL churn).
+        refresh_before = now + timedelta(seconds=max(10, ttl // 3))
         values = {
             "user_id": int(user_id),
             "mailbox_id": mailbox_id,
@@ -197,7 +202,7 @@ class MailRuntimeSnapshotService:
             "status": "ok",
             "last_error": "",
             "as_of": now,
-            "expires_at": now + timedelta(seconds=max(1, int(ttl_seconds or 90))),
+            "expires_at": now + timedelta(seconds=ttl),
             "created_at": now,
             "updated_at": now,
         }
@@ -205,6 +210,8 @@ class MailRuntimeSnapshotService:
             session,
             values=values,
             update_fields=("payload_json", "status", "last_error", "as_of", "expires_at", "updated_at"),
+            content_fields=("payload_json", "status", "last_error"),
+            refresh_before=refresh_before,
         ):
             return
 
@@ -213,11 +220,29 @@ class MailRuntimeSnapshotService:
             row = AppMailRuntimeSnapshot(**values)
             session.add(row)
             return
+        row_expires_at = row.expires_at
+        if row_expires_at is not None and row_expires_at.tzinfo is None:
+            row_expires_at = row_expires_at.replace(tzinfo=timezone.utc)
+        if (
+            str(row.payload_json or "") == values["payload_json"]
+            and str(row.status or "") == values["status"]
+            and str(row.last_error or "") == values["last_error"]
+            and row_expires_at is not None
+            and row_expires_at >= refresh_before
+        ):
+            return
         for field_name in ("payload_json", "status", "last_error", "as_of", "expires_at", "updated_at"):
             setattr(row, field_name, values[field_name])
 
     @staticmethod
-    def _execute_atomic_upsert(session, *, values: dict[str, Any], update_fields: tuple[str, ...]) -> bool:
+    def _execute_atomic_upsert(
+        session,
+        *,
+        values: dict[str, Any],
+        update_fields: tuple[str, ...],
+        content_fields: tuple[str, ...] = (),
+        refresh_before: datetime | None = None,
+    ) -> bool:
         dialect_name = str(session.get_bind().dialect.name or "").lower()
         if dialect_name == "postgresql":
             from sqlalchemy.dialects.postgresql import insert
@@ -228,6 +253,19 @@ class MailRuntimeSnapshotService:
 
         table = AppMailRuntimeSnapshot.__table__
         statement = insert(table).values(**values)
+        upsert_kwargs: dict[str, Any] = {}
+        if content_fields:
+            clauses = [
+                getattr(table.c, field_name).is_distinct_from(getattr(statement.excluded, field_name))
+                for field_name in content_fields
+            ]
+            if refresh_before is not None:
+                clauses.append(table.c.expires_at.is_(None))
+                clauses.append(table.c.expires_at < refresh_before)
+            where_clause = None
+            for clause in clauses:
+                where_clause = clause if where_clause is None else (where_clause | clause)
+            upsert_kwargs["where"] = where_clause
         statement = statement.on_conflict_do_update(
             index_elements=[
                 table.c.user_id,
@@ -236,6 +274,7 @@ class MailRuntimeSnapshotService:
                 table.c.context_key,
             ],
             set_={field_name: getattr(statement.excluded, field_name) for field_name in update_fields},
+            **upsert_kwargs,
         )
         session.execute(statement)
         return True
@@ -268,6 +307,7 @@ class MailRuntimeSnapshotService:
             session,
             values=values,
             update_fields=("status", "last_error", "updated_at"),
+            content_fields=("status", "last_error"),
         ):
             return
 
@@ -280,6 +320,8 @@ class MailRuntimeSnapshotService:
         )
         if row is None:
             session.add(AppMailRuntimeSnapshot(**values))
+            return
+        if str(row.status or "") == values["status"] and str(row.last_error or "") == values["last_error"]:
             return
         row.status = "error"
         row.last_error = values["last_error"]

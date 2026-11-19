@@ -12,7 +12,7 @@ import { type FluentTokens, useAppFluentTokens } from '../../src/theme/fluentTok
 export default function TwoFactorScreen() {
   const tokens = useAppFluentTokens();
   const styles = useMemo(() => createStyles(tokens), [tokens]);
-  const { verifyTwoFactor, loginChallengeId } = useAuth();
+  const { verifyTwoFactor, loginChallengeId, resetLoginChallenge } = useAuth();
   const [code, setCode] = useState('');
   const [useBackup, setUseBackup] = useState(false);
   const [error, setError] = useState('');
@@ -94,7 +94,16 @@ export default function TwoFactorScreen() {
         <HubButton mode="contained" onPress={onSubmit} loading={submitting} disabled={submitting || expired}>
           Подтвердить
         </HubButton>
-        <HubButton mode="text" disabled={submitting} onPress={() => router.replace('/(auth)/login')}>
+        <HubButton
+          mode="text"
+          disabled={submitting}
+          onPress={() => {
+            // Without clearing the challenge the auth guard would bounce
+            // straight back here (and even a later biometric unlock).
+            resetLoginChallenge();
+            router.replace('/(auth)/login');
+          }}
+        >
           Войти заново
         </HubButton>
       </HubCard>

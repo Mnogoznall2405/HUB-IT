@@ -43,6 +43,8 @@ def env(tmp_path, monkeypatch):
         package = brand.PACKAGE_VERSION
         ready_after = 0
         ready_checks = 0
+        files_ready_after = 0
+        file_checks = 0
         failure = None
         moves = 0
         clock = 0.0
@@ -71,6 +73,13 @@ def env(tmp_path, monkeypatch):
                 if self.ready_checks <= self.ready_after:
                     raise RuntimeError('editor is starting')
                 return 'true'
+            if command[:2] == ('sh', '-c') and 'test -f' in command[2]:
+                self.file_checks += 1
+                if self.file_checks <= self.files_ready_after:
+                    raise RuntimeError('asset is still generating')
+                if self.relative(command[-1]) not in self.files:
+                    raise RuntimeError('missing asset')
+                return ''
             if command[0] in ('mkdir', 'chmod'):
                 return ''
             if command[0] == 'mv':
@@ -197,6 +206,24 @@ def test_readiness_timeout_does_not_modify_container_assets(env):
     before = container.files.copy()
     with pytest.raises(RuntimeError, match='not ready'):
         brand.apply('onlyoffice', state, manifest, False, wait_ready_seconds=4)
+    assert container.files == before and container.moves == 0
+
+
+def test_ready_healthcheck_still_waits_for_generated_assets(env):
+    # 2026-11-09 regression: /healthcheck passed while api.js.gz was still being written.
+    brand, container, manifest, state, _ = env
+    container.files_ready_after = 2
+    brand.apply('onlyoffice', state, manifest, False, wait_ready_seconds=30)
+    assert container.file_checks > 2
+    assert brand.CACHE_TAG.encode() in container.files[API]
+
+
+def test_assets_never_generated_times_out_without_changes(env):
+    brand, container, manifest, state, _ = env
+    container.files_ready_after = 1000
+    before = container.files.copy()
+    with pytest.raises(RuntimeError, match='not ready'):
+        brand.apply('onlyoffice', state, manifest, False, wait_ready_seconds=5)
     assert container.files == before and container.moves == 0
 
 

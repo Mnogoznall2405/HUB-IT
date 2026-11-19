@@ -31,7 +31,37 @@ describe('CompanyStructureFocus alignment', () => {
     const peerCards = screen.getAllByTestId('focus-node-card')
       .filter((card) => card.dataset.selected === 'false');
     expect(peerCards).toHaveLength(2);
-    peerCards.forEach((card) => expect(card).toHaveStyle({ height: '136px' }));
+    peerCards.forEach((card) => expect(card).toHaveStyle({ minHeight: '136px' }));
+  });
+
+  it('lets a leader card grow past the baseline instead of clipping name and position', () => {
+    const root = {
+      id: 'root',
+      node_type: 'root',
+      title: 'Генеральный директор по направлению и развитию',
+      person_name: 'Иванов Иван Иванович',
+      person_position: 'Первый заместитель генерального директора',
+      person_employee_code: 'EMP-1',
+      children: [],
+    };
+
+    render(
+      <CompanyStructureFocus
+        tree={[root]}
+        selectedNode={root}
+        selectedPath={[root]}
+        onSelect={vi.fn()}
+        onPeople={vi.fn()}
+      />,
+    );
+
+    const card = screen.getByTestId('focus-node-card');
+    expect(card).toHaveStyle({ minHeight: '156px' });
+    const button = card.querySelector('button');
+    expect(button).toHaveStyle({ flex: '1 1 0%', minHeight: '112px' });
+    expect(button).not.toHaveStyle({ overflow: 'hidden' });
+    expect(screen.getByText('Иванов Иван Иванович')).toBeInTheDocument();
+    expect(screen.getByText('Первый заместитель генерального директора')).toBeInTheDocument();
   });
 
   it('shows employees inline for a terminal node', () => {

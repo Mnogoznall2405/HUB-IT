@@ -1,4 +1,5 @@
 import { writeNativeSnapshot } from '../cache/nativeSnapshotCache';
+import { clearDiagnosticEvents, recordDiagnosticEvent } from '../diagnostics/diagnostics';
 import { assertAppLockPayload, executeNativeCommand } from './nativeCommandRuntime';
 
 describe('nativeCommandRuntime', () => {
@@ -84,5 +85,25 @@ describe('nativeCommandRuntime', () => {
       snapshotScopes: [],
       snapshotMissingScopes: ['address-book'],
     }));
+  });
+
+  it('feeds stored diagnostic events into the summary section', async () => {
+    await clearDiagnosticEvents();
+    await recordDiagnosticEvent('native_file_error', undefined, { source: 'chat-outbox', stage: 'parse' });
+
+    const state = await executeNativeCommand('diagnostics.getState', {}, {
+      user: { id: 17, username: 'diagnostic-user' } as never,
+      biometricEnabled: false,
+      enableBiometrics: jest.fn(),
+      skipBiometrics: jest.fn(),
+      updater: {} as never,
+    }) as {
+      eventCount: number;
+      summary: { sections: Array<{ id: string; lines: string[] }> };
+    };
+
+    expect(state.eventCount).toBe(1);
+    expect(state.summary.sections.find((section) => section.id === 'events')?.lines.join(' '))
+      .toContain('Ошибка локального файла (очередь чата, чтение)');
   });
 });

@@ -17,12 +17,19 @@ import {
 import { getBrowserAccount, BROWSER_ACCOUNT_EVENT } from '../lib/browserAccountSession';
 
 const NotificationContext = createContext(null);
+// Toast history lives in a separate context: it changes on every pushToast and
+// would otherwise re-render all ~30 useNotification consumers for data that
+// only the (optional) history list reads.
+const NotificationHistoryContext = createContext([]);
 
 const TOAST_HISTORY_KEY = 'itinvent_toast_history';
 const HUB_SEEN_KEY = 'itinvent_hub_seen_ids';
 const MAX_HISTORY_ITEMS = 50;
 const MAX_SEEN_IDS = 300;
 const MAX_ACTIVE_TOASTS = 4;
+// Chat toasts drain one per CHAT_TOAST_VISIBLE_MS; past this backlog the oldest
+// queued toasts are dropped — the newest ones stay, and history keeps all.
+const MAX_CHAT_SERIAL_QUEUE = 8;
 const CHAT_TOAST_VISIBLE_MS = 5_200;
 const DEDUPE_WINDOW_MS = 15_000;
 const EXPIRY_GRACE_MS = 20;
@@ -38,25 +45,41 @@ function safeParseArray(raw) {
 
 function loadToastHistory() {
   if (!getBrowserAccount()) return [];
-  return safeParseArray(window.localStorage.getItem(TOAST_HISTORY_KEY))
-    .map(normalizeNotificationItem);
+  try {
+    return safeParseArray(window.localStorage.getItem(TOAST_HISTORY_KEY))
+      .map(normalizeNotificationItem);
+  } catch {
+    return [];
+  }
 }
 
 function loadSeenHubIds() {
   if (!getBrowserAccount()) return [];
-  return safeParseArray(window.localStorage.getItem(HUB_SEEN_KEY))
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
+  try {
+    return safeParseArray(window.localStorage.getItem(HUB_SEEN_KEY))
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function persistToastHistory(items) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(TOAST_HISTORY_KEY, JSON.stringify(items.slice(0, MAX_HISTORY_ITEMS)));
+  try {
+    window.localStorage.setItem(TOAST_HISTORY_KEY, JSON.stringify(items.slice(0, MAX_HISTORY_ITEMS)));
+  } catch {
+    // Storage quota/private mode must not break toasts.
+  }
 }
 
 function persistSeenHubIds(ids) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(HUB_SEEN_KEY, JSON.stringify(ids.slice(-MAX_SEEN_IDS)));
+  try {
+    window.localStorage.setItem(HUB_SEEN_KEY, JSON.stringify(ids.slice(-MAX_SEEN_IDS)));
+  } catch {
+    // Storage quota/private mode must not break toasts.
+  }
 }
 
 function createToastId() {
@@ -170,6 +193,7 @@ export function NotificationProvider({ children }) {
   const [activeToasts, setActiveToasts] = useState([]);
   const [seenHubNotificationIds, setSeenHubNotificationIds] = useState(() => loadSeenHubIds());
   const chatSerialQueueRef = useRef([]);
+  const seenHubNotificationIdsRef = useRef(seenHubNotificationIds);
   const accountKeyRef = useRef(getBrowserAccount());
   const accountEpochRef = useRef(0);
   const [accountEpoch, setAccountEpoch] = useState(0);
@@ -196,6 +220,7 @@ export function NotificationProvider({ children }) {
   }, [toastHistory, accountEpoch]);
 
   useEffect(() => {
+    seenHubNotificationIdsRef.current = seenHubNotificationIds;
     if (accountEpoch !== accountEpochRef.current || !accountKeyRef.current || accountKeyRef.current !== getBrowserAccount()) return;
     persistSeenHubIds(seenHubNotificationIds);
   }, [seenHubNotificationIds, accountEpoch]);
@@ -343,6 +368,9 @@ export function NotificationProvider({ children }) {
           }
         }
         chatSerialQueueRef.current.push(next);
+        if (chatSerialQueueRef.current.length > MAX_CHAT_SERIAL_QUEUE) {
+          chatSerialQueueRef.current.splice(0, chatSerialQueueRef.current.length - MAX_CHAT_SERIAL_QUEUE);
+        }
         const hasActiveChatToast = prev.some((item) => String(item?.source || '').trim() === 'chat');
         if (!hasActiveChatToast) {
           const queued = chatSerialQueueRef.current.shift();
@@ -417,11 +445,10 @@ export function NotificationProvider({ children }) {
 
   const hasSeenHubNotification = useCallback((id) => {
     const normalized = String(id || '').trim();
-    return normalized ? seenHubNotificationIds.includes(normalized) : false;
-  }, [seenHubNotificationIds]);
+    return normalized ? seenHubNotificationIdsRef.current.includes(normalized) : false;
+  }, []);
 
   const value = useMemo(() => ({
-    toastHistory,
     clearToastHistory,
     notifySuccess,
     notifyInfo,
@@ -439,12 +466,13 @@ export function NotificationProvider({ children }) {
     notifyInfo,
     notifySuccess,
     notifyWarning,
-    toastHistory,
   ]);
 
   return (
     <NotificationContext.Provider value={value}>
-      {children}
+      <NotificationHistoryContext.Provider value={toastHistory}>
+        {children}
+      </NotificationHistoryContext.Provider>
       <Box
         data-testid="toast-stack"
         data-toast-position="bottom-right"
@@ -506,4 +534,9 @@ export function useNotification() {
 /** Как useNotification, но без провайдера возвращает null (изолированный рендер компонента). */
 export function useOptionalNotification() {
   return useContext(NotificationContext);
+}
+
+/** Отдельная подписка на историю тостов: не ререндерит обычных потребителей API. */
+export function useNotificationHistory() {
+  return useContext(NotificationHistoryContext);
 }

@@ -985,7 +985,7 @@ export default function ItPurchaseRequests() {
               actions={(
                 <>
                   <Typography variant="caption" color="text.secondary" role="status" aria-live="polite">
-                    {asOf ? `Обновлено ${formatDate(asOf, true)}` : 'Данные ещё не загружены'}
+                    {asOf ? `Обновлено ${formatDate(asOf, true)}` : loading ? <Skeleton variant="text" width={150} /> : 'Данные ещё не загружены'}
                   </Typography>
                   <Tooltip title="Обновить список и открытую заявку">
                     <span>

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -24,14 +24,16 @@ import { TelegramDialogPanel } from '../components/dlp/TelegramDialogPanel';
 import { HostFilesTable } from '../components/dlp/HostFilesTable';
 import { BrowserVisitsPanel } from '../components/dlp/BrowserVisitsPanel';
 import { DlpSummaryInline } from '../components/dlp/stats';
-import { normalizeHost } from '../components/dlp/utils';
+import { dayAtUtcOffset, normalizeHost } from '../components/dlp/utils';
 
 const HOST_TABS = ['files', 'telegram', 'max', 'browser'];
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const LIST_SCROLL_KEY = 'dlp_hostlist_scroll';
 
+// The overview/attention rollups are explicitly Tyumen (UTC+05) days; the
+// per-host activity view resolves its own branch-local day on the server.
 function todayKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return dayAtUtcOffset(Date.now(), 300);
 }
 
 export default function FileEgress() {
@@ -53,6 +55,20 @@ export default function FileEgress() {
   const hostTab = HOST_TABS.includes(rawTab) ? rawTab : 'files';
   const rawDay = searchParams.get('day') || '';
   const day = DAY_RE.test(rawDay) ? rawDay : todayKey();
+  // Server-resolved branch day for the open host (local_time.day); the URL
+  // keeps no ?day until the user picks one explicitly.
+  const [hostResolvedDay, setHostResolvedDay] = useState('');
+  // One-shot category for the browser panel: set when a metric deep-links into
+  // a host's filtered browser view, not kept in the URL — the panel owns its
+  // filter afterwards.
+  const [browserCategory, setBrowserCategory] = useState('');
+  const hostSectionRef = useRef(null);
+  const showHostList = useCallback(() => {
+    const el = hostSectionRef.current;
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
 
   const setParams = useCallback(
     (patch) => {
@@ -68,20 +84,81 @@ export default function FileEgress() {
     [setSearchParams],
   );
 
+  useEffect(() => {
+    setHostResolvedDay('');
+  }, [selectedHost, rawDay]);
+
   const openHost = useCallback(
     (name) => {
-      setParams({ host: name, tab: 'files', day });
+      setParams({ host: name, tab: 'files', day: rawDay || '' });
       setChannel('all');
+      setBrowserCategory('');
     },
-    [setParams, day],
+    [setParams, rawDay],
+  );
+
+  // Entertainment column deep-link: open the host straight on the browser tab
+  // filtered to entertainment sites.
+  const openHostEntertainment = useCallback(
+    (name) => {
+      setParams({ host: name, tab: 'browser', day: rawDay || '' });
+      setBrowserCategory('entertainment');
+    },
+    [setParams, rawDay],
   );
 
   const closeHost = useCallback(() => {
-    setParams({ host: '', tab: '', day });
-  }, [setParams, day]);
+    setParams({ host: '', tab: '', day: rawDay || '' });
+  }, [setParams, rawDay]);
 
   const setDay = useCallback((value) => setParams({ day: value }), [setParams]);
   const setHostTab = useCallback((value) => setParams({ tab: value }), [setParams]);
+
+  // Esc on a host card works like "К списку хостов"; open dialogs/menus and
+  // focused text inputs keep their own Esc semantics.
+  useEffect(() => {
+    if (!selectedHost) return undefined;
+    const onKey = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (document.querySelector('.MuiModal-root, .MuiPopover-root')) return;
+      const target = event.target;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      closeHost();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedHost, closeHost]);
+
+  // Host list scroll position survives the host round trip (and F5): write the
+  // trailing value on scroll, restore when the list remounts.
+  const scrollSaveTimer = useRef(0);
+  const onListScroll = useCallback((event) => {
+    const top = event.currentTarget.scrollTop;
+    window.clearTimeout(scrollSaveTimer.current);
+    scrollSaveTimer.current = window.setTimeout(() => {
+      try {
+        sessionStorage.setItem(LIST_SCROLL_KEY, String(Math.round(top)));
+      } catch {
+        // sessionStorage may be unavailable — scroll restore just skips.
+      }
+    }, 150);
+  }, []);
+  const listScrollRef = useCallback((el) => {
+    if (!el) return;
+    let saved = 0;
+    try {
+      saved = Number(sessionStorage.getItem(LIST_SCROLL_KEY) || 0);
+    } catch {
+      saved = 0;
+    }
+    if (saved <= 0) return;
+    el.scrollTop = saved;
+    // Collapsed groups may still be mounting — re-apply after layout settles.
+    requestAnimationFrame(() => {
+      el.scrollTop = saved;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -243,7 +320,7 @@ export default function FileEgress() {
               <CircularProgress />
             </Box>
           ) : !selectedHost ? (
-            <Box sx={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
+            <Box ref={listScrollRef} onScroll={onListScroll} sx={{ overflow: 'auto', flex: 1, minHeight: 0 }}>
               <Stack spacing={2} sx={{ minHeight: 'min-content' }}>
                 <DlpOverview
                   day={day}
@@ -251,12 +328,16 @@ export default function FileEgress() {
                   attention={attention}
                   loading={attentionLoading}
                   onOpenHost={openHost}
+                  onShowHosts={showHostList}
                 />
-                <DlpHostList
-                  hosts={hosts}
-                  attentionMap={attentionMap}
-                  onOpenHost={openHost}
-                />
+                <Box ref={hostSectionRef}>
+                  <DlpHostList
+                    hosts={hosts}
+                    attentionMap={attentionMap}
+                    onOpenHost={openHost}
+                    onOpenBrowser={openHostEntertainment}
+                  />
+                </Box>
               </Stack>
             </Box>
           ) : (
@@ -264,12 +345,17 @@ export default function FileEgress() {
               <DlpHostHeader
                 host={selectedHost}
                 stats={selectedStats}
-                day={day}
+                day={rawDay || hostResolvedDay}
                 onDayChange={setDay}
                 onBack={closeHost}
                 onOpenReport={openReport}
               />
-              <DlpActivityBlock computerName={selectedHost} day={day} />
+              <DlpActivityBlock
+                computerName={selectedHost}
+                day={rawDay || ''}
+                onDayResolved={setHostResolvedDay}
+                onOpenBrowser={() => setHostTab('browser')}
+              />
 
               <Box sx={{ flex: 1, minHeight: 0, overflow: hostTab === 'files' || hostTab === 'browser' ? 'auto' : 'hidden' }}>
                 {hostTab === 'files' ? (
@@ -284,7 +370,11 @@ export default function FileEgress() {
                     emptyHint="Откройте чат в MAX на этом ПК — probe снимет переписку и снимки окна."
                   />
                 ) : (
-                  <BrowserVisitsPanel host={selectedHost} initialDay={day} />
+                  <BrowserVisitsPanel
+                    host={selectedHost}
+                    initialDay={day}
+                    initialCategory={browserCategory}
+                  />
                 )}
               </Box>
             </Stack>

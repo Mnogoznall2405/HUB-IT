@@ -6,6 +6,7 @@ import concurrent.futures
 import importlib
 import json
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -142,35 +143,29 @@ def test_claim_failure_does_not_persist_message(chat_env, monkeypatch):
     assert int(count) == 0
 
 
-def test_text_send_defers_delivery_outbox_and_records_lock_hold(chat_env):
+def test_text_send_commits_delivery_outbox_and_records_lock_hold(chat_env):
     service = chat_env["service"]
     conversation = chat_env["direct"]
     persisted = service._text_message_persistence.persist_text_message(
         current_user_id=1,
         conversation_id=conversation["id"],
-        body="deferred outbox",
+        body="durable outbox",
         body_format="plain",
         client_message_id="deferred-outbox-1",
         reply_to_message_id=None,
     )
-    assert float(persisted.stage_metrics.get("outbox_insert_ms", -1)) == 0.0
+    assert float(persisted.stage_metrics["outbox_insert_ms"]) >= 0.0
     assert "conversation_lock_hold_ms" in persisted.stage_metrics
     assert float(persisted.stage_metrics["conversation_lock_hold_ms"]) >= 0.0
-    deferred = persisted.payload.get("_deferred_delivery_outbox")
-    assert isinstance(deferred, dict)
-    assert deferred.get("message_id") == persisted.message_id
+    assert "_deferred_delivery_outbox" not in persisted.payload
     with chat_db_module.chat_session() as session:
         outbox_count = session.execute(
             select(func.count())
             .select_from(chat_models_module.ChatEventOutbox)
             .where(chat_models_module.ChatEventOutbox.message_id == persisted.message_id)
         ).scalar_one()
-    assert int(outbox_count) == 0
+    assert int(outbox_count) == 1
 
-    from backend.chat.event_outbox_service import chat_event_outbox_service
-
-    assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(deferred) is True
-    assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(deferred) is False
     assert service.apply_delivery_state_for_message(message_id=persisted.message_id) is True
 
 
@@ -201,6 +196,44 @@ def test_client_message_id_dedup_does_not_create_second_row(chat_env):
     assert int(count) == 1
 
 
+def test_racing_duplicate_sends_return_the_same_message(chat_env, monkeypatch):
+    service = chat_env["service"]
+    conversation_id = chat_env["direct"]["id"]
+    persistence = service._text_message_persistence
+    original = persistence._find_existing_client_message
+    both_read = threading.Barrier(2)
+    local = threading.local()
+
+    def simultaneous_lookup(**kwargs):
+        result = original(**kwargs)
+        if not getattr(local, "checked", False):
+            local.checked = True
+            both_read.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(persistence, "_find_existing_client_message", simultaneous_lookup)
+
+    def send():
+        return service.send_message(
+            current_user_id=1, conversation_id=conversation_id, body="one message",
+            client_message_id="racing-retry", defer_push_notifications=True,
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: send(), range(2)))
+    assert results[0]["id"] == results[1]["id"]
+    with chat_db_module.chat_session() as session:
+        rows = session.execute(
+            select(chat_models_module.ChatMessage).where(
+                chat_models_module.ChatMessage.conversation_id == conversation_id
+            )
+        ).scalars().all()
+        tip = session.get(chat_models_module.ChatConversation, conversation_id)
+        assert len(rows) == 1
+        assert tip.last_message_id == rows[0].id
+        assert int(tip.last_message_seq) == int(rows[0].conversation_seq) == 1
+
+
 def test_delivery_outbox_unread_is_idempotent(chat_env):
     service = chat_env["service"]
     conversation = chat_env["direct"]
@@ -211,12 +244,6 @@ def test_delivery_outbox_unread_is_idempotent(chat_env):
         client_message_id="delivery-1",
         defer_push_notifications=True,
     )
-    # Production enqueues via after-ACK aux TX; unit path calls service.send_message directly.
-    from backend.chat.event_outbox_service import chat_event_outbox_service
-
-    deferred = created.pop("_deferred_delivery_outbox", None)
-    assert isinstance(deferred, dict)
-    assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(deferred) is True
     assert service.apply_delivery_state_for_message(message_id=created["id"]) is True
     assert service.apply_delivery_state_for_message(message_id=created["id"]) is False
 
@@ -356,7 +383,7 @@ def test_sender_task_stops_on_cancel():
     asyncio.run(_run())
 
 
-def test_delivery_outbox_is_deferred_then_enqueued_idempotently(chat_env):
+def test_delivery_outbox_reenqueue_does_not_duplicate_committed_intent(chat_env):
     service = chat_env["service"]
     conversation = chat_env["direct"]
     created = service.send_message(
@@ -375,12 +402,9 @@ def test_delivery_outbox_is_deferred_then_enqueued_idempotently(chat_env):
                 chat_models_module.ChatEventOutbox.event_type == CHAT_MESSAGE_DELIVERY_STATE_EVENT,
             )
         ).scalar_one()
-    assert int(count) == 0
+    assert int(count) == 1
     from backend.chat.event_outbox_service import chat_event_outbox_service
 
-    deferred = created.get("_deferred_delivery_outbox")
-    assert isinstance(deferred, dict)
-    assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(deferred) is True
     with chat_db_module.chat_session() as session:
         row = session.execute(
             select(chat_models_module.ChatEventOutbox).where(
@@ -390,4 +414,9 @@ def test_delivery_outbox_is_deferred_then_enqueued_idempotently(chat_env):
         ).scalar_one()
     assert row.status == "queued"
     assert row.dedupe_key == f"delivery_state:{created['id']}"
-    assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(deferred) is False
+    duplicate = {
+        "event_type": row.event_type, "target_scope": row.target_scope,
+        "target_user_id": row.target_user_id, "conversation_id": row.conversation_id,
+        "message_id": row.message_id, "payload": json.loads(row.payload_json), "dedupe_key": row.dedupe_key,
+    }
+    assert chat_event_outbox_service.enqueue_delivery_state_job_idempotent(duplicate) is False

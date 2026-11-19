@@ -6,6 +6,7 @@ import useChatActiveConversationThreadBootstrap, {
   shouldInvalidateThreadCacheFromNotification,
 } from './useChatActiveConversationThreadBootstrap';
 import { CHAT_MOBILE_SCREEN_TRANSITION_MS } from './chatMobileModel';
+import { peekSWRCache } from '../../lib/swrCache';
 
 vi.mock('../../lib/swrCache', () => ({
   invalidateSWRCacheByPrefix: vi.fn(),
@@ -132,5 +133,31 @@ describe('useChatActiveConversationThreadBootstrap hook', () => {
 
     renderHook(() => useChatActiveConversationThreadBootstrap(args));
     expect(args.loadThreadBootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a fresh cached thread without a forced revalidation request', () => {
+    const cachedData = { items: [{ id: 'm-1' }] };
+    peekSWRCache.mockReturnValue({ data: cachedData, isFresh: true });
+    const args = buildBootstrapHookArgs();
+
+    renderHook(() => useChatActiveConversationThreadBootstrap(args));
+
+    expect(args.applyLatestThreadPayload).toHaveBeenCalledWith('conv-1', cachedData);
+    expect(args.setMessagesLoading).toHaveBeenCalledWith(false);
+    expect(args.loadThreadBootstrap).not.toHaveBeenCalled();
+  });
+
+  it('revalidates a stale cached thread through SWR without force', () => {
+    const cachedData = { items: [{ id: 'm-1' }] };
+    peekSWRCache.mockReturnValue({ data: cachedData, isFresh: false });
+    const args = buildBootstrapHookArgs();
+
+    renderHook(() => useChatActiveConversationThreadBootstrap(args));
+
+    expect(args.applyLatestThreadPayload).toHaveBeenCalledWith('conv-1', cachedData);
+    expect(args.loadThreadBootstrap).toHaveBeenCalledWith('conv-1', {
+      silent: true,
+      reason: 'effect:activeConversation:revalidate',
+    });
   });
 });

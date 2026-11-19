@@ -18,10 +18,9 @@ import type { HubDashboard } from '../api/hubApi';
 import { formatApiError } from '../api/formatError';
 import { useAuth } from '../auth/AuthContext';
 import { readNativeSnapshot, writeNativeSnapshot } from '../cache/nativeSnapshotCache';
+import { NativeDocflowAbsencesSection } from '../components/docflow/NativeDocflowAbsencesSection';
 import { NATIVE_CHAT_ENABLED } from '../chat/nativeChatFeature';
-import { NativeDatabaseQrScannerModal } from '../components/database/NativeDatabaseQrScannerModal';
 import { NATIVE_DATABASE_ENABLED } from '../database/nativeDatabaseFeature';
-import type { InventoryQrPayload } from '../database/nativeDatabaseModel';
 import { openNativeNotifications, openPortalPath } from '../navigation/moduleRegistry';
 import { useNativeBottomNavInset } from '../navigation/useNativeBottomNavInset';
 import { getNativeUnreadSnapshot } from '../notifications/nativeUnreadSnapshot';
@@ -105,23 +104,6 @@ function DashboardContent() {
   const canReadNews = hasPermission('dashboard.read');
   const canReadDocflow = hasPermission('docflow.read');
   const canScanInventoryQr = NATIVE_DATABASE_ENABLED && hasPermission('database.read');
-  const [qrScannerOpen, setQrScannerOpen] = useState(false);
-
-  const handleQrScanned = useCallback((payload: InventoryQrPayload) => {
-    setQrScannerOpen(false);
-    const search = new URLSearchParams();
-    if (payload.kind === 'consumable') {
-      const itemId = Number(payload.itemId);
-      if (!Number.isInteger(itemId) || itemId <= 0) return;
-      search.set('consumable', String(itemId));
-    } else {
-      const invNo = String(payload.inventoryNumber || '').trim();
-      if (!invNo) return;
-      search.set('inv_no', invNo);
-    }
-    if (payload.databaseId) search.set('db_id', payload.databaseId);
-    openPortalPath(`/database?${search.toString()}`);
-  }, []);
 
   const persistDashboardSnapshot = useCallback((nextDocflow = docflowSummaryRef.current) => {
     const userId = Number(user?.id || 0);
@@ -301,15 +283,26 @@ function DashboardContent() {
     return undefined;
   }, [canReadDocflow, offlineMode, refreshDocflowSummary]);
 
-  const taskItems = useMemo(() => listDashboardTasks(payload), [payload]);
-  const announcementItems = useMemo(() => listDashboardAnnouncements(payload), [payload]);
+  // A restored snapshot or a still-mounted screen must not leak section data
+  // after the matching permission was revoked — filter at the source.
+  const taskItems = useMemo(
+    () => (canReadTasks ? listDashboardTasks(payload) : []),
+    [canReadTasks, payload],
+  );
+  const announcementItems = useMemo(
+    () => (canReadNews ? listDashboardAnnouncements(payload) : []),
+    [canReadNews, payload],
+  );
   const attentionItems = useMemo(
     () => buildAttentionItems(taskItems, announcementItems, user),
     [announcementItems, taskItems, user],
   );
   const nearestTasks = useMemo(() => nearestOpenTasks(taskItems), [taskItems]);
   const newsItems = useMemo(() => latestNews(announcementItems), [announcementItems]);
-  const absences = useMemo(() => listDashboardAbsences(payload), [payload]);
+  const absences = useMemo(
+    () => (canReadNews ? listDashboardAbsences(payload) : { count: 0, items: [] }),
+    [canReadNews, payload],
+  );
   const unreadCounts = payload.unread_counts || {};
 
   const handleSaveSections = async (nextSections: DashboardSectionKey[]) => {
@@ -351,7 +344,7 @@ function DashboardContent() {
           canReadChat={canReadChat}
           canReadMail={canReadMail}
           canScanQr={canScanInventoryQr}
-          onScanQr={() => setQrScannerOpen(true)}
+          onScanQr={() => openPortalPath('/database?scan=1')}
           onRefresh={() => { void loadDashboard(); }}
           onCustomize={() => setCustomizeOpen(true)}
         />
@@ -424,12 +417,6 @@ function DashboardContent() {
         themeMode={preferences.theme_mode}
         onClose={() => setCustomizeOpen(false)}
         onSave={(next) => { void handleSaveSections(next); }}
-      />
-      <NativeDatabaseQrScannerModal
-        visible={qrScannerOpen}
-        tokens={tokens}
-        onClose={() => setQrScannerOpen(false)}
-        onScanned={handleQrScanned}
       />
     </SafeAreaView>
   );
@@ -727,6 +714,7 @@ function AbsencesSection({
       ) : (
         <EmptyState tokens={tokens} title="Сегодня все на месте" text="Записи об отпусках и неявках появятся здесь." />
       )}
+      <NativeDocflowAbsencesSection tokens={tokens} />
     </Section>
   );
 }

@@ -13,12 +13,31 @@ export function startChatMessageEditing({
   setEditingMessage,
   setMessageText,
   setReplyMessage,
+  editDraftSnapshotRef,
+  latestDraftStorageKeyRef,
+  latestMessageTextRef,
 }) {
   if (!message?.id) return false;
+  // FE-004: remember the conversation draft replaced by the edited body so
+  // cancel/send/reply can put it back instead of losing it.
+  if (editDraftSnapshotRef && !editDraftSnapshotRef.current) {
+    editDraftSnapshotRef.current = {
+      key: latestDraftStorageKeyRef?.current,
+      text: String(latestMessageTextRef?.current ?? ''),
+    };
+  }
   setReplyMessage(null);
   setEditingMessage(message);
   setMessageText(String(message?.body || '').trim());
   focusComposer({ forceMobile: true });
+  return true;
+}
+
+export function restoreChatEditDraft({ editDraftSnapshotRef, latestDraftStorageKeyRef, setMessageText }) {
+  const saved = editDraftSnapshotRef?.current;
+  if (!saved) return false;
+  editDraftSnapshotRef.current = null;
+  setMessageText(saved.key === latestDraftStorageKeyRef?.current ? saved.text : '');
   return true;
 }
 
@@ -37,6 +56,9 @@ export default function useChatMessageMenuActions({
   pinnedMessageMutationRef,
   pinnedMessage,
   pinnedMessages,
+  editDraftSnapshotRef,
+  latestDraftStorageKeyRef,
+  latestMessageTextRef,
   setComposerMenuAnchor,
   setMessageMenuAnchor,
   setMessageMenuMessage,
@@ -116,10 +138,11 @@ export default function useChatMessageMenuActions({
 
   const handleReplyMessage = useCallback((message) => {
     if (!message || !message.id) return;
+    restoreChatEditDraft({ editDraftSnapshotRef, latestDraftStorageKeyRef, setMessageText });
     setEditingMessage(null);
     setReplyMessage(message);
     focusComposer();
-  }, [focusComposer, setEditingMessage, setReplyMessage]);
+  }, [editDraftSnapshotRef, focusComposer, latestDraftStorageKeyRef, setEditingMessage, setMessageText, setReplyMessage]);
 
   const handleReplyFromMessageMenu = useCallback((message) => {
     closeMessageMenu();
@@ -134,8 +157,11 @@ export default function useChatMessageMenuActions({
       setEditingMessage,
       setMessageText,
       setReplyMessage,
+      editDraftSnapshotRef,
+      latestDraftStorageKeyRef,
+      latestMessageTextRef,
     });
-  }, [closeMessageMenu, focusComposer, setEditingMessage, setMessageText, setReplyMessage]);
+  }, [closeMessageMenu, editDraftSnapshotRef, focusComposer, latestDraftStorageKeyRef, latestMessageTextRef, setEditingMessage, setMessageText, setReplyMessage]);
 
   const handleCopyMessage = useCallback(async (message) => {
     closeMessageMenu();

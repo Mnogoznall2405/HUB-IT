@@ -42,9 +42,12 @@ vi.mock('./MailComposeDialog', () => ({
     composeUploadProgress,
     draftSyncState,
     composeForwardAttachments = [],
+    composeDraftAttachments = [],
+    composeFiles = [],
     onCancelComposeUpload,
     onClose,
     onComposeBodyChange,
+    onFileChange,
     onOpenDesktopWindow,
     onPasteInlineImages,
     onRemoveForwardAttachment,
@@ -63,6 +66,8 @@ vi.mock('./MailComposeDialog', () => ({
       data-sending={composeSending ? 'true' : 'false'}
       data-upload-progress={String(composeUploadProgress || 0)}
       data-draft-sync-state={draftSyncState || ''}
+      data-compose-files={composeFiles.map((file) => file?.name || '').join(',')}
+      data-draft-attachments={composeDraftAttachments.map((item) => item?.name || '').join(',')}
     >
       <button type="button" data-testid="mail-compose-host-send" onClick={() => onSendCompose?.()}>
         send
@@ -93,6 +98,18 @@ vi.mock('./MailComposeDialog', () => ({
       </button>
       <button type="button" data-testid="mail-compose-host-change-body" onClick={() => onComposeBodyChange?.('<p>Latest body</p>')}>
         change-body
+      </button>
+      <button
+        type="button"
+        data-testid="mail-compose-host-add-file"
+        onClick={() => onFileChange?.({
+          target: {
+            files: [new File(['two'], 'two.txt', { type: 'text/plain', lastModified: 1720000000002 })],
+            value: '',
+          },
+        })}
+      >
+        add-file
       </button>
       <button
         type="button"
@@ -493,6 +510,40 @@ describe('MailComposeHost', () => {
     }
   });
 
+  it('revokes the pasted inline blob URL once it is uploaded into the draft', async () => {
+    vi.useFakeTimers();
+    const originalCreateObjectUrl = URL.createObjectURL;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    const revokeObjectUrl = vi.fn();
+    URL.createObjectURL = vi.fn(() => 'blob:pasted-image');
+    URL.revokeObjectURL = revokeObjectUrl;
+    mockSaveDraftMultipart.mockResolvedValue({ draft_id: 'draft-inline', attachments: [] });
+    try {
+      renderHost();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      fireEvent.click(screen.getByTestId('mail-compose-host-paste-inline'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockSaveDraftMultipart).toHaveBeenCalled();
+      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:pasted-image');
+    } finally {
+      if (originalCreateObjectUrl) URL.createObjectURL = originalCreateObjectUrl;
+      else delete URL.createObjectURL;
+      if (originalRevokeObjectUrl) URL.revokeObjectURL = originalRevokeObjectUrl;
+      else delete URL.revokeObjectURL;
+      vi.useRealTimers();
+    }
+  });
+
   it('does not let an inline image satisfy the missing file warning', async () => {
     const onComposeWarning = vi.fn();
     renderHost({
@@ -724,6 +775,35 @@ describe('MailComposeHost', () => {
     expect(secondKey).toBe(firstKey);
   });
 
+  it('rotates the send idempotency key when the payload changes after a failed attempt', async () => {
+    mockSendMessage
+      .mockRejectedValueOnce(new Error('HTTP 500'))
+      .mockResolvedValueOnce({});
+
+    renderHost();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('mail-compose-host-dialog')).toHaveAttribute('data-sending', 'false');
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-change-body'));
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    const firstKey = mockSendMessage.mock.calls[0][0].idempotencyKey;
+    const secondKey = mockSendMessage.mock.calls[1][0].idempotencyKey;
+    expect(secondKey).toEqual(expect.any(String));
+    expect(secondKey).not.toBe(firstKey);
+  });
+
   it('shows maybe-sent copy on send timeout and does not auto-retry', async () => {
     const requestError = Object.assign(new Error('timeout of 115000ms exceeded'), {
       code: 'ECONNABORTED',
@@ -885,5 +965,179 @@ describe('MailComposeHost', () => {
       expect(onDraftSaved).toHaveBeenCalledTimes(1);
       expect(onCloseSession).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('autosaves an attached file into the draft and warns on unload only while the file is pending', async () => {
+    vi.useFakeTimers();
+    mockSaveDraftMultipart.mockResolvedValue({
+      draft_id: 'draft-file',
+      attachments: [{ id: 'att-saved', name: 'report.txt', download_token: 'tok-report' }],
+    });
+    try {
+      renderHost({
+        session: {
+          id: 21,
+          initialState: {
+            composeToValues: ['person@example.com'],
+            composeSubject: 'With file',
+            composeBody: '<p>Body</p>',
+            composeFiles: [new File(['report'], 'report.txt', { type: 'text/plain', lastModified: 1720000000000 })],
+          },
+        },
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const dialog = screen.getByTestId('mail-compose-host-dialog');
+      expect(dialog).toHaveAttribute('data-compose-files', 'report.txt');
+
+      const pendingUnload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(pendingUnload);
+      expect(pendingUnload.defaultPrevented).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      expect(mockSaveDraftMultipart).toHaveBeenCalledWith(expect.objectContaining({
+        files: [expect.objectContaining({ name: 'report.txt' })],
+      }));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      const updatedDialog = screen.getByTestId('mail-compose-host-dialog');
+      expect(updatedDialog).toHaveAttribute('data-compose-files', '');
+      expect(updatedDialog).toHaveAttribute('data-draft-attachments', 'report.txt');
+
+      const afterSaveUnload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(afterSaveUnload);
+      expect(afterSaveUnload.defaultPrevented).toBe(false);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('warns on tab close while a send without files is in flight', async () => {
+    let resolveSend;
+    mockSendMessage.mockImplementation(
+      () => new Promise((resolve) => { resolveSend = resolve; }),
+    );
+    renderHost();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const idleUnload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(idleUnload);
+    expect(idleUnload.defaultPrevented).toBe(false);
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+    await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
+    expect(screen.getByTestId('mail-compose-host-dialog')).toHaveAttribute('data-sending', 'true');
+
+    const sendingUnload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(sendingUnload);
+    expect(sendingUnload.defaultPrevented).toBe(true);
+
+    await act(async () => {
+      resolveSend({});
+      await Promise.resolve();
+    });
+
+    const doneUnload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(doneUnload);
+    expect(doneUnload.defaultPrevented).toBe(false);
+  });
+
+  it('keeps a file attached during an in-flight draft save until its own save succeeds', async () => {
+    vi.useFakeTimers();
+    let resolveFirstSave;
+    let resolveSecondSave;
+    mockSaveDraftMultipart
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstSave = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecondSave = resolve; }))
+      .mockResolvedValue({ draft_id: 'draft-file', attachments: [] });
+    try {
+      renderHost({
+        session: {
+          id: 22,
+          initialState: {
+            composeToValues: ['person@example.com'],
+            composeSubject: 'With file',
+            composeBody: '<p>Body</p>',
+            composeFiles: [new File(['one'], 'one.txt', { type: 'text/plain', lastModified: 1720000000001 })],
+          },
+        },
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(1);
+      expect(mockSaveDraftMultipart.mock.calls[0][0].files).toEqual([
+        expect.objectContaining({ name: 'one.txt' }),
+      ]);
+
+      fireEvent.click(screen.getByTestId('mail-compose-host-add-file'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveFirstSave({
+          draft_id: 'draft-file',
+          attachments: [{ id: 'att-one', name: 'one.txt', download_token: 'tok-one' }],
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(2);
+      expect(mockSaveDraftMultipart.mock.calls[1][0].files).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'two.txt' })]),
+      );
+
+      const dialog = screen.getByTestId('mail-compose-host-dialog');
+      expect(dialog).toHaveAttribute('data-compose-files', 'two.txt');
+      expect(dialog).toHaveAttribute('data-draft-attachments', 'one.txt');
+
+      await act(async () => {
+        resolveSecondSave({
+          draft_id: 'draft-file',
+          attachments: [
+            { id: 'att-one', name: 'one.txt', download_token: 'tok-one' },
+            { id: 'att-two', name: 'two.txt', download_token: 'tok-two' },
+          ],
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const settled = screen.getByTestId('mail-compose-host-dialog');
+      expect(settled).toHaveAttribute('data-compose-files', '');
+      expect(settled).toHaveAttribute('data-draft-attachments', 'one.txt,two.txt');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

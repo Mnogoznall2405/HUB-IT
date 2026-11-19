@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 
 const refPath = (objectRef) => encodeURIComponent(String(objectRef || '').trim());

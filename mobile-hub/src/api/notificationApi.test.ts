@@ -75,6 +75,16 @@ describe('notificationApi inbox contract', () => {
     ]);
   });
 
+  it('treats an explicit zero mail unread as real, not as a missing field', async () => {
+    mockedClient.get.mockResolvedValueOnce({
+      data: { unread_count: 0, total_unread: 9, state: 'ok' },
+    });
+
+    await expect(getMailUnreadSnapshot()).resolves.toEqual(
+      expect.objectContaining({ unread_count: 0 }),
+    );
+  });
+
   it('marks one and all HUB notifications read', async () => {
     mockedClient.post
       .mockResolvedValueOnce({ data: { ok: true } })

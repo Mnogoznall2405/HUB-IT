@@ -1,7 +1,8 @@
-import { createRef } from 'react';
+import { createRef, useEffect } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
+import * as Print from 'expo-print';
 import { Alert, Share, StyleSheet } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as databaseApi from '../../api/databaseApi';
@@ -66,6 +67,8 @@ jest.mock('../../api/databaseApi', () => ({
   getConsumableById: jest.fn(),
   submitEquipmentTransfer: jest.fn(),
   getEquipmentTransferJob: jest.fn(),
+  transferEquipmentToDatabase: jest.fn(),
+  emailDbTransferAct: jest.fn(),
   deleteEquipment: jest.fn(),
   recordEquipmentWork: jest.fn(),
   sendEquipmentTransferActsEmail: jest.fn(),
@@ -74,7 +77,7 @@ jest.mock('../../api/databaseApi', () => ({
   commitUploadedEquipmentAct: jest.fn(),
 }));
 
-jest.mock('../../database/nativeDatabaseFiles', () => ({ downloadEquipmentAct: jest.fn(), downloadGeneratedTransferAct: jest.fn() }));
+jest.mock('../../database/nativeDatabaseFiles', () => ({ downloadEquipmentAct: jest.fn(), downloadGeneratedTransferAct: jest.fn(), downloadDbTransferAct: jest.fn() }));
 jest.mock('../../database/nativeDatabaseActUpload', () => ({
   normalizeUploadedActInventoryInput: (value: string) => String(value || '').split(/[\s,;]+/).map((item) => item.trim()).filter((item) => /^\d+$/.test(item)),
   pickNativeDatabaseActPdf: jest.fn(),
@@ -104,6 +107,7 @@ jest.mock('../../cache/nativeEquipmentCatalogSnapshot', () => ({
   readNativeEquipmentCatalogSnapshot: jest.fn(),
   findNativeEquipmentCatalogItem: jest.fn(),
   invalidateNativeEquipmentCatalogCache: jest.fn(),
+  patchNativeEquipmentCatalogItem: jest.fn(async () => true),
 }));
 let mockQrScanData = 'INV_NO: INV-1';
 
@@ -118,6 +122,8 @@ jest.mock('expo-camera', () => {
     useCameraPermissions: () => [{ granted: true, canAskAgain: true }, jest.fn()],
   };
 });
+
+jest.mock('expo-print', () => ({ printAsync: jest.fn(async () => undefined) }));
 
 const params = useLocalSearchParams as jest.Mock;
 const equipment = {
@@ -204,6 +210,23 @@ beforeEach(() => {
   (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue({ success_count: 0, failed_count: 0, failed: [], retry_inv_nos: [], acts: [], job_status: 'done' });
   (databaseApi.sendEquipmentTransferActsEmail as jest.Mock).mockResolvedValue({ success_count: 1, failed_count: 0, errors: [] });
   (databaseApi.deleteEquipment as jest.Mock).mockResolvedValue(undefined);
+  (databaseApi.transferEquipmentToDatabase as jest.Mock).mockResolvedValue({
+    target_db: 'MSK',
+    act_doc_no: '9001',
+    replayed: false,
+    summary: { ok: 2, total: 2, failed: 0 },
+    items: [
+      { inv_no: 'INV-1', inv_no_old: 'INV-1', inv_no_new: 'T-1', status: 'ok', message: '' },
+      { inv_no: 'INV-2', inv_no_old: 'INV-2', inv_no_new: 'T-2', status: 'ok', message: '' },
+    ],
+    acts: [{ act_id: '1', db_id: 'MSK', file_no: 41, doc_no: 9001, file_name: 'act-9001.pdf' }],
+    created_refs: [],
+    task_id: '',
+    task_error: '',
+    act_error: '',
+    acts_error: '',
+  });
+  (databaseApi.emailDbTransferAct as jest.Mock).mockResolvedValue(undefined);
   (databaseApi.deleteConsumable as jest.Mock).mockResolvedValue(undefined);
   (databaseApi.recordEquipmentWork as jest.Mock).mockResolvedValue(undefined);
   (databaseApi.parseUploadedEquipmentAct as jest.Mock).mockResolvedValue({
@@ -239,6 +262,25 @@ it('browses equipment without forcing a search query', async () => {
   const view = await render(<NativeDatabaseScreen />);
   await waitFor(() => expect(view.getByText('OptiPlex')).toBeTruthy());
   expect(databaseApi.listEquipment).toHaveBeenCalledWith(1, 50, 'ITINVENT');
+});
+
+it('refreshes the inventory list when the screen regains focus', async () => {
+  let focused = true;
+  const focus = jest.spyOn(require('expo-router') as typeof import('expo-router'), 'useFocusEffect')
+    .mockImplementation((callback: () => void | (() => void)) => {
+      useEffect(() => focused ? callback() : undefined, [callback, focused]);
+    });
+  try {
+    const view = await render(<NativeDatabaseScreen />);
+    await waitFor(() => expect(databaseApi.listEquipment).toHaveBeenCalledTimes(1));
+    focused = false;
+    await view.rerender(<NativeDatabaseScreen />);
+    focused = true;
+    await view.rerender(<NativeDatabaseScreen />);
+    await waitFor(() => expect(databaseApi.listEquipment).toHaveBeenCalledTimes(2));
+  } finally {
+    focus.mockRestore();
+  }
 });
 
 it('stores the database bootstrap and equipment list after an online load', async () => {
@@ -623,6 +665,186 @@ it('loads and filters the native read-only consumables list', async () => {
   expect(view.getByText('3 шт.')).toBeTruthy();
 });
 
+it('prints a consumable QR label from the list with database.read only', async () => {
+  params.mockReturnValue({ mode: 'consumables' });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-consumable-print-qr-11')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-consumable-print-qr-11')); });
+  await waitFor(() => expect(Print.printAsync).toHaveBeenCalledTimes(1));
+  const html = (Print.printAsync as jest.Mock).mock.calls[0][0].html as string;
+  expect(html).toContain('<svg');
+  expect(html).toContain('HP 12A');
+  expect(html).toContain('size: 56mm 50mm');
+  expect(databaseApi.updateConsumableQuantity).not.toHaveBeenCalled();
+  expect(databaseApi.consumeConsumableStock).not.toHaveBeenCalled();
+});
+
+it('prints the QR label from the scanned consumable card without database.write', async () => {
+  (databaseApi.getConsumableById as jest.Mock).mockResolvedValue({
+    id: 4821, inv_no: 'C-4821', type_name: 'Картридж', model_name: 'HP 12A', qty: 2,
+    branch_name: 'Склад', location_name: '', part_no: '', description: '', raw: {},
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'https://hubit.zsgp.ru/database?consumable=4821&db_id=ITINVENT');
+  await waitFor(() => expect(view.getByTestId('native-consumable-scan-print-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-consumable-scan-print-qr')); });
+  await waitFor(() => expect(Print.printAsync).toHaveBeenCalledTimes(1));
+  const html = (Print.printAsync as jest.Mock).mock.calls[0][0].html as string;
+  expect(html).toContain('<svg');
+  expect(html).toContain('HP 12A');
+  expect(databaseApi.updateConsumableQuantity).not.toHaveBeenCalled();
+  expect(databaseApi.consumeConsumableStock).not.toHaveBeenCalled();
+});
+
+it('prints the selected consumables to one A4 sheet without mutating stock', async () => {
+  (databaseApi.listConsumables as jest.Mock).mockResolvedValue({
+    consumables: [
+      { id: 11, inv_no: 'C-11', type_name: 'Картридж', model_name: 'HP 12A', qty: 3, branch_name: 'Главный офис', location_name: 'Склад', part_no: '', description: '', raw: {} },
+      { id: 12, inv_no: 'C-12', type_name: 'Картридж', model_name: 'Samsung MLT-D111', qty: 1, branch_name: 'Главный офис', location_name: 'Склад', part_no: '', description: '', raw: {} },
+    ],
+    total: 2,
+    truncated: false,
+  });
+  params.mockReturnValue({ mode: 'consumables' });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-consumable-11')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-consumable-select-mode')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-consumable-select-11')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-consumable-select-12')); });
+  await waitFor(() => expect(view.getByTestId('native-consumable-qr-selection')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-consumable-qr-print-a4')); });
+  await waitFor(() => expect(Print.printAsync).toHaveBeenCalledTimes(1));
+  const html = (Print.printAsync as jest.Mock).mock.calls[0][0].html as string;
+  expect((html.match(/<svg/g) || []).length).toBe(2);
+  expect(html).toContain('size: A4');
+  expect(databaseApi.updateConsumableQuantity).not.toHaveBeenCalled();
+  expect(databaseApi.consumeConsumableStock).not.toHaveBeenCalled();
+});
+
+it('caps batch selection even when checkbox presses batch against a stale snapshot', async () => {
+  const qrPrintModule = jest.requireActual('../../database/nativeConsumableQrPrint') as { CONSUMABLE_QR_BATCH_LIMIT: number };
+  const realLimit = qrPrintModule.CONSUMABLE_QR_BATCH_LIMIT;
+  qrPrintModule.CONSUMABLE_QR_BATCH_LIMIT = 3;
+  try {
+    (databaseApi.listConsumables as jest.Mock).mockResolvedValue({
+      consumables: Array.from({ length: 6 }, (_, index) => ({
+        id: index + 1, inv_no: `C-${index + 1}`, type_name: 'Картридж',
+        model_name: `Картридж ${index + 1}`, qty: 1,
+        branch_name: 'Офис', location_name: 'Склад', part_no: '', description: '', raw: {},
+      })),
+      total: 6,
+      truncated: false,
+    });
+    params.mockReturnValue({ mode: 'consumables' });
+    const view = await render(<NativeDatabaseScreen />);
+    await waitFor(() => expect(view.getByTestId('native-consumable-1')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('native-consumable-select-mode')); });
+    await act(async () => {
+      for (let id = 1; id <= 5; id += 1) {
+        fireEvent.press(view.getByTestId(`native-consumable-select-${id}`));
+      }
+    });
+    await waitFor(() => expect(view.getByText('Выбрано: 3')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('native-consumable-select-6')); });
+    await waitFor(() => expect(view.getByText('Можно выбрать не больше 3 расходников для печати QR.')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('native-consumable-qr-print-a4')); });
+    await waitFor(() => expect(Print.printAsync).toHaveBeenCalledTimes(1));
+    const html = (Print.printAsync as jest.Mock).mock.calls[0][0].html as string;
+    expect((html.match(/<svg/g) || []).length).toBe(3);
+  } finally {
+    qrPrintModule.CONSUMABLE_QR_BATCH_LIMIT = realLimit;
+  }
+});
+
+it('does not open the print dialog when database.read is revoked while the QR page builds', async () => {
+  params.mockReturnValue({ mode: 'consumables' });
+  const qrCode = jest.requireActual<{ toString: (text: string, options?: unknown) => Promise<string> }>('qrcode');
+  const realToString = qrCode.toString.bind(qrCode);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const qrSpy = jest.spyOn(qrCode, 'toString').mockImplementation(async (text: string, options?: unknown) => {
+    await gate;
+    return realToString(text, options);
+  });
+  try {
+    const view = await render(<NativeDatabaseScreen />);
+    await waitFor(() => expect(view.getByTestId('native-consumable-print-qr-11')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('native-consumable-print-qr-11')); });
+    await waitFor(() => expect(qrSpy).toHaveBeenCalled());
+    mockPermissions = [];
+    await act(async () => { view.rerender(<NativeDatabaseScreen />); });
+    await act(async () => { release(); });
+    expect(Print.printAsync).not.toHaveBeenCalled();
+  } finally {
+    qrSpy.mockRestore();
+  }
+});
+
+it('does not open the print dialog when a database switch starts while the QR page builds', async () => {
+  (databaseApi.listAvailableDatabases as jest.Mock).mockResolvedValue([
+    { id: 'ITINVENT', name: 'Основная' },
+    { id: 'MSK-ITINVENT', name: 'Москва' },
+  ]);
+  let releaseSwitch!: (value: { id: string; name: string; locked: boolean }) => void;
+  (databaseApi.switchDatabase as jest.Mock).mockImplementation(
+    () => new Promise((done) => { releaseSwitch = done; }),
+  );
+  params.mockReturnValue({ mode: 'consumables' });
+  const qrCode = jest.requireActual<{ toString: (text: string, options?: unknown) => Promise<string> }>('qrcode');
+  const realToString = qrCode.toString.bind(qrCode);
+  let releaseQr!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseQr = resolve; });
+  const qrSpy = jest.spyOn(qrCode, 'toString').mockImplementation(async (text: string, options?: unknown) => {
+    await gate;
+    return realToString(text, options);
+  });
+  try {
+    const view = await render(<NativeDatabaseScreen />);
+    await waitFor(() => expect(view.getByTestId('native-consumable-print-qr-11')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('native-consumable-print-qr-11')); });
+    await waitFor(() => expect(qrSpy).toHaveBeenCalled());
+    // The switch begins before React commits `switchingDatabase` — the
+    // synchronous generation bump in changeDatabase is what vetoes the print.
+    await act(async () => { fireEvent.press(view.getByTestId('native-database-header-selector')); });
+    await act(async () => { fireEvent.press(view.getByTestId('native-database-option-MSK-ITINVENT')); });
+    await waitFor(() => expect(databaseApi.switchDatabase).toHaveBeenCalledWith('MSK-ITINVENT'));
+    await act(async () => { releaseQr(); });
+    expect(Print.printAsync).not.toHaveBeenCalled();
+    await act(async () => { releaseSwitch({ id: 'MSK-ITINVENT', name: 'Москва', locked: false }); });
+  } finally {
+    qrSpy.mockRestore();
+  }
+});
+
+it('does not open the print dialog when the session changes while the QR page builds', async () => {
+  params.mockReturnValue({ mode: 'consumables' });
+  const qrCode = jest.requireActual<{ toString: (text: string, options?: unknown) => Promise<string> }>('qrcode');
+  const realToString = qrCode.toString.bind(qrCode);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const qrSpy = jest.spyOn(qrCode, 'toString').mockImplementation(async (text: string, options?: unknown) => {
+    await gate;
+    return realToString(text, options);
+  });
+  const tokenStore = jest.requireActual<typeof import('../../auth/tokenStore')>('../../auth/tokenStore');
+  let generation = 0;
+  const genSpy = jest.spyOn(tokenStore, 'getSessionGeneration').mockImplementation(() => generation);
+  try {
+    const view = await render(<NativeDatabaseScreen />);
+    await waitFor(() => expect(view.getByTestId('native-consumable-print-qr-11')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('native-consumable-print-qr-11')); });
+    await waitFor(() => expect(qrSpy).toHaveBeenCalled());
+    generation = 1;
+    await act(async () => { release(); });
+    expect(Print.printAsync).not.toHaveBeenCalled();
+  } finally {
+    qrSpy.mockRestore();
+    genSpy.mockRestore();
+  }
+});
+
 it('updates consumable quantity natively with database.write', async () => {
   mockPermissions = ['database.read', 'database.write'];
   params.mockReturnValue({ mode: 'consumables' });
@@ -679,6 +901,49 @@ it('loads detail first and lazy-loads acts only after selecting the tab', async 
   });
   await waitFor(() => expect(databaseApi.getEquipmentActs).toHaveBeenCalledWith('INV-1', 'ITINVENT'));
   await waitFor(() => expect(view.getByText('Акт A-7')).toBeTruthy());
+});
+
+it('prints the equipment QR label from the card overflow menu', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-menu')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-print-qr')); });
+  await waitFor(() => expect(Print.printAsync).toHaveBeenCalledTimes(1));
+  const html = (Print.printAsync as jest.Mock).mock.calls[0][0].html as string;
+  expect(html).toContain('<svg');
+  expect(html).toContain('Инв. № INV-1');
+  expect(html).toContain('OptiPlex');
+});
+
+it('shows an alert error when QR label printing fails', async () => {
+  (Print.printAsync as jest.Mock).mockRejectedValueOnce('printer unavailable');
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-menu')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-print-qr')); });
+  await waitFor(() => expect(view.getByText('Не удалось напечатать QR-этикетку.')).toBeTruthy());
+});
+
+it('refreshes the equipment card when the screen regains focus', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  let focused = true;
+  const focus = jest.spyOn(require('expo-router') as typeof import('expo-router'), 'useFocusEffect')
+    .mockImplementation((callback: () => void | (() => void)) => {
+      useEffect(() => focused ? callback() : undefined, [callback, focused]);
+    });
+  try {
+    const view = await render(<NativeEquipmentDetailScreen />);
+    await waitFor(() => expect(databaseApi.getEquipment).toHaveBeenCalledTimes(1));
+    focused = false;
+    await view.rerender(<NativeEquipmentDetailScreen />);
+    focused = true;
+    await view.rerender(<NativeEquipmentDetailScreen />);
+    await waitFor(() => expect(databaseApi.getEquipment).toHaveBeenCalledTimes(2));
+  } finally {
+    focus.mockRestore();
+  }
 });
 
 it('stores an opened equipment card and its loaded tabs for offline use', async () => {
@@ -852,6 +1117,170 @@ it('selects several cards and sends one server-supported bulk transfer request',
     expect.objectContaining({ inv_nos: ['INV-1', 'INV-2'], new_employee: 'Петров П.П.', new_employee_dept: 'ИТ', operation_id: expect.any(String) }),
     'ITINVENT',
   ));
+});
+
+it('records bulk maintenance once per selected card with per-item payloads', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const second = { ...equipment, inv_no: 'INV-2', model_name: 'Latitude', raw: { INV_NO: 'INV-2' } };
+  (databaseApi.listEquipment as jest.Mock).mockResolvedValueOnce({ equipment: [equipment, second], total: 2, page: 1, pages: 1 });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-INV-2')); });
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-record-work-cleaning')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Чистка компьютера записана: 2 из 2.')).toBeTruthy());
+  // Как в вебе: один вызов на каждый инвентарный номер, у каждого свои карточка и operation_id.
+  expect(databaseApi.recordEquipmentWork).toHaveBeenCalledTimes(2);
+  const calls = (databaseApi.recordEquipmentWork as jest.Mock).mock.calls.map((call) => call[0]);
+  expect(calls[0]).toEqual(expect.objectContaining({ kind: 'cleaning', equipment, databaseId: 'ITINVENT' }));
+  expect(calls[1]).toEqual(expect.objectContaining({ kind: 'cleaning', equipment: second, databaseId: 'ITINVENT' }));
+  expect(calls[0].operationId).toEqual(expect.any(String));
+  expect(calls[1].operationId).toEqual(expect.any(String));
+  expect(calls[0].operationId).not.toBe(calls[1].operationId);
+  expect(calls[0].operationId).toContain('INV-1');
+  expect(calls[1].operationId).toContain('INV-2');
+});
+
+it('reports a partial bulk maintenance failure without clearing the selection', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const second = { ...equipment, inv_no: 'INV-2', model_name: 'Latitude', raw: { INV_NO: 'INV-2' } };
+  (databaseApi.listEquipment as jest.Mock).mockResolvedValueOnce({ equipment: [equipment, second], total: 2, page: 1, pages: 1 });
+  (databaseApi.recordEquipmentWork as jest.Mock)
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('Отказ сервера'));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-INV-2')); });
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-record-work-cleaning')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText(/Записано: 1 из 2/)).toBeTruthy());
+  expect(view.getByText(/INV-2: Отказ сервера/)).toBeTruthy();
+  expect(view.queryByText(/записана/)).toBeNull();
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть операцию')); });
+  // Частичная ошибка не считается успехом: выбор не снимается.
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+});
+
+it('hides bulk equipment deletion without database.delete_equipment', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await waitFor(() => expect(view.getByText('Выбрано: 1')).toBeTruthy());
+  expect(view.queryByTestId('native-database-bulk-delete')).toBeNull();
+});
+
+it('deletes selected cards one DELETE per item and keeps failures selected', async () => {
+  mockPermissions = ['database.read', 'database.write', 'database.delete_equipment'];
+  const second = { ...equipment, inv_no: 'INV-2', model_name: 'Latitude', raw: { INV_NO: 'INV-2' } };
+  (databaseApi.listEquipment as jest.Mock).mockResolvedValueOnce({ equipment: [equipment, second], total: 2, page: 1, pages: 1 });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({ equipment: [], not_found: ['INV-1'] });
+  (databaseApi.deleteEquipment as jest.Mock)
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce({ response: { status: 409, data: { detail: 'Нельзя удалить: связаны акты (acts=2), история (history=3)' } }, isAxiosError: true });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-INV-2')); });
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-delete')); });
+  await waitFor(() => expect(view.getByText(/Удалить выбранные карточки \(2\)/)).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(databaseApi.deleteEquipment).toHaveBeenCalledTimes(2));
+  expect(databaseApi.deleteEquipment).toHaveBeenNthCalledWith(1, 'INV-1', 'ITINVENT');
+  expect(databaseApi.deleteEquipment).toHaveBeenNthCalledWith(2, 'INV-2', 'ITINVENT');
+  await waitFor(() => expect(view.getByText(/Удалено: 1 из 2/)).toBeTruthy());
+  // Без database.delete_equipment_history повтор с историей не предлагается.
+  expect(view.queryByTestId('native-database-bulk-delete-with-history')).toBeNull();
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть операцию')); });
+  // Удалённая карточка уходит из списка, ошибочная остаётся выбранной.
+  await waitFor(() => expect(view.getByText('Выбрано: 1')).toBeTruthy());
+  expect(view.queryByTestId('native-equipment-INV-1')).toBeNull();
+  expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy();
+});
+
+it('offers with_history retry for 409-blocked deletes with the history permission', async () => {
+  mockPermissions = ['database.read', 'database.write', 'database.delete_equipment', 'database.delete_equipment_history'];
+  const second = { ...equipment, inv_no: 'INV-2', model_name: 'Latitude', raw: { INV_NO: 'INV-2' } };
+  (databaseApi.listEquipment as jest.Mock).mockResolvedValueOnce({ equipment: [equipment, second], total: 2, page: 1, pages: 1 });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({ equipment: [], not_found: ['INV-1', 'INV-2'] });
+  (databaseApi.deleteEquipment as jest.Mock)
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce({ response: { status: 409, data: { detail: 'Нельзя удалить: связаны акты (acts=2), история (history=3)' } }, isAxiosError: true })
+    .mockResolvedValueOnce(undefined);
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-INV-2')); });
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-delete')); });
+  await waitFor(() => expect(view.getByText(/Удалить выбранные карточки \(2\)/)).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  // 409 только у INV-2: повтор предлагается ровно для этой карточки.
+  await waitFor(() => expect(view.getByText(/Удалено: 1 из 2/)).toBeTruthy());
+  const retry = view.getByTestId('native-database-bulk-delete-with-history');
+  await act(async () => { fireEvent.press(retry); });
+  await waitFor(() => expect(databaseApi.deleteEquipment).toHaveBeenCalledTimes(3));
+  expect(databaseApi.deleteEquipment).toHaveBeenNthCalledWith(3, 'INV-2', 'ITINVENT', { withHistory: true });
+  // Все позиции удалены — диалог закрывается сам, выделение снимается.
+  await waitFor(() => expect(view.queryByTestId('native-database-selection')).toBeNull());
+});
+
+it('sends the cross-database transfer payload for all selected cards', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.listAvailableDatabases as jest.Mock).mockResolvedValue([
+    { id: 'ITINVENT', name: 'Основная' },
+    { id: 'MSK', name: 'Филиал' },
+  ]);
+  const second = { ...equipment, inv_no: 'INV-2', model_name: 'Latitude', raw: { INV_NO: 'INV-2' } };
+  (databaseApi.listEquipment as jest.Mock).mockResolvedValueOnce({ equipment: [equipment, second], total: 2, page: 1, pages: 1 });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({ equipment: [], not_found: ['INV-1', 'INV-2'] });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-INV-2')); });
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-db-transfer')); });
+  await waitFor(() => expect(view.getByTestId('native-dbtransfer-owner')).toBeTruthy());
+  await fillEmployeeManually(view, 'Сидоров С.С.', 'native-dbtransfer-owner');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  // Тот же POST /equipment/transfer/to-db, что в веб-диалоге: один запрос на весь набор.
+  await waitFor(() => expect(databaseApi.transferEquipmentToDatabase).toHaveBeenCalledWith(
+    expect.objectContaining({
+      inv_nos: ['INV-1', 'INV-2'],
+      target_db: 'MSK',
+      target_owner_no: null,
+      new_owner_name: 'Сидоров С.С.',
+      target_branch_no: null,
+      target_loc_no: null,
+      task_assignee_user_ids: null,
+      task_due_at: null,
+      comment: null,
+      operation_id: expect.any(String),
+    }),
+    'ITINVENT',
+  ));
+  await waitFor(() => expect(view.getByText(/Перенос завершён: 2 из 2/)).toBeTruthy());
+  expect(view.getByTestId('native-dbtransfer-act-41')).toBeTruthy();
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  // Перенесённые карточки уходят из текущей базы — список примиряется одним батч-чтением.
+  await waitFor(() => expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledWith(['INV-1', 'INV-2'], 'ITINVENT'));
+  await waitFor(() => expect(view.queryByTestId('native-database-selection')).toBeNull());
+  expect(view.queryByTestId('native-equipment-INV-1')).toBeNull();
+  expect(view.queryByTestId('native-equipment-INV-2')).toBeNull();
+});
+
+it('hides the cross-database action when no other database is available', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await waitFor(() => expect(view.getByText('Выбрано: 1')).toBeTruthy());
+  expect(view.queryByTestId('native-database-bulk-db-transfer')).toBeNull();
 });
 
 it('substitutes a new employee from the ITINVENT owner directory search', async () => {
@@ -1756,6 +2185,74 @@ it('keeps the pending job scoped to its database and frozen selection across rer
   expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
 });
 
+it('drops a bulk work run when the database scope changes mid-flight', async () => {
+  const second = { ...equipment, inv_no: 'INV-2', raw: { INV_NO: 'INV-2' } };
+  let releaseFirst: (value: unknown) => void = () => undefined;
+  (databaseApi.recordEquipmentWork as jest.Mock)
+    .mockImplementationOnce(() => new Promise((done) => { releaseFirst = done; }))
+    .mockResolvedValue(undefined);
+  const onChanged = jest.fn();
+  const onDeleted = jest.fn();
+  const ref = createRef<NativeEquipmentActionsHandle>();
+  const common = {
+    canWrite: true,
+    canDeleteEquipment: false,
+    offline: false,
+    surface: 'general' as const,
+    tokens: getFluentTokens('light'),
+    onChanged,
+    onDeleted,
+  };
+  const view = await render(
+    <NativeEquipmentActions ref={ref} equipment={equipment} targets={[equipment, second]} databaseId="ITINVENT" {...common} />,
+  );
+  await act(async () => { ref.current?.open('cleaning'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.recordEquipmentWork).toHaveBeenCalledTimes(1));
+  // База сменилась, пока первая позиция была в полёте: дальше не идём и результат не применяем.
+  await act(async () => {
+    view.rerender(
+      <NativeEquipmentActions ref={ref} equipment={equipment} targets={[equipment, second]} databaseId="MSK" {...common} />,
+    );
+  });
+  await act(async () => { releaseFirst(undefined); });
+  expect(databaseApi.recordEquipmentWork).toHaveBeenCalledTimes(1);
+  expect(onChanged).not.toHaveBeenCalled();
+  expect(onDeleted).not.toHaveBeenCalled();
+  expect(view.queryByText(/записана/)).toBeNull();
+});
+
+it('blocks bulk work and deletion while offline', async () => {
+  const ref = createRef<NativeEquipmentActionsHandle>();
+  const view = await render(
+    <NativeEquipmentActions
+      ref={ref}
+      equipment={equipment}
+      targets={[equipment, { ...equipment, inv_no: 'INV-2', raw: { INV_NO: 'INV-2' } }]}
+      databaseId="ITINVENT"
+      canWrite
+      canDeleteEquipment
+      allowWorkActions
+      offline
+      surface="general"
+      tokens={getFluentTokens('light')}
+      onChanged={jest.fn()}
+      onDeleted={jest.fn()}
+    />,
+  );
+  expect(view.getByTestId('native-equipment-record-work-cleaning').props.accessibilityState.disabled).toBeTruthy();
+  expect(view.getByTestId('native-equipment-delete').props.accessibilityState.disabled).toBeTruthy();
+  await act(async () => { ref.current?.open('delete'); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-action-confirm')).toBeTruthy());
+  const confirm = view.getByTestId('native-equipment-action-confirm');
+  expect(confirm.props.accessibilityState.disabled).toBeTruthy();
+  await act(async () => { fireEvent.press(confirm); });
+  expect(databaseApi.deleteEquipment).not.toHaveBeenCalled();
+  await act(async () => { ref.current?.open('cleaning'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  expect(databaseApi.recordEquipmentWork).not.toHaveBeenCalled();
+});
+
 it('applies the top safe-area inset to the action modal header', async () => {
   mockPermissions = ['database.read', 'database.write'];
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
@@ -1805,8 +2302,8 @@ it('records supported maintenance natively', async () => {
   })));
 });
 
-it('keeps destructive equipment deletion admin-only and confirms it explicitly', async () => {
-  mockRole = 'admin';
+it('keeps destructive equipment deletion behind database.delete_equipment and confirms it explicitly', async () => {
+  mockPermissions = ['database.read', 'database.delete_equipment'];
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
   const view = await render(<NativeEquipmentDetailScreen />);
   await waitFor(() => expect(view.getByTestId('native-equipment-menu')).toBeTruthy());
@@ -2123,6 +2620,37 @@ it('picks a model through the searchable picker sheet', async () => {
   await waitFor(() => expect(databaseApi.updateEquipment).toHaveBeenCalledWith('INV-1', expect.objectContaining({ model_no: 8 }), 'ITINVENT'));
 });
 
+it('persists the saved card to the offline snapshot and catalog patch (MB-14)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const updated = { ...equipment, serial_no: 'SN-NEW' };
+  (databaseApi.updateEquipment as jest.Mock).mockResolvedValue(updated);
+  let persisted: { databaseId?: string; equipment?: { serial_no?: string }; loadedTabs?: unknown[] } | null = null;
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: unknown, _user: unknown, _key: unknown, data: typeof persisted) => { persisted = data; return true; },
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockClear();
+  persisted = null;
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-edit-serial_no')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-equipment-edit-serial_no'), 'SN-NEW'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit-save')); });
+  await waitFor(() => expect(databaseApi.updateEquipment).toHaveBeenCalledWith(
+    'INV-1', expect.objectContaining({ serial_no: 'SN-NEW' }), 'ITINVENT',
+  ));
+
+  await waitFor(() => expect(equipmentCatalog.patchNativeEquipmentCatalogItem).toHaveBeenCalledWith(17, 'ITINVENT', updated));
+  await waitFor(() => expect(persisted?.equipment?.serial_no).toBe('SN-NEW'));
+  const snapshotWrite = (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mock.calls.find(
+    ([scope]) => scope === 'database-item-details',
+  );
+  expect(snapshotWrite?.[1]).toBe(17);
+});
+
 it('copies the whole card from the overflow menu', async () => {
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
   const view = await render(<NativeEquipmentDetailScreen />);
@@ -2162,7 +2690,7 @@ it('hides the edit button and the actions sheet without database.write', async (
   expect(view.queryByTestId('native-equipment-actions-open')).toBeNull();
 });
 
-it('hides the delete item in the overflow menu for a non-admin user', async () => {
+it('hides the delete item in the overflow menu without database.delete_equipment', async () => {
   mockPermissions = ['database.read', 'database.write'];
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
   const view = await render(<NativeEquipmentDetailScreen />);

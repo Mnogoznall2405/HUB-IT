@@ -45,6 +45,7 @@ import {
 } from '../account/AccountChrome';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
+import { NativeDocflowAbsencesSection } from '../../components/docflow/NativeDocflowAbsencesSection';
 import { AddressBookEntryDetail } from '../../addressBook/AddressBookEntryDetail';
 import { AddressBookEntryRow } from '../../addressBook/AddressBookEntryRow';
 import {
@@ -315,6 +316,8 @@ export function NativeAddressBookScreen() {
   const [chatBusyKey, setChatBusyKey] = useState('');
   const [remoteItems, setRemoteItems] = useState<AddressBookEntry[]>([]);
   const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteError, setRemoteError] = useState('');
+  const [remoteRetryTick, setRemoteRetryTick] = useState(0);
   // N2: list modes — 'all' | 'favorites' | 'recent'. The code set is frozen on
   // mode entry so opening a card (pushRecentEmployee) never reshuffles the
   // visible "Недавние" list on the fly.
@@ -460,6 +463,7 @@ export function NativeAddressBookScreen() {
   const loadItems = useCallback(async (mode: 'load' | 'refresh' = 'load') => {
     const requestId = ++searchRequestRef.current;
     let hadCachedSnapshot = false;
+    let snapshotUpdatedAt = '';
     if (mode === 'refresh') setRefreshing(true);
     else setLoading(true);
     setError('');
@@ -468,6 +472,7 @@ export function NativeAddressBookScreen() {
       if (requestId !== searchRequestRef.current) return;
       if (snapshot) {
         hadCachedSnapshot = true;
+        snapshotUpdatedAt = snapshot.data.updated_at || '';
         setDirectoryItems(snapshot.data.items);
         setTotal(snapshot.data.total);
         setStatus((prev) => ({
@@ -517,6 +522,12 @@ export function NativeAddressBookScreen() {
       if (requestId !== searchRequestRef.current) return;
       if (!hadCachedSnapshot) {
         setError(formatApiError(cause, 'Не удалось загрузить адресную книгу.'));
+      } else {
+        // The list on screen is still the cached snapshot — surface the
+        // failure and roll the status timestamp back so it does not claim
+        // the data is fresher than it is.
+        setError(formatApiError(cause, 'Не удалось обновить адресную книгу. Показаны данные из кэша.'));
+        setStatus((prev) => (prev ? { ...prev, updated_at: snapshotUpdatedAt || prev.updated_at } : prev));
       }
     } finally {
       if (requestId === searchRequestRef.current) {
@@ -671,22 +682,27 @@ export function NativeAddressBookScreen() {
     if (!normalized || directoryItems.length > 0 || offlineMode || !allowed || dismissedTab) {
       setRemoteItems([]);
       setRemoteLoading(false);
+      setRemoteError('');
       return;
     }
     const controller = new AbortController();
     remoteAbortRef.current = controller;
     setRemoteLoading(true);
+    setRemoteError('');
     void searchAddressBook({ q: normalized, limit: SEARCH_LIMIT, signal: controller.signal })
       .then((result) => {
         if (requestId === remoteSearchRef.current && !controller.signal.aborted) setRemoteItems(result.items);
       })
-      .catch(() => {
-        if (requestId === remoteSearchRef.current && !controller.signal.aborted) setRemoteItems([]);
+      .catch((cause) => {
+        if (requestId === remoteSearchRef.current && !controller.signal.aborted) {
+          setRemoteItems([]);
+          setRemoteError(formatApiError(cause, 'Не удалось выполнить поиск по адресной книге.'));
+        }
       })
       .finally(() => {
         if (requestId === remoteSearchRef.current && !controller.signal.aborted) setRemoteLoading(false);
       });
-  }, [allowed, remoteQuery, directoryItems.length, offlineMode, dismissedTab]);
+  }, [allowed, remoteQuery, directoryItems.length, offlineMode, dismissedTab, remoteRetryTick]);
 
   useAndroidBackHandler(() => {
     if (selectedItem) {
@@ -990,6 +1006,18 @@ export function NativeAddressBookScreen() {
           Показаны результаты сервера — адресная книга ещё загружается.
         </Text>
       ) : null}
+      {remoteError ? (
+        <Pressable
+          onPress={() => setRemoteRetryTick((tick) => tick + 1)}
+          accessibilityRole="button"
+          accessibilityLabel="Повторить поиск"
+          testID="address-book-remote-retry"
+        >
+          <Text accessibilityRole="alert" style={[styles.updated, { color: tokens.error }]}>
+            {remoteError} Нажмите, чтобы повторить.
+          </Text>
+        </Pressable>
+      ) : null}
       {showModesRow && !dismissedTab ? (
         <AddressBookModesRow
           mode={listMode}
@@ -1137,6 +1165,13 @@ export function NativeAddressBookScreen() {
               onToggleFavorite={!dismissedTab && entryCode(selectedItem) ? () => handleToggleFavorite(selectedItem) : undefined}
               dismissed={dismissedTab}
             />
+            {!dismissedTab ? (
+              <NativeDocflowAbsencesSection
+                tokens={tokens}
+                employee
+                employeeCode={entryCode(selectedItem)}
+              />
+            ) : null}
           </>
         ) : null}
       </AccountSubpage>

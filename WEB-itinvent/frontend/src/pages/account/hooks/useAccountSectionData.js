@@ -428,15 +428,17 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     }
   }, [fontFamily, fontScale, mobileBottomNavItems, notifyApiError, notifySuccess, savePreferences, themeMode]);
 
-  const handleRegenerateBackupCodes = useCallback(async () => {
+  const handleRegenerateBackupCodes = useCallback(async (stepUp) => {
     try {
-      const response = await authAPI.regenerateBackupCodes();
+      const response = await authAPI.regenerateBackupCodes(stepUp);
       setBackupCodes(Array.isArray(response?.backup_codes) ? response.backup_codes : []);
       setBackupCodesDialogOpen(true);
       notifySuccess('Новые backup-коды сгенерированы. Сохраните их в безопасном месте.', { dedupeMode: 'none' });
       await loadSecurity();
+      return true;
     } catch (error) {
       notifyApiError(error, 'Не удалось сгенерировать backup-коды.', { dedupeMode: 'none' });
+      return false;
     }
   }, [loadSecurity, notifyApiError, notifySuccess]);
 
@@ -530,26 +532,24 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     }
   }, [linkTrustedDeviceLabel, loadSecurity, notifySuccess, refreshSession]);
 
-  const handleResetTwoFactor = useCallback(async () => {
+  const handleResetTwoFactor = useCallback(async (stepUp) => {
     if (!user?.id) return;
-    const confirmed = window.confirm(
-      'Сбросить 2FA и удалить все доверенные устройства для этой учётной записи? После этого нужно будет войти заново и настроить код повторно.'
-    );
-    if (!confirmed) return;
     setResettingTwoFactor(true);
     try {
-      await authAPI.resetOwnTwoFactor();
+      await authAPI.resetOwnTwoFactor(stepUp);
       notifySuccess('2FA и доверенные устройства сброшены. Войдите заново и настройте код повторно.', {
         source: 'settings',
         dedupeMode: 'none',
       });
       await logout();
       window.location.assign('/login');
+      return true;
     } catch (error) {
       notifyApiError(error, 'Не удалось сбросить 2FA для текущей учётной записи.', {
         source: 'settings',
         dedupeMode: 'none',
       });
+      return false;
     } finally {
       setResettingTwoFactor(false);
     }

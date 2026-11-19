@@ -27,10 +27,8 @@ import {
   Typography,
   useMediaQuery,
 } from '@mui/material';
-import {
-  MoreVert as MoreVertIcon,
-  PlayArrow as PlayArrowIcon,
-} from '@mui/icons-material';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { useTheme } from '@mui/material/styles';
 
 const cellSx = { py: 0.75, px: 1 };

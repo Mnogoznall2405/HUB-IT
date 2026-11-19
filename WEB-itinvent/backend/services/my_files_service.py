@@ -147,6 +147,10 @@ class MyFilesCapacityError(MyFilesError):
     """Raised when upload or processing capacity is temporarily exhausted."""
 
 
+class MyFilesGrantConsumedError(MyFilesError):
+    """Raised when a single-use download grant has already been redeemed."""
+
+
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
@@ -837,6 +841,12 @@ class MyFilesService:
             return self.may_act_locked(session, user_id, row.owner_user_id, "manage")
         return self.may_manage_file_access_locked(session, row, user_id)
 
+    def _may_share_folder_locked(self, session, row: AppMyFileFolder, user_id: int) -> bool:
+        """Public-link gate: a personal folder follows access management; a library folder needs ``manage``."""
+        if int(row.owner_user_id) < 0:
+            return self.may_act_locked(session, user_id, row.owner_user_id, "manage")
+        return self.may_manage_folder_access_locked(session, row, user_id)
+
     def library_role_locked(self, session, library: AppMyFileLibrary, user_id: int) -> str:
         """Best role of the user in the library: own entry or through any of the user's departments."""
         if self.is_admin_locked(session, user_id):
@@ -992,7 +1002,11 @@ class MyFilesService:
                 direct = self._norm_access_role(member.role)
         if int(row.owner_user_id) < 0:
             library_role = self.library_access_role_locked(session, row.owner_user_id, user_id)
-            return "owner" if library_role == "manage" else self._best_access_role(library_role, direct)
+            if library_role == "manage":
+                return "owner"
+            # The uploader keeps at least edit rights on their own upload while still a member.
+            authored = bool(library_role) and int(row.uploaded_by_user_id or 0) == int(user_id)
+            return self._best_access_role(library_role, direct, "edit" if authored else "")
         inherited = self._folder_role_locked(session, row.folder_id, row.owner_user_id, user_id)
         return self._best_access_role(direct, inherited)
 
@@ -1006,6 +1020,10 @@ class MyFilesService:
             if library is not None:
                 library_roles = {role for role in writing_roles if role in _LIBRARY_ROLE_RANK} | {"manage"}
                 allowed |= self.library_member_user_ids_locked(session, library.id, library_roles)
+                # A demoted uploader must still be able to save their own upload.
+                uploader_id = int(row.uploaded_by_user_id or 0)
+                if uploader_id > 0 and self.library_role_locked(session, library, uploader_id):
+                    allowed.add(uploader_id)
         if self._collab_tables_present(session):
             allowed |= {
                 int(item.user_id)
@@ -1740,6 +1758,11 @@ class MyFilesService:
                 row = session.get(AppMyFile, _normalize_text(file_id))
                 if row is None or not self._upload_belongs_to(row, user_id) or row.deleted_at is not None:
                     return
+                if row.status != STATUS_UPLOADING:
+                    # The reservation already completed (queued/scanning/done):
+                    # a late abort — e.g. the client retried after a lost
+                    # response — must not mark the committed file as failed.
+                    return
                 if _normalize_text(row.spool_path):
                     spool_path = Path(_normalize_text(row.spool_path))
                 row.status = STATUS_FAILED
@@ -2244,6 +2267,14 @@ class MyFilesService:
             return {
                 "folders": [self._folder_response(folder) for folder in visible_folders],
                 "items": [self._response(file_row) for file_row in visible_files],
+                # Полный scope корзины (не только видимый верхний уровень):
+                # клиенту он нужен, чтобы при purge/очистке снять офлайн-копии
+                # файлов, вложенных в удалённые папки.
+                "all_file_ids": [str(file_row.id) for file_row in trashed_files],
+                "all_folders": [
+                    {"id": str(folder.id), "parent_id": str(folder.parent_id) if folder.parent_id else None}
+                    for folder in trashed_folders
+                ],
             }
 
     def empty_trash(
@@ -2790,9 +2821,15 @@ class MyFilesService:
         if not raw:
             raise MyFilesNotFoundError("Blob storage path is empty")
         path = Path(raw)
-        # Absolute / UNC legacy paths remain readable during migration.
+        # Absolute / UNC legacy paths remain readable during migration,
+        # but a DB row must not resolve outside the storage root.
         if path.is_absolute() or raw.startswith("\\\\") or raw.startswith("//"):
-            return path
+            try:
+                resolved = path.resolve()
+                resolved.relative_to(self.storage_root.resolve())
+            except (OSError, ValueError) as exc:
+                raise MyFilesNotFoundError("Blob storage path is outside the storage root") from exc
+            return resolved
         return resolve_under_root(self.storage_root, raw)
 
     def _find_owner_blob(self, session, *, owner_user_id: int, original_sha256: str) -> AppMyFileBlob | None:
@@ -3090,6 +3127,7 @@ class MyFilesService:
         now = _utc_now()
         download_size = self._preview_download_size_locked(row)
         if download_size <= 0 or download_size > self._preview_max_bytes():
+            error_text = "File is too large for preview" if download_size > 0 else "File is empty"
             if preview is None:
                 session.add(
                     AppMyFilePreview(
@@ -3098,17 +3136,23 @@ class MyFilesService:
                         preview_kind=preview_kind,
                         source_filename=file_name,
                         content_type=mime_type,
-                        error_text="File is too large for preview" if download_size > 0 else "File is empty",
+                        error_text=error_text,
                         created_at=now,
                         updated_at=now,
                     )
                 )
-            elif preview.status != PREVIEW_STATUS_READY:
+            elif preview.status != PREVIEW_STATUS_READY and (
+                preview.status != PREVIEW_STATUS_ERROR
+                or _normalize_text(preview.error_text) != error_text
+                or _normalize_text(preview.preview_kind) != preview_kind
+                or _normalize_text(preview.source_filename) != file_name
+                or _normalize_text(preview.content_type) != mime_type
+            ):
                 preview.status = PREVIEW_STATUS_ERROR
                 preview.preview_kind = preview_kind
                 preview.source_filename = file_name
                 preview.content_type = mime_type
-                preview.error_text = "File is too large for preview" if download_size > 0 else "File is empty"
+                preview.error_text = error_text
                 preview.updated_at = now
             return False
         if preview is None:
@@ -3128,6 +3172,14 @@ class MyFilesService:
             return False
         if preview.status == PREVIEW_STATUS_ERROR:
             return False
+        if (
+            preview.status == PREVIEW_STATUS_QUEUED
+            and _normalize_text(preview.preview_kind) == preview_kind
+            and _normalize_text(preview.source_filename) == file_name
+            and _normalize_text(preview.content_type) == mime_type
+            and not _normalize_text(preview.error_text)
+        ):
+            return True
         preview.status = PREVIEW_STATUS_QUEUED
         preview.preview_kind = preview_kind
         preview.source_filename = file_name
@@ -4122,7 +4174,7 @@ class MyFilesService:
         actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.deleted_at is not None or not self.may_manage_folder_access_locked(session, row, actor_id):
+            if row is None or row.deleted_at is not None or not self._may_share_folder_locked(session, row, actor_id):
                 raise MyFilesNotFoundError("Folder not found")
 
             existing_token = self._existing_share_token_locked(row)
@@ -4163,7 +4215,7 @@ class MyFilesService:
         actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.deleted_at is not None or not self.may_manage_folder_access_locked(session, row, actor_id):
+            if row is None or row.deleted_at is not None or not self._may_share_folder_locked(session, row, actor_id):
                 raise MyFilesNotFoundError("Folder not found")
             self._clear_share(row)
             row.updated_at = _utc_now()
@@ -4888,8 +4940,9 @@ class MyFilesService:
             ).first()
             if grant is None:
                 raise MyFilesNotFoundError("File not found")
-            if grant.used_at is None:
-                grant.used_at = now
+            if grant.used_at is not None:
+                raise MyFilesGrantConsumedError("Download grant already used")
+            grant.used_at = now
             file_id = _normalize_text(grant.file_id)
             folder_id = _normalize_text(grant.folder_id)
             owner_user_id = int(grant.owner_user_id or 0)

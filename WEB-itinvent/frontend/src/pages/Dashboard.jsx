@@ -76,6 +76,7 @@ import {
 
 const DASHBOARD_ANNOUNCEMENTS_LIMIT = 12;
 const DASHBOARD_TASKS_LIMIT = 40;
+const CONNECTED_REFRESH_RECENT_MS = 2_000;
 const OPTIONAL_SECTION_KEYS = ['tasks', 'absences', 'communication', 'news'];
 const normalizeDashboardLayoutSections = (value, legacyValue) => {
   const normalized = normalizeDashboardSections(value, legacyValue);
@@ -390,10 +391,10 @@ function TaskQueueRow({ task, onClick, returnFocusId = '' }) {
   );
 }
 
-function CommunicationRow({ icon, title, secondary, count, onClick }) {
+function CommunicationRow({ icon, title, secondary, count, unavailable = false, onClick }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const hasUnread = Number(count || 0) > 0;
+  const hasUnread = !unavailable && Number(count || 0) > 0;
   return (
     <ButtonBase
       onClick={onClick}
@@ -419,7 +420,7 @@ function CommunicationRow({ icon, title, secondary, count, onClick }) {
           </Typography>
         </Box>
         <Typography
-          aria-label={`${title}: ${Number(count || 0)}`}
+          aria-label={unavailable ? `${title}: нет данных` : `${title}: ${Number(count || 0)}`}
           sx={{
             minWidth: 34,
             textAlign: 'right',
@@ -662,6 +663,7 @@ export default function Dashboard() {
   const { preferences, savePreferences } = usePreferences();
   const [payload, setPayload] = useState(EMPTY_DASHBOARD);
   const [communicationCounts, setCommunicationCounts] = useState({ chat: 0, mail: 0 });
+  const [communicationErrors, setCommunicationErrors] = useState({ chat: false, mail: false });
   const [docflowSummary, setDocflowSummary] = useState({ status: 'loading', count: null, truncated: false });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -705,50 +707,65 @@ export default function Dashboard() {
 
   const dashboardRequestRef = useRef(0);
   const docflowSummaryRequestRef = useRef(0);
+  const dashboardInFlightRef = useRef(false);
+  const docflowInFlightRef = useRef(false);
+  const lastDashboardFinishedAtRef = useRef(0);
+  const lastDocflowFinishedAtRef = useRef(0);
 
   const loadDashboard = useCallback(async (silent = false) => {
-    const requestId = dashboardRequestRef.current + 1;
-    dashboardRequestRef.current = requestId;
-    if (!silent) setLoading(true);
-    if (!silent) setError('');
-    const [dashboardResult, chatResult, mailResult] = await Promise.allSettled([
-      hubAPI.getDashboard({
-        announcements_limit: DASHBOARD_ANNOUNCEMENTS_LIMIT,
-        tasks_limit: DASHBOARD_TASKS_LIMIT,
-      }),
-      canReadChat ? chatNotificationsAPI.getUnreadSummary() : Promise.resolve(null),
-      canReadMail ? mailNotificationsAPI.getUnreadCount({ force: true }) : Promise.resolve(null),
-    ]);
+    dashboardInFlightRef.current = true;
+    try {
+      const requestId = dashboardRequestRef.current + 1;
+      dashboardRequestRef.current = requestId;
+      if (!silent) setLoading(true);
+      if (!silent) setError('');
+      const [dashboardResult, chatResult, mailResult] = await Promise.allSettled([
+        hubAPI.getDashboard({
+          announcements_limit: DASHBOARD_ANNOUNCEMENTS_LIMIT,
+          tasks_limit: DASHBOARD_TASKS_LIMIT,
+        }),
+        canReadChat ? chatNotificationsAPI.getUnreadSummary() : Promise.resolve(null),
+        canReadMail ? mailNotificationsAPI.getUnreadCount({ force: true }) : Promise.resolve(null),
+      ]);
 
-    // A newer load superseded this one: its result must not overwrite fresher data.
-    if (requestId !== dashboardRequestRef.current) return;
+      // A newer load superseded this one: its result must not overwrite fresher data.
+      if (requestId !== dashboardRequestRef.current) return;
 
-    if (dashboardResult.status === 'fulfilled') {
-      setPayload(dashboardResult.value || EMPTY_DASHBOARD);
-    } else {
-      if (!silent) {
-        setPayload(EMPTY_DASHBOARD);
-        setError(
-          dashboardResult.reason?.response?.data?.detail
-          || dashboardResult.reason?.message
-          || 'Не удалось загрузить главную страницу.',
-        );
+      if (dashboardResult.status === 'fulfilled') {
+        setPayload(dashboardResult.value || EMPTY_DASHBOARD);
+      } else {
+        if (!silent) {
+          setPayload(EMPTY_DASHBOARD);
+          setError(
+            dashboardResult.reason?.response?.data?.detail
+            || dashboardResult.reason?.message
+            || 'Не удалось загрузить главную страницу.',
+          );
+        }
       }
+      setCommunicationCounts((current) => ({
+        chat: chatResult.status === 'fulfilled'
+          ? Number(chatResult.value?.messages_unread_total || chatResult.value?.unread_total || 0)
+          : (silent ? current.chat : 0),
+        mail: mailResult.status === 'fulfilled'
+          ? Number(mailResult.value?.unread_count || mailResult.value?.total_unread || 0)
+          : (silent ? current.mail : 0),
+      }));
+      setCommunicationErrors((current) => ({
+        chat: chatResult.status === 'fulfilled' ? false : (silent ? current.chat : true),
+        mail: mailResult.status === 'fulfilled' ? false : (silent ? current.mail : true),
+      }));
+      // The latest load always clears the spinner, even if it was a silent one that superseded a visible load.
+      setLoading(false);
+    } finally {
+      dashboardInFlightRef.current = false;
+      lastDashboardFinishedAtRef.current = Date.now();
     }
-    setCommunicationCounts((current) => ({
-      chat: chatResult.status === 'fulfilled'
-        ? Number(chatResult.value?.messages_unread_total || chatResult.value?.unread_total || 0)
-        : (silent ? current.chat : 0),
-      mail: mailResult.status === 'fulfilled'
-        ? Number(mailResult.value?.unread_count || mailResult.value?.total_unread || 0)
-        : (silent ? current.mail : 0),
-    }));
-    // The latest load always clears the spinner, even if it was a silent one that superseded a visible load.
-    setLoading(false);
   }, [canReadChat, canReadMail]);
 
   const loadDocflowSummary = useCallback(async (showLoading = false) => {
     if (!canReadDocflow) return;
+    docflowInFlightRef.current = true;
     const requestId = docflowSummaryRequestRef.current + 1;
     docflowSummaryRequestRef.current = requestId;
     if (showLoading) setDocflowSummary({ status: 'loading', count: null, truncated: false });
@@ -759,6 +776,9 @@ export default function Dashboard() {
     } catch {
       if (requestId !== docflowSummaryRequestRef.current) return;
       setDocflowSummary({ status: 'unavailable', count: null, truncated: false });
+    } finally {
+      docflowInFlightRef.current = false;
+      lastDocflowFinishedAtRef.current = Date.now();
     }
   }, [canReadDocflow]);
 
@@ -770,17 +790,35 @@ export default function Dashboard() {
     let timer = null;
     // Events coalesced into one window must all be honoured, not just the first one.
     let refreshDocflowSummary = false;
+    let sawConnected = false;
+    let sawDataEvent = false;
     const refresh = (event) => {
       if (event?.type === HUB_REALTIME_DOCFLOW_EVENT || event?.type === HUB_REALTIME_CONNECTED_EVENT) {
         refreshDocflowSummary = true;
+      }
+      if (event?.type === HUB_REALTIME_CONNECTED_EVENT) {
+        sawConnected = true;
+      } else {
+        sawDataEvent = true;
       }
       if (timer) return;
       timer = window.setTimeout(() => {
         timer = null;
         const withDocflow = refreshDocflowSummary;
+        const onlyConnected = sawConnected && !sawDataEvent;
         refreshDocflowSummary = false;
-        void loadDashboard(true);
-        if (withDocflow) void loadDocflowSummary(false);
+        sawConnected = false;
+        sawDataEvent = false;
+        const now = Date.now();
+        // A socket connect landing while the mount load is still running or just
+        // finished adds no new data — skipping it keeps a cold open at one request
+        // set. A later reconnect still refreshes normally.
+        const dashboardFresh = dashboardInFlightRef.current
+          || (now - lastDashboardFinishedAtRef.current) < CONNECTED_REFRESH_RECENT_MS;
+        const docflowFresh = docflowInFlightRef.current
+          || (now - lastDocflowFinishedAtRef.current) < CONNECTED_REFRESH_RECENT_MS;
+        if (!(onlyConnected && dashboardFresh)) void loadDashboard(true);
+        if (withDocflow && !(onlyConnected && docflowFresh)) void loadDocflowSummary(false);
       }, 180);
     };
     const eventNames = [
@@ -848,7 +886,7 @@ export default function Dashboard() {
     )
   )), [taskItems, user?.id, user?.role]);
 
-  const attentionItems = useMemo(() => {
+  const attentionResult = useMemo(() => {
     const result = [];
     const seen = new Set();
     const addTask = (task, kind) => {
@@ -868,8 +906,10 @@ export default function Dashboard() {
         seen.add(`announcement:${id}`);
         result.push({ type: 'announcement', kind: 'ack', id, item });
       });
-    return result.slice(0, 6);
+    return { items: result.slice(0, 6), total: result.length };
   }, [announcementItems, reviewTasks, taskItems]);
+  const attentionItems = attentionResult.items;
+  const attentionTotal = attentionResult.total;
 
   const nearestTasks = useMemo(() => (
     taskItems
@@ -897,8 +937,11 @@ export default function Dashboard() {
       rows.push({
         key: 'mail',
         title: 'Почта',
-        secondary: communicationCounts.mail > 0 ? 'Есть непрочитанные письма' : 'Новых писем нет',
+        secondary: communicationErrors.mail
+          ? 'Нет данных'
+          : (communicationCounts.mail > 0 ? 'Есть непрочитанные письма' : 'Новых писем нет'),
         count: communicationCounts.mail,
+        unavailable: communicationErrors.mail,
         icon: <MailOutlineRoundedIcon />,
         path: '/mail',
       });
@@ -907,8 +950,11 @@ export default function Dashboard() {
       rows.push({
         key: 'chat',
         title: 'Чат',
-        secondary: communicationCounts.chat > 0 ? 'Есть новые сообщения' : 'Новых сообщений нет',
+        secondary: communicationErrors.chat
+          ? 'Нет данных'
+          : (communicationCounts.chat > 0 ? 'Есть новые сообщения' : 'Новых сообщений нет'),
         count: communicationCounts.chat,
+        unavailable: communicationErrors.chat,
         icon: <ForumOutlinedIcon />,
         path: '/chat',
       });
@@ -924,7 +970,7 @@ export default function Dashboard() {
       onClick: () => window.dispatchEvent(new CustomEvent('hub-open-notifications')),
     });
     return rows;
-  }, [canReadChat, canReadMail, communicationCounts.chat, communicationCounts.mail, unreadCounts?.notifications_unread_total]);
+  }, [canReadChat, canReadMail, communicationCounts.chat, communicationCounts.mail, communicationErrors.chat, communicationErrors.mail, unreadCounts?.notifications_unread_total]);
 
   const quickActions = useMemo(() => [
     canCreateTasks ? {
@@ -986,6 +1032,18 @@ export default function Dashboard() {
           })}
         >
           <Skeleton height={42} />
+        </Paper>
+      );
+    }
+
+    if (error) {
+      return (
+        <Paper
+          data-testid="dashboard-section-attention"
+          data-state="error"
+          sx={{ p: 1.5, borderRadius: { xs: '13px', sm: '16px' }, boxShadow: 'none' }}
+        >
+          <Alert severity="warning">Не удалось проверить события, требующие внимания. Повторите загрузку главной страницы.</Alert>
         </Paper>
       );
     }
@@ -1059,7 +1117,7 @@ export default function Dashboard() {
           </Stack>
           <Chip
             size="small"
-            label={attentionItems.length}
+            label={attentionTotal}
             sx={{
               height: 24,
               minWidth: 30,
@@ -1307,6 +1365,7 @@ export default function Dashboard() {
               title={item.title}
               secondary={item.secondary}
               count={item.count}
+              unavailable={item.unavailable}
               onClick={item.onClick || (() => navigate(item.path))}
             />
           ))}

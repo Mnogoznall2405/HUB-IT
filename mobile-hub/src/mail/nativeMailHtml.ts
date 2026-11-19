@@ -81,15 +81,16 @@ export function getSafeNativeMailExternalUrl(value: unknown): string {
 }
 
 function removeAttribute(tag: string, attribute: string): string {
-  const quoted = new RegExp(`\\s${attribute}\\s*=\\s*(["'])[\\s\\S]*?\\1`, 'gi');
-  const unquoted = new RegExp(`\\s${attribute}\\s*=\\s*[^\\s>]+`, 'gi');
+  // LOW-07: `/` — тоже разделитель внутри тега (<p/onclick=...>).
+  const quoted = new RegExp(`[\\s/]${attribute}\\s*=\\s*(["'])[\\s\\S]*?\\1`, 'gi');
+  const unquoted = new RegExp(`[\\s/]${attribute}\\s*=\\s*[^\\s>]+`, 'gi');
   return tag.replace(quoted, '').replace(unquoted, '');
 }
 
 function readAttribute(tag: string, attribute: string): string {
-  const quoted = tag.match(new RegExp(`\\s${attribute}\\s*=\\s*(["'])(.*?)\\1`, 'i'));
+  const quoted = tag.match(new RegExp(`[\\s/]${attribute}\\s*=\\s*(["'])(.*?)\\1`, 'i'));
   if (quoted) return String(quoted[2] || '').trim();
-  const unquoted = tag.match(new RegExp(`\\s${attribute}\\s*=\\s*([^\\s>]+)`, 'i'));
+  const unquoted = tag.match(new RegExp(`[\\s/]${attribute}\\s*=\\s*([^\\s>]+)`, 'i'));
   return String(unquoted?.[1] || '').trim();
 }
 
@@ -114,10 +115,10 @@ function stripDangerousMarkup(source: string): string {
     .replace(/<!doctype[^>]*>/gi, '')
     .replace(/<\/?(?:html|head|body)\b[^>]*>/gi, '')
     .replace(/<(?:meta|link|base|input|button|textarea|select|option)\b[^>]*>/gi, '')
-    .replace(/\s(?:on[a-z0-9_-]+|srcdoc|nonce)\s*=\s*(["'])[\s\S]*?\1/gi, '')
-    .replace(/\s(?:on[a-z0-9_-]+|srcdoc|nonce)\s*=\s*[^\s>]+/gi, '')
-    .replace(/\s(?:action|formaction)\s*=\s*(["'])[\s\S]*?\1/gi, '')
-    .replace(/\s(?:action|formaction)\s*=\s*[^\s>]+/gi, '')
+    .replace(/[\s/](?:on[a-z0-9_-]+|srcdoc|nonce)\s*=\s*(["'])[\s\S]*?\1/gi, '')
+    .replace(/[\s/](?:on[a-z0-9_-]+|srcdoc|nonce)\s*=\s*[^\s>]+/gi, '')
+    .replace(/[\s/](?:action|formaction)\s*=\s*(["'])[\s\S]*?\1/gi, '')
+    .replace(/[\s/](?:action|formaction)\s*=\s*[^\s>]+/gi, '')
     .replace(/<[a-z][^>]*>/gi, (tag) => {
       const anchor = /^<a\b/i.test(tag);
       const safeHref = anchor ? getSafeNativeMailExternalUrl(readAttribute(tag, 'href')) : '';
@@ -268,7 +269,7 @@ function stripRemoteCssResources(html: string, allowExternalImages: boolean): { 
 export function sanitizeNativeMailEditableHtml(value: string): string {
   if (value.length > MAX_MAIL_HTML_LENGTH) throw new Error('Письмо слишком большое для редактора.');
   return stripDangerousMarkup(value)
-    .replace(/\scontenteditable\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    .replace(/[\s/]contenteditable\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
 }
 
 export function prepareNativeMailHtml(
@@ -340,7 +341,12 @@ export function prepareNativeMailHtml(
   return { document, hasBlockedExternalImages, usedInlineAttachmentRefs };
 }
 
-export function shouldAllowMailDocumentNavigation(url: unknown): boolean {
+export function shouldAllowMailDocumentNavigation(
+  url: unknown,
+  { allowDataDocument = false }: { allowDataDocument?: boolean } = {},
+): boolean {
   const normalized = String(url || '').trim().toLowerCase();
-  return normalized === 'about:blank' || normalized.startsWith('data:text/html');
+  // LOW-08: data:text/html допустим только для первичной загрузки документа
+  // (Android рендерит source.html через data:); последующая навигация — нет.
+  return normalized === 'about:blank' || (allowDataDocument && normalized.startsWith('data:text/html'));
 }

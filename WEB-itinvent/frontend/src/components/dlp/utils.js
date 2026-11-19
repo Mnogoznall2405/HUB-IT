@@ -1,12 +1,244 @@
 // Shared DLP helpers (extracted from pages/FileEgress.jsx).
 
+// Foreground telemetry stores raw process names (chrome.exe, winword.exe);
+// the UI shows the product name. Keys are lowercase, without ".exe".
+const APP_NAME_LABELS = {
+  '1cv8': '1С:Предприятие',
+  '1cv8c': '1С:Предприятие',
+  '1cv8s': '1С:Предприятие',
+  chrome: 'Google Chrome',
+  msedge: 'Microsoft Edge',
+  firefox: 'Mozilla Firefox',
+  browser: 'Яндекс Браузер',
+  opera: 'Opera',
+  iexplore: 'Internet Explorer',
+  winword: 'Microsoft Word',
+  excel: 'Microsoft Excel',
+  powerpnt: 'Microsoft PowerPoint',
+  outlook: 'Microsoft Outlook',
+  onenote: 'Microsoft OneNote',
+  msaccess: 'Microsoft Access',
+  visio: 'Microsoft Visio',
+  winproj: 'Microsoft Project',
+  mspub: 'Microsoft Publisher',
+  teams: 'Microsoft Teams',
+  'ms-teams': 'Microsoft Teams',
+  lync: 'Skype for Business',
+  notepad: 'Блокнот',
+  'notepad++': 'Notepad++',
+  wordpad: 'WordPad',
+  mspaint: 'Paint',
+  snippingtool: 'Ножницы',
+  screenshotsketch: 'Ножницы',
+  explorer: 'Проводник',
+  taskmgr: 'Диспетчер задач',
+  cmd: 'Командная строка',
+  powershell: 'PowerShell',
+  pwsh: 'PowerShell',
+  windowsterminal: 'Терминал Windows',
+  wt: 'Терминал Windows',
+  systemsettings: 'Параметры Windows',
+  applicationframehost: 'Приложение Windows',
+  textinputhost: 'Панель ввода',
+  searchhost: 'Поиск Windows',
+  searchapp: 'Поиск Windows',
+  startmenuexperiencehost: 'Меню «Пуск»',
+  shellexperiencehost: 'Оболочка Windows',
+  lockapp: 'Экран блокировки',
+  dwm: 'Рабочий стол',
+  mstsc: 'Подключение к удалённому рабочему столу',
+  msrdcw: 'Удалённый рабочий стол',
+  vmconnect: 'Hyper-V',
+  anydesk: 'AnyDesk',
+  teamviewer: 'TeamViewer',
+  rustdesk: 'RustDesk',
+  radmin: 'Radmin',
+  rview: 'Radmin Viewer',
+  ammyy: 'Ammyy Admin',
+  aa_v3: 'Ammyy Admin',
+  romview: 'LiteManager',
+  romserver: 'LiteManager',
+  mremoteng: 'mRemoteNG',
+  putty: 'PuTTY',
+  kitty: 'KiTTY',
+  mobaxterm: 'MobaXterm',
+  securecrt: 'SecureCRT',
+  winscp: 'WinSCP',
+  filezilla: 'FileZilla',
+  totalcmd: 'Total Commander',
+  totalcmd64: 'Total Commander',
+  far: 'Far Manager',
+  '7zfm': '7-Zip',
+  '7zg': '7-Zip',
+  winrar: 'WinRAR',
+  acrobat: 'Adobe Acrobat',
+  acrord32: 'Adobe Acrobat Reader',
+  foxitreader: 'Foxit Reader',
+  sumatrapdf: 'SumatraPDF',
+  code: 'Visual Studio Code',
+  devenv: 'Visual Studio',
+  cursor: 'Cursor',
+  windsurf: 'Windsurf',
+  idea64: 'IntelliJ IDEA',
+  pycharm64: 'PyCharm',
+  webstorm64: 'WebStorm',
+  rider64: 'Rider',
+  datagrip64: 'DataGrip',
+  phpstorm64: 'PhpStorm',
+  goland64: 'GoLand',
+  clion64: 'CLion',
+  rubymine64: 'RubyMine',
+  sublime_text: 'Sublime Text',
+  atom: 'Atom',
+  zed: 'Zed',
+  studio3t: 'Studio 3T',
+  robo3t: 'Robo 3T',
+  mongodbcompass: 'MongoDB Compass',
+  dbeaver: 'DBeaver',
+  ssms: 'SQL Server Management Studio',
+  sqldeveloper: 'Oracle SQL Developer',
+  sqldeveloper64w: 'Oracle SQL Developer',
+  heidisql: 'HeidiSQL',
+  navicat: 'Navicat',
+  pgadmin4: 'pgAdmin',
+  plsqldev: 'PL/SQL Developer',
+  toad: 'Toad',
+  postman: 'Postman',
+  insomnia: 'Insomnia',
+  fiddler: 'Fiddler',
+  wireshark: 'Wireshark',
+  docker: 'Docker Desktop',
+  obs64: 'OBS Studio',
+  obs: 'OBS Studio',
+  telegram: 'Telegram',
+  max: 'MAX',
+  whatsapp: 'WhatsApp',
+  viber: 'Viber',
+  discord: 'Discord',
+  slack: 'Slack',
+  signal: 'Signal',
+  element: 'Element',
+  rocketchat: 'Rocket.Chat',
+  mattermost: 'Mattermost',
+  icq: 'ICQ',
+  skype: 'Skype',
+  skypeapp: 'Skype',
+  zoom: 'Zoom',
+  webex: 'Webex',
+  gotomeeting: 'GoToMeeting',
+  trueconf: 'TrueConf',
+  thunderbird: 'Mozilla Thunderbird',
+  emclient: 'eM Client',
+  thebat: 'The Bat!',
+  notion: 'Notion',
+  obsidian: 'Obsidian',
+  evernote: 'Evernote',
+  figma: 'Figma',
+  canva: 'Canva',
+  photoshop: 'Adobe Photoshop',
+  illustrator: 'Adobe Illustrator',
+  gimp: 'GIMP',
+  inkscape: 'Inkscape',
+  blender: 'Blender',
+  acad: 'AutoCAD',
+  autocad: 'AutoCAD',
+  kompas: 'КОМПАС-3D',
+  kompas3d: 'КОМПАС-3D',
+  sldworks: 'SOLIDWORKS',
+  inventor: 'Autodesk Inventor',
+  revit: 'Autodesk Revit',
+  sketchup: 'SketchUp',
+  nanocad: 'nanoCAD',
+  napp64: 'nanoCAD',
+  cons: 'Консультант Плюс',
+  consultant: 'Консультант Плюс',
+  garant: 'Гарант',
+  'garant-f1': 'Гарант',
+  sbis: 'СБИС',
+  sbis3: 'СБИС',
+  saby: 'СБИС',
+  directum: 'Directum',
+  elma365: 'ELMA365',
+  vlc: 'VLC',
+  wmplayer: 'Windows Media Player',
+  potplayer: 'PotPlayer',
+  potplayermini64: 'PotPlayer',
+  'mpc-hc64': 'MPC-HC',
+  smplayer: 'SMPlayer',
+  aimp: 'AIMP',
+  aimp3: 'AIMP',
+  foobar2000: 'foobar2000',
+  spotify: 'Spotify',
+  itunes: 'iTunes',
+  audacity: 'Audacity',
+  steam: 'Steam',
+  epicgameslauncher: 'Epic Games',
+  'battle.net': 'Battle.net',
+  eadesktop: 'EA App',
+  riotclientservices: 'Riot Client',
+  keepass: 'KeePass',
+  keepassxc: 'KeePassXC',
+  bitwarden: 'Bitwarden',
+  avp: 'Kaspersky',
+  avpui: 'Kaspersky',
+  msmpeng: 'Защитник Windows',
+  sharex: 'ShareX',
+  greenshot: 'Greenshot',
+  lightshot: 'Lightshot',
+  monosnap: 'Monosnap',
+  everything: 'Everything',
+  windirstat: 'WinDirStat',
+  treesizefree: 'TreeSize',
+  ccleaner64: 'CCleaner',
+  ditto: 'Ditto',
+  powerlauncher: 'PowerToys',
+  onedrive: 'OneDrive',
+  googledrivefs: 'Google Диск',
+  dropbox: 'Dropbox',
+  cloud: 'Облако Mail.ru',
+  unknown: 'Неизвестное приложение',
+};
+
+/** Process name → product name: 'winword.exe' → 'Microsoft Word'. */
+export function displayAppName(name) {
+  const key = String(name || '').trim().replace(/\.exe$/i, '');
+  if (!key) return '';
+  const label = APP_NAME_LABELS[key.toLowerCase()];
+  if (label) return label;
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/** 'Google Chrome (chrome)' — friendly name plus the raw process for forensics. */
+export function displayAppDetail(name) {
+  const raw = String(name || '').trim();
+  const label = displayAppName(raw);
+  if (!label) return '';
+  const base = raw.replace(/\.exe$/i, '');
+  return label.toLowerCase() === base.toLowerCase() ? label : `${label} (${base})`;
+}
+
 export const CHANNEL_LABELS = {
   usb: 'USB',
   network: 'Сеть',
   telegram: 'Telegram',
   max: 'MAX',
+  browser: 'Браузер',
   deleted: 'Удаление',
 };
+
+// details.send_state set by agent probes: 'sent' = outgoing bubble seen in chat
+// history, 'selected' = file picked/opened by the app (send not confirmed),
+// 'observed' = file touched with unknown direction (browser handles).
+const SEND_STATE_META = {
+  sent: { label: 'Отправлено', color: 'info' },
+  selected: { label: 'Выбран файл', color: 'default' },
+  observed: { label: 'Наблюдено', color: 'default' },
+};
+
+export function sendStateMeta(row) {
+  const state = String(row?.details?.send_state || '').toLowerCase();
+  return SEND_STATE_META[state] || null;
+}
 
 export function formatTs(ts) {
   if (!ts) return '—';
@@ -310,4 +542,22 @@ export function formatAgo(ts) {
   const d = Math.floor(h / 24);
   if (d < 7) return `${d} дн назад`;
   return formatTs(n);
+}
+
+// Fixed-offset clocks for branch-local DLP data: the viewer's own timezone
+// must never shift what a remote host's day looked like.
+
+export function dayAtUtcOffset(epochMs, offsetMinutes) {
+  return new Date(epochMs + offsetMinutes * 60000).toISOString().slice(0, 10);
+}
+
+export function clockAtUtcOffset(epochMs, offsetMinutes) {
+  const date = new Date(epochMs + offsetMinutes * 60000);
+  return `${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
+}
+
+export function utcOffsetLabel(minutes) {
+  const sign = minutes < 0 ? '-' : '+';
+  const absolute = Math.abs(minutes);
+  return `UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`;
 }

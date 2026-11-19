@@ -1,12 +1,14 @@
-﻿/**
+/**
  * Authentication Context - manages user authentication state across the app.
  */
-import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { authAPI } from '../api/client';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { authAPI } from '../api/auth';
+import { clearAllChatDrafts } from '../lib/chatDraftsStorage';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
 import { clearMobileOfflineCache } from '../lib/mobileOfflineCache';
 import { isMailSessionEnabled, MAIL_SESSION_CHANGED_EVENT } from '../lib/mailSession';
+import { sweepLogoutSessionData } from '../lib/logoutDataSweep';
 import { clearSWRCache } from '../lib/swrCache';
 import { synchronizePrivateMediaSession } from '../lib/privateMediaSession';
 import { synchronizeBrowserAccount } from '../lib/browserAccountSession';
@@ -151,6 +153,13 @@ const resolveErrorDetail = (err, fallback) => {
   return fallback;
 };
 
+// A request that never reached the backend (connection refused, DNS, timeout, offline
+// WebView) must not look like "wrong password": callers show a distinct notice for it.
+const isNetworkLevelAuthError = (err) => (
+  err?.code === 'HUBIT_OFFLINE_READ_ONLY'
+  || (Boolean(err?.isAxiosError) && !err?.response)
+);
+
 const isLoginRoute = () => {
   if (typeof window === 'undefined') return false;
   const pathname = String(window.location?.pathname || '').replace(/\/+$/, '') || '/';
@@ -191,7 +200,9 @@ export const AuthProvider = ({ children }) => {
     clearSWRCache();
     localStorage.removeItem('user');
     synchronizeBrowserAccount();
+    clearAllChatDrafts();
     clearAllMailRecentCache();
+    sweepLogoutSessionData();
     setUser(null);
     setLoading(false);
     const generation = sessionGenerationRef.current;
@@ -534,6 +545,7 @@ export const AuthProvider = ({ children }) => {
       return {
         success: false,
         error: message,
+        networkError: isNetworkLevelAuthError(err),
         statusCode,
         retryAfterSeconds: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
           ? retryAfterSeconds
@@ -699,7 +711,7 @@ export const AuthProvider = ({ children }) => {
     return permissions.some((permission) => hasPermission(permission));
   }, [hasPermission]);
 
-  const value = {
+  const value = useMemo(() => ({
     user,
     loading,
     error,
@@ -716,7 +728,24 @@ export const AuthProvider = ({ children }) => {
     isAuthenticated,
     hasPermission,
     hasAnyPermission,
-  };
+  }), [
+    user,
+    loading,
+    error,
+    login,
+    startTwoFactorSetup,
+    verifyTwoFactorSetup,
+    verifyTwoFactorLogin,
+    startPasskeyLogin,
+    verifyPasskeyLogin,
+    refreshTrustedDeviceAuth,
+    verifyTrustedDeviceAuth,
+    logout,
+    refreshSession,
+    isAuthenticated,
+    hasPermission,
+    hasAnyPermission,
+  ]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

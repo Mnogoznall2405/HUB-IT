@@ -43,6 +43,7 @@ import {
   type TaskStatusLog,
   type TaskObject,
   type TaskProject,
+  type TaskUpdatePayload,
   type TaskUploadFile,
 } from '../../api/taskApi';
 import { HUB_WEB_ORIGIN } from '../../api/config';
@@ -139,8 +140,10 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
   const tokens = useFluentTokens(preferences.theme_mode);
   const bottomInset = useNativeBottomNavInset();
   const allowed = hasPermission('tasks.read');
+  const canReadDepartments = hasPermission('settings.read') || hasPermission('departments.manage');
   const loadGeneration = useRef(0);
   const loadInProgress = useRef(false);
+  const lastMutationAtRef = useRef(0);
   useLayoutEffect(() => {
     loadGeneration.current += 1;
     return () => { loadGeneration.current += 1; };
@@ -183,6 +186,15 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
   const [editDepartments, setEditDepartments] = useState<DepartmentRecord[]>([]);
   const [editMetaLoading, setEditMetaLoading] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
+  // Field values as they were when the form opened: the save payload is a diff
+  // against this snapshot so untouched fields are never written back over a
+  // colleague's parallel edit.
+  const editBaselineRef = useRef<{
+    title: string; description: string; dueDate: string; priority: string;
+    protocolDate: string; assigneeIds: number[]; controllerId: number | null;
+    observerIds: number[]; projectId: string; objectId: string;
+    departmentId: string; visibility: string; emailReminder: string;
+  } | null>(null);
   const [checklistText, setChecklistText] = useState('');
   const [checklistBusy, setChecklistBusy] = useState(false);
   const [fileBusy, setFileBusy] = useState(false);
@@ -214,6 +226,16 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     return true;
   });
 
+  // PATCH responses may omit `capabilities` — merge them from the last full
+  // payload so the card doesn't drop into read-only mode.
+  const applyUpdatedTask = useCallback((updated: typeof task) => {
+    if (!updated) return;
+    lastMutationAtRef.current = Date.now();
+    setTask((current) => (current
+      ? { ...updated, capabilities: updated.capabilities ?? current.capabilities }
+      : updated));
+  }, []);
+
   const loadTask = useCallback(async (mode: 'initial' | 'refresh' | 'silent' = 'initial') => {
     if (!taskId || !allowed) return;
     const request = ++loadGeneration.current;
@@ -232,6 +254,9 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
       : null;
     if (!isCurrent()) return;
     if (cached && cached.data.task.id !== taskId) cached = null;
+    // After a local mutation the snapshot still holds the pre-action state —
+    // a refresh must not roll the UI back to it.
+    if (cached && mode !== 'initial' && Date.now() - lastMutationAtRef.current < 60_000) cached = null;
     if (cached) {
       setTask(cached.data.task);
       setComments(cached.data.comments || []);
@@ -266,7 +291,8 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
           setStatusLog(nextStatusLog);
         } catch (cause) {
           if (!isCurrent()) return;
-          setStatusLog([]);
+          // Keep the last good log: clearing it would also write an empty
+          // offline snapshot and erase the cached history permanently.
           setStatusLogError(formatApiError(cause, 'Не удалось загрузить историю статусов.'));
         }
       };
@@ -282,7 +308,7 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
           void markTaskCommentsSeen(taskId).catch(() => undefined);
         } catch (cause) {
           if (!isCurrent()) return;
-          setComments([]);
+          // Same rule for comments: a failed refresh keeps the previous list.
           setError(formatApiError(cause, 'Не удалось загрузить комментарии.'));
         }
       };
@@ -457,10 +483,13 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
           updated = await reopenTask(task.id);
           break;
       }
-      setTask(updated);
+      applyUpdatedTask(updated);
       setPendingAction(null);
       setActionComment('');
       setActionFile(null);
+      // A transition writes a status-log entry and stores the action comment —
+      // refetch both instead of waiting for the websocket to catch up.
+      void loadTask('refresh');
       setMessage(actionSuccessMessage(pendingAction.key));
     } catch (cause) {
       const actionError = formatApiError(cause, 'Не удалось изменить состояние задачи.');
@@ -473,29 +502,50 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
 
   const openEdit = useCallback(() => {
     if (!task) return;
-    setEditTitle(String(task.title || ''));
-    setEditDescription(String(task.description || ''));
-    setEditDueDate(taskDueDateInput(task.due_at));
-    setEditPriority(TASK_PRIORITY_OPTIONS.some((item) => item.value === task.priority)
+    const priority = TASK_PRIORITY_OPTIONS.some((item) => item.value === task.priority)
       ? task.priority as 'low' | 'normal' | 'high' | 'urgent'
-      : 'normal');
-    setEditProtocolDate(String(task.protocol_date || '').slice(0, 10));
-    const assigneeIds = (Array.isArray(task.assignee_user_ids)
+      : 'normal';
+    const visibility = ['department', 'department_managers'].includes(String(task.visibility_scope || ''))
+      ? task.visibility_scope as 'department' | 'department_managers'
+      : 'private';
+    const assigneeIds = [...new Set((Array.isArray(task.assignee_user_ids)
       ? task.assignee_user_ids
       : [task.assignee_user_id])
       .map(Number)
-      .filter((id) => Number.isInteger(id) && id > 0);
-    setEditAssigneeIds([...new Set(assigneeIds)]);
-    setEditControllerId(Number(task.controller_user_id || 0) || null);
-    setEditObserverIds((Array.isArray(task.observer_user_ids) ? task.observer_user_ids : [])
-      .map(Number).filter((id) => Number.isInteger(id) && id > 0));
-    setEditProjectId(String(task.project_id || ''));
-    setEditObjectId(String(task.object_id || ''));
-    setEditDepartmentId(String(task.department_id || ''));
-    setEditVisibility(['department', 'department_managers'].includes(String(task.visibility_scope || ''))
-      ? task.visibility_scope as 'department' | 'department_managers'
-      : 'private');
-    setEditEmailReminder(task.email_deadline_remind_hours == null ? '' : String(task.email_deadline_remind_hours));
+      .filter((id) => Number.isInteger(id) && id > 0))];
+    const observerIds = (Array.isArray(task.observer_user_ids) ? task.observer_user_ids : [])
+      .map(Number).filter((id) => Number.isInteger(id) && id > 0);
+    const controllerId = Number(task.controller_user_id || 0) || null;
+    const emailReminder = task.email_deadline_remind_hours == null ? '' : String(task.email_deadline_remind_hours);
+    const baseline = {
+      title: String(task.title || ''),
+      description: String(task.description || ''),
+      dueDate: taskDueDateInput(task.due_at),
+      priority,
+      protocolDate: String(task.protocol_date || '').slice(0, 10),
+      assigneeIds: [...assigneeIds].sort((a, b) => a - b),
+      controllerId,
+      observerIds: [...observerIds].sort((a, b) => a - b),
+      projectId: String(task.project_id || ''),
+      objectId: String(task.object_id || ''),
+      departmentId: String(task.department_id || ''),
+      visibility,
+      emailReminder,
+    };
+    editBaselineRef.current = baseline;
+    setEditTitle(baseline.title);
+    setEditDescription(baseline.description);
+    setEditDueDate(baseline.dueDate);
+    setEditPriority(priority);
+    setEditProtocolDate(baseline.protocolDate);
+    setEditAssigneeIds(assigneeIds);
+    setEditControllerId(controllerId);
+    setEditObserverIds(observerIds);
+    setEditProjectId(baseline.projectId);
+    setEditObjectId(baseline.objectId);
+    setEditDepartmentId(baseline.departmentId);
+    setEditVisibility(visibility);
+    setEditEmailReminder(emailReminder);
     setEditDirectoryQuery('');
     setEditOpen(true);
     setError('');
@@ -505,7 +555,9 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
       searchTaskControllers('', 100),
       getTaskProjects(),
       getTaskObjects(),
-      listDepartments(),
+      // GET /departments requires settings.read/departments.manage — without it
+      // the request returns 403 and must not take down the other directories.
+      canReadDepartments ? listDepartments() : Promise.resolve([]),
     ]).then(([assignees, controllers, projects, objects, departments]) => {
       setEditAssignees(assignees);
       setEditControllers(controllers);
@@ -515,7 +567,7 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     }).catch((cause) => {
       setError(formatApiError(cause, 'Не удалось загрузить справочники для редактирования задачи.'));
     }).finally(() => setEditMetaLoading(false));
-  }, [task]);
+  }, [canReadDepartments, task]);
 
   const filteredEditAssignees = useMemo(() => {
     const query = editDirectoryQuery.trim().toLocaleLowerCase('ru');
@@ -553,7 +605,12 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     }
     let dueAt: string | null;
     try {
-      dueAt = normalizeDueDate(editDueDate);
+      // The form is date-only: an untouched date must keep the server's exact
+      // timestamp (web-created tasks carry a real time, normalizeDueDate would
+      // silently rewrite it to 18:00).
+      dueAt = editDueDate === taskDueDateInput(task?.due_at)
+        ? (task?.due_at ?? null)
+        : normalizeDueDate(editDueDate);
     } catch (cause) {
       setError(formatApiError(cause, 'Проверьте срок задачи.'));
       return;
@@ -563,30 +620,48 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
       setError('Укажите дату протокола в формате ГГГГ-ММ-ДД.');
       return;
     }
-    const reminder = editEmailReminder.trim() === '' ? undefined : Number(editEmailReminder);
-    if (reminder !== undefined && (!Number.isInteger(reminder) || reminder < 0 || reminder > 720)) {
-      setError('Напоминание должно быть целым числом от 0 до 720 часов.');
+    // Empty field = explicit clear (server stores null → default reminder),
+    // 0 = "never remind". Backend accepts 0–168 only.
+    const reminder = editEmailReminder.trim() === '' ? null : Number(editEmailReminder);
+    if (reminder !== null && (!Number.isInteger(reminder) || reminder < 0 || reminder > 168)) {
+      setError('Напоминание должно быть целым числом от 0 до 168 часов.');
+      return;
+    }
+    // Only fields the user actually changed are sent — the backend applies
+    // whatever keys arrive, so a full payload would silently roll back a
+    // colleague's parallel edits to the other fields.
+    const baseline = editBaselineRef.current;
+    const idsEqual = (a: number[], b: number[]) => a.length === b.length && a.every((id, index) => id === b[index]);
+    const payload: TaskUpdatePayload = {};
+    if (!baseline || editTitle !== baseline.title) payload.title = title;
+    if (!baseline || editDescription !== baseline.description) payload.description = editDescription.trim();
+    if (!baseline || editDueDate !== baseline.dueDate) payload.due_at = dueAt;
+    if (!baseline || editPriority !== baseline.priority) payload.priority = editPriority;
+    if (!baseline || protocolDate !== baseline.protocolDate) payload.protocol_date = protocolDate || undefined;
+    if (!baseline || !idsEqual([...editAssigneeIds].sort((a, b) => a - b), baseline.assigneeIds)) {
+      payload.assignee_user_ids = editAssigneeIds;
+    }
+    if (!baseline || editControllerId !== baseline.controllerId) payload.controller_user_id = editControllerId;
+    if (!baseline || !idsEqual([...editObserverIds].sort((a, b) => a - b), baseline.observerIds)) {
+      payload.observer_user_ids = editObserverIds;
+    }
+    const departmentChanged = !baseline || editDepartmentId !== baseline.departmentId;
+    const visibilityChanged = !baseline || editVisibility !== baseline.visibility;
+    if (!baseline || editProjectId !== baseline.projectId) payload.project_id = editProjectId || undefined;
+    if (!baseline || editObjectId !== baseline.objectId) payload.object_id = editObjectId || null;
+    if (departmentChanged) payload.department_id = editDepartmentId || null;
+    if (departmentChanged || visibilityChanged) payload.visibility_scope = editDepartmentId ? editVisibility : 'private';
+    if (!baseline || editEmailReminder !== baseline.emailReminder) payload.email_deadline_remind_hours = dueAt ? reminder : undefined;
+    if (!Object.keys(payload).length) {
+      setEditOpen(false);
+      setMessage('Изменений нет.');
       return;
     }
     setEditBusy(true);
     setError('');
     try {
-      const updated = await updateTask(task.id, {
-        title,
-        description: editDescription.trim(),
-        due_at: dueAt,
-        priority: editPriority,
-        protocol_date: protocolDate || undefined,
-        assignee_user_ids: editAssigneeIds,
-        controller_user_id: editControllerId,
-        observer_user_ids: editObserverIds,
-        project_id: editProjectId || undefined,
-        object_id: editObjectId || null,
-        department_id: editDepartmentId || null,
-        visibility_scope: editDepartmentId ? editVisibility : 'private',
-        email_deadline_remind_hours: dueAt ? reminder : undefined,
-      });
-      setTask(updated);
+      const updated = await updateTask(task.id, payload);
+      applyUpdatedTask(updated);
       setEditOpen(false);
       setMessage('Задача обновлена.');
     } catch (cause) {
@@ -596,17 +671,18 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     }
   }, [editAssigneeIds, editBusy, editControllerId, editDepartmentId, editDescription, editDueDate, editEmailReminder, editObjectId, editObserverIds, editPriority, editProjectId, editProtocolDate, editTitle, editVisibility, offlineMode, task]);
 
-  const saveChecklist = useCallback(async (items: TaskChecklistItem[], successMessage: string) => {
-    if (!task || checklistBusy || offlineMode) return;
+  const saveChecklist = useCallback(async (items: TaskChecklistItem[], successMessage: string): Promise<boolean> => {
+    if (!task || checklistBusy || offlineMode) return false;
     setChecklistBusy(true);
     setError('');
     try {
       const updated = await updateTask(task.id, { checklist_items: items });
-      setTask(updated);
-      setChecklistText('');
+      applyUpdatedTask(updated);
       setMessage(successMessage);
+      return true;
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось обновить чек-лист.'));
+      return false;
     } finally {
       setChecklistBusy(false);
     }
@@ -616,10 +692,12 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     const text = checklistText.trim();
     if (!task || !text) return;
     const current = Array.isArray(task.checklist_items) ? task.checklist_items : [];
+    // The input is cleared only when the item it holds was actually added —
+    // toggling or removing an existing item must not eat half-typed text.
     void saveChecklist([
       ...current,
       { id: `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text, done: false },
-    ], 'Пункт добавлен.');
+    ], 'Пункт добавлен.').then((saved) => { if (saved) setChecklistText(''); });
   }, [checklistText, saveChecklist, task]);
 
   const toggleChecklistItem = useCallback((item: TaskChecklistItem) => {
@@ -641,7 +719,9 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     setFileBusy(true);
     setError('');
     try {
-      setActionFile(await pickNativeTaskFile());
+      // Cancel returns null — keep the previously picked file.
+      const picked = await pickNativeTaskFile();
+      if (picked) setActionFile(picked);
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось выбрать файл отчёта.'));
     } finally {
@@ -711,16 +791,20 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     if (!task || !body || commentSending || offlineMode) return;
     setCommentSending(true);
     setError('');
+    // Clear now so a send-in-flight field accepts new text; on failure the
+    // sent body is restored only while the composer stayed untouched.
+    const sentDraft = commentText;
+    setCommentText('');
     try {
       const created = await addTaskComment(task.id, body);
       setComments((current) => [...current, created]);
-      setCommentText('');
       setTask((current) => current ? {
         ...current,
         comments_count: Number(current.comments_count || 0) + 1,
       } : current);
       setMessage('Комментарий добавлен.');
     } catch (cause) {
+      setCommentText((current) => (current === '' ? sentDraft : current));
       setError(formatApiError(cause, 'Не удалось добавить комментарий.'));
     } finally {
       setCommentSending(false);
@@ -1232,7 +1316,7 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
                   value={editEmailReminder}
                   onChangeText={(value) => setEditEmailReminder(value.replace(/\D/g, '').slice(0, 3))}
                   keyboardType="number-pad"
-                  placeholder="Без отдельного напоминания"
+                  placeholder="Пусто — по умолчанию, 0 — не напоминать"
                   placeholderTextColor={tokens.textTertiary}
                   accessibilityLabel="Напоминание о сроке по электронной почте в часах"
                   style={[styles.input, { color: tokens.textPrimary, borderColor: tokens.border }]}

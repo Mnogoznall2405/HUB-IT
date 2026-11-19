@@ -33,6 +33,9 @@ export function NativeAdminDepartmentsScreen() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [membersLoading, setMembersLoading] = useState(false);
+  // «Сохранить руководителей» отправляет весь список: без успешной загрузки
+  // состава пустой draftManagerIds деактивировал бы всех руководителей.
+  const [membersLoaded, setMembersLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState<'users' | 'ad' | ''>('');
   const [status, setStatus] = useState({ error: '', message: '' });
@@ -72,6 +75,7 @@ export function NativeAdminDepartmentsScreen() {
     const current = () => lease === memberRequestRef.current && selectedIdRef.current === departmentId;
     setMemberships([]);
     setDraftManagerIds([]);
+    setMembersLoaded(false);
     if (!departmentId || !allowed || offlineMode) {
       setMembersLoading(false);
       return;
@@ -85,6 +89,7 @@ export function NativeAdminDepartmentsScreen() {
         .filter((item) => String(item.role || '') === 'manager' && item.is_active !== false)
         .map((item) => Number(item.user_id))
         .filter((item) => Number.isInteger(item) && item > 0));
+      setMembersLoaded(true);
     } catch (error) {
       if (!current()) return;
       setStatus({ error: formatApiError(error, 'Не удалось загрузить состав отдела.'), message: '' });
@@ -122,7 +127,7 @@ export function NativeAdminDepartmentsScreen() {
   }, [memberships]);
 
   const saveManagers = useCallback(async () => {
-    if (!selectedId || membersLoading || saving || offlineMode || !allowed) return;
+    if (!selectedId || membersLoading || !membersLoaded || saving || offlineMode || !allowed) return;
     const lease = memberRequestRef.current;
     setSaving(true);
     try {
@@ -136,7 +141,7 @@ export function NativeAdminDepartmentsScreen() {
     } finally {
       setSaving(false);
     }
-  }, [allowed, draftManagerIds, loadMembers, membersLoading, offlineMode, saving, selectedId]);
+  }, [allowed, draftManagerIds, loadMembers, membersLoaded, membersLoading, offlineMode, saving, selectedId]);
 
   const confirmSync = useCallback((source: 'users' | 'ad') => {
     if (syncing || offlineMode || !allowed) return;
@@ -162,6 +167,10 @@ export function NativeAdminDepartmentsScreen() {
                     : 'Отделы синхронизированы из пользователей.',
                 });
                 await loadDepartments();
+                // Memberships change during sync (transfers deactivate old
+                // rows): reloading only departments would let an admin assign
+                // a manager to a member who already moved away.
+                if (selectedId) await loadMembers(selectedId);
               })
               .catch((error) => {
                 setStatus({
@@ -177,7 +186,7 @@ export function NativeAdminDepartmentsScreen() {
         },
       ],
     );
-  }, [allowed, loadDepartments, offlineMode, syncing]);
+  }, [allowed, loadDepartments, loadMembers, offlineMode, selectedId, syncing]);
 
   if (!allowed) {
     return (
@@ -268,7 +277,7 @@ export function NativeAdminDepartmentsScreen() {
         })}
         <AccountPrimaryButton
           tokens={tokens}
-          disabled={!selectedId || membersLoading || offlineMode}
+          disabled={!selectedId || membersLoading || !membersLoaded || offlineMode}
           loading={saving}
           label="Сохранить руководителей"
           onPress={() => { void saveManagers(); }}

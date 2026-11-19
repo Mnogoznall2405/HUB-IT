@@ -71,7 +71,7 @@ vi.mock('../contexts/AuthContext', () => ({
   }),
 }));
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/auth', () => ({
   authAPI: {
     getLoginMode: mockGetLoginMode,
     getTrustedDeviceRegistrationOptions: mockGetTrustedDeviceRegistrationOptions,

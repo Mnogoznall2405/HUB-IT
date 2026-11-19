@@ -23,7 +23,9 @@ describe('useMailMailboxConfigRefresh', () => {
     await expect(result.current()).resolves.toEqual(data);
 
     expect(deps.mailAPI.getMyConfig).toHaveBeenCalledWith({ mailbox_id: 'mb-1' });
-    expect(deps.setMailboxInfo).toHaveBeenCalledWith(data);
+    expect(deps.setMailboxInfo).toHaveBeenCalledWith(expect.any(Function));
+    const mergeMailboxInfo = deps.setMailboxInfo.mock.calls[0][0];
+    expect(mergeMailboxInfo({ unread_count: 5 })).toEqual({ ...data, unread_count: 5 });
     expect(deps.setSelectedMailboxId).toHaveBeenCalledWith('mb-2');
     expect(deps.setMailConfigLoading).toHaveBeenNthCalledWith(1, true);
     expect(deps.setMailConfigLoading).toHaveBeenLastCalledWith(false);

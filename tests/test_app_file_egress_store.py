@@ -286,6 +286,58 @@ def test_browser_focus_segments_attach_session_dwell_to_history_row(app_db_url: 
     assert history_rows[0]["dwell_sec"] == pytest.approx(180.0)
 
 
+def test_browser_focus_upload_updates_latest_matching_history(app_db_url: str, monkeypatch: pytest.MonkeyPatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from backend.api.v1 import fs_egress
+    from backend.appdb.file_egress_store import AppFileEgressStore
+
+    store = AppFileEgressStore(database_url=app_db_url)
+    monkeypatch.setattr(fs_egress.store, "get_egress_store", lambda: store)
+    monkeypatch.setenv("ITINV_AGENT_API_KEYS", "browser-fixture")
+    app = FastAPI()
+    app.include_router(fs_egress.router)
+    url = "https://docs.example.invalid/work"
+    other_url = "https://docs.example.invalid/other"
+    histories = [
+        ("old", "edge", url, "2026-11-10T10:00:00+00:00", 5.0),
+        ("new", "edge", url, "2026-11-11T10:00:00+00:00", 10.0),
+        ("no-time", "edge", url, None, 3.0),
+        ("chrome", "chrome", url, "2026-11-12T10:00:00+00:00", 4.0),
+        ("other-url", "edge", other_url, "2026-11-12T11:00:00+00:00", 7.0),
+    ]
+    visits = [
+        {
+            "browser": browser, "profile": "Default", "visit_id": visit_id,
+            "url": visit_url, "title": "Work", "dwell_sec": dwell,
+            **({"visited_at": visited_at} if visited_at else {}),
+        }
+        for visit_id, browser, visit_url, visited_at, dwell in histories
+    ]
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/browser-probe", headers={"X-API-Key": "browser-fixture"},
+            json={"computer_name": "PC-LATEST", "windows_user": "alice", "visits": visits},
+        )
+        assert response.status_code == 200
+        focus = _focus_event(
+            event_id="latest-only", browser="edge", url=url, title="Work",
+            ended_at=datetime.fromisoformat("2026-11-13T10:00:00+00:00").timestamp(),
+            dwell_sec=30.0, session_dwell_sec=80.0,
+        )
+        response = client.post(
+            "/browser-probe", headers={"X-API-Key": "browser-fixture"},
+            json={"computer_name": "PC-LATEST", "windows_user": "alice", "focus_events": [focus]},
+        )
+        assert response.status_code == 200
+    actual = {
+        row["visit_id"]: row["dwell_sec"]
+        for row in store.list_browser_visits(computer_name="PC-LATEST")
+        if row["profile"] != "focus"
+    }
+    assert actual == {"old": 5.0, "new": 80.0, "no-time": 3.0, "chrome": 4.0, "other-url": 7.0}
+
+
 def test_browser_days_report_idle_dwell(app_db_url: str):
     from backend.appdb.file_egress_store import AppFileEgressStore
 
@@ -305,6 +357,59 @@ def test_browser_days_report_idle_dwell(app_db_url: str):
         days[0]["work_dwell"] + days[0]["entertainment_dwell"] + days[0]["other_dwell"]
         == pytest.approx(150.0)
     )
+
+
+def test_browser_days_report_per_category(app_db_url: str):
+    from backend.appdb.file_egress_store import AppFileEgressStore
+
+    store = AppFileEgressStore(database_url=app_db_url)
+    visits = [
+        {
+            "browser": "edge",
+            "profile": "Default",
+            "visit_id": "h-mail",
+            "url": "https://mail.google.com/inbox",
+            "title": "Inbox",
+            "visited_at": "2026-11-10T10:00:00+00:00",
+        },
+        {
+            "browser": "edge",
+            "profile": "Default",
+            "visit_id": "h-work",
+            "url": "https://github.com/org/repo",
+            "title": "Repo",
+            "visited_at": "2026-11-10T11:00:00+00:00",
+        },
+    ]
+    # Noon local keeps the same bucket date in any test-machine timezone.
+    focus_ts = datetime(2026, 11, 10, 12, 0, 0).astimezone().timestamp()
+    events = [
+        _focus_event(
+            event_id="cat-1",
+            url="https://github.com/org/repo",
+            title="Repo",
+            dwell_sec=60.0,
+            idle_sec=0.0,
+            ended_at=focus_ts,
+        ),
+    ]
+    assert store.ingest_browser_visits(
+        computer_name="PC-CATS", windows_user="alice", visits=visits, focus_events=events
+    ) == 3
+    days = store.list_browser_days(computer_name="PC-CATS")
+    assert len(days) == 1
+    day = days[0]
+    assert day["day"] == "2026-11-10"
+    assert day["visits"] == 3
+    cats = day["categories"]
+    assert cats["mail"]["visits"] == 1
+    assert cats["work"]["visits"] == 2
+    assert cats["work"]["dwell"] == pytest.approx(60.0)
+    # Classic buckets still roll up from the same rows.
+    assert day["work"] == 2
+    assert day["work_dwell"] == pytest.approx(60.0)
+    assert day["other"] == 1
+    assert day["other_dwell"] == pytest.approx(0.0)
 
 
 def test_ingest_file_left_batches_and_dedupes(app_db_url: str):
@@ -328,6 +433,152 @@ def test_ingest_file_left_batches_and_dedupes(app_db_url: str):
     assert len(rows) == 2
 
 
+def test_ingest_file_left_keeps_repeat_delete_events(app_db_url: str):
+    """Same-name deletions are distinct events: event_id is the only retry key.
+    A repeat delete of the recreated file at the same path must stay."""
+    from backend.appdb.file_egress_store import AppFileEgressStore
+
+    store = AppFileEgressStore(database_url=app_db_url)
+    events = [
+        {
+            "event_id": "del1",
+            "ts": 100,
+            "channel": "deleted",
+            "file_name": "report.docx",
+            "dest_path": r"C:\Users\a\Documents\report.docx",
+            "computer_name": "PC-B",
+        },
+        {
+            "event_id": "del2",
+            "ts": 101,
+            "channel": "deleted",
+            "file_name": "report.docx",
+            "dest_path": r"C:\Users\a\Desktop\report.docx",
+            "computer_name": "PC-B",
+        },
+        {
+            "event_id": "del3",
+            "ts": 102,
+            "channel": "deleted",
+            "file_name": "report.docx",
+            "dest_path": r"C:\Users\a\Documents\report.docx",
+            "computer_name": "PC-B",
+        },
+    ]
+    assert store.ingest_file_left(events) == 3
+    rows = store.list_file_left(computer_name="PC-B", channel="deleted")
+    assert len(rows) == 3
+    assert store.ingest_file_left(events) == 0
+    assert len(store.list_file_left(computer_name="PC-B", channel="deleted")) == 3
+
+
+async def test_ingest_timeout_does_not_start_queued_store_later(monkeypatch):
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+
+    from backend.api.v1 import fs_egress
+
+    monkeypatch.setenv("ITINV_INGEST_MAX_CONCURRENCY", "1")
+    monkeypatch.setattr(fs_egress, "_ingest_admission", None)
+    monkeypatch.setattr(fs_egress, "_ingest_queue_admission", None, raising=False)
+    monkeypatch.setattr(fs_egress, "_ingest_limiters", {})
+    monkeypatch.setattr(fs_egress, "_ingest_timeout_sec", lambda: 0.1)
+    gate = threading.Event()
+    finished = threading.Event()
+    calls = []
+
+    def stalled():
+        calls.append("first")
+        try:
+            gate.wait(5)
+        finally:
+            finished.set()
+
+    try:
+        with pytest.raises(HTTPException) as first:
+            await fs_egress._run_ingest(stalled)
+        assert first.value.status_code == 503
+        with pytest.raises(HTTPException):
+            await fs_egress._run_ingest(lambda: calls.append("expired"))
+    finally:
+        gate.set()
+        assert await asyncio.to_thread(finished.wait, 2)
+    await asyncio.sleep(0.05)
+    await fs_egress._run_ingest(lambda: calls.append("new"))
+    assert calls == ["first", "new"]
+
+
+async def test_ingest_rejects_overflow_without_starting_more_workers(monkeypatch):
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+
+    from backend.api.v1 import fs_egress
+
+    monkeypatch.setenv("ITINV_INGEST_MAX_CONCURRENCY", "1")
+    monkeypatch.setattr(fs_egress, "_ingest_admission", None)
+    monkeypatch.setattr(fs_egress, "_ingest_queue_admission", None, raising=False)
+    monkeypatch.setattr(fs_egress, "_ingest_limiters", {})
+    gate = threading.Event()
+    entered = threading.Event()
+    calls = []
+
+    def stalled():
+        entered.set()
+        gate.wait(5)
+        calls.append("running")
+
+    first = asyncio.create_task(fs_egress._run_ingest(stalled))
+    queued = []
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        queued = [
+            asyncio.create_task(fs_egress._run_ingest(lambda: calls.append("queued")))
+            for _ in range(2)
+        ]
+        await asyncio.sleep(0.05)
+        with pytest.raises(HTTPException) as overflow:
+            await asyncio.wait_for(fs_egress._run_ingest(lambda: calls.append("overflow")), 0.5)
+        assert overflow.value.status_code == 503
+        assert overflow.value.headers["Retry-After"] == "30"
+    finally:
+        gate.set()
+        await asyncio.gather(first, *queued)
+    assert calls == ["running", "queued", "queued"]
+
+
+async def test_cancel_before_worker_start_releases_reserved_slot(monkeypatch):
+    import asyncio
+
+    from backend.api.v1 import fs_egress
+
+    monkeypatch.setenv("ITINV_INGEST_MAX_CONCURRENCY", "1")
+    monkeypatch.setattr(fs_egress, "_ingest_admission", None)
+    monkeypatch.setattr(fs_egress, "_ingest_queue_admission", None)
+    limiter = fs_egress.anyio.CapacityLimiter(1)
+    monkeypatch.setattr(fs_egress, "_get_ingest_limiter", lambda: limiter)
+    calls = []
+    await limiter.acquire()
+    task = asyncio.create_task(fs_egress._run_ingest(lambda: calls.append("cancelled")))
+    try:
+        async with asyncio.timeout(2):
+            while not limiter.statistics().tasks_waiting:
+                await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        limiter.release()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    await asyncio.wait_for(fs_egress._run_ingest(lambda: calls.append("new")), 1)
+    assert calls == ["new"]
+
+
 async def test_ingest_limiter_serializes_store_calls(app_db_url: str, monkeypatch):
     import asyncio
     import threading
@@ -339,12 +590,15 @@ async def test_ingest_limiter_serializes_store_calls(app_db_url: str, monkeypatc
     from backend.appdb.file_egress_store import AppFileEgressStore
 
     store = AppFileEgressStore(database_url=app_db_url)
+    # Schema creation is fixture setup, not part of the concurrent ingest deadline.
+    await asyncio.to_thread(store.list_file_left)
     monkeypatch.setattr(fs_egress.store, "get_egress_store", lambda: store)
     monkeypatch.setenv("ITINV_AGENT_API_KEYS", "lim-key")
     monkeypatch.setenv("ITINV_INGEST_MAX_CONCURRENCY", "1")
     monkeypatch.setenv("ITINV_INGEST_TIMEOUT_SEC", "30")
     fs_egress._ingest_limiters.clear()
     fs_egress._ingest_admission = None
+    fs_egress._ingest_queue_admission = None
 
     gate = threading.Event()
     entered = threading.Event()
@@ -399,6 +653,7 @@ async def test_ingest_limiter_serializes_store_calls(app_db_url: str, monkeypatc
     fs_egress._ingest_admission = None
     assert [reply.status_code for reply in replies] == [200, 200, 200]
     assert max_active == 1
+    assert {row["id"] for row in store.list_file_left()} == {"e0", "e1", "e2"}
 
 
 async def test_ingest_timeout_returns_503(app_db_url: str, monkeypatch):
@@ -547,3 +802,138 @@ def test_media_storage_write_unc_needs_share(monkeypatch):
     assert store.media_storage_ready(unc) is False
     # Share down -> no write attempted, caller falls back to bytea
     assert store._media_storage_write(unc, "browser_probe_media", "a.png", b"x", "image/png") is None
+
+def test_file_left_same_event_id_reingest_is_idempotent(app_db_url: str):
+    """Watcher drop + sync drop + server re-extract share one event_id → one row."""
+    from backend.appdb.file_egress_store import AppFileEgressStore
+
+    store = AppFileEgressStore(database_url=app_db_url)
+    event = {
+        "event_id": "tg-ivan_ab12-k1",
+        "ts": 100,
+        "channel": "telegram",
+        "file_name": "dogovor.docx",
+        "dest_path": "telegram:Иван",
+        "src_path": r"C:\Users\u\Desktop\dogovor.docx",
+        "computer_name": "PC-TG",
+        "windows_user": "u",
+        "details": {"send_state": "sent", "source": "uia_outgoing", "chat_name": "Иван"},
+    }
+    assert store.ingest_file_left([event]) == 1
+    assert store.ingest_file_left([dict(event)]) == 0
+    rows = store.list_file_left(computer_name="PC-TG", channel="telegram")
+    assert len(rows) == 1
+
+
+def test_grouped_file_left_keeps_send_state_details(app_db_url: str):
+    from backend.appdb.file_egress_store import AppFileEgressStore
+
+    store = AppFileEgressStore(database_url=app_db_url)
+    store.ingest_file_left(
+        [
+            {
+                "event_id": "tg-a",
+                "ts": 100,
+                "channel": "telegram",
+                "file_name": "doc.docx",
+                "dest_path": "telegram:Иван",
+                "computer_name": "PC-TG",
+                "details": {"send_state": "sent", "chat_name": "Иван", "source": "uia_outgoing"},
+            },
+            {
+                "event_id": "tg-b",
+                "ts": 200,
+                "channel": "telegram",
+                "file_name": "doc.docx",
+                "dest_path": "telegram:Иван",
+                "computer_name": "PC-TG",
+                "details": {"send_state": "sent", "chat_name": "Иван", "source": "uia_outgoing"},
+            },
+        ]
+    )
+    rows = store.list_file_left(computer_name="PC-TG", channel="telegram", group=True)
+    assert len(rows) == 1
+    assert rows[0]["count"] == 2
+    assert rows[0]["details"]["send_state"] == "sent"
+    assert rows[0]["details"]["chat_name"] == "Иван"
+
+
+def test_ingest_max_payload_extracts_real_file_and_is_idempotent(app_db_url: str):
+    from backend.services import fs_egress_store_service as svc
+
+    payload = {
+        "computer_name": "PC-MAX",
+        "windows_user": "u",
+        "chats": [
+            {
+                "chat_id": "c1",
+                "chat_name": "Иван",
+                "messages": [
+                    {
+                        "direction": "outgoing",
+                        "sender": "Я",
+                        "time": "в 10:00",
+                        "text": "Файл: report.docx",
+                    }
+                ],
+            }
+        ],
+    }
+    first = svc.ingest_max_payload(payload)
+    assert first["egress"] == 1
+    svc.ingest_max_payload(payload)
+    store = svc.get_egress_store()
+    rows = store.list_file_left(computer_name="PC-MAX", channel="max")
+    assert len(rows) == 1
+    assert rows[0]["file_name"] == "report.docx"
+    assert rows[0]["details"]["send_state"] == "sent"
+    assert rows[0]["details"]["source"] == "uia_outgoing"
+
+def test_list_file_left_filters_by_send_state(app_db_url: str):
+    from backend.appdb.file_egress_store import AppFileEgressStore
+
+    store = AppFileEgressStore(database_url=app_db_url)
+    base = {
+        "ts": 100,
+        "channel": "telegram",
+        "dest_path": "telegram:Иван",
+        "computer_name": "PC-SS",
+        "windows_user": "u",
+    }
+    store.ingest_file_left(
+        [
+            dict(base, event_id="ss-1", file_name="a.docx",
+                 details={"send_state": "sent"}),
+            dict(base, event_id="ss-2", file_name="b.docx",
+                 details={"send_state": "selected"}),
+            dict(base, event_id="ss-3", file_name="c.docx", details={}),
+        ]
+    )
+    rows = store.list_file_left(computer_name="PC-SS", send_state="sent")
+    assert [r["file_name"] for r in rows] == ["a.docx"]
+    assert len(store.list_file_left(computer_name="PC-SS")) == 3
+    # Unknown/empty state values never crash the filter and match everything.
+    assert len(store.list_file_left(computer_name="PC-SS", send_state="bogus")) == 3
+
+
+def test_dlp_host_stats_splits_send_state(app_db_url: str):
+    from backend.appdb.file_egress_store import AppFileEgressStore
+
+    store = AppFileEgressStore(database_url=app_db_url)
+    base = {"ts": 100, "computer_name": "PC-STAT", "windows_user": "u"}
+    store.ingest_file_left(
+        [
+            dict(base, event_id="st-1", channel="telegram", file_name="a.docx",
+                 details={"send_state": "sent"}),
+            dict(base, event_id="st-2", channel="telegram", file_name="b.docx",
+                 details={"send_state": "selected"}),
+            dict(base, event_id="st-3", channel="browser", file_name="c.pdf",
+                 details={"send_state": "observed"}),
+        ]
+    )
+    hosts = {h["computer_name"]: h for h in store.list_dlp_host_stats()}
+    row = hosts["PC-STAT"]
+    assert row["telegram_events"] == 2
+    assert row["telegram_sent"] == 1
+    assert row["browser_events"] == 1
+    assert row["max_sent"] == 0

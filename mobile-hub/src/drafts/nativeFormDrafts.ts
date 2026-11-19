@@ -15,11 +15,11 @@ function enqueue<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 /** Copy only upload descriptors; remap feed order/cover keys in the same commit. */
-function durableState<T>(userId: number, scope: string, state: T): T {
+async function durableState<T>(userId: number, scope: string, state: T): Promise<T> {
   const directory = new Directory(root(), String(userId), scope);
   const replacements = new Map<string, string>();
-  const copy = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(copy);
+  const copy = async (value: unknown): Promise<unknown> => {
+    if (Array.isArray(value)) return Promise.all(value.map(copy));
     if (!value || typeof value !== 'object') return value;
     const item = value as Record<string, unknown>;
     if (typeof item.uri === 'string' && typeof item.name === 'string' && typeof item.size === 'number') {
@@ -31,14 +31,17 @@ function durableState<T>(userId: number, scope: string, state: T): T {
       if (previous) return { ...item, uri: previous, size: file.size };
       directory.create({ intermediates: true, idempotent: true });
       const target = new File(directory, randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      file.copy(target);
+      // File.copy() is async: the size check is only valid after it settles.
+      await file.copy(target);
       if (!target.exists || target.size !== file.size) throw new Error('Не удалось сохранить вложение на устройстве.');
       replacements.set(item.uri, target.uri);
       return { ...item, uri: target.uri, size: target.size };
     }
-    return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, copy(child)]));
+    return Object.fromEntries(await Promise.all(
+      Object.entries(item).map(async ([key, child]) => [key, await copy(child)] as const),
+    ));
   };
-  const copied = copy(state);
+  const copied = await copy(state);
   const remap = (value: unknown): unknown => {
     if (typeof value === 'string') {
       if (replacements.has(value)) return replacements.get(value);
@@ -75,7 +78,7 @@ export function createNativeFormDraftSession<T extends object>(userId: number, s
       return enqueue(async () => {
         check(); const current = await readEntry(); check();
         if (current && current.revision !== observedRevision) throw new Error('Черновик изменён в другом окне. Откройте его заново.');
-        const durable = durableState(userId, scope, snapshot);
+        const durable = await durableState(userId, scope, snapshot);
         const revision = (current?.revision || 0) + 1;
         check();
         if (!await writeEncryptedNativeSnapshot(storageScope, userId, JSON.stringify({ version: 1, revision, state: durable }))) throw new Error('Не удалось сохранить черновик на устройстве.');

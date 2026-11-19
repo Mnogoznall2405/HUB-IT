@@ -92,11 +92,11 @@ export function useInboxActions({
     setSearching(true);
     const timer = setTimeout(() => {
       void Promise.all([
-        chatApi.getConversationPage({ query, limit: 50 }),
+        chatApi.listAllConversations(query),
         chatApi.searchMessagesGlobal(query, 20).catch(() => []),
-      ]).then(([page, messages]) => {
+      ]).then(([conversations, messages]) => {
         if (!mountedRef.current || ownerRef.current !== userId || requestId !== searchRequestRef.current) return;
-        const remote = page.items || [];
+        const remote = conversations || [];
         remoteSearchItemsRef.current = remote;
         setSearchItems(mergeSearchResults(filterConversationsByLocalQuery(itemsRef.current, query)));
         setSearchMessages(messages);

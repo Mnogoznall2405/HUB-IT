@@ -180,7 +180,8 @@ export default function MyFiles() {
   // Library roles govern editing and trash; individual sharing uses the server's author/admin capability.
   const canWrite = hasPermission('my_files.write')
     && (!isLibraryView || libraryRank >= (isTrashView ? LIBRARY_ROLE_RANK.manage : LIBRARY_ROLE_RANK.edit));
-  const canShare = hasPermission('my_files.share') && (!isLibraryView || authUser?.role === 'admin');
+  const canShare = hasPermission('my_files.share')
+    && (!isLibraryView || authUser?.role === 'admin' || libraryRank >= LIBRARY_ROLE_RANK.manage);
   const libraryName = String(activeLibrary?.name || (libraryInfo && String(libraryInfo.id) === String(libraryId) ? libraryInfo.name : '') || 'Общая папка');
   // "Недавние" and search results mix in rows of libraries the user belongs to: each one is gated by its own role.
   const entryAccess = (entry) => {
@@ -208,10 +209,12 @@ export default function MyFiles() {
     const fileShare = isFile
       ? hasPermission('my_files.share') && (authUser?.role === 'admin' || rank >= LIBRARY_ROLE_RANK.manage)
       : null;
+    const folderShare = hasPermission('my_files.share')
+      && (authUser?.role === 'admin' || rank >= LIBRARY_ROLE_RANK.manage);
     return {
       library: true,
       canWrite: hasPermission('my_files.write') && rank >= LIBRARY_ROLE_RANK.edit,
-      canShare: fileShare ?? adminShare,
+      canShare: fileShare ?? folderShare,
       canManageAccess: isFile ? fileAccess : adminShare,
       canManage: isFile ? fileAccess : adminShare,
     };
@@ -287,19 +290,16 @@ export default function MyFiles() {
     setRefreshing(true);
     try {
       // A library has its own limit: its usage comes with the library list instead of the personal quota.
-      const [filesPayload, quotaPayload, foldersPayload, librariesPayload] = await Promise.all([
+      // Сам список библиотек грузится один раз через loadLibraries (mount + refreshQuota):
+      // здесь он дублировал GET /my-files/libraries на каждый переход по папкам.
+      const [filesPayload, quotaPayload, foldersPayload] = await Promise.all([
         isTrashView && myFilesAPI.listTrash
           ? myFilesAPI.listTrash({ libraryId })
           : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView, q: debouncedSearchQuery, libraryId }),
         libraryId ? Promise.resolve(null) : myFilesAPI.getQuota(),
         myFilesAPI.listFolders ? myFilesAPI.listFolders({ libraryId }) : Promise.resolve({ items: [] }),
-        libraryId ? myFilesLibrariesAPI.list().catch(() => null) : Promise.resolve(null),
       ]);
       if (!isCurrent()) return;
-      if (librariesPayload) {
-        setLibraries(Array.isArray(librariesPayload.items) ? librariesPayload.items : []);
-        setCanManageLibraries(Boolean(librariesPayload.can_manage));
-      }
       setLibraryInfo(libraryId && filesPayload?.library ? filesPayload.library : null);
       const nextItems = Array.isArray(filesPayload?.items) ? filesPayload.items : [];
       const nextFolders = Array.isArray(filesPayload?.folders) ? filesPayload.folders : [];
@@ -873,12 +873,13 @@ export default function MyFiles() {
             setItems((prev) => prev.filter((entryItem) => String(entryItem.id) !== targetId));
           }
           notifySuccess('Удалено навсегда.', { source: 'my-files-purge', dedupeMode: 'none' });
+          void refreshQuota();
         } catch (error) {
           notifyApiError(error, 'Не удалось удалить навсегда.', { dedupeMode: 'none' });
         }
       },
     });
-  }, [notifyApiError, notifySuccess]);
+  }, [notifyApiError, notifySuccess, refreshQuota]);
 
   const handleEmptyTrash = useCallback(() => {
     setConfirmState({
@@ -892,12 +893,13 @@ export default function MyFiles() {
           setItems([]);
           setFolders([]);
           notifySuccess('Корзина очищена.', { source: 'my-files-empty-trash', dedupeMode: 'none' });
+          void refreshQuota();
         } catch (error) {
           notifyApiError(error, 'Не удалось очистить корзину.', { dedupeMode: 'none' });
         }
       },
     });
-  }, [libraryId, notifyApiError, notifySuccess]);
+  }, [libraryId, notifyApiError, notifySuccess, refreshQuota]);
 
   const handleMoveFileToFolder = useCallback(async (fileId, folderId) => {
     try {
@@ -1029,6 +1031,7 @@ export default function MyFiles() {
     Object.values(thumbsRef.current).forEach((value) => {
       if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
     });
+    thumbsRef.current = {};
   }, []);
 
   const moveDialogOptions = useMemo(() => {
@@ -1062,7 +1065,7 @@ export default function MyFiles() {
 
   useEffect(() => {
     clearSelection();
-  }, [currentFolderId, viewParam, clearSelection]);
+  }, [currentFolderId, viewParam, searchQuery, typeFilter, dateFilter, clearSelection]);
 
   const toggleSelected = useCallback((key) => {
     setSelectedKeys((current) => {
@@ -1164,8 +1167,8 @@ export default function MyFiles() {
     [selectedKeys, visibleFolders],
   );
   const selectedFiles = useMemo(
-    () => items.filter((item) => selectedKeys.has(`file:${item.id}`)),
-    [items, selectedKeys],
+    () => visibleItems.filter((item) => selectedKeys.has(`file:${item.id}`)),
+    [visibleItems, selectedKeys],
   );
 
   const thumbObserverRef = useRef(null);
@@ -1175,15 +1178,22 @@ export default function MyFiles() {
     const id = String(item?.id || '');
     if (!id || thumbsRef.current[id]) return;
     if (String(item.preview_kind || '') !== 'image' || !item.preview_available) return;
-    thumbsRef.current[id] = 'loading';
+    const requestToken = {};
+    thumbsRef.current[id] = requestToken;
     myFilesAPI.downloadPreviewContent(id, { variant: 'thumb' })
       .then((response) => {
         const url = URL.createObjectURL(response.data);
+        // Late response: the marker was swept by a folder/view change or replaced
+        // by a newer request — the fresh URL must be revoked, not stored.
+        if (thumbsRef.current[id] !== requestToken) {
+          URL.revokeObjectURL(url);
+          return;
+        }
         thumbsRef.current[id] = url;
         setThumbs((current) => ({ ...current, [id]: url }));
       })
       .catch(() => {
-        delete thumbsRef.current[id];
+        if (thumbsRef.current[id] === requestToken) delete thumbsRef.current[id];
       });
   }, []);
 
@@ -1236,6 +1246,7 @@ export default function MyFiles() {
     const foldersToDelete = selectedFolders;
     const filesToDelete = selectedFiles;
     const count = foldersToDelete.length + filesToDelete.length;
+    if (count === 0) return;
     setConfirmState({
       title: 'Удалить выбранные объекты',
       body: `Будут удалены выбранные объекты (${count} шт.). Содержимое папок будет удалено вместе с ними.`,

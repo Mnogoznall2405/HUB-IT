@@ -47,7 +47,12 @@ export function NativeChatDeliveryHost() {
         userId, canDeliver,
         transport: createNativeChatDeliveryTransport(canDeliver),
         persistConfirmed: createNativeChatPersistConfirmed({ ownsSession, userId, historyGeneration }),
-        onError: () => { void recordDiagnosticEvent('native_file_error'); },
+        onError: () => {
+          void recordDiagnosticEvent('native_chat_delivery_error', undefined, {
+            source: 'chat-delivery',
+            stage: 'foreground',
+          });
+        },
       });
       if (reason) runner.wake(reason);
     };

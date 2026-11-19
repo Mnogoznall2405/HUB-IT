@@ -2,6 +2,7 @@ import { Fragment, useMemo } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import type { FluentTokens } from '../theme/fluentTokens';
+import { stripInlineFeedMarkdown } from './feedFormat';
 
 type MarkdownBlock = {
   key: string;
@@ -94,7 +95,7 @@ function InlineMarkdown({ text, tokens }: { text: string; tokens: FluentTokens }
             </Text>
           ) : <Fragment key={index}>{link[1]}</Fragment>;
         }
-        return <Fragment key={index}>{part.replace(/[*_~]/g, '')}</Fragment>;
+        return <Fragment key={index}>{stripInlineFeedMarkdown(part)}</Fragment>;
       })}
     </Text>
   );

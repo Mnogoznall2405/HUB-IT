@@ -1,0 +1,683 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.ComputersView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+            <Style x:Key="MetaValueStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+            </Style>
+            <Style x:Key="SectionPanelStyle" TargetType="Border">
+                <Setter Property="Margin" Value="0,14,0,0" />
+                <Setter Property="Padding" Value="14,12" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceAltBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+            </Style>
+            <Style x:Key="SectionHeaderStyle" TargetType="TextBlock" BasedOn="{StaticResource HubSectionTitleStyle}">
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="Margin" Value="0,0,0,8" />
+            </Style>
+            <Style x:Key="ChipStyle" TargetType="Border">
+                <Setter Property="Margin" Value="0,0,8,6" />
+                <Setter Property="Padding" Value="8,3" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+            </Style>
+
+            <!-- Меню-фильтры: пункт = опция, команда — из Tag кнопки-хозяина. -->
+            <Style x:Key="FilterMenuItemStyle" TargetType="MenuItem">
+                <Setter Property="Header" Value="{Binding Label}" />
+                <Setter Property="Command" Value="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                <Setter Property="CommandParameter" Value="{Binding}" />
+            </Style>
+
+            <!-- Пилюля статуса ПК: тон по StatusTone (success/warning/error/muted). -->
+            <Style x:Key="StatusPillTextStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="success">
+                        <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="warning">
+                        <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="error">
+                        <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+            <Style x:Key="StatusPillBorderStyle" TargetType="Border" BasedOn="{StaticResource HubStatusPillStyle}">
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="success">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubSuccessBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="warning">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubWarningBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="error">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubErrorTextBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Верхняя панель: поиск, фильтр статуса, тумблеры, обновить -->
+        <Border Grid.Row="0" Padding="20,16,20,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Grid VerticalAlignment="Center">
+                        <TextBox x:Name="SearchInput"
+                                 Width="300"
+                                 HorizontalAlignment="Left"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="Поиск компьютера" />
+                        <TextBlock Margin="13,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="Имя ПК, IP, MAC, сотрудник, инв. №…">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=SearchInput}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                    <Button Margin="10,0,0,0"
+                            VerticalAlignment="Center"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Tag="{Binding SelectStatusFilterCommand}"
+                            Click="StatusFilterMenuButton_Click"
+                            AutomationProperties.Name="Фильтр по статусу компьютера">
+                        <Button.ContextMenu>
+                            <ContextMenu ItemContainerStyle="{StaticResource FilterMenuItemStyle}" />
+                        </Button.ContextMenu>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="Статус: " />
+                            <TextBlock FontSize="12" Text="{Binding SelectedStatusFilterText}" />
+                            <TextBlock Margin="4,0,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="▾" />
+                        </StackPanel>
+                    </Button>
+                    <ToggleButton Margin="6,0,0,0"
+                                  VerticalAlignment="Center"
+                                  Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding ChangedOnly}"
+                                  Content="Изменения"
+                                  ToolTip="Только ПК с изменениями железа за 30 дней"
+                                  AutomationProperties.Name="Только компьютеры с изменениями" />
+                    <ToggleButton Margin="6,0,0,0"
+                                  VerticalAlignment="Center"
+                                  Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding HideVm172}"
+                                  Content="Скрыть ВМ 172.*"
+                                  ToolTip="Отсекать компьютеры, у которых все IP из 172.16.0.0/12"
+                                  AutomationProperties.Name="Скрыть виртуальные машины 172" />
+                    <ToggleButton Margin="6,0,0,0"
+                                  VerticalAlignment="Center"
+                                  Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding AllDatabases}"
+                                  Content="Все базы"
+                                  ToolTip="Искать по всем базам инвентаря"
+                                  Visibility="{Binding ShowScopeFilter, Converter={StaticResource BoolToVisibility}}"
+                                  AutomationProperties.Name="Искать по всем базам" />
+                    <Button Margin="6,0,0,0"
+                            VerticalAlignment="Center"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding ClearFiltersCommand}"
+                            Content="Сбросить"
+                            Visibility="{Binding HasActiveFilters, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Сбросить фильтры компьютеров" />
+                    <ProgressBar Margin="8,0,0,0"
+                                 Width="80"
+                                 Height="3"
+                                 VerticalAlignment="Center"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор загрузки компьютеров" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Обновить"
+                        AutomationProperties.Name="Обновить список компьютеров" />
+            </Grid>
+        </Border>
+
+        <!-- Баннер ошибки -->
+        <Border Grid.Row="1"
+                Margin="20,10,20,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}"
+                AutomationProperties.Name="Ошибка загрузки компьютеров">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{DynamicResource HubErrorTextBrush}"
+                           Text="{Binding BannerErrorText}"
+                           TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <Button Grid.Column="1"
+                        Margin="12,0,8,0"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Повторить"
+                        AutomationProperties.Name="Повторить загрузку компьютеров" />
+                <Button Grid.Column="2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DismissBannerCommand}"
+                        Content="✕"
+                        AutomationProperties.Name="Скрыть ошибку" />
+            </Grid>
+        </Border>
+
+        <!-- Список компьютеров | карточка -->
+        <Grid Grid.Row="2" Margin="20,14,20,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360" MinWidth="300" />
+                <ColumnDefinition Width="6" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Список -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <DockPanel Grid.Row="0" Margin="0,0,0,6">
+                    <TextBlock DockPanel.Dock="Left"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               FontSize="12"
+                               Text="{Binding TotalText}"
+                               Visibility="{Binding TotalText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                    <TextBlock DockPanel.Dock="Right"
+                               HorizontalAlignment="Right"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               FontSize="12"
+                               Text="{Binding LastUpdatedText}"
+                               Visibility="{Binding LastUpdatedText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                </DockPanel>
+                <Grid Grid.Row="1">
+                    <ListBox Style="{StaticResource HubListBoxStyle}"
+                             ItemsSource="{Binding Items}"
+                             SelectedItem="{Binding SelectedItem}"
+                             AutomationProperties.Name="Список компьютеров">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding Title}"
+                                                   TextWrapping="Wrap"
+                                                   AutomationProperties.Name="{Binding Title}" />
+                                        <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                            <Border Style="{StaticResource StatusPillBorderStyle}" Padding="7,2">
+                                                <TextBlock Style="{StaticResource StatusPillTextStyle}"
+                                                           Text="{Binding StatusText}" />
+                                            </Border>
+                                            <TextBlock Margin="8,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding AgeText}" />
+                                        </StackPanel>
+                                        <TextBlock Margin="0,4,0,0"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding UserText}"
+                                                   Visibility="{Binding HasUser, Converter={StaticResource BoolToVisibility}}" />
+                                        <TextBlock Margin="0,2,0,0"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding PlaceText}"
+                                                   Visibility="{Binding HasPlace, Converter={StaticResource BoolToVisibility}}" />
+                                        <TextBlock Margin="0,2,0,0"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding IpText}"
+                                                   Visibility="{Binding HasIp, Converter={StaticResource BoolToVisibility}}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Top">
+                                        <Border Padding="7,2"
+                                                Margin="8,0,0,4"
+                                                HorizontalAlignment="Right"
+                                                CornerRadius="9"
+                                                Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                BorderBrush="{DynamicResource HubWarningBrush}"
+                                                BorderThickness="1"
+                                                Visibility="{Binding IsUnassigned, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock FontSize="10"
+                                                       Foreground="{DynamicResource HubWarningBrush}"
+                                                       Text="Без пользователя" />
+                                        </Border>
+                                        <Border Padding="7,2"
+                                                Margin="8,0,0,4"
+                                                HorizontalAlignment="Right"
+                                                CornerRadius="9"
+                                                Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                BorderBrush="{DynamicResource HubAccentBrush}"
+                                                BorderThickness="1"
+                                                Visibility="{Binding HasChangesBadge, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock FontSize="10"
+                                                       Foreground="{DynamicResource HubAccentBrush}"
+                                                       Text="{Binding ChangesBadgeText}" />
+                                        </Border>
+                                        <Border Padding="7,2"
+                                                Margin="8,0,0,0"
+                                                HorizontalAlignment="Right"
+                                                CornerRadius="9"
+                                                Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                                BorderThickness="1"
+                                                Visibility="{Binding HasDiskBadge, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock FontSize="10"
+                                                       Foreground="{DynamicResource HubErrorTextBrush}"
+                                                       Text="{Binding DiskBadgeText}" />
+                                        </Border>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- Пустое состояние списка -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Компьютеров нет" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   Text="По текущим фильтрам компьютеры не найдены." />
+                    </StackPanel>
+                </Grid>
+                <Button Grid.Row="2"
+                        Margin="0,8,0,0"
+                        HorizontalAlignment="Stretch"
+                        Style="{StaticResource HubSecondaryButtonStyle}"
+                        Command="{Binding LoadMoreCommand}"
+                        Content="{Binding MoreButtonText}"
+                        Visibility="{Binding HasMore, Converter={StaticResource BoolToVisibility}}"
+                        AutomationProperties.Name="Показать ещё компьютеры" />
+            </Grid>
+
+            <GridSplitter Grid.Column="1"
+                          Width="6"
+                          HorizontalAlignment="Stretch"
+                          Background="Transparent"
+                          AutomationProperties.Name="Разделитель списка и карточки компьютера" />
+
+            <!-- Карточка компьютера -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12">
+                <Grid>
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding ShowDetailPlaceholder, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Компьютер не выбран" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Выберите компьютер в списке слева." />
+                    </StackPanel>
+
+                    <ProgressBar Height="3"
+                                 Margin="16"
+                                 VerticalAlignment="Top"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsDetailLoading, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор загрузки карточки компьютера" />
+
+                    <TextBlock Margin="20"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource HubErrorTextBrush}"
+                               Text="{Binding DetailErrorText}"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               Visibility="{Binding HasDetailError, Converter={StaticResource BoolToVisibility}}"
+                               AutomationProperties.Name="Ошибка карточки компьютера" />
+
+                    <Grid Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}">
+                        <ScrollViewer Padding="22,18"
+                                      VerticalScrollBarVisibility="Auto"
+                                      DataContext="{Binding Detail}"
+                                      AutomationProperties.Name="Карточка компьютера">
+                        <StackPanel>
+                            <!-- Шапка: имя + статус + IP/MAC -->
+                            <TextBlock FontSize="20"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding Title}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Имя компьютера" />
+                            <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
+                                <Border Style="{StaticResource StatusPillBorderStyle}">
+                                    <TextBlock Style="{StaticResource StatusPillTextStyle}"
+                                               FontSize="12"
+                                               Text="{Binding StatusText}" />
+                                </Border>
+                                <TextBlock Margin="10,0,0,0"
+                                           VerticalAlignment="Center"
+                                           Style="{StaticResource MetaLabelStyle}"
+                                           Text="{Binding AgeText}" />
+                                <Border Margin="10,0,0,0"
+                                        Padding="8,3"
+                                        CornerRadius="10"
+                                        VerticalAlignment="Center"
+                                        Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                        BorderBrush="{DynamicResource HubWarningBrush}"
+                                        BorderThickness="1"
+                                        Visibility="{Binding IsUnassigned, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock FontSize="11"
+                                               Foreground="{DynamicResource HubWarningBrush}"
+                                               Text="Без пользователя" />
+                                </Border>
+                                <Border Margin="8,0,0,0"
+                                        Padding="8,3"
+                                        CornerRadius="10"
+                                        VerticalAlignment="Center"
+                                        Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                        BorderBrush="{DynamicResource HubAccentBrush}"
+                                        BorderThickness="1"
+                                        Visibility="{Binding HasHardwareChanges, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock FontSize="11"
+                                               Foreground="{DynamicResource HubAccentBrush}"
+                                               Text="Изменения железа" />
+                                </Border>
+                            </StackPanel>
+                            <TextBlock Margin="0,8,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding HeroMetaText}"
+                                       Visibility="{Binding HeroMetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+
+                            <!-- Пользователь и расположение -->
+                            <Border Style="{StaticResource SectionPanelStyle}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SectionHeaderStyle}"
+                                               Text="Пользователь и расположение" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="170" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Style="{StaticResource MetaLabelStyle}" Text="Сотрудник" />
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MetaValueStyle}" Text="{Binding UserText}" />
+                                        <TextBlock Grid.Row="1" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Филиал" />
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding BranchText}" />
+                                        <TextBlock Grid.Row="2" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Расположение" />
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding LocationText}" />
+                                        <TextBlock Grid.Row="3" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="База" />
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding DatabaseText}" />
+                                        <TextBlock Grid.Row="4" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Инвентарный номер" />
+                                        <TextBlock Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding InventoryText}" />
+                                        <TextBlock Grid.Row="5" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Модель по учёту" />
+                                        <TextBlock Grid.Row="5" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding InventoryModelText}" />
+                                        <TextBlock Grid.Row="6" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Последний отчёт" />
+                                        <TextBlock Grid.Row="6" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding LastSeenText}" />
+                                    </Grid>
+                                    <TextBlock Margin="0,8,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubWarningBrush}"
+                                               Text="{Binding AssignmentText}"
+                                               Visibility="{Binding HasAssignmentText, Converter={StaticResource BoolToVisibility}}" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Оборудование и нагрузка агента -->
+                            <Border Style="{StaticResource SectionPanelStyle}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SectionHeaderStyle}"
+                                               Text="Оборудование и агент" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="170" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Style="{StaticResource MetaLabelStyle}" Text="Процессор" />
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MetaValueStyle}" Text="{Binding CpuText}" />
+                                        <TextBlock Grid.Row="1" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Оперативная память" />
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding RamText}" />
+                                        <TextBlock Grid.Row="2" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Загрузка CPU" />
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding CpuLoadText}" />
+                                        <TextBlock Grid.Row="3" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Использование RAM" />
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding RamUsedText}" />
+                                        <TextBlock Grid.Row="4" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Время работы" />
+                                        <TextBlock Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding UptimeText}" />
+                                        <TextBlock Grid.Row="5" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Последняя перезагрузка" />
+                                        <TextBlock Grid.Row="5" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding LastRebootText}" />
+                                        <TextBlock Grid.Row="6" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Серийный номер" />
+                                        <TextBlock Grid.Row="6" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding SystemSerialText}" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Сеть -->
+                            <Border Style="{StaticResource SectionPanelStyle}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SectionHeaderStyle}"
+                                               Text="Сеть" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="170" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Style="{StaticResource MetaLabelStyle}" Text="Основной IP" />
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MetaValueStyle}" Text="{Binding IpPrimaryText}" />
+                                        <TextBlock Grid.Row="1" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Все IP" />
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding IpListText}" />
+                                        <TextBlock Grid.Row="2" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="MAC" />
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding MacAddress}" />
+                                    </Grid>
+                                    <ItemsControl Margin="0,8,0,0"
+                                                  ItemsSource="{Binding NetworkDevices}"
+                                                  Visibility="{Binding HasNetworkDevices, Converter={StaticResource BoolToVisibility}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,6"
+                                                        Padding="10,6"
+                                                        CornerRadius="8"
+                                                        Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                        BorderThickness="1">
+                                                    <StackPanel>
+                                                        <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding Title}" />
+                                                        <TextBlock FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding MetaText}"
+                                                                   Visibility="{Binding HasMeta, Converter={StaticResource BoolToVisibility}}" />
+                                                        <TextBlock FontSize="11"
+                                                                   Foreground="{DynamicResource HubAccentBrush}"
+                                                                   Text="{Binding Ipv4Text}"
+                                                                   Visibility="{Binding HasIpv4, Converter={StaticResource BoolToVisibility}}" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Диски -->
+                            <Border Style="{StaticResource SectionPanelStyle}"
+                                    Visibility="{Binding HasDisks, Converter={StaticResource BoolToVisibility}}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SectionHeaderStyle}"
+                                               Text="Диски и тома" />
+                                    <ItemsControl ItemsSource="{Binding Disks}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,6"
+                                                        Padding="10,6"
+                                                        CornerRadius="8"
+                                                        Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                        BorderThickness="1">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding Title}" />
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding SubtitleText}"
+                                                                       Visibility="{Binding SubtitleText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="1"
+                                                                   VerticalAlignment="Top"
+                                                                   FontSize="11"
+                                                                   Text="{Binding HealthText}"
+                                                                   Visibility="{Binding HasHealth, Converter={StaticResource BoolToVisibility}}">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock" BasedOn="{StaticResource MetaValueStyle}">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Outlook и изменения -->
+                            <Border Style="{StaticResource SectionPanelStyle}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource SectionHeaderStyle}"
+                                               Text="Outlook и изменения" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="170" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Style="{StaticResource MetaLabelStyle}" Text="Состояние Outlook" />
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MetaValueStyle}" Text="{Binding OutlookStatusText}" />
+                                        <TextBlock Grid.Row="1" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Размер файлов Outlook" />
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding OutlookSizeText}" />
+                                        <TextBlock Grid.Row="2" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Архивов" />
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding OutlookArchivesText}" />
+                                        <TextBlock Grid.Row="3" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Изменений за 30 дней" />
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding ChangesCountText}" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

@@ -131,6 +131,13 @@ export function NativeComputersScreen() {
       setHasMore(pageResult.value.has_more && pageResult.value.items.length > 0);
     } else {
       messages.push(formatApiError(pageResult.reason, 'Не удалось загрузить список компьютеров.'));
+      if (reset) {
+        // A failed filter change must not keep the previous list and its
+        // pagination — they describe a different query.
+        setItems([]);
+        setTotal(0);
+        setHasMore(false);
+      }
     }
     const summaryResult = results[1];
     if (summaryResult) {

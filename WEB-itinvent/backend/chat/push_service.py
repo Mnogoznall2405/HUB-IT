@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
+import ipaddress
 import json
 import logging
+import socket
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from backend.chat.db import chat_session
@@ -37,6 +41,45 @@ CHAT_PUSH_TTL_SEC = 12 * 60 * 60
 CHAT_PUSH_IDEMPOTENCY_SEC = 5 * 60
 MAX_APP_BADGE_COUNT = 999
 _recent_chat_push_deliveries: dict[tuple[int, str], float] = {}
+
+_PUSH_ENDPOINT_DNS_TIMEOUT_SEC = 1.5
+# Bounded pool so a hung getaddrinfo cannot stall subscription writes or sends.
+_PUSH_ENDPOINT_DNS_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="push-endpoint-dns",
+)
+
+
+def assert_public_push_endpoint(endpoint: str) -> str:
+    parts = urlsplit(endpoint)
+    if parts.scheme != "https" or not parts.hostname:
+        raise HTTPException(status_code=400, detail="Invalid push endpoint")
+    if parts.username is not None or parts.password is not None:
+        raise HTTPException(status_code=400, detail="Invalid push endpoint")
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid push endpoint") from exc
+    if port not in (None, 443):
+        raise HTTPException(status_code=400, detail="Invalid push endpoint")
+    future = _PUSH_ENDPOINT_DNS_EXECUTOR.submit(
+        socket.getaddrinfo, parts.hostname, 443, proto=socket.IPPROTO_TCP,
+    )
+    try:
+        infos = future.result(timeout=_PUSH_ENDPOINT_DNS_TIMEOUT_SEC)
+    except (concurrent.futures.TimeoutError, OSError) as exc:
+        raise HTTPException(status_code=422, detail="Could not resolve push endpoint") from exc
+    if not infos:
+        raise HTTPException(status_code=422, detail="Could not resolve push endpoint")
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Push endpoint host is not allowed") from exc
+        if not ip.is_global:
+            raise HTTPException(status_code=400, detail="Push endpoint host is not allowed")
+    return endpoint
 
 
 def _utc_now() -> datetime:
@@ -241,6 +284,7 @@ class ChatPushService:
         normalized_install_mode = _normalize_text(install_mode) or None
         if not normalized_endpoint or not normalized_p256dh or not normalized_auth:
             raise ValueError("Push subscription is incomplete")
+        assert_public_push_endpoint(normalized_endpoint)
 
         now = _utc_now()
         with chat_session() as session:
@@ -409,11 +453,19 @@ class ChatPushService:
         serialized_payload = json.dumps(payload or {}, ensure_ascii=False)
         now = _utc_now()
         vapid_private_key = _resolve_vapid_private_key(config.web_push.private_key)
+        try:
+            import requests
+
+            push_session = requests.Session()
+            push_session.max_redirects = 0
+        except Exception:  # pragma: no cover - requests ships with pywebpush
+            push_session = None
 
         with chat_session() as session:
             for subscription in subscriptions:
                 managed = session.get(ChatPushSubscription, subscription.id) or subscription
                 try:
+                    assert_public_push_endpoint(managed.endpoint)
                     webpush(
                         subscription_info={
                             "endpoint": managed.endpoint,
@@ -428,6 +480,7 @@ class ChatPushService:
                         ttl=max(30, int(ttl or DEFAULT_PUSH_TTL_SEC)),
                         headers=headers or None,
                         timeout=10,
+                        requests_session=push_session,
                     )
                     managed.failure_count = 0
                     managed.last_push_at = now
@@ -436,6 +489,16 @@ class ChatPushService:
                     managed.last_error_at = None
                     managed.last_error_text = None
                     result.sent += 1
+                except HTTPException as exc:
+                    managed.failure_count = int(managed.failure_count or 0) + 1
+                    managed.updated_at = now
+                    managed.last_error_at = now
+                    managed.last_error_text = _normalize_text(exc.detail)
+                    if int(exc.status_code) == 400:
+                        managed.is_active = False
+                        result.disabled += 1
+                    else:
+                        result.failed += 1
                 except WebPushException as exc:  # pragma: no branch - status driven
                     status_code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
                     managed.failure_count = int(managed.failure_count or 0) + 1

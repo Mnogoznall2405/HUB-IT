@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const authDevicesAPI = {
   list: async () => (await apiClient.get('/auth/my-devices')).data,

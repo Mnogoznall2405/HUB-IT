@@ -55,13 +55,18 @@ class DatabaseConfig:
         Возвращает:
             str: Полная строка подключения ODBC с параметрами безопасности
         """
+        encrypt = str(os.getenv("SQL_SERVER_ENCRYPT", "yes") or "yes").strip() or "yes"
+        trust = str(os.getenv("SQL_SERVER_TRUST_SERVER_CERTIFICATE", "") or "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
         return (
             f"DRIVER={self.driver};"
             f"SERVER={self.server};"
             f"DATABASE={self.database};"
             f"UID={self.username};"
             f"PWD={self.password};"
-            "TrustServerCertificate=yes;"
+            f"Encrypt={encrypt};"
+            f"TrustServerCertificate={'yes' if trust else 'no'};"
             "autocommit=True;"
         )
 
@@ -933,7 +938,7 @@ class UniversalInventoryDB:
                 cursor = conn.cursor()
 
                 # Получаем следующий OWNER_NO
-                cursor.execute("SELECT ISNULL(MAX(OWNER_NO), 0) + 1 FROM OWNERS")
+                cursor.execute("SELECT ISNULL(MAX(OWNER_NO), 0) + 1 FROM OWNERS WITH (TABLOCKX, HOLDLOCK)")
                 next_owner_no = cursor.fetchone()[0]
 
                 # Разбиваем ФИО на компоненты

@@ -213,7 +213,14 @@ export function applyReadReceiptDelta(
     && Number.isFinite(Number(rawReadByCount));
   const nextReadByCount = hasReadByCount ? Math.max(0, Number(rawReadByCount)) : undefined;
   const nextDeliveryStatus = String(source.delivery_status || '').trim();
-  const markAsRead = nextDeliveryStatus === 'read' || (nextReadByCount ?? 0) > 0;
+  // A receipt emitted by *my* other session (reader_user_id === me) only means
+  // I marked someone else's message read — it never read my own messages, so
+  // the own-message cascade must not run.
+  const readerUserId = Number(source.reader_user_id || source.user_id || 0);
+  const isOwnReadEvent = Number.isFinite(readerUserId) && readerUserId > 0
+    && Number(currentUserId || 0) > 0 && readerUserId === Number(currentUserId);
+  const markAsRead = !isOwnReadEvent
+    && (nextDeliveryStatus === 'read' || (nextReadByCount ?? 0) > 0);
 
   if (!markAsRead) {
     let changed = false;

@@ -15,15 +15,17 @@ afterEach(() => {
 
 describe('screen load trace (temporary)', () => {
   it('records how long a screen kept loading after navigation, until the API went quiet', () => {
+    const first = {};
+    const second = {};
     beginScreenLoadTrace('settings');
     jest.advanceTimersByTime(100);
-    noteApiRequestStart();
+    noteApiRequestStart(first);
     jest.advanceTimersByTime(300);
-    noteApiRequestStart();
+    noteApiRequestStart(second);
     jest.advanceTimersByTime(200);
-    noteApiRequestEnd();
+    noteApiRequestEnd(first);
     jest.advanceTimersByTime(500);
-    noteApiRequestEnd(); // last request finishes 1100 ms after the navigation
+    noteApiRequestEnd(second); // last request finishes 1100 ms after the navigation
     jest.advanceTimersByTime(1_000);
     expect(getUiOpenSummary()['load:settings']).toMatchObject({ count: 1, p50: 1100 });
   });
@@ -35,10 +37,11 @@ describe('screen load trace (temporary)', () => {
   });
 
   it('drops an unfinished trace when the user moves on to another screen', () => {
+    const request = {};
     beginScreenLoadTrace('mail');
-    noteApiRequestStart();
+    noteApiRequestStart(request);
     beginScreenLoadTrace('chat');
-    noteApiRequestEnd();
+    noteApiRequestEnd(request);
     jest.advanceTimersByTime(2_000);
     expect(getUiOpenSummary()['load:mail']).toBeUndefined();
     expect(getUiOpenSummary()['load:chat']).toBeDefined();

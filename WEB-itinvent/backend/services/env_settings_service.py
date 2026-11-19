@@ -104,6 +104,7 @@ _DIRECT_DESCRIPTIONS = {
     "TASK_EMAIL_DESCRIPTION_MAX_CHARS": ("Почта и SMTP", "Максимальная длина описания задачи в email-уведомлении."),
     "TRANSFER_TEMPLATE_PATH": ("Документы", "Путь к шаблону акта передачи."),
     "TRANSFER_ACTS_DIR": ("Документы", "Каталог для сохранения актов передачи."),
+    "EQUIPMENT_ACT_FILE_ROOTS": ("Документы", "Разрешённые корни каталогов/шар для файлов актов из legacy FILES.FILE_PATH (через точку с запятой)."),
     "MAX_TRANSFER_PHOTOS": ("Документы", "Максимум фотографий для одного акта передачи."),
     "MAIL_MODULE_ENABLED": ("Почта Exchange", "Включает или выключает почтовый модуль backend."),
     "MAIL_EXCHANGE_HOST": ("Почта Exchange", "Хост Exchange для почтового модуля."),
@@ -362,6 +363,7 @@ def _build_targets(key: str) -> tuple[list[str], bool]:
     if upper_key in {
         "ITINV_AGENT_API_KEY",
         "ITINV_AGENT_API_KEYS",
+        "INVENTORY_AGENT_API_KEYS",
         "ITINV_INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",
         "ITINV_INVENTORY_HEARTBEAT_WRITE_INTERVAL_SECONDS",
     }:
@@ -403,6 +405,7 @@ def _describe_variable(key: str) -> tuple[str, str]:
     if upper_key in {
         "ITINV_AGENT_API_KEY",
         "ITINV_AGENT_API_KEYS",
+        "INVENTORY_AGENT_API_KEYS",
         "ITINV_INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",
         "ITINV_INVENTORY_HEARTBEAT_WRITE_INTERVAL_SECONDS",
     }:

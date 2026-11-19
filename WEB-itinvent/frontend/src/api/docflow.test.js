@@ -9,7 +9,7 @@ const { apiClientMock } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('./client', () => ({
+vi.mock('./http', () => ({
   default: apiClientMock,
 }));
 

@@ -35,23 +35,91 @@ describe('useMailKeyboardShortcuts', () => {
     const refreshList = vi.fn();
     const refreshFolderSummary = vi.fn();
     const setShortcutsOpen = vi.fn();
-    renderHook(() => useMailKeyboardShortcuts({
+    const { rerender } = renderHook(
+      (props) => useMailKeyboardShortcuts(props),
+      {
+        initialProps: {
+          invalidateMailClientCache,
+          refreshList,
+          refreshFolderSummary,
+          shortcutsOpen: false,
+          setShortcutsOpen,
+        },
+      },
+    );
+
+    act(() => {
+      press('R');
+    });
+    expect(invalidateMailClientCache).toHaveBeenCalledTimes(1);
+    expect(refreshList).toHaveBeenCalledWith({ force: true });
+    expect(refreshFolderSummary).toHaveBeenCalledTimes(1);
+
+    rerender({
       invalidateMailClientCache,
       refreshList,
       refreshFolderSummary,
       shortcutsOpen: true,
       setShortcutsOpen,
+    });
+    act(() => {
+      press('Escape');
+    });
+    expect(setShortcutsOpen).toHaveBeenCalledWith(false);
+  });
+
+  it('ignores compose, refresh and delete keys while the composer is open', () => {
+    const openCompose = vi.fn();
+    const refreshList = vi.fn();
+    const handleDeleteSelectedMessage = vi.fn();
+    renderHook(() => useMailKeyboardShortcuts({
+      openCompose,
+      refreshList,
+      handleDeleteSelectedMessage,
+      selectedMessageId: 'msg-1',
+      composeOpen: true,
     }));
 
     act(() => {
-      press('R');
-      press('Escape');
+      press('c');
+      press('r');
+      press('Delete');
     });
 
-    expect(invalidateMailClientCache).toHaveBeenCalledTimes(1);
-    expect(refreshList).toHaveBeenCalledWith({ force: true });
-    expect(refreshFolderSummary).toHaveBeenCalledTimes(1);
-    expect(setShortcutsOpen).toHaveBeenCalledWith(false);
+    expect(openCompose).not.toHaveBeenCalled();
+    expect(refreshList).not.toHaveBeenCalled();
+    expect(handleDeleteSelectedMessage).not.toHaveBeenCalled();
+  });
+
+  it('ignores destructive keys while a MUI modal is open, but not a hidden keepMounted one', () => {
+    const openCompose = vi.fn();
+    const handleDeleteSelectedMessage = vi.fn();
+    renderHook(() => useMailKeyboardShortcuts({
+      openCompose,
+      handleDeleteSelectedMessage,
+      selectedMessageId: 'msg-1',
+    }));
+
+    const hiddenModal = document.createElement('div');
+    hiddenModal.className = 'MuiModal-root MuiModal-hidden';
+    document.body.appendChild(hiddenModal);
+    act(() => {
+      press('Delete');
+      press('c');
+    });
+    expect(handleDeleteSelectedMessage).toHaveBeenCalledTimes(1);
+    expect(openCompose).toHaveBeenCalledTimes(1);
+
+    const openModal = document.createElement('div');
+    openModal.className = 'MuiModal-root';
+    document.body.appendChild(openModal);
+    act(() => {
+      press('Delete');
+      press('c');
+      press('r');
+    });
+    expect(handleDeleteSelectedMessage).toHaveBeenCalledTimes(1);
+    expect(openCompose).toHaveBeenCalledTimes(1);
   });
 
   it('moves selection with arrows only inside the message list', () => {

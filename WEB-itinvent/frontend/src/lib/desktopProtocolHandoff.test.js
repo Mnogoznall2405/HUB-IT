@@ -7,6 +7,7 @@ import {
   canOfferDesktopHandoff,
   isWindowsDesktopBrowser,
   launchHubitProtocol,
+  markDesktopHandoffSeen,
   normalizeHandoffRoute,
   resolveHandoffRoute,
   setDesktopHandoffPreference,
@@ -81,6 +82,18 @@ describe('desktopProtocolHandoff', () => {
       localStorage: window.localStorage,
       sessionStorage: window.sessionStorage,
     })).toBe(false);
+  });
+
+  it('stops offering after the banner was shown once', () => {
+    const opts = {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      runtimeWindow: {},
+      localStorage: window.localStorage,
+      sessionStorage: window.sessionStorage,
+    };
+    expect(canOfferDesktopHandoff(opts)).toBe(true);
+    markDesktopHandoffSeen();
+    expect(canOfferDesktopHandoff(opts)).toBe(false);
   });
 
   it('launches only hubit://open hrefs', () => {

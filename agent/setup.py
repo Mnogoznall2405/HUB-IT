@@ -198,6 +198,7 @@ build_exe_options = {
         "watchdog.observers",
         "agent_installer",
         "fs_egress.service",
+        "shared.upload_retry",
         "telegram_probe.watcher",
         "telegram_probe.sync",
         "telegram_probe.history_reader",

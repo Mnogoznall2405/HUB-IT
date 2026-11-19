@@ -25,6 +25,13 @@ const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 20000, 30000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const INITIAL_RECONNECT_SPREAD_MS = 5_000;
 const MAX_BUFFERED_BYTES = 256 * 1024;
+// Terminal closes where a reconnect loop is pointless: protocol error (4000),
+// inactive user (4400) and revoked chat access (1008). An explicit connect()
+// (tab return, resume) still re-arms reconnection.
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([4000, 4400, 1008]);
+// 4429 is the server rate-limit close: reconnecting after ~1s just earns the
+// next rate-limit, so the first retry jumps straight to the slowest backoff step.
+const RATE_LIMITED_CLOSE_CODE = 4429;
 
 let pingSequence = 0;
 function createPingRequestId(): string {
@@ -65,9 +72,19 @@ export class ChatSocketClient {
   private status: ChatSocketStatus = 'disconnected';
   private wantInbox = false;
   private conversationIds = new Set<string>();
+  // Wire-level dedupe: what this socket actually received, reset per socket.
+  // Backend runs get_realtime_snapshot per inbox subscribe and access checks
+  // per room subscribe — duplicates and silent drops are both expensive.
+  private inboxSubscribedOnSocket = false;
+  private conversationsSubscribedOnSocket = new Set<string>();
   // M5: watched presence ids survive a socket reconnect — they replay on
   // open exactly like inbox/conversation subscriptions.
   private presenceIds = new Set<number>();
+
+  private resetSocketSubscriptions() {
+    this.inboxSubscribedOnSocket = false;
+    this.conversationsSubscribedOnSocket.clear();
+  }
 
   on(eventType: string, handler: SocketHandler) {
     if (!this.handlers.has(eventType)) this.handlers.set(eventType, new Set());
@@ -161,6 +178,7 @@ export class ChatSocketClient {
   private abandonSocket(socket: WebSocket) {
     if (this.socket !== socket) return;
     this.socket = null;
+    this.resetSocketSubscriptions();
     this.clearConnectWatchdog();
     this.stopHeartbeat();
     // Native close is asynchronous and may never deliver onclose on a dead link.
@@ -182,33 +200,50 @@ export class ChatSocketClient {
     }, CONNECT_TIMEOUT_MS);
   }
 
-  send(message: Record<string, unknown>) {
+  send(message: Record<string, unknown>): boolean {
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    if (Number(socket.bufferedAmount || 0) > MAX_BUFFERED_BYTES) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    const type = String(message.type || '');
+    // Control frames must never vanish silently into a flooded buffer: losing
+    // one leaves the desired and wire subscription sets diverged until the
+    // next reconnect. Dropping typing/ping is harmless, so they stay best-effort.
+    const critical = type === 'chat.subscribe_inbox' || type === 'chat.subscribe_conversation'
+      || type === 'chat.unsubscribe_conversation' || type === 'chat.watch_presence' || type === 'chat.auth';
+    if (Number(socket.bufferedAmount || 0) > MAX_BUFFERED_BYTES) {
+      if (critical) this.abandonSocket(socket);
+      return false;
+    }
     try {
       socket.send(JSON.stringify(message));
+      return true;
     } catch {
       /* a dying socket must not throw into UI handlers */
+      this.abandonSocket(socket);
+      return false;
     }
   }
 
   subscribeInbox() {
     this.wantInbox = true;
-    this.send({ type: 'chat.subscribe_inbox' });
+    if (this.inboxSubscribedOnSocket) return;
+    if (this.send({ type: 'chat.subscribe_inbox' })) this.inboxSubscribedOnSocket = true;
   }
 
   subscribeConversation(conversationId: string) {
     const id = String(conversationId || '').trim();
     if (!id) return;
     this.conversationIds.add(id);
-    this.send({ type: 'chat.subscribe_conversation', conversation_id: id });
+    if (this.conversationsSubscribedOnSocket.has(id)) return;
+    if (this.send({ type: 'chat.subscribe_conversation', conversation_id: id })) {
+      this.conversationsSubscribedOnSocket.add(id);
+    }
   }
 
   unsubscribeConversation(conversationId: string) {
     const id = String(conversationId || '').trim();
     if (!id) return;
     this.conversationIds.delete(id);
+    if (!this.conversationsSubscribedOnSocket.delete(id)) return;
     this.send({ type: 'chat.unsubscribe_conversation', conversation_id: id });
   }
 
@@ -291,10 +326,13 @@ export class ChatSocketClient {
       this.clearConnectWatchdog();
       this.reconnectAttempt = 0;
       this.lastAuthPushedToken = token;
+      this.resetSocketSubscriptions();
       this.startHeartbeat();
       if (this.wantInbox) this.subscribeInbox();
       this.conversationIds.forEach((id) => this.subscribeConversation(id));
       if (this.presenceIds.size) this.watchPresence([...this.presenceIds]);
+      // A flooded replay abandons the socket — do not report it as connected.
+      if (this.socket !== socket) return;
       this.emitStatus('connected');
     };
 
@@ -325,8 +363,14 @@ export class ChatSocketClient {
 
     socket.onclose = (event?: { code?: number }) => {
       if (this.socket !== socket) return;
-      if (Number(event?.code || 0) === 4401) this.forceTokenRefresh = true;
+      const closeCode = Number(event?.code || 0);
+      if (closeCode === 4401) this.forceTokenRefresh = true;
+      if (NON_RECONNECTABLE_CLOSE_CODES.has(closeCode)) this.reconnectEnabled = false;
+      if (closeCode === RATE_LIMITED_CLOSE_CODE) {
+        this.reconnectAttempt = Math.max(this.reconnectAttempt, RECONNECT_DELAYS.length - 1);
+      }
       this.socket = null;
+      this.resetSocketSubscriptions();
       this.clearConnectWatchdog();
       this.stopHeartbeat();
       this.emitStatus(this.suspended ? 'suspended' : 'offline');
@@ -352,6 +396,7 @@ export class ChatSocketClient {
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;
+    this.resetSocketSubscriptions();
     if (socket) {
       socket.onclose = null;
       socket.close();
@@ -380,6 +425,7 @@ export class ChatSocketClient {
     this.stopHeartbeat();
     const socket = this.socket;
     this.socket = null;
+    this.resetSocketSubscriptions();
     if (socket) {
       socket.onclose = null;
       socket.close();

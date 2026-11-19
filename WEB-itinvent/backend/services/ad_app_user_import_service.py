@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from ldap3 import ALL, SUBTREE, Connection, Server
+from ldap3 import SUBTREE
 from sqlalchemy import text
 
 from backend.appdb.db import get_app_engine, is_app_database_configured
 from backend.config import config
 from backend.services.department_service import department_service
+from backend.services.ldap_security import open_ldap_connection
 from backend.services.session_auth_context_service import normalize_exchange_login
 from backend.services.user_service import UserService, user_service
 
@@ -245,14 +246,13 @@ def fetch_ad_users_for_import() -> dict[str, Any]:
 
     sync_user = os.getenv("LDAP_SYNC_USER", "")
     sync_password = os.getenv("LDAP_SYNC_PASSWORD", "")
-    server = Server(server_host, get_info=ALL)
 
     conn = None
     try:
         if sync_user and sync_password:
-            conn = Connection(server, user=sync_user, password=sync_password, auto_bind=True)
+            conn = open_ldap_connection(server_host, user=sync_user, password=sync_password)
         else:
-            conn = Connection(server, auto_bind=True)
+            conn = open_ldap_connection(server_host)
     except Exception as exc:
         logger.error("Failed to bind to LDAP for AD app-user import: %s", exc)
         return _empty_ad_fetch_result(error=str(exc))

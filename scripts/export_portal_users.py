@@ -48,7 +48,15 @@ def main() -> int:
     parser.add_argument("--out", default="", help="путь локального файла (по умолчанию во временной папке)")
     args = parser.parse_args()
 
-    summary = portal_user_export_service.export(out_path=args.out or None)
+    try:
+        summary = portal_user_export_service.export(out_path=args.out or None)
+    except Exception as exc:
+        logger.exception("Не удалось сформировать users.csv")
+        portal_user_export_service.send_alert(
+            "HUB-IT: ошибка выгрузки users.csv для портала",
+            f"Выгрузка из 1С завершилась ошибкой: {exc}",
+        )
+        return 1
     logger.info(
         "Сформирован users.csv: %s строк, с email: %s → %s",
         summary["rows"], summary["with_email"], summary["path"],
@@ -57,7 +65,17 @@ def main() -> int:
     if args.no_upload:
         return 0
 
-    delivery = portal_user_export_service.deliver(summary["path"])
+    try:
+        delivery = portal_user_export_service.deliver(
+            summary["path"], row_count=summary["rows"]
+        )
+    except Exception as exc:
+        logger.exception("Доставка users.csv на портал не удалась")
+        portal_user_export_service.send_alert(
+            "HUB-IT: users.csv не доставлен на портал",
+            f"Строк: {summary['rows']}. Ошибка: {exc}\nФайл: {summary['path']}",
+        )
+        return 2
     logger.info("Доставлено: %s", delivery["delivered_to"])
     return 0
 

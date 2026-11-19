@@ -1,8 +1,8 @@
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import useMediaQuery from '@mui/material/useMediaQuery';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 
-import { authAPI } from '../api/client';
+import { authAPI } from '../api/auth';
 import { windowsSsoAPI } from '../api/windowsSso';
 import DesktopInstallerDownload from '../components/desktop/DesktopInstallerDownload';
 import MobileInstallerDownload from '../components/mobile/MobileInstallerDownload';
@@ -99,6 +99,9 @@ function resolvePasswordLoginError(result) {
   if (Number(result?.statusCode) === 429) {
     return 'Слишком много попыток входа. Подождите немного и попробуйте снова.';
   }
+  if (result?.networkError) {
+    return 'Нет связи с сервером. Проверьте подключение и попробуйте позже.';
+  }
   return String(result?.error || '').trim() || 'Ошибка входа';
 }
 
@@ -138,8 +141,7 @@ function ShieldGlyph({ className = '' }) {
   );
 }
 
-function EyeGlyph({ open = false, className = '' }) {
-  if (open) {
+function EyeGlyph({ open = false, className = '' }) {  if (open) {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
         <path d="M3 12s3.75-6 9-6 9 6 9 6-3.75 6-9 6-9-6-9-6Z" stroke="currentColor" strokeWidth="1.9" />
@@ -384,19 +386,12 @@ function LoginVpnHintBanner({ visible, onDismiss, reducedMotion = false }) {
   }
 
   return (
-    <AnimatePresence>
-      <motion.div
-        key="login-vpn-hint"
-        initial={{ opacity: 0, y: -14 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -10 }}
-        transition={{ duration: 0.22, ease: 'easeOut' }}
-        className="pointer-events-none fixed inset-x-0 top-0 z-[60] px-4"
-        style={shellStyle}
-      >
-        {content}
-      </motion.div>
-    </AnimatePresence>
+    <div
+      className="pointer-events-none fixed inset-x-0 top-0 z-[60] px-4 login-anim-top"
+      style={shellStyle}
+    >
+      {content}
+    </div>
   );
 }
 
@@ -432,21 +427,15 @@ function LoginTopNotice({ notice, reducedMotion = false }) {
   }
 
   return (
-    <AnimatePresence>
-      <motion.div
-        key={notice.id}
-        role="status"
-        aria-live="polite"
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -8 }}
-        transition={{ duration: 0.18, ease: 'easeOut' }}
-        className={shellClassName}
-        style={shellStyle}
-      >
-        {content}
-      </motion.div>
-    </AnimatePresence>
+    <div
+      key={notice.id}
+      role="status"
+      aria-live="polite"
+      className={`${shellClassName} login-anim-top-soft`}
+      style={shellStyle}
+    >
+      {content}
+    </div>
   );
 }
 
@@ -569,7 +558,7 @@ function Login() {
   const noticeTimerRef = useRef(null);
   const keyboardInsetRef = useRef(0);
   const keyboardInsetRafRef = useRef(null);
-  const prefersReducedMotion = useReducedMotion();
+  const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const {
     webAuthnReady,
     webAuthnWebApiReady,
@@ -1683,13 +1672,7 @@ function Login() {
     await completeAuthenticatedRedirect(authenticatedUserRef.current);
   };
 
-  const shellMotion = prefersReducedMotion || isCompactViewport
-    ? {}
-    : {
-      initial: { opacity: 0, y: 12 },
-      animate: { opacity: 1, y: 0 },
-      transition: { duration: 0.28, ease: 'easeOut' },
-    };
+  const shellEnterClass = prefersReducedMotion || isCompactViewport ? '' : 'login-anim-shell';
 
   const primaryButtonClassName = 'flex min-h-14 w-full items-center justify-center gap-2 rounded-[18px] !bg-cyan-200 px-5 text-[15px] font-semibold !text-zinc-950 transition hover:!bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-55';
   const secondaryButtonClassName = 'flex min-h-12 w-full items-center justify-center rounded-[16px] border border-white/10 bg-white/[0.045] px-5 text-sm font-semibold text-white/78 transition hover:bg-white/[0.08]';
@@ -1764,17 +1747,14 @@ function Login() {
           <div className="relative flex h-16 w-16 items-center justify-center">
             {prefersReducedMotion ? null : (
               <>
-                <motion.div
+                <div
                   aria-hidden="true"
-                  className="absolute inset-0 rounded-full border-2 border-cyan-200/30"
-                  animate={{ scale: [1, 1.45], opacity: [0.7, 0] }}
-                  transition={{ duration: 1.6, repeat: Infinity, ease: 'easeOut' }}
+                  className="absolute inset-0 rounded-full border-2 border-cyan-200/30 login-anim-ring"
                 />
-                <motion.div
+                <div
                   aria-hidden="true"
-                  className="absolute inset-0 rounded-full border-2 border-cyan-200/20"
-                  animate={{ scale: [1, 1.45], opacity: [0.7, 0] }}
-                  transition={{ duration: 1.6, repeat: Infinity, ease: 'easeOut', delay: 0.8 }}
+                  className="absolute inset-0 rounded-full border-2 border-cyan-200/20 login-anim-ring"
+                  style={{ animationDelay: '0.8s' }}
                 />
               </>
             )}
@@ -1786,15 +1766,14 @@ function Login() {
             <div className="flex items-center justify-center gap-0.5 text-base font-semibold text-white">
               <span>Определяем режим входа</span>
               {prefersReducedMotion ? null : [0, 1, 2].map((index) => (
-                <motion.span
+                <span
                   key={index}
                   aria-hidden="true"
-                  className="inline-block"
-                  animate={{ opacity: [0.15, 1, 0.15] }}
-                  transition={{ duration: 1.2, repeat: Infinity, delay: index * 0.2, ease: 'easeInOut' }}
+                  className="inline-block login-anim-dot"
+                  style={{ animationDelay: `${index * 0.2}s` }}
                 >
                   .
-                </motion.span>
+                </span>
               ))}
             </div>
             {!isCompactViewport ? (
@@ -1854,24 +1833,19 @@ function Login() {
         ) : null}
 
         {windowsSsoPrimary ? (
-          <motion.div
-            initial={prefersReducedMotion ? undefined : { opacity: 0, y: 10, scale: 0.985 }}
-            animate={prefersReducedMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.3, ease: 'easeOut' }}
-            className={cn(isCompactViewport ? 'space-y-2' : 'space-y-3')}
+          <div
+            className={cn(isCompactViewport ? 'space-y-2' : 'space-y-3', !prefersReducedMotion && 'login-anim-scale-in')}
           >
-            <motion.button
+            <button
               type="button"
               data-testid="windows-sso-login"
               onClick={startWindowsSso}
               disabled={loading}
-              whileHover={prefersReducedMotion ? undefined : { scale: 1.018 }}
-              whileTap={prefersReducedMotion ? undefined : { scale: 0.982 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 22 }}
               className={cn(
                 'group relative w-full overflow-hidden rounded-[24px] border border-cyan-200/18 bg-cyan-200/[0.08] p-4 text-left transition-[border-color,background-color]',
                 'hover:border-cyan-100/28 hover:bg-cyan-200/[0.12] disabled:cursor-not-allowed disabled:opacity-60',
                 isCompactViewport ? 'min-h-[124px]' : 'min-h-[148px]',
+                !prefersReducedMotion && 'login-sso-press',
               )}
               style={{
                 boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.12), 0 18px 48px rgba(8,47,73,0.22)',
@@ -1909,7 +1883,7 @@ function Login() {
                   </svg>
                 </div>
               </div>
-            </motion.button>
+            </button>
             <button
               type="button"
               data-testid="show-password-login"
@@ -1918,7 +1892,7 @@ function Login() {
             >
               Войти логином и паролем
             </button>
-          </motion.div>
+          </div>
         ) : (
         <form
           onSubmit={handlePasswordSubmit}
@@ -2304,11 +2278,11 @@ function Login() {
         reducedMotion={prefersReducedMotion}
       />
 
-      <motion.div
-        {...shellMotion}
+      <div
         className={cn(
           'relative z-10 mx-auto grid w-full max-w-[78rem] gap-6 md:grid-cols-[minmax(0,1fr)_minmax(27rem,31rem)]',
           isCompactViewport ? 'items-start py-2' : 'min-h-[calc(100dvh-42px)] items-center',
+          shellEnterClass,
         )}
         style={mobileNoticeInset ? { paddingTop: mobileNoticeInset } : undefined}
       >
@@ -2341,23 +2315,12 @@ function Login() {
               </div>
             </div>
             <div className="space-y-4">
-              {prefersReducedMotion || isCompactViewport ? (
-                <div key={step}>
-                  {renderStepBody()}
-                </div>
-              ) : (
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={step}
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    transition={{ duration: 0.22, ease: 'easeOut' }}
-                  >
-                    {renderStepBody()}
-                  </motion.div>
-                </AnimatePresence>
-              )}
+              <div
+                key={step}
+                className={prefersReducedMotion || isCompactViewport ? undefined : 'login-anim-up'}
+              >
+                {renderStepBody()}
+              </div>
             </div>
           </div>
 
@@ -2374,24 +2337,22 @@ function Login() {
             </div>
           ) : null}
         </div>
-      </motion.div>
+      </div>
 
-      <AnimatePresence>
-        {rememberDeviceOpen ? (
-          <motion.div
+      {rememberDeviceOpen ? (
+          <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="remember-device-title"
             data-testid="login-remember-device-dialog"
-            className="fixed bottom-0 z-30 w-[calc(100vw-24px)] max-w-[31rem] overflow-hidden rounded-t-[28px] border border-white/10 bg-[#080b10] px-5 pb-5 pt-4 text-white shadow-[0_-20px_60px_rgba(2,6,23,0.58)] md:bottom-6 md:rounded-[28px]"
+            className={cn(
+              'fixed bottom-0 z-30 w-[calc(100vw-24px)] max-w-[31rem] overflow-hidden rounded-t-[28px] border border-white/10 bg-[#080b10] px-5 pb-5 pt-4 text-white shadow-[0_-20px_60px_rgba(2,6,23,0.58)] md:bottom-6 md:rounded-[28px]',
+              !prefersReducedMotion && 'login-anim-dialog',
+            )}
               style={{
                 paddingBottom: 'max(20px, calc(env(safe-area-inset-bottom, 0px) + 14px))',
                 right: 'max(12px, env(safe-area-inset-right, 0px))',
               }}
-              initial={prefersReducedMotion ? undefined : { opacity: 0, y: 40, x: 14 }}
-              animate={{ opacity: 1, y: 0, x: 0 }}
-              exit={prefersReducedMotion ? undefined : { opacity: 0, y: 24, x: 10 }}
-              transition={{ duration: 0.26, ease: 'easeOut' }}
             >
               <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-white/16" />
               <div className="space-y-4">
@@ -2434,9 +2395,8 @@ function Login() {
                   ) : null}
                 </div>
               </div>
-            </motion.div>
+            </div>
         ) : null}
-      </AnimatePresence>
     </div>
   );
 }

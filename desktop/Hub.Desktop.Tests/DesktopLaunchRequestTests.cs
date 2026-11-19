@@ -23,6 +23,24 @@ public sealed class DesktopLaunchRequestTests
         Assert.Equal("/tasks?task=7", request.Route);
     }
 
+    [Theory]
+    [InlineData("--native", "--route", "/tasks")]
+    [InlineData("--route", "/chat?conversation=7", "--native")]
+    public void ParsesNativeRouteLaunch(params string[] arguments)
+    {
+        Assert.True(DesktopLaunchRequest.TryParse(arguments, out var request));
+        Assert.True(request.OpenNativeHub);
+        Assert.NotNull(request.Route);
+    }
+
+    [Fact]
+    public void ParsesNativeLaunch()
+    {
+        Assert.True(DesktopLaunchRequest.TryParse(["--native"], out var request));
+        Assert.True(request.OpenNativeHub);
+        Assert.Null(request.Route);
+    }
+
     [Fact]
     public void ParsesDownloadsLaunch()
     {

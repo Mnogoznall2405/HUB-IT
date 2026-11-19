@@ -2349,7 +2349,16 @@ class AppBrowserProbeVisit(AppBase):
             name="uq_app_browser_probe_visits_host_visit",
         ),
         Index("ix_app_browser_probe_visits_computer_visited", "computer_name", "visited_at"),
+        Index("ix_app_browser_probe_visits_visited_computer", "visited_at", "computer_name"),
         Index("ix_app_browser_probe_visits_category", "category"),
+        Index(
+            "ix_app_browser_probe_hist_latest",
+            "computer_name",
+            "browser",
+            text("md5(url)"),
+            text("visited_at DESC NULLS LAST"),
+            postgresql_where=text("profile <> 'focus'"),
+        ).ddl_if(dialect="postgresql"),
         schema=APP_SCHEMA,
     )
 

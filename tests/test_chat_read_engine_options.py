@@ -51,6 +51,21 @@ def test_write_engine_is_never_read_only():
     assert engine not in chat_db._READ_ENGINES_WITH_SESSION_DEFAULTS
 
 
+def test_write_engine_async_commit_opt_in(monkeypatch):
+    """CHAT_DB_ASYNC_COMMIT=1 must surface as a connect-level synchronous_commit=off
+    so chat COMMITs stop waiting on WAL fsync (silent-regression class: the flag
+    only exists in PostgreSQL connect options, invisible to sqlite E2E)."""
+    monkeypatch.setenv("CHAT_DB_ASYNC_COMMIT", "1")
+    engine = chat_db._build_engine(PG_URL, pool_class="write")
+    assert "synchronous_commit=off" in _connect_options(engine)
+
+
+def test_write_engine_sync_commit_default(monkeypatch):
+    monkeypatch.delenv("CHAT_DB_ASYNC_COMMIT", raising=False)
+    engine = chat_db._build_engine(PG_URL, pool_class="write")
+    assert "synchronous_commit" not in _connect_options(engine)
+
+
 def test_read_session_skips_per_transaction_set_statements_only_when_defaults_exist(monkeypatch):
     executed: list[str] = []
 

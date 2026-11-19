@@ -23,6 +23,12 @@ jest.mock('../../api/passwordsApi', () => ({
   unlockPasswordVaultWithBiometrics: jest.fn(),
   revealPasswordVaultEntry: jest.fn(),
   updatePasswordVaultEntry: jest.fn(),
+  createPasswordVaultEntry: jest.fn(),
+  archivePasswordVaultEntry: jest.fn(),
+  listPasswordVaultGroups: jest.fn(),
+  createPasswordVaultGroup: jest.fn(),
+  updatePasswordVaultGroup: jest.fn(),
+  archivePasswordVaultGroup: jest.fn(),
 }));
 
 jest.mock('../../auth/biometricAuth', () => ({ unlockBiometricLogin: jest.fn() }));
@@ -63,6 +69,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockedApi.listPasswordVaultEntries.mockResolvedValue({
     items: entries,
+    total: entries.length,
+    truncated: false,
     groups: ['Серверы'],
     tags: ['prod'],
     unlocked_until: '',

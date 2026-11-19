@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const SCAN_HOSTS_404_KEY = 'itinvent_scan_hosts_404';
 const SCAN_HOSTS_404_TTL_MS = 6 * 60 * 60 * 1000;

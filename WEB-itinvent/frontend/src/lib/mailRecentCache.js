@@ -1,4 +1,7 @@
 const MAIL_RECENT_CACHE_STORAGE_KEY = 'mail_recent_cache_v3';
+// Полные тела писем храним отдельно в sessionStorage: они переживают reload
+// вкладки, но не остаются в localStorage после её закрытия.
+const MAIL_RECENT_DETAIL_STORAGE_KEY = 'mail_recent_detail_cache_v1';
 // Keep last inbox paint long enough that a page refresh does not flash "Нет писем".
 const MAIL_RECENT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MAIL_RECENT_DETAIL_TTL_MS = 60 * 60 * 1000;
@@ -7,16 +10,19 @@ const MAIL_RECENT_CACHE_MAX_ITEMS = 50;
 const MAIL_RECENT_CACHE_MAX_DETAILS = 20;
 const MAIL_RECENT_DETAIL_HTML_MAX_LENGTH = 200_000;
 const MAIL_RECENT_DETAIL_TEXT_MAX_LENGTH = 20_000;
+// Бюджет на объект с деталями: 20 деталей по 200 КБ в сумме дают ~4 МБ и могут
+// упереться в квоту — при переполнении вытесняем старейшие детали.
+const MAIL_RECENT_CACHE_MAX_BYTES = 2 * 1024 * 1024;
 
 const nowMs = () => Date.now();
 
 const normalizeScope = (value) => String(value || '').trim();
 const normalizeContextKey = (value) => String(value || '').trim();
 
-const safeReadStorage = () => {
-  if (typeof window === 'undefined' || !window.localStorage) return {};
+const safeReadJson = (storage, key) => {
+  if (!storage) return {};
   try {
-    const raw = window.localStorage.getItem(MAIL_RECENT_CACHE_STORAGE_KEY);
+    const raw = storage.getItem(key);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : {};
@@ -25,18 +31,59 @@ const safeReadStorage = () => {
   }
 };
 
-const safeWriteStorage = (payload) => {
-  if (typeof window === 'undefined' || !window.localStorage) return;
+const safeWriteJson = (storage, key, payload) => {
+  if (!storage) return;
   try {
     const normalizedPayload = payload && typeof payload === 'object' ? payload : {};
     if (Object.keys(normalizedPayload).length === 0) {
-      window.localStorage.removeItem(MAIL_RECENT_CACHE_STORAGE_KEY);
+      storage.removeItem(key);
       return;
     }
-    window.localStorage.setItem(MAIL_RECENT_CACHE_STORAGE_KEY, JSON.stringify(normalizedPayload));
+    storage.setItem(key, JSON.stringify(normalizedPayload));
   } catch {
     // ignore storage errors
   }
+};
+
+const getLocalStore = () => (typeof window === 'undefined' ? null : window.localStorage);
+const getSessionStore = () => {
+  try {
+    return typeof window === 'undefined' ? null : window.sessionStorage;
+  } catch {
+    return null;
+  }
+};
+
+const readPersistedPayload = () => {
+  const base = safeReadJson(getLocalStore(), MAIL_RECENT_CACHE_STORAGE_KEY);
+  const details = safeReadJson(getSessionStore(), MAIL_RECENT_DETAIL_STORAGE_KEY);
+  const merged = { ...(base || {}) };
+  Object.entries(details || {}).forEach(([scope, scopeEntry]) => {
+    merged[scope] = {
+      ...(merged[scope] || {}),
+      details: (scopeEntry && typeof scopeEntry === 'object' ? scopeEntry.details : null) || {},
+    };
+  });
+  return merged;
+};
+
+const writePersistedPayload = (payload) => {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const base = {};
+  const detailStore = {};
+  Object.entries(source).forEach(([scope, scopeEntry]) => {
+    const entry = scopeEntry && typeof scopeEntry === 'object' ? scopeEntry : {};
+    const details = entry.details && typeof entry.details === 'object' ? entry.details : {};
+    base[scope] = {
+      bootstrap: entry.bootstrap || null,
+      lists: entry.lists && typeof entry.lists === 'object' ? entry.lists : {},
+    };
+    if (Object.keys(details).length > 0) {
+      detailStore[scope] = { details };
+    }
+  });
+  safeWriteJson(getLocalStore(), MAIL_RECENT_CACHE_STORAGE_KEY, base);
+  safeWriteJson(getSessionStore(), MAIL_RECENT_DETAIL_STORAGE_KEY, enforceByteBudget(detailStore));
 };
 
 const isFresh = (updatedAt, ttlMs = MAIL_RECENT_CACHE_TTL_MS) => (
@@ -164,6 +211,43 @@ const pruneScopeEntry = (entry) => {
   return { bootstrap, lists, details };
 };
 
+const enforceByteBudget = (payload) => {
+  let totalBytes;
+  try {
+    totalBytes = JSON.stringify(payload).length;
+  } catch {
+    return payload;
+  }
+  if (totalBytes <= MAIL_RECENT_CACHE_MAX_BYTES) return payload;
+  const detailRefs = [];
+  Object.entries(payload).forEach(([scope, scopeEntry]) => {
+    Object.entries(scopeEntry?.details || {}).forEach(([messageId, entry]) => {
+      let bytes = 0;
+      try { bytes = JSON.stringify(entry).length; } catch { bytes = 0; }
+      detailRefs.push({ scope, messageId, updatedAt: Number(entry?.updatedAt || 0), bytes });
+    });
+  });
+  detailRefs.sort((left, right) => left.updatedAt - right.updatedAt);
+  const next = {};
+  Object.entries(payload).forEach(([scope, scopeEntry]) => {
+    next[scope] = { ...scopeEntry, details: { ...(scopeEntry?.details || {}) } };
+  });
+  for (const ref of detailRefs) {
+    if (totalBytes <= MAIL_RECENT_CACHE_MAX_BYTES) break;
+    delete next[ref.scope].details[ref.messageId];
+    totalBytes -= ref.bytes;
+  }
+  Object.keys(next).forEach((scope) => {
+    const scopeEntry = next[scope];
+    if (!scopeEntry?.bootstrap
+      && Object.keys(scopeEntry?.lists || {}).length === 0
+      && Object.keys(scopeEntry?.details || {}).length === 0) {
+      delete next[scope];
+    }
+  });
+  return next;
+};
+
 const prunePayload = (payload) => {
   const source = payload && typeof payload === 'object' ? payload : {};
   const nextEntries = Object.entries(source)
@@ -179,10 +263,10 @@ const prunePayload = (payload) => {
 };
 
 const mutatePayload = (mutator) => {
-  const current = prunePayload(safeReadStorage());
+  const current = prunePayload(readPersistedPayload());
   const draft = mutator(current) || current;
   const next = prunePayload(draft);
-  safeWriteStorage(next);
+  writePersistedPayload(next);
   return next;
 };
 
@@ -190,7 +274,7 @@ export const getMailRecentHydration = ({ scope, contextKey } = {}) => {
   const normalizedScope = normalizeScope(scope);
   const normalizedContextKey = normalizeContextKey(contextKey);
   if (!normalizedScope) return null;
-  const payload = prunePayload(safeReadStorage());
+  const payload = prunePayload(readPersistedPayload());
   const scopeEntry = payload[normalizedScope];
   if (!scopeEntry) return null;
   const bootstrap = scopeEntry.bootstrap || null;
@@ -255,7 +339,7 @@ export const getMailRecentMessageDetail = ({ scope, messageId } = {}) => {
   const normalizedScope = normalizeScope(scope);
   const normalizedMessageId = String(messageId || '').trim();
   if (!normalizedScope || !normalizedMessageId) return null;
-  const payload = prunePayload(safeReadStorage());
+  const payload = prunePayload(readPersistedPayload());
   const scopeEntry = payload[normalizedScope];
   if (!scopeEntry) return null;
   const detailEntry = scopeEntry.details?.[normalizedMessageId];
@@ -299,14 +383,16 @@ export const clearMailRecentCacheForScope = (scope) => {
 };
 
 export const clearAllMailRecentCache = () => {
-  safeWriteStorage({});
+  writePersistedPayload({});
 };
 
 export const __MAIL_RECENT_CACHE_TESTING__ = {
   MAIL_RECENT_CACHE_STORAGE_KEY,
+  MAIL_RECENT_DETAIL_STORAGE_KEY,
   MAIL_RECENT_CACHE_TTL_MS,
   MAIL_RECENT_DETAIL_TTL_MS,
   MAIL_RECENT_CACHE_MAX_CONTEXTS,
   MAIL_RECENT_CACHE_MAX_ITEMS,
   MAIL_RECENT_CACHE_MAX_DETAILS,
+  MAIL_RECENT_CACHE_MAX_BYTES,
 };

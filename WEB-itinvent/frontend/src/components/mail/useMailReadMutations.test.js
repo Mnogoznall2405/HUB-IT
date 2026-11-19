@@ -239,6 +239,66 @@ describe('useMailReadMutations', () => {
     expect(result.current.folderSummary.inbox.unread).toBe(1);
   });
 
+  it('decrements the active mailbox unread badge when marking a message read', async () => {
+    const setMailboxInfo = vi.fn();
+    const setMailboxes = vi.fn();
+    const { result } = renderReadMutationHook({
+      props: { setMailboxInfo, setMailboxes },
+    });
+
+    await act(async () => {
+      await result.current.performMailReadMutation({
+        mode: 'messages',
+        targetId: 'msg-1',
+        nextIsRead: true,
+        currentUnreadCount: 1,
+        currentMessageCount: 1,
+      });
+    });
+
+    const infoUpdater = setMailboxInfo.mock.calls[0][0];
+    expect(infoUpdater({ mailbox_email: 'a@b.c', unread_count: 5 }))
+      .toEqual({ mailbox_email: 'a@b.c', unread_count: 4 });
+    const boxesUpdater = setMailboxes.mock.calls[0][0];
+    expect(boxesUpdater([
+      { id: 'mailbox-1', unread_count: 5 },
+      { id: 'mailbox-2', unread_count: 3 },
+    ])).toEqual([
+      { id: 'mailbox-1', unread_count: 4 },
+      { id: 'mailbox-2', unread_count: 3 },
+    ]);
+  });
+
+  it('restores the mailbox unread badge when the read mutation fails', async () => {
+    const setMailboxInfo = vi.fn();
+    const setMailboxes = vi.fn();
+    const mailAPI = createMailAPI({
+      markAsRead: vi.fn(async () => {
+        throw new Error('exchange down');
+      }),
+    });
+    const { result } = renderReadMutationHook({
+      mailAPI,
+      props: { setMailboxInfo, setMailboxes },
+    });
+
+    await act(async () => {
+      await result.current.performMailReadMutation({
+        mode: 'messages',
+        targetId: 'msg-1',
+        nextIsRead: true,
+        currentUnreadCount: 1,
+        currentMessageCount: 1,
+      });
+    });
+
+    expect(setMailboxInfo.mock.calls.length).toBe(2);
+    const optimisticUpdater = setMailboxInfo.mock.calls[0][0];
+    expect(optimisticUpdater({ unread_count: 5 })).toEqual({ unread_count: 4 });
+    const rollbackUpdater = setMailboxInfo.mock.calls[1][0];
+    expect(rollbackUpdater({ unread_count: 4 })).toEqual({ unread_count: 5 });
+  });
+
   it('clears optimistic overrides and delegates credentials errors on mutation failure', async () => {
     const requestError = new Error('auth required');
     const mailAPI = createMailAPI({

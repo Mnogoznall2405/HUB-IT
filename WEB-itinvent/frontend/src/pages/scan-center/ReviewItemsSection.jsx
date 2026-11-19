@@ -17,7 +17,7 @@ import {
   Typography,
   useMediaQuery,
 } from '@mui/material';
-import { Replay as ReplayIcon } from '@mui/icons-material';
+import ReplayIcon from '@mui/icons-material/Replay';
 import { useTheme } from '@mui/material/styles';
 import { friendlyScanReason as friendlyReason } from './scanReasonLabels';
 

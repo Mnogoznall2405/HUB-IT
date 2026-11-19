@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // Предложения по улучшению HUB («Предложить улучшение HUB»). Контракт бэкенда: /api/v1/feedback.
 export const FEEDBACK_CATEGORY_OPTIONS = [

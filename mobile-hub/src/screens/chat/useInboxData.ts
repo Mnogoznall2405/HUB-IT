@@ -69,6 +69,9 @@ export function useInboxData({
   const typingParticipantsRef = useRef(new Map<string, TypingParticipant[]>());
   const typingTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const removedConversationIdsRef = useRef(new Set<string>());
+  // Bumped on every tombstone write/restore so an in-flight page response that
+  // predates a removal can be discarded instead of resurrecting the row.
+  const removalRevisionRef = useRef(0);
   const pendingSnapshotRef = useRef<{
     owner: number; page: ChatConversationPage; removedConversationIds: string[];
   } | null>(null);
@@ -144,13 +147,42 @@ export function useInboxData({
     loadStartingRef.current = true;
     if (mode === 'initial') { setLoading(true); noteInboxLoadStart(); }
     if (mode === 'refresh') setRefreshing(true);
+    // Start the live first page before the snapshot read resolves (the thread
+    // history does the same): a slow SecureStore read must not delay the GET.
+    // The snapshot can still hydrate the list first when it wins the race.
+    const firstPageRevision = removalRevisionRef.current;
+    const firstPageStartedAt = Date.now();
+    let firstPageFinishedAt = 0;
+    const firstPagePromise = mode === 'initial' && !offlineMode
+      ? chatApi.getConversationPage({ limit: 50 }).then(
+        (page) => { firstPageFinishedAt = Date.now(); return page; },
+        (cause: unknown) => { firstPageFinishedAt = Date.now(); throw cause; },
+      )
+      : null;
+    void firstPagePromise?.catch(() => undefined);
+    let firstRequest = firstPagePromise;
     let cached = false;
     if (mode === 'initial' && userId) {
-      const snapshot = await readNativeChatInboxSnapshot(userId);
+      let cacheFailed = false;
+      const snapshot = await readNativeChatInboxSnapshot(userId).catch(() => {
+        cacheFailed = true;
+        return null;
+      });
       if (!isCurrent()) return;
-      if (snapshot) {
+      // A removal landing during the snapshot read makes the whole snapshot
+      // stale: applying its rows/cursor would resurrect the deleted chat before
+      // the already-started first page corrects it (or forever, if that page
+      // fails). Even when the revision is stable, live tombstones still filter
+      // individual cached rows.
+      const cacheStale = removalRevisionRef.current !== firstPageRevision;
+      logChatDevice('inbox_cache', cacheFailed
+        ? { ms: Date.now() - startedAt, outcome: 'error' }
+        : cacheStale
+          ? { ms: Date.now() - startedAt, hit: Boolean(snapshot), outcome: 'stale' }
+          : { ms: Date.now() - startedAt, hit: Boolean(snapshot) });
+      if (snapshot && !cacheStale) {
         cached = true;
-        setItems(snapshot.data.items);
+        setItems(snapshot.data.items.filter((item) => !removedConversationIdsRef.current.has(item.id)));
         setHasMore(snapshot.data.has_more);
         setNextCursor(snapshot.data.next_cursor);
         setHydratedOwner(userId);
@@ -171,11 +203,34 @@ export function useInboxData({
     }
     do {
       loadDirtyRef.current = false;
-      const request = chatApi.getConversationPage({ limit: 50 });
+      const isFirstRequest = firstRequest !== null;
+      const removalRevision = isFirstRequest ? firstPageRevision : removalRevisionRef.current;
+      const requestStartedAt = isFirstRequest ? firstPageStartedAt : Date.now();
+      const request = firstRequest ?? chatApi.getConversationPage({ limit: 50 });
+      firstRequest = null;
+      // The early first page may settle while the snapshot is still being read;
+      // its stage duration must remain the real HTTP wait, not the delayed
+      // application time.
+      const requestElapsedMs = () => Math.max(0,
+        (isFirstRequest && firstPageFinishedAt ? firstPageFinishedAt : Date.now()) - requestStartedAt);
       loadInFlightRef.current = request.then(() => undefined, () => undefined);
       try {
         const page = await request;
         if (!isCurrent()) return;
+        if (mode === 'initial') {
+          logChatDevice('inbox_page', {
+            ms: requestElapsedMs(),
+            count: page.items.length,
+            outcome: removalRevisionRef.current !== removalRevision ? 'stale' : 'ok',
+          });
+        }
+        if (removalRevisionRef.current !== removalRevision) {
+          // A removed/restored event landed while the page was in flight — this
+          // response predates it. Refetch rather than resurrect the row, apply
+          // a stale cursor or clear the tombstone.
+          loadDirtyRef.current = true;
+          continue;
+        }
         page.items.forEach((item) => removedConversationIdsRef.current.delete(item.id));
         if (mode === 'silent') {
           const pageIds = new Set(page.items.map((item) => item.id));
@@ -208,6 +263,9 @@ export function useInboxData({
         if (mode === 'initial') logChatDevice('inbox_open', { ms: Date.now() - startedAt, count: page.items.length });
         if (userId) void writeNativeChatInboxSnapshot(userId, page);
       } catch (cause) {
+        if (isCurrent() && mode === 'initial') {
+          logChatDevice('inbox_page', { ms: requestElapsedMs(), outcome: 'error' });
+        }
         if (isCurrent() && mode !== 'silent') {
           setError(cached
             ? 'Нет подключения. Показаны сохранённые диалоги.'
@@ -228,8 +286,16 @@ export function useInboxData({
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
+      const removalRevision = removalRevisionRef.current;
       const page = await chatApi.getConversationPage({ cursor: nextCursor, limit: 50 });
       if (!mountedRef.current || ownerRef.current !== userId) return;
+      if (removalRevisionRef.current !== removalRevision) {
+        // The list changed while this page was in flight; rebuild it from a
+        // fresh first page instead of trusting the stale cursor. The finally
+        // block still clears the spinner.
+        void load('silent');
+        return;
+      }
       page.items.forEach((item) => removedConversationIdsRef.current.delete(item.id));
       setItems((current) => {
         const byId = new Map(current.map((item) => [item.id, item]));
@@ -254,7 +320,7 @@ export function useInboxData({
         if (mountedRef.current) setLoadingMore(false);
       }
     }
-  }, [hasMore, mountedRef, nextCursor, offlineMode, ownerRef, userId]);
+  }, [hasMore, load, mountedRef, nextCursor, offlineMode, ownerRef, userId]);
 
   useEffect(() => {
     let active = true;
@@ -300,7 +366,9 @@ export function useInboxData({
       }
       const payload = (envelope as { payload?: { conversation?: { id?: string }; item?: { id?: string } } })?.payload;
       const restoredId = String(payload?.conversation?.id || payload?.item?.id || '').trim();
-      if (restoredId) removedConversationIdsRef.current.delete(restoredId);
+      if (restoredId && removedConversationIdsRef.current.delete(restoredId)) {
+        removalRevisionRef.current += 1;
+      }
       setItems((current) => {
         const done = trackWork('inbox-apply');
         try {
@@ -320,6 +388,7 @@ export function useInboxData({
         (envelope as { payload?: { conversation_id?: string } })?.payload?.conversation_id || '',
       ).trim();
       if (conversationId && ownerRef.current === userId) {
+        removalRevisionRef.current += 1;
         removedConversationIdsRef.current.add(conversationId);
         remoteSearchItemsRef.current = remoteSearchItemsRef.current.filter((item) => item.id !== conversationId);
         setItems((current) => current.filter((item) => item.id !== conversationId));

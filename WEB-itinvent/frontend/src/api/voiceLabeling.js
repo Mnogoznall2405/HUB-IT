@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const projectPath = (id) => `/voice/labeling/projects/${encodeURIComponent(id)}`;
 

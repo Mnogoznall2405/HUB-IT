@@ -242,6 +242,54 @@ it('previews session-limit normalization before applying it', async () => {
   await waitFor(() => expect(sessionMocks.normalizeSessionLimit).toHaveBeenCalledWith(true));
 });
 
+it('ignores the previous user\'s late delegate response after switching users', async () => {
+  mockUserDirectory([
+    { id: 9, username: 'ivanov', full_name: 'Иванов Иван', role: 'viewer', permissions: [], is_active: true },
+    { id: 10, username: 'petrova', full_name: 'Петрова Анна', role: 'viewer', permissions: [], is_active: true },
+    { id: 11, username: 'sidorov', full_name: 'Сидоров Пётр', role: 'viewer', permissions: [], is_active: true },
+  ]);
+  let finishA!: (links: userAdminApi.TaskDelegateLink[]) => void;
+  userMocks.getTaskDelegates.mockImplementation((userId: number) =>
+    userId === 9
+      ? new Promise((resolve) => { finishA = resolve; })
+      : Promise.resolve([]));
+
+  const view = await render(<NativeAdminUsersScreen />);
+  await waitFor(() => expect(view.getByText('Иванов Иван')).toBeTruthy());
+  await act(async () => {
+    fireEvent.press(view.getByText('Иванов Иван').parent as never);
+  });
+  await waitFor(() => expect(view.getByDisplayValue('ivanov')).toBeTruthy());
+
+  // A's delegates are still loading — go back and open another user.
+  await act(async () => {
+    fireEvent.press(view.getByTestId('account-header-back'));
+  });
+  await act(async () => {
+    fireEvent.press(view.getByText('Петрова Анна').parent as never);
+  });
+  await waitFor(() => expect(view.getByTestId('native-admin-delegate-search')).toBeTruthy());
+
+  // A's request lands late: B must keep her own (empty) delegate list.
+  await act(async () => {
+    finishA([{
+      owner_user_id: 9,
+      delegate_user_id: 11,
+      role_type: 'assistant',
+      is_active: true,
+      delegate_username: 'sidorov',
+      delegate_full_name: 'Сидоров Пётр',
+    }]);
+  });
+  expect(view.queryByText('Сидоров Пётр')).toBeNull();
+
+  // Saving writes B's delegate set — never A's leaked links.
+  await act(async () => {
+    fireEvent.press(view.getByText('Сохранить'));
+  });
+  await waitFor(() => expect(userMocks.updateTaskDelegates).toHaveBeenCalledWith(10, []));
+});
+
 it('late department members must not replace selected department managers', async () => {
   let finish: (value:any)=>void=()=>{};
   const member=(id:number,name:string)=>({user_id:id,role:'manager',is_active:true,user:{id,username:name,full_name:name}});

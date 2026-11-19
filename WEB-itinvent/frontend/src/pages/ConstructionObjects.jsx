@@ -93,11 +93,11 @@ const isCancelled = (error) => (
   || error?.name === 'AbortError'
 );
 
-function Metric({ label, value, hint }) {
+function Metric({ label, value, hint, pending }) {
   return (
     <Box sx={{ minWidth: 0 }}>
       <Typography variant="h6" component="p" fontWeight={850} sx={{ lineHeight: 1.1 }}>
-        {formatNumber(value)}
+        {pending ? <Skeleton variant="text" width={64} /> : value === undefined ? '—' : formatNumber(value)}
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.25 }}>
         {label}
@@ -507,7 +507,7 @@ export default function ConstructionObjects() {
             actions={(
               <>
                 <Typography variant="caption" color="text.secondary" role="status" aria-live="polite" sx={{ display: { xs: 'none', md: 'block' } }}>
-                  {asOf ? `Обновлено ${formatDate(asOf, true)} · ${shownPeriod}` : 'Данные ещё не загружены'}
+                  {asOf ? `Обновлено ${formatDate(asOf, true)} · ${shownPeriod}` : loading ? <Skeleton variant="text" width={190} /> : 'Данные ещё не загружены'}
                 </Typography>
                 <Button
                   size="small"
@@ -547,11 +547,11 @@ export default function ConstructionObjects() {
               borderRadius: 3.5,
             }}
           >
-            <Metric label="строительных объектов" value={summary?.project_count} />
-            <Metric label="заявок за 12 месяцев" value={summary?.request_count} />
-            <Metric label="заявок за 30 дней" value={summary?.requests_last_30_days} />
-            <Metric label="общехозяйственных" value={summary?.general_request_count} />
-            <Metric label="без группы" value={summary?.unassigned_request_count} />
+            <Metric label="строительных объектов" value={summary?.project_count} pending={loading && !summary} />
+            <Metric label="заявок за 12 месяцев" value={summary?.request_count} pending={loading && !summary} />
+            <Metric label="заявок за 30 дней" value={summary?.requests_last_30_days} pending={loading && !summary} />
+            <Metric label="общехозяйственных" value={summary?.general_request_count} pending={loading && !summary} />
+            <Metric label="без группы" value={summary?.unassigned_request_count} pending={loading && !summary} />
           </Paper>
 
           <Paper

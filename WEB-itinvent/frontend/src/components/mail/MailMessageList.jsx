@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
   Box,
@@ -51,6 +51,11 @@ const SWIPE_COMMIT_THRESHOLD = 132;
 const SWIPE_REVEAL_OFFSET = 78;
 const SWIPE_COMMIT_OFFSET = 164;
 const SWIPE_MAX_OFFSET = 168;
+// The list pages in older mail without bound; rendering thousands of rows grows
+// the DOM linearly. Rows stay virtualized via content-visibility, but the node
+// count itself is capped — deeper history expands on an explicit tap.
+const MAIL_LIST_RENDER_LIMIT = 400;
+const MAIL_LIST_RENDER_STEP = 400;
 
 function assignRef(ref, value) {
   if (!ref) return;
@@ -539,7 +544,7 @@ function MessageRow({
         onClick={handleClick}
         role="button"
         tabIndex={0}
-        aria-selected={selected}
+        aria-pressed={selected}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
@@ -938,10 +943,12 @@ function DesktopRowMenu({
   folder,
   viewMode,
   moveTargets,
+  isSelected = false,
   onClose,
   onOpen,
   onArchive,
   onMove,
+  onToggleSelected,
   onOpenHeaders,
   onDownloadSource,
   onPrint,
@@ -983,6 +990,15 @@ function DesktopRowMenu({
         />
       ) : (
         <>
+          {onToggleSelected ? (
+            <MailCompactMenuItem
+              label={isSelected ? 'Снять выбор' : 'Выбрать'}
+              onClick={() => {
+                closeMenu();
+                onToggleSelected(String(item?.id || ''));
+              }}
+            />
+          ) : null}
           {canArchive ? (
             <MailCompactMenuItem
               icon={<ArchiveRoundedIcon fontSize="small" />}
@@ -1046,6 +1062,54 @@ function DesktopRowMenu({
   );
 }
 
+// Rows rerender on every list-level state change (pull distance, hover state,
+// other rows' swipe). Memoizing keeps untouched rows out of that render pass.
+// selectedItems/activeSwipeState are compared by membership for this row, so a
+// selection change elsewhere does not force a repaint of the whole list.
+const areMessageRowPropsEqual = (prev, next) => {
+  if (
+    prev.item !== next.item
+    || prev.rowId !== next.rowId
+    || prev.selected !== next.selected
+    || prev.unread !== next.unread
+    || prev.folder !== next.folder
+    || prev.viewMode !== next.viewMode
+    || prev.dragHandleActive !== next.dragHandleActive
+    || prev.menuOpen !== next.menuOpen
+    || prev.density !== next.density
+    || prev.showPreviewSnippets !== next.showPreviewSnippets
+    || prev.isMobile !== next.isMobile
+    || prev.isSearch !== next.isSearch
+    || prev.tokens !== next.tokens
+    || prev.formatTime !== next.formatTime
+    || prev.getAvatarColor !== next.getAvatarColor
+    || prev.getInitials !== next.getInitials
+    || prev.mailboxEmails !== next.mailboxEmails
+    || prev.onOpen !== next.onOpen
+    || prev.onToggleSelected !== next.onToggleSelected
+    || prev.onStartDragItems !== next.onStartDragItems
+    || prev.onMarkRead !== next.onMarkRead
+    || prev.onDelete !== next.onDelete
+    || prev.onRestore !== next.onRestore
+    || prev.onOpenDesktopMenu !== next.onOpenDesktopMenu
+    || prev.onDragHandleHoverChange !== next.onDragHandleHoverChange
+    || prev.onSetActiveSwipeState !== next.onSetActiveSwipeState
+    || prev.onSwipeGestureChange !== next.onSwipeGestureChange
+    || prev.activeSwipeState?.rowId !== next.activeSwipeState?.rowId
+    || prev.activeSwipeState?.side !== next.activeSwipeState?.side
+  ) {
+    return false;
+  }
+  const wasBulkSelected = prev.selectedItems.includes(prev.rowId);
+  const isBulkSelected = next.selectedItems.includes(next.rowId);
+  if (wasBulkSelected !== isBulkSelected) return false;
+  // A bulk-selected row drags the whole selection, so it must see the live array.
+  if (isBulkSelected && prev.selectedItems !== next.selectedItems) return false;
+  return true;
+};
+
+const MemoMessageRow = memo(MessageRow, areMessageRowPropsEqual);
+
 export default function MailMessageList({
   listSx,
   folder = 'inbox',
@@ -1104,6 +1168,14 @@ export default function MailMessageList({
     () => buildMailMonthGroups(listData?.items, viewMode),
     [listData?.items, viewMode],
   );
+  const [renderLimit, setRenderLimit] = useState(MAIL_LIST_RENDER_LIMIT);
+  useEffect(() => {
+    setRenderLimit(MAIL_LIST_RENDER_LIMIT);
+  }, [folder, viewMode, isSearch]);
+  const hiddenRowCount = Math.max(0, groupedListItems.length - renderLimit);
+  const visibleGroupedItems = hiddenRowCount > 0
+    ? groupedListItems.slice(0, renderLimit)
+    : groupedListItems;
 
   const closeActiveSwipe = useCallback(() => {
     setActiveSwipeState({ rowId: '', side: '' });
@@ -1314,7 +1386,7 @@ export default function MailMessageList({
           </Box>
         ) : (
           <>
-            {groupedListItems.map(({ item, monthKey, monthLabel }) => {
+            {visibleGroupedItems.map(({ item, monthKey, monthLabel }) => {
               const rowId = String(
                 viewMode === 'conversations'
                   ? (item.conversation_id || item.id || '')
@@ -1350,7 +1422,7 @@ export default function MailMessageList({
                       </Typography>
                     </Box>
                   ) : null}
-                  <MessageRow
+                  <MemoMessageRow
                   item={item}
                   rowId={rowId}
                   selected={selected}
@@ -1384,6 +1456,18 @@ export default function MailMessageList({
                 </Fragment>
               );
             })}
+
+            {hiddenRowCount > 0 ? (
+              <Box sx={{ px: 1.6, py: 1.6, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.8 }}>
+                <Button
+                  size="small"
+                  onClick={() => setRenderLimit((limit) => limit + MAIL_LIST_RENDER_STEP)}
+                  sx={getMailSurfaceButtonSx(tokens, { px: 1.6 })}
+                >
+                  {`Показать ещё ${Math.min(MAIL_LIST_RENDER_STEP, hiddenRowCount)} (осталось ${hiddenRowCount})`}
+                </Button>
+              </Box>
+            ) : null}
 
             {listData.has_more ? (
               <Box
@@ -1426,10 +1510,12 @@ export default function MailMessageList({
         folder={folder}
         viewMode={viewMode}
         moveTargets={moveTargets}
+        isSelected={Array.isArray(selectedItems) && selectedItems.includes(String(desktopMenuState.item?.id || ''))}
         onClose={handleCloseDesktopMenu}
         onOpen={handleOpenRow}
         onArchive={onArchiveMessage}
         onMove={onMoveMessage}
+        onToggleSelected={viewMode === 'messages' ? onToggleSelectedListItem : undefined}
         onOpenHeaders={onOpenHeaders}
         onDownloadSource={onDownloadSource}
         onPrint={onPrintMessage}

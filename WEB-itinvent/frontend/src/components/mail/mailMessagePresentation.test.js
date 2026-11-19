@@ -68,4 +68,16 @@ describe('mailMessagePresentation', () => {
     expect(quotedSx.fontSize).toBe('0.9rem');
     expect(quotedSx.borderTop).toBe('1px solid');
   });
+
+  it('does not pin descendant iframes: the sandbox frame owns its measured height', () => {
+    const theme = createTheme();
+    const ui = { isDark: true, textPrimary: '#eee', textSecondary: '#999', borderSoft: '#333', actionBg: '#222' };
+    for (const variant of ['message', 'conversation']) {
+      const sx = getMailRenderedContentSx({ ui, theme, variant });
+      const iframeRules = Object.entries(sx).filter(([selector]) => /\biframe\b/.test(selector));
+      for (const [selector, rules] of iframeRules) {
+        expect(rules?.height, `${selector} must not override the measured frame height`).toBeUndefined();
+      }
+    }
+  });
 });

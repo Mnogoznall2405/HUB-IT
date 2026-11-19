@@ -63,6 +63,7 @@ export function NativeWarehouse1CBalancesPanel({
   meta,
   onSearch,
   onRefresh,
+  onResetFilters,
   onOpenMovements,
 }: {
   tokens: FluentTokens;
@@ -83,6 +84,7 @@ export function NativeWarehouse1CBalancesPanel({
   meta: Warehouse1CListMeta | null;
   onSearch: () => void;
   onRefresh: () => void;
+  onResetFilters?: () => void;
   onOpenMovements: (item: Warehouse1CBalance) => void;
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -221,7 +223,10 @@ export function NativeWarehouse1CBalancesPanel({
         onClearNomenclature={onClearNomenclature}
         onClearWarehouse={onClearWarehouse}
         onApply={() => { setFiltersOpen(false); onSearch(); }}
-        onReset={() => { onClearNomenclature(); onClearWarehouse(); onQueryDraft(''); setFiltersOpen(false); }}
+        onReset={() => {
+          if (onResetFilters) { setFiltersOpen(false); onResetFilters(); return; }
+          onClearNomenclature(); onClearWarehouse(); onQueryDraft(''); setFiltersOpen(false);
+        }}
         onClose={() => setFiltersOpen(false)}
       />
     </View>

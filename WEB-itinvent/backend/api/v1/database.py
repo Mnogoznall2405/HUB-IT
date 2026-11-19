@@ -79,6 +79,28 @@ def _get_persisted_user_database(current_user: Optional[User]) -> Optional[str]:
     return normalize_database_id(settings.get("pinned_database"))
 
 
+def _resolve_bound_assigned_db(current_user: Optional[User]) -> Optional[str]:
+    """Return the fixed assigned database binding a non-admin user.
+
+    A non-admin assignment is authoritative only while it resolves to a
+    configured database. A dangling assignment (renamed or removed from the
+    catalog) must fail closed: silently dropping it would let request hints,
+    cookies or persisted selections widen the user to any known database.
+    """
+    if not current_user or current_user.role == "admin":
+        return None
+    raw_assigned = _get_assigned_db(current_user)
+    if not raw_assigned:
+        return None
+    assigned_db = normalize_database_id(raw_assigned)
+    if assigned_db:
+        return assigned_db
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Assigned database '{raw_assigned}' is not configured; contact an administrator",
+    )
+
+
 def resolve_current_database_id(
     current_user: Optional[User],
     *,
@@ -93,8 +115,8 @@ def resolve_current_database_id(
     the persisted server-side value authoritative; explicitly request-scoped
     data endpoints may opt into a validated header before that persisted value.
     """
-    assigned_db = normalize_database_id(_get_assigned_db(current_user))
-    if assigned_db and current_user and current_user.role != "admin":
+    assigned_db = _resolve_bound_assigned_db(current_user)
+    if assigned_db:
         return assigned_db, "assigned"
 
     hint_db = normalize_database_id(request_hint)
@@ -127,8 +149,8 @@ async def get_available_databases(current_user: User = Depends(get_current_activ
     """
     def _build_response() -> list[dict]:
         databases = get_all_db_configs()
-        assigned_db = normalize_database_id(_get_assigned_db(current_user))
-        if assigned_db and current_user and current_user.role != "admin":
+        assigned_db = _resolve_bound_assigned_db(current_user)
+        if assigned_db:
             filtered = [db for db in databases if db["id"] == assigned_db]
             if filtered:
                 return filtered
@@ -198,8 +220,8 @@ async def switch_database(
     if not requested_db or not db_info:
         raise HTTPException(status_code=404, detail="Database not found")
 
-    assigned_db = normalize_database_id(_get_assigned_db(current_user))
-    if assigned_db and current_user and current_user.role != "admin" and requested_db != assigned_db:
+    assigned_db = _resolve_bound_assigned_db(current_user)
+    if assigned_db and requested_db != assigned_db:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Database is fixed for this user: {assigned_db}",

@@ -177,8 +177,11 @@ async function setTokensInternal(accessToken: string, refreshToken: string): Pro
     await setItem(ACCESS_KEY, accessToken);
     await setItem(REFRESH_KEY, refreshToken);
   } catch (error) {
-    // Never leave a half-written pair that could pass for a usable login.
+    // Never leave a half-written pair that could pass for a usable login —
+    // and drop the in-memory mirror, or getAccessToken keeps serving the
+    // stale token the store no longer holds.
     await Promise.allSettled([deleteItem(ACCESS_KEY), deleteItem(REFRESH_KEY)]);
+    accessTokenCache = null;
     throw error;
   }
   notifyAccessTokenChanges(accessToken);

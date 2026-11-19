@@ -9,11 +9,20 @@ const mockActCardRender = jest.fn();
 let mockParams: { mode?: string } = {};
 let mockPermissions = ['database.read'];
 
-jest.mock('expo-router', () => ({
-  router: { push: jest.fn() },
-  useLocalSearchParams: () => mockParams,
-  usePathname: () => '/database',
-}));
+jest.mock('expo-router', () => {
+  const React = require('react');
+  return {
+    router: { push: jest.fn() },
+    useLocalSearchParams: () => mockParams,
+    usePathname: () => '/database',
+    useFocusEffect: (callback: () => void | (() => void)) => {
+      React.useEffect(() => {
+        const cleanup = callback();
+        return typeof cleanup === 'function' ? cleanup : undefined;
+      }, [callback]);
+    },
+  };
+});
 
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({

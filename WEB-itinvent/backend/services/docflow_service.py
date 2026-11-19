@@ -1505,6 +1505,13 @@ class DocflowService:
         user_id: int,
         row: AppDocflowCommand,
     ) -> AppDocflowCommand:
+        # A crashed/abandoned request leaves the row in ``pending`` forever;
+        # expire it to ``state_unknown`` like task commands, then verify the
+        # real 1C state read-only instead of polling ``assignment_state``
+        # against a row that can never leave "pending".
+        row = await self._expire_stale_pending(row)
+        if str(row.status) not in {"pending", "state_unknown"}:
+            return row
         payload = self._assignment_payload_from_row(row)
         process_ref = str(payload.get("process_ref") or "")
         if not process_ref:

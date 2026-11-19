@@ -1879,6 +1879,15 @@ class ScanAgent:
             },
         }
 
+    def _read_ingest_ack(self, response: requests.Response) -> Dict[str, Any]:
+        data = response.json()
+        if not isinstance(data, dict) or data.get("success") is not True:
+            raise ValueError("Missing Scan ingest acknowledgement")
+        self._note_server_queue_from_payload(data)
+        self._last_ingest_ok_at = int(time.time())
+        self._last_error = ""
+        return data
+
     def _send_document_ingest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         raw_b64 = str(payload.get("document_b64") or "").strip()
         if not raw_b64:
@@ -1917,10 +1926,7 @@ class ScanAgent:
             if response.status_code >= 300:
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
                 return {"success": False, "deduped": False, "fallback": False}
-            self._last_ingest_ok_at = int(time.time())
-            self._last_error = ""
-            data = response.json() if response.content else {}
-            self._note_server_queue_from_payload(data if isinstance(data, dict) else {})
+            data = self._read_ingest_ack(response)
             return {"success": True, "deduped": bool((data or {}).get("deduped")), "fallback": False}
         except Exception as exc:
             logging.warning("Document ingest request error: %s", exc)
@@ -1968,17 +1974,12 @@ class ScanAgent:
                 logging.warning("PDF slice ingest failed status=%s body=%s", response.status_code, response.text[:300])
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
                 return {"success": False, "deduped": False, "fallback": False}
-            self._last_ingest_ok_at = int(time.time())
-            self._last_error = ""
-            data = response.json() if response.content else {}
-            if not isinstance(data, dict):
-                data = {}
-            self._note_server_queue_from_payload(data)
+            data = self._read_ingest_ack(response)
             return {"success": True, "deduped": bool(data.get("deduped")), "fallback": False}
         except Exception as exc:
             logging.warning("PDF slice ingest request error: %s", exc)
             self._last_error = f"INGEST_ERR:{type(exc).__name__}"
-            return {"success": False, "deduped": False, "fallback": True}
+            return {"success": False, "deduped": False, "fallback": False}
 
     def _send_ingest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if str(payload.get("document_b64") or "").strip():
@@ -2008,12 +2009,7 @@ class ScanAgent:
                 logging.warning("Ingest failed status=%s body=%s", response.status_code, response.text[:300])
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
                 return {"success": False, "deduped": False}
-            self._last_ingest_ok_at = int(time.time())
-            self._last_error = ""
-            data = response.json() if response.content else {}
-            if not isinstance(data, dict):
-                data = {}
-            self._note_server_queue_from_payload(data)
+            data = self._read_ingest_ack(response)
             return {"success": True, "deduped": bool(data.get("deduped"))}
         except Exception as exc:
             logging.warning("Ingest request error: %s", exc)
@@ -2779,6 +2775,94 @@ class ScanAgent:
             "persisted": persisted,
         }
 
+    def run_rotate_key(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist per-agent API keys to the agent env file and switch this process in-memory.
+
+        The caller reports ``completed`` and then schedules an agent-task restart: the scan
+        sidecar lives inside ITInventAgent.exe, so every module re-reads env only after the
+        process is recycled. The shared env file carries both ``ITINV_AGENT_API_KEY`` and
+        ``SCAN_AGENT_API_KEY`` for the whole agent bundle on the machine.
+        """
+        import agent_installer
+
+        itinv_key = str(payload.get("itinv_api_key") or "").strip()
+        scan_key = str(payload.get("scan_api_key") or "").strip()
+        if not itinv_key and not scan_key:
+            raise ValueError("rotate_key payload must contain itinv_api_key and/or scan_api_key")
+        for field, key in (("itinv_api_key", itinv_key), ("scan_api_key", scan_key)):
+            if key and len(key) < 32:
+                raise ValueError(f"rotate_key: {field} is too short")
+
+        updates: Dict[str, str] = {}
+        if itinv_key:
+            updates["ITINV_AGENT_API_KEY"] = itinv_key
+        if scan_key:
+            updates["SCAN_AGENT_API_KEY"] = scan_key
+
+        install_dir = agent_installer.resolve_install_dir("")
+        explicit_env = str(os.getenv("ITINV_AGENT_ENV_FILE", "") or "").strip()
+        env_file_path = agent_installer.resolve_env_file_path(install_dir, explicit_env)
+        existing = agent_installer.read_runtime_env_map(env_file_path, install_dir)
+        existing.update(updates)
+        agent_installer.upsert_env_file(env_file_path, existing)
+
+        extra_env_paths: List[str] = []
+        scan_env = str(os.getenv("SCAN_AGENT_ENV_FILE", "") or "").strip()
+        if scan_env and scan_key:
+            scan_env_path = Path(scan_env)
+            if scan_env_path != env_file_path:
+                scan_existing = agent_installer.read_env_map(scan_env_path)
+                scan_existing["SCAN_AGENT_API_KEY"] = scan_key
+                agent_installer.upsert_env_file(scan_env_path, scan_existing)
+                extra_env_paths.append(str(scan_env_path))
+
+        for env_name, key in updates.items():
+            os.environ[env_name] = key
+        if scan_key:
+            self.config["api_key"] = scan_key
+            self.session.headers.update({"X-API-Key": scan_key})
+
+        logging.info(
+            "API key rotation persisted env=%s keys=%s", env_file_path, sorted(updates)
+        )
+        return {
+            "phase": "rotated",
+            "persisted": True,
+            "env_file": str(env_file_path),
+            "extra_env_files": extra_env_paths,
+            "keys_updated": sorted(updates),
+        }
+
+    def _schedule_agent_restart(self, delay_sec: int = 8) -> None:
+        """End and re-run the agent scheduled task from a detached PowerShell.
+
+        Gives the task-result POST time to flush before this process is killed; a missing
+        task (dev/manual runs) is a no-op — the in-memory key switch already covers it.
+        """
+        command = (
+            "$ErrorActionPreference='SilentlyContinue'; "
+            f"Start-Sleep -Seconds {int(delay_sec)}; "
+            "$tasks = @('HUB-IT Agent','IT-Invent Agent'); "
+            "foreach ($t in $tasks) { schtasks.exe /End /TN $t | Out-Null }; "
+            "Start-Sleep -Seconds 2; "
+            "foreach ($t in $tasks) { schtasks.exe /Run /TN $t | Out-Null }"
+        )
+        subprocess.Popen(
+            [
+                self._resolve_powershell(),
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                command,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+        )
+
     def run_install_package(self, payload: Dict[str, Any], *, task_id: str = "") -> Dict[str, Any]:
         """Download, verify and silently install a server-approved package; returns the task result."""
         package_id = str(payload.get("package_id") or "").strip().lower()
@@ -2919,6 +3003,18 @@ class ScanAgent:
                     self._task_result(task_id, "completed", result=stats)
                 except Exception as exc:
                     logging.exception("Disable message probes failed task_id=%s", task_id)
+                    self._task_result(task_id, "failed", error_text=str(exc))
+                continue
+
+            if command == "rotate_key":
+                self._task_result(task_id, "acknowledged", result={"phase": "rotating"})
+                try:
+                    stats = self.run_rotate_key(payload)
+                    self._task_result(task_id, "completed", result=stats)
+                    # Reported before the scheduled task recycle kills this process.
+                    self._schedule_agent_restart()
+                except Exception as exc:
+                    logging.exception("Key rotation failed task_id=%s", task_id)
                     self._task_result(task_id, "failed", error_text=str(exc))
                 continue
 

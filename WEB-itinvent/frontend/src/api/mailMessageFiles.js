@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { withMailboxQuery } from './mailMailboxQuery';
 
 const withSignal = (config, signal) => (signal ? { ...config, signal } : config);

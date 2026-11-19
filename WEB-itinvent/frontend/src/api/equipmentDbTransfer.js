@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // Cross-database equipment transfer between ITINVENT databases.
 // Dictionary lookups (owners/branches/locations) point at the *target* DB via

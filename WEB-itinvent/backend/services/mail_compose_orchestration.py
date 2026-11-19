@@ -4,7 +4,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from backend.services.mail_outgoing_html import build_outgoing_html_body
+from backend.services.mail_outgoing_html import (
+    build_outgoing_html_body,
+    plain_text_to_html,
+    signature_html_to_text,
+)
 
 
 class ComposeValidationError(ValueError):
@@ -105,6 +109,13 @@ def resolve_outbound_mailbox_id(
     )
 
 
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def _body_looks_like_html(value: str) -> bool:
+    return bool(_HTML_TAG_RE.search(value))
+
+
 def prepare_outgoing_body(
     *,
     body: Any,
@@ -115,13 +126,18 @@ def prepare_outgoing_body(
     final_body = normalize_text(body)
     normalized_signature = normalize_text(signature)
     if is_html:
+        prepared_body = final_body
+        if prepared_body and not _body_looks_like_html(prepared_body):
+            prepared_body = plain_text_to_html(prepared_body)
         return build_outgoing_html_body(
-            final_body,
+            prepared_body,
             normalized_signature,
             prefer_signature_before_quote=bool(has_reply_or_forward),
         )
     if normalized_signature:
-        return f"{final_body}\n\n{normalized_signature}" if final_body else normalized_signature
+        signature_text = signature_html_to_text(normalized_signature)
+        if signature_text:
+            return f"{final_body}\n\n{signature_text}" if final_body else signature_text
     return final_body
 
 

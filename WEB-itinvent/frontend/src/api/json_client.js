@@ -5,7 +5,7 @@
  * that are shared with the Telegram bot.
  */
 
-import apiClient from './client';
+import apiClient from './http';
 
 /**
  * JSON Operations API methods

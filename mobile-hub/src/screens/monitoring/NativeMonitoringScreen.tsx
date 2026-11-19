@@ -1,17 +1,24 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, BackHandler, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { fetchMonitoringOverview, type MonitoringOverview } from '../../api/monitoringApi';
+import {
+  fetchMonitoringOverview,
+  getMonitoringEvents,
+  type MonitoringEvent,
+  type MonitoringOverview,
+} from '../../api/monitoringApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
-import { NativeFilterChip } from '../../components/ui/NativeFilterControls';
+import { NativeFilterChip, NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import {
   MONITORING_FILTER_OPTIONS,
   MONITORING_REFRESH_MS,
   countMonitoringIssues,
   displayTargetName,
+  eventTone,
   filterMonitoringTargets,
   formatBps,
+  formatDuration,
   formatTime,
   isStale,
   outageNotice,
@@ -21,8 +28,14 @@ import {
 import { useMonitoringActive } from '../../monitoring/useMonitoringActive';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
-import { AccountScreenScaffold } from '../account/AccountChrome';
+import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 import { NativeMonitoringDetail, toneColor } from './NativeMonitoringDetail';
+
+type MonitoringSection = 'targets' | 'events';
+const MONITORING_SECTION_OPTIONS = [
+  { value: 'targets', label: 'Устройства' },
+  { value: 'events', label: 'События' },
+];
 
 export function NativeMonitoringScreen() {
   const { user } = useAuth();
@@ -42,6 +55,9 @@ function MonitoringContent() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<MonitoringFilter>('all');
   const [selectedId, setSelectedId] = useState('');
+  const [section, setSection] = useState<MonitoringSection>('targets');
+  const [events, setEvents] = useState<MonitoringEvent[] | null>(null);
+  const [eventsError, setEventsError] = useState('');
   const generation = useRef(0);
   const abort = useRef<AbortController | null>(null);
   const inFlight = useRef(false);
@@ -58,20 +74,39 @@ function MonitoringContent() {
     const controller = new AbortController();
     abort.current = controller;
     if (!silent) setLoading(true);
+    const withEvents = section === 'events';
     try {
-      const result = await fetchMonitoringOverview({ signal: controller.signal });
+      const [overview, feed] = await Promise.allSettled([
+        fetchMonitoringOverview({ signal: controller.signal }),
+        withEvents ? getMonitoringEvents({ signal: controller.signal }) : Promise.resolve(null),
+      ]);
       if (controller.signal.aborted || current !== generation.current) return;
-      setData(result);
-      setError('');
-      setSelectedId((id) => (id && !result.targets.some((row) => row.id === id) ? '' : id));
-    } catch (cause) {
-      if (controller.signal.aborted || current !== generation.current) return;
-      setError(formatApiError(cause, 'Не удалось загрузить мониторинг'));
+      if (overview.status === 'fulfilled') {
+        const result = overview.value;
+        setData(result);
+        setError('');
+        setSelectedId((id) => (id && !result.targets.some((row) => row.id === id) ? '' : id));
+      } else {
+        setError(formatApiError(overview.reason, 'Не удалось загрузить мониторинг'));
+      }
+      if (withEvents) {
+        if (feed.status === 'fulfilled' && feed.value) {
+          setEvents(feed.value);
+          setEventsError('');
+        } else if (feed.status === 'rejected') {
+          setEventsError(formatApiError(feed.reason, 'Не удалось загрузить события'));
+        }
+      }
     } finally {
       if (current === generation.current) { inFlight.current = false; setLoading(false); setRefreshing(false); }
     }
-  }, [canView, offlineMode]);
+  }, [canView, offlineMode, section]);
   useEffect(() => { loadRef.current = load; }, [load]);
+
+  // The events feed loads lazily on first entry, then rides the same refresh/poll cycle.
+  useEffect(() => {
+    if (section === 'events') void loadRef.current(true);
+  }, [section]);
 
   const active = useMonitoringActive();
   useEffect(() => {
@@ -89,6 +124,11 @@ function MonitoringContent() {
   }, [selectedId]);
 
   const targets = useMemo(() => data?.targets ?? [], [data]);
+  const names = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const target of targets) map[target.id] = displayTargetName(target);
+    return map;
+  }, [targets]);
   const visible = useMemo(() => filterMonitoringTargets(targets, query, filter), [targets, query, filter]);
   const issues = useMemo(() => countMonitoringIssues(targets), [targets]);
   const selected = targets.find((row) => row.id === selectedId) ?? null;
@@ -107,7 +147,7 @@ function MonitoringContent() {
       return <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Автономный режим: мониторинг показывает только живые данные, подключитесь к сети.</Text>;
     }
     if (loading && !data) return <ActivityIndicator testID="native-monitoring-loading" color={tokens.primary} style={styles.loader} />;
-    if (selected) return <NativeMonitoringDetail target={selected} tokens={tokens} />;
+    if (selected) return <NativeMonitoringDetail target={selected} tokens={tokens} canManage={hasPermission('monitoring.manage')} offline={offlineMode} />;
     return (
       <View style={styles.stack}>
         {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{error}</Text> : null}
@@ -119,6 +159,46 @@ function MonitoringContent() {
             Сбор данных задерживается. Последний цикл: {formatTime(worker.heartbeat_at)}.
           </Text>
         ) : null}
+        <NativeSegmentedControl
+          options={MONITORING_SECTION_OPTIONS}
+          selected={section}
+          onSelect={(value) => setSection(value as MonitoringSection)}
+          tokens={tokens}
+          testIDPrefix="native-monitoring-section"
+        />
+        {section === 'events' ? (
+          <AccountSectionCard tokens={tokens} title="История событий">
+            {eventsError ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{eventsError}</Text> : null}
+            {!events && !eventsError ? <ActivityIndicator testID="native-monitoring-events-loading" color={tokens.primary} style={styles.loader} /> : null}
+            {events && !events.length ? (
+              <Text style={[styles.notice, { color: tokens.textSecondary }]}>Событий пока нет. Здесь появятся изменения состояния и предупреждения.</Text>
+            ) : null}
+            {(events ?? []).map((event) => {
+              const color = toneColor(tokens, eventTone(event));
+              return (
+                <View key={event.id} testID={`native-monitoring-feed-event-${event.id}`} style={[styles.eventRow, { borderColor: tokens.borderSoft }]}>
+                  <MaterialCommunityIcons
+                    name={event.closed_at ? 'check-circle-outline' : 'alert-outline'}
+                    size={20}
+                    color={color}
+                  />
+                  <View style={styles.cardMain}>
+                    <Text numberOfLines={2} style={[styles.cardTitle, { color: tokens.textPrimary }]}>{event.title}</Text>
+                    <Text style={[styles.cardMeta, { color: tokens.textSecondary }]}>
+                      {names[event.target_id] || event.target_id}{event.interface_name ? ` · ${event.interface_name}` : ''}
+                      {' · '}{formatTime(event.opened_at)}{event.closed_at ? ` → ${formatTime(event.closed_at)}` : ''}
+                    </Text>
+                  </View>
+                  <Text testID={`native-monitoring-feed-status-${event.id}`} style={[styles.eventBadge, { color }]}>
+                    {event.closed_at ? 'Завершено' : 'Открыто'} · {formatDuration(event.opened_at, event.closed_at || Date.now())}
+                  </Text>
+                </View>
+              );
+            })}
+          </AccountSectionCard>
+        ) : null}
+        {section === 'targets' ? (
+          <>
         <View style={[styles.search, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
           <MaterialCommunityIcons name="magnify" size={20} color={tokens.iconMuted} />
           <TextInput
@@ -195,6 +275,8 @@ function MonitoringContent() {
         {data?.checked_at ? (
           <Text style={[styles.cardMeta, { color: tokens.textTertiary }]}>Сводка обновлена: {formatTime(data.checked_at)}</Text>
         ) : null}
+          </>
+        ) : null}
       </View>
     );
   })();
@@ -225,5 +307,7 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 15, fontWeight: '800' },
   cardMeta: { fontSize: 12, lineHeight: 17, fontWeight: '600' },
   cardStatus: { fontSize: 12, fontWeight: '800' },
+  eventRow: { borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 8 },
+  eventBadge: { flexShrink: 1, maxWidth: '45%', fontSize: 12, lineHeight: 17, fontWeight: '800', textAlign: 'right' },
   dot: { width: 10, height: 10, borderRadius: 5 },
 });

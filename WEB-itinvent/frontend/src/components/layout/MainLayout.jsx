@@ -1,7 +1,7 @@
 /**
  * Main Layout component - AppBar and Sidebar navigation.
  */
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useContext, useMemo, useRef, useCallback } from 'react';
 import { DesktopHandoffSlot } from './DesktopProtocolHandoff';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -161,7 +161,7 @@ import { getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInsta
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { resolveChatMessageNotificationPlan } from '../../lib/chatSocketNotificationPlan';
 import { playChatMessageSound } from '../../lib/chatMessageSound';
-import { MainLayoutShellContext } from './MainLayoutShellContext';
+import { MainLayoutRouteContext, MainLayoutShellContext } from './MainLayoutShellContext';
 import { APP_BRAND_NAME, buildDocumentTitle } from '../../lib/appBranding';
 import {
   isNativeShellBottomNav,
@@ -200,7 +200,7 @@ const MAIL_UNREAD_REFRESH_TTL_MS = 20_000;
 const PUSH_FOREGROUND_NOTIFICATION_EVENT = 'itinvent:push-foreground-notification';
 const CONNECTION_RESTORED_STATUS_MS = 4_200;
 
-function MainLayout({
+export function MainLayoutInner({
   children,
   headerMode = 'default',
   pageTitle,
@@ -209,6 +209,7 @@ function MainLayout({
   mobileBottomNavTransitionMs = 280,
   showDatabaseSelector = false,
   headerInlineContent = null,
+  bare = false,
 }) {
   const theme = useTheme();
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
@@ -235,6 +236,8 @@ function MainLayout({
   ));
   const [accountMenuAnchorEl, setAccountMenuAnchorEl] = useState(null);
   const navigate = useNavigate();
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
   const location = useLocation();
   const { user, logout, hasPermission } = useAuth();
   const { preferences } = usePreferences();
@@ -304,6 +307,7 @@ function MainLayout({
   const hubPollLastWarnAtRef = useRef(0);
   const hubPollSuppressToastsRef = useRef(false);
   const hubPollLastSuccessAtRef = useRef(0);
+  const hubPollInFlightRef = useRef(false);
   const hubRealtimeStableRef = useRef(false);
   const hasSeenHubNotificationRef = useRef(hasSeenHubNotification);
   const markHubNotificationsSeenRef = useRef(markHubNotificationsSeen);
@@ -384,6 +388,9 @@ function MainLayout({
   // Закреплённое меню: полная навигация всегда на экране, в том числе на страницах
   // со встроенной шапкой (там без закрепления — узкая полоса и меню поверх по ☰).
   const pinnedSidebar = !isPhone && sidebarPinned;
+  // Headless chrome applies only when the sidebar is not pinned: a pinned panel
+  // must stay visible (and keep its content offset) on hubBare routes too.
+  const bareShell = bare && !pinnedSidebar;
   const chatPortalRail = (integratedChatHeader || integratedPageHeader) && !pinnedSidebar;
   const effectiveSidebarCollapsed = pinnedSidebar ? false : (sidebarCollapsed || chatPortalRail);
   const isEdgeToEdgeMobileContent = isPhone && contentMode === 'edge-to-edge-mobile';
@@ -435,7 +442,7 @@ function MainLayout({
       setDesktopActionsAvailable(isDesktopCapabilityAvailable('desktop-actions'));
     };
     const handleDesktopSharedFiles = () => {
-      navigate('/my-files');
+      navigateRef.current('/my-files');
     };
     window.addEventListener('keydown', handleShortcut);
     window.addEventListener(DESKTOP_OPEN_COMMAND_PALETTE_EVENT, handleDesktopOpen);
@@ -447,12 +454,12 @@ function MainLayout({
       window.removeEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, handleDesktopCapabilities);
       window.removeEventListener(DESKTOP_SHARED_FILES_EVENT, handleDesktopSharedFiles);
     };
-  }, [navigate]);
+  }, []);
 
   const executeHubCommand = useCallback((command) => {
     setCommandPaletteOpen(false);
     if (typeof command?.route === 'string' && command.route.startsWith('/')) {
-      navigate(command.route);
+      navigateRef.current?.(command.route);
       return;
     }
 
@@ -468,7 +475,7 @@ function MainLayout({
     if (!accepted) {
       notifyWarning('Команда HUB Desktop сейчас недоступна');
     }
-  }, [navigate, notifyWarning]);
+  }, [notifyWarning]);
   const mainNavigationItems = useMemo(
     () => visibleNavigationItems.filter((item) => item.group === 'main'),
     [visibleNavigationItems],
@@ -840,11 +847,11 @@ function MainLayout({
       if (delivery === 'system') {
         createMailSystemNotification(
           { ...item, folder: String(item?.folder || 'inbox') },
-          { onNavigate: (target) => navigate(target) },
+          { onNavigate: (target) => navigateRef.current?.(target) },
         );
       }
     });
-  }, [hasMailPermission, navigate, rememberRecentMailNotification]);
+  }, [hasMailPermission, rememberRecentMailNotification]);
 
   useEffect(() => {
     chatUnreadSummaryRef.current = {
@@ -890,11 +897,16 @@ function MainLayout({
         messages_unread_total: messagesUnreadTotal,
         conversations_unread: conversationsUnread,
       };
-      setUnreadCounts((prev) => ({
-        ...prev,
-        chat_messages_unread_total: messagesUnreadTotal,
-        chat_conversations_unread: conversationsUnread,
-      }));
+      setUnreadCounts((prev) => (
+        prev.chat_messages_unread_total === messagesUnreadTotal
+          && prev.chat_conversations_unread === conversationsUnread
+          ? prev
+          : {
+            ...prev,
+            chat_messages_unread_total: messagesUnreadTotal,
+            chat_conversations_unread: conversationsUnread,
+          }
+      ));
     };
 
     window.addEventListener(CHAT_SOCKET_UNREAD_SUMMARY_EVENT, handleUnreadSummary);
@@ -987,7 +999,7 @@ function MainLayout({
       if (plan.system) {
         createChatSystemNotification({
           ...plan.system,
-          onNavigate: (target) => navigate(target || plan.system.navigateTo),
+          onNavigate: (target) => navigateRef.current?.(target || plan.system.navigateTo),
         });
       }
     };
@@ -1004,21 +1016,20 @@ function MainLayout({
     isMobileChatRoute,
     isTaskDiscussionRoute,
     location.pathname,
-    navigate,
     user?.id,
   ]);
 useEffect(() => {
   const handleToastActionExecute = (event) => {
     const action = normalizeToastAction(event?.detail);
     if (!action || action.kind !== 'navigate') return;
-    navigate(action.to);
+    navigateRef.current?.(action.to);
   };
 
   window.addEventListener(TOAST_ACTION_EXECUTE_EVENT, handleToastActionExecute);
   return () => {
     window.removeEventListener(TOAST_ACTION_EXECUTE_EVENT, handleToastActionExecute);
   };
-}, [navigate]);
+}, []);
 
   const toggleSidebarPinned = useCallback(() => {
     setSidebarPinned((current) => {
@@ -1045,6 +1056,13 @@ useEffect(() => {
     window.addEventListener('open-sidebar', handleOpenSidebar);
     return () => window.removeEventListener('open-sidebar', handleOpenSidebar);
   }, []);
+
+  // FEA-019: любая смена маршрута закрывает оверлейные панели — переход может
+  // прийти не из пунктов меню (ссылка, back-кнопка, тост, поиск).
+  useEffect(() => {
+    setDrawerOpen(false);
+    setNotificationsOpen(false);
+  }, [location.pathname]);
 
   useEffect(() => {
     const fetchDatabases = async () => {
@@ -1251,7 +1269,11 @@ useEffect(() => {
             notifyInfoRef.current?.(deltaToast.message, deltaToast.options);
           }
         }
-        setUnreadCounts(nextCounts);
+        setUnreadCounts((previous) => (
+          Object.keys(nextCounts).length === Object.keys(previous).length
+            && Object.keys(nextCounts).every((key) => Object.is(previous[key], nextCounts[key]))
+            ? previous : nextCounts
+        ));
       } catch (error) {
         console.error('Hub unread counts error:', error);
       }
@@ -1404,6 +1426,10 @@ useEffect(() => {
         return;
       }
       if (!ignoreBackoff && Date.now() < Number(hubPollBackoffUntilRef.current || 0)) return;
+      // Hub-poll может висеть дольше интервала 20с — без guard тик, visibility
+      // и hub-refresh накладывают запросы друг на друга.
+      if (hubPollInFlightRef.current) return;
+      hubPollInFlightRef.current = true;
       try {
         const sinceValue = forceFull ? '' : String(lastPollRef.current || '').trim();
         const response = await apiClient.get('/hub/notifications/poll', {
@@ -1488,7 +1514,7 @@ useEffect(() => {
                 }
                 if (shouldShowSystemNotifications) {
                   createHubSystemNotification(item, {
-                    onNavigate: (target) => navigate(target),
+                    onNavigate: (target) => navigateRef.current?.(target),
                   });
                   // R16: /sounds/notification.mp3 never existed in public/ —
                   // reuse the chat message sound under the same toggle.
@@ -1529,6 +1555,8 @@ useEffect(() => {
           return;
         }
         console.error('Hub notifications poll error:', error);
+      } finally {
+        hubPollInFlightRef.current = false;
       }
     };
 
@@ -1630,7 +1658,6 @@ useEffect(() => {
     hasHubNotificationPermission,
     hasMailPermission,
     refreshBellInbox,
-    navigate,
   ]);
 
   useEffect(() => {
@@ -1788,30 +1815,32 @@ useEffect(() => {
     }
   };
 
-  const handleOpenNotification = async (item) => {
+  const handleOpenNotification = (item) => {
     if (!item) return;
     if (Number(item?.unread || 0) === 1) {
-      await handleMarkNotificationRead(item?.id);
+      void handleMarkNotificationRead(item?.id);
     }
     setNotificationsOpen(false);
     navigate(getHubNotificationNavigateTo(item));
   };
 
-  const handleOpenMailNotification = async (item) => {
+  const handleOpenMailNotification = (item) => {
     const messageId = String(item?.id || '').trim();
     const mailboxId = String(item?.mailbox_id || '').trim();
     if (!messageId) return;
-    try {
-      if (!item?.is_read) {
-        await mailAPI.markAsRead(messageId, mailboxId);
-        window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
-        await Promise.all([
-          refreshBellInboxRef.current?.(),
-          fetchUnreadCountsRef.current?.(),
-        ]);
-      }
-    } catch (error) {
-      console.error('Mark mail notification read failed:', error);
+    if (!item?.is_read) {
+      void (async () => {
+        try {
+          await mailAPI.markAsRead(messageId, mailboxId);
+          window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
+          await Promise.all([
+            refreshBellInboxRef.current?.(),
+            fetchUnreadCountsRef.current?.(),
+          ]);
+        } catch (error) {
+          console.error('Mark mail notification read failed:', error);
+        }
+      })();
     }
     setNotificationsOpen(false);
     const routeParts = [
@@ -1895,7 +1924,7 @@ useEffect(() => {
     }, { replace: true });
   }, [handleOpenNotifications, location.pathname, location.search, navigate]);
 
-  const handleDatabaseChange = async (event) => {
+  const handleDatabaseChange = useCallback(async (event) => {
     if (dbLocked) return;
     const newDbId = normalizeDbId(event.target.value);
     const selectedDb = databases.find((db) => normalizeDbId(db.id) === newDbId);
@@ -1914,7 +1943,7 @@ useEffect(() => {
         });
       }
     }
-  };
+  }, [currentDb?.id, databases, dbLocked, notifyApiError]);
 
   const isItemActive = (path, candidatePath = location.pathname) => {
     return isNavigationItemActive(path, candidatePath);
@@ -2023,6 +2052,8 @@ useEffect(() => {
         data-testid={`main-layout-sidebar-${item.path.replace(/^\//, '')}`}
         selected={selected}
         onClick={() => handleNavigation(item)}
+        onMouseEnter={() => { if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {}); }}
+        onFocus={() => { if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {}); }}
         sx={{
           minHeight: compact ? 46 : { xs: 44, sm: 'var(--app-density-sidebar-item-min-height)' },
           px: compact ? 0 : { xs: 1.35, sm: 'var(--app-density-sidebar-item-px)' },
@@ -2262,12 +2293,12 @@ useEffect(() => {
   );
 
   const shellValue = useMemo(() => ({
-    headerMode: integratedChatHeader || integratedPageHeader ? 'hidden' : headerMode,
+    headerMode: bare ? 'hidden' : (integratedChatHeader || integratedPageHeader ? 'hidden' : headerMode),
     drawerOpen,
     openDrawer: () => setDrawerOpen(true),
     closeDrawer: () => setDrawerOpen(false),
     toggleDrawer: () => setDrawerOpen((current) => !current),
-    sidebarPinned: pinnedSidebar,
+    sidebarPinned: bareShell ? false : pinnedSidebar,
     toggleSidebarPinned,
     openNotifications: handleOpenNotifications,
     notificationsBadgeValue,
@@ -2296,6 +2327,8 @@ useEffect(() => {
     showDatabaseSelector,
     showNotificationsButton,
     toggleSidebarPinned,
+    bare,
+    bareShell,
   ]);
   const shouldReserveMobileSafeArea = (
     isPhone
@@ -2368,7 +2401,7 @@ useEffect(() => {
           top: 'var(--app-shell-safe-top-offset)',
           // Same offset as the AppBar: on sm+ the permanent Drawer sits above
           // this layer and would otherwise cover the banner's start.
-          left: { xs: 0, sm: effectiveSidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
+          left: { xs: 0, sm: bareShell ? 0 : (effectiveSidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR) },
           right: 0,
           transition: (theme) => theme.transitions.create('left', {
             duration: theme.transitions.duration.standard,
@@ -2487,7 +2520,7 @@ useEffect(() => {
       </Stack>
 
       {/* AppBar */}
-        {!hiddenHeader ? (
+        {!bare && !hiddenHeader ? (
           <AppBar
             ref={appBarRef}
             data-testid="main-layout-app-bar"
@@ -2771,6 +2804,21 @@ useEffect(() => {
         ) : null}
 
       {/* Sidebar Drawer */}
+      {bareShell ? (
+        // Headless shell: no permanent rail, but the portal menu still opens as
+        // a temporary overlay so the ☰ control on bare pages keeps working.
+        <Drawer
+          variant="temporary"
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          ModalProps={{ keepMounted: true }}
+          sx={{
+            '& .MuiDrawer-paper': { '--dialog-safe-top': '0px', boxSizing: 'border-box', width: DRAWER_WIDTH_CSS_VAR, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
+          }}
+        >
+          {renderDrawerContent({ compact: false, instanceKey: 'bare' })}
+        </Drawer>
+      ) : (
       <Box
         component="nav"
         sx={{
@@ -2837,6 +2885,7 @@ useEffect(() => {
           </Drawer>
         ) : null}
       </Box>
+      )}
 
       <AccountMenu
         anchorEl={accountMenuAnchorEl}
@@ -2861,23 +2910,23 @@ useEffect(() => {
           display: isFixedHeightRoute ? 'flex' : 'block',
           flexDirection: isFixedHeightRoute ? 'column' : undefined,
           overflow: isFixedHeightRoute ? 'hidden' : 'visible',
-          px: {
+          px: bare ? 0 : {
             // Д1: страница чата идёт вровень с краями области контента на всех ширинах.
             xs: (isChatRoute || isEdgeToEdgeContent) ? 0 : 2,
             sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
-          pb: {
+          pb: bare ? 0 : {
             xs: hasMobileBottomNavigation
               ? (mobileBottomNavHidden ? 0 : 'var(--app-shell-mobile-bottom-nav-height)')
               : ((isChatRoute || isEdgeToEdgeContent) ? 0 : 2),
             sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
-          pt: {
+          pt: bare ? 0 : {
             xs: (isChatRoute || isEdgeToEdgeContent) ? 0 : 2,
             sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
-          bgcolor: (isChatRoute || isEdgeToEdgeMobileContent) ? 'transparent' : ui.pageBg,
-          width: {
+          bgcolor: (bare || isChatRoute || isEdgeToEdgeMobileContent) ? 'transparent' : ui.pageBg,
+          width: bareShell ? '100%' : {
             xs: '100%',
             sm: effectiveSidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})`
           },
@@ -3246,4 +3295,41 @@ useEffect(() => {
   );
 }
 
-export default MainLayout;
+export default function MainLayout(props) {
+  const routeShell = useContext(MainLayoutRouteContext);
+  const {
+    headerMode,
+    pageTitle,
+    contentMode,
+    mobileBottomNavMode,
+    mobileBottomNavTransitionMs,
+    showDatabaseSelector,
+    headerInlineContent,
+    children,
+  } = props;
+  useLayoutEffect(() => {
+    if (!routeShell) return undefined;
+    const shellProps = {
+      headerMode,
+      pageTitle,
+      contentMode,
+      mobileBottomNavMode,
+      mobileBottomNavTransitionMs,
+      showDatabaseSelector,
+      headerInlineContent,
+    };
+    routeShell.register(shellProps);
+    return () => routeShell.unregister(shellProps);
+  }, [
+    routeShell,
+    headerMode,
+    pageTitle,
+    contentMode,
+    mobileBottomNavMode,
+    mobileBottomNavTransitionMs,
+    showDatabaseSelector,
+    headerInlineContent,
+  ]);
+  if (routeShell) return children;
+  return <MainLayoutInner {...props} />;
+}

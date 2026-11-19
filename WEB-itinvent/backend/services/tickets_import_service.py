@@ -32,6 +32,7 @@ from backend.appdb.tickets_models import (
     TicketObject,
     TicketRequest,
 )
+from backend.utils.upload_limits import assert_xlsx_uncompressed_size
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +298,7 @@ class TicketsImportService:
 
     def open_workbook(self, path: str) -> Workbook:
         """Open workbook in full reading mode."""
+        assert_xlsx_uncompressed_size(path)
         return openpyxl.load_workbook(path, read_only=False, data_only=False)
 
     def get_preview(self, job_id: str) -> ImportPreview:

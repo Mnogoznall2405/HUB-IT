@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Callable
 from xml.etree import ElementTree as ET
 
+from backend.utils.upload_limits import assert_xlsx_uncompressed_size
+
 try:
     import fitz  # type: ignore
 except Exception:  # pragma: no cover
@@ -348,6 +350,10 @@ def _extract_pptx_text(path: Path, *, image_extractor: TextExtractor | None = No
 
 
 def _extract_xlsx_text(path: Path) -> str:
+    try:
+        assert_xlsx_uncompressed_size(path)
+    except Exception:
+        return ""
     if load_workbook is not None:
         try:
             workbook = load_workbook(str(path), read_only=True, data_only=True)

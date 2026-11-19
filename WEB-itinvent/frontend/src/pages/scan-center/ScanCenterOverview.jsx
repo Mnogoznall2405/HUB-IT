@@ -14,16 +14,14 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import {
-  ArrowForwardRounded as ArrowForwardRoundedIcon,
-  CheckCircleOutline as CheckCircleOutlineIcon,
-  ErrorOutline as ErrorOutlineIcon,
-  ExpandMore as ExpandMoreIcon,
-  GppMaybeOutlined as GppMaybeOutlinedIcon,
-  PeopleAltOutlined as PeopleAltOutlinedIcon,
-  ScheduleOutlined as ScheduleOutlinedIcon,
-  SystemUpdateAlt as SystemUpdateAltIcon,
-} from '@mui/icons-material';
+import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import GppMaybeOutlinedIcon from '@mui/icons-material/GppMaybeOutlined';
+import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
+import ScheduleOutlinedIcon from '@mui/icons-material/ScheduleOutlined';
+import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
 import { friendlyScanReason } from './scanReasonLabels';
 
 function formatDurationMs(value) {

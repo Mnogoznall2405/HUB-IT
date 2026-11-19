@@ -161,6 +161,66 @@ $rows=@(
     assert payload["EffectivePids"] == [11, 20, 30, 40, 41]
 
 
+@pytest.mark.parametrize("listener,parent_time,reused_after_stop,expected", [
+    (10, "01:00:00", False, True),
+    (11, "01:00:00", False, True),
+    (20, "01:00:00", False, False),
+    (11, "02:00:00", False, False),
+    (11, "01:00:00", True, False),
+])
+def test_chat_rolling_restart_verifies_listener_family_before_stopping(
+    tmp_path, listener, parent_time, reused_after_stop, expected
+):
+    script = tmp_path / "chat-stop.ps1"
+    script.write_text(f"""
+$ErrorActionPreference='Stop'
+. '{ROOT / 'scripts/pm2/runtime-operations.ps1'}'
+$tokens=$null; $parseErrors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile('{ROOT / 'scripts/pm2/restart-chat-scale.ps1'}',[ref]$tokens,[ref]$parseErrors)
+$definition=$ast.Find({{param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Stop-ChatNodeForRestart'}},$true)
+Invoke-Expression $definition.Extent.Text
+$script:actions=@(); $script:portProbes=0; $script:stopped=$false
+function Invoke-HubitPm2 {{
+ param($Pm2Command,$Arguments,$TimeoutSeconds)
+ if ($Arguments[0] -eq 'jlist') {{
+  return [pscustomobject]@{{ExitCode=0;Output='[{{"name":"itinvent-chat-a","pid":10,"pm2_env":{{"status":"online"}}}}]'}}
+ }}
+ $script:actions += $Arguments[0]
+ if ($Arguments[0] -eq 'stop') {{ $script:stopped=$true }}
+ return [pscustomobject]@{{ExitCode=0;Output='ok'}}
+}}
+function Get-PortListenerPids {{
+ param($ListenPort)
+ $script:portProbes++
+ if ($script:portProbes -le 2) {{ return @({listener}) }}
+ return @()
+}}
+function Get-CimInstance {{
+ [pscustomobject]@{{ProcessId=10;ParentProcessId=1;CreationDate=[datetime]'2026-11-10T{parent_time}'}}
+ $created=[datetime]'2026-11-10T01:00:01'
+ if ($script:stopped -and ${str(reused_after_stop).lower()}) {{ $created=$created.AddHours(3) }}
+ [pscustomobject]@{{ProcessId=11;ParentProcessId=10;CreationDate=$created}}
+ [pscustomobject]@{{ProcessId=20;ParentProcessId=1;CreationDate=[datetime]'2026-11-10T01:00:01'}}
+}}
+function Start-Sleep {{ param($Seconds) }}
+function taskkill {{ $script:actions += 'kill' }}
+function Write-Host {{ param($Object,$ForegroundColor) }}
+$ok=$false
+try {{ Stop-ChatNodeForRestart -Pm2Command 'isolated' -Name 'itinvent-chat-a' -Port 8002; $ok=$true }} catch {{ }}
+[pscustomobject]@{{Success=$ok;Actions=@($script:actions)}} | ConvertTo-Json -Compress
+""", encoding="utf-8-sig")
+    result = run_ps(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["Success"] is expected
+    if expected:
+        assert payload["Actions"] == ["stop", "kill", "delete"]
+    elif reused_after_stop:
+        assert payload["Actions"] == ["stop"]
+    else:
+        assert payload["Actions"] == []
+
+
 @pytest.mark.parametrize("listener,parent_created,expected", [
     (10, "01:00:00", True),
     (11, "01:00:00", True),

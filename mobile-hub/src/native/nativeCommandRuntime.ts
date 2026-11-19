@@ -11,13 +11,15 @@ import {
 } from '../cache/nativeSnapshotInventory';
 import {
   clearDiagnosticEvents,
-  getDiagnosticEventCount,
+  getDiagnosticEvents,
   getReleaseHealthSnapshot,
   shareDiagnosticReport,
 } from '../diagnostics/diagnostics';
 import { getChatSendTimingSummary } from '../diagnostics/chatSendTiming';
 import { getUiTimingSummary } from '../diagnostics/uiTiming';
+import { getApiInflightSummary } from '../diagnostics/apiInflight';
 import { getAndroidProcessHealthSnapshot } from '../diagnostics/androidProcessHealth';
+import { buildDiagnosticSummary } from '../diagnostics/diagnosticSummary';
 import {
   clearNativeDatabaseFileCache,
   getNativeDatabaseFileCacheSize,
@@ -57,6 +59,8 @@ import { shareNativeText } from '../share/nativeOutgoingShare';
 import { openAndroidBackgroundSettings } from '../system/androidBackgroundSettings';
 import { clearNativeTaskFileCache, getNativeTaskFileCacheSize } from '../tasks/nativeTaskFiles';
 import { clearNativeImageCache } from '../files/nativeImageCache';
+import { clearNativeKbCache, getNativeKbCacheSize } from '../help/nativeKbFiles';
+import { clearNativeWarehouse1cCache, getNativeWarehouse1cCacheSize } from '../warehouse1c/nativeWarehouse1cFiles';
 import type { MobileUpdateFeed } from '../updates/mobileUpdate';
 import type { MobileUpdaterState } from '../updates/useMobileUpdater';
 import type { NativeCommandName } from './nativeCommandContract';
@@ -127,7 +131,9 @@ async function getOfflineState(user: HubUser | null) {
       + getNativeMyFilesCacheSize()
       + getNativeDocflowCacheSize()
       + getNativeFeedFileCacheSize()
-      + getNativeDatabaseFileCacheSize(),
+      + getNativeDatabaseFileCacheSize()
+      + getNativeKbCacheSize()
+      + getNativeWarehouse1cCacheSize(),
     snapshotReady: snapshots.ready,
     snapshotScopes: snapshots.scopes,
     snapshotMissingScopes: snapshots.missingScopes,
@@ -138,19 +144,33 @@ async function getOfflineState(user: HubUser | null) {
 }
 
 async function getDiagnosticsState(user: HubUser | null) {
-  const [eventCount, releaseHealth, processHealth, offline] = await Promise.all([
-    getDiagnosticEventCount(),
-    getReleaseHealthSnapshot(),
-    getAndroidProcessHealthSnapshot(),
+  const releaseHealthPromise = getReleaseHealthSnapshot();
+  const [events, releaseHealth, processHealth, offline] = await Promise.all([
+    getDiagnosticEvents(),
+    releaseHealthPromise,
+    // The build boundary scopes the exit-history window — the same inputs the
+    // shareable report uses, so the screen and the export cannot disagree.
+    releaseHealthPromise.then((release) => getAndroidProcessHealthSnapshot(release.currentBuildFirstSeenAt)),
     getOfflineState(user),
   ]);
+  const eventCount = events.length;
   const pendingReplies = Number(offline.pendingReplies || 0);
   const pendingCommands = Number(offline.pendingCommands || 0);
+  const chatSendTiming = getChatSendTimingSummary();
+  const uiTiming = getUiTimingSummary();
   return {
     eventCount,
     processHealth,
-    chatSendTiming: getChatSendTimingSummary(),
-    uiTiming: getUiTimingSummary(),
+    chatSendTiming,
+    uiTiming,
+    summary: buildDiagnosticSummary({
+      releaseHealth,
+      androidProcessHealth: processHealth,
+      chatSendTiming,
+      uiTiming,
+      apiInflight: getApiInflightSummary(),
+      events,
+    }),
     releaseHealth: {
       ...releaseHealth,
       queueDepth: {
@@ -250,6 +270,8 @@ export async function executeNativeCommand(
       clearNativeDocflowCache();
       clearNativeFeedFileCache();
       clearNativeDatabaseFileCache();
+      clearNativeKbCache();
+      clearNativeWarehouse1cCache();
       return getOfflineState(user);
     case 'network.getState':
       if (Object.keys(payload).length > 0) throw new Error('Invalid network state payload');

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as ScreenCapture from 'expo-screen-capture';
-import { AppState, type AppStateStatus } from 'react-native';
+import { Alert, AppState, type AppStateStatus } from 'react-native';
 import * as passwordsApi from '../../api/passwordsApi';
 import { unlockBiometricLogin } from '../../auth/biometricAuth';
 import { NativePasswordsScreen } from './NativePasswordsScreen';
@@ -9,11 +9,12 @@ import { NativePasswordsScreen } from './NativePasswordsScreen';
 let mockPermissions = ['passwords.read', 'passwords.write'];
 let mockOfflineMode = false;
 let mockUserId = 7;
+let mockUserRole = 'operator';
 let mockBiometricEnabled = true;
 
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: mockUserId, role: 'operator', is_2fa_enabled: true },
+    user: { id: mockUserId, role: mockUserRole, is_2fa_enabled: true },
     biometricEnabled: mockBiometricEnabled,
     offlineMode: mockOfflineMode,
     hasPermission: (permission: string) => mockPermissions.includes(permission),
@@ -27,7 +28,24 @@ jest.mock('../../api/passwordsApi', () => ({
   unlockPasswordVaultWithBiometrics: jest.fn(),
   revealPasswordVaultEntry: jest.fn(),
   updatePasswordVaultEntry: jest.fn(),
+  createPasswordVaultEntry: jest.fn(),
+  archivePasswordVaultEntry: jest.fn(),
+  listPasswordVaultGroups: jest.fn(),
+  createPasswordVaultGroup: jest.fn(),
+  updatePasswordVaultGroup: jest.fn(),
+  archivePasswordVaultGroup: jest.fn(),
 }));
+jest.mock('expo-crypto', () => {
+  const actual = jest.requireActual('expo-crypto');
+  return {
+    ...actual,
+    getRandomBytesAsync: jest.fn(async (count: number) => {
+      const bytes = new Uint8Array(count);
+      for (let index = 0; index < count; index += 1) bytes[index] = (index * 31 + 17) % 256;
+      return bytes;
+    }),
+  };
+});
 jest.mock('../../auth/biometricAuth', () => ({ unlockBiometricLogin: jest.fn() }));
 jest.mock('expo-screen-capture', () => ({
   preventScreenCaptureAsync: jest.fn(async () => undefined),
@@ -53,10 +71,21 @@ beforeEach(() => {
   mockPermissions = ['passwords.read', 'passwords.write'];
   mockOfflineMode = false;
   mockUserId = 7;
+  mockUserRole = 'operator';
   mockBiometricEnabled = true;
   (passwordsApi.listPasswordVaultEntries as jest.Mock).mockResolvedValue({
     items: [entry], groups: ['Серверы'], tags: ['prod'], unlocked_until: '',
   });
+  (passwordsApi.listPasswordVaultGroups as jest.Mock).mockResolvedValue([
+    { id: 'group-1', name: 'Серверы', sort_order: 0, is_active: true },
+  ]);
+  (passwordsApi.createPasswordVaultEntry as jest.Mock).mockResolvedValue({
+    ...entry, id: 'entry-new', login: 'new-login',
+  });
+  (passwordsApi.archivePasswordVaultEntry as jest.Mock).mockResolvedValue({ ...entry, is_archived: true });
+  (passwordsApi.createPasswordVaultGroup as jest.Mock).mockResolvedValue({ id: 'group-2', name: 'Кассы', sort_order: 1, is_active: true });
+  (passwordsApi.updatePasswordVaultGroup as jest.Mock).mockResolvedValue({ id: 'group-1', name: 'Серверы-2', sort_order: 0, is_active: true });
+  (passwordsApi.archivePasswordVaultGroup as jest.Mock).mockResolvedValue({ id: 'group-1', name: 'Серверы-2', sort_order: 0, is_active: false });
   (unlockBiometricLogin as jest.Mock).mockResolvedValue({
     version: 2,
     user: { id: 7 },
@@ -268,5 +297,157 @@ it.each(['user', 'write-permission'])('rejects a late copy response after changi
   await act(async () => { finish({ password: 'synthetic-late-value', unlocked_until: new Date(Date.now() + 300000).toISOString() }); });
   expect(Clipboard.setStringAsync).not.toHaveBeenCalled();
   expect(view.queryByTestId('native-passwords-secret')).toBeNull();
+  await view.unmount();
+});
+
+it('creates an entry with the exact payload, then closes the editor and refreshes', async () => {
+  const view = await render(<NativePasswordsScreen />);
+  await waitFor(() => expect(view.getByTestId('native-password-entry-entry-1')).toBeTruthy());
+
+  await fireEvent.press(view.getByTestId('native-passwords-create'));
+  await waitFor(() => expect(view.getByTestId('native-passwords-edit-login')).toBeTruthy());
+  expect(view.getByText('Новая запись')).toBeTruthy();
+
+  // Web parity: group + login + password are required — empty save is blocked locally.
+  await fireEvent.press(view.getByText('Сохранить'));
+  expect(passwordsApi.createPasswordVaultEntry).not.toHaveBeenCalled();
+  expect(view.getAllByText('Заполните группу, логин и пароль.').length).toBeGreaterThan(0);
+
+  await fireEvent.press(view.getByTestId('native-passwords-edit-group-Серверы'));
+  await fireEvent.changeText(view.getByTestId('native-passwords-edit-login'), 'new-login');
+  await fireEvent.changeText(view.getByTestId('native-passwords-edit-tags'), '#prod, vpn');
+  await fireEvent.changeText(view.getByTestId('native-passwords-edit-description'), 'Резервный доступ');
+  await fireEvent.changeText(view.getByTestId('native-passwords-edit-password'), 's3cret');
+  await fireEvent.press(view.getByText('Сохранить'));
+
+  await waitFor(() => expect(passwordsApi.createPasswordVaultEntry).toHaveBeenCalledWith({
+    group: 'Серверы',
+    tags: ['prod', 'vpn'],
+    login: 'new-login',
+    description: 'Резервный доступ',
+    password: 's3cret',
+  }));
+  await waitFor(() => expect(view.getByText('Запись создана.')).toBeTruthy());
+  expect(view.queryByTestId('native-passwords-edit-login')).toBeNull();
+  expect(passwordsApi.listPasswordVaultEntries).toHaveBeenCalledTimes(2);
+  // Creation must not unlock the vault or touch biometric credentials.
+  expect(unlockBiometricLogin).not.toHaveBeenCalled();
+  expect(passwordsApi.unlockPasswordVaultWithBiometrics).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it('keeps the create save button single-flight while the request is in flight', async () => {
+  let finish!: (value: unknown) => void;
+  (passwordsApi.createPasswordVaultEntry as jest.Mock).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const view = await render(<NativePasswordsScreen />);
+  await waitFor(() => expect(view.getByTestId('native-passwords-create')).toBeTruthy());
+
+  await fireEvent.press(view.getByTestId('native-passwords-create'));
+  await fireEvent.press(view.getByTestId('native-passwords-edit-group-Серверы'));
+  await fireEvent.changeText(view.getByTestId('native-passwords-edit-login'), 'new-login');
+  await fireEvent.changeText(view.getByTestId('native-passwords-edit-password'), 's3cret');
+  await fireEvent.press(view.getByTestId('native-passwords-save'));
+  await fireEvent.press(view.getByTestId('native-passwords-save'));
+
+  expect(passwordsApi.createPasswordVaultEntry).toHaveBeenCalledTimes(1);
+  await act(async () => { finish({ ...entry, id: 'entry-new' }); });
+  await view.unmount();
+});
+
+it('generates a password into the draft field and reveals it', async () => {
+  const view = await render(<NativePasswordsScreen />);
+  await waitFor(() => expect(view.getByTestId('native-passwords-create')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-passwords-create'));
+  await waitFor(() => expect(view.getByTestId('native-passwords-generate-password')).toBeTruthy());
+
+  await fireEvent.press(view.getByTestId('native-passwords-generate-password'));
+
+  await waitFor(() => {
+    const input = view.getByTestId('native-passwords-edit-password');
+    expect(input.props.value).toHaveLength(20);
+  });
+  const input = view.getByTestId('native-passwords-edit-password');
+  expect(input.props.secureTextEntry).toBe(false);
+  await view.unmount();
+});
+
+it('archives an entry only after explicit confirmation and refreshes the list', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const view = await render(<NativePasswordsScreen />);
+  await waitFor(() => expect(view.getByTestId('native-password-entry-entry-1')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-password-entry-entry-1'));
+  await waitFor(() => expect(view.getByTestId('native-passwords-archive')).toBeTruthy());
+
+  await fireEvent.press(view.getByTestId('native-passwords-archive'));
+  expect(alert).toHaveBeenCalledWith('Архивировать пароль', 'Архивировать пароль для administrator?', expect.any(Array));
+  expect(passwordsApi.archivePasswordVaultEntry).not.toHaveBeenCalled();
+
+  await act(async () => {
+    alert.mock.calls[0]?.[2]?.find((button) => button.style === 'destructive')?.onPress?.();
+  });
+  await waitFor(() => expect(passwordsApi.archivePasswordVaultEntry).toHaveBeenCalledWith('entry-1'));
+  await waitFor(() => expect(view.getByText('Запись перенесена в архив.')).toBeTruthy());
+  expect(view.queryByTestId('native-passwords-archive')).toBeNull();
+  expect(passwordsApi.listPasswordVaultEntries).toHaveBeenCalledTimes(2);
+  alert.mockRestore();
+  await view.unmount();
+});
+
+it('hides create and archive actions without passwords.write', async () => {
+  mockPermissions = ['passwords.read'];
+  const view = await render(<NativePasswordsScreen />);
+  await waitFor(() => expect(view.getByTestId('native-password-entry-entry-1')).toBeTruthy());
+  expect(view.queryByTestId('native-passwords-create')).toBeNull();
+  await fireEvent.press(view.getByTestId('native-password-entry-entry-1'));
+  expect(view.queryByTestId('native-passwords-archive')).toBeNull();
+  expect(view.queryByText('Редактировать')).toBeNull();
+  await view.unmount();
+});
+
+it('keeps create disabled and archive hidden while offline', async () => {
+  mockOfflineMode = true;
+  const view = await render(<NativePasswordsScreen />);
+  await waitFor(() => expect(view.getByText(/Автономный режим/)).toBeTruthy());
+  const create = view.getByTestId('native-passwords-create');
+  expect(create.props.accessibilityState.disabled).toBe(true);
+  await view.unmount();
+});
+
+it('lets an admin create, rename and archive vault groups', async () => {
+  mockUserRole = 'admin';
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const view = await render(<NativePasswordsScreen />);
+  await waitFor(() => expect(view.getByTestId('native-passwords-filters')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-passwords-filters'));
+  await waitFor(() => expect(view.getByTestId('native-passwords-manage-groups')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-passwords-manage-groups'));
+
+  await waitFor(() => expect(passwordsApi.listPasswordVaultGroups).toHaveBeenCalledWith({ includeInactive: true }));
+  await waitFor(() => expect(view.getByTestId('native-passwords-group-name-group-1')).toBeTruthy());
+
+  await fireEvent.changeText(view.getByTestId('native-passwords-group-new-name'), 'Кассы');
+  await fireEvent.press(view.getByTestId('native-passwords-group-create'));
+  await waitFor(() => expect(passwordsApi.createPasswordVaultGroup).toHaveBeenCalledWith({ name: 'Кассы', sort_order: 1 }));
+
+  await fireEvent.changeText(view.getByTestId('native-passwords-group-name-group-1'), 'Серверы-2');
+  await fireEvent.press(view.getByTestId('native-passwords-group-save-group-1'));
+  await waitFor(() => expect(passwordsApi.updatePasswordVaultGroup).toHaveBeenCalledWith('group-1', { name: 'Серверы-2', sort_order: 0 }));
+
+  await fireEvent.press(view.getByTestId('native-passwords-group-archive-group-1'));
+  expect(alert).toHaveBeenCalledWith('Архивировать группу', 'Архивировать группу "Серверы-2"?', expect.any(Array));
+  await act(async () => {
+    alert.mock.calls.at(-1)?.[2]?.find((button) => button.style === 'destructive')?.onPress?.();
+  });
+  await waitFor(() => expect(passwordsApi.archivePasswordVaultGroup).toHaveBeenCalledWith('group-1'));
+  alert.mockRestore();
+  await view.unmount();
+});
+
+it('hides group administration from non-admin users', async () => {
+  const view = await render(<NativePasswordsScreen />);
+  await waitFor(() => expect(view.getByTestId('native-passwords-filters')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-passwords-filters'));
+  await waitFor(() => expect(view.getByTestId('native-filter-sheet')).toBeTruthy());
+  expect(view.queryByTestId('native-passwords-manage-groups')).toBeNull();
   await view.unmount();
 });

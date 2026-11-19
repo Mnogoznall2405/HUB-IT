@@ -111,6 +111,17 @@ export const mergeMailboxEntries = (entries, selectedMailbox = null, existingEnt
   return result;
 };
 
+export const withPreservedMailboxUnreadCount = (next, prev) => {
+  if (!next) return next;
+  const serverUnreadCount = next?.unread_count;
+  return {
+    ...next,
+    unread_count: serverUnreadCount != null && Number.isFinite(Number(serverUnreadCount))
+      ? Number(serverUnreadCount)
+      : Number(prev?.unread_count || 0),
+  };
+};
+
 export const withMailboxParams = (activeMailboxId = '', params = {}) => (
   normalizeMailboxId(activeMailboxId)
     ? { ...(params || {}), mailbox_id: normalizeMailboxId(activeMailboxId) }

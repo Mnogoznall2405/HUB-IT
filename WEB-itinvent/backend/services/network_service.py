@@ -19,6 +19,7 @@ from backend.appdb.db import get_app_database_url, get_app_engine, initialize_ap
 from backend.appdb.sql_compat import SqlAlchemyCompatConnection
 from backend.config import config
 from backend.db_schema import schema_name
+from backend.utils.upload_limits import assert_xlsx_uncompressed_size
 from local_store import get_local_store
 
 try:
@@ -2172,6 +2173,7 @@ class NetworkService:
         if not file_bytes:
             raise ValueError("Template file is empty")
 
+        assert_xlsx_uncompressed_size(BytesIO(file_bytes))
         workbook = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
 
         created = 0
@@ -4117,6 +4119,7 @@ class NetworkService:
             branch = self.ensure_branch(city_code=city_code, branch_code=branch_code, name=branch_name)
             branch_id = int(branch["id"])
 
+            assert_xlsx_uncompressed_size(BytesIO(excel_file_bytes))
             wb = openpyxl.load_workbook(BytesIO(excel_file_bytes), data_only=True)
             summary.sheets_total = len(wb.sheetnames)
 
@@ -4332,6 +4335,7 @@ class NetworkService:
             raise ValueError("Excel file is empty")
 
         summary = ImportSummary()
+        assert_xlsx_uncompressed_size(BytesIO(file_bytes))
         wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
         summary.sheets_total = len(wb.sheetnames)
         sheet_units = self._expand_equipment_import_units(self._plan_equipment_sheets(wb))

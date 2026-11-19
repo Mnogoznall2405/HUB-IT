@@ -1,4 +1,4 @@
-import { authAPI } from '../api/client';
+import { authAPI } from '../api/auth';
 import {
   isDesktopBridgeReady,
   subscribeDesktopBridgeReady,

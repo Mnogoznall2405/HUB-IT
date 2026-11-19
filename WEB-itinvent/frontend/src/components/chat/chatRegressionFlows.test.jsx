@@ -10,6 +10,10 @@ import useChatSocketEvents from './useChatSocketEvents';
 import useChatScheduledMessages from './useChatScheduledMessages';
 import useChatReactionAndPinController from '../../pages/chat/useChatReactionAndPinController';
 import useChatThreadInteractionController from '../../pages/chat/useChatThreadInteractionController';
+import useChatComposerInteractionController from '../../pages/chat/useChatComposerInteractionController';
+import useChatConversationDraftRestore from '../../pages/chat/useChatConversationDraftRestore';
+import useChatDraftsAndPinned from '../../pages/chat/useChatDraftsAndPinned';
+import { buildChatDraftKey } from './chatHelpers';
 import { buildOptimisticTextMessage } from '../../pages/chat/chatOptimisticMessages';
 import { chatAPI } from '../../api/client';
 import { chatScheduledAPI } from '../../api/chatScheduled';
@@ -328,4 +332,195 @@ it('finishing an old history load does not scroll the newly opened conversation'
   activeConversationIdRef.current = 'B';
   await act(async () => { history.resolve([]); await loading; });
   expect(scrollThreadBottomIntoView).not.toHaveBeenCalled();
+});
+
+// FE-004: entering edit mode must not destroy the composer's draft — one shared
+// per-conversation snapshot across menu edit, ArrowUp, send, cancel and reply.
+const EDITABLE_MESSAGE = { id: 'own-old', conversation_id: 'A', kind: 'text', is_own: true, body: 'old body' };
+const OTHER_MESSAGE = { id: 'other-1', conversation_id: 'A', kind: 'text', is_own: false, body: 'question' };
+const EDIT_DRAFT_KEY_A = buildChatDraftKey(1, 'A');
+const EDIT_DRAFT_KEY_B = buildChatDraftKey(1, 'B');
+
+function EditDraftProbe() {
+  const [conversationId, setConversationId] = useState('A');
+  const [text, setText] = useState('');
+  const [editingMessage, setEditingMessage] = useState(null);
+  const [replyMessage, setReplyMessage] = useState(null);
+  const [selected, setSelected] = useState([]);
+  const activeConversationIdRef = useRef(conversationId); activeConversationIdRef.current = conversationId;
+  const latestMessageTextRef = useRef(text); latestMessageTextRef.current = text;
+  const editDraftSnapshotRef = useRef(null);
+  const latestDraftStorageKeyRef = useRef('');
+  const draftWriteTimeoutRef = useRef(null);
+  const suppressDraftSyncRef = useRef(false);
+  const shareComposeDraftRef = useRef(null);
+  const focusComposer = vi.fn();
+  const sequence = useRef(0);
+  const drafts = useChatDraftsAndPinned({
+    userId: 1, activeConversationId: conversationId, messageText: text,
+    pinnedMessage: null, setPinnedMessage: () => {},
+    suppressDraftSyncRef, draftWriteTimeoutRef, latestDraftStorageKeyRef, latestMessageTextRef,
+    editDraftSnapshotRef,
+  });
+  useChatConversationDraftRestore({
+    activeConversationId: conversationId, draftStorageKey: drafts.draftStorageKey,
+    latestMessageTextRef, setEditingMessage, setMessageText: setText, setReplyMessage,
+    shareComposeDraftRef, suppressDraftSyncRef, editDraftSnapshotRef,
+  });
+  const sending = useChatComposerSending({
+    activeConversation: { id: conversationId, kind: 'direct' }, activeConversationId: conversationId, activeConversationIdRef,
+    applyOutgoingThreadMessage: vi.fn(), ensureLatestThreadWindow: undefined,
+    buildReplyPreview: (message) => message, cancelPendingInitialAnchor: vi.fn(),
+    createOptimisticTextMessage: (values) => buildOptimisticTextMessage({ ...values, user: { id: 1 }, seq: ++sequence.current }),
+    draftWriteTimeoutRef, failedThreadMessagesRef: useRef(new Map()), editingMessage,
+    flushDraftToStorage: drafts.flushDraftToStorage, focusComposer, latestMessageTextRef, latestDraftStorageKeyRef,
+    editDraftSnapshotRef, logChatDebug: vi.fn(), mergeMessageIntoThread: vi.fn(), notifyApiError: vi.fn(),
+    readSelectedDatabaseId: () => '', removeThreadMessage: vi.fn(), replyMessage, setEditingMessage,
+    setMessageText: setText, setOptimisticAiQueuedStatus: vi.fn(), setReplyMessage,
+    socketStatusRef: useRef('disconnected'), userId: 1,
+  });
+  const menuActions = useChatMessageMenuActions({
+    activeConversationIdRef, focusComposer,
+    editDraftSnapshotRef, latestDraftStorageKeyRef, latestMessageTextRef,
+    setEditingMessage, setMessageText: setText, setReplyMessage,
+    setComposerMenuAnchor: () => {}, setMessageMenuAnchor: () => {}, setMessageMenuMessage: () => {},
+    setSelectedMessageIds: () => {}, setThreadMenuAnchor: () => {},
+  });
+  const interaction = useChatComposerInteractionController({
+    editingMessage, focusComposer, handleComposerSend: sending.handleComposerSend,
+    latestMessageTextRef, latestDraftStorageKeyRef, editDraftSnapshotRef,
+    messages: conversationId === 'A' ? [OTHER_MESSAGE, EDITABLE_MESSAGE] : [],
+    replyMessage, setEditingMessage, setMessageText: setText, setReplyMessage,
+  });
+  const selectedActions = useChatSelectedMessageActions({
+    activeConversationIdRef, clearSelectedMessages: () => setSelected([]), conversationKind: 'direct',
+    editDraftSnapshotRef, viewerMemberRole: 'member', focusComposer, latestDraftStorageKeyRef,
+    selectedMessages: selected, setEditingMessage, setMessageText: setText, setReplyMessage,
+  });
+  return <>
+    <input aria-label="draft" value={text} onChange={(event) => setText(event.target.value)} />
+    <button onClick={() => menuActions.handleEditFromMessageMenu(EDITABLE_MESSAGE)}>Menu edit</button>
+    <button onClick={() => interaction.handleComposerKeyDown({
+      key: 'ArrowUp', preventDefault() {},
+      currentTarget: { value: '', selectionStart: 0, selectionEnd: 0 },
+    })}>Arrow up</button>
+    <button onClick={() => menuActions.handleReplyMessage(OTHER_MESSAGE)}>Reply msg</button>
+    <button onClick={() => setSelected([OTHER_MESSAGE])}>Select msg</button>
+    <button onClick={() => selectedActions.replyToSelectedMessage()}>Selected reply</button>
+    <button onClick={interaction.clearEditingMessage}>Cancel edit</button>
+    <button onClick={sending.handleComposerSend}>Send</button>
+    <button onClick={() => setConversationId('B')}>Switch to B</button>
+    <button onClick={() => window.dispatchEvent(new Event('pagehide'))}>Pagehide</button>
+    <output aria-label="editing">{editingMessage?.id || ''}</output>
+    <output aria-label="reply">{replyMessage?.id || ''}</output>
+  </>;
+}
+
+const settleDraftSync = async () => {
+  await act(async () => { await new Promise((done) => setTimeout(done, 10)); });
+};
+const waitForDraftWrite = async () => {
+  await act(async () => { await new Promise((done) => setTimeout(done, 450)); });
+};
+
+describe('chat edit keeps the composer draft (FE-004)', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem(EDIT_DRAFT_KEY_A, 'draft text A');
+  });
+
+  it('menu edit + typing must not overwrite the stored draft and Esc restores it', async () => {
+    render(<EditDraftProbe />);
+    await settleDraftSync();
+    expect(screen.getByLabelText('draft')).toHaveValue('draft text A');
+    fireEvent.click(screen.getByText('Menu edit'));
+    expect(screen.getByLabelText('draft')).toHaveValue('old body');
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: 'old body edited' } });
+    await waitForDraftWrite();
+    expect(window.localStorage.getItem(EDIT_DRAFT_KEY_A)).toBe('draft text A');
+    fireEvent.click(screen.getByText('Cancel edit'));
+    expect(screen.getByLabelText('draft')).toHaveValue('draft text A');
+    expect(screen.getByLabelText('editing')).toBeEmptyDOMElement();
+  });
+
+  it('ArrowUp edit takes the same snapshot and pagehide must not overwrite it', async () => {
+    render(<EditDraftProbe />);
+    await settleDraftSync();
+    fireEvent.click(screen.getByText('Arrow up'));
+    expect(screen.getByLabelText('draft')).toHaveValue('old body');
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: 'old body edited' } });
+    fireEvent.click(screen.getByText('Pagehide'));
+    expect(window.localStorage.getItem(EDIT_DRAFT_KEY_A)).toBe('draft text A');
+  });
+
+  it('replying while editing restores the draft and never sends the edit body as the reply', async () => {
+    render(<EditDraftProbe />);
+    await settleDraftSync();
+    fireEvent.click(screen.getByText('Menu edit'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: 'old body edited' } });
+    fireEvent.click(screen.getByText('Reply msg'));
+    expect(screen.getByLabelText('reply')).toHaveTextContent('other-1');
+    expect(screen.getByLabelText('draft')).toHaveValue('draft text A');
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(chatAPI.sendMessage).toHaveBeenCalledTimes(1));
+    expect(chatAPI.sendMessage).toHaveBeenCalledWith('A', 'draft text A', expect.objectContaining({ reply_to_message_id: 'other-1' }));
+    expect(chatAPI.editChatMessage).not.toHaveBeenCalled();
+  });
+
+  it('selected-message reply restores the draft instead of sending the edit body', async () => {
+    render(<EditDraftProbe />);
+    await settleDraftSync();
+    fireEvent.click(screen.getByText('Menu edit'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: 'old body edited' } });
+    fireEvent.click(screen.getByText('Select msg'));
+    fireEvent.click(screen.getByText('Selected reply'));
+    expect(screen.getByLabelText('reply')).toHaveTextContent('other-1');
+    expect(screen.getByLabelText('draft')).toHaveValue('draft text A');
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(chatAPI.sendMessage).toHaveBeenCalledTimes(1));
+    expect(chatAPI.sendMessage).toHaveBeenCalledWith('A', 'draft text A', expect.objectContaining({ reply_to_message_id: 'other-1' }));
+    expect(chatAPI.editChatMessage).not.toHaveBeenCalled();
+  });
+
+  it('a successful edit restores the original draft in the composer', async () => {
+    render(<EditDraftProbe />);
+    await settleDraftSync();
+    fireEvent.click(screen.getByText('Menu edit'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: 'old body edited' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(chatAPI.editChatMessage).toHaveBeenCalledTimes(1));
+    expect(chatAPI.editChatMessage).toHaveBeenCalledWith('A', 'own-old', 'old body edited', expect.anything());
+    expect(screen.getByLabelText('editing')).toBeEmptyDOMElement();
+    expect(screen.getByLabelText('draft')).toHaveValue('draft text A');
+    expect(window.localStorage.getItem(EDIT_DRAFT_KEY_A)).toBe('draft text A');
+  });
+
+  it('a failed edit re-enters editing over the restored draft and Esc still restores it', async () => {
+    chatAPI.editChatMessage.mockRejectedValueOnce(new Error('500'));
+    render(<EditDraftProbe />);
+    await settleDraftSync();
+    fireEvent.click(screen.getByText('Menu edit'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: 'old body edited' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(chatAPI.editChatMessage).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByLabelText('editing')).toHaveTextContent('own-old'));
+    expect(screen.getByLabelText('draft')).toHaveValue('old body edited');
+    fireEvent.click(screen.getByText('Cancel edit'));
+    expect(screen.getByLabelText('draft')).toHaveValue('draft text A');
+    expect(window.localStorage.getItem(EDIT_DRAFT_KEY_A)).toBe('draft text A');
+  });
+
+  it('switching conversations during an edit persists the old draft under its own key', async () => {
+    render(<EditDraftProbe />);
+    await settleDraftSync();
+    fireEvent.click(screen.getByText('Menu edit'));
+    fireEvent.change(screen.getByLabelText('draft'), { target: { value: 'old body edited' } });
+    fireEvent.click(screen.getByText('Switch to B'));
+    await settleDraftSync();
+    expect(window.localStorage.getItem(EDIT_DRAFT_KEY_A)).toBe('draft text A');
+    expect(screen.getByLabelText('draft')).toHaveValue('');
+    await waitForDraftWrite();
+    expect(window.localStorage.getItem(EDIT_DRAFT_KEY_A)).toBe('draft text A');
+    expect(window.localStorage.getItem(EDIT_DRAFT_KEY_B)).toBeNull();
+  });
 });

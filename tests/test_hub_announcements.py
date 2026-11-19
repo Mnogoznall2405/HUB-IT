@@ -516,6 +516,23 @@ def test_announcement_attachment_upload_is_idempotent(announcement_env):
     assert conflict.status_code == 409
 
 
+def test_announcement_attachment_download_returns_410_when_file_is_gone(announcement_env):
+    client = announcement_env["client"]
+    service = announcement_env["service"]
+    post = _create_announcement(client, title="Gone file")
+    upload = client.post(
+        f"/hub/announcements/{post['id']}/attachments",
+        files={"file": ("plan.pdf", b"payload", "application/pdf")},
+    )
+    assert upload.status_code == 200, upload.text
+    attachment_id = upload.json()["id"]
+    meta = service.get_announcement_attachment(announcement_id=post["id"], attachment_id=attachment_id)
+    Path(meta["file_abs_path"]).unlink()
+
+    gone = client.get(f"/hub/announcements/{post['id']}/attachments/{attachment_id}/file")
+    assert gone.status_code == 410
+
+
 def test_announcement_fanout_does_not_wait_for_each_push_delivery(announcement_env, monkeypatch):
     service = announcement_env["service"]
     actor = announcement_env["raw_users"][1]

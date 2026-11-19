@@ -136,6 +136,12 @@ class TwoFactorLoginVerifyRequest(BaseModel):
     backup_code: Optional[str] = Field(default=None, min_length=6, max_length=32)
 
 
+class TwoFactorStepUpRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=256)
+    totp_code: Optional[str] = Field(default=None, min_length=6, max_length=16)
+    backup_code: Optional[str] = Field(default=None, min_length=6, max_length=32)
+
+
 class BackupCodesResponse(BaseModel):
     backup_codes: list[str] = Field(default_factory=list)
 

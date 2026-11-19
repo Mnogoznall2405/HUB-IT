@@ -1,41 +1,23 @@
 /**
  * Main App component with routing and authentication.
  */
-import { Component, lazy, Suspense, useCallback, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Component, lazy, Suspense, useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Box } from '@mui/material';
 import './components/construction/useConstructionWorkLeaveGuard';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CHAT_FEATURE_ENABLED } from './lib/chatFeature';
+import { ChatCallsContext, DISABLED_CHAT_CALLS } from './components/chat/calls/ChatCallsContext';
 import BrandedRouteLoader from './components/layout/BrandedRouteLoader';
 import ScrollToTop from './components/layout/ScrollToTop';
 import { canAccessAdminArea } from './components/account/accountNavigationConfig';
-import { forceAppHardReload } from './lib/routeChunkRecovery';
-import {
-  applyChatPushDiagnostic,
-  getChatNotificationState,
-  refreshChatNotificationState,
-  requestChatPushSyncDrain,
-  syncChatPushSubscription,
-} from './lib/chatNotifications';
-import { emitAgentDebugLog } from './lib/debugClientLog';
-import ChatSocketBootstrap from './components/chat/ChatSocketBootstrap';
-import ChatCallsProvider from './components/chat/calls/ChatCallsProvider';
-import DesktopNavigationBootstrap from './components/layout/DesktopNavigationBootstrap';
-import DesktopProtocolHandoff from './components/layout/DesktopProtocolHandoff';
-import DesktopPresenceBootstrap from './components/layout/DesktopPresenceBootstrap';
-import DesktopLifecycleBootstrap from './components/layout/DesktopLifecycleBootstrap';
-import DesktopMemoryPressureBootstrap from './components/layout/DesktopMemoryPressureBootstrap';
-import NativeMobileShellBridge from './components/layout/NativeMobileShellBridge';
-import { hasAnyAppPushPermission } from './lib/appPushPermissions';
-import { syncAppBadge } from './lib/appBadge';
+import { forceAppHardReload, isRouteChunkLoadError } from './lib/routeChunkRecovery';
 import {
   needsAboutOnboarding,
   peekPostAuthReturnPath,
+  consumePostAuthReturnPath,
   rememberPostAuthReturnPath,
-  resolvePostAuthenticationPath,
 } from './lib/aboutOnboarding';
-import { WINDOWS_NOTIFICATIONS_CHANGED_EVENT } from './lib/windowsNotifications';
 import {
   loadAboutRoute,
   loadAddressBookRoute,
@@ -121,6 +103,7 @@ const MyFilesEditor = lazy(loadMyFilesEditorRoute);
 const SharedFile = lazy(loadSharedFileRoute);
 const SharedFolder = lazy(loadSharedFolderRoute);
 const Help = lazy(loadHelpRoute);
+const SharedHubRouteLayout = lazy(() => import('./components/layout/MainLayoutRouteShell'));
 
 const routePermissions = [
   { path: '/dashboard', permissions: ['dashboard.read'] },
@@ -147,7 +130,7 @@ const routePermissions = [
   { path: '/it/objects', permissions: ['it_objects.read'] },
   { path: '/construction', permissions: ['construction.read'] },
   { path: '/docflow', permissions: ['docflow.read'] },
-  { path: '/passwords', permissions: ['passwords.read'] },
+  { path: '/passwords', permissions: ['passwords.read', 'it_objects.read'] },
   { path: '/groups-access', permissions: ['groups_access.read'] },
   { path: '/my-files', permissions: ['my_files.read'] },
 ];
@@ -233,6 +216,17 @@ const RootRoute = () => {
   return <Navigate to="/login" replace />;
 };
 
+const PostAuthNavigate = ({ destination, consumeReturnPath }) => {
+  // The stored return path is consumed only when this navigation actually
+  // commits. Login.jsx resolves the same destination via peek + assign for the
+  // canonical-host reload case, so the two owners cannot race the key away from
+  // each other.
+  useEffect(() => {
+    if (consumeReturnPath) consumePostAuthReturnPath();
+  }, [consumeReturnPath]);
+  return <Navigate to={destination} replace />;
+};
+
 const LoginRoute = () => {
   const { hasPermission, isAuthenticated, loading, user } = useAuth();
 
@@ -244,12 +238,16 @@ const LoginRoute = () => {
     return <Login />;
   }
 
+  const needsOnboarding = needsAboutOnboarding(user);
+  // Peek, not consume: the pending return path must stay readable until the
+  // winning navigation commits (see PostAuthNavigate).
+  const storedReturnPath = needsOnboarding ? '' : peekPostAuthReturnPath();
   return (
-    <Navigate
-      to={needsAboutOnboarding(user)
+    <PostAuthNavigate
+      destination={needsOnboarding
         ? '/about'
-        : resolvePostAuthenticationPath(user, resolveFirstAccessiblePath(hasPermission, user))}
-      replace
+        : (storedReturnPath || resolveFirstAccessiblePath(hasPermission, user))}
+      consumeReturnPath={Boolean(storedReturnPath)}
     />
   );
 };
@@ -290,234 +288,15 @@ const AdminAreaRoute = ({ children }) => {
   return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
 };
 
-export const AppPushBootstrap = () => {
-  const { user, hasPermission } = useAuth();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const hasAppPushPermission = hasAnyAppPushPermission(hasPermission, {
-    chatFeatureEnabled: CHAT_FEATURE_ENABLED,
-  });
-  const isChatRoute = String(location?.pathname || '').startsWith('/chat');
+// Post-auth infrastructure (push, realtime socket, desktop/mobile bridges)
+// lives in a lazily imported module so the public login and shared-file pages
+// neither run nor download it.
+const AuthenticatedBootstraps = lazy(() => import('./components/layout/AuthenticatedBootstraps'));
 
-  const runPushSync = useCallback((force = false) => {
-    if (!hasAppPushPermission || !user) {
-      // AppPushBootstrap mounts before AuthProvider finishes restoring the
-      // cookie session. Unsubscribing here invalidates a healthy browser
-      // endpoint on every cold start. Explicit logout/revocation owns cleanup.
-      return;
-    }
-    void syncChatPushSubscription({ user, force }).catch(() => {
-      refreshChatNotificationState();
-    });
-    requestChatPushSyncDrain();
-  }, [hasAppPushPermission, user]);
-
-  const schedulePushSync = useCallback(({ force = false } = {}) => {
-    const currentState = getChatNotificationState();
-    const needsFastBootstrap = Boolean(
-      currentState?.permission === 'granted'
-      && (!currentState?.pushSubscribed || currentState?.pendingResubscribe)
-    );
-    if (!isChatRoute) {
-      runPushSync(force);
-      return () => {};
-    }
-
-    if (needsFastBootstrap && typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-      let cancelled = false;
-      navigator.serviceWorker.ready
-        .then(() => {
-          if (!cancelled) {
-            runPushSync(force);
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            runPushSync(force);
-          }
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    let timeoutId = null;
-    let idleId = null;
-    const start = () => {
-      timeoutId = window.setTimeout(() => {
-        timeoutId = null;
-        runPushSync(force);
-      }, needsFastBootstrap ? 1_500 : 8_000);
-    };
-
-    if (!needsFastBootstrap && typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-      idleId = window.requestIdleCallback(() => {
-        idleId = null;
-        start();
-      }, { timeout: 12_000 });
-    } else {
-      start();
-    }
-
-    return () => {
-      if (idleId != null && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(idleId);
-      }
-      if (timeoutId != null) {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, [isChatRoute, runPushSync]);
-
-  useEffect(() => {
-    if (!user) {
-      void syncAppBadge(0);
-    }
-  }, [user]);
-
-  useEffect(() => {
-    return schedulePushSync({ force: false });
-  }, [schedulePushSync]);
-
-  useEffect(() => {
-    if (!user || !hasAppPushPermission) {
-      return undefined;
-    }
-
-    const retryTimer = window.setInterval(() => {
-      const currentState = getChatNotificationState();
-      if (currentState?.permission !== 'granted') return;
-      if (currentState?.pushSubscribed && !currentState?.pendingResubscribe) return;
-      runPushSync(Boolean(currentState?.pendingResubscribe));
-    }, 30_000);
-
-    return () => {
-      window.clearInterval(retryTimer);
-    };
-  }, [hasAppPushPermission, runPushSync, user]);
-
-  useEffect(() => {
-    const handleNotificationSettingsChange = () => {
-      if (document.visibilityState === 'hidden') return;
-      const currentState = getChatNotificationState();
-      if (currentState?.permission !== 'granted') return;
-      runPushSync(false);
-    };
-
-    window.addEventListener(WINDOWS_NOTIFICATIONS_CHANGED_EVENT, handleNotificationSettingsChange);
-    return () => {
-      window.removeEventListener(WINDOWS_NOTIFICATIONS_CHANGED_EVENT, handleNotificationSettingsChange);
-    };
-  }, [runPushSync]);
-
-  useEffect(() => {
-    const handleSyncRequest = () => {
-      if (document.visibilityState === 'hidden') {
-        return;
-      }
-      schedulePushSync({ force: false });
-    };
-
-    window.addEventListener('focus', handleSyncRequest);
-    document.addEventListener('visibilitychange', handleSyncRequest);
-    return () => {
-      window.removeEventListener('focus', handleSyncRequest);
-      document.removeEventListener('visibilitychange', handleSyncRequest);
-    };
-  }, [schedulePushSync]);
-
-  useEffect(() => {
-    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
-      return undefined;
-    }
-
-    const handleWorkerMessage = (event) => {
-      const messageType = String(event?.data?.type || '').trim();
-      if (!messageType) return;
-
-      if (messageType === 'itinvent:navigate') {
-        const rawRoute = String(event?.data?.route || event?.data?.url || '').trim();
-        if (!rawRoute) return;
-        const source = String(event?.data?.source || '').trim();
-        try {
-          const target = new URL(rawRoute, window.location.origin);
-          if (target.origin !== window.location.origin) return;
-          const nextRoute = `${target.pathname}${target.search}${target.hash}` || '/';
-          const fromPath = `${window.location.pathname}${window.location.search}${window.location.hash}` || '/';
-          // #region agent log
-          emitAgentDebugLog({
-            location: 'App.jsx:itinvent:navigate',
-            message: 'Navigate from notification/service worker',
-            hypothesisId: 'H-NAV',
-            runId: 'post-fix',
-            data: {
-              route: nextRoute,
-              source,
-              fromPath,
-            },
-          });
-          // #endregion
-          // Push opens on mobile often resume a long-lived PWA with a stale JS graph.
-          // Soft React navigate then fails lazy /chat chunk load and shows "Нужно обновить экран".
-          // One hard assign loads a fresh document that matches the active service worker.
-          if (source === 'notificationclick') {
-            if (fromPath !== nextRoute) {
-              window.location.assign(nextRoute);
-            }
-            return;
-          }
-          navigate(nextRoute);
-        } catch {
-          if (rawRoute.startsWith('/')) {
-            if (source === 'notificationclick') {
-              const fromPath = `${window.location.pathname}${window.location.search}${window.location.hash}` || '/';
-              if (fromPath !== rawRoute) {
-                window.location.assign(rawRoute);
-              }
-              return;
-            }
-            navigate(rawRoute);
-          }
-        }
-        return;
-      }
-
-      if (messageType === 'itinvent:push-subscription-updated') {
-        refreshChatNotificationState();
-        return;
-      }
-
-      if (messageType === 'itinvent:push-diagnostic') {
-        applyChatPushDiagnostic({
-          stage: String(event?.data?.detail?.stage || event?.data?.stage || '').trim(),
-          detail: event?.data?.detail?.detail || event?.data?.detail || {},
-          sw_version: String(event?.data?.detail?.sw_version || event?.data?.sw_version || '').trim(),
-          ts: String(event?.data?.detail?.ts || event?.data?.ts || '').trim(),
-        });
-        return;
-      }
-
-      if (messageType === 'itinvent:push-foreground-notification') {
-        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-          window.dispatchEvent(new CustomEvent('itinvent:push-foreground-notification', {
-            detail: event?.data?.detail || {},
-          }));
-        }
-        return;
-      }
-
-      if (messageType === 'itinvent:push-subscription-refresh-required') {
-        schedulePushSync({ force: true });
-      }
-    };
-
-    navigator.serviceWorker.addEventListener('message', handleWorkerMessage);
-    return () => {
-      navigator.serviceWorker.removeEventListener('message', handleWorkerMessage);
-    };
-  }, [navigate, schedulePushSync]);
-
-  return null;
+const PostAuthGate = ({ children }) => {
+  const { isAuthenticated } = useAuth();
+  if (!isAuthenticated()) return null;
+  return <Suspense fallback={null}>{children}</Suspense>;
 };
 
 const PageFallback = () => (
@@ -526,19 +305,29 @@ const PageFallback = () => (
   </Box>
 );
 
-class RouteErrorBoundary extends Component {
+export class RouteErrorBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, reloading: false };
+    this.state = { hasError: false, reloading: false, chunkError: false };
   }
 
-  static getDerivedStateFromError() {
-    return { hasError: true };
+  static getDerivedStateFromError(error) {
+    return { hasError: true, chunkError: isRouteChunkLoadError(error) };
   }
 
   componentDidCatch(error) {
     console.error('Route render failed:', error);
   }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.pathname !== this.props.pathname && this.state.hasError) {
+      this.setState({ hasError: false, reloading: false, chunkError: false });
+    }
+  }
+
+  handleRetry = () => {
+    this.setState({ hasError: false, reloading: false, chunkError: false });
+  };
 
   handleHardReload = async () => {
     this.setState({ reloading: true });
@@ -568,17 +357,26 @@ class RouteErrorBoundary extends Component {
               textAlign: 'center',
             }}
           >
-            <Box sx={{ fontSize: 22, fontWeight: 700, mb: 1 }}>Нужно обновить экран</Box>
+            <Box sx={{ fontSize: 22, fontWeight: 700, mb: 1 }}>
+              {this.state.chunkError ? 'Нужно обновить экран' : 'Не удалось отобразить раздел'}
+            </Box>
             <Box sx={{ color: 'rgba(255,255,255,0.62)', fontSize: 14, lineHeight: 1.7, mb: 2 }}>
-              Страница была открыта долго, и раздел не удалось догрузить. Нажмите «Обновить» — подтянется новая версия интерфейса.
+              {this.state.chunkError
+                ? 'Страница была открыта долго, и раздел не удалось догрузить. Нажмите «Обновить» — подтянется новая версия интерфейса.'
+                : 'Раздел не удалось отобразить. Попробуйте ещё раз или откройте другой раздел.'}
             </Box>
             <button
               type="button"
-              onClick={() => { void this.handleHardReload(); }}
+              onClick={() => {
+                if (this.state.chunkError) void this.handleHardReload();
+                else this.handleRetry();
+              }}
               disabled={this.state.reloading}
               className="min-h-12 rounded-[16px] !bg-cyan-200 px-5 text-sm font-semibold !text-zinc-950 disabled:opacity-60"
             >
-              {this.state.reloading ? 'Обновляем...' : 'Обновить'}
+              {this.state.chunkError
+                ? (this.state.reloading ? 'Обновляем...' : 'Обновить')
+                : 'Повторить'}
             </button>
           </Box>
         </Box>
@@ -589,21 +387,39 @@ class RouteErrorBoundary extends Component {
   }
 }
 
+const LazyChatCallsProvider = lazy(() => import('./components/chat/calls/ChatCallsProvider'));
+
+// The calls logic lives in a lazy chunk, but the context owner must be static:
+// a `fallback={children}` Suspense would mount the whole route tree once under
+// the fallback and again under the real provider. The shell provides
+// DISABLED_CHAT_CALLS until the chunk reports its value via onContextValue.
+const PostAuthChatCallsProvider = ({ children }) => {
+  const { isAuthenticated } = useAuth();
+  const [callsValue, setCallsValue] = useState(null);
+  if (!isAuthenticated()) return children;
+  return (
+    <ChatCallsContext.Provider value={callsValue || DISABLED_CHAT_CALLS}>
+      {children}
+      <Suspense fallback={null}>
+        <LazyChatCallsProvider bare onContextValue={setCallsValue} />
+      </Suspense>
+    </ChatCallsContext.Provider>
+  );
+};
+
 function AuthenticatedAppShell() {
+  const { pathname } = useLocation();
   return (
     <AuthProvider>
       <ScrollToTop />
-      <DesktopProtocolHandoff />
-      <DesktopNavigationBootstrap />
-      <DesktopPresenceBootstrap />
-      <DesktopLifecycleBootstrap />
-      <DesktopMemoryPressureBootstrap />
-      <AppPushBootstrap />
-      <ChatSocketBootstrap />
-      <NativeMobileShellBridge />
-      <ChatCallsProvider>
+      <PostAuthGate>
+        <Suspense fallback={null}>
+          <AuthenticatedBootstraps />
+        </Suspense>
+      </PostAuthGate>
+      <PostAuthChatCallsProvider>
       <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
-        <RouteErrorBoundary>
+        <RouteErrorBoundary pathname={pathname}>
           <Suspense fallback={<PageFallback />}>
             <Routes>
               <Route path="/" element={<RootRoute />} />
@@ -614,172 +430,177 @@ function AuthenticatedAppShell() {
               <Route element={<ProtectedRoute />}>
                 <Route path="/about" element={<About mode="onboarding" />} />
                 <Route element={<AboutOnboardingRoute />}>
-                <Route
-                  path="/dashboard"
-                  element={<PermissionRoute permission="dashboard.read"><Dashboard /></PermissionRoute>}
-                />
-                <Route
-                  path="/feed"
-                  element={<PermissionRoute permission="dashboard.read"><Feed /></PermissionRoute>}
-                />
+                <Route element={<SharedHubRouteLayout />}>
+                  <Route
+                    path="/dashboard"
+                    element={<PermissionRoute permission="dashboard.read"><Dashboard /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/feed"
+                    element={<PermissionRoute permission="dashboard.read"><Feed /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/tickets"
+                    element={<PermissionRoute permission="tickets.read"><Tickets /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/tasks"
+                    element={<PermissionRoute permission="tasks.read"><Tasks /></PermissionRoute>}
+                  />
+                  {CHAT_FEATURE_ENABLED ? (
+                    <Route
+                      path="/chat/open"
+                      element={<PermissionRoute permission="chat.read"><ChatOpen /></PermissionRoute>}
+                    />
+                  ) : null}
+                  {CHAT_FEATURE_ENABLED ? (
+                    <Route
+                      path="/chat"
+                      handle={{ hubBare: true }}
+                      element={<PermissionRoute permission="chat.read"><Chat /></PermissionRoute>}
+                    />
+                  ) : null}
+                  <Route
+                    path="/database"
+                    element={<PermissionRoute permission="database.read"><Database /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/networks"
+                    element={<PermissionRoute permission="networks.read"><Networks /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/networks/:branchId"
+                    element={<PermissionRoute permission="networks.read"><Networks /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/vcs"
+                    element={<PermissionRoute permission="vcs.read"><Vcs /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/mfu"
+                    element={<PermissionRoute permission="mfu.read"><Mfu /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/monitoring"
+                    element={<MonitoringRoute><Monitoring /></MonitoringRoute>}
+                  />
+                  <Route
+                    path="/computers"
+                    element={<PermissionRoute permission="computers.read"><Computers /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/scan-center"
+                    handle={{ hubBare: true }}
+                    element={<PermissionRoute permission="scan.read"><ScanCenter /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/voice"
+                    handle={{ hubBare: true }}
+                    element={<PermissionRoute permission="voice.read"><VoiceVideo /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/dlp"
+                    element={<PermissionRoute adminOnly><FileEgress /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/file-egress"
+                    element={<PermissionRoute adminOnly><FileEgress /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/statistics"
+                    element={<PermissionRoute permission="statistics.read"><Statistics /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/mail"
+                    element={<PermissionRoute permission="mail.access"><Mail /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/mail/compose"
+                    element={<PermissionRoute permission="mail.access"><Mail /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/menu"
+                    element={<MobileMenu />}
+                  />
+                  <Route
+                    path="/address-book"
+                    element={<PermissionRoute permission="address_book.read"><AddressBook /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/company-structure"
+                    element={<PermissionRoute permission="company_structure.read"><CompanyStructure /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/warehouse-1c"
+                    element={<PermissionRoute permission="warehouse_1c.read"><Warehouse1C /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/it/requests/:requestRef?"
+                    element={<PermissionRoute permission="warehouse_1c.it_requests.read"><ItPurchaseRequests /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/it/objects"
+                    element={<PermissionRoute permission="it_objects.read"><ItObjects /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/it/objects/:objectRef"
+                    element={<PermissionRoute permission="it_objects.read"><ItObjectDetail /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/construction"
+                    element={<PermissionRoute permission="construction.read"><ConstructionObjects /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/construction/objects/:objectId"
+                    element={<PermissionRoute permission="construction.read"><ConstructionObjectDetail /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/construction/objects/:objectId/directions/:groupRef"
+                    element={<PermissionRoute permission="construction.read"><ConstructionDirectionDetail /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/construction/objects/:objectId/directions/:groupRef/requests/:requestRef"
+                    element={<PermissionRoute permission="construction.read"><ConstructionDirectionDetail /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/construction/objects/:objectId/requests/:requestRef"
+                    element={<PermissionRoute permission="construction.read"><ConstructionObjectDetail /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/docflow"
+                    element={<PermissionRoute permission="docflow.read"><Docflow /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/passwords"
+                    element={<PermissionRoute permissions={['passwords.read', 'it_objects.read']}><Passwords /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/groups-access"
+                    element={<PermissionRoute permission="groups_access.read"><GroupsAccess /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/my-files"
+                    element={<PermissionRoute permission="my_files.read"><MyFiles /></PermissionRoute>}
+                  />
+                  <Route
+                    path="/kb/manage"
+                    element={<PermissionRoute permission="kb.write"><KnowledgeBase /></PermissionRoute>}
+                  />
+                  <Route path="/help" element={<Help />} />
+                  <Route path="/profile" handle={{ hubBare: true }} element={<Profile />} />
+                  <Route path="/settings/:section?" handle={{ hubBare: true }} element={<Settings />} />
+                  <Route path="/admin/:section?" handle={{ hubBare: true }} element={<AdminAreaRoute><Admin /></AdminAreaRoute>} />
+                </Route>
                 <Route
                   path="/dashboard/news"
                   element={<PermissionRoute permission="dashboard.read"><LegacyNewsRedirect /></PermissionRoute>}
                 />
-                <Route
-                  path="/tasks"
-                  element={<PermissionRoute permission="tasks.read"><Tasks /></PermissionRoute>}
-                />
-                <Route
-                  path="/tickets"
-                  element={<PermissionRoute permission="tickets.read"><Tickets /></PermissionRoute>}
-                />
-                {CHAT_FEATURE_ENABLED ? (
-                  <Route
-                    path="/chat/open"
-                    element={<PermissionRoute permission="chat.read"><ChatOpen /></PermissionRoute>}
-                  />
-                ) : null}
-                {CHAT_FEATURE_ENABLED ? (
-                  <Route
-                    path="/chat"
-                    element={<PermissionRoute permission="chat.read"><Chat /></PermissionRoute>}
-                  />
-                ) : null}
-                <Route
-                  path="/database"
-                  element={<PermissionRoute permission="database.read"><Database /></PermissionRoute>}
-                />
-                <Route
-                  path="/networks"
-                  element={<PermissionRoute permission="networks.read"><Networks /></PermissionRoute>}
-                />
-                <Route
-                  path="/networks/:branchId"
-                  element={<PermissionRoute permission="networks.read"><Networks /></PermissionRoute>}
-                />
                 <Route path="/ad-users" element={<Navigate to="/admin/ad-users" replace />} />
-                <Route
-                  path="/vcs"
-                  element={<PermissionRoute permission="vcs.read"><Vcs /></PermissionRoute>}
-                />
-                <Route
-                  path="/mfu"
-                  element={<PermissionRoute permission="mfu.read"><Mfu /></PermissionRoute>}
-                />
-                <Route
-                  path="/monitoring"
-                  element={<MonitoringRoute><Monitoring /></MonitoringRoute>}
-                />
-                <Route
-                  path="/computers"
-                  element={<PermissionRoute permission="computers.read"><Computers /></PermissionRoute>}
-                />
-                <Route
-                  path="/scan-center"
-                  element={<PermissionRoute permission="scan.read"><ScanCenter /></PermissionRoute>}
-                />
-                <Route
-                  path="/voice"
-                  element={<PermissionRoute permission="voice.read"><VoiceVideo /></PermissionRoute>}
-                />
-                <Route
-                  path="/dlp"
-                  element={<PermissionRoute adminOnly><FileEgress /></PermissionRoute>}
-                />
-                <Route
-                  path="/file-egress"
-                  element={<PermissionRoute adminOnly><FileEgress /></PermissionRoute>}
-                />
-                <Route
-                  path="/statistics"
-                  element={<PermissionRoute permission="statistics.read"><Statistics /></PermissionRoute>}
-                />
-                <Route
-                  path="/mail"
-                  element={<PermissionRoute permission="mail.access"><Mail /></PermissionRoute>}
-                />
-                <Route
-                  path="/mail/compose"
-                  element={<PermissionRoute permission="mail.access"><Mail /></PermissionRoute>}
-                />
-                <Route
-                  path="/menu"
-                  element={<MobileMenu />}
-                />
-                <Route
-                  path="/address-book"
-                  element={<PermissionRoute permission="address_book.read"><AddressBook /></PermissionRoute>}
-                />
-                <Route
-                  path="/company-structure"
-                  element={<PermissionRoute permission="company_structure.read"><CompanyStructure /></PermissionRoute>}
-                />
-                <Route
-                  path="/warehouse-1c"
-                  element={<PermissionRoute permission="warehouse_1c.read"><Warehouse1C /></PermissionRoute>}
-                />
-                <Route
-                  path="/it/requests/:requestRef?"
-                  element={<PermissionRoute permission="warehouse_1c.it_requests.read"><ItPurchaseRequests /></PermissionRoute>}
-                />
-                <Route
-                  path="/it/objects"
-                  element={<PermissionRoute permission="it_objects.read"><ItObjects /></PermissionRoute>}
-                />
-                <Route
-                  path="/it/objects/:objectRef"
-                  element={<PermissionRoute permission="it_objects.read"><ItObjectDetail /></PermissionRoute>}
-                />
-                <Route
-                  path="/construction"
-                  element={<PermissionRoute permission="construction.read"><ConstructionObjects /></PermissionRoute>}
-                />
-                <Route
-                  path="/construction/objects/:objectId"
-                  element={<PermissionRoute permission="construction.read"><ConstructionObjectDetail /></PermissionRoute>}
-                />
-                <Route
-                  path="/construction/objects/:objectId/directions/:groupRef"
-                  element={<PermissionRoute permission="construction.read"><ConstructionDirectionDetail /></PermissionRoute>}
-                />
-                <Route
-                  path="/construction/objects/:objectId/directions/:groupRef/requests/:requestRef"
-                  element={<PermissionRoute permission="construction.read"><ConstructionDirectionDetail /></PermissionRoute>}
-                />
-                <Route
-                  path="/construction/objects/:objectId/requests/:requestRef"
-                  element={<PermissionRoute permission="construction.read"><ConstructionObjectDetail /></PermissionRoute>}
-                />
-                <Route
-                  path="/docflow"
-                  element={<PermissionRoute permission="docflow.read"><Docflow /></PermissionRoute>}
-                />
-                <Route
-                  path="/passwords"
-                  element={<PermissionRoute permissions={['passwords.read', 'it_objects.read']}><Passwords /></PermissionRoute>}
-                />
-                <Route
-                  path="/groups-access"
-                  element={<PermissionRoute permission="groups_access.read"><GroupsAccess /></PermissionRoute>}
-                />
-                <Route
-                  path="/my-files"
-                  element={<PermissionRoute permission="my_files.read"><MyFiles /></PermissionRoute>}
-                />
                 <Route
                   path="/my-files/edit/:fileId"
                   element={<PermissionRoute permission="my_files.read"><MyFilesEditor /></PermissionRoute>}
                 />
                 <Route path="/kb" element={<Navigate to="/help" replace />} />
-                <Route
-                  path="/kb/manage"
-                  element={<PermissionRoute permission="kb.read"><KnowledgeBase /></PermissionRoute>}
-                />
-                <Route path="/profile" element={<Profile />} />
-                <Route path="/help" element={<Help />} />
-                <Route path="/settings/:section?" element={<Settings />} />
-                <Route path="/admin/:section?" element={<AdminAreaRoute><Admin /></AdminAreaRoute>} />
                 </Route>
               </Route>
 
@@ -788,7 +609,7 @@ function AuthenticatedAppShell() {
           </Suspense>
         </RouteErrorBoundary>
       </Box>
-      </ChatCallsProvider>
+      </PostAuthChatCallsProvider>
     </AuthProvider>
   );
 }

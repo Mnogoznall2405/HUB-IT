@@ -245,3 +245,41 @@ async def test_bot_transfer_act_has_six_columns_and_atomic_signature_block(tmp_p
     assert generated_path is not None
     assert Path(generated_path).suffix == ".docx"
     _assert_transfer_act_layout(Path(generated_path))
+
+
+@pytest.mark.asyncio
+async def test_bot_pdf_conversion_keeps_only_the_pdf_act(tmp_path, monkeypatch):
+    pdf_generator = importlib.import_module("bot.services.pdf_generator")
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    shutil.copy2(TEMPLATE_PATH, template_dir / TEMPLATE_PATH.name)
+    monkeypatch.chdir(tmp_path)
+
+    import docx2pdf
+
+    def convert_to_pdf(docx_path, pdf_path):
+        Path(pdf_path).write_bytes(b"%PDF-1.4")
+
+    monkeypatch.setattr(docx2pdf, "convert", convert_to_pdf)
+
+    generated_path = await pdf_generator.generate_transfer_act_pdf(
+        new_employee=TO_EMPLOYEE,
+        new_employee_dept=DEPARTMENT,
+        old_employee=FROM_EMPLOYEE,
+        serials_data=[
+            {
+                "serial": "PC1L9HLE",
+                "equipment": {
+                    "TYPE_NAME": "Системный блок",
+                    "MODEL_NAME": "Lenovo ThinkCentre M720q",
+                    "PART_NO": "ЦБ-00087978",
+                    "INV_NO": "101646",
+                },
+            }
+        ],
+        db_name="main",
+    )
+
+    assert str(generated_path).endswith(".pdf")
+    assert Path(generated_path).read_bytes().startswith(b"%PDF-")
+    assert list((tmp_path / "transfer_acts").glob("*.docx")) == []

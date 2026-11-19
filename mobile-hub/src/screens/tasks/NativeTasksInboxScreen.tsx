@@ -28,15 +28,31 @@ import {
 import { useAuth } from '../../auth/AuthContext';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import {
+  nativeCollectionSignature,
   readNativeCollectionSnapshot,
   writeNativeCollectionSnapshot,
 } from '../../cache/nativeSnapshotCache';
 import { NativeTaskRow } from '../../components/tasks/NativeTaskRow';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
+import { taskStatusLabel } from '../../tasks/taskActions';
 import { TASK_STATUS_OPTIONS } from '../../tasks/taskFormat';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
-import { buildNativeTaskListSections } from '../../tasks/nativeTaskViews';
+import {
+  buildNativeTaskBoardSections,
+  buildNativeTaskCalendar,
+  buildNativeTaskDeadlines,
+  buildNativeTaskGantt,
+  buildNativeTaskListSections,
+  NATIVE_TASK_BOARD_COLUMNS,
+  NATIVE_TASK_PAGE_MODES,
+  nativeTaskDateKey,
+  normalizeNativeTaskPageMode,
+  type NativeTaskCalendarDay,
+  type NativeTaskDeadlineBucket,
+  type NativeTaskGanttRow,
+  type NativeTaskPageMode,
+} from '../../tasks/nativeTaskViews';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
 import {
   AccountLoading,
@@ -67,10 +83,18 @@ type DirectoryOption = {
   label: string;
 };
 
+type TaskPageMode = NativeTaskPageMode;
+
 type TaskFeedRow =
   | { key: string; kind: 'section'; label: string; count: number }
   | { key: string; kind: 'task'; task: HubTask }
   | { key: string; kind: 'completed-toggle'; count: number };
+
+type TaskBoardRow =
+  | { key: string; kind: 'section'; title: string; count: number }
+  | { key: string; kind: 'task'; task: HubTask };
+
+const CALENDAR_WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 const VIEW_OPTIONS: Array<{ value: TaskViewMode; label: string; permission?: 'manage' | 'review' }> = [
   { value: 'assignee', label: 'Исполняю' },
@@ -123,6 +147,10 @@ function firstParam(value: string | string[] | undefined): string {
   return String(Array.isArray(value) ? value[0] : value || '').trim();
 }
 
+function normalizeInboxPageMode(value: unknown): TaskPageMode {
+  return normalizeNativeTaskPageMode(value);
+}
+
 function personOption(person: TaskAssignee): DirectoryOption {
   return {
     value: String(person.id),
@@ -153,6 +181,7 @@ export function NativeTasksInboxScreen() {
     taskController?: string | string[];
     taskDepartment?: string | string[];
     taskSort?: string | string[];
+    taskMode?: string | string[];
   }>();
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
@@ -171,6 +200,7 @@ export function NativeTasksInboxScreen() {
       : ['assignee', 'creator', 'department'].includes(requestedView)
         ? requestedView as TaskViewMode
         : defaultView;
+  const requestedTaskMode = firstParam(params.taskMode);
   const requestedFocus = firstParam(params.focusMode);
   const requestedStatus = firstParam(params.status);
   const requestedDue = firstParam(params.taskDue);
@@ -193,6 +223,9 @@ export function NativeTasksInboxScreen() {
   const [filters, setFilters] = useState<TaskFilterState>(() => initialFilters);
   const [filterDraft, setFilterDraft] = useState<TaskFilterState>(() => initialFilters);
   const [sortByDue, setSortByDue] = useState(firstParam(params.taskSort) === 'asc');
+  const [pageMode, setPageMode] = useState<TaskPageMode>(() => normalizeInboxPageMode(requestedTaskMode));
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const [selectedDayKey, setSelectedDayKey] = useState(() => nativeTaskDateKey(new Date()));
   const [completedTasksOpen, setCompletedTasksOpen] = useState(false);
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [moreVisible, setMoreVisible] = useState(false);
@@ -227,6 +260,7 @@ export function NativeTasksInboxScreen() {
       else setLoadingMore(true);
     }
     setError('');
+    const deadlineMode = pageMode === 'calendar' || pageMode === 'gantt' || pageMode === 'deadlines';
     const request = {
       q: debouncedQuery.trim(),
       status: filters.status,
@@ -239,12 +273,14 @@ export function NativeTasksInboxScreen() {
       assignee_user_id: filters.viewMode === 'all' ? filters.assigneeUserId : undefined,
       has_attachments: filters.hasAttachments,
       unread_comments_only: filters.unreadCommentsOnly,
-      sort_by: sortByDue ? 'due_at' : 'updated_at',
-      sort_dir: sortByDue ? 'asc' : 'desc',
-      limit: PAGE_SIZE,
+      sort_by: pageMode === 'board' ? 'status' : deadlineMode || sortByDue ? 'due_at' : 'updated_at',
+      sort_dir: pageMode === 'board' || deadlineMode || sortByDue ? 'asc' : 'desc',
+      // A silent realtime refresh must cover the already-loaded window, not
+      // just its first page — otherwise every event drops loaded pages.
+      limit: Math.min(500, reset && silent ? Math.max(PAGE_SIZE, items.length) : PAGE_SIZE),
       offset: reset ? 0 : items.length,
     } as const;
-    const signature = JSON.stringify({ ...request, offset: 0 });
+    const signature = nativeCollectionSignature(request);
     const userId = Number(user?.id || 0);
     const dataScope = `${userId}:${signature}`;
     let cached = loadedScopeRef.current === dataScope;
@@ -278,7 +314,13 @@ export function NativeTasksInboxScreen() {
       return;
     }
     try {
-      const page = await getTasksPage(request);
+      const refreshCount = reset && silent ? Math.max(PAGE_SIZE, items.length) : PAGE_SIZE;
+      let page = await getTasksPage(request);
+      while (reset && silent && page.items.length < refreshCount && page.items.length < page.total) {
+        const next = await getTasksPage({ ...request, offset: page.items.length, limit: Math.min(500, refreshCount - page.items.length) });
+        if (!next.items.length) break;
+        page = { ...next, items: [...page.items, ...next.items] };
+      }
       if (requestId !== requestRef.current) return;
       const cachedItems = uniqueTasks(reset ? page.items : [...items, ...page.items]);
       loadedScopeRef.current = dataScope;
@@ -308,12 +350,16 @@ export function NativeTasksInboxScreen() {
         setLoadingMore(false);
       }
     }
-  }, [debouncedQuery, filters, items.length, offlineMode, sortByDue, user?.id]);
+  }, [debouncedQuery, filters, items.length, offlineMode, pageMode, sortByDue, user?.id]);
 
   useEffect(() => {
     if (allowed) void loadPage({ reset: true });
     return () => { requestRef.current += 1; };
-  }, [allowed, debouncedQuery, filters, sortByDue, offlineMode, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allowed, debouncedQuery, filters, sortByDue, pageMode, offlineMode, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setPageMode(normalizeInboxPageMode(requestedTaskMode));
+  }, [requestedTaskMode]);
 
   useEffect(() => {
     if (!allowed || offlineMode) return undefined;
@@ -335,24 +381,36 @@ export function NativeTasksInboxScreen() {
     };
   }, [allowed, loadPage, offlineMode]);
 
+  // In-flight guard via ref: keeping `directoriesLoading` in deps would
+  // retrigger the effect the moment the flag resets and loop requests while
+  // filters stay open after a partial failure.
+  const directoriesLoadingRef = useRef(false);
   useEffect(() => {
-    if (offlineMode || !filtersVisible || directoriesLoading || directoriesLoaded) return;
+    if (offlineMode || !filtersVisible || directoriesLoaded || directoriesLoadingRef.current) return;
+    directoriesLoadingRef.current = true;
     setDirectoriesLoading(true);
-    void Promise.all([
+    void Promise.allSettled([
       listDepartments(),
       searchTaskControllers('', 100),
       canManageAll ? searchTaskAssignees('', 100) : Promise.resolve([]),
-    ]).then(([nextDepartments, nextControllers, nextAssignees]) => {
-      setDepartments(nextDepartments);
-      setControllers(nextControllers);
-      setAssignees(nextAssignees);
-    }).catch((cause) => {
-      setError(formatApiError(cause, 'Не удалось загрузить отделы и сотрудников. Закройте фильтры и повторите попытку.'));
+    ]).then((results) => {
+      const [departmentsResult, controllersResult, assigneesResult] = results;
+      if (departmentsResult.status === 'fulfilled') setDepartments(departmentsResult.value);
+      if (controllersResult.status === 'fulfilled') setControllers(controllersResult.value);
+      if (assigneesResult.status === 'fulfilled') setAssignees(assigneesResult.value);
+      const failed = results.filter((result) => result.status === 'rejected');
+      if (failed.length) {
+        // Keep directoriesLoaded=false so reopening filters retries the
+        // failed requests; data that did load is still usable.
+        setError('Не удалось загрузить часть справочников. Закройте фильтры и повторите попытку.');
+      } else {
+        setDirectoriesLoaded(true);
+      }
     }).finally(() => {
-      setDirectoriesLoaded(true);
+      directoriesLoadingRef.current = false;
       setDirectoriesLoading(false);
     });
-  }, [canManageAll, directoriesLoaded, directoriesLoading, filtersVisible]);
+  }, [canManageAll, directoriesLoaded, filtersVisible, offlineMode]);
 
   const activeFilterCount = Number(Boolean(filters.status))
     + Number(Boolean(filters.dueState))
@@ -400,6 +458,61 @@ export function NativeTasksInboxScreen() {
     }
     return rows;
   }, [completedTasksOpen, items.length, taskListSections]);
+
+  const boardRows = useMemo<TaskBoardRow[]>(() => {
+    if (pageMode !== 'board') return [];
+    const rows: TaskBoardRow[] = [];
+    buildNativeTaskBoardSections(items).forEach((section) => {
+      rows.push({
+        key: `board-section-${section.key}`,
+        kind: 'section',
+        title: section.title,
+        count: section.data.length,
+      });
+      section.data.forEach((task) => rows.push({ key: `board-task-${task.id}`, kind: 'task', task }));
+    });
+    return rows;
+  }, [items, pageMode]);
+
+  const calendar = useMemo(
+    () => (pageMode === 'calendar' ? buildNativeTaskCalendar(items, calendarMonth) : null),
+    [calendarMonth, items, pageMode],
+  );
+  const gantt = useMemo(
+    () => (pageMode === 'gantt' ? buildNativeTaskGantt(items) : null),
+    [items, pageMode],
+  );
+  const deadlineBuckets = useMemo(
+    () => (pageMode === 'deadlines' ? buildNativeTaskDeadlines(items) : []),
+    [items, pageMode],
+  );
+  const calendarWeeks = useMemo<NativeTaskCalendarDay[][]>(() => {
+    if (!calendar) return [];
+    const weeks: NativeTaskCalendarDay[][] = [];
+    for (let index = 0; index < calendar.days.length; index += 7) {
+      weeks.push(calendar.days.slice(index, index + 7));
+    }
+    return weeks;
+  }, [calendar]);
+  const selectedDayTasks = selectedDayKey === 'no-due'
+    ? calendar?.noDueItems || []
+    : calendar?.days.find((day) => day.dateKey === selectedDayKey)?.items || [];
+  const calendarMonthTitle = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(calendarMonth);
+  const calendarAgendaTitle = selectedDayKey === 'no-due'
+    ? `Задачи без срока · ${taskCountLabel(selectedDayTasks.length)}`
+    : `${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(new Date(`${selectedDayKey}T12:00:00`))} · ${taskCountLabel(selectedDayTasks.length)}`;
+
+  const shiftCalendarMonth = (delta: number) => {
+    const next = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + delta, 1);
+    setCalendarMonth(next);
+    setSelectedDayKey(nativeTaskDateKey(next));
+  };
+
+  const selectCalendarToday = () => {
+    const now = new Date();
+    setCalendarMonth(now);
+    setSelectedDayKey(nativeTaskDateKey(now));
+  };
 
   const openFilters = () => {
     setFilterDraft(filters);
@@ -470,6 +583,247 @@ export function NativeTasksInboxScreen() {
       />
     );
   }, [completedTasksOpen, filters.viewMode, openTask, tokens]);
+
+  const taskPersonRole = filters.viewMode === 'assignee' ? 'created_by' : 'assignee';
+
+  const renderTaskBoardRow = useCallback(({ item }: ListRenderItemInfo<TaskBoardRow>) => {
+    if (item.kind === 'section') {
+      return (
+        <View style={styles.taskSectionHeader}>
+          <Text accessibilityRole="header" style={[styles.taskSectionTitle, { color: tokens.textPrimary }]}>{item.title}</Text>
+          <Text style={[styles.taskSectionCount, { color: tokens.textSecondary }]}>{`Загружено ${item.count}`}</Text>
+        </View>
+      );
+    }
+    return (
+      <NativeTaskRow
+        task={item.task}
+        tokens={tokens}
+        personRole={taskPersonRole}
+        onPress={openTask}
+      />
+    );
+  }, [openTask, taskPersonRole, tokens]);
+
+  const renderCalendarTask = useCallback(({ item }: ListRenderItemInfo<HubTask>) => (
+    <NativeTaskRow
+      task={item}
+      tokens={tokens}
+      personRole={taskPersonRole}
+      onPress={openTask}
+    />
+  ), [openTask, taskPersonRole, tokens]);
+
+  const renderTaskGanttRow = useCallback(({ item }: ListRenderItemInfo<NativeTaskGanttRow>) => {
+    const title = String(item.task.title || '').trim() || 'Задача';
+    const statusKey = String(item.task.status || '').trim().toLowerCase();
+    const color = item.task.is_overdue
+      ? tokens.error
+      : NATIVE_TASK_BOARD_COLUMNS.find((column) => column.key === statusKey)?.color || tokens.primary;
+    return (
+      <Pressable
+        testID={`native-tasks-gantt-row-${item.task.id}`}
+        accessibilityRole="button"
+        accessibilityLabel={`${title}. ${taskStatusLabel(item.task.status)}. ${item.startKey} — ${item.endKey}`}
+        onPress={() => openTask(item.task)}
+        style={({ pressed }) => [styles.ganttRow, { borderColor: tokens.borderSoft }, pressed && styles.pressed]}
+      >
+        <View style={styles.ganttRowMeta}>
+          <Text numberOfLines={2} style={[styles.ganttRowTitle, { color: tokens.textPrimary }]}>{title}</Text>
+          <Text numberOfLines={1} style={[styles.ganttRowDates, { color: tokens.textSecondary }]}>{`${item.startKey} — ${item.endKey}`}</Text>
+        </View>
+        <View style={[styles.ganttTrack, { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft }]}>
+          <View style={[
+            styles.ganttBar,
+            {
+              left: `${item.leftPercent}%`,
+              width: `${item.widthPercent}%`,
+              backgroundColor: `${color}38`,
+              borderColor: `${color}6b`,
+            },
+          ]} />
+        </View>
+      </Pressable>
+    );
+  }, [openTask, tokens]);
+
+  const renderDeadlineBucket = useCallback(({ item }: ListRenderItemInfo<NativeTaskDeadlineBucket>) => (
+    <View testID={`native-tasks-deadline-bucket-${item.key}`} style={[styles.deadlineBucket, { borderColor: tokens.borderSoft }]}>
+      <View style={styles.deadlineBucketHeader}>
+        <View style={[styles.deadlineBucketDot, { backgroundColor: item.color }]} />
+        <Text accessibilityRole="header" style={[styles.deadlineBucketTitle, { color: item.color }]}>{item.label}</Text>
+        <Text style={[styles.deadlineBucketCount, { color: item.color, backgroundColor: `${item.color}1f` }]}>{item.items.length}</Text>
+      </View>
+      {item.items.length ? item.items.map((task) => (
+        <NativeTaskRow
+          key={String(task.id)}
+          task={task}
+          tokens={tokens}
+          personRole={taskPersonRole}
+          onPress={openTask}
+        />
+      )) : (
+        <Text style={[styles.deadlineBucketEmpty, { color: tokens.textSecondary }]}>Нет задач.</Text>
+      )}
+    </View>
+  ), [openTask, taskPersonRole, tokens]);
+
+  const partialTasksFooter = items.length < total ? (
+    <View>
+      <Text accessibilityLiveRegion="polite" style={[styles.partialNotice, { color: tokens.textSecondary }]}>
+        {`Загружено ${items.length} из ${total} задач. Доска/календарь может быть неполным.`}
+      </Text>
+      <Pressable
+        testID="native-tasks-load-more"
+        accessibilityRole="button"
+        accessibilityLabel="Загрузить ещё задачи"
+        accessibilityState={{ disabled: offlineMode || loading || loadingMore || refreshing }}
+        disabled={offlineMode || loading || loadingMore || refreshing}
+        onPress={() => { void loadPage({ reset: false }); }}
+        style={({ pressed }) => [styles.loadMoreButton, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }, pressed && styles.pressed]}
+      >
+        {loadingMore
+          ? <ActivityIndicator size="small" color={tokens.primary} />
+          : <Text style={[styles.toolbarText, { color: tokens.primary }]}>Загрузить ещё задачи</Text>}
+      </Pressable>
+      {offlineMode ? (
+        <Text style={[styles.partialNotice, { color: tokens.textSecondary }]}>Нет сети — остальные задачи недоступны.</Text>
+      ) : null}
+    </View>
+  ) : null;
+
+  const ganttHeader = gantt ? (
+    <View style={styles.ganttHeader}>
+      <View style={styles.ganttHeaderMeta}>
+        <Text accessibilityRole="header" style={[styles.ganttTitle, { color: tokens.textPrimary }]}>Гант</Text>
+        <Text style={[styles.ganttRange, { color: tokens.textSecondary }]}>
+          {`${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).format(gantt.rangeStart)} — ${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).format(gantt.rangeEnd)}`}
+        </Text>
+      </View>
+      <View style={[styles.ganttNoDueChip, { backgroundColor: tokens.panelInset }]}>
+        <Text style={[styles.ganttNoDueText, { color: tokens.textSecondary }]}>{`Без срока: ${gantt.noDueItems.length}`}</Text>
+      </View>
+    </View>
+  ) : null;
+
+  const ganttFooter = gantt ? (
+    <View>
+      {gantt.noDueItems.length ? (
+        <View>
+          <View style={styles.taskSectionHeader}>
+            <Text accessibilityRole="header" style={[styles.taskSectionTitle, { color: tokens.textPrimary }]}>Без срока</Text>
+            <Text style={[styles.taskSectionCount, { color: tokens.textSecondary }]}>{`Загружено ${gantt.noDueItems.length}`}</Text>
+          </View>
+          {gantt.noDueItems.map((task) => (
+            <NativeTaskRow
+              key={String(task.id)}
+              task={task}
+              tokens={tokens}
+              personRole={taskPersonRole}
+              onPress={openTask}
+            />
+          ))}
+        </View>
+      ) : null}
+      {partialTasksFooter}
+    </View>
+  ) : null;
+
+  const calendarHeader = pageMode === 'calendar' ? (
+    <View>
+      <Text accessibilityRole="header" style={[styles.calendarMonthTitle, { color: tokens.textPrimary }]}>{calendarMonthTitle}</Text>
+      <View style={styles.calendarNavRow}>
+        <Pressable
+          testID="native-task-calendar-prev"
+          accessibilityRole="button"
+          accessibilityLabel="Предыдущий месяц"
+          onPress={() => shiftCalendarMonth(-1)}
+          style={({ pressed }) => [styles.calendarNavButton, { borderColor: tokens.borderSoft }, pressed && styles.pressed]}
+        >
+          <MaterialCommunityIcons name="chevron-left" size={22} color={tokens.iconMuted} />
+        </Pressable>
+        <Pressable
+          testID="native-task-calendar-today"
+          accessibilityRole="button"
+          accessibilityLabel="Перейти к текущей дате"
+          onPress={selectCalendarToday}
+          style={({ pressed }) => [styles.calendarNavButton, styles.calendarNavToday, { borderColor: tokens.borderSoft }, pressed && styles.pressed]}
+        >
+          <Text style={[styles.calendarNavText, { color: tokens.primary }]}>Сегодня</Text>
+        </Pressable>
+        <Pressable
+          testID="native-task-calendar-next"
+          accessibilityRole="button"
+          accessibilityLabel="Следующий месяц"
+          onPress={() => shiftCalendarMonth(1)}
+          style={({ pressed }) => [styles.calendarNavButton, { borderColor: tokens.borderSoft }, pressed && styles.pressed]}
+        >
+          <MaterialCommunityIcons name="chevron-right" size={22} color={tokens.iconMuted} />
+        </Pressable>
+      </View>
+      <View style={styles.calendarWeekdayRow}>
+        {CALENDAR_WEEKDAYS.map((label) => (
+          <Text key={label} style={[styles.calendarWeekday, { color: tokens.textTertiary }]}>{label}</Text>
+        ))}
+      </View>
+      {calendarWeeks.map((week) => (
+        <View key={week[0]?.dateKey || 'week'} style={styles.calendarWeekRow}>
+          {week.map((day) => {
+            const selected = selectedDayKey === day.dateKey;
+            return (
+              <Pressable
+                key={day.dateKey}
+                testID={`native-task-calendar-day-${day.dateKey}`}
+                accessibilityRole="button"
+                accessibilityLabel={`${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(day.date)}${day.isToday ? ', сегодня' : ''}. Задач: ${day.items.length}`}
+                accessibilityState={{ selected }}
+                onPress={() => setSelectedDayKey(day.dateKey)}
+                style={({ pressed }) => [
+                  styles.calendarDay,
+                  {
+                    borderColor: selected ? tokens.primary : day.isToday ? tokens.selectedBorder : 'transparent',
+                    backgroundColor: selected ? `${tokens.primary}14` : 'transparent',
+                    opacity: day.inMonth ? 1 : 0.45,
+                  },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={[
+                  styles.calendarDayText,
+                  {
+                    color: selected || day.isToday ? tokens.primary : day.inMonth ? tokens.textPrimary : tokens.textTertiary,
+                    fontWeight: selected || day.isToday ? '900' : '700',
+                  },
+                ]}>
+                  {day.date.getDate()}
+                </Text>
+                <Text style={[styles.calendarDayCount, { color: tokens.primary }]}>
+                  {day.items.length || ''}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      ))}
+      <Pressable
+        testID="native-task-calendar-no-due"
+        accessibilityRole="button"
+        accessibilityLabel={`Задачи без срока: ${calendar?.noDueItems.length || 0}`}
+        accessibilityState={{ selected: selectedDayKey === 'no-due' }}
+        onPress={() => setSelectedDayKey('no-due')}
+        style={({ pressed }) => [
+          styles.calendarNoDue,
+          { borderColor: selectedDayKey === 'no-due' ? tokens.primary : tokens.borderSoft },
+          pressed && styles.pressed,
+        ]}
+      >
+        <Text style={[styles.toolbarText, { color: selectedDayKey === 'no-due' ? tokens.primary : tokens.textPrimary }]}>
+          {`Без срока (${calendar?.noDueItems.length || 0})`}
+        </Text>
+      </Pressable>
+      <Text accessibilityRole="header" style={[styles.calendarAgendaTitle, { color: tokens.textPrimary }]}>{calendarAgendaTitle}</Text>
+    </View>
+  ) : null;
 
   if (!allowed) {
     return (
@@ -543,6 +897,16 @@ export function NativeTasksInboxScreen() {
 
       <View style={styles.scopeRow}>
         <NativeSegmentedControl
+          options={NATIVE_TASK_PAGE_MODES.map((mode) => ({ value: mode.value, label: mode.label }))}
+          selected={pageMode}
+          onSelect={(value) => setPageMode(value as TaskPageMode)}
+          tokens={tokens}
+          testIDPrefix="native-task-page-mode"
+        />
+      </View>
+
+      <View style={styles.scopeRow}>
+        <NativeSegmentedControl
           options={[
             { value: 'assignee', label: 'Исполняю' },
             { value: 'creator', label: 'Созданные' },
@@ -570,6 +934,7 @@ export function NativeTasksInboxScreen() {
             {!['assignee', 'creator'].includes(filters.viewMode) ? scopeLabel : 'Фильтры'}{activeFilterCount ? ` · ${activeFilterCount}` : ''}
           </Text>
         </Pressable>
+        {pageMode === 'list' ? (
         <Pressable
           testID="native-task-sort-due"
           onPress={() => setSortByDue((value) => !value)}
@@ -580,6 +945,7 @@ export function NativeTasksInboxScreen() {
           <MaterialCommunityIcons name={sortByDue ? 'calendar-arrow-right' : 'sort-clock-descending-outline'} size={19} color={tokens.iconMuted} />
           <Text style={[styles.toolbarText, { color: tokens.textPrimary }]}>{sortByDue ? 'Ближайший срок' : 'Обновлённые'}</Text>
         </Pressable>
+        ) : null}
       </View>
 
       {activeFilterCount ? (
@@ -612,6 +978,74 @@ export function NativeTasksInboxScreen() {
 
       {loading && items.length === 0 ? (
         <AccountLoading tokens={tokens} />
+      ) : pageMode === 'board' ? (
+        <FlatList
+          initialNumToRender={14}
+          maxToRenderPerBatch={10}
+          windowSize={7}
+          testID="native-tasks-board"
+          data={boardRows}
+          keyExtractor={(item) => item.key}
+          keyboardShouldPersistTaps="handled"
+          refreshing={refreshing}
+          onRefresh={() => { void loadPage({ reset: true, refresh: true }); }}
+          contentContainerStyle={[styles.listContent, { paddingBottom: navInset }]}
+          ListFooterComponent={partialTasksFooter}
+          renderItem={renderTaskBoardRow}
+        />
+      ) : pageMode === 'calendar' ? (
+        <FlatList
+          initialNumToRender={10}
+          maxToRenderPerBatch={8}
+          windowSize={7}
+          testID="native-tasks-calendar"
+          data={selectedDayTasks}
+          keyExtractor={(task) => String(task.id)}
+          keyboardShouldPersistTaps="handled"
+          refreshing={refreshing}
+          onRefresh={() => { void loadPage({ reset: true, refresh: true }); }}
+          contentContainerStyle={[styles.listContent, { paddingBottom: navInset }]}
+          ListHeaderComponent={calendarHeader}
+          ListEmptyComponent={error ? null : (
+            <Text style={[styles.emptyText, styles.calendarEmptyText, { color: tokens.textSecondary }]}>Задач на выбранную дату нет</Text>
+          )}
+          ListFooterComponent={partialTasksFooter}
+          renderItem={renderCalendarTask}
+        />
+      ) : pageMode === 'gantt' ? (
+        <FlatList
+          initialNumToRender={10}
+          maxToRenderPerBatch={8}
+          windowSize={7}
+          testID="native-tasks-gantt"
+          data={gantt?.rows || []}
+          keyExtractor={(row) => String(row.task.id)}
+          keyboardShouldPersistTaps="handled"
+          refreshing={refreshing}
+          onRefresh={() => { void loadPage({ reset: true, refresh: true }); }}
+          contentContainerStyle={[styles.listContent, { paddingBottom: navInset }]}
+          ListHeaderComponent={ganttHeader}
+          ListEmptyComponent={error ? null : (
+            <Text style={[styles.emptyText, styles.calendarEmptyText, { color: tokens.textSecondary }]}>Нет задач со сроком для диаграммы</Text>
+          )}
+          ListFooterComponent={ganttFooter}
+          renderItem={renderTaskGanttRow}
+        />
+      ) : pageMode === 'deadlines' ? (
+        <FlatList
+          initialNumToRender={7}
+          maxToRenderPerBatch={7}
+          windowSize={7}
+          testID="native-tasks-deadlines"
+          data={deadlineBuckets}
+          keyExtractor={(bucket) => bucket.key}
+          keyboardShouldPersistTaps="handled"
+          refreshing={refreshing}
+          onRefresh={() => { void loadPage({ reset: true, refresh: true }); }}
+          contentContainerStyle={[styles.listContent, { paddingBottom: navInset }]}
+          ListFooterComponent={partialTasksFooter}
+          renderItem={renderDeadlineBucket}
+        />
       ) : (
         <FlatList
           initialNumToRender={12}
@@ -876,6 +1310,40 @@ const styles = StyleSheet.create({
   emptyAction: { minHeight: 44, borderWidth: 1, borderRadius: 13, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center', marginTop: 16 },
   emptyActionText: { fontSize: 14, fontWeight: '900' },
   footerLoader: { marginVertical: 12 },
+  partialNotice: { fontSize: 12, lineHeight: 16, marginTop: 10, textAlign: 'center' },
+  loadMoreButton: { minHeight: 44, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center', marginTop: 8, paddingHorizontal: 12 },
+  calendarMonthTitle: { fontSize: 16, fontWeight: '800', textAlign: 'center', marginBottom: 8 },
+  calendarNavRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  calendarNavButton: { minWidth: 44, minHeight: 44, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10 },
+  calendarNavToday: { flex: 1, minWidth: 0 },
+  calendarNavText: { fontSize: 13, fontWeight: '700' },
+  calendarWeekdayRow: { flexDirection: 'row', marginBottom: 4 },
+  calendarWeekday: { flex: 1, minWidth: 0, textAlign: 'center', fontSize: 11, fontWeight: '700' },
+  calendarWeekRow: { flexDirection: 'row', gap: 2, marginBottom: 2 },
+  calendarDay: { flex: 1, minWidth: 0, minHeight: 44, borderRadius: 8, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 3 },
+  calendarDayText: { fontSize: 12 },
+  calendarDayCount: { fontSize: 9, minHeight: 11 },
+  calendarNoDue: { minHeight: 44, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center', marginTop: 8, paddingHorizontal: 12 },
+  calendarAgendaTitle: { fontSize: 14, fontWeight: '800', marginTop: 10, marginBottom: 6 },
+  calendarEmptyText: { textAlign: 'center', paddingVertical: 18 },
+  ganttHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 4, marginBottom: 6 },
+  ganttHeaderMeta: { flex: 1, minWidth: 0 },
+  ganttTitle: { fontSize: 16, fontWeight: '900' },
+  ganttRange: { fontSize: 12, fontWeight: '700', marginTop: 2 },
+  ganttNoDueChip: { borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4 },
+  ganttNoDueText: { fontSize: 12, fontWeight: '800' },
+  ganttRow: { minHeight: 44, borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  ganttRowMeta: { flex: 2, minWidth: 0 },
+  ganttRowTitle: { fontSize: 13, fontWeight: '800' },
+  ganttRowDates: { fontSize: 11, fontWeight: '600', marginTop: 2 },
+  ganttTrack: { flex: 3, height: 30, borderRadius: 9, borderWidth: 1, overflow: 'hidden', position: 'relative' },
+  ganttBar: { position: 'absolute', top: 4, bottom: 4, borderRadius: 7, borderWidth: 1 },
+  deadlineBucket: { borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 8 },
+  deadlineBucketHeader: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 2 },
+  deadlineBucketDot: { width: 8, height: 8, borderRadius: 4 },
+  deadlineBucketTitle: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: '900' },
+  deadlineBucketCount: { borderRadius: 9, overflow: 'hidden', fontSize: 12, fontWeight: '900', paddingHorizontal: 8, paddingVertical: 2 },
+  deadlineBucketEmpty: { fontSize: 13, fontWeight: '700', paddingHorizontal: 12, paddingVertical: 6 },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.42)' },
   backdropDismissLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   filterSheet: { maxHeight: '90%', minHeight: '68%', borderWidth: 1, borderBottomWidth: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },

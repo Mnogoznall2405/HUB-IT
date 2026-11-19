@@ -340,12 +340,13 @@ def resolve_effective_database_id(
     explicit = normalize_database_id(explicit_database_id)
     user = user_payload if isinstance(user_payload, dict) else {}
     role = _normalize_text(user.get("role")).lower()
-    assigned_database = normalize_database_id(user.get("assigned_database"))
-    if not assigned_database:
-        assigned_database = normalize_database_id(
-            user_db_selection_service.get_assigned_database(user.get("telegram_id"))
-        )
-    if assigned_database and role != "admin":
+    raw_assigned = _normalize_text(user.get("assigned_database")) or _normalize_text(
+        user_db_selection_service.get_assigned_database(user.get("telegram_id"))
+    )
+    assigned_database = normalize_database_id(raw_assigned)
+    if role != "admin" and raw_assigned:
+        # Fail closed: a dangling assignment (renamed/removed DB) must not fall
+        # through to explicit/pinned — that would hand the user another DB.
         return assigned_database
     if explicit:
         return explicit

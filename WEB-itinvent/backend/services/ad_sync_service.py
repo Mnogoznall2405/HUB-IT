@@ -2,8 +2,9 @@ import os
 import asyncio
 import logging
 from typing import List, Dict, Optional
-from ldap3 import Server, Connection, ALL, SUBTREE
+from ldap3 import SUBTREE
 from backend.config import config
+from backend.services.ldap_security import open_ldap_connection
 from backend.database.connection import get_db
 from backend.database.queries import AVAILABLE_DATABASES
 
@@ -28,15 +29,12 @@ def fetch_ad_users() -> List[Dict]:
     sync_user = os.getenv("LDAP_SYNC_USER", "")
     sync_password = os.getenv("LDAP_SYNC_PASSWORD", "")
     
-    server = Server(server_host, get_info=ALL)
-    
-    # Try binding
     if sync_user and sync_password:
-        conn = Connection(server, user=sync_user, password=sync_password, auto_bind=True)
+        conn = open_ldap_connection(server_host, user=sync_user, password=sync_password)
     else:
         # Try anonymous or NTLM current context bind (works if running on Windows domain joined machine)
         try:
-            conn = Connection(server, auto_bind=True)
+            conn = open_ldap_connection(server_host)
         except Exception as e:
             logger.error(f"Failed to bind anonymously. Set LDAP_SYNC_USER and LDAP_SYNC_PASSWORD in .env: {e}")
             return []
@@ -131,17 +129,27 @@ def sync_users_to_db(ad_users: List[Dict], db_id: str, force_update: bool = Fals
                 if force_update:
                     # Optional: Update existing user (department, title, phone, email) if we want to sync changes
                     # But per user request: "Главное чтобы он не удалял из базы пользователей"
+                    # Name fields update only when AD provides a non-empty value, so a
+                    # missing AD attribute (e.g. middleName) never wipes stored data.
                     owner_no = login_map[login]["OWNER_NO"]
                     try:
                         update_query = """
                         UPDATE OWNERS SET
-                            OWNER_DEPT = ?, 
-                            OWNER_POSITION = ?, 
-                            OWNER_PHONE = ?, 
+                            OWNER_LNAME = COALESCE(NULLIF(?, ''), OWNER_LNAME),
+                            OWNER_FNAME = COALESCE(NULLIF(?, ''), OWNER_FNAME),
+                            OWNER_MNAME = COALESCE(NULLIF(?, ''), OWNER_MNAME),
+                            OWNER_DISPLAY_NAME = COALESCE(NULLIF(?, ''), OWNER_DISPLAY_NAME),
+                            OWNER_DEPT = ?,
+                            OWNER_POSITION = ?,
+                            OWNER_PHONE = ?,
                             OWNER_EMAIL = ?
                         WHERE OWNER_NO = ?
                         """
                         db.execute_update(update_query, (
+                            u["lname"][:255] if u["lname"] else "",
+                            u["fname"][:255] if u["fname"] else "",
+                            u["mname"][:255] if u["mname"] else "",
+                            u["display_name"][:255] if u["display_name"] else "",
                             u["department"][:255] if u["department"] else "",
                             u["title"][:255] if u["title"] else "",
                             u["phone"][:255] if u["phone"] else "",

@@ -172,6 +172,7 @@ Notes:
 - events contain only compact realtime envelopes; durable messages remain in PostgreSQL tables/outbox;
 - each node has `12` pooled Chat DB connections plus three dedicated PostgreSQL connections (publisher, `LISTEN`, presence); the two-node realtime budget stays within `30`;
 - `restart-chat-scale.ps1` validates the configured PostgreSQL envelope before a rollout and stops the rolling restart if fewer than 20 live connections remain free;
+- Run ARR-aware scripts through native Windows PowerShell 5.1 (`%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe -File ...`). PowerShell 7's `WinPSCompatSession` deserializes IIS elements and can fail on `GetChildElement` before the node is drained; do not bypass the drain or readiness guards.
 - restart чата — только `restart-chat-scale.ps1`; `restart-chat.ps1` и `pm2 restart itinvent-chat*` в dual-режиме не использовать (скрипт откажет);
 - exactly one `itinvent-preview-worker` (Chat, Hub tasks, mail, document flow and My Files) and one `itinvent-chat-push-worker` are shared by both API nodes;
 - `itinvent-preview-worker` is the only application process that generates file-preview artifacts: Office-to-PDF documents, My Files copies, Chat image thumbnails and video posters;
@@ -426,6 +427,7 @@ DROP INDEX CONCURRENTLY IF EXISTS app.idx_hub_notifications_entity;
 ## Ротация логов PM2
 
 PM2 не ротирует логи сам (`pm2-logrotate` не установлен). Задача планировщика `HUB-IT PM2 Log Rotate` раз в сутки (04:30)
-запускает `rotate-logs.ps1`: лог крупнее 200 МБ сжимается в `%USERPROFILE%\.pm2\logs\archive\*.gz` и обнуляется
-(copytruncate, процессы не перезапускаются; строки, записанные за время сжатия, теряются). Архивы старше 14 дней удаляются.
+запускает `rotate-logs.ps1` с явным `-LogDir`: лог крупнее 200 МБ сжимается в `archive\*.gz` и обнуляется
+(copytruncate, процессы не перезапускаются; строки, записанные за время сжатия, могут потеряться).
+Архивы по умолчанию сохраняются; удаление доступно только при явно заданном `-KeepDays`.
 Проверка без изменений: `powershell -File scripts\pm2\rotate-logs.ps1 -DryRun`.

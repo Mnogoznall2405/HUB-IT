@@ -1,4 +1,4 @@
-import { API_V1_BASE } from '../api/client';
+import { API_V1_BASE } from '../api/http';
 import { getWsTicket } from '../api/chatWsAuth';
 import {
   getChatContactPreviewText,
@@ -41,7 +41,13 @@ const STABLE_CONNECTION_MS = 5_000;
 // otherwise block connect()/probes forever: give up and reconnect with backoff.
 const CONNECT_TIMEOUT_MS = 10_000;
 const MAX_QUEUED_MESSAGES = 100;
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4000, 4400, 4401, 4403, 4404, 4503]);
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4400, 4401, 4403, 4404]);
+// 4000: the server evicted this connection for a newer one (per-user connection
+// limit). Transient by nature — but an immediate reconnect would start a tab
+// war, so retry once on a long delay; focus/online probes still reconnect at
+// once because authBlocked stays false.
+const EVICTED_CLOSE_CODE = 4000;
+const EVICTED_RECONNECT_DELAY_MS = 120_000;
 const VOLATILE_OFFLINE_COMMANDS = new Set(['chat.typing', 'chat.ping']);
 const CONVERSATION_SUBSCRIPTION_COMMANDS = new Set([
   'chat.subscribe_conversation',
@@ -533,7 +539,9 @@ class ChatSocketClient {
         this.scheduleReconnect(
           closeCode === RATE_LIMITED_CLOSE_CODE
             ? this.resolveRateLimitRetryAfterMs(event?.reason)
-            : 0,
+            : closeCode === EVICTED_CLOSE_CODE
+              ? EVICTED_RECONNECT_DELAY_MS
+              : 0,
         );
       }
     };

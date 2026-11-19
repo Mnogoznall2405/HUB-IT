@@ -712,7 +712,7 @@ def _pop_deferred_delivery_outbox(message: Any) -> dict[str, Any] | None:
 
 
 async def _enqueue_deferred_delivery_outbox(*, deferred: dict[str, Any] | None) -> bool:
-    """Aux-slot INSERT ... ON CONFLICT DO NOTHING after ACK."""
+    """Legacy-adapter fallback; new sends already commit their delivery intent."""
     if not isinstance(deferred, dict) or not deferred:
         return False
     from backend.chat.event_outbox_service import chat_event_outbox_service
@@ -967,7 +967,7 @@ async def _run_after_send_background_effects(
             inbox_meta_after_send_enabled,
         )
 
-        # Deferred outbox first (aux slot), then apply — closes crash window via repair poll.
+        # Legacy deferred intents first; new sends already have an atomic outbox row.
         if isinstance(deferred_delivery_outbox, dict) and deferred_delivery_outbox:
             await _enqueue_deferred_delivery_outbox(deferred=deferred_delivery_outbox)
         if delivery_state_after_send_enabled():

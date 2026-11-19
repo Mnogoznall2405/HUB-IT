@@ -55,13 +55,20 @@ export default function useMailComposeSessionController({
       resolveComposeMailboxId,
       storage,
     });
-    openComposeSession(
-      restoredState || createComposeInitialState({
-        composeMode: 'new',
-        composeFromMailboxId: resolveComposeMailboxId(),
-      })
-    );
-  }, [composeDraftKey, openComposeSession, resolveComposeMailboxId, storage]);
+    setComposeSession((prevSession) => {
+      if (prevSession) return prevSession;
+      composeSessionCounterRef.current += 1;
+      return {
+        id: composeSessionCounterRef.current,
+        initialState: createComposeInitialState(
+          restoredState || createComposeInitialState({
+            composeMode: 'new',
+            composeFromMailboxId: resolveComposeMailboxId(),
+          })
+        ),
+      };
+    });
+  }, [composeDraftKey, resolveComposeMailboxId, storage]);
 
   useEffect(() => {
     const searchParams = new URLSearchParams(locationSearch || '');

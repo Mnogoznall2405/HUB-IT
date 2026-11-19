@@ -80,8 +80,10 @@ class WsSessionLease:
             return True
         if token_data.jti and auth_runtime_store_service.is_jti_revoked(token_data.jti):
             return True
-        session_id = token_data.session_id or self.session_id
-        if session_id and not session_service.is_session_active(session_id):
+        session_id = str(token_data.session_id or "").strip()
+        if not session_id or not session_service.is_session_active_for_user(
+            session_id, token_data.user_id
+        ):
             return True
         return False
 
@@ -132,7 +134,7 @@ class WsSessionLease:
                 _note("ws_auth_update_rejected")
                 return False
             self.token = access_token
-            self.session_id = token_data.session_id or self.session_id
+            self.session_id = token_data.session_id
             self.authenticated_until = token_data.expires_at or (_now_utc())
             self.grace_deadline = None
             _note("ws_auth_update_ok")
@@ -145,12 +147,14 @@ class WsSessionLease:
                 or token_data.token_type != "ws_auth"
                 or int(token_data.user_id or 0) != self.user_id
                 or (token_data.jti and auth_runtime_store_service.is_jti_revoked(token_data.jti))
-                or (token_data.session_id and not session_service.is_session_active(token_data.session_id))
+                or not token_data.session_id
+                or not session_service.is_session_active_for_user(
+                    token_data.session_id, token_data.user_id
+                )
             ):
                 _note("ws_auth_update_rejected")
                 return False
-            if token_data.session_id:
-                self.session_id = token_data.session_id
+            self.session_id = token_data.session_id
             from datetime import timedelta
 
             self.authenticated_until = _now_utc() + timedelta(seconds=_WS_AUTH_PROOF_WINDOW_SEC)

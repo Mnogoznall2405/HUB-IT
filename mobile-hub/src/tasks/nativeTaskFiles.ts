@@ -10,7 +10,7 @@ import {
 } from '../api/taskApi';
 import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
-import { sanitizeNativeFileName } from '../files/filePolicy';
+import { fitNativeFileName, sanitizeNativeFileName } from '../files/filePolicy';
 
 export const TASK_FILE_MAX_BYTES = 20 * 1024 * 1024;
 const CACHE_DIRECTORY_NAME = 'hubit-task-files';
@@ -41,7 +41,7 @@ export function getNativeTaskFileCacheSize(): number {
 async function taskCacheFile(fileName: string): Promise<File> {
   const userId = Number(await getSessionUserId());
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
-  return new File(taskCacheDirectory(), `${userId}-${fileName}`);
+  return new File(taskCacheDirectory(), fitNativeFileName(`${userId}-${fileName}`));
 }
 
 export function taskAttachmentPath(taskId: string, attachmentId: string): string {

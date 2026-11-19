@@ -126,6 +126,11 @@ export function NativeMailComposeScreen() {
   const [retainedAttachments, setRetainedAttachments] = useState<MailAttachment[]>([]);
   const [forwardedAttachments, setForwardedAttachments] = useState<MailAttachment[]>([]);
   const [forwardAttachmentsPruned, setForwardAttachmentsPruned] = useState(false);
+  // Kept refs restored from the server draft context: they drive the payload
+  // until the forward source message is fetched and the kept attachments are
+  // materialized for the UI.
+  const [restoredForwardRefs, setRestoredForwardRefs] = useState<string[]>([]);
+  const forwardRefsSeqRef = useRef(0);
   const [draftId, setDraftId] = useState(initialDraftId);
   const [replyToMessageId, setReplyToMessageId] = useState('');
   const [forwardMessageId, setForwardMessageId] = useState('');
@@ -285,9 +290,9 @@ export function NativeMailComposeScreen() {
 
   useEffect(() => {
     if (incomingShareAppliedRef.current || mode !== 'new') return;
-    incomingShareAppliedRef.current = true;
     const share = consumeIncomingShare('mail');
     if (!share) return;
+    incomingShareAppliedRef.current = true;
     setSubject(share.subject.slice(0, 500));
     setBody(share.text);
     if (share.copiedFiles?.length) {
@@ -328,7 +333,7 @@ export function NativeMailComposeScreen() {
       transferredTextRef.current = null;
     }
     preparationScopeRef.current = preparationScope;
-    const restoreLocal = async (selectedMailbox: string) => {
+    const restoreLocal = async (selectedMailbox: string, serverDraftLoaded = false) => {
       if (user?.id && selectedMailbox) {
           const session = createMailComposeDraftSession({ userId: user.id, mailboxId: selectedMailbox, sourceId: sourceMessageId || initialDraftId, mode });
           const restored = await session.read();
@@ -337,7 +342,33 @@ export function NativeMailComposeScreen() {
           const pendingSend = await session.hasPendingSend();
           if (cancelled) return false;
           setSendPending(pendingSend);
-          if (restored && !first(params.transferId)) {
+          // Локальная копия уступает: входящему share (свежее намерение) и
+          // серверному черновику (авторитетный между устройствами, MB-12).
+          if (restored && !first(params.transferId) && !incomingShareAppliedRef.current && serverDraftLoaded) {
+            // Only files that were picked but never reached the server are
+            // still worth restoring from the local copy.
+            if (restored.files.length) setFiles(restored.files);
+            return false;
+          }
+          if (restored && !first(params.transferId) && !incomingShareAppliedRef.current && !serverDraftLoaded) {
+            // Reply/forward drafts linked to a server draftId defer to it:
+            // the local copy may predate edits made on another device.
+            const linkedDraftId = mode !== 'draft' && !offlineMode ? String(restored.draftId || '').trim() : '';
+            const serverDraft = linkedDraftId
+              ? await getMailMessage(linkedDraftId, selectedMailbox).catch(() => null)
+              : null;
+            if (cancelled) return false;
+            if (serverDraft && String(serverDraft.id || '') === linkedDraftId) {
+              applyServerDraftSource(serverDraft);
+              setMailboxId(selectedMailbox);
+              if (restored.files.length) setFiles(restored.files);
+              if (restored.forwardAttachmentsPruned === true) {
+                setForwardedAttachments(Array.isArray(restored.forwardedAttachments) ? restored.forwardedAttachments : []);
+                setForwardAttachmentsPruned(true);
+              }
+              setDraftStatus('Открыт черновик с сервера');
+              return true;
+            }
             setDraftId(restored.draftId); setTo(restored.to); setCc(restored.cc); setBcc(restored.bcc);
             setSubject(restored.subject); setBody(restored.body); setBodyHtml(restored.bodyHtml || ''); setRichEditing(restored.richEditing === true || Boolean(restored.richDraftRequiresWeb && restored.bodyHtml)); setQuoteHtml(restored.quoteHtml);
             setReplyToMessageId(restored.replyToMessageId); setForwardMessageId(restored.forwardMessageId);
@@ -398,7 +429,7 @@ export function NativeMailComposeScreen() {
           if (transferred === null) throw new Error('Не удалось перенести быстрый ответ. Вернитесь к письму и повторите.');
           if (transferred !== null) { transferredTextRef.current = { userId: user.id, transferId: first(params.transferId), text: transferred }; setBody(transferred); }
         }
-        await restoreLocal(selectedMailbox);
+        await restoreLocal(selectedMailbox, mode === 'draft' && Boolean(source));
         if (cancelled) return;
         queueMicrotask(() => {
           if (cancelled) return;
@@ -420,6 +451,44 @@ export function NativeMailComposeScreen() {
     return () => { cancelled = true; };
   }, [allowed, initialDraftId, initialMailboxId, initialTransferId, sourceMessageId, mode, user?.id, offlineMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const applyServerDraftSource = useCallback((source: MailMessageDetail) => {
+    setRichDraftRequiresWeb(mailDraftNeedsRichEditor(source.body_html));
+    setDraftId(source.id);
+    setMailboxId(String(source.mailbox_id || initialMailboxId));
+    setTo(recipientInputValue(draftRecipients(source, 'to')));
+    setCc(recipientInputValue(draftRecipients(source, 'cc')));
+    setBcc(recipientInputValue(draftRecipients(source, 'bcc')));
+    setSubject(String(source.subject || ''));
+    setBody(String(source.body_text || ''));
+    setBodyHtml(mailDraftNeedsRichEditor(source.body_html) ? String(source.body_html || '') : '');
+    setRichEditing(mailDraftNeedsRichEditor(source.body_html));
+    setQuoteHtml('');
+    setQuotePreview('');
+    setShowCopies(Boolean((source.cc || []).length || (source.bcc || []).length));
+    setRetainedAttachments(source.attachments || []);
+    setReplyToMessageId(String(source.draft_context?.reply_to_message_id || ''));
+    setForwardMessageId(String(source.draft_context?.forward_message_id || ''));
+    const forwardSourceId = String(source.draft_context?.forward_message_id || '');
+    const forwardRefs = source.draft_context?.forward_attachment_refs;
+    const refsSeq = ++forwardRefsSeqRef.current;
+    if (Array.isArray(forwardRefs) && forwardSourceId) {
+      // The server draft records which forward attachments were kept; the
+      // source message is fetched to materialize them for editing/removal.
+      const refSet = new Set(forwardRefs.map((item) => String(item || '').trim()).filter(Boolean));
+      setRestoredForwardRefs([...refSet]);
+      setForwardAttachmentsPruned(true);
+      void getMailMessage(forwardSourceId, String(source.mailbox_id || initialMailboxId)).then((forwardSource) => {
+        if (forwardRefsSeqRef.current !== refsSeq) return;
+        setForwardedAttachments((forwardSource.attachments || []).filter((attachment) => (
+          refSet.has(String(attachment.download_token || attachment.id || '').trim())
+        )));
+        setRestoredForwardRefs([]);
+      }).catch(() => undefined);
+    } else {
+      setRestoredForwardRefs([]);
+    }
+  }, [initialMailboxId]);
+
   const initializeFromSource = useCallback((source: MailMessageDetail) => {
     // These fields belong to the previous source, even when the compose mode
     // stays the same. A matching local draft is restored after initialization.
@@ -427,28 +496,14 @@ export function NativeMailComposeScreen() {
     setRetainedAttachments([]);
     setForwardedAttachments([]);
     setForwardAttachmentsPruned(false);
+    setRestoredForwardRefs([]);
     setDraftId('');
     setBcc('');
     setReplyToMessageId('');
     setForwardMessageId('');
     setRichDraftRequiresWeb(false);
     if (mode === 'draft') {
-      setRichDraftRequiresWeb(mailDraftNeedsRichEditor(source.body_html));
-      setDraftId(source.id);
-      setMailboxId(String(source.mailbox_id || initialMailboxId));
-      setTo(recipientInputValue(draftRecipients(source, 'to')));
-      setCc(recipientInputValue(draftRecipients(source, 'cc')));
-      setBcc(recipientInputValue(draftRecipients(source, 'bcc')));
-      setSubject(String(source.subject || ''));
-      setBody(String(source.body_text || ''));
-      setBodyHtml(mailDraftNeedsRichEditor(source.body_html) ? String(source.body_html || '') : '');
-      setRichEditing(mailDraftNeedsRichEditor(source.body_html));
-      setQuoteHtml('');
-      setQuotePreview('');
-      setShowCopies(Boolean((source.cc || []).length || (source.bcc || []).length));
-      setRetainedAttachments(source.attachments || []);
-      setReplyToMessageId(String(source.draft_context?.reply_to_message_id || ''));
-      setForwardMessageId(String(source.draft_context?.forward_message_id || ''));
+      applyServerDraftSource(source);
       return;
     }
     if (mode === 'reply' || mode === 'reply_all' || mode === 'forward') {
@@ -474,7 +529,7 @@ export function NativeMailComposeScreen() {
         );
       }
     }
-  }, [initialMailboxId, mode]);
+  }, [applyServerDraftSource, mode]);
 
   useEffect(() => {
     if (!initialized || lastSavedFingerprintRef.current) return;
@@ -498,10 +553,12 @@ export function NativeMailComposeScreen() {
       replyToMessageId,
       forwardMessageId,
       retainExistingAttachments: attachmentRefs(retainedAttachments),
-      forwardAttachmentRefs: forwardAttachmentsPruned ? attachmentRefs(forwardedAttachments) : undefined,
+      forwardAttachmentRefs: forwardAttachmentsPruned
+        ? (forwardedAttachments.length ? attachmentRefs(forwardedAttachments) : restoredForwardRefs)
+        : undefined,
       files: includeFiles ? files : [],
     };
-  }, [bcc, body, cc, draftId, files, forwardAttachmentsPruned, forwardMessageId, forwardedAttachments, mailboxId, mode, quoteHtml, bodyHtml, richEditing, replyToMessageId, retainedAttachments, subject, to]);
+  }, [bcc, body, cc, draftId, files, forwardAttachmentsPruned, forwardMessageId, forwardedAttachments, mailboxId, mode, quoteHtml, bodyHtml, restoredForwardRefs, richEditing, replyToMessageId, retainedAttachments, subject, to]);
 
   const saveDraft = useCallback(async ({ includeFiles, closeAfter = false, silent = false }: { includeFiles: boolean; closeAfter?: boolean; silent?: boolean }) => {
     if (!checkCurrentEditor() || saveInFlightRef.current || sendInFlightRef.current || saving || sending || sendPendingRef.current || offlineMode || (richDraftRequiresWeb && !richEditing) || (richEditing && !richReady)) return false;
@@ -624,6 +681,31 @@ export function NativeMailComposeScreen() {
     }
   }, [checkCurrentEditor]);
 
+  const selectMailbox = useCallback((nextMailboxId: string) => {
+    if (nextMailboxId === mailboxId) return;
+    const previous = localSessionRef.current;
+    setMailboxId(nextMailboxId);
+    // The server draft belongs to the old mailbox — a fresh one is created
+    // under the new sender on the next save instead of risking a
+    // cross-mailbox update or a rejection.
+    if (draftId) setDraftId('');
+    if (!user?.id || !nextMailboxId) return;
+    const next = createMailComposeDraftSession({ userId: user.id, mailboxId: nextMailboxId, sourceId: sourceMessageId || initialDraftId, mode });
+    localSessionRef.current = next;
+    // The local draft is keyed by mailbox — re-save the current editor state
+    // under the new mailbox and drop the stale record so reopening this
+    // composer under the new sender finds it (attachments live under the
+    // user-scoped copy directory, keys stay valid).
+    void next.write({ ...localState, draftId: '' })
+      .then(() => previous?.clear().catch(() => undefined))
+      .catch(() => {
+        // Roll back to the still-valid previous session: autosave must keep
+        // writing under the old mailbox instead of a broken empty record.
+        if (localSessionRef.current === next) localSessionRef.current = previous;
+        if (mountedRef.current) setError('Локальный черновик не перенесён на новый ящик. Проверьте список черновиков.');
+      });
+  }, [draftId, initialDraftId, localState, mailboxId, mode, sourceMessageId, user?.id]);
+
   const saveLocalAndClose = useCallback(async () => {
     if (!checkCurrentEditor() || saveInFlightRef.current || sendInFlightRef.current || !initialized) return;
     const session = localSessionRef.current;
@@ -743,12 +825,36 @@ export function NativeMailComposeScreen() {
       if (!ownsEditor()) return;
       if (snapshot) { setBody(snapshot.text); setBodyHtml(snapshot.html); }
       if (!localSession) throw new Error('Локальный черновик недоступен. Отправка приостановлена для сохранности письма.');
-      const prepared = await localSession.prepareSend({ ...localState, ...(snapshot ? { body: snapshot.text, bodyHtml: snapshot.html } : {}) }, createSendIdempotencyKey);
+      const preparedOrError = await localSession.prepareSend({ ...localState, ...(snapshot ? { body: snapshot.text, bodyHtml: snapshot.html } : {}) }, createSendIdempotencyKey).then(
+        (value) => ({ ok: true as const, value }),
+        (cause: unknown) => ({ ok: false as const, cause }),
+      );
+      if (!preparedOrError.ok) {
+        // Прошлая отправка не подтверждена, а текст успели изменить: без явного
+        // решения экран навсегда клинит на pending-записи — ни отправить, ни сохранить.
+        if (ownsEditor() && localSessionRef.current === localSession) {
+          Alert.alert('Отправка не подтверждена', 'Результат предыдущей отправки неизвестен. Отправить изменённое письмо как новое? Если прошлое уже доставлено, получатель увидит дубль.', [
+            { text: 'Проверю отправленные', style: 'cancel' },
+            {
+              text: 'Отправить заново', onPress: () => {
+                void (async () => {
+                  await localSession.resolvePending().catch(() => undefined);
+                  if (!ownsEditor() || localSessionRef.current !== localSession) return;
+                  sendPendingRef.current = false; setSendPending(false);
+                  void performSend(true);
+                })();
+              },
+            },
+          ]);
+        }
+        return;
+      }
+      const prepared = preparedOrError.value;
       if (!ownsEditor() || currentAccessRef.current.offlineMode) return;
       sendPendingRef.current = true; setSendPending(true);
       if (prepared.retry && !retryApproved) {
         Alert.alert('Повторить отправку?', 'Результат предыдущей отправки неизвестен. Проверьте папку «Отправленные»: повтор может создать второе письмо.', [
-          { text: 'Вернуться', style: 'cancel' },
+          { text: 'Вернуться', style: 'cancel', onPress: () => { sendPendingRef.current = false; setSendPending(false); } },
           { text: 'Повторить отправку', onPress: () => { void performSend(true); } },
         ]);
         return;
@@ -874,6 +980,17 @@ export function NativeMailComposeScreen() {
           {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
           {sendPending ? <View><Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Предыдущая отправка ещё не подтверждена. Проверьте «Отправленные» перед повтором. Сохранение на сервере приостановлено.</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="Проверить отправленные" disabled={sending || saving} style={styles.secondaryButton} onPress={() => router.push({ pathname: '/(shell)/mail', params: { mailboxId, folder: 'sent' } } as never)}><Text style={{ color: tokens.primary }}>Проверить отправленные</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Сохранить как черновик" disabled={sending || saving} style={styles.secondaryButton} onPress={() => {
+              void (async () => {
+                // User checked «Отправленные» and chose to keep editing: lift
+                // the send-pending hold and persist the current text again.
+                await localSessionRef.current?.resolvePending().catch(() => undefined);
+                if (!mountedRef.current) return;
+                sendPendingRef.current = false;
+                setSendPending(false);
+                void saveDraft({ includeFiles: true });
+              })();
+            }}><Text style={{ color: tokens.primary }}>Сохранить как черновик</Text></Pressable>
           </View> : null}
           {hasExternalRecipients ? <Text accessibilityLiveRegion="polite" style={[styles.externalNotice, { color: tokens.primary }]}>В письме есть внешние получатели. Проверьте адреса перед отправкой.</Text> : null}
           <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{localDraftStatus}</Text>
@@ -886,7 +1003,7 @@ export function NativeMailComposeScreen() {
             <View style={styles.fieldBlock}>
               <Text style={[styles.label, { color: tokens.textSecondary }]}>Отправитель</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.mailboxRow}>
-                {mailboxes.map((mailbox) => <ComposeChip disabled={sending || saving} key={mailbox.id} label={mailbox.label || mailbox.mailbox_email || 'Ящик'} selected={mailboxId === String(mailbox.id)} tokens={tokens} onPress={() => setMailboxId(String(mailbox.id))} />)}
+                {mailboxes.map((mailbox) => <ComposeChip disabled={sending || saving} key={mailbox.id} label={mailbox.label || mailbox.mailbox_email || 'Ящик'} selected={mailboxId === String(mailbox.id)} tokens={tokens} onPress={() => selectMailbox(String(mailbox.id))} />)}
               </ScrollView>
             </View>
           ) : null}

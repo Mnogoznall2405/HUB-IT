@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { normalizeMailboxId, withMailboxQuery } from './mailMailboxQuery';
 
 const withSignal = (config, signal) => (signal ? { ...config, signal } : config);

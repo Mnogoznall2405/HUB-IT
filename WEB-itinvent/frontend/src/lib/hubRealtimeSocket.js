@@ -1,4 +1,5 @@
-import { API_V1_BASE, authAPI } from '../api/client';
+import { API_V1_BASE } from '../api/http';
+import { authAPI } from '../api/auth';
 import { getWsTicket } from '../api/chatWsAuth';
 
 export const HUB_REALTIME_NOTIFICATION_EVENT = 'hub-realtime-notification-created';
@@ -27,7 +28,12 @@ const INITIAL_RECONNECT_SPREAD_MS = 5_000;
 const STABLE_CONNECTION_MS = 5_000;
 // 1008 (slow consumer / rate limit) must reconnect with backoff — only
 // session/auth-class closes stay non-reconnectable.
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([4000, 4400, 4403, 4404]);
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([4400, 4403, 4404]);
+// 4000: the server evicted this connection for a newer one (per-user connection
+// limit). Transient by nature — but an immediate reconnect would start a tab
+// war, so retry once on a long delay.
+const EVICTED_CLOSE_CODE = 4000;
+const EVICTED_RECONNECT_DELAY_MS = 120_000;
 const AUTH_TOKEN_REFRESHED_EVENT = 'auth-token-refreshed';
 const RECENT_EVENT_IDS_LIMIT = 512;
 const TASK_EVENT_TYPES = new Set(['tasks.task.created', 'tasks.task.updated', 'tasks.task.deleted']);
@@ -195,7 +201,7 @@ export class HubRealtimeSocketClient {
         && this.retainCount > 0
         && !NON_RECONNECTABLE_CLOSE_CODES.has(closeCode)
       ) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(closeCode === EVICTED_CLOSE_CODE ? EVICTED_RECONNECT_DELAY_MS : 0);
       }
     };
   }
@@ -323,7 +329,7 @@ export class HubRealtimeSocketClient {
     this.connect();
   }
 
-  scheduleReconnect() {
+  scheduleReconnect(minDelayMs = 0) {
     if (this.reconnectTimer || this.manualClose || this.authBlocked || this.retainCount <= 0) return;
     const baseDelay = RECONNECT_DELAYS_MS[
       Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)
@@ -335,6 +341,7 @@ export class HubRealtimeSocketClient {
     const delay = Math.max(
       0,
       Math.min(RECONNECT_DELAYS_MS.at(-1), baseDelay + jitter + initialSpread),
+      Number(minDelayMs) || 0,
     );
     this.reconnectAttempt += 1;
     this.setStatus('reconnecting');

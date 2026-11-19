@@ -115,6 +115,8 @@ def task_env(temp_dir, monkeypatch):
         6: _raw_user(6, "taskonly", "Task Only User", "viewer", [TASKS_READ]),
         7: _raw_user(7, "assistant", "Task Assistant", "viewer", [TASKS_READ]),
         8: _raw_user(8, "createonly", "Task Create Only", "viewer", [DASHBOARD_READ, TASKS_READ, TASKS_CREATE]),
+        9: _raw_user(9, "annmoder", "Announcement Moderator", "viewer", [TASKS_READ, "announcements.moderate"]),
+        10: _raw_user(10, "taskadmin", "Task Admin Delegate", "viewer", [TASKS_READ, "tasks.manage_all"]),
     }
     users_by_id = dict(raw_users)
     store = SimpleNamespace(
@@ -514,6 +516,22 @@ def test_create_task_detail_access_and_role_scopes(task_env):
     set_user(4)
     denied = client.get(f"/hub/tasks/{task_id}")
     assert denied.status_code == 403
+
+
+def test_announcement_moderator_cannot_read_private_task(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    set_user(1)
+    task = _create_task(client)
+
+    set_user(9)  # announcements.moderate is not a task-admin permission
+    denied = client.get(f"/hub/tasks/{task['id']}")
+    assert denied.status_code == 403
+
+    set_user(10)  # tasks.manage_all grants task-admin scope
+    allowed = client.get(f"/hub/tasks/{task['id']}")
+    assert allowed.status_code == 200
+    assert allowed.json()["id"] == task["id"]
 
 
 def test_create_task_provisions_discussion_before_first_open(task_env, monkeypatch):
@@ -1740,7 +1758,7 @@ def test_task_email_outbox_queues_assignment_and_dispatches(task_env, monkeypatc
 
     result = service.dispatch_task_email_outbox()
 
-    assert result == {"claimed": 2, "sent": 2, "failed": 0}
+    assert result == {"claimed": 2, "sent": 2, "failed": 0, "unknown": 0}
     assert len(sent) == 2
     assert {item["recipient_email"] for item in sent} == {"assignee@example.test", "controller@example.test"}
     assert all("Email Assigned Task" in item["subject"] for item in sent)

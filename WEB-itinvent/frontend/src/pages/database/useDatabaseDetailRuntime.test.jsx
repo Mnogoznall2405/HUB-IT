@@ -23,6 +23,17 @@ vi.mock('../../api/client', () => ({
   },
 }));
 
+vi.mock('../../api/http', async () => {
+  const client = await import('../../api/client');
+  const pick = (key) => (Object.hasOwn(client, key) ? client[key] : undefined);
+  return {
+    default: client.default,
+    apiClient: pick('apiClient') ?? client.default,
+    API_V1_BASE: pick('API_V1_BASE'),
+    ...(pick('getCachedGet') ? { getCachedGet: client.getCachedGet } : {}),
+  };
+});
+
 const detailItem = {
   ID: 1,
   INV_NO: '1001',

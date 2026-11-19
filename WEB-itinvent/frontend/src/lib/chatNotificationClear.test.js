@@ -110,4 +110,28 @@ describe('clearChatConversationNotifications', () => {
     expect(opened.close).toHaveBeenCalledTimes(1);
     expect(other.close).not.toHaveBeenCalled();
   });
+
+  it('caps tracked notifications per conversation and closes the superseded ones', async () => {
+    const {
+      clearChatConversationNotifications,
+      rememberChatConversationNotification,
+    } = await import('./chatNotificationClear');
+    const notifications = Array.from({ length: 25 }, () => ({ close: vi.fn() }));
+    notifications.forEach((notification) => {
+      rememberChatConversationNotification('conv-1', notification);
+    });
+
+    // The 5 oldest are already closed by eviction; the newest 20 stay tracked.
+    notifications.slice(0, 5).forEach((notification) => {
+      expect(notification.close).toHaveBeenCalledTimes(1);
+    });
+    notifications.slice(5).forEach((notification) => {
+      expect(notification.close).not.toHaveBeenCalled();
+    });
+
+    clearChatConversationNotifications('conv-1', { now: 1_000 });
+    notifications.slice(5).forEach((notification) => {
+      expect(notification.close).toHaveBeenCalledTimes(1);
+    });
+  });
 });

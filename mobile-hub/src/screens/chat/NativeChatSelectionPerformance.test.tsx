@@ -61,7 +61,7 @@ const MESSAGES = Array.from({ length: 6 }, (_, index) => ({
 beforeEach(() => {
   // M7: history starts from getThreadBootstrap; reject it so tests exercise
   // the getMessagesPage fallback path.
-  mockedChatApi.getThreadBootstrap.mockRejectedValue(new Error('404'));
+  mockedChatApi.getThreadBootstrap.mockRejectedValue({ response: { status: 404 } });
   mockedChatApi.getConversation.mockResolvedValue({
     id: 'conversation-1',
     kind: 'direct',

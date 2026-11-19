@@ -23,6 +23,8 @@ export default function useMailReadMutations({
   setError,
   setFolderSummary,
   setListData,
+  setMailboxInfo,
+  setMailboxes,
   setSelectedConversation,
   setSelectedMessage,
   settleAutoReadGuard,
@@ -58,6 +60,23 @@ export default function useMailReadMutations({
     return true;
   }, [folder, folderSummaryRef, setFolderSummary]);
 
+  const applyMailboxUnreadDelta = useCallback((delta) => {
+    const normalizedDelta = Number(delta || 0);
+    if (!normalizedDelta) return;
+    setMailboxInfo?.((prev) => (prev
+      ? { ...prev, unread_count: Math.max(0, Number(prev?.unread_count || 0) + normalizedDelta) }
+      : prev));
+    const normalizedActiveId = String(activeMailboxId || '').trim();
+    if (!normalizedActiveId) return;
+    setMailboxes?.((prev) => (Array.isArray(prev)
+      ? prev.map((entry) => (
+        String(entry?.id || entry?.mailbox_id || '').trim() === normalizedActiveId
+          ? { ...entry, unread_count: Math.max(0, Number(entry?.unread_count || 0) + normalizedDelta) }
+          : entry
+      ))
+      : prev));
+  }, [activeMailboxId, setMailboxInfo, setMailboxes]);
+
   const applyMessageReadStateLocally = useCallback(({ messageId, isRead, unreadDelta = 0 }) => {
     const normalizedMessageId = String(messageId || '');
     if (!normalizedMessageId) return false;
@@ -88,8 +107,10 @@ export default function useMailReadMutations({
         is_read: Boolean(isRead),
       });
     }
+    applyMailboxUnreadDelta(unreadDelta);
     return updateCurrentFolderUnread(unreadDelta);
   }, [
+    applyMailboxUnreadDelta,
     getRecentMessageDetailSnapshot,
     listDataRef,
     persistRecentMessageDetailSnapshot,
@@ -159,8 +180,10 @@ export default function useMailReadMutations({
         is_read: Boolean(isRead),
       };
     }
+    applyMailboxUnreadDelta(unreadDelta);
     return updateCurrentFolderUnread(unreadDelta);
   }, [
+    applyMailboxUnreadDelta,
     listDataRef,
     selectedConversationRef,
     selectedMessageRef,
@@ -284,6 +307,7 @@ export default function useMailReadMutations({
         unreadDelta: -unreadDelta,
         nextIsRead: !nextIsRead,
       });
+      applyMailboxUnreadDelta(-unreadDelta);
       localReadStateOverridesRef.current = clearLocalReadStateOverride({
         mode: normalizedMode,
         targetId: normalizedTargetId,
@@ -305,6 +329,7 @@ export default function useMailReadMutations({
     activeMailboxId,
     advancedFiltersApplied,
     applyConversationReadStateLocally,
+    applyMailboxUnreadDelta,
     applyMessageReadStateLocally,
     emitMailUnreadChange,
     folder,

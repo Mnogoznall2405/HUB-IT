@@ -9,13 +9,15 @@ import {
   createMyFileDownloadGrant,
   createMyFileUploadSession,
   getMyFileUploadSession,
+  listMyFiles,
   uploadMyFileChunk,
   type MyFilePreview,
   type MyFileRecord,
   type MyFileUploadSession,
 } from '../api/myFilesApi';
+import { getSessionGeneration } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
-import { sanitizeNativeFileName, selectCacheEvictions } from '../files/filePolicy';
+import { fitNativeFileName, sanitizeNativeFileName, selectCacheEvictions } from '../files/filePolicy';
 import {
   MY_FILES_MAX_FILE_BYTES,
   MY_FILES_TEXT_PREVIEW_MAX_BYTES,
@@ -25,6 +27,11 @@ import { getNativeMyFilesOfflineFile } from './nativeMyFilesOfflineStore';
 
 const CACHE_DIRECTORY_NAME = 'hubit-my-files';
 const NATIVE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024;
+// Bumped by clearNativeMyFilesCache on logout/session switch. Downloads
+// capture the generation as a lease, write into lease-prefixed names and
+// refuse to return results that outlived their session — a slow transfer
+// must never hand user A's file to user B.
+let cacheGeneration = 0;
 const TEXT_PREVIEW_MAX_CHARACTERS = 200_000;
 /** Паритет с вебом: сервер резервирует сессию на upload_reservation_ttl_sec (2ч). */
 const UPLOAD_RESUME_MAX_AGE_MS = 2 * 60 * 60 * 1000;
@@ -86,7 +93,15 @@ function cleanupCache(preserveUri?: string): void {
 }
 
 export function clearNativeMyFilesCache(): void {
+  cacheGeneration += 1;
   cacheDirectory().list().forEach((entry) => entry.delete());
+}
+
+// Cache names embed the server content version so a same-size edit lands on
+// a new path instead of being served from a stale entry.
+function myFileVersionTag(item: MyFileRecord): string {
+  const stamp = Date.parse(String(item.updated_at || ''));
+  return Number.isFinite(stamp) ? Math.round(stamp).toString(36) : '0';
 }
 
 export function getNativeMyFilesCacheSize(): number {
@@ -179,17 +194,59 @@ function uploadResumeKey(name: string, size: number, folderId: string, modifiedA
 async function findResumableUploadSession(
   key: string,
   expectedSize: number,
+  folderId: string | null | undefined,
   signal?: AbortSignal,
-): Promise<MyFileUploadSession | null> {
+): Promise<{ kind: 'session'; session: MyFileUploadSession } | { kind: 'completed'; record: MyFileRecord } | null> {
   const entry = (await readUploadResumeMap())[key];
   const fileId = String(entry?.fileId || '').trim();
   if (!fileId || Date.now() - Number(entry?.savedAt || 0) > UPLOAD_RESUME_MAX_AGE_MS) return null;
   try {
     const session = await getMyFileUploadSession(fileId, signal);
-    if (session.file_size_bytes !== expectedSize || session.complete) return null;
-    return session;
+    if (session.file_size_bytes !== expectedSize) return null;
+    return { kind: 'session', session };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    // The session endpoint only serves active reservations: a reservation
+    // whose complete response was lost is already a file under the same id.
+    // Only a proven list hit counts as a duplicate — a failed lookup must
+    // propagate instead of silently falling back to a new upload session.
+    const record = await findCompletedUploadRecord(fileId, folderId, signal);
+    return record ? { kind: 'completed', record } : null;
+  }
+}
+
+async function findCompletedUploadRecord(
+  fileId: string,
+  folderId: string | null | undefined,
+  signal?: AbortSignal,
+): Promise<MyFileRecord | null> {
+  const page = await listMyFiles({ folderId: folderId || null, signal });
+  return page.items.find((item) => item.id === fileId) || null;
+}
+
+/**
+ * A live resume record means the file's full size is already counted in the
+ * server quota — the pre-upload quota check must not charge it again, or an
+ * interrupted upload can never be resumed while the quota is tight.
+ */
+export async function hasPendingMyFileUploadReservation(
+  picked: NativeMyFileUpload,
+  folderId?: string | null,
+): Promise<boolean> {
+  try {
+    const source = new File(picked.uri);
+    const actualSize = Math.max(0, Number(source.size || picked.size || 0));
+    const key = uploadResumeKey(
+      sanitizeNativeFileName(picked.name),
+      actualSize,
+      String(folderId || ''),
+      Number(source.modificationTime || 0),
+    );
+    const entry = (await readUploadResumeMap())[key];
+    return Boolean(String(entry?.fileId || '').trim())
+      && Date.now() - Number(entry?.savedAt || 0) <= UPLOAD_RESUME_MAX_AGE_MS;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -329,15 +386,22 @@ export async function uploadNativeMyFile(
   let fileId = '';
   emitUploadProgress(options.onProgress, 0, actualSize);
   try {
-    const session = (await findResumableUploadSession(resumeKey, actualSize, signal))
-      || await createUploadSessionWithCapacityRetry({
-        fileName: safeName,
-        fileSize: actualSize,
-        retentionDays: normalizeMyFilesRetention(retentionDays),
-        mimeType,
-        folderId: options.folderId || null,
-        signal,
-      });
+    const resumable = await findResumableUploadSession(resumeKey, actualSize, options.folderId, signal);
+    if (resumable?.kind === 'completed') {
+      // The earlier complete response was lost but the server committed the
+      // upload — return its record instead of uploading the file a second time.
+      await clearUploadResume(resumeKey);
+      emitUploadProgress(options.onProgress, actualSize, actualSize);
+      return resumable.record;
+    }
+    const session = resumable?.session ?? await createUploadSessionWithCapacityRetry({
+      fileName: safeName,
+      fileSize: actualSize,
+      retentionDays: normalizeMyFilesRetention(retentionDays),
+      mimeType,
+      folderId: options.folderId || null,
+      signal,
+    });
     fileId = session.file_id;
     await saveUploadResume(resumeKey, fileId);
     const chunkSizeBytes = Number(session.chunk_size_bytes || 0);
@@ -398,7 +462,18 @@ export async function uploadNativeMyFile(
       emitUploadProgress(options.onProgress, uploadedBytes, actualSize);
     }
 
-    const completed = await completeMyFileUploadSession(fileId, signal);
+    let completed: MyFileRecord;
+    try {
+      completed = await completeMyFileUploadSession(fileId, signal);
+    } catch (error) {
+      if (signal?.aborted || !isRetriableUploadError(error)) throw error;
+      // The complete response can be lost after the server already committed.
+      // A committed session is rejected by the session endpoint, so resolve
+      // the record through the file list — the file keeps the session id.
+      const record = await findCompletedUploadRecord(fileId, options.folderId, signal).catch(() => null);
+      if (!record) throw error;
+      completed = record;
+    }
     emitUploadProgress(options.onProgress, actualSize, actualSize);
     await clearUploadResume(resumeKey);
     return completed;
@@ -449,6 +524,13 @@ export async function downloadNativeMyFilePreview(
   options: { signal?: AbortSignal } = {},
 ): Promise<{ file: File; mimeType: string }> {
   assertNativeRuntime();
+  const lease = cacheGeneration;
+  // Also bound to the tokenStore session: clearTokens/setTokens bump the
+  // session generation on paths that never reach clearNativeMyFilesCache
+  // (expired session, token refresh on another account) — plaintext cached
+  // by the previous account must not be served or kept after that.
+  const sessionLease = getSessionGeneration();
+  const stale = () => lease !== cacheGeneration || sessionLease !== getSessionGeneration();
   const kind = String(metadata.preview_kind || '').toLowerCase();
   if (!['image', 'pdf', 'office_pdf'].includes(kind)) {
     throw new Error('Этот формат нельзя безопасно просмотреть в приложении');
@@ -463,7 +545,10 @@ export async function downloadNativeMyFilePreview(
     ? metadata.pdf_filename || `${item.id}.pdf`
     : metadata.source_filename || item.download_file_name || item.original_file_name || 'preview';
   const safeId = item.id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
-  const destination = new File(cacheDirectory(), `preview-${safeId}-${sanitizeNativeFileName(sourceName)}`);
+  // The cache key must include the content version: an edited file can keep
+  // name and size while its preview changes underneath.
+  const versionTag = myFileVersionTag(item);
+  const destination = new File(cacheDirectory(), fitNativeFileName(`${lease}-${sessionLease}-preview-${safeId}-${versionTag}-${sanitizeNativeFileName(sourceName)}`));
   const configuredMax = Math.max(0, Number(item.preview_max_bytes || 0));
   const maxBytes = configuredMax > 0 ? Math.min(configuredMax, NATIVE_PREVIEW_MAX_BYTES) : NATIVE_PREVIEW_MAX_BYTES;
   if (destination.exists && destination.size > 0 && destination.size <= maxBytes) {
@@ -477,6 +562,10 @@ export async function downloadNativeMyFilePreview(
       idempotent: true,
       signal: options.signal,
     });
+    if (stale()) {
+      if (downloaded.exists) downloaded.delete();
+      throw new Error('Сессия изменилась. Загрузите файл заново.');
+    }
     if (!downloaded.exists || downloaded.size <= 0 || downloaded.size > maxBytes) {
       if (downloaded.exists) downloaded.delete();
       throw new Error('Предпросмотр пустой или превышает допустимый размер');
@@ -516,8 +605,13 @@ export async function downloadNativeMyFile(
   } = {},
 ): Promise<File> {
   assertNativeRuntime();
+  const lease = cacheGeneration;
+  const sessionLease = getSessionGeneration();
+  const stale = () => lease !== cacheGeneration || sessionLease !== getSessionGeneration();
+  const staleSessionError = () => new Error('Сессия изменилась. Загрузите файл заново.');
   if (options.userId) {
     const offlineFile = await getNativeMyFilesOfflineFile(options.userId, item);
+    if (stale()) throw staleSessionError();
     if (offlineFile) {
       options.onProgress?.({ loaded: offlineFile.size, total: offlineFile.size, progress: 1 });
       return offlineFile;
@@ -525,7 +619,7 @@ export async function downloadNativeMyFile(
   }
   const safeName = sanitizeNativeFileName(item.download_file_name || item.original_file_name || 'file.bin');
   const safeId = item.id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
-  const destination = new File(cacheDirectory(), `${safeId}-${safeName}`);
+  const destination = new File(cacheDirectory(), fitNativeFileName(`${lease}-${sessionLease}-${safeId}-${myFileVersionTag(item)}-${safeName}`));
   const expectedSize = Math.max(0, Number(
     item.storage_mode === 'optimized_media' ? item.stored_size_bytes : item.original_size_bytes,
   ));
@@ -535,6 +629,7 @@ export async function downloadNativeMyFile(
     return destination;
   }
   const grant = await createMyFileDownloadGrant(item.id);
+  if (stale()) throw staleSessionError();
   const sourceUrl = resolveMyFileDownloadGrantUrl(grant.download_path);
   if (destination.exists) destination.delete();
   cleanupCache();
@@ -551,6 +646,10 @@ export async function downloadNativeMyFile(
         });
       },
     });
+    if (stale()) {
+      if (downloaded.exists) downloaded.delete();
+      throw staleSessionError();
+    }
     if (expectedSize && downloaded.size !== expectedSize) {
       if (downloaded.exists) downloaded.delete();
       throw new Error('Скачанный файл имеет неверный размер');

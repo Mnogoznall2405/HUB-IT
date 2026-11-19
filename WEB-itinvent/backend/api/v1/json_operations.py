@@ -59,7 +59,7 @@ from backend.json_db.transfers import TransferManager
 from backend.json_db.works import WorksManager
 from backend.json_db.cartridges import CartridgeDatabase, CartridgeInfo
 from backend.services.excel_export_service import build_statistics_excel
-from backend.services.authorization_service import PERM_DATABASE_WRITE, PERM_MFU_READ
+from backend.services.authorization_service import PERM_DATABASE_READ, PERM_DATABASE_WRITE, PERM_MFU_READ
 from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
 from backend.models.auth import User
 
@@ -113,12 +113,31 @@ def get_cartridge_database():
     return CartridgeDatabase()
 
 
+def _resolve_scoped_db_name(
+    explicit_db_name: Optional[str],
+    db_id: Optional[str],
+    current_user: Optional[User],
+) -> Optional[str]:
+    """Resolve the database an operation may touch.
+
+    For non-admin callers the request-scoped resolution is authoritative: it
+    carries the fixed assignment (or their own mutable selection) and raw
+    ``db_name`` input must never expand it beyond that. Admins keep explicit
+    ``db_name`` as a per-request override of their resolved selection.
+    """
+    role = str(getattr(current_user, "role", "") or "").strip().lower()
+    if role != "admin" and db_id:
+        return db_id
+    return str(explicit_db_name or "").strip() or db_id
+
+
 # ========== Transfer Endpoints ==========
 
 @router.post("/transfers", response_model=TransferResponse, status_code=status.HTTP_201_CREATED)
 async def add_transfer(
     data: TransferCreate,
     manager: TransferManager = Depends(get_transfer_manager),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Add a new equipment transfer record."""
@@ -130,7 +149,7 @@ async def add_transfer(
             inv_no=data.inv_no,
             branch=data.branch,
             location=data.location,
-            db_name=data.db_name,
+            db_name=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             act_pdf_path=data.act_pdf_path,
             additional_data=data.additional_data,
         )
@@ -152,12 +171,13 @@ async def get_transfers(
     to_date: Optional[str] = None,
     limit: Optional[int] = None,
     manager: TransferManager = Depends(get_transfer_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get equipment transfer records with optional filtering."""
     try:
         records = await run_in_threadpool(manager.get_transfers,
-            db_name=db_name,
+            db_name=_resolve_scoped_db_name(db_name, db_id, current_user),
             branch=branch,
             employee=employee,
             serial_number=serial_number,
@@ -175,6 +195,7 @@ async def get_transfers(
 async def bulk_transfer(
     data: BulkTransferRequest,
     manager: TransferManager = Depends(get_transfer_manager),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Bulk transfer multiple items to a new employee."""
@@ -191,7 +212,7 @@ async def bulk_transfer(
                 inv_no=item.get('inv_no'),
                 branch=data.branch or item.get('branch'),
                 location=data.location or item.get('location'),
-                db_name=data.db_name,
+                db_name=_resolve_scoped_db_name(data.db_name, db_id, current_user),
                 additional_data=item.get('additional_data', {}),
             )
             success_count += 1
@@ -208,12 +229,16 @@ async def bulk_transfer(
 
 @router.get("/transfers/statistics", response_model=TransferStatisticsResponse)
 async def get_transfer_statistics(
+    db_name: Optional[str] = None,
     manager: TransferManager = Depends(get_transfer_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get statistics about equipment transfers."""
     try:
-        stats = await run_in_threadpool(manager.get_transfer_statistics)
+        stats = await run_in_threadpool(manager.get_transfer_statistics,
+            db_name=_resolve_scoped_db_name(db_name, db_id, current_user),
+        )
         return TransferStatisticsResponse(**stats)
     except Exception as e:
         logger.error(f"Error getting transfer statistics: {e}")
@@ -226,6 +251,7 @@ async def get_transfer_statistics(
 async def add_cartridge_replacement(
     data: CartridgeReplacementCreate,
     manager: WorksManager = Depends(get_works_manager),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Add a cartridge replacement record."""
@@ -242,7 +268,7 @@ async def add_cartridge_replacement(
             location=data.location,
             serial_number=data.serial_number,
             inv_no=data.inv_no,
-            db_name=data.db_name,
+            db_name=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             additional_data=data.additional_data,
             equipment_id=data.equipment_id,
             current_description=data.current_description,
@@ -253,7 +279,7 @@ async def add_cartridge_replacement(
         )
         await run_in_threadpool(_touch_recent_card_safely,
             current_user=current_user,
-            db_id=data.db_name,
+            db_id=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             inv_no=data.inv_no,
             action_type="cartridge",
             snapshot=record,
@@ -275,12 +301,13 @@ async def get_cartridge_replacements(
     to_date: Optional[str] = None,
     limit: Optional[int] = None,
     manager: WorksManager = Depends(get_works_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get cartridge replacement records with optional filtering."""
     try:
         records = await run_in_threadpool(manager.get_cartridge_replacements,
-            db_name=db_name,
+            db_name=_resolve_scoped_db_name(db_name, db_id, current_user),
             branch=branch,
             location=location,
             from_date=from_date,
@@ -301,7 +328,8 @@ async def get_cartridge_replacement_history(
     cartridge_color: Optional[str] = None,
     cartridge_model: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get cartridge replacement history for a specific equipment item."""
     try:
@@ -311,6 +339,7 @@ async def get_cartridge_replacement_history(
             inv_no=inv_no,
             cartridge_color=cartridge_color,
             cartridge_model=cartridge_model,
+            db_name=db_id,
         )
         return CartridgeReplacementHistoryResponse(**history)
     except Exception as e:
@@ -324,6 +353,7 @@ async def get_cartridge_replacement_history(
 async def add_battery_replacement(
     data: BatteryReplacementCreate,
     manager: WorksManager = Depends(get_works_manager),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Add a battery replacement record."""
@@ -333,7 +363,7 @@ async def add_battery_replacement(
             branch=data.branch,
             location=data.location,
             inv_no=data.inv_no,
-            db_name=data.db_name,
+            db_name=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             additional_data=data.additional_data,
             equipment_id=data.equipment_id,
             current_description=data.current_description,
@@ -344,7 +374,7 @@ async def add_battery_replacement(
         )
         await run_in_threadpool(_touch_recent_card_safely,
             current_user=current_user,
-            db_id=data.db_name,
+            db_id=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             inv_no=data.inv_no,
             action_type="battery",
             snapshot=record,
@@ -366,12 +396,13 @@ async def get_battery_replacements(
     to_date: Optional[str] = None,
     limit: Optional[int] = None,
     manager: WorksManager = Depends(get_works_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get battery replacement records with optional filtering."""
     try:
         records = await run_in_threadpool(manager.get_battery_replacements,
-            db_name=db_name,
+            db_name=_resolve_scoped_db_name(db_name, db_id, current_user),
             branch=branch,
             serial_number=serial_number,
             from_date=from_date,
@@ -389,13 +420,15 @@ async def get_battery_replacement_history(
     serial_number: str,
     hw_serial_number: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get battery replacement history for a specific serial number."""
     try:
         history = await run_in_threadpool(manager.get_battery_replacement_history,
             serial_number=serial_number,
             hw_serial_number=hw_serial_number,
+            db_name=db_id,
         )
         return BatteryReplacementHistoryResponse(**history)
     except Exception as e:
@@ -409,6 +442,7 @@ async def get_battery_replacement_history(
 async def add_component_replacement(
     data: ComponentReplacementCreate,
     manager: WorksManager = Depends(get_works_manager),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Add a component replacement record."""
@@ -420,7 +454,7 @@ async def add_component_replacement(
             branch=data.branch,
             location=data.location,
             inv_no=data.inv_no,
-            db_name=data.db_name,
+            db_name=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             additional_data=data.additional_data,
             equipment_id=data.equipment_id,
             current_description=data.current_description,
@@ -433,7 +467,7 @@ async def add_component_replacement(
         )
         await run_in_threadpool(_touch_recent_card_safely,
             current_user=current_user,
-            db_id=data.db_name,
+            db_id=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             inv_no=data.inv_no,
             action_type="component",
             snapshot=record,
@@ -456,12 +490,13 @@ async def get_component_replacements(
     to_date: Optional[str] = None,
     limit: Optional[int] = None,
     manager: WorksManager = Depends(get_works_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get component replacement records with optional filtering."""
     try:
         records = await run_in_threadpool(manager.get_component_replacements,
-            db_name=db_name,
+            db_name=_resolve_scoped_db_name(db_name, db_id, current_user),
             branch=branch,
             component_type=component_type,
             serial_number=serial_number,
@@ -482,7 +517,8 @@ async def get_component_replacement_history(
     component_type: Optional[str] = None,
     component_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get component replacement history for a specific serial number and component."""
     try:
@@ -491,6 +527,7 @@ async def get_component_replacement_history(
             hw_serial_number=hw_serial_number,
             component_type=component_type,
             component_name=component_name,
+            db_name=db_id,
         )
         return ComponentReplacementHistoryResponse(**history)
     except Exception as e:
@@ -504,6 +541,7 @@ async def get_component_replacement_history(
 async def add_pc_cleaning(
     data: PcCleaningCreate,
     manager: WorksManager = Depends(get_works_manager),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Add a PC cleaning record."""
@@ -514,7 +552,7 @@ async def add_pc_cleaning(
             branch=data.branch,
             location=data.location,
             inv_no=data.inv_no,
-            db_name=data.db_name,
+            db_name=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             additional_data=data.additional_data,
             equipment_id=data.equipment_id,
             current_description=data.current_description,
@@ -524,7 +562,7 @@ async def add_pc_cleaning(
         )
         await run_in_threadpool(_touch_recent_card_safely,
             current_user=current_user,
-            db_id=data.db_name,
+            db_id=_resolve_scoped_db_name(data.db_name, db_id, current_user),
             inv_no=data.inv_no,
             action_type="cleaning",
             snapshot=record,
@@ -547,12 +585,13 @@ async def get_pc_cleanings(
     to_date: Optional[str] = None,
     limit: Optional[int] = None,
     manager: WorksManager = Depends(get_works_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get PC cleaning records with optional filtering."""
     try:
         records = await run_in_threadpool(manager.get_pc_cleanings,
-            db_name=db_name,
+            db_name=_resolve_scoped_db_name(db_name, db_id, current_user),
             branch=branch,
             employee=employee,
             serial_number=serial_number,
@@ -572,11 +611,11 @@ async def get_pc_cleaning_statistics(
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get PC cleaning coverage statistics by branch."""
     try:
-        resolved_db = db_name or db_id
+        resolved_db = _resolve_scoped_db_name(db_name, db_id, current_user)
         stats = await run_in_threadpool(manager.get_pc_cleaning_statistics,
             period_days=period_days,
             db_name=resolved_db,
@@ -594,11 +633,11 @@ async def get_pc_cleaning_remaining(
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get uncleaned PCs for one branch in the selected period."""
     try:
-        resolved_db = db_name or db_id
+        resolved_db = _resolve_scoped_db_name(db_name, db_id, current_user)
         payload = await run_in_threadpool(manager.get_pc_cleaning_remaining,
             period_days=period_days,
             db_name=resolved_db,
@@ -616,11 +655,11 @@ async def get_mfu_statistics(
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(require_permission(PERM_MFU_READ)),
+    current_user: User = Depends(require_permission(PERM_MFU_READ)),
 ):
     """Get MFU/printer/plotter maintenance statistics by branch."""
     try:
-        resolved_db = db_name or db_id
+        resolved_db = _resolve_scoped_db_name(db_name, db_id, current_user)
         stats = await run_in_threadpool(manager.get_mfu_statistics,
             period_days=period_days,
             db_name=resolved_db,
@@ -637,11 +676,11 @@ async def get_battery_statistics(
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get UPS battery replacement statistics from JSON records."""
     try:
-        resolved_db = db_name or db_id
+        resolved_db = _resolve_scoped_db_name(db_name, db_id, current_user)
         stats = await run_in_threadpool(manager.get_battery_statistics,
             period_days=period_days,
             db_name=resolved_db,
@@ -658,11 +697,11 @@ async def get_pc_components_statistics(
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get PC component replacement statistics from JSON records."""
     try:
-        resolved_db = db_name or db_id
+        resolved_db = _resolve_scoped_db_name(db_name, db_id, current_user)
         stats = await run_in_threadpool(manager.get_pc_components_statistics,
             period_days=period_days,
             db_name=resolved_db,
@@ -680,13 +719,13 @@ async def export_statistics_excel(
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Export selected statistics tab as a single Excel list."""
     try:
-        # Keep export global by default (all databases in JSON).
-        # If db_name is explicitly provided, export only that database.
-        resolved_db = db_name
+        # Keep export global by default for admins; restricted users are scoped
+        # to their resolved database so cross-DB data cannot be pulled by name.
+        resolved_db = _resolve_scoped_db_name(db_name, db_id, current_user)
         file_bytes, filename = build_statistics_excel(
             manager=manager,
             tab=tab,
@@ -716,7 +755,7 @@ async def get_pc_cleaning_history(
     equipment_id: Optional[int] = None,
     manager: WorksManager = Depends(get_works_manager),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get PC cleaning history for a specific equipment item."""
     try:
@@ -743,13 +782,14 @@ async def get_all_works(
     to_date: Optional[str] = None,
     limit: Optional[int] = None,
     manager: WorksManager = Depends(get_works_manager),
-    current_user: User = Depends(get_current_active_user),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
     """Get all works with optional filtering."""
     try:
         works = await run_in_threadpool(manager.get_all_works,
             work_type=work_type,
-            db_name=db_name,
+            db_name=_resolve_scoped_db_name(db_name, db_id, current_user),
             from_date=from_date,
             to_date=to_date,
             limit=limit,
@@ -770,12 +810,14 @@ async def get_all_works(
 async def bulk_work(
     data: BulkWorkRequest,
     manager: WorksManager = Depends(get_works_manager),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Bulk work operation for multiple items."""
     success_count = 0
     failed_count = 0
     errors = []
+    resolved_db = _resolve_scoped_db_name(data.db_name, db_id, current_user)
 
     for item in data.items:
         try:
@@ -793,7 +835,7 @@ async def bulk_work(
                     location=data.location,
                     serial_number=item.get('serial_number') or item.get('serial_no'),
                     inv_no=item.get('inv_no'),
-                    db_name=data.db_name,
+                    db_name=resolved_db,
                     equipment_id=item.get('equipment_id'),
                     current_description=item.get('current_description'),
                     hw_serial_no=item.get('hw_serial_no'),
@@ -807,7 +849,7 @@ async def bulk_work(
                     branch=data.branch,
                     location=data.location,
                     inv_no=item.get('inv_no'),
-                    db_name=data.db_name,
+                    db_name=resolved_db,
                     equipment_id=item.get('equipment_id'),
                     current_description=item.get('current_description'),
                     hw_serial_no=item.get('hw_serial_no'),
@@ -823,7 +865,7 @@ async def bulk_work(
                     branch=data.branch,
                     location=data.location,
                     inv_no=item.get('inv_no'),
-                    db_name=data.db_name,
+                    db_name=resolved_db,
                     equipment_id=item.get('equipment_id'),
                     current_description=item.get('current_description'),
                     hw_serial_no=item.get('hw_serial_no'),
@@ -840,7 +882,7 @@ async def bulk_work(
                     branch=data.branch,
                     location=data.location,
                     inv_no=item.get('inv_no'),
-                    db_name=data.db_name,
+                    db_name=resolved_db,
                     equipment_id=item.get('equipment_id'),
                     current_description=item.get('current_description'),
                     hw_serial_no=item.get('hw_serial_no'),

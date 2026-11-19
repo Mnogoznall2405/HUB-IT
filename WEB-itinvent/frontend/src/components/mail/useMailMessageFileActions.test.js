@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import useMailMessageFileActions from './useMailMessageFileActions';
 
 const createPrintWindow = () => ({
@@ -309,5 +309,227 @@ describe('useMailMessageFileActions', () => {
       { preferOpenFallback: true },
     );
     expect(result.current.attachmentPreview.open).toBe(false);
+  });
+});
+
+describe('attachment preview object URL lifecycle', () => {
+  const deferred = () => {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+
+  const imageResponse = (name = 'photo.png') => ({
+    data: new Blob(['image-bytes'], { type: 'image/png' }),
+    headers: {
+      'content-type': 'image/png',
+      'content-disposition': `attachment; filename="${name}"`,
+    },
+  });
+
+  const imageProps = () => createProps({
+    mailAPI: {
+      getMessageHeaders: vi.fn(),
+      downloadMessageSource: vi.fn(),
+      downloadAttachment: vi.fn().mockResolvedValue(imageResponse()),
+    },
+  });
+
+  const openImagePreview = async (result, name = 'photo.png') => {
+    await act(async () => {
+      await result.current.openAttachmentPreview(
+        { id: 'msg-1', mailbox_id: 'mb-1' },
+        { id: `att-${name}`, name, content_type: 'image/png' },
+      );
+    });
+  };
+
+  let originalCreate;
+  let originalRevoke;
+  let create;
+  let revoke;
+
+  beforeEach(() => {
+    originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    create = vi.fn(() => 'blob:mail-preview');
+    revoke = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+  });
+
+  afterEach(() => {
+    if (originalCreate) Object.defineProperty(URL, 'createObjectURL', originalCreate);
+    else delete URL.createObjectURL;
+    if (originalRevoke) Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
+    else delete URL.revokeObjectURL;
+  });
+
+  it('revokes the blob URL once on close and not again on a repeated close', async () => {
+    const { result } = renderHook(() => useMailMessageFileActions(imageProps()));
+
+    await openImagePreview(result);
+    expect(result.current.attachmentPreview.objectUrl).toBe('blob:mail-preview');
+
+    act(() => result.current.closeAttachmentPreview());
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('blob:mail-preview');
+
+    act(() => result.current.closeAttachmentPreview());
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('revokes the previous blob URL when another preview replaces it', async () => {
+    create.mockReturnValueOnce('blob:first').mockReturnValueOnce('blob:second');
+    const { result, unmount } = renderHook(() => useMailMessageFileActions(imageProps()));
+
+    await openImagePreview(result, 'one.png');
+    expect(result.current.attachmentPreview.objectUrl).toBe('blob:first');
+
+    await openImagePreview(result, 'two.png');
+    expect(result.current.attachmentPreview.objectUrl).toBe('blob:second');
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('blob:first');
+
+    unmount();
+    expect(revoke).toHaveBeenCalledTimes(2);
+    expect(revoke).toHaveBeenLastCalledWith('blob:second');
+  });
+
+  it('revokes the blob URL once when the hook unmounts with an open preview', async () => {
+    const { result, unmount } = renderHook(() => useMailMessageFileActions(imageProps()));
+
+    await openImagePreview(result);
+    unmount();
+
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('blob:mail-preview');
+  });
+
+  it('ignores non-blob preview URLs', async () => {
+    create.mockReturnValue('https://cdn.example.test/photo.png');
+    const { result, unmount } = renderHook(() => useMailMessageFileActions(imageProps()));
+
+    await openImagePreview(result);
+    expect(result.current.attachmentPreview.objectUrl).toBe('https://cdn.example.test/photo.png');
+
+    act(() => result.current.closeAttachmentPreview());
+    unmount();
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it('revokes a late blob URL once and stays closed when closed before the response resolves', async () => {
+    const pending = deferred();
+    const props = imageProps();
+    props.mailAPI.downloadAttachment = vi.fn(() => pending.promise);
+    const { result } = renderHook(() => useMailMessageFileActions(props));
+
+    let openPromise;
+    act(() => {
+      openPromise = result.current.openAttachmentPreview(
+        { id: 'msg-1', mailbox_id: 'mb-1' },
+        { id: 'att-photo', name: 'photo.png', content_type: 'image/png' },
+      );
+    });
+    act(() => result.current.closeAttachmentPreview());
+
+    await act(async () => {
+      pending.resolve(imageResponse());
+      await openPromise;
+    });
+
+    expect(result.current.attachmentPreview.open).toBe(false);
+    expect(result.current.attachmentPreview.objectUrl).toBe('');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('blob:mail-preview');
+  });
+
+  it('revokes a late blob URL once when the hook unmounts before the response resolves', async () => {
+    const pending = deferred();
+    const props = imageProps();
+    props.mailAPI.downloadAttachment = vi.fn(() => pending.promise);
+    const { result, unmount } = renderHook(() => useMailMessageFileActions(props));
+
+    let openPromise;
+    act(() => {
+      openPromise = result.current.openAttachmentPreview(
+        { id: 'msg-1', mailbox_id: 'mb-1' },
+        { id: 'att-photo', name: 'photo.png', content_type: 'image/png' },
+      );
+    });
+    unmount();
+
+    await act(async () => {
+      pending.resolve(imageResponse());
+      await openPromise;
+    });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('blob:mail-preview');
+  });
+
+  it('revokes a late Office preview blob URL when closed before conversion resolves', async () => {
+    const pending = deferred();
+    const props = createProps({
+      openOfficeWithDesktopApplication: vi.fn(async () => ({ accepted: false, status: 'unavailable' })),
+      mailAPI: {
+        getMessageHeaders: vi.fn(),
+        downloadMessageSource: vi.fn(),
+        downloadAttachment: vi.fn(),
+        getAttachmentPreview: vi.fn().mockResolvedValue({
+          status: 'ready',
+          preview_kind: 'office_pdf',
+          source_kind: 'word',
+          pdf_filename: 'memo.pdf',
+          page_count: 1,
+        }),
+        downloadAttachmentPreviewPdf: vi.fn(() => pending.promise),
+      },
+    });
+    const { result } = renderHook(() => useMailMessageFileActions(props));
+
+    let openPromise;
+    act(() => {
+      openPromise = result.current.openAttachmentPreview(
+        { id: 'msg-1', mailbox_id: 'mb-1' },
+        {
+          id: 'att-docx',
+          name: 'memo.docx',
+          content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        },
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(props.mailAPI.downloadAttachmentPreviewPdf).toHaveBeenCalledWith(
+      'msg-1',
+      'att-docx',
+      { mailboxId: 'mb-1' },
+    );
+    expect(result.current.attachmentPreview).toMatchObject({ open: true, loading: true });
+
+    act(() => result.current.closeAttachmentPreview());
+    await act(async () => {
+      pending.resolve({
+        data: new Blob(['%PDF-1.4'], { type: 'application/pdf' }),
+        headers: {
+          'content-type': 'application/pdf',
+          'content-disposition': 'attachment; filename="memo.pdf"',
+        },
+      });
+      await openPromise;
+    });
+
+    expect(result.current.attachmentPreview.open).toBe(false);
+    expect(revoke).toHaveBeenCalledTimes(1);
   });
 });

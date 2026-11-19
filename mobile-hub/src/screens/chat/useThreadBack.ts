@@ -31,6 +31,8 @@ export function useThreadBack({
   leaveInFlightRef,
   requestLeave,
   messagesRef,
+  markReadRef,
+  nearBottomRef,
   actionMessage,
   setActionMessage,
   voiceRecording,
@@ -49,6 +51,8 @@ export function useThreadBack({
   leaveInFlightRef: MutableRefObject<boolean>;
   requestLeave: (onAllowed: () => void) => void;
   messagesRef: MutableRefObject<ChatMessage[]>;
+  markReadRef?: MutableRefObject<(latest: ChatMessage | null | undefined) => void>;
+  nearBottomRef?: MutableRefObject<boolean>;
   actionMessage: ChatMessage | null;
   setActionMessage: Dispatch<SetStateAction<ChatMessage | null>>;
   voiceRecording: boolean;
@@ -114,7 +118,6 @@ export function useThreadBack({
       if (leaveInFlightRef.current || !mountedRef.current) return;
       leaveInFlightRef.current = true;
       const latest = findLatestIncomingMessage(messagesRef.current, userId);
-      notifyNativeChatConversationRead(conversationId);
       Keyboard.dismiss();
       if (backWorkspace) {
         const inbox = `/(shell)/chat?workspace=${backWorkspace}`;
@@ -123,11 +126,17 @@ export function useThreadBack({
         else router.replace(inbox as never);
       } else if (router.canGoBack?.()) router.back();
       else router.replace('/(shell)/chat');
-      if (!offlineMode && latest?.id) {
-        void chatApi.markConversationRead(conversationId, latest.id).catch(() => undefined);
+      // Mark read only up to what the user actually reached: scrolled-away
+      // threads keep their unread tail instead of being silently consumed.
+      // The inbox badge/snapshot clears only when a mark-read is really sent —
+      // otherwise the unread counter would drop for never-seen messages.
+      if (!offlineMode && latest?.id && (nearBottomRef?.current ?? true)) {
+        notifyNativeChatConversationRead(conversationId);
+        if (markReadRef?.current) markReadRef.current(latest);
+        else void chatApi.markConversationRead(conversationId, latest.id).catch(() => undefined);
       }
     });
-  }, [backWorkspace, conversationId, offlineMode, requestLeave, userId]);
+  }, [backWorkspace, conversationId, markReadRef, nearBottomRef, offlineMode, requestLeave, userId]);
 
   const closeThreadLayer = useCallback((layer: ReturnType<typeof nextChatThreadBackAction>) => {
     if (layer === 'viewer') {

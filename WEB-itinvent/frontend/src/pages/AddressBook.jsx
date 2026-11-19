@@ -1,4 +1,5 @@
 import useRequestGuard from '../lib/useRequestGuard';
+import useDebounce from '../hooks/useDebounce';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -65,6 +66,19 @@ import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 const SEARCH_DEBOUNCE_MS = 300;
 const SEARCH_LIMIT = 50;
 
+const visuallyHiddenSx = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  p: 0,
+  m: -1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
 function AddressBookDetailEmptyState({
   query,
   dismissed,
@@ -124,16 +138,7 @@ function AddressBookDetailEmptyState({
   );
 }
 
-const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [delayMs, value]);
-
-  return debounced;
-};
+const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => useDebounce(value, delayMs);
 
 const AddressBook = () => {
   const theme = useTheme();
@@ -321,25 +326,6 @@ const AddressBook = () => {
     selectedIdentityRef.current = selectedItem ? getEntryIdentity(selectedItem) : '';
   }, [selectedItem]);
 
-  const handleSync = useCallback(async () => {
-    refreshAbsenceMarks();
-    setSyncing(true);
-    setError(null);
-    try {
-      const nextStatus = await addressBookAPI.sync();
-      setStatus(nextStatus);
-      // Keep already loaded pages: refetch as many items as were shown (API caps limit at 200).
-      const restoreLimit = Math.min(Math.max(items.length, SEARCH_LIMIT), 200);
-      await loadItems(debouncedQuery, dismissed, 0, restoreLimit, departmentFilter, cityFilter);
-    } catch (err) {
-      console.error('Failed to sync address book:', err);
-      setError({ source: 'sync', message: 'Не удалось обновить адресную книгу из 1С.' });
-      await loadStatus();
-    } finally {
-      setSyncing(false);
-    }
-  }, [cityFilter, debouncedQuery, departmentFilter, dismissed, items.length, loadItems, loadStatus, refreshAbsenceMarks]);
-
   const handleRetrySearch = useCallback(() => {
     refreshAbsenceMarks();
     void loadItems(debouncedQuery, dismissed, 0, SEARCH_LIMIT, departmentFilter, cityFilter);
@@ -396,6 +382,30 @@ const AddressBook = () => {
     filtersInflightRef.current = { bucket, promise };
     return promise;
   }, [dismissed]);
+
+  const handleSync = useCallback(async () => {
+    refreshAbsenceMarks();
+    setSyncing(true);
+    setError(null);
+    try {
+      const nextStatus = await addressBookAPI.sync();
+      setStatus(nextStatus);
+      // Keep already loaded pages: refetch as many items as were shown (API caps limit at 200).
+      const restoreLimit = Math.min(Math.max(items.length, SEARCH_LIMIT), 200);
+      await loadItems(debouncedQuery, dismissed, 0, restoreLimit, departmentFilter, cityFilter);
+      // 1С may add departments/cities: cached dictionaries must not survive the sync.
+      filtersCacheRef.current = { active: null, dismissed: null };
+      filtersInflightRef.current = { bucket: '', promise: null };
+      if (filtersDialogOpen) void ensureFilterOptions();
+      else setFilterOptions({ departments: [], cities: [] });
+    } catch (err) {
+      console.error('Failed to sync address book:', err);
+      setError({ source: 'sync', message: 'Не удалось обновить адресную книгу из 1С.' });
+      await loadStatus();
+    } finally {
+      setSyncing(false);
+    }
+  }, [cityFilter, debouncedQuery, departmentFilter, dismissed, ensureFilterOptions, filtersDialogOpen, items.length, loadItems, loadStatus, refreshAbsenceMarks]);
 
   const handleDepartmentFilterChange = useCallback((value) => {
     setDepartmentFilter(value || '');
@@ -936,6 +946,9 @@ const AddressBook = () => {
                 }}
                 data-testid="address-book-entry-detail-scroll"
               >
+                <Box role="status" aria-live="polite" sx={visuallyHiddenSx}>
+                  {selectedItem?.full_name || ''}
+                </Box>
                 {selectedItem ? (
                   <AddressBookEntryDetail
                     item={selectedItem}

@@ -32,6 +32,22 @@ describe('nativeTasksFeature', () => {
         taskSort: 'asc',
       },
     });
+    expect(nativeTasksDestinationFromPortalPath('/tasks?task_mode=board&task_view=department')).toEqual({
+      pathname: '/(shell)/tasks',
+      params: { taskMode: 'board', taskView: 'department' },
+    });
+    expect(nativeTasksDestinationFromPortalPath('/tasks?task_mode=calendar')).toEqual({
+      pathname: '/(shell)/tasks',
+      params: { taskMode: 'calendar' },
+    });
+    expect(nativeTasksDestinationFromPortalPath('/tasks?task_mode=gantt')).toEqual({
+      pathname: '/(shell)/tasks',
+      params: { taskMode: 'gantt' },
+    });
+    expect(nativeTasksDestinationFromPortalPath('/tasks?task_mode=deadlines')).toEqual({
+      pathname: '/(shell)/tasks',
+      params: { taskMode: 'deadlines' },
+    });
     expect(nativeTasksDestinationFromPortalPath('/tasks?create=1')).toEqual({ pathname: '/(shell)/tasks/create' });
     expect(nativeTasksDestinationFromPortalPath('/tasks?view=analytics')).toEqual({ pathname: '/(shell)/tasks/analytics' });
     expect(nativeTasksDestinationFromPortalPath('/tasks?task_mode=analytics')).toEqual({ pathname: '/(shell)/tasks/analytics' });
@@ -44,7 +60,7 @@ describe('nativeTasksFeature', () => {
   it('rejects unsupported and unsafe task routes before native navigation', () => {
     expect(nativeTasksDestinationFromPortalPath('/tasks?view=board')).toBeNull();
     expect(nativeTasksDestinationFromPortalPath('/tasks?view=analytics&q=x')).toBeNull();
-    expect(nativeTasksDestinationFromPortalPath('/tasks?task_mode=board')).toBeNull();
+    expect(nativeTasksDestinationFromPortalPath('/tasks?task_mode=plan')).toBeNull();
     expect(nativeTasksDestinationFromPortalPath('/tasks?create=android-share')).toBeNull();
     expect(nativeTasksDestinationFromPortalPath('//evil.example/tasks')).toBeNull();
     expect(nativeTasksDestinationFromPortalPath('/tasks#section')).toBeNull();

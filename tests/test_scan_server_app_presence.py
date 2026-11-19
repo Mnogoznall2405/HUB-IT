@@ -436,7 +436,8 @@ def test_lifespan_purges_legacy_artifacts_before_worker_start(monkeypatch):
 
     asyncio.run(_run())
 
-    assert events[:4] == ["purge", "reconcile-spool", "start", "inside"]
+    assert events[:3] == ["purge", "start", "inside"]
+    assert "reconcile-spool" not in events
 
 
 def test_agents_activity_returns_batched_runtime_state(temp_dir, monkeypatch):

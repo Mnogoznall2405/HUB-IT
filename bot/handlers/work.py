@@ -19,6 +19,7 @@ from bot.config import States, Messages
 from functools import wraps
 
 from bot.utils.decorators import check_user_access, handle_errors
+from bot.utils.hub_binding import PERM_DATABASE_WRITE
 from bot.utils.keyboards import create_main_menu_keyboard
 from bot.services.input_identifier_service import (
     detect_identifiers_from_image,
@@ -40,7 +41,7 @@ def require_work_access(func):
     """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if not await check_user_access(update, context):
+        if not await check_user_access(update, context, permission=PERM_DATABASE_WRITE):
             clear_work_data(context)
             query = getattr(update, "callback_query", None)
             try:

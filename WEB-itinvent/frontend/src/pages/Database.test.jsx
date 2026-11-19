@@ -78,6 +78,17 @@ vi.mock('../api/equipmentPhotos', () => ({
   equipmentPhotosAPI: mockApi.equipmentPhotosAPI,
 }));
 
+vi.mock('../api/http', async () => {
+  const client = await import('../api/client');
+  const pick = (key) => (Object.hasOwn(client, key) ? client[key] : undefined);
+  return {
+    default: pick('default') ?? pick('apiClient'),
+    apiClient: pick('apiClient') ?? pick('default'),
+    API_V1_BASE: pick('API_V1_BASE'),
+    ...(pick('getCachedGet') ? { getCachedGet: client.getCachedGet } : {}),
+  };
+});
+
 vi.mock('../api/client', () => ({
   equipmentAPI: mockApi.equipmentAPI,
   settingsAPI: mockApi.settingsAPI,

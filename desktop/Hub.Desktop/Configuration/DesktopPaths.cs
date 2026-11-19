@@ -5,7 +5,7 @@ namespace Hub.Desktop.Configuration;
 
 public static class DesktopPaths
 {
-    private static readonly string Root = ResolveRoot();
+    internal static readonly string Root = ResolveRoot();
 
     public static string UserDataFolder { get; } = ResolveUserDataFolder();
 

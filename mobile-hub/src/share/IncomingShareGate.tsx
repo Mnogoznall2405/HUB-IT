@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Modal, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../accessibility/useReducedMotion';
@@ -13,6 +13,7 @@ import { officeTokens } from '../theme/officeTokens';
 import {
   copyIncomingShareFiles,
   discardIncomingShare,
+  getIncomingShareGeneration,
   getPendingIncomingTextShare,
   queueIncomingShare,
   subscribeIncomingTextShare,
@@ -54,9 +55,21 @@ export function IncomingShareGate() {
   const [step, setStep] = useState<Step>('choose');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const userIdRef = useRef(Number(user?.id || 0));
+  userIdRef.current = Number(user?.id || 0);
 
   const receive = useCallback(async () => {
+    const owner = userIdRef.current;
+    if (!owner) return;
+    const lease = getIncomingShareGeneration();
     const next = await getPendingIncomingTextShare();
+    if (next && (userIdRef.current !== owner || lease !== getIncomingShareGeneration())) {
+      // The account changed or the share was cleared while the deferred read
+      // was in flight — this share can no longer be attributed to the current
+      // user, so it must be dropped rather than shown.
+      discardIncomingShare(next);
+      return;
+    }
     if (next) {
       setStep('choose');
       setError('');
@@ -64,7 +77,17 @@ export function IncomingShareGate() {
     }
   }, []);
 
+  // A share staged by one account must not surface for the next one on a
+  // shared device — drop the dialog state whenever the signed-in user changes.
   useEffect(() => {
+    setShare(null);
+    setStep('choose');
+    setError('');
+    setBusy(false);
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
     void receive();
     const unsubscribe = subscribeIncomingTextShare(() => { void receive(); });
     const appState = AppState.addEventListener('change', (state) => {
@@ -74,7 +97,7 @@ export function IncomingShareGate() {
       unsubscribe();
       appState.remove();
     };
-  }, [receive]);
+  }, [receive, user?.id]);
 
   const files = share?.files || [];
   const hasFiles = files.length > 0;
@@ -97,10 +120,21 @@ export function IncomingShareGate() {
     conversationId?: string,
   ) => {
     if (!share || busy) return;
+    const owner = userIdRef.current;
+    const lease = getIncomingShareGeneration();
+    const stale = () =>
+      userIdRef.current !== owner || lease !== getIncomingShareGeneration();
     setBusy(true);
     setError('');
     try {
       const copiedFiles = hasFiles ? await copyIncomingShareFiles(share) : [];
+      if (stale()) {
+        // Cleared or handed to another account while files were copying — the
+        // copied files belong to the outgoing share and must be discarded with
+        // it instead of being queued or navigated to under the new context.
+        discardIncomingShare(share);
+        return;
+      }
       if (hasFiles && !copiedFiles.length) {
         setError('Не удалось подготовить файлы: тип не поддерживается, файл пустой или недоступен.');
         return;
@@ -110,9 +144,9 @@ export function IncomingShareGate() {
       setStep('choose');
       destination();
     } catch {
-      setError('Не удалось подготовить файлы. Попробуйте ещё раз.');
+      if (!stale()) setError('Не удалось подготовить файлы. Попробуйте ещё раз.');
     } finally {
-      setBusy(false);
+      if (!stale()) setBusy(false);
     }
   }, [busy, hasFiles, share]);
 

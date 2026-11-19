@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildRenderedMailHtml } from './mailHtmlContent';
 import {
   MAX_PREVIEW_FILE_BYTES,
@@ -46,6 +46,22 @@ export default function useMailMessageFileActions({
   const [messageHeaders, setMessageHeaders] = useState({ items: [] });
   const [attachmentPreview, setAttachmentPreview] = useState(createEmptyAttachmentPreview);
   const attachmentDownloadInFlightRef = useRef(new Set());
+  const previewGenerationRef = useRef(0);
+  const previewMountedRef = useRef(true);
+
+  useEffect(() => {
+    previewMountedRef.current = true;
+    return () => {
+      previewMountedRef.current = false;
+      previewGenerationRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    const url = attachmentPreview.objectUrl;
+    if (!url?.startsWith('blob:')) return undefined;
+    return () => window.URL?.revokeObjectURL?.(url);
+  }, [attachmentPreview.objectUrl]);
 
   const reportError = useCallback((value) => {
     if (typeof setError === 'function') setError(value);
@@ -236,6 +252,8 @@ export default function useMailMessageFileActions({
   }, [downloadBlobFileImpl, getMailErrorDetailAsync, mailAPI, maybeHandleCredentials, reportError, resolveAttachmentRequestContext]);
 
   const openAttachmentPreview = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
+    const generation = ++previewGenerationRef.current;
+    const isCurrentPreview = () => previewMountedRef.current && previewGenerationRef.current === generation;
     const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(
       messageOrId,
       attachment,
@@ -254,6 +272,7 @@ export default function useMailMessageFileActions({
       const desktopOpen = await openOfficeWithDesktopApplication({
         onDownload: () => downloadAttachmentFile(messageOrId, attachment, fallbackMessage),
       });
+      if (!isCurrentPreview()) return;
       if (desktopOpen.accepted) return;
 
       const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
@@ -278,6 +297,12 @@ export default function useMailMessageFileActions({
           filename,
           contentType,
         });
+        if (!isCurrentPreview()) {
+          if (previewState?.objectUrl?.startsWith?.('blob:')) {
+            window.URL?.revokeObjectURL?.(previewState.objectUrl);
+          }
+          return;
+        }
         setAttachmentPreview({
           ...createEmptyAttachmentPreview(),
           ...previewState,
@@ -288,7 +313,7 @@ export default function useMailMessageFileActions({
           requestError,
           '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u0438\u0442\u044c \u043f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440 Office-\u0444\u0430\u0439\u043b\u0430.',
         );
-        if (!(await maybeHandleCredentials(requestError, errorDetail))) {
+        if (!(await maybeHandleCredentials(requestError, errorDetail)) && isCurrentPreview()) {
           setAttachmentPreview({
             ...createEmptyAttachmentPreview(),
             open: true,
@@ -314,10 +339,16 @@ export default function useMailMessageFileActions({
           ? window.URL.createObjectURL.bind(window.URL)
           : undefined,
       });
+      if (!isCurrentPreview()) {
+        if (previewState?.objectUrl?.startsWith?.('blob:')) {
+          window.URL?.revokeObjectURL?.(previewState.objectUrl);
+        }
+        return;
+      }
       setAttachmentPreview({ ...previewState, downloadContext });
     } catch (requestError) {
       const errorDetail = await getMailErrorDetailAsync?.(requestError, '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435.');
-      if (!(await maybeHandleCredentials(requestError, errorDetail))) {
+      if (!(await maybeHandleCredentials(requestError, errorDetail)) && isCurrentPreview()) {
         reportError(errorDetail);
       }
     }
@@ -333,6 +364,7 @@ export default function useMailMessageFileActions({
   ]);
 
   const closeAttachmentPreview = useCallback(() => {
+    previewGenerationRef.current += 1;
     setAttachmentPreview(createEmptyAttachmentPreview());
   }, []);
 

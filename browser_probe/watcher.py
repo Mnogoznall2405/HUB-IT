@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
+import sys
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from .activity import ActivityTracker
 from .classify import classify_visit, is_noise_visit
-from .foreground import ForegroundTracker, _strip_browser_suffix
+from .foreground import BROWSER_PROCESS_MAP, ForegroundTracker, _strip_browser_suffix
 from .history import (
     discover_profiles,
     profile_cursor_key,
@@ -28,6 +31,7 @@ log = logging.getLogger("browser_probe.watcher")
 _TITLE_CACHE_LIMIT = 2048
 _SCREENSHOT_CACHE_LIMIT = 512
 _TITLE_PREFIX_MATCH = 20
+_SHOT_RETRY_MAX = 2
 
 _TITLE_COUNTER_RE = re.compile(r"^[\(\[]\d+[\)\]]\s*")
 _TITLE_BADGE_RE = re.compile(r"^[●•*·]\s*")
@@ -115,10 +119,48 @@ class BrowserProbeWatcher:
                 else _env_float("ITINV_BROWSER_PROBE_SHOT_THROTTLE_SEC", 30)
             ),
         )
+        # Delay between a page becoming foreground and capturing it: an instant
+        # shot usually frames the still-loading (blank) page. A degenerate
+        # capture (blank frame, tiny/minimizing window) re-arms the pending shot
+        # a few times instead of storing garbage.
+        self._shot_settle_sec = max(
+            0.0,
+            float(_env_float("ITINV_BROWSER_PROBE_SHOT_SETTLE_SEC", 8)),
+        )
+        self._shot_retry_sec = max(
+            1.0,
+            float(_env_float("ITINV_BROWSER_PROBE_SHOT_RETRY_SEC", 20)),
+        )
         self.history_enabled = (
             _env_bool("ITINV_BROWSER_PROBE_HISTORY_ENABLED", True)
             if history_enabled is None
             else bool(history_enabled)
+        )
+        # Files opened/picked by browser processes → fs_egress inbox as
+        # "browser" rows (send_state observed/selected — never claimed as sent).
+        self._file_watch = None
+        if _env_bool("ITINV_BROWSER_PROBE_FILE_WATCH_ENABLED", True):
+            try:
+                from types import SimpleNamespace
+
+                probe_root = Path(__file__).resolve().parents[1] / "telegram_uia_probe"
+                if str(probe_root) not in sys.path:
+                    sys.path.insert(0, str(probe_root))
+                from telegram_probe.disk_access import DiskAccessTracker
+
+                self._file_watch = DiskAccessTracker(
+                    SimpleNamespace(process_names=frozenset(BROWSER_PROCESS_MAP)),
+                    min_poll_sec=3.0,
+                )
+            except Exception as exc:
+                log.debug("browser file watch unavailable: %s", exc)
+        self._egress_inbox = (
+            Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+            / "HUB-IT"
+            / "Agent"
+            / "Spool"
+            / "fs_egress"
+            / "inbox"
         )
         self._stop = False
         self._tracker = ForegroundTracker()
@@ -126,11 +168,16 @@ class BrowserProbeWatcher:
         self._last_history = 0.0
         self._last_shot_mono = 0.0
         self._last_shot_key = ""
+        self._pending_shot_key: str | None = None
+        self._pending_shot_due = 0.0
+        self._pending_shot_retries = 0
         self._shots_by_key: OrderedDict[str, str] = OrderedDict()
         self._fg_key: str | None = None
         self._cursors: Dict[str, int] = {}
         # Recent History title→url for enriching focus when omnibox UIA is empty.
         self._title_url_cache: OrderedDict[str, str] = OrderedDict()
+        self._liveness_path = self.output_dir / "liveness.ts"
+        self._last_liveness_mono = 0.0
         self._load_state()
 
     def request_stop(self) -> None:
@@ -244,22 +291,54 @@ class BrowserProbeWatcher:
         title_part = str(title or "").strip().lower()
         return f"{browser}|{url_part or title_part}"
 
-    def _maybe_screenshot(self, snap, *, title_changed: bool) -> Dict[str, Any] | None:
-        if snap is None or not title_changed:
+    def _schedule_shot(self, fg_key: str | None, *, now: float) -> None:
+        """Remember a just-foregrounded page for a settled capture."""
+        if not fg_key or fg_key == self._last_shot_key:
+            return
+        if fg_key != self._pending_shot_key:
+            self._pending_shot_retries = 0
+        self._pending_shot_key = fg_key
+        self._pending_shot_due = now + self._shot_settle_sec
+
+    def _deferred_screenshot(
+        self, snap, fg_key: str | None, *, now: float
+    ) -> Dict[str, Any] | None:
+        """Fire the pending capture once the page is settled and still foreground.
+
+        A navigated-away pending key is dropped; a throttled one waits until the
+        throttle window opens (a dwell is more valuable than the first tick).
+        """
+        key = self._pending_shot_key
+        if key is None:
             return None
-        key = self._shot_key(snap.browser, snap.page_title, getattr(snap, "url", "") or "")
-        now = time.monotonic()
-        if key == self._last_shot_key:
+        if fg_key != key or snap is None:
+            self._pending_shot_key = None
+            return None
+        if now < self._pending_shot_due:
             return None
         if (now - self._last_shot_mono) < self.screenshot_throttle_sec:
             return None
+        self._pending_shot_key = None
+        shot = self._capture_screenshot(snap, now=now)
+        # Retryable failure (blank frame, tiny window, grab error): re-arm the
+        # same key a bounded number of times — a page still loading at +8s may
+        # be fine at +28s. The key is NOT marked shot on failure, so a later
+        # revisit gets a fresh attempt.
+        if shot is None and self._pending_shot_retries < _SHOT_RETRY_MAX:
+            self._pending_shot_retries += 1
+            self._pending_shot_key = key
+            self._pending_shot_due = now + self._shot_retry_sec
+        return shot
+
+    def _capture_screenshot(self, snap, *, now: float) -> Dict[str, Any] | None:
+        key = self._shot_key(snap.browser, snap.page_title, getattr(snap, "url", "") or "")
         prefix = f"{snap.browser}"
         rel, err = capture_window(snap.hwnd, self.screenshots_dir, prefix)
         self._last_shot_mono = now
-        self._last_shot_key = key
         if not rel:
             log.debug("screenshot skipped: %s", err)
             return None
+        self._last_shot_key = key
         name = rel.split("/")[-1]
         _remember_recent(self._shots_by_key, key, name, _SCREENSHOT_CACHE_LIMIT)
         return {
@@ -286,6 +365,70 @@ class BrowserProbeWatcher:
         if any(payload[key] for key in ("visits", "focus_events", "screenshots", "activity")):
             self.syncer.enqueue(payload)
 
+    def _poll_file_access(self, snap) -> None:
+        """User files opened by a browser process → file_left 'browser' events.
+
+        Direction cannot be proven from handles alone (upload attach vs
+        download/PDF view), so these are evidence rows — 'selected' when the
+        common file dialog picked the file, 'observed' otherwise.
+        """
+        preferred = int(getattr(snap, "pid", 0) or 0)
+        for acc in self._file_watch.poll(preferred):
+            name = str(getattr(acc, "file_name", "") or "")
+            if not name or "." not in name:
+                continue
+            path = Path(str(getattr(acc, "path", "") or ""))
+            if not path.is_file():
+                continue
+            try:
+                size = int(path.stat().st_size)
+            except OSError:
+                size = None
+            url = str(getattr(snap, "url", "") or "") if snap else ""
+            domain = urlparse(url).netloc.lower()
+            browser = str(getattr(snap, "browser", "") or "") if snap else ""
+            windows_user, computer_name = self._identity()
+            ts = int(time.time())
+            dest = f"browser:{domain or browser or 'unknown'}"
+            event_id = "browser-" + hashlib.sha1(
+                f"{computer_name}|browser|{path}|{acc.source}|{dest}|{ts // 300}".encode(
+                    "utf-8", errors="replace"
+                )
+            ).hexdigest()[:24]
+            event = {
+                "event_id": event_id,
+                "ts": ts,
+                "channel": "browser",
+                "file_name": name,
+                "dest_path": dest,
+                "src_path": str(path),
+                "size": size,
+                "sha256": "",
+                "windows_user": windows_user,
+                "computer_name": computer_name,
+                "details": {
+                    "send_state": (
+                        "selected"
+                        if str(getattr(acc, "source", "") or "") == "file_dialog"
+                        else "observed"
+                    ),
+                    "source": "disk_open",
+                    "access_source": str(getattr(acc, "source", "") or ""),
+                    "browser": browser or str(getattr(acc, "process_name", "") or ""),
+                    "url": url[:300],
+                    "page_title": (
+                        str(getattr(snap, "page_title", "") or "")[:300] if snap else ""
+                    ),
+                },
+            }
+            try:
+                self._egress_inbox.mkdir(parents=True, exist_ok=True)
+                (self._egress_inbox / f"br_{event_id}.json").write_text(
+                    json.dumps(event, ensure_ascii=False), encoding="utf-8"
+                )
+            except OSError as exc:
+                log.debug("browser file_left drop failed: %s", exc)
+
     def _handle_closed_focus(self, closed: Dict[str, Any], focus_batch: List[Dict[str, Any]]) -> None:
         self._enrich_focus_url(closed)
         closed_title = str(closed.get("title") or "")
@@ -301,16 +444,41 @@ class BrowserProbeWatcher:
         closed["source"] = "focus"
         focus_batch.append(closed)
 
+    def _mark_liveness(self) -> None:
+        """Cheap heartbeat for the agent watchdog: proves the tick loop runs.
+
+        The agent's probe watchdog treats a running process whose liveness
+        file is stale (e.g. a blocking WinAPI call wedged the loop) as hung
+        and restarts the scheduled task.
+        """
+        now_mono = time.monotonic()
+        if now_mono - self._last_liveness_mono < 15.0:
+            return
+        self._last_liveness_mono = now_mono
+        try:
+            self._liveness_path.write_text(f"{time.time():.3f}\n", encoding="ascii")
+        except OSError as exc:
+            log.debug("liveness mark failed: %s", exc)
+
     def run(self) -> None:
         log.info(
-            "browser probe watcher start history=%ss poll=%ss shot_throttle=%ss",
+            "browser probe watcher start history=%ss poll=%ss "
+            "shot_throttle=%ss settle=%ss retry=%ss",
             self.history_interval_sec,
             self.foreground_poll_sec,
             self.screenshot_throttle_sec,
+            self._shot_settle_sec,
+            self._shot_retry_sec,
         )
         while not self._stop:
             try:
+                self._mark_liveness()
                 snap, closed = self._tracker.poll()
+                if self._file_watch is not None:
+                    try:
+                        self._poll_file_access(snap)
+                    except Exception as exc:
+                        log.debug("browser file access poll failed: %s", exc)
                 # Activity is best-effort: a tracker fault must not blind focus.
                 try:
                     activity_buckets = self._activity.poll()
@@ -336,7 +504,10 @@ class BrowserProbeWatcher:
                 snap_url = str(getattr(snap, "url", "") or "") if snap else ""
                 if snap is not None and is_noise_visit(snap_url, snap_title):
                     title_changed = False
-                shot = self._maybe_screenshot(snap, title_changed=title_changed)
+                now_mono = time.monotonic()
+                if title_changed:
+                    self._schedule_shot(fg_key, now=now_mono)
+                shot = self._deferred_screenshot(snap, fg_key, now=now_mono)
                 if shot:
                     shot_batch.append(shot)
                 self._fg_key = fg_key

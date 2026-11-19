@@ -214,8 +214,11 @@ export function NativeCompanyNodeEditorSheet({
     setLeaderQuery(leader.full_name);
     setLeaders([]);
   };
+  // In «create» mode selectedNode is the future parent, so a code linked to
+  // any node (including that parent) is a conflict — the new child owns none.
+  const editableNodeId = mode === 'edit' ? selectedNode?.id : null;
   const toggleCode = (option: CompanyStructureDepartmentCode) => {
-    const ownerConflict = option.linked_node_id && option.linked_node_id !== selectedNode?.id;
+    const ownerConflict = option.linked_node_id && option.linked_node_id !== editableNodeId;
     if (ownerConflict) return;
     setDraft((current) => ({
       ...current,
@@ -226,12 +229,16 @@ export function NativeCompanyNodeEditorSheet({
   };
   const selectableCodesByGroup = (group: 'office' | 'object') => codes.filter((option) => (
     option.binding_group === group
-      && (!option.linked_node_id || option.linked_node_id === selectedNode?.id)
+      && (!option.linked_node_id || option.linked_node_id === editableNodeId)
   ));
   const replaceCodesByGroup = (group: 'office' | 'object') => {
+    // Merge, not replace: `codes` only holds the current search results, so
+    // overwriting would drop codes of the other group and matches outside
+    // the current query.
+    const groupCodes = selectableCodesByGroup(group).map((option) => option.department_code);
     setDraft((current) => ({
       ...current,
-      department_codes: selectableCodesByGroup(group).map((option) => option.department_code),
+      department_codes: [...new Set([...current.department_codes, ...groupCodes])],
     }));
   };
   const officeCodeCount = selectableCodesByGroup('office').length;
@@ -368,7 +375,7 @@ export function NativeCompanyNodeEditorSheet({
                 ) : null}
                 {codes.map((option) => {
                   const selected = draft.department_codes.includes(option.department_code);
-                  const conflict = Boolean(option.linked_node_id && option.linked_node_id !== selectedNode?.id);
+                  const conflict = Boolean(option.linked_node_id && option.linked_node_id !== editableNodeId);
                   return (
                     <Pressable
                       key={option.department_code}

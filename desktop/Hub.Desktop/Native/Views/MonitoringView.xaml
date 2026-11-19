@@ -1,0 +1,785 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.MonitoringView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+            <Style x:Key="InterfaceHeaderCellStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
+            <Style x:Key="SectionPanelStyle" TargetType="Border">
+                <Setter Property="Margin" Value="0,14,0,0" />
+                <Setter Property="Padding" Value="14,12" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceAltBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+            </Style>
+            <Style x:Key="MetricPanelStyle" TargetType="Border">
+                <Setter Property="Margin" Value="0,0,10,10" />
+                <Setter Property="Padding" Value="10,8" />
+                <Setter Property="MinWidth" Value="140" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+            </Style>
+
+            <!-- Точка/подпись статуса: success|warning|error|muted → кисти темы.
+                 Цвет всегда дублируется текстом StatusText. -->
+            <Style x:Key="StatusDotStyle" TargetType="Ellipse">
+                <Setter Property="Width" Value="8" />
+                <Setter Property="Height" Value="8" />
+                <Setter Property="Fill" Value="{DynamicResource HubTextSecondaryBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="success">
+                        <Setter Property="Fill" Value="{DynamicResource HubSuccessBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="warning">
+                        <Setter Property="Fill" Value="{DynamicResource HubWarningBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="error">
+                        <Setter Property="Fill" Value="{DynamicResource HubErrorTextBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+            <Style x:Key="StatusTextStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="success">
+                        <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="warning">
+                        <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="error">
+                        <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+            <Style x:Key="StatusPillStyle" TargetType="Border" BasedOn="{StaticResource HubStatusPillStyle}">
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+            </Style>
+            <Style x:Key="ToneChipStyle" TargetType="Border" BasedOn="{StaticResource HubStatusPillStyle}">
+                <Setter Property="Margin" Value="0,0,8,0" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceBrush}" />
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid AutomationProperties.Name="Страница мониторинга">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Верхняя панель: поиск, фильтр «Требуют внимания», обновить -->
+        <Border Grid.Row="0" Padding="20,16,20,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Grid VerticalAlignment="Center">
+                        <TextBox x:Name="SearchInput"
+                                 Width="300"
+                                 HorizontalAlignment="Left"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="Поиск устройства по имени или адресу" />
+                        <TextBlock Margin="13,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="Имя или адрес…">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=SearchInput}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                    <ToggleButton Margin="12,0,0,0"
+                                  Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding IssuesOnly}"
+                                  Content="Требуют внимания"
+                                  AutomationProperties.Name="Показать только устройства с проблемами" />
+                    <ProgressBar Margin="10,0,0,0"
+                                 Width="80"
+                                 Height="3"
+                                 VerticalAlignment="Center"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор загрузки мониторинга" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Обновить"
+                        AutomationProperties.Name="Обновить мониторинг" />
+            </Grid>
+        </Border>
+
+        <!-- Баннер ошибки загрузки -->
+        <Border Grid.Row="1"
+                Margin="20,10,20,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}"
+                AutomationProperties.Name="Ошибка загрузки мониторинга">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{DynamicResource HubErrorTextBrush}"
+                           Text="{Binding BannerErrorText}"
+                           TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <Button Grid.Column="1"
+                        Margin="12,0,8,0"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Повторить"
+                        AutomationProperties.Name="Повторить загрузку мониторинга" />
+                <Button Grid.Column="2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DismissBannerCommand}"
+                        Content="✕"
+                        AutomationProperties.Name="Скрыть ошибку мониторинга" />
+            </Grid>
+        </Border>
+
+        <!-- Уведомление о состоянии сборщика (worker{} из overview) -->
+        <Border Grid.Row="2"
+                Visibility="{Binding HasWorkerNotice, Converter={StaticResource BoolToVisibility}}"
+                AutomationProperties.Name="Уведомление сборщика мониторинга">
+            <Border.Style>
+                <Style TargetType="Border" BasedOn="{StaticResource SectionPanelStyle}">
+                    <Setter Property="Margin" Value="20,10,20,0" />
+                    <Setter Property="Padding" Value="14,10" />
+                    <Setter Property="CornerRadius" Value="8" />
+                    <Setter Property="Background" Value="{DynamicResource HubSurfaceBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding WorkerNoticeTone}" Value="warning">
+                            <Setter Property="BorderBrush" Value="{DynamicResource HubWarningBrush}" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <TextBlock FontSize="12"
+                       Text="{Binding WorkerNoticeText}"
+                       TextWrapping="Wrap">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding WorkerNoticeTone}" Value="warning">
+                                <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Border>
+
+        <!-- Список устройств | карточка устройства -->
+        <Grid Grid.Row="3" Margin="20,14,20,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360" MinWidth="300" />
+                <ColumnDefinition Width="6" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Список устройств мониторинга -->
+            <Grid Grid.Column="0">
+                <ListBox Style="{StaticResource HubListBoxStyle}"
+                         ItemsSource="{Binding Items}"
+                         SelectedItem="{Binding SelectedTarget}"
+                         AutomationProperties.Name="Список устройств мониторинга">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel AutomationProperties.Name="{Binding AutomationName}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Ellipse Style="{StaticResource StatusDotStyle}"
+                                             VerticalAlignment="Center" />
+                                    <TextBlock Margin="8,0,0,0"
+                                               FontSize="14"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding Title}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <TextBlock Margin="16,3,0,0"
+                                           FontSize="12"
+                                           FontFamily="Consolas"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding AddressText}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Margin="16,2,0,0"
+                                           Style="{StaticResource StatusTextStyle}"
+                                           Text="{Binding StatusText}" />
+                                <TextBlock Margin="16,4,0,0"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding LatencyText}"
+                                           Visibility="{Binding HasLatency, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Margin="16,2,0,0"
+                                           FontSize="11"
+                                           FontFamily="Consolas"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding SummaryText}"
+                                           Visibility="{Binding HasSummary, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Margin="16,2,0,0"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding ModelText}"
+                                           Visibility="{Binding HasModel, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <!-- Пустое состояние списка -->
+                <StackPanel HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Text="Нет целей мониторинга" />
+                    <TextBlock Margin="0,6,0,0"
+                               HorizontalAlignment="Center"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               Text="Цели появятся после настройки мониторинга в веб-версии или измените условия поиска." />
+                </StackPanel>
+            </Grid>
+
+            <GridSplitter Grid.Column="1"
+                          Width="6"
+                          HorizontalAlignment="Stretch"
+                          Background="Transparent"
+                          AutomationProperties.Name="Разделитель списка и карточки мониторинга" />
+
+            <!-- Карточка устройства -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12">
+                <Grid>
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding ShowDetailPlaceholder, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Устройство не выбрано" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Выберите устройство в списке слева." />
+                    </StackPanel>
+
+                    <ProgressBar Height="3"
+                                 Margin="16"
+                                 VerticalAlignment="Top"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsDetailLoading, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор загрузки карточки устройства" />
+
+                    <TextBlock Margin="20"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource HubErrorTextBrush}"
+                               Text="{Binding DetailErrorText}"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               Visibility="{Binding HasDetailError, Converter={StaticResource BoolToVisibility}}"
+                               AutomationProperties.Name="Ошибка карточки устройства" />
+
+                    <Grid Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}">
+                        <ScrollViewer Padding="22,18"
+                                      VerticalScrollBarVisibility="Auto"
+                                      DataContext="{Binding Detail}"
+                                      AutomationProperties.Name="Карточка устройства мониторинга">
+                            <StackPanel>
+                                <!-- Шапка: имя, адрес:порт, описание SNMP -->
+                                <TextBlock FontSize="20"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding Title}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="Имя устройства мониторинга" />
+                                <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                    <TextBlock FontSize="13"
+                                               FontFamily="Consolas"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding AddressText}" />
+                                    <TextBlock Margin="10,0,0,0"
+                                               Style="{StaticResource MetaLabelStyle}"
+                                               Text="{Binding SubtitleText}"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+
+                                <!-- Статус + эпизод недоступности -->
+                                <StackPanel Margin="0,12,0,0" Orientation="Horizontal">
+                                    <Border Style="{StaticResource StatusPillStyle}">
+                                        <TextBlock FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding StatusText}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding StatusTone}" Value="success">
+                                                            <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding StatusTone}" Value="warning">
+                                                            <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding StatusTone}" Value="error">
+                                                            <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+                                    <TextBlock Margin="12,0,0,0"
+                                               VerticalAlignment="Center"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubErrorTextBrush}"
+                                               Text="{Binding OutageText}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding HasOutage, Converter={StaticResource BoolToVisibility}}"
+                                               AutomationProperties.Name="Эпизод недоступности" />
+                                </StackPanel>
+
+                                <!-- Чипы связи: ICMP / SNMP / последний успех -->
+                                <StackPanel Margin="0,10,0,0"
+                                            Orientation="Horizontal"
+                                            AutomationProperties.Name="Связь устройства">
+                                    <Border Style="{StaticResource ToneChipStyle}">
+                                        <TextBlock FontSize="12" Text="{Binding IcmpText}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IcmpTone}" Value="success">
+                                                            <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+                                    <Border Style="{StaticResource ToneChipStyle}">
+                                        <TextBlock FontSize="12" Text="{Binding SnmpText}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SnmpTone}" Value="success">
+                                                            <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding SnmpTone}" Value="warning">
+                                                            <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{StaticResource MetaLabelStyle}"
+                                               Text="{Binding LastSuccessText}"
+                                               TextWrapping="NoWrap"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <TextBlock Margin="0,8,0,0"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubWarningBrush}"
+                                           Text="{Binding SnmpErrorText}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding HasSnmpError, Converter={StaticResource BoolToVisibility}}" />
+
+                                <!-- Текущие ресурсы: текст + прогресс для процентов -->
+                                <WrapPanel Margin="0,14,0,0"
+                                           AutomationProperties.Name="Метрики устройства">
+                                    <Border Style="{StaticResource MetricPanelStyle}"
+                                            Visibility="{Binding HasCpu, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="CPU" />
+                                            <TextBlock Margin="0,2,0,0"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding CpuText}" />
+                                            <ProgressBar Margin="0,6,0,0"
+                                                         Height="3"
+                                                         Minimum="0"
+                                                         Maximum="100"
+                                                         Value="{Binding CpuValue, Mode=OneWay}"
+                                                         Foreground="{DynamicResource HubAccentBrush}"
+                                                         Background="{DynamicResource HubSurfaceBrush}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource MetricPanelStyle}"
+                                            Visibility="{Binding HasMemory, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="Память" />
+                                            <TextBlock Margin="0,2,0,0"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding MemoryText}" />
+                                            <ProgressBar Margin="0,6,0,0"
+                                                         Height="3"
+                                                         Minimum="0"
+                                                         Maximum="100"
+                                                         Value="{Binding MemoryValue, Mode=OneWay}"
+                                                         Foreground="{DynamicResource HubAccentBrush}"
+                                                         Background="{DynamicResource HubSurfaceBrush}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource MetricPanelStyle}"
+                                            Visibility="{Binding HasStorage, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="Хранилище" />
+                                            <TextBlock Margin="0,2,0,0"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding StorageText}" />
+                                            <ProgressBar Margin="0,6,0,0"
+                                                         Height="3"
+                                                         Minimum="0"
+                                                         Maximum="100"
+                                                         Value="{Binding StorageValue, Mode=OneWay}"
+                                                         Foreground="{DynamicResource HubAccentBrush}"
+                                                         Background="{DynamicResource HubSurfaceBrush}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource MetricPanelStyle}"
+                                            Visibility="{Binding HasTemperature, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="Температура платы" />
+                                            <TextBlock Margin="0,2,0,0"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding TemperatureText}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource MetricPanelStyle}"
+                                            Visibility="{Binding HasLatency, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="Задержка HUB" />
+                                            <TextBlock Margin="0,2,0,0"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding LatencyText}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource MetricPanelStyle}"
+                                            Visibility="{Binding HasLoss, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="Потери ICMP" />
+                                            <TextBlock Margin="0,2,0,0"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding LossText}" />
+                                        </StackPanel>
+                                    </Border>
+                                </WrapPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                               Text="{Binding UptimeText}"
+                                               Visibility="{Binding UptimeText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    <TextBlock Margin="12,0,0,0"
+                                               Style="{StaticResource MetaLabelStyle}"
+                                               Text="{Binding SerialText}"
+                                               Visibility="{Binding SerialText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                </StackPanel>
+                                <TextBlock Margin="0,8,0,0"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubWarningBrush}"
+                                           Text="{Binding StaleDataText}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding StaleDataText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                <TextBlock Margin="0,4,0,0"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubWarningBrush}"
+                                           Text="{Binding ResourcesStaleText}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding ResourcesStaleText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+
+                                <!-- Интерфейсы -->
+                                <Border Style="{StaticResource SectionPanelStyle}">
+                                    <StackPanel>
+                                        <TextBlock FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding InterfacesTitleText}"
+                                                   AutomationProperties.Name="Интерфейсы устройства" />
+                                        <TextBlock Margin="0,8,0,0"
+                                                   Style="{StaticResource MetaLabelStyle}"
+                                                   Text="Интерфейсы появятся после успешного обнаружения SNMP."
+                                                   Visibility="{Binding IsInterfacesEmpty, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <Grid Margin="0,8,0,0">
+                                            <Grid.Style>
+                                                <Style TargetType="Grid">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsInterfacesEmpty}" Value="True">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Grid.Style>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="2*" MinWidth="150" />
+                                                <ColumnDefinition Width="120" />
+                                                <ColumnDefinition Width="100" />
+                                                <ColumnDefinition Width="110" />
+                                                <ColumnDefinition Width="110" />
+                                                <ColumnDefinition Width="120" />
+                                                <ColumnDefinition Width="80" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Style="{StaticResource InterfaceHeaderCellStyle}" Text="ИНТЕРФЕЙС" />
+                                            <TextBlock Grid.Column="1" Style="{StaticResource InterfaceHeaderCellStyle}" Text="СОСТОЯНИЕ" />
+                                            <TextBlock Grid.Column="2" Style="{StaticResource InterfaceHeaderCellStyle}" Text="ЛИНК" />
+                                            <TextBlock Grid.Column="3" Style="{StaticResource InterfaceHeaderCellStyle}" Text="ПРИЁМ" />
+                                            <TextBlock Grid.Column="4" Style="{StaticResource InterfaceHeaderCellStyle}" Text="ПЕРЕДАЧА" />
+                                            <TextBlock Grid.Column="5" Style="{StaticResource InterfaceHeaderCellStyle}" Text="RX/TX %" />
+                                            <TextBlock Grid.Column="6" Style="{StaticResource InterfaceHeaderCellStyle}" Text="КОНТРОЛЬ" />
+                                        </Grid>
+                                        <ItemsControl Margin="0,2,0,0"
+                                                      ItemsSource="{Binding Interfaces}"
+                                                      AutomationProperties.Name="Таблица интерфейсов устройства">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,6,0,0"
+                                                          AutomationProperties.Name="{Binding AutomationName}">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="2*" MinWidth="150" />
+                                                            <ColumnDefinition Width="120" />
+                                                            <ColumnDefinition Width="100" />
+                                                            <ColumnDefinition Width="110" />
+                                                            <ColumnDefinition Width="110" />
+                                                            <ColumnDefinition Width="120" />
+                                                            <ColumnDefinition Width="80" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock FontSize="13"
+                                                                           FontWeight="SemiBold"
+                                                                           Text="{Binding Name}"
+                                                                           TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Margin="6,0,0,0"
+                                                                           VerticalAlignment="Center"
+                                                                           FontSize="10"
+                                                                           Foreground="{DynamicResource HubAccentBrush}"
+                                                                           Text="закреплён"
+                                                                           Visibility="{Binding IsPinned, Converter={StaticResource BoolToVisibility}}" />
+                                                            </StackPanel>
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding AliasText}"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       Visibility="{Binding HasAlias, Converter={StaticResource BoolToVisibility}}" />
+                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="1"
+                                                                   Margin="8,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   Style="{StaticResource StatusTextStyle}"
+                                                                   Text="{Binding StatusText}" />
+                                                        <TextBlock Grid.Column="2"
+                                                                   Margin="8,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12"
+                                                                   FontFamily="Consolas"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding SpeedText}" />
+                                                        <TextBlock Grid.Column="3"
+                                                                   Margin="8,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12"
+                                                                   FontFamily="Consolas"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding RxText}" />
+                                                        <TextBlock Grid.Column="4"
+                                                                   Margin="8,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12"
+                                                                   FontFamily="Consolas"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding TxText}" />
+                                                        <TextBlock Grid.Column="5"
+                                                                   Margin="8,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12"
+                                                                   FontFamily="Consolas"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding UtilText}" />
+                                                        <TextBlock Grid.Column="6"
+                                                                   Margin="8,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding ControlText}" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- События -->
+                                <Border Style="{StaticResource SectionPanelStyle}">
+                                    <StackPanel>
+                                        <TextBlock FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding EventsTitleText}"
+                                                   AutomationProperties.Name="События устройства" />
+                                        <TextBlock Margin="0,8,0,0"
+                                                   Style="{StaticResource MetaLabelStyle}"
+                                                   Text="Событий пока нет."
+                                                   Visibility="{Binding IsEventsEmpty, Converter={StaticResource BoolToVisibility}}" />
+                                        <ItemsControl Margin="0,4,0,0"
+                                                      ItemsSource="{Binding Events}"
+                                                      AutomationProperties.Name="Журнал событий устройства">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,6,0,0">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   FontSize="13"
+                                                                   Text="⚠">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Text" Value="⚠" />
+                                                                    <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsOpen}" Value="False">
+                                                                            <Setter Property="Text" Value="✓" />
+                                                                            <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding StateTone}" Value="error">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                                                            <TextBlock FontSize="13"
+                                                                       Text="{Binding Title}"
+                                                                       TextWrapping="Wrap" />
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding TimeText}" />
+                                                        </StackPanel>
+                                                        <Border Grid.Column="2"
+                                                                VerticalAlignment="Center"
+                                                                Style="{StaticResource ToneChipStyle}"
+                                                                Margin="12,0,0,0">
+                                                            <TextBlock FontSize="11" Text="{Binding StateText}">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding StateTone}" Value="warning">
+                                                                                <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding StateTone}" Value="error">
+                                                                                <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </Border>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Статусная строка -->
+        <Border Grid.Row="4" Padding="20,0,20,12">
+            <Grid>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                               Text="{Binding TotalText}"
+                               AutomationProperties.Name="Счётчик устройств мониторинга" />
+                    <TextBlock Margin="12,0,0,0"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               Foreground="{DynamicResource HubWarningBrush}"
+                               Text="{Binding IssuesText}"
+                               Visibility="{Binding IssuesText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                </StackPanel>
+                <TextBlock HorizontalAlignment="Right"
+                           Style="{StaticResource HubMutedTextStyle}"
+                           Text="{Binding LastUpdatedText}"
+                           Visibility="{Binding LastUpdatedText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

@@ -8,9 +8,10 @@ import re
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from backend.services.dlp_categories import CATEGORY_META
 from backend.utils.network_scope import resolve_network_scope
@@ -176,6 +177,7 @@ def list_events(
     offset: int = 0,
     group: bool = False,
     include_noise: bool = False,
+    send_state: str = "",
 ) -> List[Dict[str, Any]]:
     store = get_egress_store()
     try:
@@ -186,6 +188,7 @@ def list_events(
             offset=offset,
             group=group,
             include_noise=include_noise,
+            send_state=send_state,
         )
     except TypeError:
         # SQLite fallback store predates group/noise kwargs — raw listing still works.
@@ -257,9 +260,43 @@ def _normalize_dlp_login(value: str) -> str:
 
 # Host stats + summary are full-table aggregates (regex included) — cache briefly
 # per process so the DLP page does not re-scan ~1.3M rows on every open.
+# The cache is single-flight + stale-while-revalidate: after TTL expiry one
+# caller recomputes while the rest get the stale value, so an ingest burst
+# cannot pile dozens of identical heavy scans onto Postgres at once.
 _dlp_cache_lock = threading.Lock()
-_dlp_cache: Dict[str, Any] = {"hosts_expires": 0.0, "hosts": None, "summary_expires": 0.0, "summary": None}
+_dlp_cache: Dict[str, Any] = {}
+_dlp_refreshing: set = set()
 _DLP_CACHE_TTL_SEC = 60.0
+
+
+def _dlp_serve(key: str, compute: Callable[[], Any]) -> Any:
+    now = time.time()
+    with _dlp_cache_lock:
+        entry = _dlp_cache.get(key) or {}
+        if float(entry.get("expires") or 0.0) > now and entry.get("value") is not None:
+            return entry["value"]
+        stale = entry.get("value")
+        if stale is not None and key in _dlp_refreshing:
+            return stale
+        _dlp_refreshing.add(key)
+    try:
+        value = compute()
+    except Exception:
+        if stale is not None:
+            return stale
+        raise
+    finally:
+        with _dlp_cache_lock:
+            _dlp_refreshing.discard(key)
+    with _dlp_cache_lock:
+        _dlp_cache[key] = {"value": value, "expires": time.time() + _DLP_CACHE_TTL_SEC}
+    return value
+
+
+def _invalidate_attention_cache() -> None:
+    with _dlp_cache_lock:
+        for key in [k for k in _dlp_cache if str(k).startswith("attention")]:
+            _dlp_cache.pop(key, None)
 
 
 def _filter_hosts_by_category(rows: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
@@ -275,10 +312,11 @@ def _filter_hosts_by_category(rows: List[Dict[str, Any]], category: str) -> List
 
 
 def list_dlp_hosts(category: str = "") -> List[Dict[str, Any]]:
-    now = time.time()
-    with _dlp_cache_lock:
-        if float(_dlp_cache.get("hosts_expires") or 0.0) > now and _dlp_cache.get("hosts") is not None:
-            return _filter_hosts_by_category(_dlp_cache["hosts"], category)
+    rows = _dlp_serve("hosts", _compute_dlp_hosts)
+    return _filter_hosts_by_category(rows, category)
+
+
+def _compute_dlp_hosts() -> List[Dict[str, Any]]:
     store = get_egress_store()
     lister = getattr(store, "list_dlp_host_stats", None)
     if not callable(lister):
@@ -329,10 +367,7 @@ def list_dlp_hosts(category: str = "") -> List[Dict[str, Any]]:
         row["login"] = login
         row["branch_no"] = branch_no
         row["branch_name"] = branch_name or None
-    with _dlp_cache_lock:
-        _dlp_cache["hosts_expires"] = time.time() + _DLP_CACHE_TTL_SEC
-        _dlp_cache["hosts"] = rows
-    return _filter_hosts_by_category(rows, category)
+    return rows
 
 
 def get_dlp_activity(*, computer_name: str, day: str = "") -> Dict[str, Any]:
@@ -340,79 +375,96 @@ def get_dlp_activity(*, computer_name: str, day: str = "") -> Dict[str, Any]:
     getter = getattr(store, "list_dlp_activity", None)
     if not callable(getter):
         return {"buckets": [], "summary": {}, "apps_top": []}
-    payload = getter(computer_name=computer_name, day=day) or {
+    from backend.services import dlp_work_schedule_service as schedules_service
+
+    # The branch schedule resolves BEFORE the bucket query: it defines both
+    # which wall-clock day the host sees and the work/lunch/off zones.
+    schedule = None
+    host_row = None
+    try:
+        host_key = str(computer_name or "").strip().upper()
+        host_row = next(
+            (
+                row
+                for row in list_dlp_hosts()
+                if str(row.get("computer_name") or "").upper() == host_key
+            ),
+            None,
+        )
+        schedules = schedules_service.load_schedules(store)
+        if schedules:
+            schedule = schedules_service.schedule_for_branch(
+                schedules, (host_row or {}).get("branch_name")
+            )
+    except Exception:
+        # A lookup hiccup must not hide store errors: fall back to the
+        # Tyumen day and let the getter raise whatever it would.
+        logger.warning("dlp schedules: lookup failed, falling back to Tyumen day", exc_info=True)
+        schedule = None
+        host_row = None
+    offset = int(schedule.get("tz_offset_minutes") or 0) if schedule else 0
+    day_key = str(day or "").strip() or datetime.now(
+        timezone(timedelta(minutes=300 + offset))
+    ).date().isoformat()
+    payload = getter(computer_name=computer_name, day=day_key, tz_offset_minutes=offset) or {
         "buckets": [],
         "summary": {},
         "apps_top": [],
     }
     try:
-        from backend.services import dlp_work_schedule_service as schedules_service
-
-        schedule = None
-        schedules = schedules_service.load_schedules(store)
-        if schedules:
-            host_key = str(computer_name or "").strip().upper()
-            host_row = next(
-                (
-                    row
-                    for row in list_dlp_hosts()
-                    if str(row.get("computer_name") or "").upper() == host_key
-                ),
-                None,
-            )
-            schedule = schedules_service.schedule_for_branch(
-                schedules, (host_row or {}).get("branch_name")
-            )
         # Always runs: with no schedule it just tags zone=work and zeroes the new
         # fields, keeping the response shape consistent for the frontend.
         schedules_service.apply_to_activity_payload(schedule, payload)
     except Exception:
         logger.warning("dlp schedules: activity reclassification skipped", exc_info=True)
+    payload["local_time"] = {
+        "day": day_key,
+        "branch_name": (host_row or {}).get("branch_name") or None,
+        "utc_offset_minutes": 300 + offset,
+        "work_start_min": schedule.get("work_start_min") if schedule else None,
+        "work_end_min": schedule.get("work_end_min") if schedule else None,
+        "lunch_start_min": schedule.get("lunch_start_min") if schedule else None,
+        "lunch_end_min": schedule.get("lunch_end_min") if schedule else None,
+        "workdays_mask": schedule.get("workdays_mask") if schedule else None,
+    }
     return payload
 
 
 def get_dlp_attention(day: str = "") -> List[Dict[str, Any]]:
     """Per-host day rollup (activity + focus + file egress), enriched like /dlp/hosts."""
     day_key = str(day or "").strip()
-    now = time.time()
-    with _dlp_cache_lock:
-        cached = _dlp_cache.get("attention") or {}
-        if (
-            float(_dlp_cache.get("attention_expires") or 0.0) > now
-            and cached.get("day") == day_key
-            and cached.get("hosts") is not None
-        ):
-            return cached["hosts"]
-    store = get_egress_store()
-    getter = getattr(store, "dlp_attention_stats", None)
-    stats = getter(day=day_key) if callable(getter) else []
-    stats = stats or []
-    # Reuse the cached /dlp/hosts enrichment (login, full name, branch) instead
-    # of resolving it here a second time.
-    enriched: Dict[str, Dict[str, Any]] = {}
-    try:
-        for host_row in list_dlp_hosts():
-            enriched[str(host_row.get("computer_name") or "").upper()] = host_row
-    except Exception:
-        enriched = {}
-    for row in stats:
-        info = enriched.get(str(row.get("computer_name") or "").upper())
-        if info:
-            row["windows_user"] = row.get("windows_user") or info.get("windows_user") or ""
-            row["user_login"] = info.get("user_login") or info.get("login") or ""
-            row["user_full_name"] = info.get("user_full_name") or ""
-            row["branch_no"] = info.get("branch_no")
-            row["branch_name"] = info.get("branch_name")
-    try:
-        from backend.services import dlp_work_schedule_service as schedules_service
 
-        schedules_service.apply_to_attention_rows(store, stats, day_key)
-    except Exception:
-        logger.warning("dlp schedules: attention reclassification skipped", exc_info=True)
-    with _dlp_cache_lock:
-        _dlp_cache["attention_expires"] = time.time() + _DLP_CACHE_TTL_SEC
-        _dlp_cache["attention"] = {"day": day_key, "hosts": stats}
-    return stats
+    def compute() -> Dict[str, Any]:
+        store = get_egress_store()
+        getter = getattr(store, "dlp_attention_stats", None)
+        stats = getter(day=day_key) if callable(getter) else []
+        stats = stats or []
+        # Reuse the cached /dlp/hosts enrichment (login, full name, branch) instead
+        # of resolving it here a second time.
+        enriched: Dict[str, Dict[str, Any]] = {}
+        try:
+            for host_row in list_dlp_hosts():
+                enriched[str(host_row.get("computer_name") or "").upper()] = host_row
+        except Exception:
+            enriched = {}
+        for row in stats:
+            info = enriched.get(str(row.get("computer_name") or "").upper())
+            if info:
+                row["windows_user"] = row.get("windows_user") or info.get("windows_user") or ""
+                row["user_login"] = info.get("user_login") or info.get("login") or ""
+                row["user_full_name"] = info.get("user_full_name") or ""
+                row["branch_no"] = info.get("branch_no")
+                row["branch_name"] = info.get("branch_name")
+        try:
+            from backend.services import dlp_work_schedule_service as schedules_service
+
+            schedules_service.apply_to_attention_rows(store, stats, day_key)
+        except Exception:
+            logger.warning("dlp schedules: attention reclassification skipped", exc_info=True)
+        return {"day": day_key, "hosts": stats}
+
+    cached = _dlp_serve(f"attention:{day_key}", compute)
+    return (cached or {}).get("hosts") or []
 
 
 def list_work_schedules() -> Dict[str, Any]:
@@ -452,6 +504,7 @@ def save_work_schedule(payload: Dict[str, Any], *, updated_by: str = "") -> Dict
     from backend.services import dlp_work_schedule_service as schedules_service
 
     schedules_service.invalidate_schedules_cache()
+    _invalidate_attention_cache()
     return schedules_service.serialize_schedule(row)
 
 
@@ -462,31 +515,28 @@ def delete_work_schedule(branch_name: str) -> bool:
         from backend.services import dlp_work_schedule_service as schedules_service
 
         schedules_service.invalidate_schedules_cache()
+        _invalidate_attention_cache()
     return deleted
 
 
 def get_dlp_summary() -> Dict[str, Any]:
-    now = time.time()
-    with _dlp_cache_lock:
-        if float(_dlp_cache.get("summary_expires") or 0.0) > now and _dlp_cache.get("summary") is not None:
-            return _dlp_cache["summary"]
-    store = get_egress_store()
-    getter = getattr(store, "dlp_summary", None)
-    if not callable(getter):
-        return {
-            "hosts_total": 0,
-            "hosts_active_today": 0,
-            "visits_today": 0,
-            "file_events_today": 0,
-            "categories_today": {},
-            "category_meta": CATEGORY_META,
-        }
-    summary = getter() or {}
-    summary["category_meta"] = CATEGORY_META
-    with _dlp_cache_lock:
-        _dlp_cache["summary_expires"] = time.time() + _DLP_CACHE_TTL_SEC
-        _dlp_cache["summary"] = summary
-    return summary
+    def compute() -> Dict[str, Any]:
+        store = get_egress_store()
+        getter = getattr(store, "dlp_summary", None)
+        if not callable(getter):
+            return {
+                "hosts_total": 0,
+                "hosts_active_today": 0,
+                "visits_today": 0,
+                "file_events_today": 0,
+                "categories_today": {},
+                "category_meta": CATEGORY_META,
+            }
+        summary = getter() or {}
+        summary["category_meta"] = CATEGORY_META
+        return summary
+
+    return _dlp_serve("summary", compute)
 
 
 def ingest_telegram_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -513,6 +563,7 @@ def ingest_telegram_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                     chat_name=str(chat.get("chat_name") or ""),
                     windows_user=windows_user,
                     computer_name=computer_name,
+                    chat_id=str(chat.get("chat_id") or ""),
                 )
             )
     except Exception:
@@ -765,11 +816,14 @@ def count_browser_visits(
 
 
 def list_browser_hosts() -> List[Dict[str, Any]]:
-    store = get_egress_store()
-    lister = getattr(store, "list_browser_hosts", None)
-    if not callable(lister):
-        return []
-    return lister()
+    def compute() -> List[Dict[str, Any]]:
+        store = get_egress_store()
+        lister = getattr(store, "list_browser_hosts", None)
+        if not callable(lister):
+            return []
+        return lister()
+
+    return _dlp_serve("browser_hosts", compute)
 
 
 def list_browser_days(*, computer_name: str, source: str = "") -> List[Dict[str, Any]]:
@@ -802,53 +856,30 @@ def ingest_max_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         chat_count = int(
             upsert(computer_name=computer_name, windows_user=windows_user, chats=chats) or 0
         )
-    # Outgoing MAX files → file_left
+    # Outgoing MAX files → file_left (shared extractor: stable event_id,
+    # real names from «Файл: name» labels, send_state evidence fields).
+    probe_root = PROJECT_ROOT / "telegram_uia_probe"
+    if str(probe_root) not in sys.path:
+        sys.path.insert(0, str(probe_root))
     egress_events: List[Dict[str, Any]] = []
-    for chat in chats:
-        if not isinstance(chat, dict):
-            continue
-        chat_name = str(chat.get("chat_name") or "")
-        for msg in chat.get("messages") or []:
-            if not isinstance(msg, dict):
-                continue
-            direction = str(msg.get("direction") or "").lower()
-            if direction not in {"out", "outgoing", "sent"} and not msg.get("outgoing"):
-                continue
-            media = str(msg.get("media") or "").strip()
-            text = str(msg.get("text") or "").strip()
-            blob = media or text
-            if not blob:
-                continue
-            if not re.match(
-                r"^(Файл|File|Документ|Document|Фото|Photo|Видео|Video|GIF|Sticker|Стикер)\b",
-                blob,
-                re.IGNORECASE,
-            ):
-                continue
-            import time
-            import uuid
+    try:
+        from telegram_probe.sync import extract_outgoing_file_left
 
-            egress_events.append(
-                {
-                    "event_id": uuid.uuid4().hex,
-                    "ts": int(time.time()),
-                    "channel": "max",
-                    "file_name": blob[:180],
-                    "dest_path": f"max:{chat_name}",
-                    "src_path": "",
-                    "size": None,
-                    "sha256": "",
-                    "windows_user": windows_user,
-                    "computer_name": computer_name,
-                    "details": {
-                        "chat_name": chat_name,
-                        "message_key": msg.get("msg_key"),
-                        "text": text[:300],
-                        "media": media[:300],
-                        "source": "max_web_ext",
-                    },
-                }
+        for chat in chats:
+            if not isinstance(chat, dict):
+                continue
+            egress_events.extend(
+                extract_outgoing_file_left(
+                    chat.get("messages") or [],
+                    chat_name=str(chat.get("chat_name") or ""),
+                    windows_user=windows_user,
+                    computer_name=computer_name,
+                    channel="max",
+                    chat_id=str(chat.get("chat_id") or ""),
+                )
             )
+    except Exception:
+        egress_events = []
     if egress_events:
         store.ingest_file_left(egress_events)
     media_items = []

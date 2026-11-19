@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // PART_NO, для которых в номенклатуре 1С (локальный снимок каталога) нет такого кода.
 // available=false — снимок не готов: ни одну строку по догадке не помечаем.

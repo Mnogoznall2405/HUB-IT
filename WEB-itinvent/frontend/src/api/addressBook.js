@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const ADDRESS_BOOK_SYNC_TIMEOUT_MS = 120_000;
 

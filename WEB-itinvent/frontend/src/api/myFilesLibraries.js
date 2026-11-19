@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const libraryUrl = (libraryId, suffix = '') => `/my-files/libraries/${encodeURIComponent(libraryId)}${suffix}`;
 

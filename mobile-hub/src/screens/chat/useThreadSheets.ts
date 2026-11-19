@@ -268,23 +268,35 @@ export function useThreadSheets({
 
   const openMemberActions = useCallback((member: ChatMember) => {
     const viewerRole = conversation?.viewer_member_role;
+    const isSelf = Number(member.user?.id || 0) === Number(userId || 0);
     const buttons: Array<{
       text: string;
       style?: 'default' | 'cancel' | 'destructive';
       onPress?: () => void;
     }> = [];
-    if (member.member_role === 'moderator') {
-      buttons.push({ text: 'Сделать участником', onPress: () => void updateMember(member, 'demote') });
-    } else {
-      buttons.push({ text: 'Сделать администратором', onPress: () => void updateMember(member, 'promote') });
-    }
-    if (viewerRole === 'owner') {
+    // Server-side rules: promote/demote/transfer are owner-only; a moderator
+    // may remove only ordinary members; nobody manages their own row here.
+    if (!isSelf && viewerRole === 'owner') {
+      buttons.push(member.member_role === 'moderator'
+        ? { text: 'Сделать участником', onPress: () => void updateMember(member, 'demote') }
+        : { text: 'Сделать администратором', onPress: () => void updateMember(member, 'promote') });
       buttons.push({ text: 'Передать права владельца', onPress: () => void updateMember(member, 'transfer') });
     }
-    buttons.push({ text: 'Удалить из группы', style: 'destructive', onPress: () => void updateMember(member, 'remove') });
+    const canRemove = !isSelf
+      && member.member_role !== 'owner'
+      && (viewerRole === 'owner' || (viewerRole === 'moderator' && member.member_role === 'member'));
+    if (canRemove) {
+      buttons.push({ text: 'Удалить из группы', style: 'destructive', onPress: () => void updateMember(member, 'remove') });
+    }
+    if (!buttons.length) {
+      // No permitted actions left — open the member card instead of an
+      // empty menu that would promise forbidden operations.
+      openPersonProfile(member.user);
+      return;
+    }
     buttons.push({ text: 'Отмена', style: 'cancel' });
     Alert.alert(member.user.full_name || member.user.username, 'Управление участником', buttons);
-  }, [conversation?.viewer_member_role, updateMember]);
+  }, [conversation?.viewer_member_role, openPersonProfile, updateMember, userId]);
 
   const requestLeaveGroup = useCallback(() => {
     void confirmChatAction({

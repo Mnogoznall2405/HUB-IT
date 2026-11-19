@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const fileUrl = (fileId, suffix = '') => `/my-files/${encodeURIComponent(fileId)}/office${suffix}`;
 const folderUrl = (folderId) => `/my-files/office/folders/${encodeURIComponent(folderId)}/collaborators`;

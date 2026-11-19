@@ -1,14 +1,21 @@
 import * as chatApi from '../api/chatApi';
+import * as mailApi from '../api/mailApi';
 import {
   clearOfflineCommandQueue,
   drainOfflineCommandQueue,
   getOfflineCommandCount,
   markConversationReadResilient,
+  markMailMessageReadResilient,
   queueConversationRead,
+  queueMailMessageRead,
 } from './offlineCommandQueue';
 
 jest.mock('../api/chatApi', () => ({
   markConversationRead: jest.fn(async () => undefined),
+}));
+
+jest.mock('../api/mailApi', () => ({
+  markMailMessageRead: jest.fn(async () => undefined),
 }));
 
 function networkError() {
@@ -19,6 +26,7 @@ describe('offline command queue', () => {
   beforeEach(async () => {
     await clearOfflineCommandQueue();
     (chatApi.markConversationRead as jest.Mock).mockReset().mockResolvedValue(undefined);
+    (mailApi.markMailMessageRead as jest.Mock).mockReset().mockResolvedValue(undefined);
   });
 
   it('preserves concurrent enqueues and additions made during a drain', async () => {
@@ -91,6 +99,33 @@ describe('offline command queue', () => {
 
     await expect(drainOfflineCommandQueue(7)).resolves.toBe(2);
     expect(chatApi.markConversationRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays queued mail read markers through the mail endpoint', async () => {
+    await queueMailMessageRead(7, 'mailbox-2', 'message-7');
+
+    await expect(drainOfflineCommandQueue(7)).resolves.toBe(0);
+
+    expect(mailApi.markMailMessageRead).toHaveBeenCalledWith('message-7', 'mailbox-2');
+    expect(chatApi.markConversationRead).not.toHaveBeenCalled();
+    expect(await getOfflineCommandCount(7)).toBe(0);
+  });
+
+  it('queues a mail read marker only on retryable failures and allows an empty mailbox', async () => {
+    (mailApi.markMailMessageRead as jest.Mock).mockRejectedValue(networkError());
+
+    await expect(markMailMessageReadResilient(7, '', 'message-8')).resolves.toBe('queued');
+    expect(await getOfflineCommandCount(7)).toBe(1);
+
+    (mailApi.markMailMessageRead as jest.Mock).mockRejectedValue({
+      isAxiosError: true,
+      config: {},
+      response: { status: 403 },
+    });
+    await expect(markMailMessageReadResilient(7, 'mailbox-2', 'message-9')).rejects.toMatchObject({
+      response: { status: 403 },
+    });
+    expect(await getOfflineCommandCount(7)).toBe(1);
   });
 
   it('does not turn definitive server errors into false offline success', async () => {

@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const DEPARTMENTS_LIST_TTL_MS = 10 * 60 * 1000;
 

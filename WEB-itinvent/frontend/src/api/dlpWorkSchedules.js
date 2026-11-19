@@ -1,4 +1,4 @@
-import client from './client';
+import client from './http';
 
 // Branch work schedules for DLP activity reclassification (Администрирование → «Графики работы»).
 export const dlpWorkSchedulesAPI = {

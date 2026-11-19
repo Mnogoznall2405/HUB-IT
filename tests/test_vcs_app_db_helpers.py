@@ -150,7 +150,11 @@ def test_vcs_launch_token_is_one_time_and_keeps_password_out_of_token_response(m
     monkeypatch.setattr(vcs_module, "_decrypt_vcs_password_hex", lambda: "0123456789abcdef")
     monkeypatch.setattr(vcs_module, "auth_runtime_store_service", runtime_store)
 
-    client = _vcs_client(_make_user(permissions=["vcs.read"]))
+    read_client = _vcs_client(_make_user(permissions=["vcs.read"]))
+    denied_response = read_client.post("/vcs/computers/vcs-1/launch-token")
+    assert denied_response.status_code == 403
+
+    client = _vcs_client(_make_user(permissions=["vcs.read", "vcs.manage"]))
     token_response = client.post("/vcs/computers/vcs-1/launch-token")
 
     assert token_response.status_code == 200

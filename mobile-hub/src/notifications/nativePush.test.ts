@@ -3,8 +3,10 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import * as notificationApi from '../api/notificationApi';
 import * as tokenStore from '../auth/tokenStore';
+import { getChatDeviceLogSnapshot, resetChatDeviceLog } from '../diagnostics/chatDeviceLog';
 import {
   ensureAndroidNotificationChannels,
+  handlePushTokenRotation,
   HUBIT_NOTIFICATION_CHANNEL_GROUP,
   HUBIT_MAIL_MARK_READ_ACTION,
   HUBIT_MAIL_MESSAGE_CATEGORY,
@@ -34,7 +36,8 @@ const deleteToken = notificationApi.deleteNativePushToken as jest.MockedFunction
 >;
 const originalPlatform = Object.getOwnPropertyDescriptor(Platform, 'OS');
 
-beforeEach(() => {
+beforeEach(async () => {
+  await resetChatDeviceLog();
   Object.defineProperty(Platform, 'OS', { configurable: true, value: 'android' });
   getRuntimeStatus.mockResolvedValue({
     enabled: true,
@@ -126,6 +129,46 @@ describe('native push lifecycle', () => {
       message: 'Разрешение на уведомления не выдано',
     });
     expect(Notifications.getDevicePushTokenAsync).not.toHaveBeenCalled();
+  });
+
+  it('resolves a failed token rotation and logs only stage and status', async () => {
+    jest.spyOn(tokenStore, 'getOrCreateClientDeviceId').mockResolvedValueOnce('mobile-device-9');
+    registerToken.mockRejectedValueOnce(Object.assign(
+      new Error('503 from hub for token fcm-rotated-secret-value'),
+      { isAxiosError: true, response: { status: 503 } },
+    ));
+
+    // The AppLifecycle listener is fire-and-forget: a rejection here would be
+    // an unhandled promise rejection on the JS thread.
+    await expect(handlePushTokenRotation({
+      type: 'fcm',
+      data: 'fcm-rotated-secret-value',
+    } as Parameters<typeof handlePushTokenRotation>[0])).resolves.toBeUndefined();
+
+    const events = getChatDeviceLogSnapshot().filter((entry) => entry.e === 'push_registration');
+    expect(events).toHaveLength(1);
+    expect(events[0].f).toEqual({ origin: 'rotation', stage: 'register', code: 'http503' });
+    const serialized = JSON.stringify(getChatDeviceLogSnapshot());
+    expect(serialized).not.toContain('fcm-rotated-secret-value');
+    expect(serialized).not.toContain('from hub');
+  });
+
+  it('logs a sync failure at the device-token stage with the transport code only', async () => {
+    (Notifications.getDevicePushTokenAsync as jest.Mock).mockRejectedValueOnce(
+      Object.assign(new Error('fetch fcm-rotated-secret-value failed: device offline'), {
+        code: 'ERR_NETWORK',
+      }),
+    );
+
+    const state = await syncNativePushToken();
+    expect(state.status).toBe('error');
+
+    const events = getChatDeviceLogSnapshot().filter((entry) => entry.e === 'push_registration');
+    expect(events).toHaveLength(1);
+    expect(events[0].f).toEqual({ origin: 'sync', stage: 'device-token', code: 'ERR_NETWORK' });
+    const serialized = JSON.stringify(getChatDeviceLogSnapshot());
+    expect(serialized).not.toContain('fcm-rotated-secret-value');
+    expect(serialized).not.toContain('device offline');
   });
 
   it('revokes the backend token and removes the local copy on logout', async () => {

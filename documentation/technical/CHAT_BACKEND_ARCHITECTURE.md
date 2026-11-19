@@ -122,6 +122,49 @@ upload_*, attachment_media, realtime   Infra (existing)
 `client_message_id`; новая миграция не требуется. Старые клиенты без ключа сохраняют
 прежнее поведение пересылки.
 
+## Attachment write transactions
+
+File and forward persistence flush parent message/attachment rows before
+batch-enqueuing previews via `enqueue_many_in_session`. One message uses at most
+one preview lookup instead of a query per attachment. Preview rows remain in the
+same transaction; the helper never commits. Pending queue rows are reused when
+autoflush is disabled, and existing processing leases are not reset.
+
+For file forwards, response-building failure after a successful write transaction
+raises `FileMessageCommittedError`, as in the regular file-send path. The facade
+must preserve files now owned by the committed message. Failure before commit
+still cleans temporary copies; a deduplicated retry discards only unused copies.
+This does not make optional post-commit delivery work atomic with the message.
+
+File/forward replay detection and authorization remain in the protected
+transaction. Once an existing message is validated, that transaction ends before
+an independent response-reading session loads attachments or serializes the
+message. A slow replay response no longer retains the conversation write lock.
+Read-phase failure must still discard unused retry copies, not preserve them as
+if they belonged to a newly committed message.
+
+These changes are prepared, not deployed. Measurements and verification limits:
+[DATABASE_WORKLOAD_ISOLATION.md](DATABASE_WORKLOAD_ISOLATION.md).
+
+## Durable delivery-state intent
+
+Prepared lean-send persistence commits one `chat.message.delivery_state` outbox
+row atomically with each new message. Failure to save the intent rolls back both
+the message and sequence update. Recipient-state writes and notifications remain
+asynchronous; the old five-minute/latest-50 text-message repair is only a fallback,
+not the durability contract. Legacy deferred adapters remain supported.
+
+Mention resolution happens in the worker outside its write transaction. New
+mention-bearing intents include the original body and send-time `@all` permission;
+later role changes cannot grant that permission retroactively. Old explicit-ID
+intents remain readable. All consumers must understand these fields before new
+writers run; avoid mixed old-consumer/new-writer deployment.
+
+Native PostgreSQL 16.15 verification covers logical `chat` and legacy `public`
+routing. This does not certify production commit settings or power-loss safety:
+`synchronous_commit=off` can still lose acknowledged message and outbox rows
+together. These changes are not deployed.
+
 ## Regression gate
 
 ```powershell

@@ -121,7 +121,8 @@ export function NativeHelpScreen() {
     };
   }, [load]);
 
-  const groups = useMemo<ArticleGroup[]>(() => {
+  // Chips need the full category set — the filtered list must not shrink them.
+  const groupsAll = useMemo<ArticleGroup[]>(() => {
     const normalizedQuery = normalizeHelpSearch(query);
     const byCategory = new Map<string, ArticleGroup>();
     const ordered: ArticleGroup[] = [];
@@ -141,14 +142,17 @@ export function NativeHelpScreen() {
     const other: ArticleGroup = { key: OTHER_CATEGORY_ID, title: 'Прочее', data: [] };
     articles.forEach((article) => {
       const group = byCategory.get(article.category.toLowerCase()) || other;
-      if (categoryFilter && group.key !== categoryFilter) return;
       if (!articleMatchesQuery(article, group.title, normalizedQuery)) return;
       group.data.push(article);
     });
     const visible = ordered.filter((group) => group.data.length > 0);
     if (other.data.length > 0) visible.push(other);
     return visible;
-  }, [articles, categories, categoryFilter, query]);
+  }, [articles, categories, query]);
+
+  const groups = useMemo<ArticleGroup[]>(() => (
+    categoryFilter ? groupsAll.filter((group) => group.key === categoryFilter) : groupsAll
+  ), [groupsAll, categoryFilter]);
 
   const openArticle = useCallback(async (articleId: string) => {
     const id = String(articleId || '').trim();
@@ -231,9 +235,17 @@ export function NativeHelpScreen() {
             </Pressable>
           ) : null}
         </View>
-        {groups.length > 1 ? (
+        {groupsAll.length > 1 || categoryFilter ? (
           <View style={styles.categoryChips}>
-            {groups.map((group) => (
+            <NativeFilterChip
+              key="__all__"
+              label="Все"
+              selected={!categoryFilter}
+              tokens={tokens}
+              onPress={() => setCategoryFilter('')}
+              testID="native-help-category-all"
+            />
+            {groupsAll.map((group) => (
               <NativeFilterChip
                 key={group.key}
                 label={`${group.title} · ${group.data.length}`}

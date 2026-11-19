@@ -5,10 +5,19 @@ import { NativeFeedInboxScreen } from './NativeFeedInboxScreen';
 
 const mockFeedPostCardRender = jest.fn();
 
-jest.mock('expo-router', () => ({
-  router: { push: jest.fn() },
-  usePathname: () => '/feed',
-}));
+jest.mock('expo-router', () => {
+  const React = require('react');
+  return {
+    router: { push: jest.fn() },
+    usePathname: () => '/feed',
+    useFocusEffect: (callback: () => void | (() => void)) => {
+      React.useEffect(() => {
+        const cleanup = callback();
+        return typeof cleanup === 'function' ? cleanup : undefined;
+      }, [callback]);
+    },
+  };
+});
 
 jest.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({

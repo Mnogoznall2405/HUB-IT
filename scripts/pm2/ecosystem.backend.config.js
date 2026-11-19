@@ -53,6 +53,8 @@ module.exports = {
         MAIL_EXCHANGE_MAX_CONCURRENCY: '16',
         MAIL_WORKER_THREADS: '16',
         MAIL_OFFICE_PREVIEW_MAX_CONCURRENCY: '2',
+        // Ingest store calls share one queue; 6 slots collapse into a wait line during DB stalls.
+        ITINV_INGEST_MAX_CONCURRENCY: '12',
         PYTHONUNBUFFERED: '1',
       },
     },

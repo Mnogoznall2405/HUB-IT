@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { withMailSendTimeout } from '../components/mail/mailSendOutcome';
 
 export const mailItRequestsAPI = {

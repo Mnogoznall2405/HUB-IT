@@ -3,6 +3,12 @@ export const EXCEL_PREVIEW_TEASER_MAX_COLS = 10;
 export const EXCEL_PREVIEW_FULL_MAX_ROWS = 250;
 export const EXCEL_PREVIEW_FULL_MAX_COLS = 40;
 
+// HIGH-07: ограничения разбора ненадёжных XLSX (почта/Мои файлы/share-ссылки).
+export const EXCEL_PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
+export const EXCEL_PREVIEW_MAX_SHEETS = 50;
+export const EXCEL_PREVIEW_MAX_ROWS_PER_SHEET = 5000;
+export const EXCEL_PREVIEW_MAX_COLS_PER_SHEET = 512;
+
 export const columnLetter = (index = 0) => {
   let value = Number(index) + 1;
   if (!Number.isFinite(value) || value <= 0) return 'A';
@@ -47,22 +53,45 @@ const readBlobArrayBuffer = async (blob) => {
   throw new Error('Excel preview blob cannot be read.');
 };
 
+const clampSheetRange = (XLSX, worksheet) => {
+  const range = worksheet?.['!ref']
+    ? XLSX.utils.decode_range(worksheet['!ref'])
+    : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+  return {
+    s: { r: range.s.r, c: range.s.c },
+    e: {
+      r: Math.min(range.e.r, range.s.r + EXCEL_PREVIEW_MAX_ROWS_PER_SHEET - 1),
+      c: Math.min(range.e.c, range.s.c + EXCEL_PREVIEW_MAX_COLS_PER_SHEET - 1),
+    },
+  };
+};
+
 export const parseExcelWorkbookFromBlob = async (blob) => {
   if (!blob) {
     throw new Error('Excel preview blob is missing.');
   }
   const buffer = await readBlobArrayBuffer(blob);
-  const XLSX = await import('xlsx');
+  if (buffer.byteLength > EXCEL_PREVIEW_MAX_BYTES) {
+    throw new Error('Excel workbook exceeds the preview size limit.');
+  }
+  const XLSX = await import('xlsx-js-style');
   const workbook = XLSX.read(buffer, {
     type: 'array',
     cellDates: true,
     dense: false,
+    sheetRows: EXCEL_PREVIEW_MAX_ROWS_PER_SHEET,
   });
-  const sheetNames = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
+  const allSheetNames = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
+  const sheetNames = allSheetNames.slice(0, EXCEL_PREVIEW_MAX_SHEETS);
   const sheets = sheetNames.map((name, index) => {
     const worksheet = workbook.Sheets[name];
     const rows = worksheet
-      ? XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false })
+      ? XLSX.utils.sheet_to_json(worksheet, {
+          header: 1,
+          defval: '',
+          raw: false,
+          range: clampSheetRange(XLSX, worksheet),
+        })
       : [];
     return {
       index,

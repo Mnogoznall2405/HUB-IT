@@ -168,7 +168,9 @@ export function useThreadHistory({
         )
         : Promise.resolve(null);
       // Start the network page before local reads finish; offline mode still
-      // performs zero requests.
+      // performs zero requests. pageStartedAt measures the first-page request
+      // duration (including the 404/405 bootstrap fallback on old backends).
+      const pageStartedAt = Date.now();
       const pagePromise = offlineMode
         ? null
         : messageId
@@ -182,7 +184,11 @@ export function useThreadHistory({
           // backlog exists) or to the bottom otherwise. An older backend
           // without the endpoint degrades to the plain latest page.
           : chatApi.getThreadBootstrap(conversationId, { limit: 80, lightweight: false })
-            .catch(() => chatApi.getMessagesPage(conversationId, { limit: 80 }));
+            .catch((cause: unknown) => {
+              const status = (cause as { response?: { status?: number } })?.response?.status;
+              if (status !== 404 && status !== 405) throw cause;
+              return chatApi.getMessagesPage(conversationId, { limit: 80 });
+            });
       // A cancelled load may return before ever awaiting the page request.
       void pagePromise?.catch(() => undefined);
       const conversationResultPromise = offlineMode
@@ -193,6 +199,7 @@ export function useThreadHistory({
         );
       const cached = await snapshotPromise;
       if (!isCurrentLoad()) return;
+      logChatDevice('thread_cache', { ms: Date.now() - openedAt, hit: Boolean(cached) });
       if (cached) {
         hadCachedSnapshot = true;
         const normalized = mergeMessages([], cached.data.messages || [], userId);
@@ -242,8 +249,14 @@ export function useThreadHistory({
         return;
       }
 
-      const page = await pagePromise!;
+      const page = await pagePromise!.catch((cause: unknown) => {
+        if (isCurrentLoad()) {
+          logChatDevice('thread_page', { ms: Date.now() - pageStartedAt, outcome: 'error' });
+        }
+        throw cause;
+      });
       if (!isCurrentLoad()) return;
+      logChatDevice('thread_page', { ms: Date.now() - pageStartedAt, count: page.items.length, outcome: 'ok' });
       loadedLiveMessages = true;
       const normalized = mergeMessages([], page.items, userId);
       void outbox.acknowledge(normalized).catch(() => undefined);

@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const termPath = (id) => `/voice/glossary/${encodeURIComponent(id)}`;
 

@@ -74,6 +74,29 @@ public sealed class SingleInstanceCoordinatorTests
         Assert.True(received.HasSharedFiles);
     }
 
+    [Fact]
+    public async Task SecondaryInstanceForwardsNativeRoute()
+    {
+        var applicationId = $"HUBIT.Desktop.Tests.{Guid.NewGuid():N}";
+        using var primary = new SingleInstanceCoordinator(applicationId);
+        using var secondary = new SingleInstanceCoordinator(applicationId);
+        var activationReceived = new TaskCompletionSource<DesktopLaunchRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        primary.ActivationRequested += (_, e) => activationReceived.TrySetResult(e.Request);
+        primary.StartListening();
+        var request = DesktopLaunchRequest.Default with
+        {
+            OpenNativeHub = true,
+            Route = "/chat",
+        };
+
+        Assert.True(await secondary.SignalPrimaryAsync(request));
+        var received = await activationReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(received.OpenNativeHub);
+        Assert.Equal("/chat", received.Route);
+    }
+
     [Theory]
     [InlineData("ROUTE:https://evil.example")]
     [InlineData("ROUTE:/login")]

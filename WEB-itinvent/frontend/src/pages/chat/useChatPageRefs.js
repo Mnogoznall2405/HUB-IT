@@ -60,6 +60,7 @@ export default function useChatPageRefs({
   const chatDebugSeqRef = useRef(0);
   const optimisticMessageSeqRef = useRef(0);
   const draftWriteTimeoutRef = useRef(null);
+  const editDraftSnapshotRef = useRef(null);
   const latestDraftStorageKeyRef = useRef('');
   const latestMessageTextRef = useRef('');
   const threadLoadAbortRef = useRef(null);
@@ -116,6 +117,7 @@ export default function useChatPageRefs({
     conversationsRequestSeqRef,
     degradedThreadRevalidateCountRef,
     draftWriteTimeoutRef,
+    editDraftSnapshotRef,
     failedThreadMessagesRef,
     fileInputRef,
     focusComposerRef,

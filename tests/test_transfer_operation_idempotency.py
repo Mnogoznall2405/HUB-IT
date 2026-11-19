@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import itertools
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -180,6 +181,11 @@ def test_worker_that_lost_lease_cannot_overwrite_reclaimed_or_done_job(monkeypat
         appdb._initialized_schema_urls.clear()
         conftest.copy_app_schema_for_url(url)
     monkeypatch.setattr(service, "TRANSFER_ACT_JOB_LEASE_SECONDS", 60)
+    # Fencing tokens are claim timestamps: a reclaim after an expired lease must
+    # see time pass, otherwise it can get the same timestamp as the old claim.
+    clock_start = datetime.now(timezone.utc)
+    ticks = itertools.count()
+    monkeypatch.setattr(service, "_now", lambda: clock_start + timedelta(seconds=next(ticks)))
 
     kwargs = {
         "operation": "transfer",

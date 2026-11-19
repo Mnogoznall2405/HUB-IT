@@ -422,6 +422,91 @@ describe('native snapshot cache', () => {
     )).resolves.toEqual(expect.objectContaining({ data: { items: [{ id: 'new-task' }] } }));
   });
 
+  it('reads a collection entry stored under a legacy pagination key and re-signs it (MB-01)', async () => {
+    const legacyKey = JSON.stringify({
+      role_scope: 'both', due_state: '', sort_by: 'updated_at', sort_dir: 'desc', limit: 200, offset: 0,
+    });
+    await writeNativeCollectionSnapshot('tasks-inbox', 7, legacyKey, {
+      signature: legacyKey,
+      page: { items: [{ id: 'prepared-task' }], total: 1, offset: 0, limit: 1 },
+    });
+    const requestKey = JSON.stringify({
+      role_scope: 'both', due_state: '', sort_by: 'updated_at', sort_dir: 'desc', offset: 0,
+    });
+
+    await expect(readNativeCollectionSnapshot<{ signature: string; page: { items: Array<{ id: string }> } }>(
+      'tasks-inbox',
+      7,
+      requestKey,
+    )).resolves.toEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        signature: requestKey,
+        page: expect.objectContaining({ items: [{ id: 'prepared-task' }] }),
+      }),
+    }));
+
+    // A different filter set must not resolve through the pagination fallback.
+    await expect(readNativeCollectionSnapshot('tasks-inbox', 7, JSON.stringify({
+      role_scope: 'owner', due_state: '', sort_by: 'updated_at', sort_dir: 'desc', offset: 0,
+    }))).resolves.toBeNull();
+  });
+
+  it('reads inline-bundle and single-filter snapshots stored under a legacy pagination key', async () => {
+    const legacyKey = JSON.stringify({ mailboxId: 'box-1', folder: 'inbox', limit: 50, offset: 0 });
+    const requestKey = JSON.stringify({ mailboxId: 'box-1', folder: 'inbox', offset: 0 });
+    await writeNativeSnapshot('mail-inbox', 7, {
+      entries: [{ key: legacyKey, savedAt: Date.now(), data: { signature: legacyKey, items: [{ id: 'bundled' }] } }],
+    });
+    await writeNativeSnapshot('docflow-inbox', 7, {
+      signature: legacyKey,
+      result: { items: [{ ref: 'legacy-do' }], total: 1 },
+    });
+
+    await expect(readNativeCollectionSnapshot<{ items: Array<{ id: string }> }>(
+      'mail-inbox',
+      7,
+      requestKey,
+    )).resolves.toEqual(expect.objectContaining({
+      data: expect.objectContaining({ signature: requestKey }),
+    }));
+    await expect(readNativeCollectionSnapshot<{ result: { items: Array<{ ref: string }> } }>(
+      'docflow-inbox',
+      7,
+      requestKey,
+    )).resolves.toEqual(expect.objectContaining({
+      data: expect.objectContaining({ signature: requestKey }),
+    }));
+  });
+
+  it('supersedes a legacy pagination key when the normalized signature is written', async () => {
+    const legacyKey = JSON.stringify({
+      role_scope: 'both', due_state: '', sort_by: 'updated_at', sort_dir: 'desc', limit: 200, offset: 0,
+    });
+    const requestKey = JSON.stringify({
+      role_scope: 'both', due_state: '', sort_by: 'updated_at', sort_dir: 'desc', offset: 0,
+    });
+    await writeNativeCollectionSnapshot('tasks-inbox', 7, legacyKey, {
+      signature: legacyKey,
+      page: { items: [{ id: 'prepared-task' }], total: 1, offset: 0, limit: 1 },
+    });
+    await writeNativeCollectionSnapshot('tasks-inbox', 7, requestKey, {
+      signature: requestKey,
+      page: { items: [{ id: 'fresh-task' }], total: 1, offset: 0, limit: 1 },
+    });
+
+    // Reading through any equivalent key (e.g. another build's limit) yields
+    // the fresh entry — the legacy one was evicted from the manifest.
+    await expect(readNativeCollectionSnapshot<{ page: { items: Array<{ id: string }> } }>(
+      'tasks-inbox',
+      7,
+      JSON.stringify({
+        role_scope: 'both', due_state: '', sort_by: 'updated_at', sort_dir: 'desc', limit: 40, offset: 0,
+      }),
+    )).resolves.toEqual(expect.objectContaining({
+      data: expect.objectContaining({ page: expect.objectContaining({ items: [{ id: 'fresh-task' }] }) }),
+    }));
+  });
+
   it('reads the legacy unkeyed chat page as the default collection', async () => {
     const legacy = { items: [{ id: 'conversation-1' }], has_more: false, next_cursor: null };
     await writeNativeSnapshot('chat-inbox', 7, legacy);

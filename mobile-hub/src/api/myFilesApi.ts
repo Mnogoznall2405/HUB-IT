@@ -231,6 +231,10 @@ export async function updateMyFile(
 export type MyFilesTrash = {
   items: MyFileRecord[];
   folders: MyFileFolder[];
+  /** Все id удалённых файлов, включая вложенные в удалённые папки. */
+  allFileIds: string[];
+  /** Все удалённые папки {id, parentId} — для построения поддерева корзины. */
+  allFolders: Array<{ id: string; parentId: string | null }>;
 };
 
 export async function listMyFilesTrash(signal?: AbortSignal): Promise<MyFilesTrash> {
@@ -243,6 +247,18 @@ export async function listMyFilesTrash(signal?: AbortSignal): Promise<MyFilesTra
     folders: (Array.isArray(payload.folders) ? payload.folders as unknown[] : [])
       .map(normalizeMyFileFolder)
       .filter((item): item is MyFileFolder => Boolean(item)),
+    allFileIds: (Array.isArray(payload.all_file_ids) ? payload.all_file_ids : [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean),
+    allFolders: (Array.isArray(payload.all_folders) ? payload.all_folders : [])
+      .map((value) => {
+        const record = asRecord(value);
+        const id = String(record.id || '').trim();
+        if (!id) return null;
+        const parentId = String(record.parent_id || '').trim();
+        return { id, parentId: parentId || null };
+      })
+      .filter((item): item is { id: string; parentId: string | null } => Boolean(item)),
   };
 }
 

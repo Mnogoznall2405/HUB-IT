@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 const encodeId = (value) => encodeURIComponent(String(value || '').trim());
 

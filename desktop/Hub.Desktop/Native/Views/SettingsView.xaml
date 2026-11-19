@@ -1,0 +1,433 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+
+            <Style x:Key="SettingsChipRadioStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}" />
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Заголовок страницы + обновление -->
+        <Border Grid.Row="0" Padding="24,18,24,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock FontSize="22"
+                               FontWeight="SemiBold"
+                               Text="Настройки" />
+                    <TextBlock Margin="0,4,0,0"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               Text="Персональные настройки учётной записи — как в разделе «Аккаунт» веб-версии HUB." />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        VerticalAlignment="Center"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Обновить"
+                        AutomationProperties.Name="Обновить настройки" />
+            </Grid>
+        </Border>
+
+        <!-- Баннер ошибки -->
+        <Border Grid.Row="1"
+                Margin="24,12,24,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{DynamicResource HubErrorTextBrush}"
+                           Text="{Binding BannerErrorText}"
+                           TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <Button Grid.Column="1"
+                        Margin="12,0,8,0"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Повторить"
+                        AutomationProperties.Name="Повторить загрузку настроек" />
+                <Button Grid.Column="2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DismissBannerCommand}"
+                        Content="✕"
+                        AutomationProperties.Name="Скрыть ошибку" />
+            </Grid>
+        </Border>
+
+        <!-- Навигация по разделам + содержимое раздела -->
+        <Grid Grid.Row="2" Margin="24,16,24,18">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="208" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" VerticalAlignment="Top">
+                <RadioButton GroupName="SettingsNav"
+                             Style="{StaticResource HubNavItemStyle}"
+                             IsChecked="{Binding IsAppearanceSection, Mode=TwoWay}"
+                             Content="🎨  Внешний вид"
+                             AutomationProperties.Name="Раздел настроек: внешний вид" />
+                <RadioButton GroupName="SettingsNav"
+                             Style="{StaticResource HubNavItemStyle}"
+                             IsChecked="{Binding IsNotificationsSection, Mode=TwoWay}"
+                             Content="🔔  Уведомления"
+                             AutomationProperties.Name="Раздел настроек: уведомления" />
+                <RadioButton GroupName="SettingsNav"
+                             Style="{StaticResource HubNavItemStyle}"
+                             IsChecked="{Binding IsSecuritySection, Mode=TwoWay}"
+                             Content="🛡  Безопасность"
+                             AutomationProperties.Name="Раздел настроек: безопасность" />
+            </StackPanel>
+
+            <ScrollViewer Grid.Column="1"
+                          Margin="20,0,0,0"
+                          Style="{StaticResource HubScrollViewerStyle}"
+                          VerticalScrollBarVisibility="Auto">
+                <StackPanel MaxWidth="640">
+
+                    <!-- Раздел «Внешний вид» -->
+                    <Border Padding="20,18"
+                            Background="{DynamicResource HubSurfaceBrush}"
+                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Visibility="{Binding IsAppearanceSection, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Секция настроек: внешний вид">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                       Text="Внешний вид" />
+                            <TextBlock Margin="0,4,0,0"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Тема, шрифт и масштаб интерфейса. Сохранение действует на все клиенты HUB." />
+
+                            <TextBlock Margin="0,18,0,0"
+                                       FontSize="12"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Тема" />
+                            <WrapPanel Margin="0,8,0,0">
+                                <RadioButton GroupName="SettingsTheme"
+                                             Style="{StaticResource SettingsChipRadioStyle}"
+                                             IsChecked="{Binding IsThemeLight, Mode=TwoWay}"
+                                             Content="Светлая"
+                                             AutomationProperties.Name="Тема: светлая" />
+                                <RadioButton GroupName="SettingsTheme"
+                                             Margin="8,0,0,0"
+                                             Style="{StaticResource SettingsChipRadioStyle}"
+                                             IsChecked="{Binding IsThemeDark, Mode=TwoWay}"
+                                             Content="Тёмная"
+                                             AutomationProperties.Name="Тема: тёмная" />
+                                <RadioButton GroupName="SettingsTheme"
+                                             Margin="8,0,0,0"
+                                             Style="{StaticResource SettingsChipRadioStyle}"
+                                             IsChecked="{Binding IsThemeSystem, Mode=TwoWay}"
+                                             Content="Как в Windows"
+                                             AutomationProperties.Name="Тема: как в Windows" />
+                            </WrapPanel>
+
+                            <TextBlock Margin="0,18,0,0"
+                                       FontSize="12"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Шрифт" />
+                            <WrapPanel Margin="0,8,0,0">
+                                <RadioButton GroupName="SettingsFont"
+                                             Style="{StaticResource SettingsChipRadioStyle}"
+                                             IsChecked="{Binding IsFontAptos, Mode=TwoWay}"
+                                             Content="Aptos"
+                                             AutomationProperties.Name="Шрифт: Aptos" />
+                                <RadioButton GroupName="SettingsFont"
+                                             Margin="8,0,0,0"
+                                             Style="{StaticResource SettingsChipRadioStyle}"
+                                             IsChecked="{Binding IsFontSegoeUi, Mode=TwoWay}"
+                                             Content="Segoe UI"
+                                             AutomationProperties.Name="Шрифт: Segoe UI" />
+                                <RadioButton GroupName="SettingsFont"
+                                             Margin="8,0,0,0"
+                                             Style="{StaticResource SettingsChipRadioStyle}"
+                                             IsChecked="{Binding IsFontInter, Mode=TwoWay}"
+                                             Content="Inter"
+                                             AutomationProperties.Name="Шрифт: Inter" />
+                                <RadioButton GroupName="SettingsFont"
+                                             Margin="8,0,0,0"
+                                             Style="{StaticResource SettingsChipRadioStyle}"
+                                             IsChecked="{Binding IsFontRoboto, Mode=TwoWay}"
+                                             Content="Roboto"
+                                             AutomationProperties.Name="Шрифт: Roboto" />
+                            </WrapPanel>
+
+                            <TextBlock Margin="0,18,0,0"
+                                       FontSize="12"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Масштаб шрифта (от 0,90 до 1,20)" />
+                            <TextBox Margin="0,8,0,0"
+                                     Width="96"
+                                     HorizontalAlignment="Left"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     Text="{Binding FontScaleText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Масштаб шрифта" />
+
+                            <Grid Margin="0,18,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubSuccessBrush}"
+                                           Text="{Binding AppearanceStatusText}"
+                                           AutomationProperties.Name="Статус сохранения внешнего вида" />
+                                <Button Grid.Column="1"
+                                        Style="{StaticResource HubPrimaryButtonStyle}"
+                                        Command="{Binding SaveAppearanceCommand}"
+                                        Content="Сохранить внешний вид"
+                                        AutomationProperties.Name="Сохранить внешний вид" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Раздел «Уведомления» -->
+                    <Border Padding="20,18"
+                            Background="{DynamicResource HubSurfaceBrush}"
+                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Visibility="{Binding IsNotificationsSection, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Секция настроек: уведомления">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                       Text="Уведомления" />
+                            <TextBlock Margin="0,4,0,0"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Настройки сохраняются для учётной записи и одинаково действуют в браузере и HUB Desktop." />
+
+                            <CheckBox Margin="0,18,0,0"
+                                      FontWeight="SemiBold"
+                                      IsChecked="{Binding NotifyChat, Mode=TwoWay}"
+                                      Content="Получать уведомления о чатах"
+                                      AutomationProperties.Name="Уведомления о чатах" />
+                            <TextBlock Margin="24,2,0,0"
+                                       FontSize="11"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Общий выключатель для личных сообщений, групповых бесед, диалогов задач и ответов ИИ-агентов." />
+                            <StackPanel Margin="24,8,0,0">
+                                <CheckBox IsChecked="{Binding NotifyChatDirect, Mode=TwoWay}"
+                                          IsEnabled="{Binding AreChatSubchannelsEnabled}"
+                                          Content="Личные сообщения"
+                                          AutomationProperties.Name="Уведомления: личные сообщения" />
+                                <CheckBox Margin="0,6,0,0"
+                                          IsChecked="{Binding NotifyChatGroup, Mode=TwoWay}"
+                                          IsEnabled="{Binding AreChatSubchannelsEnabled}"
+                                          Content="Групповые беседы"
+                                          AutomationProperties.Name="Уведомления: групповые беседы" />
+                                <CheckBox Margin="0,6,0,0"
+                                          IsChecked="{Binding NotifyChatTask, Mode=TwoWay}"
+                                          IsEnabled="{Binding AreChatSubchannelsEnabled}"
+                                          Content="Диалоги задач"
+                                          AutomationProperties.Name="Уведомления: диалоги задач" />
+                                <CheckBox Margin="0,6,0,0"
+                                          IsChecked="{Binding NotifyChatAi, Mode=TwoWay}"
+                                          IsEnabled="{Binding AreChatSubchannelsEnabled}"
+                                          Content="Уведомления ИИ-агентов"
+                                          AutomationProperties.Name="Уведомления: ответы ИИ-агентов" />
+                                <CheckBox Margin="0,6,0,0"
+                                          IsChecked="{Binding NotifyChatSound, Mode=TwoWay}"
+                                          IsEnabled="{Binding AreChatSubchannelsEnabled}"
+                                          Content="Звук сообщений"
+                                          AutomationProperties.Name="Уведомления: звук сообщений" />
+                            </StackPanel>
+
+                            <TextBlock Margin="0,18,0,8"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       Text="Другие события" />
+                            <CheckBox IsChecked="{Binding NotifyMail, Mode=TwoWay}"
+                                      Content="Почта"
+                                      AutomationProperties.Name="Уведомления: почта" />
+                            <CheckBox Margin="0,6,0,0"
+                                      IsChecked="{Binding NotifyTasks, Mode=TwoWay}"
+                                      Content="Задачи"
+                                      AutomationProperties.Name="Уведомления: задачи" />
+                            <CheckBox Margin="0,6,0,0"
+                                      IsChecked="{Binding NotifyTaskEmail, Mode=TwoWay}"
+                                      Content="Email по задачам"
+                                      AutomationProperties.Name="Уведомления: email по задачам" />
+                            <CheckBox Margin="0,6,0,0"
+                                      IsChecked="{Binding NotifyAnnouncements, Mode=TwoWay}"
+                                      Content="Лента компании"
+                                      AutomationProperties.Name="Уведомления: лента компании" />
+
+                            <TextBlock Margin="0,14,0,0"
+                                       FontSize="11"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Отключение уведомлений не скрывает диалоги и счётчики непрочитанных сообщений." />
+
+                            <Grid Margin="0,18,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubSuccessBrush}"
+                                           Text="{Binding NotificationsStatusText}"
+                                           AutomationProperties.Name="Статус сохранения уведомлений" />
+                                <Button Grid.Column="1"
+                                        Style="{StaticResource HubPrimaryButtonStyle}"
+                                        Command="{Binding SaveNotificationsCommand}"
+                                        Content="Сохранить уведомления"
+                                        AutomationProperties.Name="Сохранить настройки уведомлений" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Раздел «Безопасность» -->
+                    <StackPanel Visibility="{Binding IsSecuritySection, Converter={StaticResource BoolToVisibility}}">
+                        <Border Padding="20,18"
+                                Background="{DynamicResource HubSurfaceBrush}"
+                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                BorderThickness="1"
+                                CornerRadius="12"
+                                AutomationProperties.Name="Секция настроек: безопасность">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                           Text="Безопасность" />
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="220" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                               Text="Двухфакторная аутентификация" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding TwoFactorStatusText}"
+                                               AutomationProperties.Name="Статус двухфакторной аутентификации" />
+                                </Grid>
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="220" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                               Text="Политика 2FA" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding TwoFactorPolicyText}"
+                                               AutomationProperties.Name="Политика двухфакторной аутентификации" />
+                                </Grid>
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="220" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                               Text="Зона сети" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding NetworkZoneText}"
+                                               AutomationProperties.Name="Зона сети текущего подключения" />
+                                </Grid>
+                                <TextBlock Margin="0,14,0,0"
+                                           FontSize="11"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Text="Управление 2FA, ключами доступа и доверенными устройствами выполняется в веб-версии HUB (раздел «Аккаунт → Безопасность»)." />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Margin="0,14,0,0"
+                                Padding="20,18"
+                                Background="{DynamicResource HubSurfaceBrush}"
+                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                BorderThickness="1"
+                                CornerRadius="12"
+                                AutomationProperties.Name="Секция настроек: смена пароля">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                           Text="Смена пароля" />
+                                <TextBlock Margin="0,4,0,0"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Text="После смены пароля сервер завершает активные сессии на всех устройствах." />
+
+                                <TextBlock Margin="0,16,0,0"
+                                           FontSize="12"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Text="Текущий пароль" />
+                                <PasswordBox x:Name="OldPasswordBox"
+                                             Margin="0,6,0,0"
+                                             Style="{StaticResource HubPasswordBoxStyle}"
+                                             AutomationProperties.Name="Текущий пароль" />
+
+                                <TextBlock Margin="0,12,0,0"
+                                           FontSize="12"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Text="Новый пароль (не короче 6 символов)" />
+                                <PasswordBox x:Name="NewPasswordBox"
+                                             Margin="0,6,0,0"
+                                             Style="{StaticResource HubPasswordBoxStyle}"
+                                             AutomationProperties.Name="Новый пароль" />
+
+                                <TextBlock Margin="0,12,0,0"
+                                           FontSize="12"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Text="Подтверждение нового пароля" />
+                                <PasswordBox x:Name="ConfirmPasswordBox"
+                                             Margin="0,6,0,0"
+                                             Style="{StaticResource HubPasswordBoxStyle}"
+                                             KeyDown="PasswordBox_KeyDown"
+                                             AutomationProperties.Name="Подтверждение нового пароля" />
+
+                                <TextBlock Margin="0,12,0,0"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubSuccessBrush}"
+                                           Text="{Binding SecurityStatusText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="Статус смены пароля" />
+
+                                <Button Margin="0,14,0,0"
+                                        HorizontalAlignment="Left"
+                                        Click="SavePasswordButton_Click"
+                                        AutomationProperties.Name="Изменить пароль">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource HubPrimaryButtonStyle}">
+                                            <Setter Property="Content" Value="Изменить пароль" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsPasswordBusy}" Value="True">
+                                                    <Setter Property="Content" Value="Меняем…" />
+                                                    <Setter Property="IsEnabled" Value="False" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+</UserControl>

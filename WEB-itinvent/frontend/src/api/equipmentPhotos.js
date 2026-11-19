@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { LegacyUploadRequired, uploadPhotoResumable } from '../lib/resumablePhotoUpload';
 
 export const equipmentPhotosAPI = {

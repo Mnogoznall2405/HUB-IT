@@ -47,6 +47,15 @@ public sealed class DesktopWindowManager
 
     public event EventHandler? MailComposeSent;
 
+    /// <summary>
+    /// Перехватчик маршрута: вызывается первым при валидном внутреннем маршруте;
+    /// true — маршрут обработан (нативное окно забрало свой раздел).
+    /// </summary>
+    public Func<string, bool>? RoutePreferenceHandler { get; set; }
+
+    /// <summary>Перехватчик активации без маршрута (трей, хоткей): true — окно активировано обработчиком.</summary>
+    public Func<bool>? RoutelessActivationHandler { get; set; }
+
     public bool CanOpenSecondary => _primary is not null && _secondary is null;
 
     public int WindowCount => (_primary is null ? 0 : 1) + (_secondary is null ? 0 : 1) + (_mailCompose is null ? 0 : 1);
@@ -210,7 +219,17 @@ public sealed class DesktopWindowManager
 
         if (DesktopBridgeProtocol.IsValidInternalRoute(route))
         {
+            if (RoutePreferenceHandler?.Invoke(route) == true)
+            {
+                return;
+            }
+
             target.ShowAndNavigate(route);
+            return;
+        }
+
+        if (RoutelessActivationHandler?.Invoke() == true)
+        {
             return;
         }
 

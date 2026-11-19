@@ -5333,13 +5333,14 @@ describe('authAccountSecurityAPI contract', () => {
 
     const { authAccountSecurityAPI } = await importAuthAccountSecurityAPI();
 
-    await expect(authAccountSecurityAPI.regenerateBackupCodes()).resolves.toEqual({
+    const stepUp = { password: 'secret', totp_code: '123456' };
+    await expect(authAccountSecurityAPI.regenerateBackupCodes(stepUp)).resolves.toEqual({
       backup_codes: ['AAAA-BBBB'],
     });
-    await expect(authAccountSecurityAPI.resetOwnTwoFactor()).resolves.toEqual({ success: true });
+    await expect(authAccountSecurityAPI.resetOwnTwoFactor(stepUp)).resolves.toEqual({ success: true });
 
-    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/auth/backup-codes/regenerate');
-    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/auth/reset-2fa-self');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/auth/backup-codes/regenerate', stepUp);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/auth/reset-2fa-self', stepUp);
   });
 
 });

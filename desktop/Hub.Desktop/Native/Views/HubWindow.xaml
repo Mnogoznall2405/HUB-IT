@@ -1,0 +1,696 @@
+<Window x:Class="Hub.Desktop.Native.Views.HubWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+        xmlns:vm="clr-namespace:Hub.Desktop.Native.ViewModels"
+        Title="HUB Desktop"
+        Icon="../../Assets/hub-icon.ico"
+        Width="1280"
+        Height="800"
+        MinWidth="980"
+        MinHeight="620"
+        WindowStyle="None"
+        ResizeMode="CanResize"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource HubBackgroundBrush}"
+        Foreground="{DynamicResource HubTextBrush}"
+        FontFamily="Segoe UI Variable Text, Segoe UI"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
+        Loaded="Window_Loaded"
+        AutomationProperties.Name="HUB Desktop — нативный клиент">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="40"
+                            ResizeBorderThickness="8"
+                            GlassFrameThickness="0"
+                            CornerRadius="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <!-- Горячие клавиши навигации по разделам: Ctrl+цифра и Ctrl+M для почты.
+         Ctrl+1..9 уже заняты — «Файлы» получили свободный Ctrl+0. -->
+    <Window.InputBindings>
+        <KeyBinding Key="D1" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="dashboard" />
+        <KeyBinding Key="D2" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="tasks" />
+        <KeyBinding Key="D8" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="tickets" />
+        <KeyBinding Key="D3" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="news" />
+        <KeyBinding Key="D4" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="chat" />
+        <KeyBinding Key="M" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="mail" />
+        <KeyBinding Key="D7" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="docflow" />
+        <KeyBinding Key="D0" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="myfiles" />
+        <KeyBinding Key="D5" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="absences" />
+        <KeyBinding Key="D6" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="profile" />
+        <KeyBinding Key="D9" Modifiers="Control" Command="{Binding NavigateToPageCommand}" CommandParameter="addressbook" />
+        <KeyBinding Key="F5" Command="{Binding RefreshCurrentPageCommand}" />
+        <KeyBinding Key="R" Modifiers="Control" Command="{Binding RefreshCurrentPageCommand}" />
+    </Window.InputBindings>
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+
+            <DataTemplate DataType="{x:Type vm:DashboardViewModel}">
+                <local:DashboardView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:TasksViewModel}">
+                <local:TasksView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:TicketsViewModel}">
+                <local:TicketsView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:NewsViewModel}">
+                <local:NewsView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:ChatViewModel}">
+                <local:ChatView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:MailViewModel}">
+                <local:MailView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:DocflowViewModel}">
+                <local:DocflowView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:MyFilesViewModel}">
+                <local:MyFilesView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:AbsencesViewModel}">
+                <local:AbsencesView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:AddressBookViewModel}">
+                <local:AddressBookView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:CompanyStructureViewModel}">
+                <local:CompanyStructureView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:ItObjectsViewModel}">
+                <local:ItObjectsView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:NetworksViewModel}">
+                <local:NetworksView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:ComputersViewModel}">
+                <local:ComputersView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:DatabaseViewModel}">
+                <local:DatabaseView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:GroupsAccessViewModel}">
+                <local:GroupsAccessView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:VcsViewModel}">
+                <local:VcsView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:MonitoringViewModel}">
+                <local:MonitoringView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:MfuViewModel}">
+                <local:MfuView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:StatisticsViewModel}">
+                <local:StatisticsView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:HelpViewModel}">
+                <local:HelpView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
+                <local:SettingsView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:ProfileViewModel}">
+                <local:ProfileView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:AdminViewModel}">
+                <local:AdminView />
+            </DataTemplate>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Border x:Name="WindowEdgeBorder" BorderBrush="{DynamicResource HubBorderDimBrush}" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- Заголовок окна -->
+            <Border Grid.Row="0"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="0,0,0,1">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="46" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Margin="14,0,0,0"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"
+                                IsHitTestVisible="False">
+                        <Image Width="20" Height="20" Margin="0,0,9,0"
+                               Source="pack://siteoforigin:,,,/Assets/hub-icon.png" Stretch="Uniform" />
+                        <TextBlock VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold"
+                                   Text="HUB" />
+                        <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontSize="12"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="Desktop" />
+                    </StackPanel>
+                    <Button Grid.Column="1"
+                            Style="{StaticResource HubTitleBarButtonStyle}"
+                            Click="MinimizeButton_Click"
+                            Content="—"
+                            AutomationProperties.Name="Свернуть окно HUB" />
+                    <Button Grid.Column="2"
+                            Style="{StaticResource HubTitleBarButtonStyle}"
+                            Click="MaximizeButton_Click"
+                            Content="▢"
+                            AutomationProperties.Name="Развернуть или восстановить окно HUB" />
+                    <Button Grid.Column="3"
+                            Style="{StaticResource HubTitleBarCloseButtonStyle}"
+                            Click="CloseButton_Click"
+                            Content="✕"
+                            AutomationProperties.Name="Закрыть окно HUB" />
+                </Grid>
+            </Border>
+
+            <!-- Состояние: восстановление сессии -->
+            <Grid Grid.Row="1"
+                  Visibility="{Binding IsBoot, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <!-- Бегущая полоска загрузки в стиле WinUI ProgressBar indeterminate. -->
+                    <Border Width="160" Height="3" CornerRadius="1.5" ClipToBounds="True"
+                            Background="{DynamicResource HubSurfaceRaisedBrush}">
+                        <Border Width="48" HorizontalAlignment="Left" CornerRadius="1.5"
+                                Background="{DynamicResource HubAccentBrush}">
+                            <Border.RenderTransform>
+                                <TranslateTransform />
+                            </Border.RenderTransform>
+                            <Border.Triggers>
+                                <EventTrigger RoutedEvent="Loaded">
+                                    <BeginStoryboard>
+                                        <Storyboard RepeatBehavior="Forever">
+                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)"
+                                                             From="-48" To="160" Duration="0:0:1.4" />
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </EventTrigger>
+                            </Border.Triggers>
+                        </Border>
+                    </Border>
+                    <TextBlock Margin="0,14,0,0" HorizontalAlignment="Center"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               Text="Восстанавливаем сессию…" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Состояние: вход -->
+            <Grid Grid.Row="1"
+                  Visibility="{Binding IsSignedOut, Converter={StaticResource BoolToVisibility}}">
+                <Grid.Background>
+                    <RadialGradientBrush GradientOrigin="0.5,0.32" Center="0.5,0.32"
+                                         RadiusX="0.75" RadiusY="0.55">
+                        <GradientStop Color="{DynamicResource HubLoginGradientStartColor}" Offset="0" />
+                        <GradientStop Color="{DynamicResource HubLoginGradientEndColor}" Offset="1" />
+                    </RadialGradientBrush>
+                </Grid.Background>
+                <Border Width="400"
+                        Padding="40,36"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Background="{DynamicResource HubSurfaceBrush}"
+                        BorderBrush="{DynamicResource HubBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="16">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="36" ShadowDepth="0" Opacity="0.45" Color="Black" />
+                    </Border.Effect>
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Border Width="46" Height="46" CornerRadius="12"
+                                    Background="{DynamicResource HubSelectionBrush}"
+                                    BorderBrush="{DynamicResource HubAccentBrush}"
+                                    BorderThickness="1">
+                                <Image Source="pack://siteoforigin:,,,/Assets/hub-icon.png" Stretch="Uniform" Margin="8" />
+                            </Border>
+                            <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
+                                <TextBlock FontSize="17" FontWeight="Bold"
+                                           Foreground="{DynamicResource HubAccentBrush}"
+                                           Text="HUB" />
+                                <TextBlock FontSize="12"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Foreground="{DynamicResource HubTextBrush}"
+                                           Text="корпоративный портал" />
+                            </StackPanel>
+                        </StackPanel>
+                        <TextBlock Margin="0,22,0,0" FontSize="22" FontWeight="SemiBold"
+                                   Text="Вход в HUB" />
+                        <TextBlock Margin="0,6,0,24"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Нативный клиент использует отдельную сессию. Войдите под своей учётной записью HUB." />
+
+                        <TextBlock FontSize="12"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Имя пользователя" />
+                        <TextBox x:Name="UsernameInput"
+                                 Margin="0,6,0,14"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Text="{Binding LoginUsername, UpdateSourceTrigger=PropertyChanged}"
+                                 KeyDown="UsernameInput_KeyDown"
+                                 AutomationProperties.Name="Имя пользователя HUB" />
+
+                        <TextBlock FontSize="12"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Пароль" />
+                        <PasswordBox x:Name="PasswordInput"
+                                     Margin="0,6,0,14"
+                                     Style="{StaticResource HubPasswordBoxStyle}"
+                                     KeyDown="PasswordInput_KeyDown"
+                                     AutomationProperties.Name="Пароль HUB" />
+
+                        <TextBlock FontSize="12"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Visibility="{Binding RequiresTwoFactor, Converter={StaticResource BoolToVisibility}}"
+                                   Text="Код из приложения аутентификации" />
+                        <TextBox Margin="0,6,0,14"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Visibility="{Binding RequiresTwoFactor, Converter={StaticResource BoolToVisibility}}"
+                                 Text="{Binding TwoFactorCode, UpdateSourceTrigger=PropertyChanged}"
+                                 KeyDown="TwoFactorInput_KeyDown"
+                                 AutomationProperties.Name="Код двухфакторной аутентификации" />
+
+                        <TextBlock Margin="0,0,0,14"
+                                   Foreground="{DynamicResource HubErrorTextBrush}"
+                                   Text="{Binding LoginErrorText}"
+                                   Visibility="{Binding LoginErrorText, Converter={StaticResource NonEmptyStringToVisibility}}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+
+                        <Button IsEnabled="{Binding CanSignIn}"
+                                Click="SignInButton_Click"
+                                AutomationProperties.Name="Войти в HUB">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource HubPrimaryButtonStyle}">
+                                    <Setter Property="Content" Value="Войти" />
+                                    <!-- CTA логина: disabled (пустые поля) остаётся читаемо primary —
+                                         акцентная заливка приглушается, а не уходит в «серый на сером». -->
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border x:Name="Surface"
+                                                        Background="{TemplateBinding Background}"
+                                                        CornerRadius="4"
+                                                        SnapsToDevicePixels="True">
+                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubAccentHoverBrush}" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsPressed" Value="True">
+                                                        <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubAccentPressedBrush}" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsEnabled" Value="False">
+                                                        <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubAccentPressedBrush}" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding RequiresTwoFactor}" Value="True">
+                                            <Setter Property="Content" Value="Подтвердить код" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsLoginBusy}" Value="True">
+                                            <Setter Property="Content" Value="Входим…" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- Состояние: шелл с навигацией и страницами -->
+            <Grid Grid.Row="1"
+                  Visibility="{Binding IsReady, Converter={StaticResource BoolToVisibility}}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="216" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Левая навигация -->
+                <Border Grid.Column="0"
+                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                        BorderThickness="0,0,1,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <ScrollViewer Grid.Row="0"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel Margin="0,10,0,0">
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsDashboardPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="dashboard"
+                                         Content="🏠  Главная"
+                                         ToolTip="Главная (Ctrl+1)"
+                                         AutomationProperties.Name="Страница: главная" />
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsTasksPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="tasks"
+                                         Content="✅  Мои задачи"
+                                         ToolTip="Мои задачи (Ctrl+2)"
+                                         AutomationProperties.Name="Страница: мои задачи" />
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsTicketsPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="tickets"
+                                         Content="🎫  Билеты"
+                                         ToolTip="Билеты (Ctrl+8)"
+                                         AutomationProperties.Name="Страница: билеты" />
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsNewsPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="news"
+                                         ToolTip="Новости (Ctrl+3)"
+                                         AutomationProperties.Name="Страница: новости">
+                                <RadioButton.Content>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="📰  Новости" />
+                                        <Border Grid.Column="1"
+                                                MinWidth="18"
+                                                Padding="5,1"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center"
+                                                CornerRadius="9"
+                                                Background="{DynamicResource HubAccentBrush}"
+                                                Visibility="{Binding HasNewsUnread, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="{Binding NewsUnreadBadgeName}">
+                                            <TextBlock HorizontalAlignment="Center"
+                                                       FontSize="10"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubOnAccentBrush}"
+                                                       Text="{Binding NewsUnreadBadgeText}" />
+                                        </Border>
+                                    </Grid>
+                                </RadioButton.Content>
+                            </RadioButton>
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsChatPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="chat"
+                                         ToolTip="Чат (Ctrl+4)"
+                                         AutomationProperties.Name="Страница: чат">
+                                <RadioButton.Content>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="💬  Чат" />
+                                        <Border Grid.Column="1"
+                                                MinWidth="18"
+                                                Padding="5,1"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center"
+                                                CornerRadius="9"
+                                                Background="{DynamicResource HubAccentBrush}"
+                                                Visibility="{Binding HasChatUnread, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="{Binding ChatUnreadBadgeName}">
+                                            <TextBlock HorizontalAlignment="Center"
+                                                       FontSize="10"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubOnAccentBrush}"
+                                                       Text="{Binding ChatUnreadBadgeText}" />
+                                        </Border>
+                                    </Grid>
+                                </RadioButton.Content>
+                            </RadioButton>
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsMailPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="mail"
+                                         ToolTip="Почта (Ctrl+M)"
+                                         AutomationProperties.Name="Страница: почта">
+                                <RadioButton.Content>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="✉  Почта" />
+                                        <Border Grid.Column="1"
+                                                MinWidth="18"
+                                                Padding="5,1"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center"
+                                                CornerRadius="9"
+                                                Background="{DynamicResource HubAccentBrush}"
+                                                Visibility="{Binding HasMailUnread, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="{Binding MailUnreadBadgeName}">
+                                            <TextBlock HorizontalAlignment="Center"
+                                                       FontSize="10"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubOnAccentBrush}"
+                                                       Text="{Binding MailUnreadBadgeText}" />
+                                        </Border>
+                                    </Grid>
+                                </RadioButton.Content>
+                            </RadioButton>
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsDocflowPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="docflow"
+                                         ToolTip="Документы (Ctrl+7)"
+                                         AutomationProperties.Name="Страница: документооборот">
+                                <RadioButton.Content>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="📄  Документы" />
+                                        <Border Grid.Column="1"
+                                                MinWidth="18"
+                                                Padding="5,1"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center"
+                                                CornerRadius="9"
+                                                Background="{DynamicResource HubAccentBrush}"
+                                                Visibility="{Binding HasDocflowUnread, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="{Binding DocflowBadgeName}">
+                                            <TextBlock HorizontalAlignment="Center"
+                                                       FontSize="10"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubOnAccentBrush}"
+                                                       Text="{Binding DocflowBadgeText}" />
+                                        </Border>
+                                    </Grid>
+                                </RadioButton.Content>
+                            </RadioButton>
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsMyFilesPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="myfiles"
+                                         Content="📁  Файлы"
+                                         ToolTip="Файлы (Ctrl+0)"
+                                         AutomationProperties.Name="Страница: файлы" />
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsAbsencesPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="absences"
+                                         Content="🗓  Отсутствия"
+                                         ToolTip="Отсутствия (Ctrl+5)"
+                                         AutomationProperties.Name="Страница: отсутствия" />
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsAddressBookPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="addressbook"
+                                         Content="📇  Контакты"
+                                         ToolTip="Контакты (Ctrl+9)"
+                                         AutomationProperties.Name="Страница: контакты" />
+                            <!-- Ctrl+цифра уже заняты 0-9 — раздел без горячей клавиши. -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsCompanyStructurePage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="structure"
+                                         Content="🏢  Структура"
+                                         ToolTip="Структура компании"
+                                         AutomationProperties.Name="Страница: структура компании" />
+                            <!-- «ИТ-объекты» — без горячей клавиши (Ctrl+цифра заняты). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsItObjectsPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="itobjects"
+                                         Content="🖥  ИТ-объекты"
+                                         ToolTip="ИТ-объекты"
+                                         AutomationProperties.Name="Страница: ИТ-объекты" />
+                            <!-- «Сети» — без горячей клавиши (Ctrl+цифра заняты). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsNetworksPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="networks"
+                                         Content="🌐  Сети"
+                                         ToolTip="Сети"
+                                         AutomationProperties.Name="Страница: сети" />
+                            <!-- «Компьютеры» — без горячей клавиши (Ctrl+цифра заняты). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsComputersPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="computers"
+                                         Content="💻  Компьютеры"
+                                         ToolTip="Компьютеры"
+                                         AutomationProperties.Name="Страница: компьютеры" />
+                            <!-- «База» — учёт оборудования ITINVENT, read-срез (поиск + карточка; без передач, актов и историй). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsDatabasePage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="database"
+                                         Content="🗄  База"
+                                         ToolTip="База оборудования ITINVENT"
+                                         AutomationProperties.Name="Страница: база оборудования" />
+                            <!-- «Доступы» — матрица доступа AD, без горячей клавиши (Ctrl+цифра заняты). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsGroupsAccessPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="groupsaccess"
+                                         Content="🔐  Доступы"
+                                         ToolTip="Доступ к папкам по группам AD"
+                                         AutomationProperties.Name="Страница: доступ к группам" />
+                            <!-- «VCS» — терминалы ВКС, без горячей клавиши (Ctrl+цифра заняты). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsVcsPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="vcs"
+                                         Content="🖧  VCS"
+                                         ToolTip="Терминалы ВКС"
+                                         AutomationProperties.Name="Страница: VCS" />
+                            <!-- «Мониторинг» — наблюдение за сетевыми устройствами, read-срез (только статусы и текущие метрики, без управления и графиков). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsMonitoringPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="monitoring"
+                                         Content="📈  Мониторинг"
+                                         ToolTip="Мониторинг сетевых устройств"
+                                         AutomationProperties.Name="Страница: мониторинг" />
+                            <!-- «МФУ» — принтеры и плоттеры, read-срез (статусы, расходники, печать; без записи работ), горячей клавиши нет. -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsMfuPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="mfu"
+                                         Content="🖨  МФУ"
+                                         ToolTip="МФУ, принтеры и плоттеры"
+                                         AutomationProperties.Name="Страница: МФУ" />
+                            <!-- «Статистика» — работы по инвентарю за период, read-срез (числа и таблицы, без графиков и экспорта), горячей клавиши нет. -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsStatisticsPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="statistics"
+                                         Content="📊  Статистика"
+                                         ToolTip="Статистика работ"
+                                         AutomationProperties.Name="Страница: статистика" />
+                            <!-- «Помощь» — как и «Структура», без горячей клавиши (Ctrl+цифра заняты). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsHelpPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="help"
+                                         Content="❓  Помощь"
+                                         ToolTip="Справка и база знаний"
+                                         AutomationProperties.Name="Страница: помощь" />
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsProfilePage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="profile"
+                                         Content="👤  Профиль"
+                                         ToolTip="Профиль (Ctrl+6)"
+                                         AutomationProperties.Name="Страница: профиль" />
+                            <!-- «Настройки» — как «Помощь» и «Структура», без горячей клавиши (Ctrl+цифра заняты). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsSettingsPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="settings"
+                                         Content="⚙  Настройки"
+                                         ToolTip="Настройки"
+                                         AutomationProperties.Name="Страница: настройки" />
+                            <!-- «Админ» — read-срез веб-админки, без горячей клавиши (Ctrl+цифра заняты). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsAdminPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="admin"
+                                         Content="🛠  Админ"
+                                         ToolTip="Администрирование"
+                                         AutomationProperties.Name="Страница: администрирование" />
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- Пользователь + выход -->
+                        <Border Grid.Row="1"
+                                Padding="16,12"
+                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                BorderThickness="0,1,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontSize="13"
+                                           Text="{Binding UserDisplayName}"
+                                           TextTrimming="CharacterEllipsis"
+                                           AutomationProperties.Name="Текущий пользователь" />
+                                <Button Grid.Column="1"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding LogoutCommand}"
+                                        Content="Выйти"
+                                        AutomationProperties.Name="Выйти из учётной записи HUB" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <!-- Текущая страница -->
+                <ContentControl Grid.Column="1"
+                                Content="{Binding CurrentPage}"
+                                Focusable="False" />
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

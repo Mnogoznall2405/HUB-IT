@@ -98,6 +98,30 @@ it('shares the initial unread snapshot with the launcher badge', async () => {
   view.unmount();
 });
 
+it('keeps the last good counts when a snapshot is not badge-safe', async () => {
+  jest.mocked(getNativeUnreadSnapshot).mockResolvedValue({
+    tasks_open: 0,
+    tasks_open_total: 9,
+    chat_messages_unread_total: 5,
+    mail_unread: 4,
+    mail_state: 'ok',
+    notifications_unread_total: 0,
+    announcements_unread: 0,
+    successful_sources: 2,
+    badge_safe: false,
+  });
+
+  const view = await render(<Probe />);
+  await waitFor(() => expect(getNativeUnreadSnapshot).toHaveBeenCalled());
+  await act(async () => undefined);
+
+  // A partial snapshot without a previous complete one must not collapse the
+  // nav counters or write a partial total to the launcher badge.
+  expect(view.getByText('0')).toBeTruthy();
+  expect(setNativeBadgeCount).not.toHaveBeenCalled();
+  view.unmount();
+});
+
 it('feeds the server chat total (chats + AI) into the bottom nav badge', async () => {
   // AUDIT-AI-NOTIF: серверный chat_messages_unread_total уже включает ИИ-диалоги.
   const view = await render(<ChatBadgeProbe />);

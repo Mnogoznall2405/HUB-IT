@@ -18,8 +18,12 @@ export type NativeMailUndo = {
       sourceFolder: string;
       /** Unread delta that was applied to counters; undo applies the inverse. */
       unreadDelta: number;
+      /** Per-folder deltas for selections spanning folders («все папки»). */
+      unreadDeltas?: Record<string, number>;
       label: string;
     }
+  /** Transient confirmation reusing the undo bar without an undo action. */
+  | { kind: 'notice'; label: string }
 );
 
 export function hasUnconfirmedMailResult(cause: unknown): boolean {

@@ -23,6 +23,23 @@ _VARIANT_MAX_DIMENSIONS = {
     "preview": 1280,
 }
 
+# Stored gzip attachments must inflate to a bounded size: a crafted member
+# (e.g. gigabytes of zeroes) would otherwise exhaust RAM during repair.
+_GZIP_REPAIR_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _gunzip_limited(file_path: Path, max_bytes: int) -> bytes:
+    out = io.BytesIO()
+    with gzip.GzipFile(filename=str(file_path), mode="rb") as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+            if out.tell() > max_bytes:
+                raise ValueError("gzipped attachment exceeds repair size limit")
+    return out.getvalue()
+
 _STICKER_ATTACHMENT_NAME = re.compile(
     r"^sticker-(?P<sticker_id>[0-9a-fA-F-]{36})--(?P<pack_short_name>[^.]+)\.[^.]+$",
 )
@@ -402,8 +419,7 @@ class ChatAttachmentMedia:
 
         temp_path = file_path.with_name(f"{file_path.name}.{uuid4().hex}.repair")
         try:
-            compressed_payload = file_path.read_bytes()
-            decoded_payload = gzip.decompress(compressed_payload)
+            decoded_payload = _gunzip_limited(file_path, _GZIP_REPAIR_MAX_BYTES)
             with Image.open(io.BytesIO(decoded_payload)) as image:
                 validated_image = ImageOps.exif_transpose(image)
                 try:
@@ -430,7 +446,7 @@ class ChatAttachmentMedia:
                 attachment.width,
                 attachment.height,
             )
-        except (OSError, EOFError, gzip.BadGzipFile, UnidentifiedImageError):
+        except (OSError, EOFError, gzip.BadGzipFile, UnidentifiedImageError, ValueError):
             self._logger.exception(
                 "chat.attachment_storage_repair_failed attachment_id=%s conversation_id=%s",
                 getattr(attachment, "id", ""),

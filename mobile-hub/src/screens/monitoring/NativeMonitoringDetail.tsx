@@ -5,6 +5,7 @@ import {
   fetchMonitoringHistory,
   fetchMonitoringLatency,
   fetchMonitoringTarget,
+  probeMonitoringTarget,
   type MonitoringHistory,
   type MonitoringTarget,
   type MonitoringTargetDetail,
@@ -70,7 +71,14 @@ function Metric({ label, value, unit, tokens, dim }: {
   );
 }
 
-export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringTarget; tokens: FluentTokens }) {
+export function NativeMonitoringDetail({ target, tokens, canManage = false, offline = false }: {
+  target: MonitoringTarget;
+  tokens: FluentTokens;
+  /** `monitoring.manage` — gates the manual probe action like on the web detail header. */
+  canManage?: boolean;
+  /** Offline read-only mode: probe is a POST and stays disabled. */
+  offline?: boolean;
+}) {
   const targetId = target.id;
   const [detail, setDetail] = useState<MonitoringTargetDetail | null>(null);
   const [error, setError] = useState('');
@@ -85,11 +93,18 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
   const active = useMonitoringActive();
   const [historyError, setHistoryError] = useState('');
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [probeNotice, setProbeNotice] = useState('');
   const detailGeneration = useRef(0);
   const historyGeneration = useRef(0);
+  // In-flight probe target id: guards double taps and drops results after a target switch.
+  const probeRequest = useRef<string | null>(null);
+  const targetIdRef = useRef(targetId);
+  targetIdRef.current = targetId;
 
   useEffect(() => {
     setDetail(null); setError(''); setInterfaceId(''); setPortHistory(null); setDeviceHistory(null); setLatency(null);
+    probeRequest.current = null; setProbing(false); setProbeNotice('');
   }, [targetId]);
 
   useEffect(() => {
@@ -141,8 +156,36 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
     return () => { controller.abort(); clearInterval(timer); };
   }, [active, tab, loadHistory, Boolean(detail)]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const probe = useCallback(async () => {
+    if (!canManage || offline || probeRequest.current) return;
+    const id = targetId;
+    probeRequest.current = id;
+    setProbing(true);
+    setProbeNotice('');
+    try {
+      const result = await probeMonitoringTarget(id);
+      if (probeRequest.current !== id || targetIdRef.current !== id) return;
+      if (result.id !== id) throw new Error('Ответ опроса относится к другому устройству');
+      // A periodic detail reload already in flight must not overwrite the fresh probe snapshot.
+      detailGeneration.current += 1;
+      setDetail(result);
+      setError('');
+      setInterfaceId((current) => (result.interfaces.some((row) => row.id === current)
+        ? current : defaultInterfaceId(result.interfaces)));
+      const probed = targetStatus(result);
+      const ping = result.current?.ping?.latency_ms;
+      setProbeNotice(`Опрошено: ${probed.label}${isNumber(ping) ? ` · ${formatNumber(ping, 0)} мс` : ''}`);
+    } catch (cause) {
+      if (probeRequest.current !== id || targetIdRef.current !== id) return;
+      setError(formatApiError(cause, 'Не удалось опросить устройство'));
+    } finally {
+      if (probeRequest.current === id) { probeRequest.current = null; setProbing(false); }
+    }
+  }, [canManage, offline, targetId]);
+
   const merged = detail ?? target;
   const status = targetStatus(merged);
+  const probeBlocked = probing || offline || !merged.enabled;
   const current = merged.current || {};
   const device = current.device || {};
   const stale = isStale(current.last_success_at);
@@ -182,6 +225,30 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
           <Metric label="Температура" value={device.temperature_c} unit="°C" tokens={tokens} dim={stale} />
           <Metric label="Задержка HUB" value={current.ping?.latency_ms} unit="мс" tokens={tokens} dim={stale} />
         </View>
+        {canManage ? (
+          <Pressable
+            testID="native-monitoring-probe"
+            accessibilityRole="button"
+            accessibilityLabel={probing ? 'Опрашиваем устройство' : 'Проверить сейчас'}
+            accessibilityState={{ disabled: probeBlocked, busy: probing }}
+            disabled={probeBlocked}
+            onPress={() => { void probe(); }}
+            style={({ pressed }) => [
+              styles.probeButton,
+              { borderColor: tokens.border, opacity: probeBlocked && !probing ? 0.55 : pressed ? 0.85 : 1 },
+            ]}
+          >
+            {probing ? (
+              <ActivityIndicator size="small" color={tokens.primary} />
+            ) : (
+              <MaterialCommunityIcons name="access-point-network" size={18} color={tokens.primary} />
+            )}
+            <Text style={[styles.probeLabel, { color: tokens.primary }]}>{probing ? 'Опрашиваем…' : 'Проверить сейчас'}</Text>
+          </Pressable>
+        ) : null}
+        {probeNotice ? (
+          <Text testID="native-monitoring-probe-result" style={[styles.note, { color: tokens.textSecondary }]}>{probeNotice}</Text>
+        ) : null}
       </AccountSectionCard>
 
       {error ? <Text accessibilityRole="alert" style={[styles.note, { color: tokens.error }]}>{error}</Text> : null}
@@ -307,4 +374,6 @@ const styles = StyleSheet.create({
   ifaceName: { fontSize: 14, fontWeight: '800' },
   ifaceState: { fontSize: 12, fontWeight: '800' },
   eventRow: { borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 8 },
+  probeButton: { minHeight: 44, marginTop: 12, borderWidth: 1, borderRadius: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 14 },
+  probeLabel: { fontSize: 14, fontWeight: '800' },
 });

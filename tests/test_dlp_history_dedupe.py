@@ -164,8 +164,8 @@ def test_dry_run_reports_counts_and_deletes_nothing(app_db_url: str):
 
     assert report["stop_reason"] == "dry_run"
     by_target = {row["target"]: row["eligible_exact"] for row in report["by_target"]}
-    assert by_target == {"visit_dupes": 1, "file_dupes": 1, "noise_deleted": 1}
-    assert report["eligible_rows_exact"] == 3
+    assert by_target == {"visit_dupes": 1, "noise_deleted": 1}
+    assert report["eligible_rows_exact"] == 2
     assert _counts(app_db_url) == (4, 5)
 
 
@@ -179,13 +179,12 @@ def test_execute_deletes_only_dupes_and_noise(app_db_url: str):
     result = svc.run_once(config=_config(dry_run=False), acquire_lock=False)
 
     assert result["stop_reason"] == "no_rows"
-    assert result["rows_deleted"] == 3
+    assert result["rows_deleted"] == 2
     assert result["deleted_by_target"] == {
         "visit_dupes": 1,
-        "file_dupes": 1,
         "noise_deleted": 1,
     }
-    assert _counts(app_db_url) == (3, 3)
+    assert _counts(app_db_url) == (3, 4)
 
     with app_session(database_url=app_db_url) as session:
         visit_ids = set(session.execute(select(AppBrowserProbeVisit.id)).scalars())
@@ -195,9 +194,11 @@ def test_execute_deletes_only_dupes_and_noise(app_db_url: str):
         }
     # Earliest row kept; minute-boundary and different-url rows untouched.
     assert visit_ids == {"v1", "v3", "v4"}
-    # Earliest deleted row kept; usb channel and real deleted file untouched.
+    # Both same-name deletes kept (f2 repeats f1's name, not a dupe); only the
+    # deleted noise row went away; usb channel untouched.
     assert file_rows == {
         "f1": ("deleted", "report.docx"),
+        "f2": ("deleted", "report.docx"),
         "f4": ("usb", "report.docx"),
         "f5": ("deleted", "contract.pdf"),
     }
@@ -210,7 +211,7 @@ def test_execute_is_idempotent_on_second_run(app_db_url: str):
     first = svc.run_once(config=_config(dry_run=False), acquire_lock=False)
     second = svc.run_once(config=_config(dry_run=False), acquire_lock=False)
 
-    assert first["rows_deleted"] == 3
+    assert first["rows_deleted"] == 2
     assert second["rows_deleted"] == 0
     assert second["stop_reason"] == "no_rows"
-    assert _counts(app_db_url) == (3, 3)
+    assert _counts(app_db_url) == (3, 4)

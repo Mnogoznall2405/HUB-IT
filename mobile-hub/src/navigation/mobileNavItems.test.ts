@@ -40,6 +40,15 @@ describe('resolveMobileNavigationItems', () => {
     ]);
   });
 
+  it('honours the saved selection order instead of catalog order', () => {
+    const items = resolveMobileNavigationItems({
+      selectedPaths: ['/mail', '/dashboard', '/tasks'],
+      user: admin,
+      hasPermission: allow,
+    });
+    expect(items.map((item) => item.path)).toEqual(['/mail', '/dashboard', '/tasks', '/menu']);
+  });
+
   it('keeps a short saved selection instead of refilling it with defaults', () => {
     const items = resolveMobileNavigationItems({
       selectedPaths: ['/tasks', '/chat'],

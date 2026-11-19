@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import useDebounce from '../../hooks/useDebounce';
 import {
   Alert,
   Autocomplete,
@@ -74,14 +75,7 @@ const isForeverExpiresAt = (expiresAt) => {
   return parsed.getTime() - Date.now() > 3650 * 86400 * 1000;
 };
 
-const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [delayMs, value]);
-  return debounced;
-};
+const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => useDebounce(value, delayMs);
 
 export default function MyFilesShareDialog({
   open,

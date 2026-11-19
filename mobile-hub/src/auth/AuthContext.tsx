@@ -28,6 +28,10 @@ import {
   isBiometricLoginEnabled,
   unlockBiometricLogin,
 } from './biometricAuth';
+import {
+  clearPendingBiometricRevocation,
+  rememberPendingBiometricRevocation,
+} from './pendingBiometricRevocation';
 
 export type ServerCheck = { at: number; ok: boolean; ms: number };
 
@@ -42,6 +46,8 @@ type AuthContextValue = {
   sessionRestoreState: 'idle' | 'checking' | 'unavailable' | 'expired' | 'deactivated';
   retrySessionRestore: () => void;
   loginChallengeId: string | null;
+  /** Drops a pending 2FA login challenge so the guard stops forcing /two-factor. */
+  resetLoginChallenge: () => void;
   biometricEnabled: boolean;
   biometricEnrollmentAvailable: boolean;
   offlineMode: boolean;
@@ -320,7 +326,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           tokenStore.getRefreshToken(),
           tokenStore.getSessionUserId(),
           tokenStore.getCachedSessionUser(),
-          getAppLockSettings(),
+          // A failed SecureStore read must fail closed: null means «lock
+          // state unknown», which arms the gate instead of opening the app.
+          getAppLockSettings().catch(() => null),
           getNativeConnectivitySnapshot(),
           tokenStore.readSessionDeactivationMark(),
         ]);
@@ -332,8 +340,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await wipeDeactivatedSession();
           return;
         }
-        setBiometricEnabled(biometrics);
         const hasSession = Boolean(hasAccessSession || refreshToken);
+        // The fingerprint credential belongs to one account: a restored session
+        // of a different user must not keep it (shared device, MB-03). The
+        // owner lookup stays lazy — a session-free start never waits on the
+        // local keystore, and login verifies ownership again on its own path.
+        let effectiveBiometrics = biometrics;
+        if (biometrics && hasSession) {
+          const biometricUserId = await getBiometricLoginUserId().catch(() => null);
+          if (!isCurrent()) return;
+          if (
+            biometricUserId !== null
+            && sessionUserId !== null
+            && Number(biometricUserId) !== Number(sessionUserId)
+          ) {
+            await disableBiometricLogin().catch(() => undefined);
+            if (!isCurrent()) return;
+            effectiveBiometrics = false;
+          }
+        }
+        setBiometricEnabled(effectiveBiometrics);
         const canReachNetwork = !initialConnectivity.available
           || initialConnectivity.connected || initialConnectivity.online;
         if (initialConnectivity.available) {
@@ -354,7 +380,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(cachedUser);
           setSessionOfflineMode(true);
           setSessionRestoreState('checking');
-          if (biometrics && appLock.enabled) setAppLockPendingUnlock(true);
+          if (effectiveBiometrics && (appLock?.enabled ?? true)) setAppLockPendingUnlock(true);
           return;
         }
         if (!canReachNetwork) {
@@ -370,6 +396,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const me = await authApi.fetchMe({ timeoutMs });
             if (!isCurrent()) return;
             setUser(me);
+            // Cold start without a cached identity must arm the app lock the
+            // same way the cached-identity branch above does.
+            if (effectiveBiometrics && (appLock?.enabled ?? true)) setAppLockPendingUnlock(true);
             markApiOnline();
             cacheSessionUserInBackground(me);
           }, SESSION_RESTORE_TIMEOUT_MS);
@@ -432,6 +461,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const retryDelaysMs = [2_000, 5_000, 15_000, 30_000, 60_000];
     let failedAttempts = 0;
     let inFlight = false;
+    let attemptId = 0;
+    let terminalTransitionPending = false;
+    let inFlightStartedAt = 0;
+    let inFlightAbortController: AbortController | null = null;
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
     let immediateRequested = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let appActive = AppState.currentState === 'active';
@@ -439,6 +473,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     function clearRetryTimer() {
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = null;
+    }
+
+    function clearDeadlineTimer() {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      deadlineTimer = null;
     }
 
     async function expireSessionLocally() {
@@ -460,18 +499,68 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }, delay);
     }
 
+    // A probe whose promise is still pending after the OS suspended the
+    // process (or whose connection silently died) blocks recovery forever:
+    // the single inFlight flag would reject every fresh attempt. After the
+    // attempt deadline we cut the generation so the late reply lands in dead
+    // code, abort the socket and let the normal backoff continue.
+    function abandonStaleAttempt(reason: 'deadline' | 'resume'): boolean {
+      if (terminalTransitionPending) return false;
+      if (!inFlight || Date.now() - inFlightStartedAt < SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS) return false;
+      attemptId += 1;
+      inFlight = false;
+      immediateRequested = false;
+      clearDeadlineTimer();
+      const controller = inFlightAbortController;
+      inFlightAbortController = null;
+      controller?.abort();
+      logChatDevice('net_probe', {
+        ok: false,
+        ms: Date.now() - inFlightStartedAt,
+        tries: failedAttempts,
+        code: reason === 'deadline' ? 'deadline' : 'stale_resume',
+      });
+      if (reason === 'deadline') {
+        failedAttempts += 1;
+        setServerCheck({ at: Date.now(), ok: false, ms: Date.now() - inFlightStartedAt });
+      }
+      return true;
+    }
+
     async function runAttempt() {
+      // A terminal transition (expire/wipe) is already tearing the session
+      // down; no probe may start or be abandoned while it is in flight.
+      if (terminalTransitionPending) return;
       if (inFlight) { immediateRequested = true; return; }
       if (!isCurrent()) return;
       inFlight = true;
       immediateRequested = false;
+      const ownAttemptId = ++attemptId;
       const startedAt = Date.now();
+      inFlightStartedAt = startedAt;
+      const controller = new AbortController();
+      inFlightAbortController = controller;
+      deadlineTimer = setTimeout(() => {
+        deadlineTimer = null;
+        if (ownAttemptId !== attemptId || !appActive || !isCurrent()) return;
+        abandonStaleAttempt('deadline');
+        scheduleRetry();
+      }, SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS);
       try {
-        const me = await authApi.fetchMe({ timeoutMs: SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS });
-        if (!isCurrent()) return;
+        const me = await authApi.fetchMe({
+          timeoutMs: SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS,
+          signal: controller.signal,
+        });
+        if (!isCurrent() || ownAttemptId !== attemptId) return;
         if (Number(me.id) !== expectedUserId) {
           // A session must never silently switch to another identity.
-          await expireSessionLocally();
+          terminalTransitionPending = true;
+          clearDeadlineTimer();
+          try {
+            await expireSessionLocally();
+          } finally {
+            terminalTransitionPending = false;
+          }
           return;
         }
         logChatDevice('net_probe', { ok: true, ms: Date.now() - startedAt, tries: failedAttempts });
@@ -480,7 +569,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         markApiOnline();
         cacheSessionUserInBackground(me);
       } catch (error) {
-        if (!isCurrent()) return;
+        if (!isCurrent() || ownAttemptId !== attemptId) return;
         logChatDevice('net_probe', {
           ok: false,
           ms: Date.now() - startedAt,
@@ -489,11 +578,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         setServerCheck({ at: Date.now(), ok: false, ms: Date.now() - startedAt });
         if (isUserDeactivatedRejection(error)) {
-          await wipeDeactivatedSession();
+          terminalTransitionPending = true;
+          clearDeadlineTimer();
+          try {
+            await wipeDeactivatedSession();
+          } finally {
+            terminalTransitionPending = false;
+          }
           return;
         }
         if (isDefinitiveAuthRejection(error)) {
-          await expireSessionLocally();
+          terminalTransitionPending = true;
+          clearDeadlineTimer();
+          try {
+            await expireSessionLocally();
+          } finally {
+            terminalTransitionPending = false;
+          }
           return;
         }
         // JSON 403 keeps the session: the account is fine, this network is
@@ -501,10 +602,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSessionNetworkRestricted(isNetworkRestrictedRejection(error));
         failedAttempts += 1;
       } finally {
-        inFlight = false;
-        if (isCurrent()) {
-          if (immediateRequested) void runAttempt();
-          else scheduleRetry();
+        // A superseded attempt must not clear the flags the replacement owns.
+        if (ownAttemptId === attemptId) {
+          clearDeadlineTimer();
+          inFlightAbortController = null;
+          inFlight = false;
+          if (isCurrent()) {
+            if (immediateRequested) void runAttempt();
+            else scheduleRetry();
+          }
         }
       }
     }
@@ -512,7 +618,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (sessionOfflineMode) setSessionRestoreState('checking');
     void runAttempt();
     const connectivitySubscription = subscribeNativeConnectivity((snapshot) => {
-      if (snapshot.connected || snapshot.online) void runAttempt();
+      if (snapshot.connected || snapshot.online) {
+        abandonStaleAttempt('resume');
+        void runAttempt();
+      }
     });
     const appStateSubscription = AppState.addEventListener('change', (nextState) => {
       const wasActive = appActive;
@@ -521,10 +630,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearRetryTimer();
         return;
       }
-      if (nextState === 'active' && !wasActive) void runAttempt();
+      if (nextState === 'active' && !wasActive) {
+        abandonStaleAttempt('resume');
+        void runAttempt();
+      }
     });
     return () => {
       disposed = true;
+      clearDeadlineTimer();
+      inFlightAbortController?.abort();
+      inFlightAbortController = null;
       clearRetryTimer();
       connectivitySubscription.remove();
       appStateSubscription.remove();
@@ -542,11 +657,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Биометрия привязана к пользователю: вход под другой учётной записью обязан
+  // отключить чужой credential (на общем устройстве отпечаток A не должен
+  // открывать аккаунт A после входа B через 2FA).
+  const applyBiometricOwnership = useCallback(async (result: LoginResponse, assertCurrent: () => void) => {
+    const signedInUserId = Number(result.user?.id || 0);
+    const enrolledBiometricUserId = await getBiometricLoginUserId().catch(() => null);
+    assertCurrent();
+    const preserveBiometrics = Boolean(
+      enrolledBiometricUserId
+      && signedInUserId > 0
+      && enrolledBiometricUserId === signedInUserId,
+    );
+    if (!preserveBiometrics) await disableBiometricLogin();
+    assertCurrent();
+    setBiometricEnabled(preserveBiometrics);
+  }, []);
+
   const login = useCallback(async (username: string, password: string) => {
     const assertCurrent = beginAuthentication();
     restorePending.current = false;
     setLoading(false);
     setSessionRestoreState('idle');
+    // Re-login while an account is still active must end the previous session
+    // the same way an explicit logout does (the login screen is reachable from
+    // Security settings): revoke the old refresh/push/biometric registration
+    // and wipe that account's caches, drafts and delivered notifications.
+    const hasPreviousSession = Boolean(user)
+      || Boolean(await tokenStore.getRefreshToken().catch(() => null));
+    if (hasPreviousSession) {
+      await endMobileSession();
+      assertCurrent();
+    }
     const enrolledBiometricUserIdPromise = getBiometricLoginUserId().catch(() => null);
     const result = await authApi.login(username, password);
     assertCurrent();
@@ -586,7 +728,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     else await refreshUser();
     assertCurrent();
     return result;
-  }, [beginAuthentication, markApiOnline, refreshUser]);
+  }, [beginAuthentication, markApiOnline, refreshUser, user]);
 
   const startTwoFactorSetup = useCallback(async () => {
     if (!twoFactorSetupChallengeId) throw new Error('Запрос настройки 2FA истёк. Войдите снова');
@@ -604,6 +746,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!twoFactorSetupChallengeId) throw new Error('Запрос настройки 2FA истёк. Войдите снова');
     const result = await authApi.verifyTwoFactorSetup(twoFactorSetupChallengeId, code);
     await persistLoginResult(result, assertCurrent);
+    await applyBiometricOwnership(result, assertCurrent);
     setBiometricEnrollmentCode(String(result.biometric_enrollment_code || '').trim() || null);
     setLoginChallengeId(null);
     setTwoFactorSetupChallengeId(null);
@@ -624,6 +767,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ? { backup_code: code }
       : { totp_code: code });
     await persistLoginResult(result, assertCurrent);
+    await applyBiometricOwnership(result, assertCurrent);
     setBiometricEnrollmentCode(String(result.biometric_enrollment_code || '').trim() || null);
     setLoginChallengeId(null);
     setTwoFactorSetupChallengeId(null);
@@ -657,6 +801,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     assertCurrent();
     const credential = await enableBiometricLogin(user, renewalToken);
     assertCurrent();
+    // A queued disable-time revocation must not kill the fresh credential.
+    await clearPendingBiometricRevocation().catch(() => undefined);
     setBiometricEnrollmentCode(null);
     setBiometricEnabled(true);
     setSessionOfflineMode(false);
@@ -665,7 +811,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const skipBiometrics = useCallback(async () => {
     const assertCurrent = currentSessionGuard();
-    await authApi.revokeMobileBiometricSession().catch(() => undefined);
+    try {
+      await authApi.revokeMobileBiometricSession();
+      await clearPendingBiometricRevocation().catch(() => undefined);
+    } catch {
+      // Offline disable must not silently leave the server credential alive:
+      // the device would keep unlocking until someone revokes it elsewhere.
+      const deviceId = await tokenStore.getClientDeviceId().catch(() => null);
+      if (user?.id && deviceId) {
+        await rememberPendingBiometricRevocation(user.id, deviceId).catch(() => undefined);
+      }
+    }
     assertCurrent();
     await disableBiometricLogin();
     assertCurrent();
@@ -673,7 +829,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBiometricEnabled(false);
     setSessionOfflineMode(false);
     setOfflineCacheKey(null);
-  }, [currentSessionGuard]);
+  }, [currentSessionGuard, user?.id]);
 
   const unlockOfflineCache = useCallback(async (): Promise<string> => {
     const assertCurrent = currentSessionGuard();
@@ -691,6 +847,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return credential.offlineCacheKey;
   }, [currentSessionGuard, user]);
 
+  const resetLoginChallenge = useCallback(() => {
+    setLoginChallengeId(null);
+    setTwoFactorSetupChallengeId(null);
+    setBiometricEnrollmentCode(null);
+  }, []);
+
   const unlockWithBiometrics = useCallback(async (): Promise<BiometricUnlockResult> => {
     const assertCurrent = beginAuthentication();
     const generation = authGenerationRef.current;
@@ -703,6 +865,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const credential = await unlockBiometricLogin();
       assertCurrent();
+      // A stale 2FA challenge from an abandoned password attempt must not
+      // outlive a successful biometric unlock — the guard checks it first.
+      resetLoginChallenge();
       setOfflineCacheKey(credential.offlineCacheKey);
       try {
         let currentUser: HubUser;
@@ -728,15 +893,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await skipBiometrics();
           throw new Error('Сессия завершена. Войдите по логину и паролю.');
         }
-        setUser(credential.user);
-        cacheSessionUserInBackground(credential.user);
+        // A JSON response (403/400/500) is not "no connectivity": surface it
+        // as a retryable failure instead of silently entering the offline
+        // shell on a server-side rejection or an internal error. Only a
+        // transport failure (no response at all) means the device is offline.
+        if (!isTransportFailure(error)) {
+          throw new Error('Сервер отклонил возобновление входа по отпечатку. Повторите попытку или войдите по логину и паролю.');
+        }
+        // credential.user is only as fresh as the moment biometrics were
+        // enabled; the session user cache is rewritten on every /auth/me and
+        // carries the latest role/permissions for the offline shell.
+        const cachedUser = await tokenStore.getCachedSessionUser().catch(() => null);
+        const offlineUser = cachedUser && Number(cachedUser.id) === Number(credential.user.id)
+          ? cachedUser
+          : credential.user;
+        setUser(offlineUser);
+        cacheSessionUserInBackground(offlineUser);
         setSessionOfflineMode(true);
-        return { user: credential.user, offline: true };
+        return { user: offlineUser, offline: true };
       }
     } finally {
       if (generation === authGenerationRef.current) setLoading(false);
     }
-  }, [beginAuthentication, markApiOnline, skipBiometrics, wipeDeactivatedSession]);
+  }, [beginAuthentication, markApiOnline, resetLoginChallenge, skipBiometrics, wipeDeactivatedSession]);
 
   const logout = useCallback(async () => {
     if (logoutPromise.current) return logoutPromise.current;
@@ -753,6 +932,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setOfflineCacheKey(null);
     setAppLockPendingUnlock(false);
     setSessionNetworkRestricted(false);
+    // После офлайн-выхода восстановление могло застрять в «checking» — экран
+    // входа показывал бы бесконечный «Проверяем сохранённый вход…».
+    setSessionRestoreState('idle');
     })();
     logoutPromise.current = pending;
     try { await pending; }
@@ -792,6 +974,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       sessionRestoreState,
       retrySessionRestore,
       loginChallengeId,
+      resetLoginChallenge,
       biometricEnabled,
       biometricEnrollmentAvailable: Boolean(biometricEnrollmentCode),
       offlineMode,
@@ -822,6 +1005,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       sessionRestoreState,
       retrySessionRestore,
       loginChallengeId,
+      resetLoginChallenge,
       biometricEnabled,
       biometricEnrollmentCode,
       offlineMode,

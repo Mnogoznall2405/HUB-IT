@@ -106,7 +106,7 @@ async function readStored(ownerId: number): Promise<Entry[]> {
     catch { parsed = null; }
     if (!Array.isArray(parsed)) {
       if (raw) await legacy.quarantineNativeChatOutboxBlob(raw);
-      void recordDiagnosticEvent('native_file_error');
+      void recordDiagnosticEvent('native_file_error', undefined, { source: 'chat-outbox', stage: 'parse' });
       setNativeChatOutboxRowsCache([]);
       return [];
     }
@@ -120,7 +120,7 @@ async function readStored(ownerId: number): Promise<Entry[]> {
   });
   if (dropped.length || stripped) {
     await writeStored(sanitized);
-    void recordDiagnosticEvent('native_file_error');
+    void recordDiagnosticEvent('native_file_error', undefined, { source: 'chat-outbox', stage: 'sanitize' });
     await deleteUnreferencedChatFiles(legacy.nativeChatOutboxUploadUris(dropped)).catch(() => undefined);
     return sanitized;
   }
@@ -272,18 +272,26 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       } finally { cancelled.delete(key(replacement)); }
     },
     acknowledge: async (messages: ChatMessage[]) => {
-      current(); await legacy.readNativeChatOutbox(userId); current();
+      current();
+      // History pages almost never contain a matching own message — skip the
+      // legacy read and the serialized storage round-trip entirely then.
+      if (!messages.some((message) => !message.local_status && message.sender_user_id === userId
+        && message.conversation_id === conversationId && Boolean(message.client_message_id))) return;
+      await legacy.readNativeChatOutbox(userId); current();
       await enqueueNativeChatStorage(async () => {
         const rows = await readStored(userId); current();
         const next: Entry[] = [], removed: Entry[] = [];
+        let changed = false;
         for (const row of rows) {
           const ack = messages.find((message) => !message.local_status && message.sender_user_id === userId
             && message.conversation_id === conversationId && message.client_message_id && match(row, message.client_message_id));
           if (!ack) { next.push(row); continue; }
+          changed = true;
           if (!row.delivery) { removed.push(row); continue; }
           acknowledgements.set(key(row.message.client_message_id!), ack);
           next.push({ ...row, delivery: { ...row.delivery, state: 'confirmed', confirmed: ack } });
         }
+        if (!changed) return;
         await writeStored(next);
         await deleteUnreferencedChatFiles(removed.flatMap((row) => row.upload?.files.map((file) => file.uri) || [])).catch(() => undefined);
       });
@@ -317,8 +325,10 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
             const beforeState = before.delivery.state;
             // FIFO is held only by entries that can actually send now: paused,
             // cancelled, far-future retry and exhausted rows step aside so a
-            // stuck message never stalls the rest of the dialog.
-            if (beforeState === 'cancelled' || beforeState === 'paused') return false;
+            // stuck message never stalls the rest of the dialog. A 'confirmed'
+            // row was already delivered — it only waits for its cleanup pass
+            // and must not gate the messages queued after it.
+            if (beforeState === 'cancelled' || beforeState === 'paused' || beforeState === 'confirmed') return false;
             return beforeState !== 'retry' || (before.delivery.notBefore || 0) <= fifoNow;
           })) throw noWork();
           const next: Entry = { ...row, delivery: { ...d, state: 'sending', attempts: d.attempts + 1 } };

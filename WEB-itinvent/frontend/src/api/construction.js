@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 import { clearConstructionPortfolioCache } from '../lib/constructionPortfolioCache';
 import { WAREHOUSE_1C_QUERY_TIMEOUT_MS } from './warehouse1c';
 

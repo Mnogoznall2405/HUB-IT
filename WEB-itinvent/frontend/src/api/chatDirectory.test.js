@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./client', () => ({
+vi.mock('./http', () => ({
   default: {
     get: vi.fn(),
     post: vi.fn(),
@@ -9,7 +9,7 @@ vi.mock('./client', () => ({
   },
 }));
 
-import apiClient from './client';
+import apiClient from './http';
 import { chatDirectoryAPI } from './chatDirectory';
 
 describe('chatDirectoryAPI AI conversations and memory', () => {
@@ -62,6 +62,8 @@ describe('chatDirectoryAPI AI conversations and memory', () => {
 
     expect(apiClient.post).toHaveBeenCalledWith(
       '/chat/messages/message%2F1/attachments/attachment%2F1/save-to-my-files',
+      null,
+      undefined,
     );
   });
 });

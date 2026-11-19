@@ -326,6 +326,7 @@ export function AccountSecondaryButton({
       onPress={onPress}
       disabled={blocked}
       accessibilityRole="button"
+      accessibilityLabel={label}
       accessibilityState={{ disabled: blocked, busy: loading }}
       style={({ pressed }) => [
         styles.button,

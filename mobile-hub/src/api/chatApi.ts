@@ -90,6 +90,28 @@ export async function getConversations(): Promise<ChatConversationSummary[]> {
 }
 
 /**
+ * Follows the cursor so pickers see every conversation, not just the first
+ * page. Bounded to 20 pages — pickers never need deeper history.
+ */
+export async function listAllConversations(query?: string): Promise<ChatConversationSummary[]> {
+  const items: ChatConversationSummary[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = null;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await getConversationPage({ query, cursor: cursor || undefined, limit: 50 });
+    for (const item of result.items) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        items.push(item);
+      }
+    }
+    if (!result.has_more || !result.next_cursor || result.next_cursor === cursor) break;
+    cursor = result.next_cursor;
+  }
+  return items;
+}
+
+/**
  * Marks the conversation read up to `lastMessageId`.
  * The backend mark-read endpoint requires `message_id` and rejects a bare
  * request, so an empty id resolves to `false` — a skipped call that callers

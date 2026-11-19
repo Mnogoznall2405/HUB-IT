@@ -39,11 +39,13 @@ export function AppLockGate() {
   const { appLockPendingUnlock, biometricEnabled, logout, markAppLockUnlocked, user } = useAuth();
   const [settings, setSettings] = useState<AppLockSettings>(DEFAULT_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
   const [locked, setLocked] = useState(false);
   // A cold-start lock armed by AuthContext must gate the very first content
   // frame: the flag lands in the same commit as the cached user, so the modal
-  // mounts together with the shell instead of after it.
-  const gated = locked || Boolean(appLockPendingUnlock && user);
+  // mounts together with the shell instead of after it. An unreadable
+  // settings store fails closed too — unknown state never opens the app.
+  const gated = locked || Boolean(appLockPendingUnlock && user) || Boolean(settingsError && user);
   useLayoutEffect(() => {
     setNativeChatDeliveryBlocked(!user || gated);
     return () => setNativeChatDeliveryBlocked(true);
@@ -56,29 +58,35 @@ export function AppLockGate() {
   const externalBackgroundAtRef = useRef(0);
   const automaticAttemptRef = useRef(false);
 
+  const [settingsLoadGeneration, setSettingsLoadGeneration] = useState(0);
   useEffect(() => {
     let active = true;
     void getAppLockSettings().then((value) => {
       if (!active) return;
       setSettings(value);
       setSettingsLoaded(true);
+      setSettingsError('');
+    }).catch(() => {
+      if (!active) return;
+      setSettingsError('Не удалось прочитать настройки блокировки.');
     });
     const unsubscribe = subscribeAppLockSettings((value) => {
       if (!active) return;
       setSettings(value);
       setSettingsLoaded(true);
+      setSettingsError('');
     });
     return () => {
       active = false;
       unsubscribe();
     };
-  }, [biometricEnabled, user]);
+  }, [biometricEnabled, settingsLoadGeneration, user]);
 
   // The pending flag was armed from the stored settings at startup; once the
   // gate reads them itself, a lock that was meanwhile switched off releases.
   useEffect(() => {
-    if (settingsLoaded && !settings.enabled && appLockPendingUnlock) markAppLockUnlocked();
-  }, [appLockPendingUnlock, markAppLockUnlocked, settings.enabled, settingsLoaded]);
+    if (settingsLoaded && !settings.enabled && !settingsError && appLockPendingUnlock) markAppLockUnlocked();
+  }, [appLockPendingUnlock, markAppLockUnlocked, settings.enabled, settingsError, settingsLoaded]);
 
   useEffect(() => {
     if (!user || !biometricEnabled || !settings.enabled) {
@@ -153,10 +161,10 @@ export function AppLockGate() {
   }, [markAppLockUnlocked, unlocking]);
 
   useEffect(() => {
-    if (!gated || automaticAttemptRef.current) return;
+    if (!gated || settingsError || automaticAttemptRef.current) return;
     automaticAttemptRef.current = true;
     void unlock();
-  }, [gated, unlock]);
+  }, [gated, settingsError, unlock]);
 
   return (
     <Modal
@@ -188,23 +196,34 @@ export function AppLockGate() {
               importantForAccessibility="no"
             />
             <Text style={styles.title} accessibilityRole="header">HUB-IT заблокирован</Text>
-            <Text style={styles.body}>Подтвердите отпечаток, чтобы вернуться к открытой странице.</Text>
+            <Text style={styles.body}>{settingsError || 'Подтвердите отпечаток, чтобы вернуться к открытой странице.'}</Text>
             {error ? (
               <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">
                 {error}
               </Text>
             ) : null}
-            <HubButton
-              mode="contained"
-              icon="fingerprint"
-              onPress={() => { void unlock(); }}
-              loading={unlocking}
-              disabled={unlocking}
-              accessibilityLabel="Разблокировать HUB-IT отпечатком пальца"
-            >
-              Разблокировать
-            </HubButton>
-            {credentialLost ? (
+            {settingsError ? (
+              <HubButton
+                mode="contained"
+                icon="refresh"
+                onPress={() => setSettingsLoadGeneration((value) => value + 1)}
+                accessibilityLabel="Повторить чтение настроек блокировки"
+              >
+                Повторить
+              </HubButton>
+            ) : (
+              <HubButton
+                mode="contained"
+                icon="fingerprint"
+                onPress={() => { void unlock(); }}
+                loading={unlocking}
+                disabled={unlocking}
+                accessibilityLabel="Разблокировать HUB-IT отпечатком пальца"
+              >
+                Разблокировать
+              </HubButton>
+            )}
+            {credentialLost || settingsError ? (
               <HubButton mode="text" onPress={() => { void logout(); }}>
                 Войти заново
               </HubButton>

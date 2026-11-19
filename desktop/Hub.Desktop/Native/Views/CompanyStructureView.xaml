@@ -1,0 +1,683 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.CompanyStructureView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+            <Style x:Key="MetaValueStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Верхняя панель: поиск по структуре, обновить -->
+        <Border Grid.Row="0" Padding="20,16,20,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Grid x:Name="SearchBox" VerticalAlignment="Center">
+                        <TextBox x:Name="SearchInput"
+                                 Width="340"
+                                 HorizontalAlignment="Left"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                 KeyDown="SearchInput_KeyDown"
+                                 AutomationProperties.Name="Поиск по структуре компании" />
+                        <TextBlock Margin="13,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="Сотрудник или подразделение…">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=SearchInput}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                    <ProgressBar Margin="10,0,0,0"
+                                 Width="80"
+                                 Height="3"
+                                 VerticalAlignment="Center"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsSearching, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор поиска по структуре" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Обновить"
+                        AutomationProperties.Name="Обновить структуру компании" />
+
+                <!-- Автоподсказка поиска: подразделения и сотрудники (как autocomplete в вебе). -->
+                <Popup IsOpen="{Binding IsSearchPopupOpen, Mode=TwoWay}"
+                       Placement="Bottom"
+                       PlacementTarget="{Binding ElementName=SearchBox}"
+                       StaysOpen="False"
+                       AllowsTransparency="True">
+                    <Border MinWidth="340"
+                            MaxWidth="480"
+                            Padding="4"
+                            Background="{DynamicResource HubSurfaceBrush}"
+                            BorderBrush="{DynamicResource HubBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                        <ListBox Style="{StaticResource HubListBoxStyle}"
+                                 ItemsSource="{Binding SearchResults}"
+                                 MaxHeight="280"
+                                 AutomationProperties.Name="Результаты поиска по структуре">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Button HorizontalContentAlignment="Stretch"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding DataContext.SelectSearchResultCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                            CommandParameter="{Binding}"
+                                            AutomationProperties.Name="{Binding Title, StringFormat='Открыть {0}'}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="13"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding Title}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding SubtitleText}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Visibility="{Binding SubtitleText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding MetaText}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Visibility="{Binding MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        </StackPanel>
+                                    </Button>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Border>
+                </Popup>
+            </Grid>
+        </Border>
+
+        <!-- Баннер ошибки -->
+        <Border Grid.Row="1"
+                Margin="20,10,20,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}"
+                AutomationProperties.Name="Ошибка структуры компании">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{DynamicResource HubErrorTextBrush}"
+                           Text="{Binding BannerErrorText}"
+                           TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <Button Grid.Column="1"
+                        Margin="12,0,8,0"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Повторить"
+                        AutomationProperties.Name="Повторить загрузку структуры" />
+                <Button Grid.Column="2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DismissBannerCommand}"
+                        Content="✕"
+                        AutomationProperties.Name="Скрыть ошибку" />
+            </Grid>
+        </Border>
+
+        <!-- Дерево подразделений + сотрудники узла + карточка -->
+        <Grid Grid.Row="2" Margin="20,14,20,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320" MinWidth="240" />
+                <ColumnDefinition Width="6" />
+                <ColumnDefinition Width="360" MinWidth="280" />
+                <ColumnDefinition Width="6" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Дерево -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <ProgressBar Grid.Row="0"
+                             Height="3"
+                             Margin="0,0,0,6"
+                             IsIndeterminate="True"
+                             Foreground="{DynamicResource HubAccentBrush}"
+                             Background="{DynamicResource HubSurfaceRaisedBrush}"
+                             Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                             AutomationProperties.Name="Индикатор загрузки структуры" />
+                <Grid Grid.Row="1">
+                    <TreeView x:Name="StructureTree"
+                              ItemsSource="{Binding RootNodes}"
+                              SelectedItemChanged="StructureTree_SelectedItemChanged"
+                              Background="Transparent"
+                              BorderThickness="0"
+                              AutomationProperties.Name="Дерево подразделений">
+                        <TreeView.ItemTemplate>
+                            <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <!-- Шар узла: фото руководителя, а без него — инициалы подразделения. -->
+                                    <Border Width="20"
+                                            Height="20"
+                                            Margin="0,0,6,0"
+                                            VerticalAlignment="Center"
+                                            CornerRadius="10"
+                                            Background="{DynamicResource HubSelectionBrush}">
+                                        <Grid>
+                                            <TextBlock HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="9"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubAccentBrush}"
+                                                       Text="{Binding Initials}" />
+                                            <Ellipse Visibility="{Binding HasPhoto, Converter={StaticResource BoolToVisibility}}">
+                                                <Ellipse.Fill>
+                                                    <ImageBrush ImageSource="{Binding PhotoImage}"
+                                                                Stretch="UniformToFill" />
+                                                </Ellipse.Fill>
+                                            </Ellipse>
+                                        </Grid>
+                                    </Border>
+                                    <StackPanel Grid.Column="1"
+                                                Margin="2,0,0,0"
+                                                VerticalAlignment="Center">
+                                        <TextBlock FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding Title}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock FontSize="11"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding SubtitleText}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding SubtitleText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </StackPanel>
+                                    <Border Grid.Column="2"
+                                            Margin="8,0,2,0"
+                                            Padding="6,1"
+                                            VerticalAlignment="Center"
+                                            CornerRadius="8"
+                                            Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                            Visibility="{Binding PeopleCountText, Converter={StaticResource NonEmptyStringToVisibility}}">
+                                        <TextBlock FontSize="10"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding PeopleCountText}" />
+                                    </Border>
+                                </Grid>
+                            </HierarchicalDataTemplate>
+                        </TreeView.ItemTemplate>
+                        <TreeView.ItemContainerStyle>
+                            <Style TargetType="TreeViewItem">
+                                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                                <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                                <Setter Property="Padding" Value="6,4" />
+                                <Setter Property="Background" Value="Transparent" />
+                                <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                                <Setter Property="FocusVisualStyle" Value="{StaticResource HubFocusStyle}" />
+                                <!-- Свой шаблон: читаемый шеврон вместо крошечного системного. -->
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="TreeViewItem">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="20" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                </Grid.RowDefinitions>
+                                                <ToggleButton x:Name="Expander"
+                                                              Grid.Column="0"
+                                                              Width="20"
+                                                              VerticalAlignment="Center"
+                                                              ClickMode="Press"
+                                                              IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}">
+                                                    <ToggleButton.Template>
+                                                        <ControlTemplate TargetType="ToggleButton">
+                                                            <Border Padding="4,3" Background="Transparent">
+                                                                <TextBlock x:Name="ChevronText"
+                                                                           HorizontalAlignment="Center"
+                                                                           VerticalAlignment="Center"
+                                                                           FontSize="13"
+                                                                           FontWeight="SemiBold"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           RenderTransformOrigin="0.5,0.55"
+                                                                           Text="❯" />
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsChecked" Value="True">
+                                                                    <Setter TargetName="ChevronText" Property="RenderTransform">
+                                                                        <Setter.Value>
+                                                                            <RotateTransform Angle="90" />
+                                                                        </Setter.Value>
+                                                                    </Setter>
+                                                                </Trigger>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="ChevronText" Property="Foreground" Value="{DynamicResource HubAccentBrush}" />
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </ToggleButton.Template>
+                                                </ToggleButton>
+                                                <Border x:Name="Bd"
+                                                        Grid.Column="1"
+                                                        Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        Padding="{TemplateBinding Padding}"
+                                                        CornerRadius="4"
+                                                        SnapsToDevicePixels="True">
+                                                    <ContentPresenter x:Name="PART_Header"
+                                                                      Content="{TemplateBinding Header}"
+                                                                      ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                                                      ContentStringFormat="{TemplateBinding HeaderStringFormat}"
+                                                                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                      SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                                                </Border>
+                                                <ItemsPresenter x:Name="ItemsHost"
+                                                                Grid.Row="1"
+                                                                Grid.Column="1" />
+                                            </Grid>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsExpanded" Value="False">
+                                                    <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed" />
+                                                </Trigger>
+                                                <Trigger Property="HasItems" Value="False">
+                                                    <Setter TargetName="Expander" Property="Visibility" Value="Hidden" />
+                                                </Trigger>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HubSelectionBrush}" />
+                                                </Trigger>
+                                                <Trigger Property="IsEnabled" Value="False">
+                                                    <Setter Property="Foreground" Value="{DynamicResource HubBorderBrush}" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </TreeView.ItemContainerStyle>
+                    </TreeView>
+
+                    <!-- Пустое состояние дерева -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Структура пока пуста" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   Text="Подразделения появятся после настройки структуры компании." />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+
+            <GridSplitter Grid.Column="1"
+                          Width="6"
+                          HorizontalAlignment="Stretch"
+                          Background="Transparent"
+                          AutomationProperties.Name="Разделитель дерева и списка сотрудников" />
+
+            <!-- Сотрудники выбранного узла -->
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0" Margin="2,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <!-- Шар узла: фото руководителя, а без него — инициалы подразделения. -->
+                    <Border Width="40"
+                            Height="40"
+                            Margin="0,0,10,0"
+                            VerticalAlignment="Center"
+                            CornerRadius="20"
+                            Background="{DynamicResource HubSelectionBrush}"
+                            Visibility="{Binding HasSelectedNode, Converter={StaticResource BoolToVisibility}}">
+                        <Grid>
+                            <TextBlock HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource HubAccentBrush}"
+                                       Text="{Binding SelectedNode.Initials}" />
+                            <Ellipse Visibility="{Binding SelectedNode.HasPhoto, Converter={StaticResource BoolToVisibility}}">
+                                <Ellipse.Fill>
+                                    <ImageBrush ImageSource="{Binding SelectedNode.PhotoImage}"
+                                                Stretch="UniformToFill" />
+                                </Ellipse.Fill>
+                            </Ellipse>
+                        </Grid>
+                    </Border>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding SelectedNodeTitleText}"
+                                   TextTrimming="CharacterEllipsis"
+                                   AutomationProperties.Name="Выбранное подразделение" />
+                        <TextBlock Margin="0,2,0,0"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   FontSize="12"
+                                   Text="{Binding SelectedNodeSubtitleText}"
+                                   TextTrimming="CharacterEllipsis"
+                                   Visibility="{Binding SelectedNodeSubtitleText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                    </StackPanel>
+                </Grid>
+                <ProgressBar Grid.Row="1"
+                             Height="3"
+                             Margin="0,0,0,6"
+                             IsIndeterminate="True"
+                             Foreground="{DynamicResource HubAccentBrush}"
+                             Background="{DynamicResource HubSurfaceRaisedBrush}"
+                             Visibility="{Binding IsPeopleLoading, Converter={StaticResource BoolToVisibility}}"
+                             AutomationProperties.Name="Индикатор загрузки сотрудников" />
+                <Grid Grid.Row="2">
+                    <ListBox Style="{StaticResource HubListBoxStyle}"
+                             ItemsSource="{Binding People}"
+                             SelectedItem="{Binding SelectedPerson}"
+                             AutomationProperties.Name="Список сотрудников подразделения">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Width="40"
+                                            Height="40"
+                                            VerticalAlignment="Top"
+                                            CornerRadius="20"
+                                            Background="{DynamicResource HubSelectionBrush}">
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource HubAccentBrush}"
+                                                   Text="{Binding Initials}"
+                                                   AutomationProperties.Name="Инициалы сотрудника" />
+                                    </Border>
+                                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                        <TextBlock FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding FullName}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Margin="0,3,0,0"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding Subtitle}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding Subtitle, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                            <TextBlock FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding PrimaryPhoneText}"
+                                                       Visibility="{Binding PrimaryPhoneText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            <TextBlock Margin="10,0,0,0"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding PrimaryEmailText}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Visibility="{Binding PrimaryEmailText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- Подразделение не выбрано -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding ShowNodePlaceholder, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Подразделение не выбрано" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Выберите подразделение в дереве слева." />
+                    </StackPanel>
+
+                    <!-- В узле нет сотрудников -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsPeopleEmpty, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Сотрудники не указаны." />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+
+            <GridSplitter Grid.Column="3"
+                          Width="6"
+                          HorizontalAlignment="Stretch"
+                          Background="Transparent"
+                          AutomationProperties.Name="Разделитель списка и карточки сотрудника" />
+
+            <!-- Карточка сотрудника -->
+            <Border Grid.Column="4"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12">
+                <Grid>
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding ShowPersonPlaceholder, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Сотрудник не выбран" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Выберите сотрудника в списке." />
+                    </StackPanel>
+
+                    <Grid Visibility="{Binding HasPersonDetail, Converter={StaticResource BoolToVisibility}}">
+                        <ScrollViewer Padding="22,18"
+                                      VerticalScrollBarVisibility="Auto"
+                                      DataContext="{Binding SelectedPerson}"
+                                      AutomationProperties.Name="Карточка сотрудника">
+                            <StackPanel>
+                                <!-- Шапка: инициалы + ФИО + должность -->
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Width="72"
+                                            Height="72"
+                                            VerticalAlignment="Top"
+                                            CornerRadius="36"
+                                            Background="{DynamicResource HubSelectionBrush}">
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="24"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource HubAccentBrush}"
+                                                   Text="{Binding Initials}"
+                                                   AutomationProperties.Name="Фото или инициалы сотрудника" />
+                                    </Border>
+                                    <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+                                        <TextBlock FontSize="20"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding FullName}"
+                                                   TextWrapping="Wrap"
+                                                   AutomationProperties.Name="ФИО сотрудника" />
+                                        <TextBlock Margin="0,6,0,0"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding PositionText}"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{Binding PositionText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- Действия -->
+                                <StackPanel Margin="0,16,0,0" Orientation="Horizontal">
+                                    <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                            Command="{Binding DataContext.CallCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding CanCall}"
+                                            Content="Позвонить"
+                                            AutomationProperties.Name="Позвонить сотруднику" />
+                                    <Button Margin="8,0,0,0"
+                                            Style="{StaticResource HubSecondaryButtonStyle}"
+                                            Command="{Binding DataContext.EmailCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding CanEmail}"
+                                            Content="Написать"
+                                            AutomationProperties.Name="Написать письмо сотруднику" />
+                                </StackPanel>
+
+                                <!-- Контакты -->
+                                <TextBlock Margin="0,20,0,0"
+                                           Style="{StaticResource HubSectionTitleStyle}"
+                                           Text="Контакты"
+                                           Visibility="{Binding HasContacts, Converter={StaticResource BoolToVisibility}}" />
+                                <Grid Margin="0,8,0,0"
+                                      Visibility="{Binding HasContacts, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Margin="0,0,0,4"
+                                                   Style="{StaticResource MetaLabelStyle}"
+                                                   Text="Телефоны" />
+                                        <ItemsControl ItemsSource="{Binding Phones}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Margin="0,0,0,6"
+                                                               Style="{StaticResource MetaValueStyle}"
+                                                               Text="{Binding}" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Margin="0,0,0,4"
+                                                   Style="{StaticResource MetaLabelStyle}"
+                                                   Text="E-mail" />
+                                        <ItemsControl ItemsSource="{Binding Emails}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Margin="0,0,0,6"
+                                                               Style="{StaticResource MetaValueStyle}"
+                                                               Text="{Binding}" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- Работа -->
+                                <TextBlock Margin="0,18,0,0"
+                                           Style="{StaticResource HubSectionTitleStyle}"
+                                           Text="Работа"
+                                           Visibility="{Binding HasWorkMeta, Converter={StaticResource BoolToVisibility}}" />
+                                <Grid Margin="0,8,0,0"
+                                      Visibility="{Binding HasWorkMeta, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Подразделение"
+                                                   Visibility="{Binding DepartmentText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Margin="0,2,0,10" Style="{StaticResource MetaValueStyle}"
+                                                   Text="{Binding DepartmentText}"
+                                                   Visibility="{Binding DepartmentText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Город"
+                                                   Visibility="{Binding LocationText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <TextBlock Margin="0,2,0,10" Style="{StaticResource MetaValueStyle}"
+                                                   Text="{Binding LocationText}"
+                                                   Visibility="{Binding LocationText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Статусная строка -->
+        <Border Grid.Row="3" Padding="20,0,20,12">
+            <Grid>
+                <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                           Text="{Binding PeopleTotalText}"
+                           AutomationProperties.Name="Счётчик сотрудников подразделения" />
+                <TextBlock HorizontalAlignment="Right"
+                           Style="{StaticResource HubMutedTextStyle}"
+                           Text="{Binding LastUpdatedText}"
+                           Visibility="{Binding LastUpdatedText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import apiClient from './client';
+import apiClient from './http';
 import { WAREHOUSE_1C_QUERY_TIMEOUT_MS } from './warehouse1c';
 import { warehouse1cItRequestsAPI } from './warehouse1cItRequests';
 
-vi.mock('./client', () => ({
+vi.mock('./http', () => ({
   default: { get: vi.fn() },
 }));
 

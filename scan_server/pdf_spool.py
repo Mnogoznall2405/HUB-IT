@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +60,23 @@ class PdfSpoolStore:
 
     def list_pdf_paths(self) -> List[Path]:
         return list(self.root_dir.glob("*.pdf"))
+
+    @contextmanager
+    def reconciliation_guard(self) -> Iterator[bool]:
+        # The spool is shared by API/worker processes. Never wait behind another sweep.
+        with (self.root_dir / ".reconcile.lock").open("a+b") as handle:
+            try:
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                yield False
+                return
+            yield True
 
     def delete_path(self, path: Path, *, description: str) -> bool:
         try:

@@ -16,6 +16,7 @@ import {
   resolveItemMailboxId,
   withMailboxParams,
   withMailboxPayload,
+  withPreservedMailboxUnreadCount,
   writeStoredSelectedMailboxId,
 } from './mailMailboxModel';
 
@@ -255,5 +256,20 @@ describe('mailMailboxModel', () => {
       mailboxInfo: { id: 'mb-info', mailbox_email: 'info@x.y' },
     })).toEqual([buildFallbackMailboxEntry({ id: 'mb-info', mailbox_email: 'info@x.y' })]);
     expect(buildComposeFromOptions({ mailboxes: null, mailboxInfo: null })).toEqual([]);
+  });
+
+  it('keeps the previous unread count when a config payload does not carry one', () => {
+    const previous = { id: 'mb-1', unread_count: 6 };
+    expect(withPreservedMailboxUnreadCount({ id: 'mb-1' }, previous))
+      .toEqual({ id: 'mb-1', unread_count: 6 });
+    expect(withPreservedMailboxUnreadCount({ id: 'mb-1', unread_count: null }, previous))
+      .toEqual({ id: 'mb-1', unread_count: 6 });
+    expect(withPreservedMailboxUnreadCount({ id: 'mb-1', unread_count: 0 }, previous))
+      .toEqual({ id: 'mb-1', unread_count: 0 });
+    expect(withPreservedMailboxUnreadCount({ id: 'mb-1', unread_count: '4' }, previous))
+      .toEqual({ id: 'mb-1', unread_count: 4 });
+    expect(withPreservedMailboxUnreadCount(null, previous)).toBeNull();
+    expect(withPreservedMailboxUnreadCount({ id: 'mb-2' }, null))
+      .toEqual({ id: 'mb-2', unread_count: 0 });
   });
 });

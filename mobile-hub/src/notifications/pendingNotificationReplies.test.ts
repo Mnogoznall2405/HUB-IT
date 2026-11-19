@@ -137,4 +137,19 @@ describe('pending notification replies', () => {
     await expect(retryPendingChatReply(item().id, 7)).resolves.toMatchObject({ status: 'discarded' });
     expect(await getPendingChatReplyCount(7)).toBe(0);
   });
+
+  it('rejects the eleventh quick reply instead of silently dropping the oldest', async () => {
+    for (let index = 0; index < 10; index += 1) {
+      await queuePendingChatReply({ ...item(), id: `reply-${index}`, body: `body-${index}` });
+    }
+
+    await expect(queuePendingChatReply({ ...item(), id: 'overflow', body: 'newest body' }))
+      .rejects.toThrow('Очередь быстрых ответов заполнена');
+
+    // The stored ten stay intact — nothing was evicted and nothing was saved.
+    expect(await getPendingChatReplyCount(7)).toBe(10);
+    const oldest = await queuePendingChatReply({ ...item(), id: 'reply-0', body: 'body-0' });
+    expect(oldest.body).toBe('body-0');
+    expect(await getPendingChatReplyCount(7)).toBe(10);
+  });
 });

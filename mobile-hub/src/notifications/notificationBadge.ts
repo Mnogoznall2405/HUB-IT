@@ -1,4 +1,5 @@
 import * as Notifications from 'expo-notifications';
+import { applyPendingNativeMailUnread } from '../mail/nativeMailUnreadPending';
 import {
   getNativeUnreadSnapshot,
   nativeUnreadTotal,
@@ -13,8 +14,13 @@ function safeCount(value: unknown): number {
 
 export async function resolveNativeUnreadCount({ force = false }: { force?: boolean } = {}): Promise<number | null> {
   const snapshot = await getNativeUnreadSnapshot({ force });
-  if (snapshot.successful_sources <= 0) return null;
-  return Math.min(MAX_BADGE_COUNT, nativeUnreadTotal(snapshot));
+  if (snapshot.successful_sources <= 0 || snapshot.badge_safe === false) return null;
+  // Mail unread is eventually consistent on the server (Exchange); apply the
+  // locally staged delta so a force refresh right after «mark read» does not
+  // roll the badge back.
+  const adjustedMailUnread = applyPendingNativeMailUnread('', null, snapshot.mail_unread);
+  const total = nativeUnreadTotal(snapshot) - safeCount(snapshot.mail_unread) + adjustedMailUnread;
+  return Math.min(MAX_BADGE_COUNT, Math.max(0, total));
 }
 
 export async function setNativeBadgeCount(count: number): Promise<number> {

@@ -1,0 +1,227 @@
+ОТЧЁТ ПО ФЛОТУ АГЕНТОВ HUB-IT — 16.11.2026 15:30
+
+======================================================================
+1) МАШИНЫ БЕЗ АГЕНТА (167) — есть в списке компьютеров, агента нет
+======================================================================
+BEIGE
+BELG-GEO-0004D
+BELG-GSTK-SVAR-
+BELG-IT-001N
+BELG-MASTERS-00
+BELG-OK-002D
+BELG-PTO-000D
+BELG-SKLAD-002D
+BG-GEODEZIST-00
+BG-VKS
+BG-ZAMNACHTMC-0
+EKS-ZFI-002-N
+GACH-WHS-0001
+GACH-WHS-0003
+GACH-WHS-0004
+GACH-WHS-0006
+GRUB-VSK-0001
+KMCH-ENRG-91-N
+KMCH-GEO-124-N
+KMCH-GEO-126-N
+KMCH-GSTK-93-N
+KMCH-MED-80-N
+KMCH-MEH-001-N
+KMCH-OK-013-D
+KMCH-OK-114-D
+KMCH-PTO-109-D
+KMCH-PTO-167-D
+KMCH-RBU-76-N
+KMCH-RP-158-N
+KMCH-SKLAD-015-
+KMCH-SKLAD-111-
+KMCH-SKLAD-89-D
+KMCH-SMR-145-N
+KNA-RP-0001D
+KNA-SKLAD-0002D
+KOS-PTO-0001N
+KOT-USA-002-N
+MGD-DISP-001-D
+MGD-GEO-001-N
+MGD-MED-001-N
+MGD-PTO-002-D
+MGD-WHS-004-D
+MOZH-HRM-0055
+MOZH-MEH-0061
+MOZH-SKL-0056
+MOZH-SKL-0057
+MSK-A-0006
+MSK-CONF-0001
+MSK-NB-003
+MSK-NB-009
+MSK-T-0001
+MSK-Y-0005
+MSK-Y-0015
+NORTH-GSTK-MAIL
+NORTH-MAIL-001-
+NORTH-NACHUCH-0
+NORTH-PTO-008-D
+NORTH-SKLAD-001
+REG-PTO-0005-D
+REGAZ-GEO-001-D
+SEV-SKLAD
+SHAR-ADM-01
+SHAR-PRORAB-04D
+SHAR-PTO-0003D
+SHAR-STKN-02D
+SPB-KOM-0004
+SPB-KOM-0010
+SPB-KOM-0019
+SPB-KOM-0023
+SPB-KOM-0024
+SPB-TEST-0001
+SPB-VKS-0001
+SPB-VKS-0002
+TIKS-ENERG-002D
+TIKSI-DESPETCHE
+TIKSI-ENERG-001
+TIKSI-ENERG-003
+TIKSI-GEO-001D
+TIKSI-GSK-001D
+TIKSI-KOM-001D
+TIKSI-LAB-001D
+TIKSI-OK-001D
+TIKSI-PTO-003D
+TIKSI-PTO-007D
+TIKSI-PTO-008D
+TIKSI-SKZ-01D
+TIKSI-SMR-001D
+TIKSI-SMR-003D
+TMN-ENG-0018
+TMN-ENG-0069
+TMN-FIN-0030
+TMN-HRM-0008
+TMN-HRM-0054
+TMN-IT-0006
+TMN-IT-0010
+TMN-IT-00111
+TMN-IT-0025
+TMN-IT-0067N
+TMN-IT-0102
+TMN-OGS-0002
+TMN-POST-ARC-01
+TMN-PTO-0021
+TMN-PTO-0037
+TMN-PTO-0166
+TMN-QTY-0002
+TMN-QTY-0110
+TMN-SAF-0005
+TMN-SEC-0012
+TMN-SRV-1C-03
+TMN-SRV-SP-01
+TMN-SUP-0048
+TMN-TEST-03
+TMN-USMR-0001
+TMN-USMR-0001~~344305
+TMN-USMR-0005
+TMN-VKS-0001
+TMN-VKS-0002
+TRUECONF_GERZ
+TSN-028
+TSN-ENG-001-N
+TSN-PTO-0006D
+TUL-SEC-001-N
+UKZ-0-N
+UKZ-000-N
+UKZ-ADM-001-N
+UKZ-DISP-0001-N
+UKZ-EMR-0002-N
+UKZ-GEO-0001-N
+UKZ-GEO-0002-N
+UKZ-GSTK-0001-N
+UKZ-LAB-001-N
+UKZ-MED-0001-N
+UKZ-MEH-0001-N
+UKZ-MEH-0002-N
+UKZ-MEH-001-N
+UKZ-MEH-SKLAD-0
+UKZ-OTIPB-0001-
+UKZ-PILL-0001-N
+UKZ-PTO-0001-N
+UKZ-PTO-0005-D
+UKZ-PTO-0011-D
+UKZ-PTO-006-D
+UKZ-PTO-009-D
+UKZ-PTO-010-D
+UKZ-PTO-KATUN-D
+UKZ-RBU-N
+UKZ-RP-0001-N
+UKZ-SKZ-002-N
+UKZ-SMR-00010-D
+UKZ-SMR-00012-N
+UKZ-SMR-00014-D
+VELG-CONF-0001
+VELG-SUP-0024
+VELG-TRS-0005
+VGD-ADM-0001
+VGD-BLD-0001-D
+VGD-GSTK-0001-D
+VGD-MAS-0003
+VGD-PTO-0001-N
+VGD-PTO-0007-D
+VLAD-SUP-0003
+VLAD-SUP-0004
+ZFI-SB-001N
+ZFI-SCLAD-0001D
+hubit
+ukz-0-n.zsgp.corp
+ukz-smr-00010-d.zsgp.corp
+
+======================================================================
+2) РУЧНАЯ ПЕРЕУСТАНОВКА — версия 1.2.x, self_update их не берёт (31)
+======================================================================
+MOZH-RP-0041                     v=1.2.8  ip=10.105.42.246:55273 last_seen=11.07.2026 14:30
+SPB-PRJ-0002                     v=1.2.8  ip=10.105.4.68:49762 last_seen=01.07.2026 19:20
+SPB-PRJ-0023                     v=1.2.8  ip=10.105.4.151:54120 last_seen=24.08.2026 19:43
+SPB-PRJ-0024                     v=1.2.8  ip=10.105.4.77:50921 last_seen=23.09.2026 15:11
+SPB-PRJ-0101                     v=1.2.8  ip=10.105.4.227:50976 last_seen=22.06.2026 14:58
+SPB-PRJ-0102                     v=1.2.8  ip=10.105.4.189:53102 last_seen=25.06.2026 15:05
+SPB-PRJ-0106                     v=1.2.8  ip=10.105.4.133:51273 last_seen=29.05.2026 14:49
+SPB-PRJ-0138                     v=1.2.8  ip=10.105.4.178:62479 last_seen=27.08.2026 17:05
+SPB-PRJ-0159                     v=1.2.3  ip=10.105.4.45:49896 last_seen=28.04.2026 16:13
+SPB-PRJ-0162                     v=1.2.8  ip=10.105.4.201:50397 last_seen=29.05.2026 18:55
+SPB-PRJ-0168                     v=1.2.8  ip=10.105.4.233:50403 last_seen=12.11.2026 17:53
+TMN-ADM-0009                     v=1.2.3  ip=10.105.0.4:61674 last_seen=28.04.2026 10:18
+TMN-ENG-0013                     v=1.2.8  ip=10.105.1.78:57436 last_seen=12.10.2026 12:55
+TMN-ENG-0112                     v=1.2.8  ip=10.101.0.101:64924 last_seen=28.04.2026 12:54
+TMN-ENT-0066                     v=1.2.8  ip=10.105.0.141:62165 last_seen=12.07.2026 12:30
+TMN-EST-0063                     v=1.2.8  ip=10.105.1.94:51527 last_seen=23.10.2026 18:03
+TMN-FIN-0013                     v=1.2.8  ip=10.105.1.1:62192 last_seen=16.11.2026 15:24
+TMN-HRM-0047                     v=1.2.8  ip=10.111.0.23:34847 last_seen=29.04.2026 16:28
+TMN-IT-0018                      v=1.2.3  ip=10.103.0.211:49769 last_seen=28.04.2026 10:33
+TMN-LOG-0006                     v=1.2.8  ip=10.105.13.27:64974 last_seen=16.11.2026 15:26
+TMN-PTO-0002                     v=1.2.8  ip=10.105.12.35:59058 last_seen=16.11.2026 14:50
+TMN-PTO-0020                     v=1.2.8  ip=10.105.12.23:49248 last_seen=17.08.2026 11:19
+TMN-PTO-0023                     v=1.2.8  ip=10.105.12.29:57843 last_seen=29.07.2026 17:44
+TMN-PTO-0041                     v=1.2.8  ip=10.105.12.37:58715 last_seen=17.08.2026 11:20
+TMN-PTO-0043                     v=1.2.8  ip=10.105.12.22:56450 last_seen=22.07.2026 03:39
+TMN-SUP-0039                     v=1.2.8  ip=10.105.1.11:54751 last_seen=16.11.2026 15:22
+TMN-TEST-02                      v=1.2.3  ip=10.103.0.202:58926 last_seen=27.04.2026 16:52
+VELG-ADM-0010                    v=1.2.8  ip=10.105.6.34:49814 last_seen=13.11.2026 12:46
+velg-acc-0005                    v=1.2.8  ip=10.105.6.195:53849 last_seen=16.11.2026 15:22
+velg-sup-0022                    v=1.2.8  ip=10.105.6.154:60591 last_seen=16.11.2026 15:20
+velg-sup-0223                    v=1.2.8  ip=10.105.6.153:64626 last_seen=14.07.2026 17:54
+
+======================================================================
+3) СЛОМАННЫЙ self_update — последний апдейт failed, версия старая (13)
+   (диагностика на месте: диск/права/антивирус)
+======================================================================
+BELG-KOM-0002-N                  v=1.4.18   ip=10.105.75.139:56028 last_seen=16.11.2026 15:29
+KOT-ENG-001-N                    v=1.4.11   ip=10.105.68.35:52681 last_seen=16.11.2026 15:30
+MGD-PRB-008-D                    v=1.4.21   ip=10.105.36.88:49275 last_seen=16.11.2026 14:37
+MGD-PTO-008-D                    v=1.4.11   ip=10.105.36.72:49711 last_seen=11.11.2026 12:11
+MGD-VKS-001-D                    v=1.4.18   ip=10.105.36.202:50244 last_seen=16.11.2026 15:29
+REG-EMR-0001-N                   v=1.4.11   ip=10.105.45.159:61226 last_seen=12.11.2026 09:18
+SHAR-PTO-0008D                   v=1.4.11   ip=10.105.65.94:51316 last_seen=13.11.2026 19:41
+SPB-KOM-0001                     v=1.4.11   ip=10.105.65.115:51064 last_seen=16.11.2026 14:41
+SPB-PRJ-0013                     v=1.4.14   ip=10.105.4.150:60900 last_seen=16.11.2026 15:29
+TSN-024                          v=1.4.11   ip=10.105.55.20:65483 last_seen=16.11.2026 15:29
+TSN-045                          v=1.4.11   ip=10.105.55.43:50498 last_seen=16.11.2026 13:57
+velg-acc-0011                    v=1.4.11   ip=10.105.6.183:49734 last_seen=10.11.2026 14:28
+velg-so-0002                     v=1.4.11   ip=10.105.6.170:51871 last_seen=10.11.2026 15:00
+
+Сводка: всего машин в списке 1001, агентов в БД 882, на 1.4.22 — 535.

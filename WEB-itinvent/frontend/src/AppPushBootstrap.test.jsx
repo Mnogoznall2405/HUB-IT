@@ -1,7 +1,7 @@
 import { act, render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
-import { AppPushBootstrap } from './App';
+import { AppPushBootstrap } from './components/layout/AuthenticatedBootstraps';
 
 const {
   authState,

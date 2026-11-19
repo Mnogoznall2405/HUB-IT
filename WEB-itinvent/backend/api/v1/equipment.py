@@ -5,11 +5,12 @@ from typing import Optional, Any, List, Literal
 from datetime import date
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, HTTPException, Response, status, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Request, Response, status, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
 import asyncio
+import mimetypes
 import os
 import re
 import threading
@@ -128,9 +129,10 @@ from backend.services.act_upload_service import (
     DuplicateActError,
     create_uploaded_act_draft,
     get_uploaded_act_draft,
+    get_uploaded_act_draft_owner_id,
     commit_uploaded_act_draft,
 )
-from backend.utils.upload_limits import read_upload_limited
+from backend.utils.upload_limits import read_body_limited, read_upload_limited
 import urllib.parse
 import logging
 
@@ -294,6 +296,20 @@ def _can_read_transfer_job(*, job: dict[str, Any], current_user: Any, db_id: Opt
     if _current_user_id(current_user) <= 0 or _current_user_id(current_user) != job_user_id:
         return False
     return (str(job.get("db_id") or "").strip() or None) == (str(db_id or "").strip() or None)
+
+
+def _is_admin_user(current_user: Any) -> bool:
+    return str(getattr(current_user, "role", "") or "").strip().lower() == "admin"
+
+
+def _is_owner_or_admin(current_user: Any, owner_user_id: Any) -> bool:
+    if _is_admin_user(current_user):
+        return True
+    current_id = _current_user_id(current_user)
+    try:
+        return current_id > 0 and owner_user_id is not None and int(owner_user_id) == current_id
+    except (TypeError, ValueError):
+        return False
 
 
 def _result_with_act_records(result: dict[str, Any]) -> dict[str, Any]:
@@ -597,6 +613,7 @@ def _run_act_only_job(
                     issuer_email=issuer_email,
                     db_id=db_id,
                     operation_id=job_id,
+                    created_by_user_id=getattr(current_user, "id", None),
                 )
 
         result = {
@@ -716,6 +733,64 @@ def _normalize_local_file_path(raw_path: str) -> str:
 
     # Also decode URL-escaped plain path fragments, if present.
     return os.path.normpath(urllib.parse.unquote(text))
+
+
+# Act bytes and FILES-stored paths are DB data rendered in an authenticated
+# session: only these types are safe to display inline (same allowlist as the
+# fs_egress media endpoints). Anything else is forced to octet-stream + nosniff
+# so a tampered row cannot serve HTML/script to the operator's browser.
+_ACT_INLINE_PREFIXES = ("image/", "audio/", "video/")
+_ACT_INLINE_TYPES = {"application/pdf", "application/octet-stream"}
+
+
+def _act_media_type(content_type: Optional[str]) -> str:
+    mime = str(content_type or "").strip().lower().split(";")[0].strip()
+    if mime.startswith("image/svg"):
+        return "application/octet-stream"
+    if not (mime in _ACT_INLINE_TYPES or mime.startswith(_ACT_INLINE_PREFIXES)):
+        return "application/octet-stream"
+    return mime
+
+
+def _act_file_storage_roots() -> List[str]:
+    roots: List[str] = []
+    for part in str(os.getenv("EQUIPMENT_ACT_FILE_ROOTS", "") or "").split(";"):
+        cleaned = str(part or "").strip().rstrip("\\/")
+        if cleaned:
+            roots.append(os.path.normcase(os.path.normpath(cleaned)))
+    return roots
+
+
+def _resolve_act_file_path(raw_path: str) -> Optional[str]:
+    """Resolve a DB-supplied FILES path to a safe local path, or None.
+
+    There is no fixed act storage root: legacy rows hold absolute/UNC paths, so
+    EQUIPMENT_ACT_FILE_ROOTS (semicolon-separated) is the containment allowlist.
+    Without it only relative paths are served — "..", drive and UNC forms are
+    refused so a tampered row cannot read arbitrary files or reach other shares.
+    """
+    decoded = urllib.parse.unquote(str(raw_path or ""))
+    if any(part == ".." for part in re.split(r"[\\/]+", decoded)):
+        return None
+    candidates: List[str] = []
+    for candidate in (raw_path, _normalize_local_file_path(raw_path)):
+        normalized = str(candidate or "").strip()
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+    roots = _act_file_storage_roots()
+    for candidate in candidates:
+        if roots:
+            resolved = os.path.normcase(os.path.abspath(candidate))
+            if any(resolved == root or resolved.startswith(root + os.sep) for root in roots):
+                return candidate
+            continue
+        # No declared roots: only a plain relative path may be served. ":"
+        # covers drive letters, ADS names and URI schemes (file://, http://);
+        # a leading separator covers rooted and UNC forms.
+        if os.path.splitdrive(candidate)[0] or ":" in candidate or candidate.startswith(("\\", "/")):
+            continue
+        return candidate
+    return None
 
 
 _UNKNOWN_EMPLOYEE_TOKENS: set[str] = {
@@ -2881,11 +2956,15 @@ async def get_transfer_act_job(
 async def send_transfer_acts(
     payload: TransferEmailRequest,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
     Send generated transfer acts by email.
     """
+    for act_id in payload.act_ids:
+        record = get_act_record(act_id)
+        if record is not None and not _is_owner_or_admin(current_user, record.get("created_by_user_id")):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Act not found")
     employee_email = None
     if payload.mode == "employee":
         owner_no = _to_int(payload.owner_no)
@@ -3171,6 +3250,7 @@ async def parse_uploaded_act(
         db_id=db_id,
         created_by=created_by,
         skip_llm=manual_mode,
+        created_by_user_id=_current_user_id(current_user) or None,
     )
     return UploadedActDraftResponse(**payload)
 
@@ -3179,12 +3259,14 @@ async def parse_uploaded_act(
 async def get_uploaded_act_parse_draft(
     draft_id: str,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: Optional[User] = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Get current parse draft payload.
     """
     try:
+        if not _is_owner_or_admin(current_user, get_uploaded_act_draft_owner_id(draft_id)):
+            raise DraftNotFoundError("Черновик не найден или срок его действия истек.")
         payload = await run_in_threadpool(
             get_uploaded_act_draft,
             draft_id=draft_id,
@@ -3212,6 +3294,8 @@ async def commit_uploaded_act(
     else:
         payload_data = payload.dict()
     try:
+        if not _is_owner_or_admin(current_user, get_uploaded_act_draft_owner_id(payload.draft_id)):
+            raise DraftNotFoundError("Черновик не найден или срок его действия истек.")
         result = await run_in_threadpool(
             commit_uploaded_act_draft,
             draft_id=payload.draft_id,
@@ -3230,18 +3314,28 @@ async def commit_uploaded_act(
 
     await run_in_threadpool(invalidate_equipment_cache, db_id)
 
-    reminder_result = await run_in_threadpool(
-        transfer_act_reminder_service.complete_for_uploaded_act,
-        reminder_id=payload.reminder_id,
-        source_task_id=payload.source_task_id,
-        db_id=db_id,
-        current_user=current_user,
-        from_employee=result.get("from_employee") or payload_data.get("from_employee") or "",
-        to_employee=result.get("to_employee") or payload_data.get("to_employee") or "",
-        linked_inv_nos=[str(x) for x in result.get("linked_inv_nos") or []],
-        doc_no=int(result["doc_no"]),
-        doc_number=str(result["doc_number"]),
-    )
+    try:
+        reminder_result = await run_in_threadpool(
+            transfer_act_reminder_service.complete_for_uploaded_act,
+            reminder_id=payload.reminder_id,
+            source_task_id=payload.source_task_id,
+            db_id=db_id,
+            current_user=current_user,
+            from_employee=result.get("from_employee") or payload_data.get("from_employee") or "",
+            to_employee=result.get("to_employee") or payload_data.get("to_employee") or "",
+            linked_inv_nos=[str(x) for x in result.get("linked_inv_nos") or []],
+            doc_no=int(result["doc_no"]),
+            doc_number=str(result["doc_number"]),
+        )
+    except Exception:
+        logger.exception("Uploaded act doc_no=%s is stored, but its reminder was not updated", result.get("doc_no"))
+        reminder_result = {
+            "reminder_status": "error",
+            "reminder_task_id": None,
+            "reminder_id": None,
+            "reminder_pending_groups": 0,
+            "warning": "Акт записан в базу, но напоминание не обновлено. Обратитесь к администратору.",
+        }
 
     response_payload = {
         "success": True,
@@ -3552,16 +3646,15 @@ async def download_equipment_act_file(
 
     file_path_raw = str(payload.get("file_path") or "").strip()
     if file_path_raw:
-        candidate_paths: list[str] = []
-        for candidate in (file_path_raw, _normalize_local_file_path(file_path_raw)):
-            normalized = str(candidate or "").strip()
-            if normalized and normalized not in candidate_paths:
-                candidate_paths.append(normalized)
-
-        for candidate in candidate_paths:
-            if os.path.exists(candidate):
-                file_name = str(payload.get("file_name") or os.path.basename(candidate) or f"act_{doc_no}.bin")
-                return FileResponse(path=candidate, filename=file_name)
+        candidate = _resolve_act_file_path(file_path_raw)
+        if candidate and os.path.exists(candidate):
+            file_name = str(payload.get("file_name") or os.path.basename(candidate) or f"act_{doc_no}.bin")
+            return FileResponse(
+                path=candidate,
+                filename=file_name,
+                media_type=_act_media_type(mimetypes.guess_type(file_name)[0]),
+                headers={"X-Content-Type-Options": "nosniff"},
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Файл не найден по пути: {file_path_raw}",
@@ -3588,10 +3681,11 @@ async def download_equipment_act_file(
     encoded_name = urllib.parse.quote(file_name, safe="")
     headers = {
         "Content-Disposition": f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}",
+        "X-Content-Type-Options": "nosniff",
         "X-Act-Source": str(payload.get("source_table") or ""),
         "X-Act-Storage": str(payload.get("storage") or ""),
     }
-    return StreamingResponse(iter([file_bytes]), media_type=content_type, headers=headers)
+    return StreamingResponse(iter([file_bytes]), media_type=_act_media_type(content_type), headers=headers)
 
 
 @router.get("/acts/{doc_no}/inspect")
@@ -3673,13 +3767,19 @@ async def get_equipment_history(
 @router.get("/transfer/act/{act_id}")
 async def download_transfer_act(
     act_id: str,
-    _: Optional[User] = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Download generated transfer act file by act_id.
     """
     record = get_act_record(act_id) or recover_act_record_from_disk(act_id)
     if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Act not found",
+        )
+
+    if not _is_owner_or_admin(current_user, record.get("created_by_user_id")):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Act not found",
@@ -4227,17 +4327,18 @@ async def get_equipment_photo_upload(
 async def put_equipment_photo_upload_chunk(
     upload_id: str,
     chunk_index: int,
-    payload: bytes = Body(default=b"", media_type="application/octet-stream"),
+    request: Request,
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Store one chunk; re-sending a chunk is safe."""
+    payload = await read_body_limited(request, equipment_photo_upload_service.CHUNK_SIZE_BYTES)
     try:
         return await run_in_threadpool(
             equipment_photo_upload_service.put_chunk,
             upload_id,
             int(current_user.id),
             int(chunk_index),
-            bytes(payload or b""),
+            payload,
         )
     except Exception as exc:
         _raise_photo_upload_error(exc)

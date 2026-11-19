@@ -1,9 +1,9 @@
 import { useNativeFormDraft } from '../../drafts/useNativeFormDraft';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   createDocflowAssignment,
   getDocflowAssignmentCapability,
@@ -18,8 +18,10 @@ import { useAuth } from '../../auth/AuthContext';
 import { HubTextField } from '../../components/ui/HubTextField';
 import { resolveNativeDocflowError } from '../../docflow/docflowError';
 import {
+  DOCFLOW_COMMAND_AUTO_CHECK_LIMIT,
   buildDocflowAssignmentDueAt,
   defaultDocflowAssignmentDueFields,
+  isForegroundAppState,
 } from '../../docflow/nativeDocflowModel';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
@@ -263,9 +265,25 @@ export function NativeDocflowAssignmentScreen() {
     setCommand(result);
   }, [draft, localState]);
 
-  const checkCommand = useCallback(async () => {
+  const autoChecksLeft = useRef(DOCFLOW_COMMAND_AUTO_CHECK_LIMIT);
+  const [autoCheckStopped, setAutoCheckStopped] = useState(false);
+  useEffect(() => {
+    autoChecksLeft.current = DOCFLOW_COMMAND_AUTO_CHECK_LIMIT;
+    setAutoCheckStopped(false);
+  }, [command?.command_id]);
+
+  const checkCommand = useCallback(async (options?: { manual?: boolean }) => {
     const commandId = command?.command_id.trim();
     if (!commandId || commandCheckRef.current || offlineMode) return;
+    if (!options?.manual) {
+      // Automatic checks are bounded like the web polling loop; the explicit
+      // «Проверить» button below stays available after the budget is spent.
+      if (autoChecksLeft.current <= 0) {
+        setAutoCheckStopped(true);
+        return;
+      }
+      autoChecksLeft.current -= 1;
+    }
     commandCheckRef.current = true;
     setWorking(true);
     setError('');
@@ -281,12 +299,23 @@ export function NativeDocflowAssignmentScreen() {
     }
   }, [command?.command_id, handleCommand, offlineMode]);
 
-  useEffect(() => {
-    if (!commandIsWaiting(command) || offlineMode) return undefined;
-    const first = setTimeout(() => { void checkCommand(); }, 750);
-    const interval = setInterval(() => { void checkCommand(); }, 3_000);
+  // Focus-scoped and foreground-only: stacked-over screens and a backgrounded
+  // app must not keep calling 1С every 3 s — the same gate as chat polling.
+  // checkCommand changes identity after every poll (it updates `command`);
+  // without a ref each response would recreate the effect and re-fire the
+  // first-check timer, polling every ~0.75 s instead of every 3 s.
+  const checkCommandRef = useRef(checkCommand);
+  checkCommandRef.current = checkCommand;
+  const commandWaiting = commandIsWaiting(command);
+  useFocusEffect(useCallback(() => {
+    if (!commandWaiting || offlineMode || autoCheckStopped) return undefined;
+    const runCheck = () => {
+      if (isForegroundAppState(AppState.currentState)) void checkCommandRef.current();
+    };
+    const first = setTimeout(runCheck, 750);
+    const interval = setInterval(runCheck, 3_000);
     return () => { clearTimeout(first); clearInterval(interval); };
-  }, [checkCommand, command, offlineMode]);
+  }, [autoCheckStopped, commandWaiting, offlineMode]));
 
   const submit = useCallback(async () => {
     if (working || command || created || offlineMode || !capability?.enabled || !draft.restored) return;
@@ -393,7 +422,7 @@ export function NativeDocflowAssignmentScreen() {
             <HubTextField testID="native-docflow-assignment-description" label="Описание *" value={description} onChangeText={(value) => setDescription(value.slice(0, 2_000))} multiline numberOfLines={4} maxLength={2_000} />
           </AccountSectionCard>
 
-          {commandIsWaiting(command) ? <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" style={[styles.command, { backgroundColor: tokens.accentSoft, borderColor: tokens.primary }]}><ActivityIndicator color={tokens.primary} /><View style={styles.flex}><Text style={[styles.optionTitle, { color: tokens.textPrimary }]}>Проверяем создание в 1С</Text><Text style={[styles.hint, { color: tokens.textSecondary }]}>Повторная отправка отключена до окончательного статуса.</Text>{command?.correlation_id ? <Text selectable style={[styles.meta, { color: tokens.textSecondary }]}>Код обращения: {command.correlation_id}</Text> : null}</View><AccountSecondaryButton tokens={tokens} label="Проверить" onPress={() => { void checkCommand(); }} disabled={working} /></View> : null}
+          {commandIsWaiting(command) ? <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" style={[styles.command, { backgroundColor: tokens.accentSoft, borderColor: tokens.primary }]}><ActivityIndicator color={tokens.primary} /><View style={styles.flex}><Text style={[styles.optionTitle, { color: tokens.textPrimary }]}>Проверяем создание в 1С</Text><Text style={[styles.hint, { color: tokens.textSecondary }]}>{autoCheckStopped ? 'Автопроверка остановлена — нажмите «Проверить».' : 'Повторная отправка отключена до окончательного статуса.'}</Text>{command?.correlation_id ? <Text selectable style={[styles.meta, { color: tokens.textSecondary }]}>Код обращения: {command.correlation_id}</Text> : null}</View><AccountSecondaryButton tokens={tokens} label="Проверить" onPress={() => { void checkCommand({ manual: true }); }} disabled={working} /></View> : null}
           {draft.status ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{draft.status}</Text> : null}
       {error ? <Text accessibilityRole="alert" style={[styles.statusText, { color: tokens.error }]}>{error}</Text> : null}
           {correlationId ? <Text selectable style={[styles.meta, { color: tokens.textSecondary }]}>Код обращения: {correlationId}</Text> : null}

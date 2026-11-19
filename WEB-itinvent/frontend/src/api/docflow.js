@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const DOCFLOW_1C_QUERY_TIMEOUT_MS = 95_000;
 

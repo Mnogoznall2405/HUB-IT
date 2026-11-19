@@ -23,16 +23,14 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import {
-  ArrowBackRounded as ArrowBackRoundedIcon,
-  ExpandLess as ExpandLessIcon,
-  ExpandMore as ExpandMoreIcon,
-  Refresh as RefreshIcon,
-  Lan as LanIcon,
-  MailOutline as MailOutlineIcon,
-  Storage as StorageIcon,
-  WarningAmber as WarningAmberIcon,
-} from '@mui/icons-material';
+import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import LanIcon from '@mui/icons-material/Lan';
+import MailOutlineIcon from '@mui/icons-material/MailOutline';
+import StorageIcon from '@mui/icons-material/Storage';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';

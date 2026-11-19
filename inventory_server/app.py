@@ -88,6 +88,7 @@ def _extract_telegram_egress(
                 chat_name=str(chat.get("chat_name") or ""),
                 windows_user=windows_user,
                 computer_name=computer_name,
+                chat_id=str(chat.get("chat_id") or ""),
             )
         )
     return events
@@ -116,14 +117,90 @@ def _key_fingerprint(value: Optional[str]) -> str:
     return inventory_runtime._api_key_fingerprint(value)
 
 
-def _check_agent_key(x_api_key: Optional[str]) -> None:
+def _agent_name_for_key(x_api_key: Optional[str]) -> str:
+    """The computer a per-agent key is bound to; ``""`` for ring/invalid keys."""
     token = str(x_api_key or "").strip()
-    if not token or token not in set(config.api_keys):
+    if not token:
+        return ""
+    for name, bound_key in config.agent_api_keys.items():
+        if bound_key == token:
+            return name
+    # DB store (app.agent_api_keys): auto-enrolled bindings beyond the env map.
+    try:
+        from backend.appdb import agent_api_keys
+        from backend.appdb.db import get_app_engine, is_app_database_configured
+
+        if is_app_database_configured():
+            return agent_api_keys.lookup_name_by_key(get_app_engine(), token)
+    except Exception:
+        pass
+    return ""
+
+
+def _check_agent_key(x_api_key: Optional[str]) -> None:
+    """Reject an unknown key: a shared-ring key or a bound per-agent key."""
+    token = str(x_api_key or "").strip()
+    if not token or (token not in set(config.api_keys) and not _agent_name_for_key(token)):
         logger.warning("Inventory ingest rejected unknown key fingerprint=%s", _key_fingerprint(token))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
         )
+
+
+def _check_agent_identity(x_api_key: Optional[str], agent_id: Optional[str]) -> None:
+    """A key bound via ``INVENTORY_AGENT_API_KEYS`` may only act for its own computer."""
+    bound = _agent_name_for_key(x_api_key)
+    if bound and not inventory_runtime._bound_identity_matches(bound, agent_id):
+        logger.warning(
+            "Inventory ingest rejected key bound to computer=%s used for computer_name=%s",
+            bound,
+            str(agent_id or "").strip(),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )
+
+
+def _scope_computer_name(x_api_key: Optional[str], computer_name: str) -> str:
+    """A bound key may only read its own computer's data; empty scope resolves to it."""
+    bound = _agent_name_for_key(x_api_key)
+    if not bound:
+        return computer_name
+    requested = str(computer_name or "").strip()
+    if requested and not inventory_runtime._bound_identity_matches(bound, requested):
+        raise HTTPException(status_code=403, detail="API key is bound to another computer")
+    return requested or bound
+
+
+def _check_agent_inventory_binding(x_api_key: Optional[str], mac_address: Optional[str]) -> None:
+    """A bound key must not overwrite a host card owned by another computer.
+
+    Identity is bound on ``hostname`` while inventory cards are keyed by
+    ``mac_address``: hostname checks alone let a stolen key rewrite a foreign
+    card. The target card's recorded owner hostname must match the bound
+    identity (unregistered cards pass — a machine changing NIC/MAC is allowed).
+    """
+    bound = _agent_name_for_key(x_api_key)
+    if not bound:
+        return
+    mac = str(mac_address or "").strip()
+    if not mac:
+        return
+    try:
+        host = inventory_runtime._get_inventory_host(mac)
+    except Exception:
+        host = None
+    owner = str((host or {}).get("hostname") or "").strip()
+    if owner and not inventory_runtime._bound_identity_matches(bound, owner):
+        logger.warning(
+            "Inventory ingest rejected key bound to computer=%s writing mac=%s owned by %s",
+            bound,
+            mac,
+            owner,
+        )
+        raise HTTPException(status_code=403, detail="API key is bound to another computer")
 
 
 @asynccontextmanager
@@ -186,6 +263,8 @@ def receive_inventory(
     x_api_key: Optional[str] = Header(None),
 ) -> dict:
     _check_agent_key(x_api_key)
+    _check_agent_identity(x_api_key, payload.hostname)
+    _check_agent_inventory_binding(x_api_key, payload.mac_address)
     ensure_worker_alive()
     payload_dict = inventory_runtime._model_dump(payload)
     dedupe_key = inventory_runtime.build_inventory_dedupe_key(payload_dict)
@@ -212,6 +291,13 @@ async def receive_fs_egress(request: Request, x_api_key: Optional[str] = Header(
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         raise HTTPException(status_code=400, detail="events list required")
+    bound = _agent_name_for_key(x_api_key)
+    if bound:
+        names = {str(e.get("computer_name") or "").strip() for e in events if isinstance(e, dict)}
+        if not names or not all(
+            inventory_runtime._bound_identity_matches(bound, name) for name in names
+        ):
+            raise HTTPException(status_code=403, detail="API key is bound to another computer")
     inserted = await asyncio.to_thread(_ingest_fs_egress_events, events)
     return {"success": True, "inserted": inserted}
 
@@ -225,6 +311,7 @@ def list_fs_egress(
     x_api_key: Optional[str] = Header(None),
 ) -> dict:
     _check_agent_key(x_api_key)
+    computer_name = _scope_computer_name(x_api_key, computer_name)
     items = _get_egress_store().list_file_left(
         computer_name=computer_name,
         channel=channel,
@@ -299,6 +386,7 @@ async def receive_telegram_probe(request: Request, x_api_key: Optional[str] = He
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
+    _check_agent_identity(x_api_key, payload.get("computer_name"))
     return await asyncio.to_thread(_process_telegram_probe_payload, payload)
 
 
@@ -309,6 +397,7 @@ def list_telegram_probe(
     x_api_key: Optional[str] = Header(None),
 ) -> dict:
     _check_agent_key(x_api_key)
+    computer_name = _scope_computer_name(x_api_key, computer_name)
     return {
         "success": True,
         "chats": _get_egress_store().list_telegram_chats(computer_name=computer_name, limit=limit),
@@ -318,6 +407,7 @@ def list_telegram_probe(
 @app.get("/api/v1/inventory/telegram-probe/report")
 def telegram_probe_report(computer_name: str, x_api_key: Optional[str] = Header(None)):
     _check_agent_key(x_api_key)
+    computer_name = _scope_computer_name(x_api_key, computer_name)
     row = _get_egress_store().get_report(computer_name)
     if not row:
         raise HTTPException(status_code=404, detail="report not found")
@@ -381,6 +471,7 @@ async def receive_browser_probe(request: Request, x_api_key: Optional[str] = Hea
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
+    _check_agent_identity(x_api_key, payload.get("computer_name"))
     return await asyncio.to_thread(_process_browser_probe_payload, payload)
 
 
@@ -393,6 +484,7 @@ def list_browser_probe(
     x_api_key: Optional[str] = Header(None),
 ) -> dict:
     _check_agent_key(x_api_key)
+    computer_name = _scope_computer_name(x_api_key, computer_name)
     items = _get_egress_store().list_browser_visits(
         computer_name=computer_name,
         category=category,
@@ -455,6 +547,7 @@ async def receive_max_probe(request: Request, x_api_key: Optional[str] = Header(
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
+    _check_agent_identity(x_api_key, payload.get("computer_name"))
     return await asyncio.to_thread(_process_max_probe_payload, payload)
 
 
@@ -465,6 +558,7 @@ def list_max_probe(
     x_api_key: Optional[str] = Header(None),
 ) -> dict:
     _check_agent_key(x_api_key)
+    computer_name = _scope_computer_name(x_api_key, computer_name)
     return {
         "success": True,
         "chats": _get_egress_store().list_max_chats(computer_name=computer_name, limit=limit),
@@ -474,6 +568,7 @@ def list_max_probe(
 @app.get("/api/v1/inventory/max-probe/media/{computer_name}/{file_name}")
 def max_probe_media(computer_name: str, file_name: str, x_api_key: Optional[str] = Header(None)):
     _check_agent_key(x_api_key)
+    computer_name = _scope_computer_name(x_api_key, computer_name)
     safe_name = str(file_name or "").replace("\\", "/").split("/")[-1].strip()
     if not computer_name.strip() or not safe_name or ".." in safe_name:
         raise HTTPException(status_code=400, detail="invalid media path")

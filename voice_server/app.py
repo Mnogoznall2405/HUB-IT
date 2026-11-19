@@ -110,6 +110,24 @@ def _require_manage_or_owner(user: Dict[str, Any], job: Dict[str, Any]) -> None:
     )
 
 
+def _meeting_owned_by(user: Dict[str, Any], base: str) -> bool:
+    actor = web_actor(user)
+    if not actor:
+        return False
+    return any(
+        str(job.get("created_by") or "") == actor
+        for job in store.list_jobs_for_base(base)
+    )
+
+
+def _require_manage_or_meeting_owner(user: Dict[str, Any], base: str) -> None:
+    if user_has_permission(user, PERM_MANAGE) or _meeting_owned_by(user, base):
+        return
+    raise HTTPException(
+        status.HTTP_403_FORBIDDEN, f"Insufficient permissions: {PERM_MANAGE}"
+    )
+
+
 def _job_view(job: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": job.get("id"),
@@ -641,6 +659,7 @@ def create_share_link(
     user: Dict[str, Any] = Depends(require_web_permission(PERM_READ)),
 ) -> Dict[str, Any]:
     safe_base = _meeting_or_404(base)
+    _require_manage_or_meeting_owner(user, safe_base)
     return store.create_share_link(
         safe_base, ttl_hours=payload.ttl_hours, created_by=web_actor(user)
     )

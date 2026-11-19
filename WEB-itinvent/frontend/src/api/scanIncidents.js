@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const scanIncidentsAPI = {
   getIncidents: async (params = {}, options = {}) => {

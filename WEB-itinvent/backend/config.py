@@ -76,6 +76,8 @@ class DatabaseConfig:
     username: str
     password: str
     driver: str = "SQL Server"
+    encrypt: str = "yes"
+    trust_server_certificate: bool = False
 
     @property
     def connection_string(self) -> str:
@@ -86,7 +88,8 @@ class DatabaseConfig:
             f"DATABASE={self.database};"
             f"UID={self.username};"
             f"PWD={self.password};"
-            "TrustServerCertificate=yes;"
+            f"Encrypt={self.encrypt};"
+            f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
             "autocommit=True;"
         )
 
@@ -390,6 +393,8 @@ class Config:
                 username=os.getenv("SQL_SERVER_USERNAME", "ROUser"),
                 password=os.getenv("SQL_SERVER_PASSWORD", ""),
                 driver=os.getenv("SQL_SERVER_DRIVER", "SQL Server"),
+                encrypt=str(os.getenv("SQL_SERVER_ENCRYPT", "yes") or "yes").strip() or "yes",
+                trust_server_certificate=_bool_env("SQL_SERVER_TRUST_SERVER_CERTIFICATE", False),
             ),
             jwt=JWTConfig(
                 secret_key=jwt_secret_key,
@@ -574,10 +579,27 @@ class Config:
         loaded.validate()
         return loaded
 
+    def validate_sql_server_tls(
+        self, *, encrypt: str, trust_server_certificate: bool, encrypt_var: str, trust_var: str
+    ) -> None:
+        if not self.app.is_production:
+            return
+        if str(encrypt or "").strip().lower() not in {"yes", "mandatory", "strict"}:
+            raise ConfigurationError(
+                f"Production APP_ENV requires {encrypt_var} to enable SQL Server encryption"
+            )
+        if trust_server_certificate and not _bool_env("SQL_SERVER_ALLOW_INSECURE_SQL_TLS", False):
+            raise ConfigurationError(
+                f"Production APP_ENV requires {trust_var}=false; "
+                "issue a CA-signed server certificate or set SQL_SERVER_ALLOW_INSECURE_SQL_TLS=1 temporarily"
+            )
+
     def validate(self) -> None:
         """Validate hard security invariants for production runtime."""
         if not self.app.is_production:
             return
+        if self.app.debug:
+            raise ConfigurationError("Production APP_ENV requires DEBUG=false")
         jwt_keys = [self.jwt.secret_key, *self.jwt.previous_secret_keys]
         if any(_is_placeholder_jwt_secret(item) for item in jwt_keys):
             raise ConfigurationError(
@@ -585,6 +607,12 @@ class Config:
             )
         if not bool(self.app.auth_cookie_secure):
             raise ConfigurationError("Production APP_ENV requires AUTH_COOKIE_SECURE=true")
+        self.validate_sql_server_tls(
+            encrypt=self.database.encrypt,
+            trust_server_certificate=self.database.trust_server_certificate,
+            encrypt_var="SQL_SERVER_ENCRYPT",
+            trust_var="SQL_SERVER_TRUST_SERVER_CERTIFICATE",
+        )
 
 
 # Global config instance

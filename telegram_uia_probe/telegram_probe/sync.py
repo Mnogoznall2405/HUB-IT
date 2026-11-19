@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 import requests
 
+from .chat_state import canonical_chat_name, message_key
 from .profile import TELEGRAM, MessengerProfile
 from .report import regenerate_from_output
 
@@ -26,6 +27,11 @@ OUTGOING_MEDIA_RE = re.compile(
     r"^(Файл|File|Документ|Document|Фотография|Photo|Видео|Video|GIF|Sticker|Стикер|"
     r"\[photo\]|\[video\]|\[audio\]|\[file\]|photo|video|audio|file)\b",
     re.IGNORECASE,
+)
+# Placeholder names used when the bubble exposes only a media kind; replaced by
+# the real basename whenever the source path was recovered from disk.
+_GENERIC_MEDIA_NAMES = frozenset(
+    {"photo.jpg", "photo", "video", "audio", "gif", "file", "document", "attachment"}
 )
 
 
@@ -45,6 +51,16 @@ def _is_confirmed_media_match(media_match: str) -> bool:
     )
 
 
+def _egress_event_id(channel: str, computer_name: str, *parts: Any) -> str:
+    """Deterministic event id: one attachment = one id across watcher drop,
+    sync delta and server re-extract, so ingest dedupe collapses them."""
+    identity = "|".join(
+        [str(channel or ""), str(computer_name or "")] + [str(p or "") for p in parts]
+    )
+    digest = hashlib.sha1(identity.encode("utf-8", errors="replace")).hexdigest()[:24]
+    return f"{channel}-{digest}"
+
+
 def extract_outgoing_file_left(
     messages: Iterable[dict],
     *,
@@ -52,6 +68,7 @@ def extract_outgoing_file_left(
     windows_user: str,
     computer_name: str,
     channel: str = "telegram",
+    chat_id: str = "",
 ) -> List[Dict[str, Any]]:
     """Outgoing messenger files/photos/videos → file_left for DLP Files tab.
 
@@ -59,6 +76,7 @@ def extract_outgoing_file_left(
     Never invent sends from Telegram media_cache heuristics / hash filenames.
     """
     channel_key = str(channel or "telegram").strip().lower() or "telegram"
+    chat_ref = str(chat_id or "").strip() or canonical_chat_name(chat_name)
     events: List[Dict[str, Any]] = []
     for msg in messages:
         if not isinstance(msg, dict):
@@ -81,7 +99,9 @@ def extract_outgoing_file_left(
         ):
             continue
 
-        file_match = FILE_MEDIA_RE.match(blob)
+        # MAX puts the kind in `media` and the label in `text` ("Файл: x.docx"):
+        # try the text label first, then the combined blob.
+        file_match = FILE_MEDIA_RE.match(text) or FILE_MEDIA_RE.match(blob)
         if file_match:
             file_name = (file_match.group("name") or "").strip() or blob[:180]
         elif media_l == "photo":
@@ -91,6 +111,10 @@ def extract_outgoing_file_left(
         else:
             file_name = (media or blob)[:180]
 
+        msg_key = str(
+            msg.get("key") or msg.get("message_key") or msg.get("msg_key") or ""
+        ).strip() or message_key(msg)
+
         media_match = str(msg.get("media_match") or "")
         media_path = str(msg.get("media_path") or "").replace("\\", "/").strip()
         # Prefer real disk path recovered from process open handles / Recent.
@@ -98,10 +122,16 @@ def extract_outgoing_file_left(
         # Fallback: visually confirmed media cache / screen crop path.
         media_src = media_path if _is_confirmed_media_match(media_match) else ""
         src_path = disk_src or media_src
+        if src_path and file_name.lower() in _GENERIC_MEDIA_NAMES:
+            real_name = src_path.replace("/", "\\").rsplit("\\", 1)[-1].strip()
+            if real_name and "." in real_name:
+                file_name = real_name
         size = msg.get("file_size")
         events.append(
             {
-                "event_id": uuid.uuid4().hex,
+                "event_id": _egress_event_id(
+                    channel_key, computer_name, chat_ref, msg_key, file_name
+                ),
                 "ts": int(time.time()),
                 "channel": channel_key,
                 "file_name": file_name,
@@ -113,7 +143,9 @@ def extract_outgoing_file_left(
                 "computer_name": computer_name,
                 "details": {
                     "chat_name": chat_name,
-                    "message_key": msg.get("key") or msg.get("message_key") or msg.get("msg_key"),
+                    "chat_id": str(chat_id or ""),
+                    "message_key": msg_key,
+                    "send_state": "sent",
                     "text": (msg.get("text") or "")[:300],
                     "media": (media or blob)[:300],
                     "media_path": media_src,
@@ -154,9 +186,18 @@ def build_disk_file_left(
         size = int(p.stat().st_size)
     except OSError:
         size = None
+    ts = int(time.time())
     return {
-        "event_id": uuid.uuid4().hex,
-        "ts": int(time.time()),
+        # 5-minute bucket: repeated opens dedupe; a later re-open is a new event.
+        "event_id": _egress_event_id(
+            channel_key,
+            computer_name,
+            canonical_chat_name(chat),
+            str(p),
+            access_source,
+            ts // 300,
+        ),
+        "ts": ts,
         "channel": channel_key,
         "file_name": name,
         "dest_path": f"{channel_key}:{chat}",
@@ -167,6 +208,7 @@ def build_disk_file_left(
         "computer_name": computer_name,
         "details": {
             "chat_name": chat,
+            "send_state": "selected",
             "source_path": str(p),
             "access_source": access_source,
             "source": "disk_open",
@@ -275,11 +317,22 @@ class TelegramProbeSync:
         )
         stats["report"] = bool(report_path and Path(report_path).exists())
 
+        # Cursor is committed only after an acknowledged upload; a failed POST
+        # keeps offsets so the same chat delta is retried, not lost.
+        prev_offsets = dict(self._cursor.get("chat_offsets") or {})
+        prev_shot_sets = list(self._cursor.get("uploaded_screenshot_sets") or [])
         chat_payloads, egress_events = self._collect_chat_deltas()
         chat_payloads = self._merge_screenshot_payloads(chat_payloads)
         stats["egress"] = self._drop_egress(egress_events)
         stats["chats"] = len(chat_payloads)
-        stats["media"] = self._upload_bundle(chat_payloads, report_path=Path(report_path) if report_path else None)
+        uploaded = self._upload_bundle(
+            chat_payloads, report_path=Path(report_path) if report_path else None
+        )
+        if uploaded is None:
+            self._cursor["chat_offsets"] = prev_offsets
+            self._cursor["uploaded_screenshot_sets"] = prev_shot_sets
+        else:
+            stats["media"] = uploaded
         self._save_cursor()
         logger.info(
             "%s sync report=%s chats=%s media=%s egress=%s",
@@ -362,6 +415,7 @@ class TelegramProbeSync:
                     windows_user=windows_user,
                     computer_name=computer_name,
                     channel=self.profile.channel,
+                    chat_id=chat_id,
                 )
             )
             payloads.append(
@@ -443,12 +497,13 @@ class TelegramProbeSync:
         chat_payloads: List[Dict[str, Any]],
         *,
         report_path: Optional[Path],
-    ) -> int:
+    ) -> int | None:
+        """Return uploaded media count, or None when the POST is not acknowledged."""
         import base64
 
         url = self._upload_url()
         if not url or not self.api_key:
-            return 0
+            return None
         batch_media: List[Path] = []
         total = 0
         for folder_name in ("media", "screenshots"):
@@ -536,10 +591,10 @@ class TelegramProbeSync:
                     response.status_code,
                     response.text[:200],
                 )
-                return 0
+                return None
             for path in batch_media:
                 self._uploaded_media.add(path.name)
             return len(batch_media)
         except Exception as exc:
             logger.warning("%s upload failed: %s", self.profile.probe_path, exc)
-            return 0
+            return None

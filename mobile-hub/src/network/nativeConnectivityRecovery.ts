@@ -84,7 +84,10 @@ export function createNativeConnectivityRecoveryController({
       if (disposed) return;
       if (path) requestedPath = path;
       offlineObserved = true;
-      online = true;
+      // Do not fake connectivity: when the OS last reported the device offline,
+      // the request is deferred until reportConnectivity(true) fires instead of
+      // burning recovery retries on a physically dead link.
+      if (online !== true) return;
       runRecovery();
     },
     dispose() {

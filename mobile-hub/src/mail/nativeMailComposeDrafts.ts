@@ -50,14 +50,33 @@ function validState(value: unknown): value is MailComposeLocalDraft {
     && state.files.every((file) => file && typeof file.uri === 'string' && typeof file.name === 'string');
 }
 async function readAll(): Promise<Entry[]> {
-  const raw = await SecureStore.getItemAsync(KEY);
+  // A SecureStore failure (invalidated keystore, transient error) must not
+  // block every composer — treat the store as empty; writes can retry later.
+  let raw: string | null;
+  try { raw = await SecureStore.getItemAsync(KEY); }
+  catch { return []; }
   let entries: unknown;
   try { entries = raw ? JSON.parse(raw) : []; }
-  catch { throw new Error('Не удалось прочитать локальные черновики писем.'); }
-  if (!Array.isArray(entries) || entries.some((entry) => !entry || typeof entry.key !== 'string' || !validState(entry.state) || (entry.sendAttempt && (typeof entry.sendAttempt.key !== 'string' || typeof entry.sendAttempt.fingerprint !== 'string' || !['pending', 'sent'].includes(entry.sendAttempt.status))))) {
-    throw new Error('Не удалось прочитать локальные черновики писем.');
+  catch {
+    // One corrupted blob must not block every composer — drop it.
+    return [];
   }
-  return entries;
+  if (!Array.isArray(entries)) return [];
+  // Skip corrupted records independently and persist the cleaned list so a
+  // bad entry cannot keep poisoning every subsequent open.
+  const valid = entries.filter((entry): entry is Entry => (
+    Boolean(entry) && typeof entry === 'object'
+    && typeof (entry as Entry).key === 'string'
+    && validState((entry as Entry).state)
+    && (!(entry as Entry).sendAttempt
+      || (typeof (entry as Entry).sendAttempt!.key === 'string'
+        && typeof (entry as Entry).sendAttempt!.fingerprint === 'string'
+        && ['pending', 'sent'].includes((entry as Entry).sendAttempt!.status)))
+  ));
+  if (valid.length !== entries.length) {
+    try { await SecureStore.setItemAsync(KEY, JSON.stringify(valid)); } catch { /* best effort */ }
+  }
+  return valid;
 }
 
 export function listLocalMailComposeDrafts(userId: number): Promise<Array<MailComposeDraftScope & { subject: string }>> {
@@ -75,11 +94,35 @@ export function listLocalMailComposeDrafts(userId: number): Promise<Array<MailCo
     });
   });
 }
-function copyFiles(userId: number, files: MailUploadFile[]): MailUploadFile[] {
+// A copied attachment under <root>/<userId> not referenced by any stored
+// draft is orphaned (discarded draft, failed SecureStore write after
+// copyFiles). Mutations are serialized by `enqueue`, so a copy is always
+// either already referenced by the committed entries or was never committed
+// at all — unreferenced files are removed on every successful mutation.
+function pruneComposeCopies(entries: Entry[], userId: number): void {
+  const directory = new Directory(root(), String(userId));
+  if (!directory.exists) return;
+  const prefix = `${directory.uri.replace(/\/$/, '')}/`;
+  const referenced = new Set<string>();
+  for (const entry of entries) {
+    let parts: unknown;
+    try { parts = JSON.parse(entry.key); } catch { continue; }
+    if (!Array.isArray(parts) || parts[0] !== userId) continue;
+    for (const file of entry.state.files) {
+      const uri = String(file?.uri || '');
+      if (uri.startsWith(prefix)) referenced.add(uri);
+    }
+  }
+  for (const entry of directory.list()) {
+    if (!(entry instanceof File) || referenced.has(entry.uri)) continue;
+    try { entry.delete(); } catch { /* best effort cleanup */ }
+  }
+}
+async function copyFiles(userId: number, files: MailUploadFile[]): Promise<MailUploadFile[]> {
   const directory = new Directory(root(), String(userId));
   directory.create({ intermediates: true, idempotent: true });
   const prefix = `${directory.uri.replace(/\/$/, '')}/`;
-  return files.map((file) => {
+  return Promise.all(files.map(async (file) => {
     const source = new File(file.uri);
     if (!source.exists) throw new Error('Вложение недоступно. Локальный черновик не обновлён.');
     if (file.uri.startsWith(prefix)) {
@@ -95,11 +138,12 @@ function copyFiles(userId: number, files: MailUploadFile[]): MailUploadFile[] {
       if (cached.exists && cached.size === source.size) return { ...file, uri: previous, size: cached.size };
     }
     const target = new File(directory, randomUUID());
-    source.copy(target);
+    // File.copy() is async: check the size only after it settles.
+    await source.copy(target);
     if (!target.exists || target.size !== source.size) throw new Error('Не удалось сохранить копию вложения.');
     copies.set(key, target.uri);
     return { ...file, uri: target.uri, size: target.size };
-  });
+  }));
 }
 export function createMailComposeDraftSession(scope: MailComposeDraftScope) {
   if (!Number.isInteger(scope.userId) || scope.userId <= 0 || !scope.mailboxId || !scope.mode) {
@@ -130,7 +174,7 @@ export function createMailComposeDraftSession(scope: MailComposeDraftScope) {
       const entry: Entry = { key, state: snapshot, revision, sendAttempt };
       next.push(entry);
       if (JSON.stringify(next).length > MAX_CHARACTERS) throw new Error('Недостаточно места для локальных черновиков.');
-      snapshot.files = copyFiles(scope.userId, snapshot.files);
+      snapshot.files = await copyFiles(scope.userId, snapshot.files);
       if (createSendKey) {
         const fingerprint = sendFingerprint(snapshot);
         if (sendAttempt && !matchesSendState(sendAttempt, snapshot)) throw new Error('Предыдущая отправка не подтверждена. Проверьте «Отправленные» перед отправкой изменённого письма.');
@@ -141,6 +185,7 @@ export function createMailComposeDraftSession(scope: MailComposeDraftScope) {
       const raw = JSON.stringify(next);
       if (raw.length > MAX_CHARACTERS) throw new Error('Недостаточно места для локальных черновиков.');
       check(); await SecureStore.setItemAsync(KEY, raw);
+      try { pruneComposeCopies(next, scope.userId); } catch { /* cleanup must not fail a draft write */ }
       observed = true; observedRevision = revision;
       return { state: snapshot, sendAttempt, retry: previous?.sendAttempt?.status === 'pending' };
     });
@@ -157,6 +202,7 @@ export function createMailComposeDraftSession(scope: MailComposeDraftScope) {
         const entries = current.filter((entry) => entry.key !== key);
         if (entries.length) await SecureStore.setItemAsync(KEY, JSON.stringify(entries));
         else await SecureStore.deleteItemAsync(KEY);
+        try { pruneComposeCopies(entries, scope.userId); } catch { /* best effort */ }
       }).catch((error: unknown) => {
         if (!terminal && lease === generation && attempt === clearAttempt) closed = false;
         throw error;
@@ -171,6 +217,16 @@ export function createMailComposeDraftSession(scope: MailComposeDraftScope) {
     write: (state: MailComposeLocalDraft) => persist(state).then((result) => result.state),
     prepareSend: (state: MailComposeLocalDraft, createSendKey: () => string) => persist(state, createSendKey),
     hasPendingSend: () => enqueue(async () => { check(); const entries = await readAll(); check(); return entries.some((entry) => entry.key === key && entry.sendAttempt?.status === 'pending'); }),
+    // Явное решение пользователя «отправить изменённое как новое письмо»:
+    // снимает pending-метку; без неё экран навсегда блокировал сохранение/отправку.
+    resolvePending: () => enqueue(async () => {
+      check(); const entries = await readAll(); check();
+      const entry = entries.find((item) => item.key === key);
+      if (!entry?.sendAttempt || entry.sendAttempt.status !== 'pending') return;
+      delete entry.sendAttempt;
+      await SecureStore.setItemAsync(KEY, JSON.stringify(entries));
+      try { pruneComposeCopies(entries, scope.userId); } catch { /* best effort */ }
+    }),
     completeSend: (sendKey: string) => {
       closed = true; terminal = true;
       return enqueue(async () => {
@@ -182,6 +238,7 @@ export function createMailComposeDraftSession(scope: MailComposeDraftScope) {
         else delete entry.sendAttempt;
         if (lease !== generation) return;
         await SecureStore.setItemAsync(KEY, JSON.stringify(entries));
+        try { pruneComposeCopies(entries, scope.userId); } catch { /* best effort */ }
       });
     },
   };

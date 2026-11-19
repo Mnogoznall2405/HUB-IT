@@ -68,7 +68,7 @@ module.exports = {
         SCAN_INCIDENT_RETENTION_DAYS: '90',
         // Mirror worker capacity/tuning so /health reports the deployed worker profile.
         SCAN_JOB_MAX_WORKERS: '12',
-        SCAN_OCR_MAX_PROCESSES: '12',
+        SCAN_OCR_MAX_PROCESSES: '6',
         SCAN_OCR_DPI: '250',
         SCAN_OCR_LANG: 'rus',
         SCAN_OCR_FOCUSED_DPI: '250',
@@ -97,7 +97,7 @@ module.exports = {
         SCAN_WORKER_LOCK_WAIT_SEC: '30',
         SCAN_WORKER_INTERVAL_SEC: '3',
         SCAN_JOB_MAX_WORKERS: '12',
-        SCAN_OCR_MAX_PROCESSES: '12',
+        SCAN_OCR_MAX_PROCESSES: '6',
         SCAN_WORKER_MEMORY_LIMIT_MB: '6144',
         SCAN_OCR_DPI: '250',
         SCAN_OCR_LANG: 'rus',

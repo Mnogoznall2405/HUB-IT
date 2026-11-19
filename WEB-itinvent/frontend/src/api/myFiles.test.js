@@ -7,7 +7,7 @@ const { mockDelete, mockGet, mockPost, mockPut } = vi.hoisted(() => ({
   mockPut: vi.fn(),
 }));
 
-vi.mock('./client', () => ({
+vi.mock('./http', () => ({
   default: {
     get: mockGet,
     post: mockPost,
@@ -67,6 +67,7 @@ describe('myFilesAPI', () => {
         retention_days: 30,
         mime_type: 'text/csv',
         folder_id: null,
+        library_id: null,
       },
       { signal: expect.any(AbortSignal) },
     );

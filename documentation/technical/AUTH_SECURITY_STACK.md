@@ -106,6 +106,21 @@ Auth does not require Redis.
 
 The in-memory fallback is for dev/test only. It is not safe for multi-process production because token revocation and challenge state would be process-local.
 
+## Agent Telemetry Ingest
+
+- The web backend telemetry router (`api/v1/fs_egress.py`) distinguishes an unavailable DB-managed key lookup (`503` with `Retry-After: 30`) from an unknown key (`401`). A dependency failure never authorizes the request and is not cached as an invalid key.
+- Bound-host checks, key-cache lifetimes and the existing shared-ring fallback are unchanged. The shared key-store helper keeps its legacy default for other runtimes; the telemetry router explicitly requests strict lookup for non-ring keys.
+- Agent JSON uploads have a per-chunk idle timeout: `ITINV_AGENT_BODY_IDLE_TIMEOUT_SEC`, default 60 seconds. Invalid/non-positive settings use the default. This is not a total upload deadline: a progressing large upload may take longer.
+- An interrupted or idle JSON upload returns `408` instead of `500`, before persistence. Malformed JSON stays `400`, and the existing byte limit stays `413`. The JSON reader is also shared by mailbox-quota import; generic raw/multipart readers do not acquire this timeout by default.
+- Local HTTP regression checks: `tests/test_agent_ingest_resilience.py` (SQLite key store, simulated DB failure and streamed request bodies).
+
+## Scan Agent Key Rotation
+
+- Enrollment and delivery compare canonical IP literals, never TCP source ports. Existing `enroll_ip` values containing `IPv4:port` or `[IPv6]:port` remain usable without rewriting rows. A missing/invalid source cannot bypass an existing nonempty pin; a different IP remains blocked. Forwarded-header trust is unchanged.
+- Automatic rotation generations use the existing dedupe keys (`rotate-key-<agent>` / `rotate-key-<agent>-c<count>`). A pending live rotation takes precedence over historical completions, including at the re-mint cap. Only completed/stale-delivered tasks for the current generation can trigger its re-mint; an expired task can be requeued with the current pair instead.
+- PostgreSQL serializes automatic enrollment decisions through task creation with a per-agent advisory transaction lock. No schema migration, bulk key replacement or counter reset is required. Applying this server fix needs a separately authorized standard Scan restart, not just a backend restart.
+- Permission/state-machine regression checks: `tests/test_agent_key_binding.py`. SQLite checks do not verify PostgreSQL multi-process locking.
+
 ## Backend Flow
 1. `POST /api/v1/auth/login`
    - Validates password.

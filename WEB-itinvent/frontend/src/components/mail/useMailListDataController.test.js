@@ -228,7 +228,11 @@ describe('useMailListDataController', () => {
       await result.current.controller.refreshBootstrap();
     });
 
-    expect(result.current.state.mailboxInfo).toEqual(bootstrapPayload.selected_mailbox);
+    expect(result.current.state.mailboxInfo).toEqual({
+      ...bootstrapPayload.selected_mailbox,
+      unread_count: 0,
+      unread_count_state: 'deferred',
+    });
     expect(result.current.state.folderSummary).toEqual({ inbox: { unread: 2 } });
     expect(result.current.state.folderTree).toEqual([{ id: 'inbox', label: 'Inbox' }]);
     expect(result.current.state.listData.items).toEqual([createMessage('msg-1')]);
@@ -722,6 +726,32 @@ describe('useMailListDataController', () => {
     expect(result.current.state.listData.items).toEqual([createMessage('sent-1')]);
     expect(result.current.state.folderSummary).toEqual({ inbox: { unread: 3 }, sent: { unread: 0 } });
     expect(result.current.refs.skipNextListRefreshRef.current).toBe(false);
+  });
+
+  it('keeps the per-mailbox unread count and never injects the aggregate into the active entry', async () => {
+    const scope = 'mailbox-1';
+    const { result } = renderController({ scope });
+
+    await act(async () => {
+      result.current.controller.applyBootstrapPayload({
+        selected_mailbox: { id: scope, mailbox_email: 'mailbox@example.com', unread_count: 0 },
+        mailboxes: [
+          { id: scope, label: 'Mailbox', unread_count: 3, unread_count_state: 'fresh' },
+          { id: 'mailbox-2', label: 'Shared', unread_count: 4, unread_count_state: 'fresh' },
+        ],
+        // 7 = aggregate across both mailboxes, not the active mailbox's count.
+        unread_count: 7,
+        folder_summary: {},
+        folder_tree: { items: [] },
+        messages: { items: [], total: 0, limit: 50 },
+      });
+    });
+
+    expect(result.current.state.mailboxInfo).toEqual(expect.objectContaining({ unread_count: 3 }));
+    expect(result.current.state.mailboxes.find((entry) => entry.id === scope))
+      .toEqual(expect.objectContaining({ unread_count: 3 }));
+    expect(result.current.state.mailboxes.find((entry) => entry.id === 'mailbox-2'))
+      .toEqual(expect.objectContaining({ unread_count: 4 }));
   });
 
   it('ignores a late bootstrap await after the user left the inbox context', async () => {

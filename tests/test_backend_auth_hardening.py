@@ -27,6 +27,10 @@ def _clear_auth_env(monkeypatch, app_env: str | None = "development") -> None:
         "AUTH_COOKIE_SECURE",
         "AUTH_CLOUDFLARE_PROXY_CIDRS",
         "AUTH_NEW_LOGIN_EMAIL_ENABLED",
+        "DEBUG",
+        "SQL_SERVER_ENCRYPT",
+        "SQL_SERVER_TRUST_SERVER_CERTIFICATE",
+        "SQL_SERVER_ALLOW_INSECURE_SQL_TLS",
     ):
         monkeypatch.delenv(key, raising=False)
     if app_env is not None:
@@ -40,6 +44,17 @@ def test_production_rejects_placeholder_jwt_secret(monkeypatch):
     monkeypatch.setenv("AUTH_COOKIE_SECURE", "true")
 
     with pytest.raises(ConfigurationError, match="JWT_SECRET"):
+        Config.from_env()
+
+
+def test_production_rejects_debug(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("JWT_SECRET_KEYS", "a" * 64)
+    monkeypatch.setenv("AUTH_COOKIE_SECURE", "true")
+    monkeypatch.setenv("DEBUG", "true")
+
+    with pytest.raises(ConfigurationError, match="DEBUG"):
         Config.from_env()
 
 
@@ -72,6 +87,107 @@ def test_development_keeps_legacy_auth_defaults(monkeypatch):
     assert loaded.app.auth_cookie_secure is False
     assert loaded.jwt.secret_key == "your-secret-key-change-in-production"
     assert loaded.security.new_login_email_enabled is False
+
+
+def _production_env(monkeypatch) -> None:
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("JWT_SECRET_KEYS", "a" * 64)
+    monkeypatch.setenv("AUTH_COOKIE_SECURE", "true")
+
+
+def test_connection_string_validates_sql_server_certificate_by_default(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    loaded = Config.from_env()
+    assert "Encrypt=yes;" in loaded.database.connection_string
+    assert "TrustServerCertificate=no;" in loaded.database.connection_string
+
+    monkeypatch.setenv("SQL_SERVER_ENCRYPT", "no")
+    monkeypatch.setenv("SQL_SERVER_TRUST_SERVER_CERTIFICATE", "yes")
+    loaded = Config.from_env()
+    assert "Encrypt=no;" in loaded.database.connection_string
+    assert "TrustServerCertificate=yes;" in loaded.database.connection_string
+
+
+def test_production_rejects_unencrypted_sql_server(monkeypatch):
+    _production_env(monkeypatch)
+    monkeypatch.setenv("SQL_SERVER_ENCRYPT", "no")
+
+    with pytest.raises(ConfigurationError, match="SQL_SERVER_ENCRYPT"):
+        Config.from_env()
+
+
+def test_production_rejects_untrusted_sql_server_certificate(monkeypatch):
+    _production_env(monkeypatch)
+    monkeypatch.setenv("SQL_SERVER_TRUST_SERVER_CERTIFICATE", "yes")
+
+    with pytest.raises(ConfigurationError, match="SQL_SERVER_TRUST_SERVER_CERTIFICATE"):
+        Config.from_env()
+
+    monkeypatch.setenv("SQL_SERVER_ALLOW_INSECURE_SQL_TLS", "1")
+    loaded = Config.from_env()
+    assert loaded.database.trust_server_certificate is True
+
+
+def _production_connection(monkeypatch):
+    _production_env(monkeypatch)
+    loaded = Config.from_env()
+    connection_module = importlib.import_module("backend.database.connection")
+    monkeypatch.setattr(connection_module, "config", loaded)
+    return connection_module
+
+
+@pytest.mark.parametrize("encrypt", ["no", "false", "0", "optional", "garbage"])
+def test_production_db_override_rejects_unencrypted_sql_server(monkeypatch, encrypt):
+    connection_module = _production_connection(monkeypatch)
+    monkeypatch.setenv("DB_OBJ-ITINVENT_ENCRYPT", encrypt)
+
+    with pytest.raises(ConfigurationError, match="DB_OBJ-ITINVENT_ENCRYPT"):
+        connection_module.get_database_config("OBJ-ITINVENT")
+
+
+def test_production_db_override_rejects_untrusted_server_certificate(monkeypatch):
+    connection_module = _production_connection(monkeypatch)
+    monkeypatch.setenv("DB_OBJ-ITINVENT_TRUST_SERVER_CERTIFICATE", "yes")
+
+    with pytest.raises(ConfigurationError, match="DB_OBJ-ITINVENT_TRUST_SERVER_CERTIFICATE"):
+        connection_module.get_database_config("OBJ-ITINVENT")
+
+    monkeypatch.setenv("SQL_SERVER_ALLOW_INSECURE_SQL_TLS", "1")
+    db_config = connection_module.get_database_config("OBJ-ITINVENT")
+    assert db_config["trust_server_certificate"] is True
+
+
+@pytest.mark.parametrize("encrypt", ["yes", ""])
+def test_production_db_override_accepts_encrypted_sql_server(monkeypatch, encrypt):
+    connection_module = _production_connection(monkeypatch)
+    monkeypatch.setenv("DB_OBJ-ITINVENT_ENCRYPT", encrypt)
+
+    db_config = connection_module.get_database_config("OBJ-ITINVENT")
+    conn_str = connection_module.build_connection_string(db_config)
+    assert "Encrypt=yes;" in conn_str
+    assert "TrustServerCertificate=no;" in conn_str
+
+
+def test_development_db_override_keeps_unencrypted_sql_server(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    loaded = Config.from_env()
+    connection_module = importlib.import_module("backend.database.connection")
+    monkeypatch.setattr(connection_module, "config", loaded)
+    monkeypatch.setenv("DB_OBJ-ITINVENT_ENCRYPT", "no")
+
+    db_config = connection_module.get_database_config("OBJ-ITINVENT")
+    conn_str = connection_module.build_connection_string(db_config)
+    assert "Encrypt=no;" in conn_str
+
+
+@pytest.mark.parametrize("encrypt", ["0", "optional"])
+def test_production_rejects_ambiguous_global_sql_server_encrypt(monkeypatch, encrypt):
+    _production_env(monkeypatch)
+    monkeypatch.setenv("SQL_SERVER_ENCRYPT", encrypt)
+
+    with pytest.raises(ConfigurationError, match="SQL_SERVER_ENCRYPT"):
+        Config.from_env()
 
 
 def test_new_login_email_notifications_are_disabled_by_default(monkeypatch):

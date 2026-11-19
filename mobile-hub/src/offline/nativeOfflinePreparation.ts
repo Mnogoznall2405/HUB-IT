@@ -24,6 +24,7 @@ import { listFeedPosts } from '../api/feedApi';
 import { getMyFilesQuota, listMyFiles } from '../api/myFilesApi';
 import { getCompanyStructureTree } from '../api/companyStructureApi';
 import {
+  nativeCollectionSignature,
   readNativeSnapshot,
   writeNativeCollectionSnapshot,
   writeNativeSnapshot,
@@ -272,7 +273,7 @@ async function prepareTasks(userId: number, isAdmin: boolean, checkpoint: Prepar
     offset: 0,
   };
   let page = await getTasksPage(request);
-  const signature = JSON.stringify({ ...request, offset: 0 });
+  const signature = nativeCollectionSignature(request);
   let items = uniqueByKey(page.items, (item) => String(item.id || ''));
   let stored = await checkpoint.write('tasks-inbox', userId, signature, {
     signature,
@@ -416,7 +417,7 @@ async function prepareMail(userId: number, checkpoint: PreparationCheckpoint): P
     key: `m:${value.id}`,
     value,
   }));
-  const signature = JSON.stringify({ ...filters, offset: 0, view: 'messages' });
+  const signature = nativeCollectionSignature({ ...filters, view: 'messages' });
   const snapshot = () => ({
     signature,
     items,

@@ -51,6 +51,15 @@ _DOMAIN_RULES = (
         "lk-b2b.mts.ru", "lk.ivc34.ru", "educon2.tyuiu.ru",
         "chatgpt.com", "chat.deepseek.com", "deepseek.com",
         "ilovepdf.com", "lovepdf.ru", "ecalc.ru",
+        # B2B suppliers / corporate services observed across many fleet PCs
+        # (industrial-construction company profile: electrical, cable, safety,
+        # counterparty checks, legal references, corp banking, gov training).
+        "etm.ru", "chipdip.ru", "dkc.ru", "dkcmarket.ru", "iek.ru",
+        "cable.ru", "komus.ru", "xcom-shop.ru", "promrukav.ru", "ssd.ru",
+        "products.rubezh.ru", "checko.ru", "rusprofile.ru", "consultant.ru",
+        "internet-law.ru", "kad.arbitr.ru", "edu.rosmintrud.ru",
+        "corporate.psbank.ru", "tinko.ru", "tlintegration.ru",
+        "docs.yandex.ru", "tools.pdf24.org",
     )),
     # news.mail.ru must outrank the generic mail.ru suffix below.
     ("news", ("news.mail.ru",)),
@@ -64,6 +73,7 @@ _DOMAIN_RULES = (
     ("maps", (
         "2gis.ru", "maps.yandex.ru", "maps.yandex.com", "maps.google.com",
         "earth.google.com", "openstreetmap.org", "windy.com",
+        "wikimapia.org", "ventusky.com", "flightradar24.com",
     )),
     ("im", (
         "web.max.ru", "max.ru", "t.me", "telegram.org", "web.telegram.org",
@@ -82,12 +92,20 @@ _DOMAIN_RULES = (
         "aviasales.ru", "ostrovok.ru", "citilink.ru", "regard.ru",
         "petrovich.ru", "oldi.ru", "mvideo.ru", "eldorado.ru",
         "lamoda.ru", "ekonika.ru", "thepoizon.ru", "xcabel.ru", "trip.com",
+        # Classifieds, real estate, car marketplaces and travel — personal
+        # purchases on the same footing as avito/ozon above.
+        "drom.ru", "cian.ru", "domclick.ru", "farpost.ru", "sutochno.ru",
+        "aeroflot.ru", "utair.ru", "rzd.ru", "sportmaster.ru",
+        "perekrestok.ru", "autoopt.ru", "autopiter.ru", "armtek.ru",
+        "trend-auto72.ru", "freshauto.ru", "sima-land.ru", "sdvor.com",
+        "lunda.ru",
     )),
     ("news", (
         "dzen.ru", "pikabu.ru", "lenta.ru", "ria.ru", "rbc.ru", "gazeta.ru",
         "kommersant.ru", "tass.ru", "vesti.ru", "news.ru", "aif.ru",
         "mk.ru", "iz.ru", "rg.ru", "ura.news", "news.yandex.ru",
         "72.ru", "aftershock.news", "sportbox.ru", "championat.com", "topwar.ru",
+        "e1.ru", "ixbt.com", "sportsdzen.ru",
     )),
     ("entertainment", (
         "youtube.com", "youtu.be", "youtubekids.com", "music.youtube.com",
@@ -95,12 +113,13 @@ _DOMAIN_RULES = (
         "okko.tv", "premier.one", "more.tv", "wink.ru", "vkvideo.ru",
         "vimeo.com", "tiktok.com", "dtf.ru", "steamcommunity.com",
         "store.steampowered.com", "steampowered.com", "music.yandex.ru",
-        "music.yandex.com",
+        "music.yandex.com", "pari.ru", "transphoto.org", "anwap.media",
     )),
     ("search", (
         "yandex.ru", "ya.ru", "yandex.com", "google.com", "bing.com",
         "duckduckgo.com", "go.mail.ru", "nigma.ru", "qwant.com",
         "rambler.ru", "startpage.com", "v-poiske24.com", "hh.ru",
+        "google.ru", "yandex.by",
     )),
 )
 
@@ -228,6 +247,15 @@ SERVICE_FILE_NAME_SQL_RE = (
     r"|.*\.part$"
     r"|.*\.partial$"
     r"|.*\.lock$"
+    r"|.*\.old$"                  # renamed-backup convention
+    r"|.*\.sw[op]$"               # vim swap files
+    r"|.*\.dmp$"                  # crash dumps
+    r"|.*\.chk$"                  # chkdsk recovered fragments
+    r"|.*\.scadmodelcolor$"       # Автокат/SCAD auxiliary sidecar
+    r"|.*-(wal|shm|journal)$"     # SQLite journal sidecars
+    r"|.*~$"                      # editor backups (file.ext~)
+    r"|^_[0-9a-z]{3,}\.(frq|fnm|tis|tii|prx|nrm|fdx|fdt|cfs|si|dvm|dvd|liv|tvx|tvf|del|vmx|lfd|kdd|kdi)$"  # Lucene index segments
+    r"|^(thumbs\.db|desktop\.ini|ehthumbs\.db|\.ds_store)$"  # shell/explorer caches
     r"|^[0-9a-f]{8,}s?(\.tmp)?$"  # hex-only temp names (incl. <hex>s session files)
     r"|^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}"  # GUID-named temps
     r"|^as_.*\.tmp$"              # as_*.tmp autosave

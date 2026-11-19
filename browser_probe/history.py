@@ -7,6 +7,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -126,6 +127,23 @@ def _copy_history_db(src: Path, dest_dir: Path) -> Path | None:
     return dest
 
 
+def _prune_hist_tmp(root: Path, *, max_age_sec: float = 86400.0) -> None:
+    """Remove stale snapshot dirs left behind by failed tempdir cleanups."""
+    try:
+        cutoff = time.time() - max_age_sec
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                if child.stat().st_mtime > cutoff:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(child, ignore_errors=True)
+    except OSError:
+        pass
+
+
 @contextmanager
 def _history_snapshot(
     profile: BrowserProfile,
@@ -133,7 +151,8 @@ def _history_snapshot(
 ) -> Iterator[sqlite3.Connection | None]:
     root = Path(work_dir or tempfile.gettempdir()) / "hub_it_browser_hist"
     root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=root) as directory:
+    _prune_hist_tmp(root)
+    with tempfile.TemporaryDirectory(dir=root, ignore_cleanup_errors=True) as directory:
         copied = _copy_history_db(profile.history_path, Path(directory))
         if copied is None:
             yield None

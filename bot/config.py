@@ -25,6 +25,7 @@ class TelegramConfig:
     bot_token: str
     allowed_group_id: str
     allowed_users: List[str]
+    require_hub_user: bool = True
 
 
 @dataclass
@@ -156,7 +157,10 @@ def load_config() -> AppConfig:
     telegram_config = TelegramConfig(
         bot_token=bot_token,
         allowed_group_id=allowed_group_id,
-        allowed_users=allowed_users
+        allowed_users=allowed_users,
+        # MED-10: доступ только при привязке Telegram ID к активному HUB user.
+        # TELEGRAM_REQUIRE_HUB_USER=0 — аварийный откат на старую модель доступа.
+        require_hub_user=os.getenv("TELEGRAM_REQUIRE_HUB_USER", "1").strip().lower() not in {"0", "false", "no"},
     )
     
     # API РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ

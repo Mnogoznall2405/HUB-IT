@@ -61,7 +61,12 @@ export async function drainNativeChatOutboxInBackground(userId: number, options:
     persistConfirmed: options.persistConfirmed ?? createNativeChatPersistConfirmed({
       ownsSession, userId, historyGeneration: getNativeChatThreadHistoryGeneration(),
     }),
-    onError: () => { void recordDiagnosticEvent('native_file_error'); },
+    onError: () => {
+      void recordDiagnosticEvent('native_chat_delivery_error', undefined, {
+        source: 'chat-delivery',
+        stage: 'background',
+      });
+    },
     drainToken,
   });
   try {

@@ -16,7 +16,8 @@ from telegram.ext import ContextTypes, ConversationHandler
 from telegram.error import RetryAfter, TimedOut
 
 from bot.config import States, Messages, StorageKeys
-from bot.utils.decorators import require_user_access, handle_errors
+from bot.utils.decorators import require_user_access, require_hub_permission, handle_errors
+from bot.utils.hub_binding import PERM_DATABASE_WRITE
 from bot.services.input_identifier_service import detect_identifiers_from_image, detect_identifiers_from_text
 from bot.services.validation import validate_employee_name, validate_serial_number
 from bot.database_manager import database_manager
@@ -42,6 +43,7 @@ async def _journal(method, *args, **kwargs):
 TRANSFER_OPERATION_ID_KEY = "transfer_operation_id"
 TRANSFER_OPERATION_STATE_KEY = "transfer_operation_state"
 TRANSFER_RETRY_SERIALS_KEY = "transfer_retry_serials"
+TRANSFER_SOURCE_DB_KEY = "transfer_source_db"
 ONE_C_SYNC_STATE_NOT_REQUESTED = "not_requested"
 TRANSFER_CONFIRM_CALLBACK_PREFIX = "confirm_transfer:"
 
@@ -49,6 +51,16 @@ TRANSFER_CONFIRM_CALLBACK_PREFIX = "confirm_transfer:"
 def _new_transfer_operation_id() -> str:
     """Return an idempotency key compatible with the Web transfer contract."""
     return f"bot-{uuid4()}"
+
+
+def _remember_transfer_source_db(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    """Keep the HUB database that the collected ITEMS.ID values were read from."""
+    context.user_data.setdefault(TRANSFER_SOURCE_DB_KEY, str(database_manager.get_user_database(user_id) or ""))
+
+
+def _transfer_source_db_changed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    source_db = str(context.user_data.get(TRANSFER_SOURCE_DB_KEY) or "")
+    return bool(source_db) and str(database_manager.get_user_database(user_id) or "") != source_db
 
 
 def _ensure_transfer_operation_id(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -425,7 +437,7 @@ def _transfer_operation_before_acts(
     return transferred_groups, outcome
 
 
-@require_user_access
+@require_hub_permission(PERM_DATABASE_WRITE)
 async def start_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Начало процесса перемещения оборудования
@@ -440,6 +452,7 @@ async def start_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Инициализируем контекст для хранения данных о перемещении
     context.user_data[StorageKeys.TEMP_PHOTOS] = []
     context.user_data[StorageKeys.TEMP_SERIALS] = []
+    context.user_data.pop(TRANSFER_SOURCE_DB_KEY, None)
     context.user_data[TRANSFER_OPERATION_ID_KEY] = _new_transfer_operation_id()
     context.user_data[TRANSFER_OPERATION_STATE_KEY] = "draft"
     # A retry list belongs only to the previous partial command; never mix it
@@ -555,6 +568,7 @@ async def receive_transfer_photos(update: Update, context: ContextTypes.DEFAULT_
             return States.TRANSFER_WAIT_PHOTOS
 
         db = database_manager.create_database_connection(user_id)
+        _remember_transfer_source_db(context, user_id)
         if not db:
             await update.message.reply_text("⚠️ Не удалось подключиться к базе данных.")
             return States.TRANSFER_WAIT_PHOTOS
@@ -713,6 +727,7 @@ async def receive_transfer_photos(update: Update, context: ContextTypes.DEFAULT_
             # Проверяем наличие оборудования в базе
             user_id = update.effective_user.id
             db = database_manager.create_database_connection(user_id)
+            _remember_transfer_source_db(context, user_id)
             
             if not db:
                 cleanup_temp_file(photo_path)
@@ -1206,6 +1221,11 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                         "Текущая HUB-база отличается от базы, в которой была подтверждена операция. "
                         "Переключитесь обратно на исходную базу перед восстановлением."
                     )
+                elif checkpoint is None and _transfer_source_db_changed(context, user_id):
+                    transfer_problem = (
+                        "Текущая HUB-база отличается от базы, в которой собрано оборудование. "
+                        "Переключитесь обратно на исходную базу или начните перемещение заново."
+                    )
                 else:
                     transfer_db = database_manager.create_database_connection(user_id)
                 if not transfer_db:
@@ -1428,6 +1448,8 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                 acts = updated_acts
                 pdf_path = str(act.get("pdf_path") or "")
                 caption = f"✅ Акт приема-передачи\nОт: {old_employee}\nКому: {new_employee}"
+                if not pdf_path.lower().endswith(".pdf"):
+                    caption += "\n⚠️ PDF не получился: отправлен DOCX-вариант акта."
                 sent = await send_document_with_retry(
                     context=context,
                     chat_id=query.message.chat_id,
@@ -1533,30 +1555,6 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
     return ConversationHandler.END
 
 
-async def generate_transfer_act(new_employee: str, new_employee_dept: str, serials_data: list, db_name: str) -> str:
-    """
-    Генерирует PDF-акт приема-передачи
-    
-    Параметры:
-        new_employee: ФИО нового сотрудника
-        new_employee_dept: Отдел нового сотрудника
-        serials_data: Список данных об оборудовании
-        db_name: Название базы данных
-        
-    Возвращает:
-        str: Путь к созданному PDF-файлу
-    """
-    from bot.services.pdf_generator import generate_transfer_act_pdf
-    
-    try:
-        pdf_path = await generate_transfer_act_pdf(new_employee, new_employee_dept, serials_data, db_name)
-        return pdf_path
-        
-    except Exception as e:
-        logger.error(f"Ошибка генерации акта: {e}", exc_info=True)
-        return None
-
-
 def cleanup_temp_file(file_path: str) -> None:
     """
     Удаляет временный файл
@@ -1597,6 +1595,7 @@ def clear_transfer_data(
         'grouped_equipment',
         TRANSFER_OPERATION_ID_KEY,
         TRANSFER_OPERATION_STATE_KEY,
+        TRANSFER_SOURCE_DB_KEY,
     ]
     if not preserve_retry_serials:
         keys_to_clear.append(TRANSFER_RETRY_SERIALS_KEY)

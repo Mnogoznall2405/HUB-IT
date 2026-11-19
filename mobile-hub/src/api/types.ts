@@ -102,6 +102,7 @@ export type ChatConversationSummary = {
   online_member_count?: number;
   member_count?: number;
   viewer_member_role?: string | null;
+  unread_mention_count?: number;
   description?: string | null;
   posting_policy?: string | null;
   slow_mode_seconds?: number | null;

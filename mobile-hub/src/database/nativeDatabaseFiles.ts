@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import { API_V1_BASE } from '../api/config';
 import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
-import { sanitizeNativeFileName } from '../files/filePolicy';
+import { fitNativeFileName, sanitizeNativeFileName } from '../files/filePolicy';
 
 function databaseCacheDirectory(): Directory {
   const directory = new Directory(Paths.document, 'hubit-database');
@@ -14,7 +14,14 @@ function databaseCacheDirectory(): Directory {
 async function databaseCacheFile(fileName: string): Promise<File> {
   const userId = Number(await getSessionUserId());
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
-  return new File(databaseCacheDirectory(), `${userId}-${fileName}`);
+  return new File(databaseCacheDirectory(), fitNativeFileName(`${userId}-${fileName}`));
+}
+
+// Equipment ids repeat across connected databases: the id is only unique per
+// base, so the cache file name must carry the database it was fetched from.
+function databaseCacheTag(databaseId?: string): string {
+  const normalized = String(databaseId || '').trim();
+  return normalized ? `${sanitizeNativeFileName(normalized).slice(0, 40)}-` : '';
 }
 
 export function clearNativeDatabaseFileCache(): void {
@@ -41,7 +48,7 @@ export async function downloadEquipmentAct(
   const suffix = query.toString();
   const sourceUrl = `${API_V1_BASE}/equipment/acts/${encodeURIComponent(String(docNo))}/file${suffix ? `?${suffix}` : ''}`;
   const fileName = sanitizeNativeFileName(options.fileName || `act-${docNo}.pdf`);
-  const destination = await databaseCacheFile(`${docNo}-${fileName}`);
+  const destination = await databaseCacheFile(`${databaseCacheTag(options.databaseId)}${docNo}-${fileName}`);
   if (destination.exists && destination.size > 0) return destination;
   if (destination.exists) destination.delete();
 
@@ -91,7 +98,7 @@ export async function downloadEquipmentPhoto(
   const thumb = Boolean(options.thumb);
   const sourceUrl = `${API_V1_BASE}/equipment/${encodeURIComponent(String(itemId))}/photos/${encodeURIComponent(String(fileNo))}/content${thumb ? '?thumb=1' : ''}${options.rev && options.rev > 0 ? `${thumb ? '&' : '?'}v=${options.rev}` : ''}`;
   const destination = await databaseCacheFile(
-    `photo-${itemId}-${fileNo}${thumb ? '-thumb' : ''}${photoCacheExtension(options.fileName)}`,
+    `${databaseCacheTag(options.databaseId)}photo-${itemId}-${fileNo}${thumb ? '-thumb' : ''}${photoCacheExtension(options.fileName)}`,
   );
   if (destination.exists && destination.size > 0) return destination;
   if (destination.exists) destination.delete();
@@ -121,7 +128,7 @@ export async function downloadGeneratedTransferAct(
   const sourceUrl = `${API_V1_BASE}/equipment/transfer/act/${encodeURIComponent(normalizedActId)}`;
   const extension = options.fileType === 'docx' ? 'docx' : 'pdf';
   const fileName = sanitizeNativeFileName(options.fileName || `transfer-${normalizedActId}.${extension}`);
-  const destination = await databaseCacheFile(`${normalizedActId}-${fileName}`);
+  const destination = await databaseCacheFile(`${databaseCacheTag(options.databaseId)}${normalizedActId}-${fileName}`);
   if (destination.exists && destination.size > 0) return destination;
   if (destination.exists) destination.delete();
 
@@ -130,6 +137,39 @@ export async function downloadGeneratedTransferAct(
       idempotent: true,
       headers: {
         ...(options.databaseId ? { 'X-Database-ID': String(options.databaseId).trim() } : {}),
+      },
+    });
+  } catch (error) {
+    if (destination.exists) destination.delete();
+    throw error;
+  }
+}
+
+// PDF акта оприходования живёт в ЦЕЛЕВОЙ базе переноса: маршрут задаёт её
+// явным параметром target_db, X-Database-ID нужен только для проверки доступа.
+export async function downloadDbTransferAct(
+  dbId: string,
+  fileNo: number,
+  options: { fileName?: string; sourceDatabaseId?: string } = {},
+): Promise<File> {
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') {
+    throw new Error('Нативное скачивание доступно только в приложении');
+  }
+  const db = String(dbId || '').trim();
+  if (!db || !Number.isInteger(fileNo) || fileNo <= 0) {
+    throw new Error('Некорректные параметры акта переноса');
+  }
+  const sourceUrl = `${API_V1_BASE}/equipment/transfer/to-db/${encodeURIComponent(db)}/files/${encodeURIComponent(String(fileNo))}`;
+  const fileName = sanitizeNativeFileName(options.fileName || `transfer-${fileNo}.pdf`);
+  const destination = await databaseCacheFile(`${databaseCacheTag(options.sourceDatabaseId)}todb-${db}-${fileNo}-${fileName}`);
+  if (destination.exists && destination.size > 0) return destination;
+  if (destination.exists) destination.delete();
+
+  try {
+    return await downloadAuthenticatedFile(sourceUrl, destination, {
+      idempotent: true,
+      headers: {
+        ...(options.sourceDatabaseId ? { 'X-Database-ID': String(options.sourceDatabaseId).trim() } : {}),
       },
     });
   } catch (error) {

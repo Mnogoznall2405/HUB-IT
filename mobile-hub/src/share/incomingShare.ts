@@ -27,6 +27,11 @@ export type QueuedIncomingShare = IncomingTextShare & {
 export const INCOMING_SHARE_MAX_FILES = 10;
 
 let queuedNativeShare: QueuedIncomingShare | null = null;
+let shareGeneration = 0;
+
+export function getIncomingShareGeneration(): number {
+  return shareGeneration;
+}
 
 function normalizeShareFiles(value: unknown): IncomingShareFileInfo[] {
   if (!Array.isArray(value)) return [];
@@ -128,6 +133,21 @@ export function consumeIncomingShare(
   return share;
 }
 
+/** Drops a queued share that no destination consumed yet — logout/account
+ * switch must not hand user A's text or files to whoever signs in next. */
+export function clearIncomingShare(): Promise<void> {
+  shareGeneration += 1;
+  if (queuedNativeShare) discardIncomingShare(queuedNativeShare);
+  queuedNativeShare = null;
+  // A share that arrived but was never read into JS still sits in the native
+  // module (pendingIntent/pendingStreams) — it must not pop up for the next user.
+  if (Platform.OS === 'android' && HubitShareIntentModule) {
+    return HubitShareIntentModule.clearPendingShareAsync?.() ?? Promise.resolve();
+  }
+  return Promise.resolve();
+}
+
 export function clearQueuedIncomingShareForTests(): void {
   queuedNativeShare = null;
+  shareGeneration = 0;
 }

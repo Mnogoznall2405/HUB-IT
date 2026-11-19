@@ -17,6 +17,11 @@ export function shouldSyncActiveThreadCache(activeConversationId, hydratedThread
   return hydratedThreadConversationIdRef?.current === normalizedConversationId;
 }
 
+// The thread cache holds only the tail of the loaded history: without a cap,
+// up to 80 cached conversations could each retain thousands of messages in
+// the SWR map for 30 minutes. Older pages are re-fetched via has_more anyway.
+export const CHAT_THREAD_CACHE_MESSAGE_LIMIT = 300;
+
 export function buildActiveThreadCachePayload({
   messages,
   messagesHasMore,
@@ -31,17 +36,19 @@ export function buildActiveThreadCachePayload({
   const persistedList = list.filter((message) => !message?.isOptimistic && !message?.optimisticStatus);
   // U3: the live-appear flag must not survive a cache round-trip — restored
   // messages are history and must mount without the appear animation.
-  const items = persistedList.some((message) => message?.animateAppear)
+  const normalizedList = persistedList.some((message) => message?.animateAppear)
     ? persistedList.map((message) => {
       if (!message?.animateAppear) return message;
       const { animateAppear: _animateAppear, ...rest } = message;
       return rest;
     })
     : persistedList;
+  const truncated = normalizedList.length > CHAT_THREAD_CACHE_MESSAGE_LIMIT;
+  const items = truncated ? normalizedList.slice(-CHAT_THREAD_CACHE_MESSAGE_LIMIT) : normalizedList;
   return {
     items,
-    has_more: messagesHasMore,
-    has_older: messagesHasMore,
+    has_more: truncated || messagesHasMore,
+    has_older: truncated || messagesHasMore,
     has_newer: messagesHasNewer,
     viewer_last_read_message_id: viewerLastReadMessageId,
     viewer_last_read_at: viewerLastReadAt,

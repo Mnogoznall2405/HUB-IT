@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { post, buildUrl } = vi.hoisted(() => ({ post: vi.fn(), buildUrl: vi.fn() }));
-vi.mock('./client', () => ({ default: { post } }));
+vi.mock('./http', () => ({ default: { post } }));
 vi.mock('./myFiles', () => ({ myFilesAPI: { buildDownloadGrantUrl: buildUrl } }));
 import { loadSandboxInputFile, SANDBOX_INPUT_MAX_BYTES } from './chatSandboxFiles';
 const item = { id: 'owned-file', status: 'ready', original_size_bytes: 3, download_file_name: 'report.txt' };

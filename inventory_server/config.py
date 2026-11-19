@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Tuple
 
 try:
     from dotenv import load_dotenv
@@ -25,6 +25,27 @@ def _to_int(value: str, default: int) -> int:
         return default
 
 
+def _parse_agent_api_keys(env_name: str) -> Dict[str, str]:
+    """Per-computer key bindings: ``ENV="host-a=keyA, host-b=keyB"``.
+
+    A bound key is accepted only for its own ``computer_name``/``hostname``; keys in the
+    shared ring stay valid for every computer until the fleet is migrated and the shared
+    key is removed.
+    """
+    bound: Dict[str, str] = {}
+    raw = str(os.getenv(env_name, "") or "").strip()
+    for row in raw.split(","):
+        row = row.strip()
+        if not row or "=" not in row:
+            continue
+        name, _, key = row.partition("=")
+        name = name.strip()
+        key = key.strip()
+        if name and key:
+            bound[name] = key
+    return bound
+
+
 @dataclass(frozen=True)
 class InventoryServerConfig:
     host: str
@@ -43,6 +64,8 @@ class InventoryServerConfig:
     # loop dies with "too many file descriptors in select()". Keep uvicorn's limit well below it:
     # over the limit a request gets 503 + "Connection: close", the agent retries later.
     limit_concurrency: int = 300
+    # Per-computer key bindings (``computer_name`` -> key); see ``_parse_agent_api_keys``.
+    agent_api_keys: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> "InventoryServerConfig":
@@ -73,11 +96,12 @@ class InventoryServerConfig:
             if legacy_key and legacy_key not in keys:
                 keys.append(legacy_key)
 
-        if not keys:
+        agent_api_keys = _parse_agent_api_keys("INVENTORY_AGENT_API_KEYS")
+        if not keys and not agent_api_keys:
             app_env = str(os.getenv("APP_ENV", "production") or "production").strip().lower()
             if app_env in {"production", "prod"}:
                 raise RuntimeError(
-                    "INVENTORY_SERVER_API_KEYS (or ITINV_AGENT_API_KEYS) must be configured in production"
+                    "INVENTORY_SERVER_API_KEYS (or INVENTORY_AGENT_API_KEYS) must be configured in production"
                 )
             keys.append(secrets.token_urlsafe(48))
 
@@ -97,6 +121,7 @@ class InventoryServerConfig:
             limit_concurrency=max(
                 2, min(400, _to_int(os.getenv("INVENTORY_SERVER_LIMIT_CONCURRENCY", "300"), 300))
             ),
+            agent_api_keys=agent_api_keys,
         )
 
 

@@ -19,6 +19,7 @@ from backend.services import my_files_service as mfs
 from backend.services.my_files_service import (
     STORAGE_ZSTD,
     MyFilesCapacityError,
+    MyFilesGrantConsumedError,
     MyFilesNotFoundError,
     MyFilesService,
     MyFilesValidationError,
@@ -521,7 +522,7 @@ def test_zstd_compression_rejects_candidate_below_min_savings(monkeypatch, tmp_p
     assert stored.mode == "stored"
 
 
-def test_download_grant_is_retryable_until_expiry(tmp_path):
+def test_download_grant_is_single_use_and_expiry_bound(tmp_path):
     service = _new_service(tmp_path)
     spool_path = _stage_upload(service, "native.bin", b"native-download")
     created = service.create_pending_upload(
@@ -539,8 +540,9 @@ def test_download_grant_is_retryable_until_expiry(tmp_path):
     payload = service.consume_download_grant(token=token)
     assert _read_download(service, payload) == b"native-download"
 
-    retry = service.consume_download_grant(token=token)
-    assert _read_download(service, retry) == b"native-download"
+    # LOW-03: grant сжигается при первом успешном выкупе.
+    with pytest.raises(MyFilesGrantConsumedError):
+        service.consume_download_grant(token=token)
 
     database_url = _sqlite_url(tmp_path / "app.db")
     with app_session(database_url) as session:
@@ -1176,6 +1178,34 @@ def test_public_preview_wraps_unexpected_office_render_errors(monkeypatch, tmp_p
         service.get_public_preview_meta(token=share["token"])
 
 
+def test_preview_backfill_does_not_rewrite_stable_error_rows(monkeypatch, tmp_path):
+    service = _new_service(tmp_path)
+    monkeypatch.setattr(MyFilesService, "_preview_max_bytes", staticmethod(lambda: 4))
+    spool_path = _stage_upload(service, "big.pdf", b"0123456789")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="big.pdf",
+        mime_type="application/pdf",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=3,
+    )
+    service.process_file(created["id"])
+    service.process_next_preview_job()
+
+    db_url = _sqlite_url(tmp_path / "app.db")
+    with app_session(db_url) as session:
+        preview = session.query(AppMyFilePreview).one()
+        assert preview.status == "error"
+        first_updated_at = preview.updated_at
+
+    service.process_next_preview_job()
+
+    with app_session(db_url) as session:
+        preview = session.query(AppMyFilePreview).one()
+        assert preview.updated_at == first_updated_at
+
+
 def test_quota_uses_per_user_override_and_caps_at_400_gib(tmp_path):
     service = _new_service(tmp_path)
     ensure_app_schema_initialized(_sqlite_url(tmp_path / "app.db"))
@@ -1642,6 +1672,38 @@ def test_library_file_share_requires_manage_role(tmp_path):
     )
     service.process_file(personal["id"])
     assert service.create_share(file_id=personal["id"], user_id=7)["token"]
+
+
+def test_library_folder_share_requires_manage_role(tmp_path):
+    """A public link on a library folder follows the same manage-only rule as its files."""
+    service = _new_service(tmp_path)
+    url = _sqlite_url(tmp_path / "app.db")
+    with app_session(url) as session:
+        session.add(AppUser(id=7, username="user-7"))
+        session.add(AppUser(id=8, username="user-8"))
+        session.add(AppUser(id=9, username="user-9", role="admin"))
+    actor = _user()
+    libraries = MyFilesLibraryService(files=service)
+    library = libraries.create_library(actor=actor, name="ИТ")
+    libraries.set_members(
+        library_id=library["id"],
+        actor=actor,
+        members=[("user", "7", "manage"), ("user", "8", "edit")],
+    )
+    folder = service.create_folder(actor=_user(8), name="Дистрибутивы", library_id=library["id"])
+
+    with pytest.raises(MyFilesNotFoundError):
+        service.create_folder_share(actor=_user(8), folder_id=folder["id"])
+    with pytest.raises(MyFilesNotFoundError):
+        service.revoke_folder_share(actor=_user(8), folder_id=folder["id"])
+
+    share = service.create_folder_share(actor=_user(7), folder_id=folder["id"])
+    assert share["token"]
+    assert service.create_folder_share(actor=_user(9), folder_id=folder["id"])["token"] == share["token"]
+
+    service.revoke_folder_share(actor=_user(7), folder_id=folder["id"])
+    with pytest.raises(MyFilesNotFoundError):
+        service.get_public_folder(token=share["token"])
 
 
 def test_library_rows_reject_favourites(tmp_path):

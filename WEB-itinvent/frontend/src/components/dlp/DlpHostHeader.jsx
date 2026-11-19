@@ -40,7 +40,7 @@ export default function DlpHostHeader({ host, stats, day, onDayChange, onBack, o
           type="date"
           value={day}
           onChange={(e) => onDayChange(e.target.value)}
-          inputProps={{ 'aria-label': 'День' }}
+          inputProps={{ 'aria-label': 'День по местному времени филиала' }}
           sx={{ width: 150 }}
         />
         <Button size="small" variant="outlined" onClick={onOpenReport}>

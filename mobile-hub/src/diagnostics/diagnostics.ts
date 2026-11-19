@@ -5,6 +5,7 @@ import * as Sharing from 'expo-sharing';
 import { Platform } from 'react-native';
 import { makeSnapshotDiagnostic, normalizeSnapshotDiagnostic, type SnapshotDiagnostic, type SnapshotDiagnosticMetrics } from './snapshotDiagnostic';
 import { getChatSendTimingSummary, resetChatSendTiming, type ChatSendTimingSummary } from './chatSendTiming';
+import { buildDiagnosticSummary, type DiagnosticSummary } from './diagnosticSummary';
 import { getApiInflightSummary, resetApiInflight, type ApiInflightSummary } from './apiInflight';
 import { getUiTimingSummary, resetUiTiming, type UiTimingSummary } from './uiTiming';
 import {
@@ -44,33 +45,44 @@ type StoredReleaseHealth = {
   updatedAt: string | null;
   lastVersion: string;
   lastBuild: string;
+  // First moment this app observed the running version/build. It is not the
+  // installer timestamp and stays unknown for installs that predate the field
+  // until the next update — never backfilled with a guess.
+  currentBuildFirstSeenAt: string | null;
   counters: ReleaseHealthCounters;
 };
 
 export type ReleaseHealthSnapshot = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   periodStartedAt: string | null;
   updatedAt: string | null;
   currentVersion: string;
   currentBuild: string;
-  crashFreeSessionPercent: number | null;
+  currentBuildFirstSeenAt: string | null;
   counters: ReleaseHealthCounters;
 };
 
 export type DiagnosticCode =
   | 'ui_render_error'
   | 'native_file_error'
+  | 'native_chat_delivery_error'
   | 'native_snapshot_error'
   | 'notification_action_error';
+
+export type DiagnosticEventContext = {
+  source: 'chat-outbox' | 'chat-thread' | 'chat-attachment' | 'chat-delivery';
+  stage: 'parse' | 'sanitize' | 'persist' | 'queue' | 'foreground' | 'background';
+};
 
 export type DiagnosticEvent = {
   code: DiagnosticCode;
   at: string;
   snapshot?: SnapshotDiagnostic;
+  context?: DiagnosticEventContext;
 };
 
 export type DiagnosticReport = {
-  schemaVersion: 7;
+  schemaVersion: 8;
   generatedAt: string;
   app: {
     version: string;
@@ -79,6 +91,7 @@ export type DiagnosticReport = {
     osVersion: string;
   };
   privacy: 'no-user-content-no-credentials';
+  summary: DiagnosticSummary;
   events: DiagnosticEvent[];
   releaseHealth: ReleaseHealthSnapshot;
   androidProcessHealth: AndroidProcessHealthSnapshot;
@@ -130,6 +143,7 @@ function normalizeReleaseHealth(value: unknown): StoredReleaseHealth {
     updatedAt: normalizeTimestamp(raw.updatedAt),
     lastVersion: String(raw.lastVersion || '').trim().slice(0, 40),
     lastBuild: String(raw.lastBuild || '').trim().slice(0, 40),
+    currentBuildFirstSeenAt: normalizeTimestamp(raw.currentBuildFirstSeenAt),
     counters,
   };
 }
@@ -159,17 +173,19 @@ async function mutateReleaseHealth(
 }
 
 function buildReleaseHealthSnapshot(current: StoredReleaseHealth): ReleaseHealthSnapshot {
-  const sessions = current.counters.sessions_started;
-  const failures = Math.min(sessions, current.counters.ui_failures);
+  const currentVersion = String(Application.nativeApplicationVersion || 'unknown');
+  const currentBuild = String(Application.nativeBuildVersion || 'unknown');
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     periodStartedAt: current.periodStartedAt,
     updatedAt: current.updatedAt,
-    currentVersion: String(Application.nativeApplicationVersion || 'unknown'),
-    currentBuild: String(Application.nativeBuildVersion || 'unknown'),
-    crashFreeSessionPercent: sessions > 0
-      ? Math.round(((sessions - failures) / sessions) * 10_000) / 100
-      : null,
+    currentVersion,
+    currentBuild,
+    // The stored boundary is honest only while it was written by this build;
+    // before startReleaseHealthSession persists the swap it describes the
+    // previous version and must not leak into the report.
+    currentBuildFirstSeenAt: current.lastVersion === currentVersion && current.lastBuild === currentBuild
+      ? current.currentBuildFirstSeenAt : null,
     counters: { ...current.counters },
   };
 }
@@ -179,16 +195,16 @@ export async function startReleaseHealthSession(): Promise<void> {
   sessionStartedInProcess = true;
   const version = String(Application.nativeApplicationVersion || 'unknown').slice(0, 40);
   const build = String(Application.nativeBuildVersion || 'unknown').slice(0, 40);
-  await mutateReleaseHealth((current) => {
-    if (
-      current.lastVersion
-      && current.lastBuild
-      && (current.lastVersion !== version || current.lastBuild !== build)
-    ) {
+  await mutateReleaseHealth((current, now) => {
+    const buildChanged = current.lastVersion !== version || current.lastBuild !== build;
+    if (current.lastVersion && current.lastBuild && buildChanged) {
       current.counters.update_completed += 1;
     }
     current.lastVersion = version;
     current.lastBuild = build;
+    if (buildChanged || !current.currentBuildFirstSeenAt) {
+      current.currentBuildFirstSeenAt = now;
+    }
     current.counters.sessions_started += 1;
   });
 }
@@ -204,22 +220,61 @@ export async function getReleaseHealthSnapshot(): Promise<ReleaseHealthSnapshot>
   return buildReleaseHealthSnapshot(await readReleaseHealth());
 }
 
+const DIAGNOSTIC_CONTEXT_SOURCES = new Set<DiagnosticEventContext['source']>([
+  'chat-outbox',
+  'chat-thread',
+  'chat-attachment',
+  'chat-delivery',
+]);
+const DIAGNOSTIC_CONTEXT_STAGES = new Set<DiagnosticEventContext['stage']>([
+  'parse',
+  'sanitize',
+  'persist',
+  'queue',
+  'foreground',
+  'background',
+]);
+
+// Context is only meaningful for file/storage and delivery failures and is
+// revalidated on every boundary: a forged or free-text source/stage from disk
+// or a caller must drop silently instead of entering the shared report.
+function normalizeDiagnosticContext(
+  code: DiagnosticCode,
+  raw: unknown,
+): DiagnosticEventContext | undefined {
+  if (code !== 'native_file_error' && code !== 'native_chat_delivery_error') return undefined;
+  const candidate = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Partial<DiagnosticEventContext>
+    : null;
+  const source = String(candidate?.source || '') as DiagnosticEventContext['source'];
+  const stage = String(candidate?.stage || '') as DiagnosticEventContext['stage'];
+  if (!DIAGNOSTIC_CONTEXT_SOURCES.has(source) || !DIAGNOSTIC_CONTEXT_STAGES.has(stage)) {
+    return undefined;
+  }
+  return { source, stage };
+}
+
 function normalizeEvents(value: unknown): DiagnosticEvent[] {
   if (!Array.isArray(value)) return [];
   const allowed = new Set<DiagnosticCode>([
     'ui_render_error',
     'native_file_error',
+    'native_chat_delivery_error',
     'native_snapshot_error',
     'notification_action_error',
   ]);
   return value
     .map((raw) => raw as Partial<DiagnosticEvent>)
     .filter((item) => allowed.has(item.code as DiagnosticCode) && !Number.isNaN(new Date(String(item.at || '')).getTime()))
-    .map((item) => ({
-      code: item.code as DiagnosticCode, at: String(item.at),
-      ...((item.code === 'native_snapshot_error' || item.code === 'ui_render_error') && item.snapshot
-        ? { snapshot: normalizeSnapshotDiagnostic(item.snapshot) } : {}),
-    }))
+    .map((item) => {
+      const context = normalizeDiagnosticContext(item.code as DiagnosticCode, item.context);
+      return {
+        code: item.code as DiagnosticCode, at: String(item.at),
+        ...((item.code === 'native_snapshot_error' || item.code === 'ui_render_error') && item.snapshot
+          ? { snapshot: normalizeSnapshotDiagnostic(item.snapshot) } : {}),
+        ...(context ? { context } : {}),
+      };
+    })
     .slice(-MAX_EVENTS);
 }
 
@@ -232,10 +287,20 @@ async function readEvents(): Promise<DiagnosticEvent[]> {
   }
 }
 
-export function recordDiagnosticEvent(code: DiagnosticCode, snapshot?: SnapshotDiagnostic): Promise<void> {
+export function recordDiagnosticEvent(
+  code: DiagnosticCode,
+  snapshot?: SnapshotDiagnostic,
+  context?: DiagnosticEventContext,
+): Promise<void> {
   diagnosticMutation = diagnosticMutation.catch(() => undefined).then(async () => {
     const events = await readEvents();
-    events.push({ code, at: new Date().toISOString(), ...(snapshot ? { snapshot } : {}) });
+    const boundedContext = normalizeDiagnosticContext(code, context);
+    events.push({
+      code,
+      at: new Date().toISOString(),
+      ...(snapshot ? { snapshot } : {}),
+      ...(boundedContext ? { context: boundedContext } : {}),
+    });
     await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(normalizeEvents(events)));
   }).catch(() => undefined);
   return diagnosticMutation;
@@ -252,9 +317,13 @@ export function recordSnapshotFailure(
   }
 }
 
-export async function getDiagnosticEventCount(): Promise<number> {
+export async function getDiagnosticEvents(): Promise<DiagnosticEvent[]> {
   await diagnosticMutation;
-  return (await readEvents()).length;
+  return readEvents();
+}
+
+export async function getDiagnosticEventCount(): Promise<number> {
+  return (await getDiagnosticEvents()).length;
 }
 
 export async function clearDiagnosticEvents(): Promise<void> {
@@ -280,8 +349,9 @@ export function buildDiagnosticReport(
   apiInflight = getApiInflightSummary(),
   chatDeviceLog: ChatDeviceLogEntry[] = getChatDeviceLogSnapshot(),
 ): DiagnosticReport {
+  const boundedEvents = normalizeEvents(events);
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     generatedAt,
     app: {
       version: String(Application.nativeApplicationVersion || 'unknown'),
@@ -290,7 +360,11 @@ export function buildDiagnosticReport(
       osVersion: String(Platform.Version),
     },
     privacy: 'no-user-content-no-credentials',
-    events: normalizeEvents(events),
+    summary: buildDiagnosticSummary({
+      releaseHealth, androidProcessHealth, chatSendTiming, uiTiming, apiInflight,
+      events: boundedEvents,
+    }),
+    events: boundedEvents,
     releaseHealth,
     androidProcessHealth,
     chatSendTiming,
@@ -304,10 +378,12 @@ export async function shareDiagnosticReport(): Promise<void> {
   await diagnosticMutation;
   if (!(await Sharing.isAvailableAsync())) throw new Error('Системное меню «Поделиться» недоступно');
   await flushChatDeviceLog();
-  const [events, releaseHealth, androidProcessHealth, chatDeviceLog] = await Promise.all([
+  // Release health must resolve first: its build boundary scopes the exit
+  // history observation window inside the process-health snapshot.
+  const releaseHealth = await getReleaseHealthSnapshot();
+  const [events, androidProcessHealth, chatDeviceLog] = await Promise.all([
     readEvents(),
-    getReleaseHealthSnapshot(),
-    getAndroidProcessHealthSnapshot(),
+    getAndroidProcessHealthSnapshot(releaseHealth.currentBuildFirstSeenAt),
     readChatDeviceLog(),
   ]);
   const report = buildDiagnosticReport(

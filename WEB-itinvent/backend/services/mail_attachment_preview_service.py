@@ -134,6 +134,50 @@ def office_preview_cache_max_bytes() -> int:
     return _positive_int_env("MAIL_OFFICE_PREVIEW_CACHE_MAX_BYTES", 64 * 1024 * 1024)
 
 
+# A compressed OOXML container must not expand beyond these bounds while a preview is
+# prepared: they cap the disk/RAM/CPU a crafted zip bomb can consume. ``workbook.xml``
+# is metadata, so it gets a much tighter cap than regular entries.
+_EXCEL_MAX_ARCHIVE_ENTRIES = 2048
+_EXCEL_WORKBOOK_XML_MAX_BYTES = 16 * 1024 * 1024
+
+
+def excel_preview_max_entry_bytes() -> int:
+    return _positive_int_env("MAIL_OFFICE_PREVIEW_MAX_ENTRY_BYTES", 128 * 1024 * 1024)
+
+
+def excel_preview_max_decompressed_bytes() -> int:
+    return _positive_int_env("MAIL_OFFICE_PREVIEW_MAX_DECOMPRESSED_BYTES", 256 * 1024 * 1024)
+
+
+def excel_preview_max_sheets() -> int:
+    return _positive_int_env("MAIL_OFFICE_PREVIEW_MAX_SHEETS", 64)
+
+
+def _check_excel_archive_bounds(infos: list[zipfile.ZipInfo]) -> None:
+    if len(infos) > _EXCEL_MAX_ARCHIVE_ENTRIES:
+        raise MailAttachmentPreviewError("Excel workbook has too many archive entries.")
+    entry_cap = excel_preview_max_entry_bytes()
+    total_cap = excel_preview_max_decompressed_bytes()
+    total = 0
+    for info in infos:
+        size = int(info.file_size or 0)
+        if size > entry_cap:
+            raise MailAttachmentPreviewError("Excel workbook entry expands beyond the preview limit.")
+        total += size
+        if total > total_cap:
+            raise MailAttachmentPreviewError("Excel workbook expands beyond the preview limit.")
+
+
+def _read_excel_workbook_xml(archive: zipfile.ZipFile) -> bytes:
+    try:
+        info = archive.getinfo(_EXCEL_WORKBOOK_XML)
+    except KeyError as exc:
+        raise MailAttachmentPreviewError("Excel workbook structure is invalid.") from exc
+    if int(info.file_size or 0) > _EXCEL_WORKBOOK_XML_MAX_BYTES:
+        raise MailAttachmentPreviewError("Excel workbook metadata expands beyond the preview limit.")
+    return archive.read(info)
+
+
 def _pdf_page_count(pdf_path: Path) -> int:
     from pypdf import PdfReader
 
@@ -202,7 +246,8 @@ _EXCEL_MAIN_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/ma
 def _excel_sheet_descriptors(source_path: Path) -> list[dict[str, Any]]:
     try:
         with zipfile.ZipFile(source_path) as archive:
-            workbook_xml = archive.read(_EXCEL_WORKBOOK_XML)
+            _check_excel_archive_bounds(archive.infolist())
+            workbook_xml = _read_excel_workbook_xml(archive)
     except (KeyError, OSError, zipfile.BadZipFile) as exc:
         raise MailAttachmentPreviewError("Excel workbook structure is invalid.") from exc
 
@@ -288,12 +333,17 @@ def _write_single_sheet_workbook(source_path: Path, *, sheet_index: int, target_
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with zipfile.ZipFile(source_path, "r") as source_archive:
+            _check_excel_archive_bounds(source_archive.infolist())
             with zipfile.ZipFile(target_path, "w") as target_archive:
                 found_workbook = False
                 for info in source_archive.infolist():
                     with source_archive.open(info, "r") as source_entry:
                         if info.filename == _EXCEL_WORKBOOK_XML:
                             found_workbook = True
+                            if int(info.file_size or 0) > _EXCEL_WORKBOOK_XML_MAX_BYTES:
+                                raise MailAttachmentPreviewError(
+                                    "Excel workbook metadata expands beyond the preview limit."
+                                )
                             payload = _patch_excel_sheet_visibility(
                                 source_entry.read(),
                                 sheet_index=sheet_index,
@@ -310,6 +360,8 @@ def _write_single_sheet_workbook(source_path: Path, *, sheet_index: int, target_
 
 def _excel_sheet_metadata(*, source_path: Path, work_dir: Path, soffice: Path, timeout_sec: int) -> tuple[list[dict[str, Any]], bytes]:
     worksheets = _excel_sheet_descriptors(source_path)
+    if sum(1 for item in worksheets if not item["hidden"]) > excel_preview_max_sheets():
+        raise MailAttachmentPreviewError("Excel workbook has too many sheets for preview.")
 
     sheets_meta: list[dict[str, Any]] = []
     pdf_paths: list[Path] = []

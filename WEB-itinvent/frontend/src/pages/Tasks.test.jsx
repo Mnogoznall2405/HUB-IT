@@ -1407,7 +1407,7 @@ describe('Tasks page detail workspace', () => {
     expect(screen.queryByTestId('tasks-mobile-header')).not.toBeInTheDocument();
     expect(screen.queryByTestId('tasks-list-view')).not.toBeInTheDocument();
     const mobileHeader = screen.getByTestId('tasks-mobile-header-inline');
-    expect(within(mobileHeader).getByTestId('tasks-mobile-header-mode')).toHaveTextContent('Лента · 1');
+    expect(within(mobileHeader).getByTestId('tasks-mobile-header-mode')).toHaveTextContent('Задачи · 1');
     expect(within(mobileHeader).getByTestId('tasks-mobile-open-search')).toBeInTheDocument();
     expect(within(mobileHeader).getByTestId('tasks-mobile-open-navigation')).toBeInTheDocument();
 

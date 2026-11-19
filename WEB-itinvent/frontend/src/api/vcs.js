@@ -1,4 +1,4 @@
-import apiClient, { API_V1_BASE } from './client';
+import apiClient, { API_V1_BASE } from './http';
 
 const getAbsoluteApiBase = () => {
     if (typeof window === 'undefined') {

@@ -9,6 +9,7 @@ const {
   mockListMembers,
   mockSetMembers,
   mockListGroups,
+  mockListGroupMembers,
   mockGetUsers,
 } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
@@ -17,6 +18,7 @@ const {
   mockListMembers: vi.fn(),
   mockSetMembers: vi.fn(),
   mockListGroups: vi.fn(),
+  mockListGroupMembers: vi.fn(),
   mockGetUsers: vi.fn(),
 }));
 
@@ -31,7 +33,7 @@ vi.mock('../../api/myFilesLibraries', () => ({
 }));
 
 vi.mock('../../api/myFilesOffice', () => ({
-  myFilesOfficeAPI: { listGroups: mockListGroups },
+  myFilesOfficeAPI: { listGroups: mockListGroups, listGroupMembers: mockListGroupMembers },
 }));
 
 vi.mock('../../api/chatDirectory', () => ({
@@ -102,6 +104,30 @@ describe('MyFilesLibraryDialog', () => {
     fireEvent.click(screen.getByTestId('my-files-library-delete-confirm'));
 
     await waitFor(() => expect(onClose).toHaveBeenCalledWith(true, { removedId: 'lib-2' }));
+  });
+
+  it('expands a department row to show the people it gives access to', async () => {
+    mockListMembers.mockResolvedValue({
+      items: [
+        { principal_type: 'user', principal_id: '1', name: 'Админ', role: 'manage', members_count: 0 },
+        { principal_type: 'department', principal_id: 'dept-5', name: 'Бухгалтерия', role: 'view', members_count: 2 },
+      ],
+    });
+    mockListGroupMembers.mockResolvedValue({
+      items: [
+        { user_id: 11, username: 'ivanov_ii', full_name: 'Иванов Иван' },
+        { user_id: 12, username: 'petrov_pp', full_name: 'Петров Пётр' },
+      ],
+    });
+
+    render(<MyFilesLibraryDialog open membersOnly library={{ id: 'lib-9', name: 'ИТ', quota_bytes: 0 }} onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('my-files-library-expand-dept-5'));
+
+    expect(mockListGroupMembers).toHaveBeenCalledWith('dept-5');
+    const list = await screen.findByTestId('my-files-library-group-users-dept-5');
+    await within(list).findByText('Иванов Иван (ivanov_ii)');
+    await within(list).findByText('Петров Пётр (petrov_pp)');
   });
 
   it('in members-only mode a library manager edits access but not the folder itself', async () => {

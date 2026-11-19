@@ -37,6 +37,7 @@ from backend.services.mail_outgoing_html import (
     normalize_signature_line_spacing,
     parse_outgoing_css_color,
     plain_text_to_html,
+    signature_html_to_text,
     split_outgoing_html_for_signature,
     wrap_outgoing_html_fragment,
 )
@@ -195,6 +196,7 @@ _parse_outgoing_css_color = parse_outgoing_css_color
 _normalize_outgoing_readable_text_colors = normalize_outgoing_readable_text_colors
 _normalize_signature_line_spacing = normalize_signature_line_spacing
 _normalize_signature_html = normalize_signature_html
+_signature_html_to_text = signature_html_to_text
 _split_outgoing_html_for_signature = split_outgoing_html_for_signature
 _wrap_outgoing_html_fragment = wrap_outgoing_html_fragment
 _build_outgoing_html_body = build_outgoing_html_body
@@ -300,6 +302,7 @@ _MAIL_REQUIRED_COLUMNS = {
         "reply_to_message_id",
         "forward_message_id",
         "compose_mailbox_id",
+        "forward_attachment_refs_json",
         "updated_at",
     },
     "mail_folder_favorites": {"user_id", "folder_id", "created_at"},
@@ -1190,6 +1193,7 @@ class MailService:
             )
             conn.commit()
         self._migrate_mail_draft_context_compose_mailbox_column()
+        self._migrate_mail_draft_context_forward_refs_column()
         self._migrate_legacy_user_mailboxes()
 
     @property
@@ -1320,6 +1324,20 @@ class MailService:
             with self._lock, self._connect() as conn:
                 conn.execute(
                     f"ALTER TABLE {self._DRAFT_CONTEXT_TABLE} ADD COLUMN compose_mailbox_id TEXT NULL",
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    def _migrate_mail_draft_context_forward_refs_column(self) -> None:
+        if self._use_app_db and self._database_url:
+            engine = get_app_engine(self._database_url)
+            if self._is_production_postgres_app_db(engine):
+                return
+        try:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    f"ALTER TABLE {self._DRAFT_CONTEXT_TABLE} ADD COLUMN forward_attachment_refs_json TEXT NULL",
                 )
                 conn.commit()
         except Exception:
@@ -2746,6 +2764,7 @@ class MailService:
         reply_to_message_id: str | None = None,
         forward_message_id: str | None = None,
         compose_mailbox_id: str | None = None,
+        forward_attachment_refs: list[str] | None = None,
     ) -> None:
         self._metadata_store.save_draft_context(
             user_id=int(user_id),
@@ -2755,6 +2774,7 @@ class MailService:
             reply_to_message_id=reply_to_message_id,
             forward_message_id=forward_message_id,
             compose_mailbox_id=compose_mailbox_id,
+            forward_attachment_refs=forward_attachment_refs,
         )
 
     def _get_draft_context(self, *, user_id: int, mailbox_id: str | None = None, draft_exchange_id: str) -> dict[str, Any] | None:
@@ -4495,6 +4515,7 @@ class MailService:
         forward_message_id: str = "",
         retain_existing_attachments: list[str] | None = None,
         attachments: list[tuple[str, bytes]] | None = None,
+        forward_attachment_refs: list[str] | None = None,
     ) -> dict[str, Any]:
         safe_attachments = attachments or []
         self._validate_outgoing_attachments_dynamic(safe_attachments)
@@ -4549,6 +4570,7 @@ class MailService:
                 reply_to_message_id=draft_plan.reply_to_message_id or None,
                 forward_message_id=draft_plan.forward_message_id or None,
                 compose_mailbox_id=resolved_mailbox_id or None,
+                forward_attachment_refs=forward_attachment_refs,
             )
             detail = self._serialize_message_detail(
                 item=draft_item,

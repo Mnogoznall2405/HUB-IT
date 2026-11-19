@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const myFilesAdminAPI = {
   listFiles: async ({ q = '', ownerUserId = null, scope = 'all', state = 'active', limit = 50, offset = 0, signal } = {}) => {

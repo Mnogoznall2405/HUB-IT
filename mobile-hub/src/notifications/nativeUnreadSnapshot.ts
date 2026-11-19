@@ -13,6 +13,9 @@ export type NativeUnreadSnapshot = {
   notifications_unread_total: number;
   announcements_unread: number;
   successful_sources: number;
+  // false when the snapshot is partial AND there is no previous complete
+  // snapshot to fill the gaps — badge consumers must not display it as-is.
+  badge_safe?: boolean;
 };
 
 type SnapshotOptions = {
@@ -28,6 +31,10 @@ type CachedSnapshot = {
 
 const cachedSnapshots = new Map<string, CachedSnapshot>();
 const pendingSnapshots = new Map<string, Promise<NativeUnreadSnapshot>>();
+// Last snapshot built from a fully successful response set per key. A source
+// that fails now keeps its previous counters instead of collapsing to zero —
+// otherwise a hub outage would silently shrink the badge.
+const lastCompleteSnapshots = new Map<string, NativeUnreadSnapshot>();
 
 function safeCount(value: unknown): number {
   const count = Number(value || 0);
@@ -41,6 +48,7 @@ function snapshotKey(canReadChat: boolean, canReadMail: boolean): string {
 function clearSnapshotCache(): void {
   cachedSnapshots.clear();
   pendingSnapshots.clear();
+  lastCompleteSnapshots.clear();
 }
 
 subscribeAccessTokenChanges(clearSnapshotCache);
@@ -70,24 +78,47 @@ export function getNativeUnreadSnapshot({
     const hub = hubResult.status === 'fulfilled' ? hubResult.value : {};
     const chat = chatResult.status === 'fulfilled' ? chatResult.value : null;
     const mail = mailResult.status === 'fulfilled' ? mailResult.value : null;
+    const hubOk = hubResult.status === 'fulfilled';
+    const chatOk = chatResult.status === 'fulfilled';
+    const mailOk = mailResult.status === 'fulfilled';
+    const successfulSources = Number(hubOk)
+      + Number(canReadChat && chatOk)
+      + Number(canReadMail && mailOk);
+    const expectedSources = 1 + Number(canReadChat) + Number(canReadMail);
+    // Fields whose source failed keep the last complete values — a partial
+    // response must not drop existing counters to zero.
+    const fallback = successfulSources < expectedSources
+      ? lastCompleteSnapshots.get(key)
+      : undefined;
+    const pick = (ok: boolean, fresh: number, stale: number | undefined): number => (
+      ok || stale === undefined ? fresh : stale
+    );
     const value: NativeUnreadSnapshot = {
-      tasks_open: safeCount(hub?.tasks_open || hub?.tasks_open_total),
-      tasks_open_total: safeCount(hub?.tasks_open_total || hub?.tasks_open),
-      chat_messages_unread_total: safeCount(
-        chat?.messages_unread_total || hub?.chat_messages_unread_total,
+      tasks_open: pick(hubOk, safeCount(hub?.tasks_open ?? hub?.tasks_open_total), fallback?.tasks_open),
+      tasks_open_total: pick(hubOk, safeCount(hub?.tasks_open_total ?? hub?.tasks_open), fallback?.tasks_open_total),
+      // Dedicated sources win over hub totals when they answer — a real zero
+      // must not be replaced by the hub's possibly stale counter (?? not ||).
+      chat_messages_unread_total: pick(
+        !canReadChat || chatOk || hubOk,
+        safeCount(chat?.messages_unread_total ?? hub?.chat_messages_unread_total),
+        fallback?.chat_messages_unread_total,
       ),
-      mail_unread: safeCount(mail?.unread_count || hub?.mail_unread),
+      mail_unread: pick(
+        !canReadMail || mailOk || hubOk,
+        safeCount(mail?.unread_count ?? hub?.mail_unread),
+        fallback?.mail_unread,
+      ),
       mail_state: String(mail?.state || hub?.mail_state || (canReadMail ? 'unknown' : 'ok')),
-      notifications_unread_total: safeCount(hub?.notifications_unread_total),
-      announcements_unread: safeCount(hub?.announcements_unread),
-      successful_sources: Number(hubResult.status === 'fulfilled')
-        + Number(canReadChat && chatResult.status === 'fulfilled')
-        + Number(canReadMail && mailResult.status === 'fulfilled'),
+      notifications_unread_total: pick(hubOk, safeCount(hub?.notifications_unread_total), fallback?.notifications_unread_total),
+      announcements_unread: pick(hubOk, safeCount(hub?.announcements_unread), fallback?.announcements_unread),
+      successful_sources: successfulSources,
+      badge_safe: successfulSources === expectedSources || Boolean(fallback),
     };
     cachedSnapshots.set(key, {
       expiresAtMs: Date.now() + BOOTSTRAP_CACHE_TTL_MS,
       value,
     });
+    if (successfulSources >= expectedSources) lastCompleteSnapshots.set(key, value);
     return value;
   });
 

@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import * as Clipboard from 'expo-clipboard';
 import * as chatApi from '../../api/chatApi';
 import type { ChatMessage } from '../../api/types';
@@ -27,6 +27,11 @@ export function useThreadMessageActions({
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   loadInitial: () => Promise<void>;
 }) {
+  // Pin responses resolve asynchronously: if the user switched conversations
+  // meanwhile, the stale result/revert must not overwrite the new thread's pin.
+  const activeConversationRef = useRef(conversationId);
+  activeConversationRef.current = conversationId;
+
   const copyMessageText = useCallback((message: ChatMessage) => {
     void Clipboard.setStringAsync(message.body_text || '').then(() => {
       if (mountedRef.current) showNativeToast('Скопировано', 'Текст сообщения скопирован.');
@@ -81,14 +86,15 @@ export function useThreadMessageActions({
     setPinnedMessageId(next);
     void setPinnedChatMessageId(owner, conversationId, next).catch(() => undefined);
     void chatApi.setPinnedMessage(conversationId, next).then((updated) => {
-      if (!mountedRef.current || updated.pinned_message_id === undefined) return;
+      if (!mountedRef.current || activeConversationRef.current !== conversationId) return;
+      if (updated.pinned_message_id === undefined) return;
       serverPinKnownRef.current = true;
       setPinnedMessageId(updated.pinned_message_id);
       void setPinnedChatMessageId(owner, conversationId, updated.pinned_message_id).catch(() => undefined);
     }).catch(() => {
       // The optimistic pin must not survive a rejected write — the banner would
       // show a pin the server never accepted until the next reload.
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || activeConversationRef.current !== conversationId) return;
       setPinnedMessageId(previous);
       void setPinnedChatMessageId(owner, conversationId, previous).catch(() => undefined);
     });
@@ -101,13 +107,13 @@ export function useThreadMessageActions({
     setPinnedMessageId(null);
     void setPinnedChatMessageId(owner, conversationId, null).catch(() => undefined);
     void chatApi.setPinnedMessage(conversationId, null).then((updated) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || activeConversationRef.current !== conversationId) return;
       serverPinKnownRef.current = true;
       const next = updated.pinned_message_id || null;
       setPinnedMessageId(next);
       void setPinnedChatMessageId(owner, conversationId, next).catch(() => undefined);
     }).catch(() => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || activeConversationRef.current !== conversationId) return;
       setPinnedMessageId(previous);
       void setPinnedChatMessageId(owner, conversationId, previous).catch(() => undefined);
     });

@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./client', () => ({
+vi.mock('./http', () => ({
   default: {
     get: vi.fn(),
     post: vi.fn(),
   },
 }));
 
-import apiClient from './client';
+import apiClient from './http';
 import { chatConfigAPI, getChatConfigCached, resetChatConfigCache } from './chatConfig';
 
 describe('chatConfigAPI', () => {

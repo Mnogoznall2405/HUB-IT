@@ -46,6 +46,35 @@ export default function SecurityTab({
 }) {
   const [revokeDevice, setRevokeDevice] = useState(null);
   const [revoking, setRevoking] = useState(false);
+  const [stepUpAction, setStepUpAction] = useState(null);
+  const [stepUpPassword, setStepUpPassword] = useState('');
+  const [stepUpCode, setStepUpCode] = useState('');
+  const [stepUpBusy, setStepUpBusy] = useState(false);
+
+  const closeStepUp = () => {
+    if (stepUpBusy) return;
+    setStepUpAction(null);
+    setStepUpPassword('');
+    setStepUpCode('');
+  };
+
+  const submitStepUp = async () => {
+    const code = stepUpCode.trim();
+    const payload = {
+      password: stepUpPassword,
+      totp_code: /^\d{6,8}$/.test(code) ? code : null,
+      backup_code: /^\d{6,8}$/.test(code) ? null : code || null,
+    };
+    setStepUpBusy(true);
+    try {
+      const done = stepUpAction === 'regenerate'
+        ? await onRegenerateBackupCodes(payload)
+        : await onResetTwoFactor(payload);
+      if (done !== false) closeStepUp();
+    } finally {
+      setStepUpBusy(false);
+    }
+  };
 
   const twofaPolicyLabel = user?.twofa_policy === 'external_only'
     ? 'Только для внешней сети'
@@ -78,14 +107,14 @@ export default function SecurityTab({
           <Grid item xs={12} sm={6} xl={3}><ProfileField label="2FA нужен сейчас" value={twofaRequestLabel} /></Grid>
         </Grid>
         <Stack direction="row" useFlexGap flexWrap="wrap" gap={1} sx={{ mt: 1.5 }}>
-          <Button variant="contained" startIcon={<GetAppOutlinedIcon />} onClick={onRegenerateBackupCodes}>
+          <Button variant="contained" startIcon={<GetAppOutlinedIcon />} onClick={() => setStepUpAction('regenerate')}>
             Сгенерировать новые backup-коды
           </Button>
           <Button
             color="error"
             variant="outlined"
             startIcon={resettingTwoFactor ? <CircularProgress size={16} color="inherit" /> : <DeleteOutlineOutlinedIcon />}
-            onClick={onResetTwoFactor}
+            onClick={() => setStepUpAction('reset')}
             disabled={loading || resettingTwoFactor}
           >
             Сбросить 2FA и доверенные устройства
@@ -170,6 +199,49 @@ export default function SecurityTab({
             try { await onRevokeTrustedDevice(revokeDevice.id); setRevokeDevice(null); }
             finally { setRevoking(false); }
           }}>Отозвать ключ</Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={Boolean(stepUpAction)} onClose={closeStepUp} fullWidth maxWidth="sm">
+        <DialogTitle>
+          {stepUpAction === 'reset' ? 'Сбросить 2FA и доверенные устройства?' : 'Подтвердите личность'}
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+            <DialogContentText>
+              {stepUpAction === 'reset'
+                ? 'Все доверенные устройства и backup-коды будут удалены, сессии закрыты. После этого нужно будет войти заново и настроить код повторно.'
+                : 'Для перевыпуска backup-кодов подтвердите пароль и текущий код двухфакторной аутентификации.'}
+            </DialogContentText>
+            <TextField
+              label="Пароль"
+              type="password"
+              value={stepUpPassword}
+              onChange={(event) => setStepUpPassword(event.target.value)}
+              fullWidth
+              autoComplete="current-password"
+              disabled={stepUpBusy}
+            />
+            <TextField
+              label="Код из приложения или backup-код"
+              value={stepUpCode}
+              onChange={(event) => setStepUpCode(event.target.value)}
+              fullWidth
+              autoComplete="one-time-code"
+              disabled={stepUpBusy}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeStepUp} disabled={stepUpBusy}>Отмена</Button>
+          <Button
+            variant="contained"
+            color={stepUpAction === 'reset' ? 'error' : 'primary'}
+            onClick={submitStepUp}
+            disabled={stepUpBusy || !stepUpPassword || !stepUpCode.trim()}
+            startIcon={stepUpBusy ? <CircularProgress size={16} color="inherit" /> : null}
+          >
+            Подтвердить
+          </Button>
         </DialogActions>
       </Dialog>
       <Dialog open={linkTrustedDeviceOpen} onClose={onCloseLinkTrustedDevice} fullWidth maxWidth="sm">

@@ -55,7 +55,7 @@ function NavigateRegistrar({ navigateRef }) {
   return null;
 }
 
-export default function ChatCallsProvider({ children }) {
+export default function ChatCallsProvider({ children, bare = false, onContextValue = null }) {
   const { user, hasPermission } = useAuth();
   const inRouter = useInRouterContext();
   const selfUserId = user?.id != null ? String(user.id) : '';
@@ -685,6 +685,31 @@ export default function ChatCallsProvider({ children }) {
     dismissNotice,
     controls,
   ]);
+
+  // `bare` mode is used by the statically-mounted app shell: it owns the
+  // ChatCallsContext.Provider so the route tree never waits on (or remounts
+  // behind) this lazy chunk — the value is reported upward instead.
+  useEffect(() => {
+    if (!onContextValue) return undefined;
+    onContextValue(value);
+    return () => onContextValue(null);
+  }, [onContextValue, value]);
+
+  if (bare) {
+    return (
+      <>
+        {inRouter ? <NavigateRegistrar navigateRef={navigateRef} /> : null}
+        {callsEnabled ? (
+          <>
+            <IncomingCallDialog />
+            <MicProblemDialog />
+            <ActiveCallPanel />
+            <CallNoticeSnackbar />
+          </>
+        ) : null}
+      </>
+    );
+  }
 
   return (
     <ChatCallsContext.Provider value={value}>

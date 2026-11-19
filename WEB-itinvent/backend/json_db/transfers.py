@@ -191,14 +191,17 @@ class TransferManager:
         """
         return self.get_transfers(employee=employee, limit=limit)
 
-    def get_transfer_statistics(self) -> Dict[str, Any]:
+    def get_transfer_statistics(self, db_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Get statistics about equipment transfers.
+
+        Args:
+            db_name: Optional database name to scope the statistics
 
         Returns:
             Statistics dictionary
         """
-        records = self.get_transfers()
+        records = self.get_transfers(db_name=db_name)
 
         # Count by employee (both new and old)
         employee_counts: Dict[str, int] = {}

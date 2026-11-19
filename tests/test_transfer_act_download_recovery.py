@@ -28,3 +28,18 @@ def test_recovers_pdf_by_act_id_and_rejects_non_uuid(tmp_path, monkeypatch):
     assert transfer_service.recover_act_record_from_disk("../*") is None
     assert transfer_service.recover_act_record_from_disk("*") is None
     assert transfer_service.recover_act_record_from_disk("00000000-0000-0000-0000-000000000000") is None
+
+
+def test_recovery_reads_owner_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(transfer_service, "DEFAULT_ACTS_DIR", tmp_path)
+    (tmp_path / f"transfer_act_{ACT_ID}_Иванов.pdf").write_bytes(b"%PDF-1.7")
+
+    assert transfer_service.recover_act_record_from_disk(ACT_ID)["created_by_user_id"] is None
+
+    transfer_service._persist_act_owner(ACT_ID, 42)
+    record = transfer_service.recover_act_record_from_disk(ACT_ID)
+    assert record["created_by_user_id"] == 42
+
+    transfer_service._persist_act_owner(ACT_ID, None)
+    transfer_service._persist_act_owner("bad-id", 42)
+    assert [p.name for p in tmp_path.glob("*.owner")] == [f"transfer_act_{ACT_ID}.owner"]

@@ -6,7 +6,7 @@ const apiClientMock = vi.hoisted(() => ({
   delete: vi.fn(),
 }));
 
-vi.mock('./client', () => ({ default: apiClientMock }));
+vi.mock('./http', () => ({ default: apiClientMock }));
 
 import { chatStickersAPI } from './chatStickers';
 

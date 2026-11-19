@@ -10,7 +10,7 @@ const { apiClientMock } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('./client', () => ({ default: apiClientMock }));
+vi.mock('./http', () => ({ default: apiClientMock }));
 
 import { companyStructureAPI } from './companyStructure';
 

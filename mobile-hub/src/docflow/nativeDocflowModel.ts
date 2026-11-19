@@ -67,6 +67,17 @@ export function docflowCommandIsWaiting(command: DocflowCommand | null): boolean
   return command?.status === 'pending' || command?.status === 'state_unknown';
 }
 
+// Same budget as the web polling loop (~90 s at a 3 s interval): automatic
+// checks stop and only the explicit «Проверить» action remains, so a stuck
+// command cannot call 1С every three seconds forever from one open screen.
+export const DOCFLOW_COMMAND_AUTO_CHECK_LIMIT = 30;
+
+// Auto checks pause while the app is backgrounded or inactive (system
+// pickers, permission sheets) instead of calling 1С from the background.
+export function isForegroundAppState(state: string | null | undefined): boolean {
+  return state !== 'background' && state !== 'inactive';
+}
+
 export function mergeAppliedDocflowTask(
   current: DocflowTaskDetail,
   command: DocflowCommand,

@@ -14,11 +14,9 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import {
-  PlayArrowOutlined as PlayArrowOutlinedIcon,
-  Refresh as RefreshIcon,
-  ShieldOutlined as ShieldOutlinedIcon,
-} from '@mui/icons-material';
+import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import PageTopBar from '../../components/layout/PageTopBar';
 
 function getHealthState(totals) {

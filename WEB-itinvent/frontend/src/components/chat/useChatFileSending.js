@@ -482,20 +482,19 @@ export default function useChatFileSending({
     setReplyMessage(null);
     setSendingFiles(true);
 
-    // R20: close the newer-messages gap before the optimistic bubbles land so
-    // they sit after the real tail of the history.
-    await ensureLatestThreadWindow?.();
-    optimisticMessages.forEach((optimisticMessage, index) => {
-      if (!optimisticMessage) return;
-      applyOutgoingThreadMessage(conversationId, optimisticMessage, {
-        scroll: index === 0,
-        scrollSource: 'sendFiles',
-      });
-    });
-
     // Object URLs stay alive while a failed ⚠ bubble still shows previews.
     const settledOptimisticIds = new Set();
     try {
+      // R20: close the newer-messages gap before the optimistic bubbles land so
+      // they sit after the real tail of the history.
+      await ensureLatestThreadWindow?.();
+      optimisticMessages.forEach((optimisticMessage, index) => {
+        if (!optimisticMessage) return;
+        applyOutgoingThreadMessage(conversationId, optimisticMessage, {
+          scroll: index === 0,
+          scrollSource: 'sendFiles',
+        });
+      });
       for (let chunkIndex = 0; chunkIndex < albumChunks.length; chunkIndex += 1) {
         const chunkItems = albumChunks[chunkIndex];
         const optimisticMessage = optimisticMessages[chunkIndex];
@@ -569,6 +568,24 @@ export default function useChatFileSending({
             notifyApiError(error, 'Не удалось отправить файлы в чат.');
           }
         }
+      }
+    } catch (error) {
+      // A failure before the per-chunk loop (e.g. ensureLatestThreadWindow
+      // 429/503) lands here: no optimistic bubbles were applied, so restore
+      // the selection instead of losing it and surface the error.
+      optimisticMessages.forEach((optimisticMessage) => {
+        if (!settledOptimisticIds.has(optimisticMessage?.id)) {
+          revokeObjectUrls(optimisticMessage?.optimisticObjectUrls);
+        }
+      });
+      const canceled = String(error?.code || '') === 'ERR_CANCELED';
+      if (!canceled && mountedRef.current) {
+        retainFailedUpload(conversationId, {
+          items: [...selectedUploadItems], caption: snapshotCaption, asFiles: sendMediaAsFiles,
+          reply: draftReplyMessage,
+          attempt: uploadAttempt,
+        });
+        notifyApiError(error, 'Не удалось отправить файлы в чат.');
       }
     } finally {
       optimisticMessages.forEach((optimisticMessage) => {

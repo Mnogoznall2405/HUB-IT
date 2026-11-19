@@ -24,6 +24,7 @@ import {
   writeNativeEntitySnapshot,
 } from '../../cache/nativeSnapshotCache';
 import { NativeMailMessageCard } from '../../components/mail/NativeMailMessageCard';
+import { hydrateNativeMailImages } from '../../mail/nativeMailFiles';
 import { NativeMailImageViewer } from '../../components/mail/NativeMailImageViewer';
 import { NativeMailQuickReplyBar } from '../../components/mail/NativeMailQuickReplyBar';
 import { openNativeFile, shareNativeFile } from '../../files/nativeAttachmentDownloads';
@@ -207,6 +208,33 @@ function NativeMailConversationContent() {
   const visibleMessageId = allCollapsed ? '' : conversation?.items.some((item) => item.id === expandedId) ? expandedId : (latest?.id || '');
   const visibleMessageIdRef = useRef(visibleMessageId);
   visibleMessageIdRef.current = visibleMessageId;
+
+  // CID images need a bounded data URL — hydrate the visible message the same
+  // way the single-message screen does.
+  const hydratedMessageRef = useRef('');
+  useEffect(() => {
+    const message = conversation?.items.find((item) => item.id === visibleMessageId);
+    if (!message?.attachments?.length || offlineMode) return;
+    if (!message.attachments.some((attachment) => (
+      (attachment.is_inline || String(attachment.content_id || '').trim())
+      && !String(attachment.inline_data_url || '').trim()
+    ))) return;
+    const hydrationKey = `${message.id}:${message.attachments.length}`;
+    if (hydratedMessageRef.current === hydrationKey) return;
+    hydratedMessageRef.current = hydrationKey;
+    let cancelled = false;
+    void hydrateNativeMailImages(message.id, String(message.mailbox_id || mailboxId), message.attachments)
+      .then((attachments) => {
+        if (cancelled) return;
+        setConversation((current) => (current ? {
+          ...current,
+          items: current.items.map((item) => (item.id === message.id ? { ...item, attachments } : item)),
+        } : current));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [conversation?.items, mailboxId, offlineMode, visibleMessageId]);
+
   const scrollToVisibleMessage = useCallback(() => {
     if (!scrollPendingRef.current || !visibleMessageId) return;
     const index = conversation?.items.findIndex(item => item.id === visibleMessageId) ?? -1;

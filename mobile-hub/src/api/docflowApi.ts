@@ -593,3 +593,77 @@ export async function getDocflowAssignmentCommand(commandId: string): Promise<Do
   const { data } = await apiClient.get(`/docflow/assignments/commands/${encodeURIComponent(id)}`, noStore);
   return normalizeAssignmentCommand(data);
 }
+
+export type DocflowAbsence = {
+  id: string;
+  employee_code: string | null;
+  matching_status: 'matched' | 'unresolved';
+  display_name: string;
+  starts_on: string;
+  ends_on: string;
+  kind: string;
+  label: string;
+  comment: string;
+  will_handle_tasks: boolean;
+  differences: string[];
+};
+
+export type DocflowAbsencesResult = {
+  status: 'available' | 'disabled' | 'unavailable';
+  items: DocflowAbsence[];
+  count: number | null;
+  unresolved_count: number;
+  as_of: string;
+  zup_comparison: 'available' | 'unavailable';
+};
+
+function normalizeDocflowAbsence(value: unknown): DocflowAbsence | null {
+  const row = record(value);
+  const id = text(row.id, 192);
+  if (!id) return null;
+  return {
+    id,
+    employee_code: nullableText(row.employee_code, 128),
+    matching_status: row.matching_status === 'unresolved' ? 'unresolved' : 'matched',
+    display_name: text(row.display_name, 512),
+    starts_on: text(row.starts_on, 32),
+    ends_on: text(row.ends_on, 32),
+    kind: text(row.kind, 64),
+    label: text(row.label, 256),
+    comment: text(row.comment, 2_000),
+    will_handle_tasks: row.will_handle_tasks === true,
+    differences: (Array.isArray(row.differences) ? row.differences : [])
+      .map((difference) => text(difference, 64))
+      .filter(Boolean),
+  };
+}
+
+export function normalizeDocflowAbsences(payload: unknown): DocflowAbsencesResult {
+  const row = record(payload);
+  const items = (Array.isArray(row.items) ? row.items : [])
+    .map(normalizeDocflowAbsence)
+    .filter((item): item is DocflowAbsence => Boolean(item));
+  const rawStatus = text(row.status, 32);
+  return {
+    status: rawStatus === 'available' || rawStatus === 'disabled' ? rawStatus : 'unavailable',
+    items,
+    count: row.count == null ? null : nonNegative(row.count),
+    unresolved_count: nonNegative(row.unresolved_count),
+    as_of: text(row.as_of, 128),
+    zup_comparison: row.zup_comparison === 'available' ? 'available' : 'unavailable',
+  };
+}
+
+// Personal read-only absence list: the server filters by the caller's own 1C
+// account, so only the optional employee_code narrows the result.
+export async function listDocflowAbsences(
+  options: { employeeCode?: string; signal?: AbortSignal } = {},
+): Promise<DocflowAbsencesResult> {
+  const employeeCode = text(options.employeeCode, 128);
+  const { data } = await apiClient.get('/docflow/absences', {
+    params: employeeCode ? { employee_code: employeeCode } : {},
+    signal: options.signal,
+    ...noStore,
+  });
+  return normalizeDocflowAbsences(data);
+}

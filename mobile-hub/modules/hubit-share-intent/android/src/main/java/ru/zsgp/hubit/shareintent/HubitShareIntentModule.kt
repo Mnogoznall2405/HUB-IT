@@ -123,6 +123,23 @@ class HubitShareIntentModule : Module() {
       }
       Unit
     }
+
+    // Logout/account switch: forget the unread intent and every uncopied stream —
+    // a share must never surface for the next signed-in user.
+    AsyncFunction("clearPendingShareAsync") {
+      pendingIntent = null
+      // getPendingShareAsync falls back to the live activity's intent — replace
+      // it with a plain MAIN intent so a stale share action cannot resurface.
+      appContext.currentActivity?.let { activity ->
+        activity.intent = Intent(activity, activity::class.java).setAction(Intent.ACTION_MAIN)
+      }
+      pendingStreams.clear()
+      val context = appContext.reactContext
+      if (context != null) {
+        File(context.cacheDir, SHARE_CACHE_DIR).deleteRecursively()
+      }
+      Unit
+    }
   }
 
   private fun isSupportedShare(intent: Intent?): Boolean {
@@ -217,9 +234,35 @@ class HubitShareIntentModule : Module() {
     return StreamMeta(name.take(MAX_NAME_LENGTH), mimeType.take(MAX_MIME_LENGTH), size)
   }
 
+  // The filesystem caps one path component at 255 UTF-8 bytes: a char count
+  // overflows on Cyrillic names, so truncation must count bytes.
   private fun safeFileName(name: String): String {
     val cleaned = name.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001f]"), "_").trim().trimStart('.')
-    return if (cleaned.isEmpty()) "file" else cleaned.take(MAX_NAME_LENGTH)
+    if (cleaned.isEmpty()) return "file"
+    if (cleaned.toByteArray(Charsets.UTF_8).size <= MAX_NAME_BYTES) return cleaned
+    val dot = cleaned.lastIndexOf('.')
+    val extension = if (dot > 0) {
+      val ext = cleaned.substring(dot)
+      if (ext.toByteArray(Charsets.UTF_8).size <= MAX_EXTENSION_BYTES) ext else ""
+    } else ""
+    val stem = if (extension.isNotEmpty()) cleaned.substring(0, dot) else cleaned
+    val budget = (MAX_NAME_BYTES - extension.toByteArray(Charsets.UTF_8).size).coerceAtLeast(1)
+    return truncateUtf8(stem, budget) + extension
+  }
+
+  private fun truncateUtf8(value: String, maxBytes: Int): String {
+    var bytes = 0
+    var index = 0
+    val out = StringBuilder()
+    while (index < value.length) {
+      val codePoint = value.codePointAt(index)
+      val size = String(Character.toChars(codePoint)).toByteArray(Charsets.UTF_8).size
+      if (bytes + size > maxBytes) break
+      bytes += size
+      out.appendCodePoint(codePoint)
+      index += Character.charCount(codePoint)
+    }
+    return out.toString()
   }
 
   private fun purgeStaleShares(root: File) {
@@ -235,6 +278,8 @@ class HubitShareIntentModule : Module() {
     const val MAX_SUBJECT_LENGTH = 500
     const val MAX_MIME_LENGTH = 100
     const val MAX_NAME_LENGTH = 180
+    const val MAX_NAME_BYTES = 180
+    const val MAX_EXTENSION_BYTES = 24
     const val MAX_FILES = 10
     const val MAX_PENDING_SHARES = 3
     const val MAX_FILE_BYTES = 1024L * 1024L * 1024L

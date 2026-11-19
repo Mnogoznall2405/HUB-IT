@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 // Распознавание серийных номеров на фото: охват и запуск пакета (запуск — только администратор).
 export const equipmentPhotoOcrAPI = {

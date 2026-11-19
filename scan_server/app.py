@@ -23,6 +23,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import ClientDisconnect
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from agent_version import SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
 
 from .agent_package import package_payload, resolve_agent_package
@@ -235,14 +237,71 @@ def _key_fingerprint(value: Optional[str]) -> str:
     return hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
 
-def _check_agent_key(x_api_key: Optional[str]) -> None:
+def _agent_id_for_key(x_api_key: Optional[str]) -> str:
+    """The agent a per-agent key is bound to; ``""`` for ring/invalid keys."""
     token = str(x_api_key or "").strip()
-    if not token or token not in set(config.api_keys):
+    if not token:
+        return ""
+    for agent_name, bound_key in config.agent_api_keys.items():
+        if bound_key == token:
+            return agent_name
+    # DB store (app.agent_api_keys): auto-enrolled bindings beyond the env map.
+    try:
+        lookup = getattr(store, "agent_key_lookup_name", None)
+        if callable(lookup):
+            return lookup(token) or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _check_agent_key(x_api_key: Optional[str]) -> None:
+    """Reject an unknown key: a ring key (``SCAN_SERVER_API_KEYS``) or a bound per-agent key."""
+    token = str(x_api_key or "").strip()
+    if not token or (token not in set(config.api_keys) and not _agent_id_for_key(token)):
         logger.warning("Scan API rejected unknown key fingerprint=%s", _key_fingerprint(token))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
         )
+
+
+def _check_agent_identity(
+    x_api_key: Optional[str],
+    agent_id: Optional[str],
+    *,
+    source_ip: str = "",
+    source_mac: str = "",
+) -> None:
+    """A key bound via ``SCAN_AGENT_API_KEYS`` may only act for its own ``agent_id``."""
+    bound = _agent_id_for_key(x_api_key)
+    if bound and bound.casefold() != str(agent_id or "").strip().casefold():
+        logger.warning(
+            "Scan API rejected key bound to agent=%s used for agent_id=%s",
+            bound,
+            str(agent_id or "").strip(),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )
+    if not bound:
+        # Ring-key auth by a registered agent: mint its bound pair once and queue
+        # rotate_key so the machine migrates itself (zero-touch enrollment).
+        claimed = str(agent_id or "").strip()
+        if claimed:
+            try:
+                store.maybe_enroll_agent_keys(claimed, source_ip=source_ip, source_mac=source_mac)
+            except Exception:
+                logger.debug("agent key auto-enroll skipped for agent_id=%s", claimed, exc_info=True)
+
+
+def _payload_mac(data: Dict[str, Any]) -> str:
+    if not isinstance(data, dict):
+        return ""
+    meta = data.get("metadata")
+    raw = data.get("mac_address") or (meta.get("mac_address") if isinstance(meta, dict) else "")
+    return str(raw or "").strip()
 
 
 def _resolve_access_token(
@@ -832,14 +891,7 @@ def _run_startup_maintenance() -> None:
                 int(purge_result.get("artifact_files") or 0),
                 int(purge_result.get("artifact_dirs") or 0),
             )
-        spool_result = store.reconcile_job_pdf_spool()
-        if any(int(spool_result.get(key) or 0) > 0 for key in ("removed_orphan_files", "removed_final_files", "failed_jobs")):
-            logger.info(
-                "Transient PDF spool reconcile completed: orphan=%s final=%s failed_jobs=%s",
-                int(spool_result.get("removed_orphan_files") or 0),
-                int(spool_result.get("removed_final_files") or 0),
-                int(spool_result.get("failed_jobs") or 0),
-            )
+        # PDF spool reconciliation belongs to ScanWorker.run(), including embedded workers.
     except Exception as exc:
         logger.exception("Scan startup maintenance failed: %s", exc)
 
@@ -933,6 +985,28 @@ class _ScanTimingMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(_ScanTimingMiddleware)
+
+
+class _ScanUploadDisconnectMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"] != "/api/v1/scan/ingest":
+            await self.app(scope, receive, send)
+            return
+
+        async def receive_upload() -> Message:
+            try:
+                return await receive()
+            except ConnectionResetError:
+                # Normalize before BaseHTTPMiddleware wraps receive errors in an ExceptionGroup.
+                return {"type": "http.disconnect"}
+
+        await self.app(scope, receive_upload, send)
+
+
+app.add_middleware(_ScanUploadDisconnectMiddleware)
 
 
 @app.get("/health")
@@ -1059,6 +1133,12 @@ def heartbeat(
 ) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
     data = _model_dump(payload)
+    _check_agent_identity(
+        x_api_key,
+        payload.agent_id,
+        source_ip=_request_ip(request),
+        source_mac=_payload_mac(data),
+    )
     if not str(data.get("ip_address") or "").strip():
         data["ip_address"] = _request_ip(request)
     data["last_seen_at"] = int(data.get("last_seen_at") or _now_ts())
@@ -1083,6 +1163,14 @@ def _ingest_json_max_bytes() -> int:
     return int(config.pdf_max_bytes) * 3 + 2 * 1024 * 1024
 
 
+def _ingest_body_idle_timeout_sec() -> float:
+    try:
+        value = int(os.getenv("SCAN_INGEST_BODY_IDLE_TIMEOUT_SEC", "60") or "60")
+    except ValueError:
+        value = 60
+    return float(value if value > 0 else 60)
+
+
 async def _read_body_limited(request: Request, limit: int) -> bytes:
     """Read the request body but stop at ``limit`` bytes (413) instead of buffering it all."""
     declared = request.headers.get("content-length")
@@ -1090,7 +1178,18 @@ async def _read_body_limited(request: Request, limit: int) -> bytes:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Request body too large")
     chunks: List[bytes] = []
     total = 0
-    async for chunk in request.stream():
+    stream = request.stream().__aiter__()
+    while True:
+        try:
+            # Limit inactivity between chunks, not the duration of a progressing upload.
+            chunk = await asyncio.wait_for(anext(stream), timeout=_ingest_body_idle_timeout_sec())
+        except StopAsyncIteration:
+            break
+        except (TimeoutError, ClientDisconnect, ConnectionResetError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                detail="Request body was not completely received",
+            ) from exc
         total += len(chunk)
         if total > limit:
             raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Request body too large")
@@ -1116,6 +1215,7 @@ async def ingest(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid JSON body") from exc
         if data is None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="JSON body must be an object")
+        _check_agent_identity(x_api_key, data.get("agent_id"), source_ip=_request_ip(request), source_mac=_payload_mac(data))
         return await _run_ingest_admitted(data, request_ip=_request_ip(request))
 
 
@@ -1134,6 +1234,7 @@ async def ingest_pdf_slice(
     if not isinstance(raw_metadata, dict):
         raise HTTPException(status_code=400, detail="metadata_json must be an object")
     metadata = _model_dump(IngestPayload(**raw_metadata))
+    _check_agent_identity(x_api_key, metadata.get("agent_id"), source_ip=_request_ip(request), source_mac=_payload_mac(metadata))
     metadata["source_kind"] = "pdf_slice"
     metadata["pdf_slice_b64"] = ""
     details = metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
@@ -1174,6 +1275,7 @@ async def ingest_document(
     if not isinstance(raw_metadata, dict):
         raise HTTPException(status_code=400, detail="metadata_json must be an object")
     metadata = _model_dump(IngestPayload(**raw_metadata))
+    _check_agent_identity(x_api_key, metadata.get("agent_id"), source_ip=_request_ip(request), source_mac=_payload_mac(metadata))
     metadata.pop("document_b64", None)
     file_name = str(metadata.get("file_name") or document.filename or "document.bin")
     extension = Path(file_name).suffix.lower()
@@ -1211,12 +1313,13 @@ def poll_tasks(
     x_api_key: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
+    _check_agent_identity(x_api_key, agent_id, source_ip=_request_ip(request))
     store.touch_agent_presence(
         agent_id=agent_id,
         ip_address=_request_ip(request),
         metadata={"last_source": "poll_tasks"},
     )
-    tasks = store.poll_tasks(agent_id=agent_id, limit=min(limit, config.poll_limit))
+    tasks = store.poll_tasks(agent_id=agent_id, limit=min(limit, config.poll_limit), source_ip=_request_ip(request))
     return {"agent_id": agent_id, "tasks": tasks}
 
 
@@ -1228,6 +1331,7 @@ def task_result(
     x_api_key: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
+    _check_agent_identity(x_api_key, payload.agent_id, source_ip=_request_ip(request))
     status_value = str(payload.status or "").strip().lower()
     if status_value not in {"acknowledged", "completed", "failed"}:
         raise HTTPException(status_code=400, detail="Unsupported status")
@@ -1349,7 +1453,7 @@ def create_task(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_TASKS)),
 ) -> Dict[str, Any]:
     command = str(payload.command or "").strip().lower()
-    if command not in {"ping", "scan_now", "self_update", "install_package", "disable_message_probes"}:
+    if command not in {"ping", "scan_now", "self_update", "install_package", "disable_message_probes", "rotate_key"}:
         raise HTTPException(status_code=400, detail="Unsupported command")
 
     task_payload = payload.payload if isinstance(payload.payload, dict) else {}
@@ -1373,6 +1477,14 @@ def create_task(
         except ValueError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         task_payload = package_payload(info)
+    if command == "rotate_key":
+        # Caller-supplied key material is never trusted: the payload is rebuilt
+        # from app.agent_api_keys, so an operator can only re-deliver the pair
+        # the store already holds for this agent.
+        rebuilt = store.rotate_payload_for_agent(payload.agent_id)
+        if rebuilt is None:
+            raise HTTPException(status_code=409, detail="Agent has no bound key pair to rotate")
+        task_payload = rebuilt
 
     created = store.create_task(
         agent_id=payload.agent_id,
@@ -1735,4 +1847,6 @@ if __name__ == "__main__":
         port=config.port,
         reload=False,
         loop="scan_server.uvicorn_loops:windows_proactor_loop_factory",
+        proxy_headers=True,
+        forwarded_allow_ips="127.0.0.1,::1",
     )

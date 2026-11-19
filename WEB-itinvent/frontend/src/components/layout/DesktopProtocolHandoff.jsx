@@ -5,10 +5,12 @@ import { Box, Button, Collapse, Paper, Stack, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import ComputerOutlinedIcon from '@mui/icons-material/ComputerOutlined';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+import useMediaQuery from '@mui/material/useMediaQuery';
 import {
   buildHubitProtocolHref,
   canOfferDesktopHandoff,
   launchHubitProtocol,
+  markDesktopHandoffSeen,
   resolveHandoffRoute,
   setDesktopHandoffPreference,
   skipDesktopHandoffThisSession,
@@ -40,9 +42,12 @@ export default function DesktopProtocolHandoff() {
   // AI15/Д1: на странице чата баннер «Открыть в HUB Desktop» не показываем
   // и протокол не запускаем — чат должен оставаться в браузере.
   const isChatRoute = location.pathname.startsWith('/chat');
+  // FEA-010: баннер и автозапуск протокола не имеет смысла на узких экранах —
+  // там Desktop-клиент всё равно недоступен.
+  const isNarrowScreen = useMediaQuery('(max-width:599.95px)');
 
   useEffect(() => {
-    if (isChatRoute || !canOfferDesktopHandoff()) {
+    if (isChatRoute || isNarrowScreen || !canOfferDesktopHandoff()) {
       setVisible(false);
       setProtocolHref('');
       return;
@@ -58,11 +63,12 @@ export default function DesktopProtocolHandoff() {
 
     setProtocolHref(href);
     setVisible(true);
+    markDesktopHandoffSeen();
     if (!autoLaunchedRef.current) {
       autoLaunchedRef.current = true;
       launchHubitProtocol(href);
     }
-  }, [isChatRoute, location.pathname, location.search]);
+  }, [isChatRoute, isNarrowScreen, location.pathname, location.search]);
 
   if (!visible || !protocolHref || isChatRoute) return null;
 

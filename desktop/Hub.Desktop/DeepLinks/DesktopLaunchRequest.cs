@@ -4,13 +4,15 @@ public sealed record DesktopLaunchRequest(
     bool StartInBackground,
     string? Route,
     bool OpenDownloads,
-    IReadOnlyList<string> SharedFiles)
+    IReadOnlyList<string> SharedFiles,
+    bool OpenNativeHub)
 {
     public static DesktopLaunchRequest Default { get; } = new(
         StartInBackground: false,
         Route: null,
         OpenDownloads: false,
-        SharedFiles: Array.Empty<string>());
+        SharedFiles: Array.Empty<string>(),
+        OpenNativeHub: false);
 
     public bool HasSharedFiles => SharedFiles.Count > 0;
 
@@ -38,6 +40,12 @@ public sealed record DesktopLaunchRequest(
                 return true;
             }
 
+            if (arguments[0].Equals("--native", StringComparison.OrdinalIgnoreCase))
+            {
+                request = Default with { OpenNativeHub = true };
+                return true;
+            }
+
             if (DesktopDeepLinkParser.TryParseProtocolUri(arguments[0], out var protocolRoute))
             {
                 request = Default with { Route = protocolRoute };
@@ -53,6 +61,34 @@ public sealed record DesktopLaunchRequest(
         {
             request = Default with { Route = route };
             return true;
+        }
+
+        // Комбинация «--native --route /tasks» (порядок аргументов не важен):
+        // нативное окно сразу на указанной странице.
+        if (arguments.Count == 3)
+        {
+            var nativeIndex = -1;
+            for (var i = 0; i < arguments.Count; i++)
+            {
+                if (arguments[i].Equals("--native", StringComparison.OrdinalIgnoreCase))
+                {
+                    nativeIndex = i;
+                }
+            }
+
+            if (nativeIndex >= 0)
+            {
+                var rest = arguments
+                    .Where((_, index) => index != nativeIndex)
+                    .ToList();
+                if (rest.Count == 2
+                    && rest[0].Equals("--route", StringComparison.OrdinalIgnoreCase)
+                    && DesktopDeepLinkParser.TryParseInternalRoute(rest[1], out var nativeRoute))
+                {
+                    request = Default with { OpenNativeHub = true, Route = nativeRoute };
+                    return true;
+                }
+            }
         }
 
         if (arguments[0].Equals("--share", StringComparison.OrdinalIgnoreCase))

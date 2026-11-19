@@ -4,8 +4,11 @@ const authHarness = vi.hoisted(() => ({
   refresh: vi.fn(),
 }));
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/http', () => ({
   API_V1_BASE: '/api/v1',
+}));
+
+vi.mock('../api/auth', () => ({
   authAPI: authHarness,
 }));
 
@@ -144,13 +147,27 @@ describe('TaskCanvasSocketClient', () => {
     client.close();
   });
 
-  it.each([4000, 4400, 4403, 4404])('does not reconnect after a terminal policy close %s', async (code) => {
+  it.each([4400, 4403, 4404])('does not reconnect after a terminal policy close %s', async (code) => {
     const { TaskCanvasSocketClient } = await loadTaskCanvasSocket();
     const client = new TaskCanvasSocketClient({ taskId: 'task-1' });
     client.connect();
     MockWebSocket.instances[0].emitClose({ code });
     await vi.advanceTimersByTimeAsync(60000);
     expect(MockWebSocket.instances).toHaveLength(1);
+    expect(authHarness.refresh).not.toHaveBeenCalled();
+    client.close();
+  });
+
+  it('reconnects on a long delay after a 4000 eviction close', async () => {
+    const { TaskCanvasSocketClient } = await loadTaskCanvasSocket();
+    const client = new TaskCanvasSocketClient({ taskId: 'task-1' });
+    client.connect();
+
+    MockWebSocket.instances[0].emitClose({ code: 4000, reason: 'connection limit exceeded' });
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
     expect(authHarness.refresh).not.toHaveBeenCalled();
     client.close();
   });

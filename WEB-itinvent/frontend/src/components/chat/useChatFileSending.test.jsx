@@ -20,12 +20,15 @@ function Harness({
     isOptimistic: true,
     optimisticObjectUrls: ['blob:demo'],
   }),
+  ensureLatestThreadWindow,
   initialSendMediaAsFiles = false,
   initialUploadItems = null,
+  notifyApiError = vi.fn(),
   notifyWarning = vi.fn(),
   patchThreadMessage,
   queuedFiles = [],
   registerFailedOutgoingMessage = vi.fn(),
+  setSendingFiles = vi.fn(),
 }) {
   const fileInputRef = useRef(null);
   const mediaFileInputRef = useRef(null);
@@ -57,13 +60,14 @@ function Harness({
     buildReplyPreview: () => null,
     cancelPendingInitialAnchor: vi.fn(),
     createOptimisticFileMessage,
+    ensureLatestThreadWindow,
     fileCaption,
     fileInputRef,
     fileUploadAbortRef,
     loadChatDialogsModule: vi.fn(),
     logChatDebug: vi.fn(),
     mediaFileInputRef,
-    notifyApiError: vi.fn(),
+    notifyApiError,
     notifySuccess: vi.fn(),
     notifyWarning,
     patchThreadMessage,
@@ -86,7 +90,7 @@ function Harness({
     setReplyMessage: vi.fn(),
     setSendMediaAsFiles,
     setSelectedUploadItems,
-    setSendingFiles: vi.fn(),
+    setSendingFiles,
     setThreadMenuAnchor: vi.fn(),
   });
 
@@ -153,6 +157,40 @@ describe('useChatFileSending', () => {
     fireEvent.click(screen.getByText('send files'));
     await waitFor(() => expect(chatAPI.sendFiles).toHaveBeenCalledTimes(2));
     expect(chatAPI.sendFiles.mock.calls[1][2].body).toBe('caption');
+  });
+
+  it('recovers and retains files when ensureLatestThreadWindow fails before the upload starts', async () => {
+    const notifyApiError = vi.fn();
+    const applyOutgoingThreadMessage = vi.fn();
+    const setSendingFiles = vi.fn();
+    const ensureLatestThreadWindow = vi.fn()
+      .mockRejectedValueOnce(new Error('429 read concurrency full'))
+      .mockResolvedValue(undefined);
+    chatAPI.sendFiles.mockResolvedValue({ id: 'server' });
+
+    render(
+      <Harness
+        applyOutgoingThreadMessage={applyOutgoingThreadMessage}
+        ensureLatestThreadWindow={ensureLatestThreadWindow}
+        notifyApiError={notifyApiError}
+        patchThreadMessage={vi.fn()}
+        setSendingFiles={setSendingFiles}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('send files'));
+
+    await waitFor(() => expect(notifyApiError).toHaveBeenCalledTimes(1));
+    expect(chatAPI.sendFiles).not.toHaveBeenCalled();
+    expect(applyOutgoingThreadMessage).not.toHaveBeenCalled();
+    expect(setSendingFiles).toHaveBeenLastCalledWith(false);
+
+    // The failed upload is retained and restored into the selection for a retry.
+    await waitFor(() => expect(screen.getByLabelText('selected file name').textContent).toBe('report.pdf'));
+
+    fireEvent.click(screen.getByText('send files'));
+    await waitFor(() => expect(chatAPI.sendFiles).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(setSendingFiles).toHaveBeenLastCalledWith(false));
   });
 
   it('keeps optimistic file message and replaces it with server response', async () => {

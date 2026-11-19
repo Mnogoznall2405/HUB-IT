@@ -826,6 +826,38 @@ class AuthSecurityService:
             ),
         }
 
+    def require_step_up_auth(
+        self,
+        *,
+        user_id: int,
+        password: str,
+        totp_code: Optional[str] = None,
+        backup_code: Optional[str] = None,
+    ) -> None:
+        """Re-authenticate a user before sensitive 2FA account operations."""
+        user = user_service.get_by_id(int(user_id))
+        if not user:
+            raise AuthSecurityError("Пользователь не найден")
+        verified = user_service.authenticate(str(user.get("username") or ""), str(password or ""))
+        if not verified or int(verified.get("id") or 0) != int(user_id):
+            raise AuthSecurityError("Неверный пароль")
+        if not bool(user.get("is_2fa_enabled", False)):
+            return
+        normalized_totp = str(totp_code or "").strip()
+        if normalized_totp:
+            try:
+                secret = twofa_service.decrypt_secret(str(user.get("totp_secret_enc") or ""))
+            except Exception as exc:
+                raise AuthSecurityError(f"Не удалось прочитать TOTP-секрет: {exc}") from exc
+            if twofa_service.verify_totp(secret=secret, code=normalized_totp):
+                return
+        normalized_backup = str(backup_code or "").strip()
+        if normalized_backup and self._consume_backup_code(
+            user_id=int(user_id), backup_code=normalized_backup,
+        ):
+            return
+        raise AuthSecurityError("Требуется действующий код двухфакторной аутентификации")
+
     def reset_user_twofa(self, *, user_id: int) -> dict[str, Any]:
         user = user_service.get_by_id(int(user_id))
         if not user:

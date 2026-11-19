@@ -2,6 +2,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../api/http', async () => {
+  const client = await import('../../api/client');
+  const pick = (key) => (Object.hasOwn(client, key) ? client[key] : undefined);
+  return {
+    default: client.default,
+    apiClient: pick('apiClient') ?? client.default,
+    API_V1_BASE: pick('API_V1_BASE'),
+    ...(pick('getCachedGet') ? { getCachedGet: client.getCachedGet } : {}),
+  };
+});
+
 vi.mock('../../api/client', () => ({
   default: {
     get: vi.fn(),

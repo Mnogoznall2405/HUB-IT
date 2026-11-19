@@ -290,9 +290,20 @@ export const shouldPreferBlobOpenFallback = () => {
   return Boolean((displayModeStandalone || iosStandalone) && isiOS);
 };
 
+const SAFE_BLOB_OPEN_TYPES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+]);
+
 export const downloadBlobFile = (blob, filename, { preferOpenFallback = false } = {}) => {
   const url = window.URL.createObjectURL(blob);
-  const useOpenFallback = Boolean(preferOpenFallback) && shouldPreferBlobOpenFallback();
+  const contentType = String(blob?.type || '').split(';', 1)[0].trim().toLowerCase();
+  const useOpenFallback = Boolean(preferOpenFallback)
+    && SAFE_BLOB_OPEN_TYPES.has(contentType)
+    && shouldPreferBlobOpenFallback();
   if (useOpenFallback) {
     const popup = window.open('', '_blank');
     if (popup) {

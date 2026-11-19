@@ -63,6 +63,7 @@ def resolve_mentioned_member_user_ids(
     sender_user_id: int,
     body: object,
     conversation_id: object = None,
+    mention_all_allowed: bool | None = None,
 ) -> set[int]:
     handles = extract_mention_handles(body)
     if not handles:
@@ -74,10 +75,12 @@ def resolve_mentioned_member_user_ids(
     })
     if not candidate_user_ids:
         return set()
-    if handles & MENTION_ALL_HANDLES and sender_may_mention_all(
-        conversation_id=conversation_id, user_id=int(sender_user_id)
-    ):
-        return set(candidate_user_ids)
+    if handles & MENTION_ALL_HANDLES:
+        allowed = mention_all_allowed
+        if allowed is None:
+            allowed = sender_may_mention_all(conversation_id=conversation_id, user_id=int(sender_user_id))
+        if allowed:
+            return set(candidate_user_ids)
     # Lazy import: user_service lives outside the chat domain modules.
     from backend.services.user_service import user_service
 

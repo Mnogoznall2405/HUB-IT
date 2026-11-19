@@ -9,16 +9,46 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import zipfile
 from typing import Any, Callable, Optional
 
 import anyio
 from fastapi import HTTPException, status
+from starlette.requests import ClientDisconnect
 
 _CHUNK_BYTES = 1024 * 1024
+
+# An .xlsx is a zip: the compressed upload limit says nothing about what openpyxl
+# inflates in memory. Sum the declared uncompressed sizes of all zip entries
+# (central directory only — nothing is decompressed) and refuse past this cap.
+XLSX_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 
 
 def upload_too_large_error(detail: str = "File is too large") -> HTTPException:
     return HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=detail)
+
+
+def assert_xlsx_uncompressed_size(
+    source: Any,
+    max_bytes: int = XLSX_MAX_UNCOMPRESSED_BYTES,
+    *,
+    too_large: Optional[Callable[[], Exception]] = None,
+) -> None:
+    """Refuse a zip-bomb workbook before ``openpyxl.load_workbook`` inflates it.
+
+    ``source`` is what ``load_workbook`` takes: a path or a readable file-like.
+    Non-zip input returns silently so the real parser reports the format error.
+    """
+    limit = max(0, int(max_bytes))
+    try:
+        with zipfile.ZipFile(source) as archive:
+            total = 0
+            for info in archive.infolist():
+                total += max(0, int(info.file_size))
+                if total > limit:
+                    raise (too_large() if too_large is not None else upload_too_large_error("Excel file is too large"))
+    except zipfile.BadZipFile:
+        return
 
 
 async def read_upload_limited(
@@ -38,6 +68,38 @@ async def read_upload_limited(
         total += len(chunk)
         if total > limit:
             raise (too_large() if too_large is not None else upload_too_large_error())
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def read_body_limited(
+    request: Any,
+    max_bytes: int,
+    *,
+    too_large: Optional[Callable[[], Exception]] = None,
+    idle_timeout_sec: Optional[float] = None,
+) -> bytes:
+    """Read a raw request body, refusing with 413 once it exceeds ``max_bytes``.
+
+    Checks ``Content-Length`` first, then counts the streamed chunks (chunked uploads have no length).
+    ``bytes = Body(...)`` cannot be used for this: Starlette buffers the whole body before the limit runs.
+    """
+    limit = max(0, int(max_bytes))
+    declared = str(request.headers.get("content-length") or "").strip()
+    if declared.isdigit() and int(declared) > limit:
+        raise upload_too_large_error("Request body is too large")
+    chunks: list[bytes] = []
+    total = 0
+    stream = request.stream().__aiter__()
+    while True:
+        try:
+            with anyio.fail_after(idle_timeout_sec):
+                chunk = await anext(stream)
+        except StopAsyncIteration:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise (too_large() if too_large is not None else upload_too_large_error("Request body is too large"))
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -74,6 +136,15 @@ def ingest_max_bytes() -> int:
     return value if value > 0 else _DEFAULT_INGEST_MAX_BYTES
 
 
+def ingest_body_idle_timeout_sec() -> float:
+    """Bound a stalled agent upload, not the total duration of a progressing one."""
+    try:
+        value = int(os.getenv("ITINV_AGENT_BODY_IDLE_TIMEOUT_SEC", "60") or "60")
+    except ValueError:
+        value = 60
+    return float(value if value > 0 else 60)
+
+
 async def read_json_body_limited(request: Any, max_bytes: Optional[int] = None) -> Any:
     """Parse a JSON request body, refusing with 413 before buffering more than ``max_bytes``.
 
@@ -81,19 +152,17 @@ async def read_json_body_limited(request: Any, max_bytes: Optional[int] = None) 
     Invalid JSON is a 400, not a 500.
     """
     limit = ingest_max_bytes() if max_bytes is None else max(0, int(max_bytes))
-    declared = str(request.headers.get("content-length") or "").strip()
-    if declared.isdigit() and int(declared) > limit:
-        raise upload_too_large_error("Request body is too large")
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in request.stream():
-        total += len(chunk)
-        if total > limit:
-            raise upload_too_large_error("Request body is too large")
-        chunks.append(chunk)
-    raw = b"".join(chunks) or b"null"
     try:
-        if total > _THREADPOOL_JSON_PARSE_BYTES:
+        raw = await read_body_limited(
+            request, limit, idle_timeout_sec=ingest_body_idle_timeout_sec()
+        ) or b"null"
+    except (TimeoutError, ClientDisconnect) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_408_REQUEST_TIMEOUT,
+            detail="Request body was not completely received",
+        ) from exc
+    try:
+        if len(raw) > _THREADPOOL_JSON_PARSE_BYTES:
             return await anyio.to_thread.run_sync(json.loads, raw, limiter=_get_json_parse_limiter())
         return json.loads(raw)
     except (ValueError, UnicodeDecodeError):

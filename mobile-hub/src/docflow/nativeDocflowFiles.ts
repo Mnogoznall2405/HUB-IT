@@ -5,7 +5,7 @@ import { getDocflowFilePreviewState } from '../api/docflowApi';
 import { API_V1_BASE } from '../api/config';
 import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
-import { sanitizeNativeFileName } from '../files/filePolicy';
+import { fitNativeFileName, sanitizeNativeFileName } from '../files/filePolicy';
 
 const CACHE_DIRECTORY_NAME = 'hubit-docflow';
 
@@ -18,7 +18,7 @@ function docflowCacheDirectory(): Directory {
 async function docflowCacheFile(fileName: string): Promise<File> {
   const userId = Number(await getSessionUserId());
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Сессия истекла. Войдите снова');
-  return new File(docflowCacheDirectory(), `${userId}-${fileName}`);
+  return new File(docflowCacheDirectory(), fitNativeFileName(`${userId}-${fileName}`));
 }
 
 export function clearNativeDocflowCache(): void {

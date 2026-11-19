@@ -16,7 +16,7 @@ const {
   mockRequestBrowserNotificationPermission: vi.fn(),
 }));
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/settings', () => ({
   settingsAPI: {
     getNotificationPushConfig: mockGetPushConfig,
     upsertNotificationPushSubscription: mockUpsertPushSubscription,

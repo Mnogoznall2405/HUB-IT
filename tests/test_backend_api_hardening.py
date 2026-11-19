@@ -81,7 +81,7 @@ def test_import_failure_does_not_leak_internal_error_text(monkeypatch):
 def _act_email_client(monkeypatch, *, owners: int, peak: dict) -> TestClient:
     app = FastAPI()
     app.include_router(equipment_api.router, prefix="/eq")
-    route = next(r for r in app.routes if getattr(r, "path", "") == "/eq/acts/upload/email")
+    route = next(r for r in equipment_api.router.routes if getattr(r, "path", "") == "/acts/upload/email")
     for dep in route.dependant.dependencies:
         app.dependency_overrides[dep.call] = lambda: "db"
     monkeypatch.setattr(
@@ -230,7 +230,7 @@ def test_identify_workspace_looks_up_the_real_client_ip_not_the_forwarded_claim(
     monkeypatch.setattr(discovery_api, "get_db", lambda db_id: _Db())
     app = FastAPI()
     app.include_router(discovery_api.router, prefix="/d")
-    route = next(r for r in app.routes if getattr(r, "path", "") == "/d/identify-workspace")
+    route = next(r for r in discovery_api.router.routes if getattr(r, "path", "") == "/identify-workspace")
     for dep in route.dependant.dependencies:
         app.dependency_overrides[dep.call] = lambda: "db1" if dep.call is discovery_api.get_current_database_id else SimpleNamespace(id=1)
     client = TestClient(app, client=("127.0.0.1", 5000))

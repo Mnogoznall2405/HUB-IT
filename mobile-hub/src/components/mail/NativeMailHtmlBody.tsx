@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Linking, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type { MailAttachment } from '../../api/mailApi';
@@ -92,8 +92,14 @@ export function NativeMailHtmlBody({
     }
   }, []);
 
+  const dataDocumentLoadedRef = useRef(false);
   const handleNavigation = useCallback((url: string) => {
-    if (shouldAllowMailDocumentNavigation(url)) return true;
+    const isDataDocument = String(url || '').trim().toLowerCase().startsWith('data:text/html');
+    // Первая data:-навигация — сам загружаемый документ (Android); остальные — нет.
+    if (shouldAllowMailDocumentNavigation(url, { allowDataDocument: isDataDocument && !dataDocumentLoadedRef.current })) {
+      if (isDataDocument) dataDocumentLoadedRef.current = true;
+      return true;
+    }
     void openExternalLink(url);
     return false;
   }, [openExternalLink]);

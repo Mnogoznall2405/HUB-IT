@@ -86,6 +86,7 @@ from backend.chat.message_persistence import (
     ChatSystemMessagePersistence,
     ChatTaskShareMessagePersistence,
     ChatTextMessagePersistence,
+    FileMessageCommittedError,
     TaskShareSnapshot,
 )
 from backend.chat.notification_dispatcher import ChatNotificationDispatcher
@@ -2808,7 +2809,7 @@ class ChatService:
         }
 
         # Lean message for critical fan-out; full enrich happens after ACK.
-        # Delivery-state outbox is deferred (aux TX after ACK), not discarded.
+        # Delivery intent is atomic with new messages; accept deferred payloads from legacy adapters.
         payload.pop("_deferred_delivery_state", None)
         deferred_delivery_outbox = payload.pop("_deferred_delivery_outbox", None)
         mentioned_user_ids = self._resolve_mentioned_member_user_ids(
@@ -2982,6 +2983,9 @@ class ChatService:
                     except OSError:
                         pass
                 return payload
+        except FileMessageCommittedError:
+            # A failed response cannot turn committed attachments into temporary files.
+            raise
         except Exception:
             for path in written_paths:
                 try:

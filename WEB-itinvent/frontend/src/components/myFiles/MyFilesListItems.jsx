@@ -108,7 +108,9 @@ const getRetentionTitle = (item) => {
 // One grid for the header and every row: checkbox, name, owner, modified, size, actions (the trash drops the owner).
 export const rowGridColumns = (isTrashView) => (isTrashView
   ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 176px' }
-  : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 140px 160px 96px 176px' });
+  // Колонка действий 226px: до 6 кнопок по 36px + зазоры (папка с коллаборацией),
+  // иначе первые иконки наезжают на колонку «Размер».
+  : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 140px 160px 96px 226px' });
 
 export const ownerLabel = (entry, currentUsername) => {
   if (entry?.library_name) return entry.library_name;
@@ -261,96 +263,113 @@ export const FolderRow = memo(function FolderRow({
               </IconButton>
             </Tooltip>
           </>
-        ) : sharedWithMe ? (
-          <Tooltip title="Открыть">
-            <IconButton
-              size="small"
-              aria-label={`Открыть папку ${folder.name}`}
-              onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id, folder.library_id); }}
-            >
-              <FolderOutlinedIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
         ) : (
           <>
-            <Tooltip title="Открыть">
-              <IconButton
-                size="small"
-                aria-label={`Открыть папку ${folder.name}`}
-                onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id, folder.library_id); }}
-              >
-                <FolderOutlinedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-            {onToggleFavorite ? (
-              <Tooltip title={folder.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
-                <IconButton
-                  size="small"
-                  disabled={!canWrite}
-                  aria-label={folder.is_favorite ? `Убрать «${folder.name}» из избранного` : `Добавить «${folder.name}» в избранное`}
-                  data-testid={`my-files-favorite-folder-${folder.id}`}
-                  onClick={(event) => { event.stopPropagation(); void onToggleFavorite(folder, 'folder'); }}
-                >
-                  {folder.is_favorite
-                    ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                    : <StarOutlineRoundedIcon fontSize="small" />}
-                </IconButton>
-              </Tooltip>
-            ) : null}
-            <Tooltip title="Поделиться папкой">
-              <IconButton
-                size="small"
-                disabled={!canShare}
-                aria-label={`Поделиться папкой ${folder.name}`}
-                data-testid={`my-files-share-folder-${folder.id}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void handleFolderShare(folder);
-                }}
-              >
-                <ShareOutlinedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-            {onFolderCollaborators ? (
-              <Tooltip title="Совместный доступ">
-                <IconButton
-                  size="small"
-                  disabled={!canShare}
-                  aria-label={`Совместный доступ к папке ${folder.name}`}
-                  data-testid={`my-files-collab-folder-${folder.id}`}
-                  onClick={(event) => { event.stopPropagation(); onFolderCollaborators(folder); }}
-                >
-                  <GroupOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            ) : null}
-            <Tooltip title="Переименовать">
-              <IconButton
-                size="small"
-                disabled={!canWrite}
-                aria-label={`Переименовать папку ${folder.name}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openRenameDialog('folder', folder.id, folder.name);
-                }}
-              >
-                <DriveFileRenameOutlineRoundedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Удалить">
-              <IconButton
-                size="small"
-                color="error"
-                disabled={!canWrite}
-                aria-label={`Удалить папку ${folder.name}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void handleDeleteFolder(folder);
-                }}
-              >
-                <DeleteOutlineIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
+            <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.25 }}>
+              {sharedWithMe ? (
+                <Tooltip title="Открыть">
+                  <IconButton
+                    size="small"
+                    aria-label={`Открыть папку ${folder.name}`}
+                    onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id, folder.library_id); }}
+                  >
+                    <FolderOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              ) : (
+                <>
+                  <Tooltip title="Открыть">
+                    <IconButton
+                      size="small"
+                      aria-label={`Открыть папку ${folder.name}`}
+                      onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id, folder.library_id); }}
+                    >
+                      <FolderOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  {onToggleFavorite ? (
+                    <Tooltip title={folder.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
+                      <IconButton
+                        size="small"
+                        disabled={!canWrite}
+                        aria-label={folder.is_favorite ? `Убрать «${folder.name}» из избранного` : `Добавить «${folder.name}» в избранное`}
+                        data-testid={`my-files-favorite-folder-${folder.id}`}
+                        onClick={(event) => { event.stopPropagation(); void onToggleFavorite(folder, 'folder'); }}
+                      >
+                        {folder.is_favorite
+                          ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                          : <StarOutlineRoundedIcon fontSize="small" />}
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip title="Поделиться папкой">
+                    <IconButton
+                      size="small"
+                      disabled={!canShare}
+                      aria-label={`Поделиться папкой ${folder.name}`}
+                      data-testid={`my-files-share-folder-${folder.id}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleFolderShare(folder);
+                      }}
+                    >
+                      <ShareOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  {onFolderCollaborators ? (
+                    <Tooltip title="Совместный доступ">
+                      <IconButton
+                        size="small"
+                        disabled={!canShare}
+                        aria-label={`Совместный доступ к папке ${folder.name}`}
+                        data-testid={`my-files-collab-folder-${folder.id}`}
+                        onClick={(event) => { event.stopPropagation(); onFolderCollaborators(folder); }}
+                      >
+                        <GroupOutlinedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip title="Переименовать">
+                    <IconButton
+                      size="small"
+                      disabled={!canWrite}
+                      aria-label={`Переименовать папку ${folder.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openRenameDialog('folder', folder.id, folder.name);
+                      }}
+                    >
+                      <DriveFileRenameOutlineRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Удалить">
+                    <IconButton
+                      size="small"
+                      color="error"
+                      disabled={!canWrite}
+                      aria-label={`Удалить папку ${folder.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleDeleteFolder(folder);
+                      }}
+                    >
+                      <DeleteOutlineIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </>
+              )}
+            </Box>
+            <IconButton
+              size="small"
+              aria-label={`Действия с папкой ${folder.name}`}
+              sx={{ display: { xs: 'inline-flex', md: 'none' }, minWidth: 44, minHeight: 44 }}
+              onClick={(event) => {
+                event.stopPropagation();
+                openFolderActionsMenu(event, folder);
+              }}
+            >
+              <MoreVertRoundedIcon fontSize="small" />
+            </IconButton>
           </>
         )}
       </Box>
@@ -526,123 +545,140 @@ export const FileRow = memo(function FileRow({
               </IconButton>
             </Tooltip>
           </>
-        ) : sharedWithMe ? (
-          <>
-            {officeEditable !== false ? (
-              <Tooltip title={sharedOpenLabel(item)}>
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`${sharedOpenLabel(item)} ${fileName}`}
-                    data-testid={`my-files-shared-edit-${item.id}`}
-                    disabled={!ready}
-                    onClick={(event) => { event.stopPropagation(); onOpenSharedFile?.(item); }}
-                  >
-                    <EditOutlinedIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-            ) : null}
-            <Tooltip title="Скачать">
-              <span>
-                <IconButton
-                  size="small"
-                  aria-label={`Скачать ${fileName}`}
-                  data-testid={`my-files-shared-download-${item.id}`}
-                  disabled={!ready || downloading}
-                  onClick={(event) => { event.stopPropagation(); void handleDownload?.(item); }}
-                >
-                  {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
-                </IconButton>
-              </span>
-            </Tooltip>
-            {officeEditable !== false ? (
-              <Tooltip title="Предыдущие версии">
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Версии ${fileName}`}
-                    disabled={!ready}
-                    onClick={(event) => { event.stopPropagation(); onOpenVersions?.(item); }}
-                  >
-                    <HistoryOutlinedIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-            ) : null}
-          </>
         ) : (
           <>
-            {onToggleFavorite ? (
-              <Tooltip title={item.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
-                <span>
-                  <IconButton
-                    size="small"
-                    disabled={!canWrite}
-                    aria-label={item.is_favorite ? `Убрать «${fileName}» из избранного` : `Добавить «${fileName}» в избранное`}
-                    data-testid={`my-files-favorite-${item.id}`}
-                    onClick={(event) => { event.stopPropagation(); void onToggleFavorite(item, 'file'); }}
-                  >
-                    {item.is_favorite
-                      ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                      : <StarOutlineRoundedIcon fontSize="small" />}
-                  </IconButton>
-                </span>
-              </Tooltip>
-            ) : null}
-            <Tooltip title={previewSupported ? 'Просмотреть' : 'Предпросмотр недоступен'}>
-              <span>
-                <IconButton
-                  size="small"
-                  data-testid={`my-files-preview-${item.id}`}
-                  aria-label={`Просмотреть ${fileName}`}
-                  disabled={!previewSupported}
-                  onClick={(event) => { event.stopPropagation(); openDocumentPreview(item); }}
-                >
-                  <VisibilityOutlinedIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
-            <Tooltip title="Скачать">
-              <span>
-                <IconButton
-                  size="small"
-                  data-testid={`my-files-download-${item.id}`}
-                  aria-label={`Скачать ${fileName}`}
-                  disabled={!ready || downloading}
-                  onClick={(event) => { event.stopPropagation(); void handleDownload(item); }}
-                >
-                  {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
-                </IconButton>
-              </span>
-            </Tooltip>
-            <Tooltip title={item.is_shared ? 'Поделиться ссылкой' : 'Создать публичную ссылку'}>
-              <span>
-                <IconButton
-                  size="small"
-                  data-testid={`my-files-share-${item.id}`}
-                  aria-label={`Поделиться ${fileName}`}
-                  disabled={!ready || !canShare}
-                  onClick={(event) => { event.stopPropagation(); void handleShare(item); }}
-                >
-                  <ShareOutlinedIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
-            <Tooltip title="Удалить">
-              <span>
-                <IconButton
-                  size="small"
-                  data-testid={`my-files-delete-${item.id}`}
-                  aria-label={`Удалить ${fileName}`}
-                  color="error"
-                  disabled={!canWrite}
-                  onClick={(event) => { event.stopPropagation(); void handleDelete(item); }}
-                >
-                  <DeleteOutlineIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
+            <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.25 }}>
+              {sharedWithMe ? (
+                <>
+                  {officeEditable !== false ? (
+                    <Tooltip title={sharedOpenLabel(item)}>
+                      <span>
+                        <IconButton
+                          size="small"
+                          aria-label={`${sharedOpenLabel(item)} ${fileName}`}
+                          data-testid={`my-files-shared-edit-${item.id}`}
+                          disabled={!ready}
+                          onClick={(event) => { event.stopPropagation(); onOpenSharedFile?.(item); }}
+                        >
+                          <EditOutlinedIcon fontSize="small" />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip title="Скачать">
+                    <span>
+                      <IconButton
+                        size="small"
+                        aria-label={`Скачать ${fileName}`}
+                        data-testid={`my-files-shared-download-${item.id}`}
+                        disabled={!ready || downloading}
+                        onClick={(event) => { event.stopPropagation(); void handleDownload?.(item); }}
+                      >
+                        {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  {officeEditable !== false ? (
+                    <Tooltip title="Предыдущие версии">
+                      <span>
+                        <IconButton
+                          size="small"
+                          aria-label={`Версии ${fileName}`}
+                          disabled={!ready}
+                          onClick={(event) => { event.stopPropagation(); onOpenVersions?.(item); }}
+                        >
+                          <HistoryOutlinedIcon fontSize="small" />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  {onToggleFavorite ? (
+                    <Tooltip title={item.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
+                      <span>
+                        <IconButton
+                          size="small"
+                          disabled={!canWrite}
+                          aria-label={item.is_favorite ? `Убрать «${fileName}» из избранного` : `Добавить «${fileName}» в избранное`}
+                          data-testid={`my-files-favorite-${item.id}`}
+                          onClick={(event) => { event.stopPropagation(); void onToggleFavorite(item, 'file'); }}
+                        >
+                          {item.is_favorite
+                            ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                            : <StarOutlineRoundedIcon fontSize="small" />}
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip title={previewSupported ? 'Просмотреть' : 'Предпросмотр недоступен'}>
+                    <span>
+                      <IconButton
+                        size="small"
+                        data-testid={`my-files-preview-${item.id}`}
+                        aria-label={`Просмотреть ${fileName}`}
+                        disabled={!previewSupported}
+                        onClick={(event) => { event.stopPropagation(); openDocumentPreview(item); }}
+                      >
+                        <VisibilityOutlinedIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Скачать">
+                    <span>
+                      <IconButton
+                        size="small"
+                        data-testid={`my-files-download-${item.id}`}
+                        aria-label={`Скачать ${fileName}`}
+                        disabled={!ready || downloading}
+                        onClick={(event) => { event.stopPropagation(); void handleDownload(item); }}
+                      >
+                        {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title={item.is_shared ? 'Поделиться ссылкой' : 'Создать публичную ссылку'}>
+                    <span>
+                      <IconButton
+                        size="small"
+                        data-testid={`my-files-share-${item.id}`}
+                        aria-label={`Поделиться ${fileName}`}
+                        disabled={!ready || !canShare}
+                        onClick={(event) => { event.stopPropagation(); void handleShare(item); }}
+                      >
+                        <ShareOutlinedIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Удалить">
+                    <span>
+                      <IconButton
+                        size="small"
+                        data-testid={`my-files-delete-${item.id}`}
+                        aria-label={`Удалить ${fileName}`}
+                        color="error"
+                        disabled={!canWrite}
+                        onClick={(event) => { event.stopPropagation(); void handleDelete(item); }}
+                      >
+                        <DeleteOutlineIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </>
+              )}
+            </Box>
+            <IconButton
+              size="small"
+              aria-label={`Действия с файлом ${fileName}`}
+              sx={{ display: { xs: 'inline-flex', md: 'none' }, minWidth: 44, minHeight: 44 }}
+              onClick={(event) => {
+                event.stopPropagation();
+                openFileActionsMenu(event, item);
+              }}
+            >
+              <MoreVertRoundedIcon fontSize="small" />
+            </IconButton>
           </>
         )}
       </Box>

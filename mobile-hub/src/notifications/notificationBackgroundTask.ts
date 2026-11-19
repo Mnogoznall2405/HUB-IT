@@ -2,7 +2,7 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { Platform } from 'react-native';
 import * as tokenStore from '../auth/tokenStore';
-import { queueConversationRead, isRetryableOfflineError } from '../offline/offlineCommandQueue';
+import { queueConversationRead, queueMailMessageRead, isRetryableOfflineError } from '../offline/offlineCommandQueue';
 import {
   dismissHandledNotification,
   getNotificationActionDetails,
@@ -27,12 +27,28 @@ import {
   retryPendingChatReply,
   type PendingChatReply,
 } from './pendingNotificationReplies';
+import { getNativeChatDraft, setNativeChatDraft } from '../chat/chatDrafts';
 
 export const HUBIT_NOTIFICATION_BACKGROUND_TASK = 'hubit-notification-actions-v1';
 const QUICK_REPLY_SEND_TIMEOUT_MS = 8_000;
 // A fast send finishes before this: the «Отправка…» update is only worth its own
 // notification round trip when the network is actually slow.
 const SENDING_FEEDBACK_DELAY_MS = 900;
+
+async function salvageFailedQuickReply(userId: number, item: PendingChatReply | null): Promise<void> {
+  const body = String(item?.body || '').trim();
+  const conversationId = String(item?.conversationId || '').trim();
+  if (!body || !conversationId) return;
+  try {
+    const existing = String(await getNativeChatDraft(userId, conversationId) || '').trim();
+    // An existing draft is still user's text: the failed reply is appended
+    // after a separator instead of silently dropping either half.
+    const merged = existing ? `${existing}\n\n${body}` : body;
+    await setNativeChatDraft(userId, conversationId, merged);
+  } catch {
+    // Salvage is best-effort — the failure notification already explains the loss.
+  }
+}
 
 function quickReplyTimeoutError(): Error {
   return Object.assign(new Error(`quick reply timeout after ${QUICK_REPLY_SEND_TIMEOUT_MS}ms`), {
@@ -162,11 +178,25 @@ export async function handleNotificationBackgroundTask(
     return finishHandledAction(Notifications.BackgroundNotificationTaskResult.NewData);
   } catch (error) {
     if (action === HUBIT_MAIL_MARK_READ_ACTION) {
-      return finishHandledAction(Notifications.BackgroundNotificationTaskResult.Failed);
+      if (!isRetryableOfflineError(error) || !userId) {
+        return finishHandledAction(Notifications.BackgroundNotificationTaskResult.Failed);
+      }
+      const details = await getNotificationActionDetails(data);
+      if (!details.messageId) {
+        return finishHandledAction(Notifications.BackgroundNotificationTaskResult.Failed);
+      }
+      await queueMailMessageRead(userId, details.mailboxId, details.messageId);
+      await dismissHandledNotification(data);
+      return finishHandledAction(Notifications.BackgroundNotificationTaskResult.NewData);
     }
     if (!isRetryableOfflineError(error) || !userId) {
       if (action === HUBIT_CHAT_REPLY_ACTION && userId) {
-        await showReplyFailed(replyItem || await pendingReplyFromResponse(data, userId));
+        const failedItem = replyItem || await pendingReplyFromResponse(data, userId);
+        // A definitive rejection (permissions, deleted conversation) must not
+        // drop the typed text: salvage it into the conversation draft — never
+        // overwriting an existing one.
+        await salvageFailedQuickReply(userId, failedItem);
+        await showReplyFailed(failedItem);
       }
       return finishHandledAction(Notifications.BackgroundNotificationTaskResult.Failed);
     }
@@ -179,8 +209,18 @@ export async function handleNotificationBackgroundTask(
       await queueConversationRead(userId, details.conversationId, details.messageId);
       await dismissHandledNotification(data);
     } else {
-      const item = await queuePendingChatReply(replyItem || await pendingReplyFromResponse(data, userId));
-      await showReplyPending(item);
+      const failedItem = replyItem || await pendingReplyFromResponse(data, userId);
+      try {
+        const item = await queuePendingChatReply(failedItem);
+        await showReplyPending(item);
+      } catch {
+        // The pending queue is full (or storage failed): the typed body must
+        // not vanish with the dead retry — salvage it into the draft and end
+        // with a terminal notice instead of a retry action that cannot work.
+        await salvageFailedQuickReply(userId, failedItem);
+        await showReplyFailed(failedItem);
+        return finishHandledAction(Notifications.BackgroundNotificationTaskResult.Failed);
+      }
     }
     return finishHandledAction(Notifications.BackgroundNotificationTaskResult.NewData);
   }

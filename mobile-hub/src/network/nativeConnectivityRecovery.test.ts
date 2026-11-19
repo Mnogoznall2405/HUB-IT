@@ -48,6 +48,11 @@ describe('native connectivity recovery controller', () => {
     controller.reportConnectivity(false);
     controller.requestRecovery('/mail?folder=inbox');
     await flushPromises();
+    // Physically offline: the request is deferred, not burned on a dead link.
+    expect(recover).not.toHaveBeenCalled();
+
+    controller.reportConnectivity(true);
+    await flushPromises();
     expect(recover).toHaveBeenCalledWith('/mail?folder=inbox');
     expect(onRecovered).not.toHaveBeenCalled();
 

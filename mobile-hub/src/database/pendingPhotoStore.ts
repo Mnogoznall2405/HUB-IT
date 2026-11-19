@@ -41,8 +41,8 @@ function readIndex(): PendingPhoto[] {
 
 // Записи меняются строго по очереди: параллельные read-modify-write потеряли бы снимок.
 let chain: Promise<unknown> = Promise.resolve();
-function serialized<T>(task: () => T): Promise<T> {
-  const run = chain.then(task, task);
+function serialized<T>(task: () => T | Promise<T>): Promise<Awaited<T>> {
+  const run = chain.then(task, task) as Promise<Awaited<T>>;
   chain = run.catch(() => undefined);
   return run;
 }
@@ -57,11 +57,12 @@ export function persistPendingPhoto(entry: Omit<PendingPhoto, 'file'> & {
   file: { uri: string; name: string; mimeType: string };
 }): Promise<PendingPhoto | null> {
   ensureClearListener();
-  return serialized(() => {
+  return serialized(async () => {
     try {
       const extension = /\.([A-Za-z0-9]{2,5})$/.exec(entry.file.name)?.[1] || 'jpg';
       const copy = new File(directory(), `${entry.id}.${extension}`);
-      new File(entry.file.uri).copy(copy);
+      // File.copy() is async: index must be written only after it settles.
+      await new File(entry.file.uri).copy(copy);
       const stored: PendingPhoto = { ...entry, file: { ...entry.file, uri: copy.uri } };
       writeIndex([...readIndex().filter((item) => item.id !== entry.id), stored]);
       return stored;

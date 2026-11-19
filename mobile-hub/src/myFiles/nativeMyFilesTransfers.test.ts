@@ -1,14 +1,20 @@
+import { File } from 'expo-file-system';
+import { getSessionGeneration } from '../auth/tokenStore';
 import {
   cancelMyFileUploadSession,
   completeMyFileUploadSession,
   createMyFileDownloadGrant,
   createMyFileUploadSession,
   getMyFileUploadSession,
+  listMyFiles,
   uploadMyFileChunk,
 } from '../api/myFilesApi';
+import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
 import { getNativeMyFilesOfflineFile } from './nativeMyFilesOfflineStore';
 import {
+  clearNativeMyFilesCache,
   downloadNativeMyFile,
+  downloadNativeMyFilePreview,
   readNativeMyFileTextPreview,
   resolveMyFileDownloadGrantUrl,
   resolveMyFilePreviewContentUrl,
@@ -83,6 +89,7 @@ jest.mock('../api/myFilesApi', () => ({
   createMyFileDownloadGrant: jest.fn(),
   createMyFileUploadSession: jest.fn(),
   getMyFileUploadSession: jest.fn(),
+  listMyFiles: jest.fn(),
   uploadMyFileChunk: jest.fn(),
   completeMyFileUploadSession: jest.fn(),
   cancelMyFileUploadSession: jest.fn(),
@@ -90,11 +97,19 @@ jest.mock('../api/myFilesApi', () => ({
 jest.mock('./nativeMyFilesOfflineStore', () => ({
   getNativeMyFilesOfflineFile: jest.fn(),
 }));
+jest.mock('../auth/tokenStore', () => ({
+  ...jest.requireActual('../auth/tokenStore'),
+  getSessionGeneration: jest.fn(() => 0),
+}));
+jest.mock('../files/authenticatedFileDownload', () => ({
+  downloadAuthenticatedFile: jest.fn(),
+}));
 
 beforeEach(() => {
   mockFiles.clear();
   jest.clearAllMocks();
   jest.mocked(getNativeMyFilesOfflineFile).mockResolvedValue(null);
+  jest.mocked(getSessionGeneration).mockReturnValue(0);
 });
 
 it('accepts only an exact relative one-time My Files grant path', () => {
@@ -114,38 +129,156 @@ it('renders text as inert plain content and replaces null bytes', async () => {
   await expect(readNativeMyFileTextPreview(file as never)).resolves.toBe('<script>bad()</script>�');
 });
 
-it('returns a valid cached file before requesting a network download grant', async () => {
-  mockFiles.set('file:///cache/hubit-my-files/f-1-report.pdf', { size: 1024 });
+const myFileItem = {
+  id: 'f-1',
+  original_file_name: 'report.pdf',
+  download_file_name: 'report.pdf',
+  mime_type: 'application/pdf',
+  download_mime_type: 'application/pdf',
+  original_size_bytes: 1024,
+  stored_size_bytes: 1024,
+  saved_size_bytes: 0,
+  retention_days: 7,
+  folder_id: null,
+  status: 'ready',
+  storage_mode: 'stored',
+  error_text: '',
+  security_scan_status: 'clean',
+  preview_kind: 'pdf',
+  preview_available: true,
+  preview_status: 'ready',
+  preview_max_bytes: 0,
+  is_shared: false,
+  is_favorite: false,
+  share_expires_at: null,
+  created_at: null,
+  updated_at: null,
+  expires_at: null,
+} as never;
 
-  const file = await downloadNativeMyFile({
-    id: 'f-1',
-    original_file_name: 'report.pdf',
-    download_file_name: 'report.pdf',
-    mime_type: 'application/pdf',
-    download_mime_type: 'application/pdf',
-    original_size_bytes: 1024,
-    stored_size_bytes: 1024,
-    saved_size_bytes: 0,
-    retention_days: 7,
-    folder_id: null,
-    status: 'ready',
-    storage_mode: 'stored',
-    error_text: '',
-    security_scan_status: 'clean',
-    preview_kind: 'pdf',
-    preview_available: true,
-    preview_status: 'ready',
-    preview_max_bytes: 0,
-    is_shared: false,
-    is_favorite: false,
-    share_expires_at: null,
-    created_at: null,
-    updated_at: null,
-    expires_at: null,
+function flushMicrotasks(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+it('returns a valid cached file before requesting a network download grant', async () => {
+  jest.mocked(createMyFileDownloadGrant).mockResolvedValue({
+    download_path: '/my-files/download-grant/token_1234567890123456',
+  } as never);
+  jest.mocked(File.downloadFileAsync).mockImplementation(async (_url, destination) => {
+    mockFiles.set(destination.uri, { size: 1024 });
+    return destination as File;
   });
 
-  expect(file.uri).toBe('file:///cache/hubit-my-files/f-1-report.pdf');
-  expect(createMyFileDownloadGrant).not.toHaveBeenCalled();
+  const first = await downloadNativeMyFile(myFileItem);
+  const file = await downloadNativeMyFile(myFileItem);
+
+  expect(file.uri).toBe(first.uri);
+  expect(createMyFileDownloadGrant).toHaveBeenCalledTimes(1);
+  expect(File.downloadFileAsync).toHaveBeenCalledTimes(1);
+});
+
+it('discards a download that finishes after the cache generation changed', async () => {
+  let finishDownload!: () => void;
+  jest.mocked(File.downloadFileAsync).mockImplementation(
+    (_url, destination) => new Promise<File>((resolve) => {
+      finishDownload = () => {
+        mockFiles.set(destination.uri, { size: 1024 });
+        resolve(destination as File);
+      };
+    }),
+  );
+  jest.mocked(createMyFileDownloadGrant).mockResolvedValue({
+    download_path: '/my-files/download-grant/token_1234567890123456',
+  } as never);
+
+  const pending = downloadNativeMyFile(myFileItem);
+  await flushMicrotasks();
+  expect(File.downloadFileAsync).toHaveBeenCalledTimes(1);
+  const staleUri = (jest.mocked(File.downloadFileAsync).mock.calls[0][1] as File).uri;
+
+  clearNativeMyFilesCache();
+  finishDownload();
+
+  await expect(pending).rejects.toThrow('Сессия изменилась');
+  // The stale file must be removed even though it landed after the clear.
+  expect(mockFiles.has(staleUri)).toBe(false);
+
+  // The next session downloads into its own scoped name: it neither receives
+  // user A's file nor loses its own to the stale cleanup.
+  jest.mocked(File.downloadFileAsync).mockImplementation(async (_url, destination) => {
+    mockFiles.set(destination.uri, { size: 1024 });
+    return destination as File;
+  });
+  const fresh = await downloadNativeMyFile(myFileItem);
+  expect(fresh.exists).toBe(true);
+  expect(fresh.uri).not.toBe(staleUri);
+  expect(mockFiles.has(fresh.uri)).toBe(true);
+});
+
+it('fences the cache by session generation even without an explicit cache clear', async () => {
+  let finishDownload!: () => void;
+  jest.mocked(File.downloadFileAsync).mockImplementation(
+    (_url, destination) => new Promise<File>((resolve) => {
+      finishDownload = () => {
+        mockFiles.set(destination.uri, { size: 1024 });
+        resolve(destination as File);
+      };
+    }),
+  );
+  jest.mocked(createMyFileDownloadGrant).mockResolvedValue({
+    download_path: '/my-files/download-grant/token_1234567890123456',
+  } as never);
+
+  const pending = downloadNativeMyFile(myFileItem);
+  await flushMicrotasks();
+  const staleUri = (jest.mocked(File.downloadFileAsync).mock.calls[0][1] as File).uri;
+
+  // The session rotated (expired token, account switch) — no explicit
+  // clearNativeMyFilesCache ran: the generation fence must still reject the
+  // old download and isolate its file from the next account.
+  jest.mocked(getSessionGeneration).mockReturnValue(1);
+  finishDownload();
+
+  await expect(pending).rejects.toThrow('Сессия изменилась');
+  expect(mockFiles.has(staleUri)).toBe(false);
+
+  // A request under the new session misses the old scoped name and downloads
+  // into its own — it cannot be served user A's cached plaintext.
+  jest.mocked(File.downloadFileAsync).mockImplementation(async (_url, destination) => {
+    mockFiles.set(destination.uri, { size: 1024 });
+    return destination as File;
+  });
+  const fresh = await downloadNativeMyFile(myFileItem);
+  expect(fresh.exists).toBe(true);
+  expect(fresh.uri).not.toBe(staleUri);
+  expect(createMyFileDownloadGrant).toHaveBeenCalledTimes(2);
+  expect(mockFiles.has(fresh.uri)).toBe(true);
+});
+
+it('discards a preview download that finishes after the cache generation changed', async () => {
+  let finishPreview!: () => void;
+  jest.mocked(downloadAuthenticatedFile).mockImplementation(
+    (_url: string, destination: File) => new Promise<File>((resolve) => {
+      finishPreview = () => {
+        mockFiles.set(destination.uri, { size: 512 });
+        resolve(destination);
+      };
+    }),
+  );
+
+  const pending = downloadNativeMyFilePreview(myFileItem, {
+    preview_kind: 'pdf',
+    source_filename: 'report.pdf',
+  } as never);
+  await flushMicrotasks();
+  expect(downloadAuthenticatedFile).toHaveBeenCalledTimes(1);
+  const staleUri = (jest.mocked(downloadAuthenticatedFile).mock.calls[0][1] as File).uri;
+
+  clearNativeMyFilesCache();
+  finishPreview();
+
+  await expect(pending).rejects.toThrow('Сессия изменилась');
+  expect(mockFiles.has(staleUri)).toBe(false);
 });
 
 it('prefers the persistent user-scoped offline copy over cache and network', async () => {
@@ -275,6 +408,70 @@ describe('resumable upload sessions', () => {
 
     expect(record.id).toBe('sess-1');
     expect(jest.mocked(uploadMyFileChunk).mock.calls.map((call) => call[2].offset)).toEqual([0, 8, 16]);
+    expect(cancelMyFileUploadSession).not.toHaveBeenCalled();
+  });
+
+  it('resolves a committed upload through the file list when the session endpoint rejects it', async () => {
+    // Server already committed the reservation: GET /upload-sessions answers
+    // "not active", and the completed file keeps the session id. Returning
+    // that record must not reserve a second upload.
+    seedResumeMap({ 'report.pdf|20||123': { fileId: 'sess-1', savedAt: Date.now() } });
+    jest.mocked(getMyFileUploadSession).mockRejectedValue(Object.assign(new Error('Upload reservation is not active'), {
+      isAxiosError: true,
+      response: { status: 400, data: { detail: 'Upload reservation is not active' } },
+    }));
+    jest.mocked(listMyFiles).mockResolvedValue({
+      items: [uploadedFile], folders: [], breadcrumbs: [], folder: null,
+    } as never);
+
+    const record = await uploadNativeMyFile(pickedFile, 7, {});
+
+    expect(record.id).toBe('sess-1');
+    expect(createMyFileUploadSession).not.toHaveBeenCalled();
+    expect(completeMyFileUploadSession).not.toHaveBeenCalled();
+    expect(readResumeMap()).toEqual({});
+  });
+
+  it('reserves a fresh session when the session and the file record are both gone', async () => {
+    seedResumeMap({ 'report.pdf|20||123': { fileId: 'sess-gone', savedAt: Date.now() } });
+    jest.mocked(getMyFileUploadSession).mockRejectedValue(Object.assign(new Error('File not found'), {
+      isAxiosError: true,
+      response: { status: 404, data: { detail: 'File not found' } },
+    }));
+    jest.mocked(listMyFiles).mockResolvedValue({
+      items: [], folders: [], breadcrumbs: [], folder: null,
+    } as never);
+
+    await uploadNativeMyFile(pickedFile, 7, {});
+
+    expect(createMyFileUploadSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconciles a lost complete response through the file list instead of failing the upload', async () => {
+    jest.mocked(completeMyFileUploadSession).mockRejectedValue(
+      Object.assign(new Error('Network Error'), { isAxiosError: true, code: 'ERR_NETWORK', response: undefined }),
+    );
+    jest.mocked(listMyFiles).mockResolvedValue({
+      items: [uploadedFile], folders: [], breadcrumbs: [], folder: null,
+    } as never);
+
+    const record = await uploadNativeMyFile(pickedFile, 7, {});
+
+    expect(record.id).toBe('sess-1');
+    expect(readResumeMap()).toEqual({});
+  });
+
+  it('keeps the failure when a lost complete response leaves no committed record', async () => {
+    jest.mocked(completeMyFileUploadSession).mockRejectedValue(
+      Object.assign(new Error('Network Error'), { isAxiosError: true, code: 'ERR_NETWORK', response: undefined }),
+    );
+    jest.mocked(listMyFiles).mockResolvedValue({
+      items: [], folders: [], breadcrumbs: [], folder: null,
+    } as never);
+
+    await expect(uploadNativeMyFile(pickedFile, 7, {})).rejects.toThrow('Network Error');
+    // Resume entry stays: a later retry can still reconcile or resume.
+    expect(Object.keys(readResumeMap())).toHaveLength(1);
     expect(cancelMyFileUploadSession).not.toHaveBeenCalled();
   });
 

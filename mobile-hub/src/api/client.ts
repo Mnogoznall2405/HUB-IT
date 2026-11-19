@@ -79,19 +79,20 @@ function assertRequestSession(config: RetryConfig): void {
 // increments only after the auth/offline request checks passed, and decrements
 // for every dispatch — including 401 retries re-dispatched below.
 apiClient.interceptors.request.use((config) => {
-  noteApiRequestStart();
+  noteApiRequestStart(config);
   noteRequestStart(config);
   return config;
 });
 apiClient.interceptors.response.use(
   (result) => {
-    noteApiRequestEnd();
+    noteApiRequestEnd(result.config);
     noteRequestEnd(result.config, false);
     return result;
   },
   (error: unknown) => {
-    noteApiRequestEnd();
-    noteRequestEnd((error as { config?: object } | null)?.config, true);
+    const config = (error as { config?: { method?: unknown; url?: unknown } } | null)?.config;
+    noteApiRequestEnd(config);
+    noteRequestEnd(config, true);
     return Promise.reject(error);
   },
 );
@@ -126,11 +127,20 @@ apiClient.interceptors.request.use(async (config) => {
     config.timeout = MAIL_EXCHANGE_TIMEOUT_MS;
   }
   let accessToken = await tokenStore.getAccessToken();
-  if (accessToken && accessTokenExpiresSoon(accessToken)) {
+  // Auth endpoints (/auth/login with fresh credentials) must not trigger a
+  // proactive refresh of the previous session's tokens.
+  if (
+    accessToken
+    && accessTokenExpiresSoon(accessToken)
+    && !isAuthRequestWithoutRefresh(config.url)
+  ) {
     try {
       // Access tokens live ~15 minutes; refresh ahead of expiry instead of
-      // paying a 401 + refresh + retry round trip on the next request.
-      accessToken = await getAuthenticatedAccessToken();
+      // paying a 401 + refresh + retry round trip on the next request. The
+      // refresh itself must fit inside the caller's total timeout budget.
+      accessToken = await getAuthenticatedAccessToken({
+        refreshTimeoutMs: Number(config.timeout || 0) || undefined,
+      });
     } catch {
       // Keep the stale token: transient refresh failures fall back to the
       // reactive 401 path; a real expiry bumps the session generation and

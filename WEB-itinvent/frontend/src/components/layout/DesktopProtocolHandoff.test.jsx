@@ -12,6 +12,7 @@ const handoffMocks = vi.hoisted(() => ({
   launch: vi.fn(),
   skip: vi.fn(),
   setPreference: vi.fn(),
+  markSeen: vi.fn(),
 }));
 
 vi.mock('../../lib/desktopProtocolHandoff', () => ({
@@ -21,6 +22,7 @@ vi.mock('../../lib/desktopProtocolHandoff', () => ({
   launchHubitProtocol: handoffMocks.launch,
   skipDesktopHandoffThisSession: handoffMocks.skip,
   setDesktopHandoffPreference: handoffMocks.setPreference,
+  markDesktopHandoffSeen: handoffMocks.markSeen,
 }));
 
 function renderHandoff(path = '/tasks?task=7') {
@@ -43,6 +45,7 @@ describe('DesktopProtocolHandoff', () => {
     handoffMocks.launch.mockReset();
     handoffMocks.skip.mockReset();
     handoffMocks.setPreference.mockReset();
+    handoffMocks.markSeen.mockReset();
   });
 
   afterEach(() => {

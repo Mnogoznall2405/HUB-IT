@@ -18,7 +18,7 @@ describe('Android process health', () => {
     }, now);
 
     expect(snapshot).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'available',
       counts: {
         anr: 1,
@@ -28,6 +28,7 @@ describe('Android process health', () => {
         otherUnexpected: 1,
         expected: 1,
       },
+      sinceCurrentBuildFirstSeen: null,
     });
     expect(snapshot.recent).toHaveLength(6);
     expect(JSON.stringify(snapshot)).not.toContain('description');
@@ -35,10 +36,55 @@ describe('Android process health', () => {
     expect(JSON.stringify(snapshot)).not.toContain('pid');
   });
 
+  it('counts exits since the current build boundary separately from all history', () => {
+    const now = 1_787_500_000_000;
+    const boundary = new Date(now - 2_500).toISOString();
+    const snapshot = normalizeAndroidProcessHealth({
+      supported: true,
+      entries: [
+        { timestampMs: now - 1_000, reason: 'crash' },
+        { timestampMs: now - 4_000, reason: 'crash' },
+        { timestampMs: now - 4_500, reason: 'user_requested' },
+      ],
+    }, now, boundary);
+
+    expect(snapshot.counts).toMatchObject({ crash: 2, expected: 1 });
+    expect(snapshot.sinceCurrentBuildFirstSeen).toEqual({
+      at: boundary,
+      counts: {
+        anr: 0,
+        crash: 1,
+        nativeCrash: 0,
+        lowMemory: 0,
+        excessiveResource: 0,
+        otherUnexpected: 0,
+        expected: 0,
+      },
+    });
+  });
+
+  it('returns no observation window for missing, invalid or future boundaries', () => {
+    const now = 1_787_500_000_000;
+    const raw = {
+      supported: true,
+      entries: [{ timestampMs: now - 1_000, reason: 'crash' }],
+    };
+
+    expect(normalizeAndroidProcessHealth(raw, now).sinceCurrentBuildFirstSeen).toBeNull();
+    expect(normalizeAndroidProcessHealth(raw, now, null).sinceCurrentBuildFirstSeen).toBeNull();
+    expect(normalizeAndroidProcessHealth(raw, now, 'not-a-date').sinceCurrentBuildFirstSeen).toBeNull();
+    expect(normalizeAndroidProcessHealth(raw, now, new Date(now + 60_000).toISOString())
+      .sinceCurrentBuildFirstSeen).toBeNull();
+    expect(normalizeAndroidProcessHealth({ supported: false, entries: [] }, now,
+      new Date(now - 1_000).toISOString()).sinceCurrentBuildFirstSeen).toBeNull();
+  });
+
   it('reports unsupported Android versions without synthetic failures', () => {
     expect(normalizeAndroidProcessHealth({ supported: false, entries: [] })).toMatchObject({
+      schemaVersion: 2,
       status: 'unsupported',
       counts: { anr: 0, crash: 0, nativeCrash: 0 },
+      sinceCurrentBuildFirstSeen: null,
       recent: [],
     });
   });

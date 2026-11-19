@@ -1,4 +1,4 @@
-import apiClient from './client';
+import apiClient from './http';
 
 export const computersUsbAPI = {
   // USB devices ever seen by the agents (vendor, product, name, serial or PNP id).

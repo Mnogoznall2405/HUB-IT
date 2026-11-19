@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { formatApiError } from '../../api/formatError';
 import {
   acknowledgeFeedPost,
@@ -95,8 +95,11 @@ export function NativeFeedPostScreen() {
 }
 
 function FeedPostContent() {
-  const params = useLocalSearchParams<{ postId?: string | string[] }>();
+  const params = useLocalSearchParams<{ postId?: string | string[]; commentId?: string | string[] }>();
   const postId = String(Array.isArray(params.postId) ? params.postId[0] : params.postId || '').trim();
+  const targetCommentId = String(
+    Array.isArray(params.commentId) ? params.commentId[0] : params.commentId || '',
+  ).trim();
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -120,6 +123,9 @@ function FeedPostContent() {
   const [commentText, setCommentText] = useState('');
   const [commentFiles, setCommentFiles] = useState<FeedUploadFile[]>([]);
   const [replyingTo, setReplyingTo] = useState<FeedComment | null>(null);
+  // A reply started on a typed draft must not erase it: the pre-reply
+  // text/files are stashed here and restored by cancelReply.
+  const preReplyDraftRef = useRef<{ text: string; files: FeedUploadFile[] } | null>(null);
   const [editingCommentId, setEditingCommentId] = useState('');
   const [editingCommentText, setEditingCommentText] = useState('');
   const [busyCommentId, setBusyCommentId] = useState('');
@@ -146,6 +152,8 @@ function FeedPostContent() {
   const [pollVoting, setPollVoting] = useState(false);
   const commentRequestRef = useRef<{ fingerprint: string; id: string } | null>(null);
   const contentRequestRef = useRef(0);
+  const listRef = useRef<FlatList<{ comment: FeedComment; isReply: boolean }>>(null);
+  const [scrollTargetId, setScrollTargetId] = useState('');
 
   const reactionTotal = Object.values(post?.reaction_counts || {})
     .reduce((sum, count) => sum + Math.max(0, Number(count || 0)), 0);
@@ -227,10 +235,13 @@ function FeedPostContent() {
     }
   }, [commentsSort, offlineMode, postId, user?.id]);
 
-  useEffect(() => {
+  // Focus-scoped: mount and returning from a stacked screen (comment
+  // composer) reload the post; blur bumps the lease so a stale in-flight
+  // response cannot overwrite a fresher state.
+  useFocusEffect(useCallback(() => {
     if (allowed && postId) void loadContent();
     return () => { contentRequestRef.current += 1; };
-  }, [allowed, loadContent, postId]);
+  }, [allowed, loadContent, postId]));
 
   useEffect(() => {
     if (!user?.id || !post || String(post.id) !== postId || loading || commentsLoading || offlineMode) return;
@@ -393,6 +404,66 @@ function FeedPostContent() {
     ));
   }, []);
 
+  // Deep-link target: /feed?post=...#feed-comment-N passes commentId; locate the
+  // comment among roots, else page its root's replies, expand and scroll.
+  useEffect(() => {
+    if (!targetCommentId || loading || commentsLoading || !postId || scrollTargetId === targetCommentId) return;
+    if (comments.some((comment) => comment.id === targetCommentId)) {
+      setScrollTargetId(targetCommentId);
+      return;
+    }
+    if (offlineMode || !comments.length) return;
+    let cancelled = false;
+    void (async () => {
+      for (const root of comments) {
+        if (cancelled) return;
+        if (!Number(root.reply_count ?? root.replies_count ?? 0)) continue;
+        if (Object.prototype.hasOwnProperty.call(replies, root.id)
+          && !(replies[root.id] || []).some((item) => item.id === targetCommentId)) continue;
+        try {
+          const payload = await listFeedComments(postId, {
+            limit: 100,
+            offset: 0,
+            sort: 'oldest',
+            rootCommentId: root.id,
+          });
+          if (!payload.items.some((item) => item.id === targetCommentId)) continue;
+          if (cancelled) return;
+          setReplies((current) => ({ ...current, [root.id]: payload.items }));
+          setExpandedRoots((current) => new Set(current).add(root.id));
+          setScrollTargetId(targetCommentId);
+          return;
+        } catch {
+          // keep searching other roots
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [comments, commentsLoading, loading, offlineMode, postId, replies, scrollTargetId, targetCommentId]);
+
+  useEffect(() => {
+    if (!scrollTargetId) return;
+    let index = 0;
+    let found = false;
+    for (const root of comments) {
+      if (root.id === scrollTargetId) { found = true; break; }
+      index += 1;
+      if (expandedRoots.has(root.id)) {
+        for (const reply of replies[root.id] || []) {
+          if (reply.id === scrollTargetId) { found = true; break; }
+          index += 1;
+        }
+      }
+      if (found) break;
+    }
+    if (!found) return;
+    const timer = setTimeout(() => {
+      listRef.current?.scrollToIndex({ index, viewPosition: 0.25, animated: true });
+      setScrollTargetId('');
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [comments, expandedRoots, replies, scrollTargetId]);
+
   const handleReaction = useCallback(async (reactionType: FeedReactionId) => {
     if (!post || offlineMode) return;
     setReactionPickerOpen(false);
@@ -548,6 +619,7 @@ function FeedPostContent() {
       setCommentText('');
       setCommentFiles([]);
       setReplyingTo(null);
+      preReplyDraftRef.current = null;
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось отправить комментарий.'));
     } finally {
@@ -556,15 +628,26 @@ function FeedPostContent() {
   }, [commentFiles, commentText, commentsSort, loadReplies, offlineMode, postId, replies, replyingTo, sending]);
 
   const startReply = useCallback((comment: FeedComment) => {
-    setReplyingTo(comment);
     const username = String(comment.username || comment.author_username || '').trim();
-    setCommentText(username ? `@${username}, ` : '');
-  }, []);
+    const mention = username ? `@${username}, ` : '';
+    setReplyingTo((current) => {
+      if (!current) preReplyDraftRef.current = { text: commentText, files: commentFiles };
+      return comment;
+    });
+    setCommentText((current) => {
+      if (!current.trim()) return mention;
+      // Replace a previous mention prefix, prepend onto an ordinary draft.
+      const body = current.replace(/^@[^\n,]+,\s*/, '');
+      return body === current ? `${mention}${current}` : `${mention}${body}`;
+    });
+  }, [commentFiles, commentText]);
 
   const cancelReply = useCallback(() => {
     setReplyingTo(null);
-    setCommentText('');
-    setCommentFiles([]);
+    const draft = preReplyDraftRef.current;
+    preReplyDraftRef.current = null;
+    setCommentText(draft?.text || '');
+    setCommentFiles(draft?.files || []);
   }, []);
 
   const saveCommentEdit = useCallback(async () => {
@@ -808,6 +891,11 @@ function FeedPostContent() {
           {...chatKeyboardAvoidingProps()}
         >
           <FlatList
+            ref={listRef}
+            onScrollToIndexFailed={({ index }) => {
+              listRef.current?.scrollToOffset({ offset: Math.max(0, index * 96), animated: false });
+              setTimeout(() => listRef.current?.scrollToIndex({ index, viewPosition: 0.25, animated: true }), 150);
+            }}
             style={styles.flex}
             contentContainerStyle={{ gap: 12, paddingHorizontal: 12, paddingTop: 12, paddingBottom: bottomInset + 16 }}
             keyboardShouldPersistTaps="handled"

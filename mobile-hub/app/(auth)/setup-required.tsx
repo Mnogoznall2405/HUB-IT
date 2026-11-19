@@ -1,4 +1,5 @@
 import * as Clipboard from 'expo-clipboard';
+import * as ScreenCapture from 'expo-screen-capture';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
@@ -46,6 +47,27 @@ export default function SetupRequiredScreen() {
     }
     void loadSetup();
   }, [backupCodes.length, loadSetup, loginChallengeId]);
+
+  // The manual secret and backup codes must not end up in screenshots or the
+  // app-switcher thumbnail — keep FLAG_SECURE held while either is visible.
+  const sensitiveVisible = Boolean(setup) || backupCodes.length > 0;
+  useEffect(() => {
+    if (!sensitiveVisible) return;
+    const key = 'hubit-twofa-setup';
+    let active = true;
+    void ScreenCapture.preventScreenCaptureAsync(key).then(() => {
+      if (!active) void ScreenCapture.allowScreenCaptureAsync(key).catch(() => undefined);
+    }).catch(() => {
+      if (!active) return;
+      setSetup(null);
+      setBackupCodes([]);
+      setError('Не удалось включить защиту экрана от записи. Повторите настройку.');
+    });
+    return () => {
+      active = false;
+      void ScreenCapture.allowScreenCaptureAsync(key).catch(() => undefined);
+    };
+  }, [sensitiveVisible]);
 
   const verify = useCallback(async () => {
     const normalizedCode = code.replace(/\D/g, '').slice(0, 6);

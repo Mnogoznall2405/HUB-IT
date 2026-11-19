@@ -31,17 +31,32 @@ def get_database_config(db_id: Optional[str] = None) -> dict:
             "username": config.database.username,
             "password": config.database.password,
             "driver": config.database.driver,
+            "encrypt": config.database.encrypt,
+            "trust_server_certificate": config.database.trust_server_certificate,
         }
 
     # Get config for specific database from environment
     env_prefix = f"DB_{db_id}_"
-    return {
+    trust_raw = str(os.getenv(f"{env_prefix}TRUST_SERVER_CERTIFICATE", "") or "").strip().lower()
+    trust_server_certificate = config.database.trust_server_certificate
+    if trust_raw:
+        trust_server_certificate = trust_raw in {"1", "true", "yes", "on"}
+    db_config = {
         "host": os.getenv(f"{env_prefix}HOST", config.database.host),
         "database": os.getenv(f"{env_prefix}DATABASE", db_id),
         "username": os.getenv(f"{env_prefix}USERNAME", "ROUser"),
         "password": os.getenv(f"{env_prefix}PASSWORD", ""),
         "driver": config.database.driver,
+        "encrypt": str(os.getenv(f"{env_prefix}ENCRYPT", config.database.encrypt) or "yes").strip() or "yes",
+        "trust_server_certificate": trust_server_certificate,
     }
+    config.validate_sql_server_tls(
+        encrypt=db_config["encrypt"],
+        trust_server_certificate=db_config["trust_server_certificate"],
+        encrypt_var=f"{env_prefix}ENCRYPT",
+        trust_var=f"{env_prefix}TRUST_SERVER_CERTIFICATE",
+    )
+    return db_config
 
 
 def build_connection_string(db_config: dict) -> str:
@@ -52,7 +67,8 @@ def build_connection_string(db_config: dict) -> str:
         f"DATABASE={db_config['database']};"
         f"UID={db_config['username']};"
         f"PWD={db_config['password']};"
-        "TrustServerCertificate=yes;"
+        f"Encrypt={str(db_config.get('encrypt') or 'yes').strip() or 'yes'};"
+        f"TrustServerCertificate={'yes' if db_config.get('trust_server_certificate') else 'no'};"
         "autocommit=True;"
     )
 

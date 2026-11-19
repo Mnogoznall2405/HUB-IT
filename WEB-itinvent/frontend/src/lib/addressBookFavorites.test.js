@@ -28,7 +28,10 @@ describe('addressBookFavorites storage', () => {
     expect(isFavoriteEmployee('u1', 'E1')).toBe(true);
     expect(isFavoriteEmployee('u1', 'E2')).toBe(false);
 
-    const keys = Object.keys(window.localStorage);
+    const keys = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      keys.push(window.localStorage.key(i));
+    }
     expect(keys).toContain('hubit.addressBook.favorites.u1');
     expect(keys).toContain('hubit.addressBook.favorites.u2');
     expect(window.localStorage.getItem('hubit.addressBook.favorites.u1')).toBe('["E1"]');
@@ -76,10 +79,10 @@ describe('addressBookFavorites storage', () => {
   });
 
   it('degrades to memory storage when localStorage throws', () => {
-    const deny = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    const deny = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
       throw new Error('denied');
     });
-    const denyGet = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+    const denyGet = vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
       throw new Error('denied');
     });
 

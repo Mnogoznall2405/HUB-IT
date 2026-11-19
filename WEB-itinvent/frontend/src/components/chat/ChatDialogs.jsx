@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
+import { forwardRef, lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -66,7 +66,9 @@ import ChatContactPickDialog from './ChatContactPickDialog';
 import ChatLocationConfirmDialog from './ChatLocationConfirmDialog';
 import ChatMediaPreviewDialog from './ChatMediaPreviewDialog';
 import ChatPollCreateDialog from './ChatPollCreateDialog';
-import MailAttachmentPreviewDialog from '../mail/MailAttachmentPreviewDialog';
+// Document preview pulls in the mail viewer stack (DOMPurify/pdf/excel ~ +200 kB
+// gzip); keep it out of the main chat graph and load it on first open.
+const MailAttachmentPreviewDialog = lazy(() => import('../mail/MailAttachmentPreviewDialog'));
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatMessageContextMenu from './ChatMessageContextMenu';
 import {
@@ -1045,13 +1047,15 @@ export default function ChatDialogs({
         prefersReducedMotion={prefersReducedMotion}
       />
       {documentPreview?.open ? (
-        <MailAttachmentPreviewDialog
-          attachmentPreview={documentPreview}
-          onClose={onCloseDocumentPreview}
-          onDownload={onDownloadDocumentPreview}
-          onDownloadPreviewPdf={onDownloadDocumentPreviewPdf}
-          formatFileSize={formatFileSize}
-        />
+        <Suspense fallback={null}>
+          <MailAttachmentPreviewDialog
+            attachmentPreview={documentPreview}
+            onClose={onCloseDocumentPreview}
+            onDownload={onDownloadDocumentPreview}
+            onDownloadPreviewPdf={onDownloadDocumentPreviewPdf}
+            formatFileSize={formatFileSize}
+          />
+        </Suspense>
       ) : null}
       <Dialog open={searchOpen} onClose={onCloseSearch} fullWidth maxWidth="sm" PaperProps={{ sx: dialogPaperSx }}>
         <DialogTitle sx={dialogTitleSx}>Поиск по сообщениям</DialogTitle>

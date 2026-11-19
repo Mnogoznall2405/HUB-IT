@@ -370,26 +370,56 @@ def _api_key_fingerprint(value: Optional[str]) -> str:
 
 
 def _load_agent_api_keys() -> List[str]:
-    keys: List[str] = []
-    ring_raw = str(os.getenv("ITINV_AGENT_API_KEYS", "") or "").strip()
-    if ring_raw:
-        for row in ring_raw.split(","):
-            key = str(row or "").strip()
-            if key and key not in keys:
-                keys.append(key)
-
-    legacy_key = str(os.getenv("ITINV_AGENT_API_KEY", "") or "").strip()
-    if legacy_key and legacy_key not in keys:
-        keys.append(legacy_key)
-    return keys
+    return inventory_runtime._load_agent_api_keys() + list(
+        inventory_runtime._load_bound_agent_keys().values()
+    )
 
 
 def _is_valid_agent_api_key(candidate: Optional[str]) -> bool:
-    token = str(candidate or "").strip()
-    if not token:
-        return False
-    keys = _load_agent_api_keys()
-    return token in keys
+    return inventory_runtime._is_valid_agent_api_key(candidate)
+
+
+def _check_agent_identity(x_api_key: Optional[str], hostname: Optional[str]) -> None:
+    """A key bound via ``INVENTORY_AGENT_API_KEYS`` may only report its own host."""
+    bound = inventory_runtime._bound_agent_name_for_key(x_api_key)
+    if bound and not inventory_runtime._bound_identity_matches(bound, hostname):
+        logger.warning(
+            "Inventory rejected key bound to computer=%s used for hostname=%s",
+            bound,
+            str(hostname or "").strip(),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key",
+        )
+
+
+def _check_agent_inventory_binding(x_api_key: Optional[str], mac_address: Optional[str]) -> None:
+    """A bound key must not overwrite a host card owned by another computer.
+
+    Identity binds on ``hostname`` but cards key on ``mac_address``; the card's
+    recorded owner hostname must match the bound identity (unregistered cards
+    pass — a machine changing NIC/MAC keeps working).
+    """
+    bound = inventory_runtime._bound_agent_name_for_key(x_api_key)
+    if not bound:
+        return
+    mac = str(mac_address or "").strip()
+    if not mac:
+        return
+    try:
+        host = inventory_runtime._get_inventory_host(mac)
+    except Exception:
+        host = None
+    owner = str((host or {}).get("hostname") or "").strip()
+    if owner and not inventory_runtime._bound_identity_matches(bound, owner):
+        logger.warning(
+            "Inventory rejected key bound to computer=%s writing mac=%s owned by %s",
+            bound,
+            mac,
+            owner,
+        )
+        raise HTTPException(status_code=403, detail="API key is bound to another computer")
 
 
 class InventoryPayload(BaseModel):
@@ -2894,6 +2924,8 @@ def receive_inventory(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key",
         )
+    _check_agent_identity(x_api_key, payload.hostname)
+    _check_agent_inventory_binding(x_api_key, payload.mac_address)
 
     inventory_runtime.configure_runtime_hooks(
         is_app_database_configured=is_app_database_configured,

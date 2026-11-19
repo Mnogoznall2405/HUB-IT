@@ -540,14 +540,11 @@ function MailWorkspace() {
         setLoading(false);
       } else {
         setRecentHydratedScope('');
-        // Keep previous mailbox rows clickable; Exchange refresh is background-only.
-        const hasPaintedItems = Array.isArray(listDataRef.current?.items) && listDataRef.current.items.length > 0;
-        if (hasPaintedItems) {
-          setLoading(false);
-          setMailBackgroundRefreshing(true);
-        } else {
-          setLoading(true);
-        }
+        // Rows of the previous mailbox must not stay clickable: opening one
+        // would request the message with the NEW mailbox id and 404. Show the
+        // loading state until the scope's own bootstrap paints real rows.
+        setListData(normalizeMailListResponse({ items: [] }));
+        setLoading(true);
       }
     }
     previousMailCacheScopeRef.current = mailCacheScope;
@@ -729,15 +726,12 @@ function MailWorkspace() {
       setLoading(false);
       setMailBackgroundRefreshing(true);
     } else {
-      // Keep previous rows interactive; MailMessageList hides items when loading=true.
+      // Rows of the previous mailbox must not stay clickable: opening one
+      // would request the message with the NEW mailbox id and 404. Show the
+      // loading state until the scope's own bootstrap paints real rows.
       setRecentHydratedScope('');
-      const hasPaintedItems = Array.isArray(listDataRef.current?.items) && listDataRef.current.items.length > 0;
-      if (hasPaintedItems) {
-        setLoading(false);
-        setMailBackgroundRefreshing(true);
-      } else {
-        setLoading(true);
-      }
+      setListData(normalizeMailListResponse({ items: [] }));
+      setLoading(true);
     }
     setFolder(nextFolder);
     setViewMode(nextViewMode);
@@ -995,6 +989,8 @@ function MailWorkspace() {
     setError,
     setFolderSummary,
     setListData,
+    setMailboxInfo,
+    setMailboxes,
     setSelectedConversation,
     setSelectedMessage,
     settleAutoReadGuard,
@@ -1432,12 +1428,28 @@ function MailWorkspace() {
   }), [mailboxEmails, selectedConversation, selectedMessage, viewMode]);
   const quickReplyPlaceholder = getMailQuickReplyPlaceholder(defaultReplyMode);
 
+  const hasNarrowingMailFilters = hasActiveMailListFilters({
+    search,
+    unreadOnly,
+    hasAttachmentsOnly,
+    filterDateFrom,
+    filterDateTo,
+    advancedFiltersActive: Boolean(
+      advancedFiltersApplied?.from_filter
+      || advancedFiltersApplied?.to_filter
+      || advancedFiltersApplied?.subject_filter
+      || advancedFiltersApplied?.body_filter
+      || advancedFiltersApplied?.importance
+    ),
+  });
   const handleMarkAllRead = useMailMarkAllRead({
     mailAPI,
     activeMailboxId,
     folder,
     folderScope: advancedFiltersApplied?.folder_scope,
     viewMode,
+    listItems: listData?.items,
+    hasNarrowingFilters: hasNarrowingMailFilters,
     selectedConversation,
     selectedMessage,
     applyConversationReadStateLocally,
@@ -1603,6 +1615,11 @@ function MailWorkspace() {
     () => serializeMailMoveTargets(effectiveFolderTreeItems, folder),
     [effectiveFolderTreeItems, folder]
   );
+  const handleToggleSelectedListItem = useCallback((id) => {
+    setSelectedItems((prev) => (prev.includes(String(id))
+      ? prev.filter((item) => item !== String(id))
+      : [...prev, String(id)]));
+  }, []);
   const advancedFiltersActive = isMailAdvancedFiltersActive(advancedFiltersApplied);
   const hasActiveFilters = hasActiveMailListFilters({
     search,
@@ -1940,7 +1957,7 @@ function MailWorkspace() {
         showPreviewSnippets={Boolean(mailPreferences?.show_preview_snippets)}
         onPrefetchId={undefined}
         onSelectId={handleSelectMailListItem}
-        onToggleSelectedListItem={(id) => setSelectedItems((prev) => (prev.includes(String(id)) ? prev.filter((item) => item !== String(id)) : [...prev, String(id)]))}
+        onToggleSelectedListItem={handleToggleSelectedListItem}
         onStartDragItems={handleStartDragItems}
         formatTime={formatTime}
         getAvatarColor={getAvatarColor}

@@ -1,6 +1,6 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { StyleSheet } from 'react-native';
+import { AppState, StyleSheet } from 'react-native';
 import * as messengerLinks from '../../addressBook/messengerLinks';
 import * as docflowApi from '../../api/docflowApi';
 import type { DocflowTaskDetail } from '../../api/docflowApi';
@@ -351,6 +351,49 @@ it('keeps a pending 1C command visible and lets the user verify it', async () =>
   fireEvent.press(view.getByTestId('native-docflow-command-check'));
   await waitFor(() => expect(docflowApi.getDocflowCommand).toHaveBeenCalledWith('cmd-pending'));
   expect(await view.findByText('1С подтвердила выполнение задания.')).toBeTruthy();
+});
+
+it('stops auto-checking a waiting command after the budget and keeps the manual check working', async () => {
+  jest.useFakeTimers();
+  AppState.currentState = 'active';
+  try {
+    (docflowApi.applyDocflowTaskAction as jest.Mock).mockResolvedValueOnce({
+      command_id: 'cmd-slow',
+      status: 'state_unknown',
+      correlation_id: 'corr-slow',
+      error_code: 'DOCFLOW_ACTION_STATE_UNKNOWN',
+      task: null,
+    });
+    (docflowApi.getDocflowCommand as jest.Mock).mockResolvedValue({
+      command_id: 'cmd-slow',
+      status: 'state_unknown',
+      correlation_id: 'corr-slow',
+      error_code: 'DOCFLOW_ACTION_STATE_UNKNOWN',
+      task: null,
+    });
+    const view = await render(<NativeDocflowDetailScreen taskRef={task.ref} />);
+    await waitFor(() => expect(view.getByTestId('native-docflow-action-approve')).toBeTruthy());
+    await fireEvent.press(view.getByTestId('native-docflow-action-approve'));
+    await waitFor(() => expect(view.getByTestId('native-docflow-action-confirm')).toBeTruthy());
+    await fireEvent.press(view.getByTestId('native-docflow-action-confirm'));
+    await waitFor(() => expect(view.getByTestId('native-docflow-command-check')).toBeTruthy());
+    expect(docflowApi.applyDocflowTaskAction).toHaveBeenCalledTimes(1);
+    (docflowApi.getDocflowCommand as jest.Mock).mockClear();
+    for (let step = 0; step < 45; step += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => { jest.advanceTimersByTime(3_000); });
+    }
+    const autoCalls = (docflowApi.getDocflowCommand as jest.Mock).mock.calls.length;
+    expect(autoCalls).toBeGreaterThan(0);
+    expect(autoCalls).toBeLessThanOrEqual(30);
+    await fireEvent.press(view.getByTestId('native-docflow-command-check'));
+    await waitFor(() => expect(docflowApi.getDocflowCommand).toHaveBeenCalledTimes(autoCalls + 1));
+    await act(async () => { jest.advanceTimersByTime(120_000); });
+    await act(async () => { await Promise.resolve(); });
+    expect(docflowApi.getDocflowCommand).toHaveBeenCalledTimes(autoCalls + 1);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('opens the exact validated 1C URL when a digital signature is required', async () => {

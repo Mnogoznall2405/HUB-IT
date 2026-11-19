@@ -549,3 +549,57 @@ select {
     animation: none !important;
   }
 }
+
+/*
+  Login enter/idle animations (CSS replacement for framer-motion on /login).
+  The global prefers-reduced-motion rule above already neutralizes them.
+*/
+@keyframes login-enter-down {
+  from { opacity: 0; transform: translateY(-14px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes login-enter-down-soft {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes login-enter-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes login-enter-scale {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes login-dialog-in {
+  from { opacity: 0; transform: translate(14px, 40px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes login-pulse-ring {
+  from { opacity: 0.7; transform: scale(1); }
+  to { opacity: 0; transform: scale(1.45); }
+}
+
+@keyframes login-dot-blink {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 1; }
+}
+
+.login-anim-top { animation: login-enter-down 0.22s ease-out both; }
+.login-anim-top-soft { animation: login-enter-down-soft 0.18s ease-out both; }
+.login-anim-up { animation: login-enter-up 0.22s ease-out both; }
+.login-anim-shell { animation: login-enter-up 0.28s ease-out both; }
+.login-anim-scale-in { animation: login-enter-scale 0.3s ease-out both; }
+.login-anim-dialog { animation: login-dialog-in 0.26s ease-out both; }
+.login-anim-ring { animation: login-pulse-ring 1.6s ease-out infinite; }
+.login-anim-dot { animation: login-dot-blink 1.2s ease-in-out infinite; }
+
+.login-sso-press {
+  transition-property: border-color, background-color, transform;
+}
+.login-sso-press:hover:not(:disabled) { transform: scale(1.018); }
+.login-sso-press:active:not(:disabled) { transform: scale(0.982); }

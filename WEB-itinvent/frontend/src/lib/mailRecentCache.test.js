@@ -13,11 +13,13 @@ import {
 describe('mailRecentCache', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    window.sessionStorage.clear();
     vi.restoreAllMocks();
   });
 
   afterEach(() => {
     clearAllMailRecentCache();
+    window.sessionStorage.clear();
     vi.restoreAllMocks();
   });
 
@@ -192,7 +194,52 @@ describe('mailRecentCache', () => {
       }),
     );
 
-    const raw = JSON.parse(window.localStorage.getItem(__MAIL_RECENT_CACHE_TESTING__.MAIL_RECENT_CACHE_STORAGE_KEY));
+    const raw = JSON.parse(window.sessionStorage.getItem(__MAIL_RECENT_CACHE_TESTING__.MAIL_RECENT_DETAIL_STORAGE_KEY));
     expect(raw['user-1'].details['msg-42'].data.attachments[0].content).toBeUndefined();
+  });
+
+  it('keeps message bodies out of localStorage so they do not survive the tab session', () => {
+    writeMailRecentMessageDetail({
+      scope: 'user-1',
+      message: {
+        id: 'msg-body',
+        subject: 'Secret subject',
+        body_html: '<p>Confidential body</p>',
+        body_text: 'Confidential body',
+        to: ['recipient@example.com'],
+        attachments: [{ id: 'att-1', name: 'doc.pdf', inline_src: '/inline/doc.pdf' }],
+      },
+    });
+
+    const persisted = window.localStorage.getItem(__MAIL_RECENT_CACHE_TESTING__.MAIL_RECENT_CACHE_STORAGE_KEY) || '';
+    expect(persisted).not.toContain('Confidential body');
+    expect(JSON.parse(persisted || '{}')['user-1']?.details).toBeUndefined();
+
+    expect(getMailRecentMessageDetail({ scope: 'user-1', messageId: 'msg-body' })).toEqual(
+      expect.objectContaining({
+        id: 'msg-body',
+        body_html: '<p>Confidential body</p>',
+        to: ['recipient@example.com'],
+      }),
+    );
+  });
+
+  it('evicts the oldest message details once the serialized cache exceeds the byte budget', () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => { now += 1_000; return now; });
+    const bigHtml = `<p>${'x'.repeat(190_000)}</p>`;
+    for (let index = 0; index < 12; index += 1) {
+      writeMailRecentMessageDetail({
+        scope: 'user-1',
+        message: { id: `msg-${index + 1}`, subject: `m-${index + 1}`, body_html: bigHtml },
+      });
+    }
+
+    const raw = window.sessionStorage.getItem(__MAIL_RECENT_CACHE_TESTING__.MAIL_RECENT_DETAIL_STORAGE_KEY);
+    expect(raw.length).toBeLessThanOrEqual(__MAIL_RECENT_CACHE_TESTING__.MAIL_RECENT_CACHE_MAX_BYTES);
+    expect(getMailRecentMessageDetail({ scope: 'user-1', messageId: 'msg-1' })).toBeNull();
+    expect(getMailRecentMessageDetail({ scope: 'user-1', messageId: 'msg-12' })).toEqual(
+      expect.objectContaining({ id: 'msg-12' }),
+    );
   });
 });

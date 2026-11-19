@@ -62,7 +62,10 @@ const realtimeTypes = new Map<string, number>();
 const workSeries = new Map<string, Series>();
 const workIntervals: Array<{ name: string; start: number; end: number }> = [];
 const stallCulprits = new Map<string, number>();
-const requestStartedAt = new WeakMap<object, number>();
+const requestStartedAt = new WeakMap<object, { at: number; epoch: number }>();
+// Bumped on reset: a response arriving after the sampler epoch moved on must
+// not be attributed to the new epoch's endpoint stats.
+let perfEpoch = 0;
 // performance.now() counts from device boot on Android, so measure from this module's
 // evaluation (the first thing the app bundle loads) instead.
 const moduleLoadedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : NaN;
@@ -107,30 +110,48 @@ function summarize(series: Series): EndpointStats {
   };
 }
 
+// Only fixed API route tokens may appear in a shared report. Any other segment
+// (conversation ids, user names, slugs) collapses to ':id' — even all-lowercase
+// ones, which used to slip through the alphabetic regex.
+const SAFE_ENDPOINT_SEGMENTS = new Set([
+  'api', 'chat', 'me', 'auth', 'login', 'logout', 'conversations', 'messages',
+  'thread-bootstrap', 'unread-summary', 'read', 'attachments', 'upload-sessions',
+  'files', 'chunks', 'complete', 'cancel', 'folders', 'users', 'search', 'direct',
+  'group', 'settings', 'pinned-message', 'profile', 'members', 'role', 'ownership',
+  'leave', 'invite-link', 'activity', 'reads', 'shareable-tasks', 'task-share',
+  'sticker-packs', 'import', 'link-preview', 'sticker', 'save-to-my-files',
+  'actions', 'confirm', 'reactions', 'forward', 'resolve', 'ai', 'bots', 'open',
+  'reset-context', 'sandbox', 'permissions', 'respond', 'archive', 'attach',
+  'access', 'poll-vote', 'poll-close', 'equipment', 'mail', 'tasks', 'database', 'dashboard',
+]);
+
 /** `GET /chat/conversations/:id/messages` — ids, queries and free text never survive. */
 export function endpointTemplate(method: unknown, url: unknown): string | null {
   const verb = String(method || 'get').toLowerCase();
   if (!ENDPOINT_METHOD.test(verb)) return null;
   const path = String(url || '').split('?')[0].split('#')[0].replace(/^https?:\/\/[^/]+/i, '');
   const segments = path.split('/').filter(Boolean).slice(0, 6).map((segment) =>
-    /^[a-z][a-z_-]{0,23}$/.test(segment) ? segment : ':id');
+    SAFE_ENDPOINT_SEGMENTS.has(segment) ? segment : ':id');
   if (!segments.length) return null;
   return `${verb.toUpperCase()} /${segments.join('/')}`;
 }
 
 export function noteRequestStart(config: object | undefined, at: number = Date.now()): void {
-  if (config && typeof config === 'object') requestStartedAt.set(config, at);
+  if (config && typeof config === 'object') requestStartedAt.set(config, { at, epoch: perfEpoch });
 }
 
 export function noteRequestEnd(
   config: { method?: unknown; url?: unknown } | undefined, failed: boolean, at: number = Date.now(),
 ): void {
   if (!config || typeof config !== 'object') return;
-  const startedAt = requestStartedAt.get(config);
-  if (startedAt === undefined) return;
+  const tracked = requestStartedAt.get(config);
+  if (!tracked || tracked.epoch !== perfEpoch) {
+    if (tracked) requestStartedAt.delete(config);
+    return;
+  }
   requestStartedAt.delete(config);
   const key = endpointTemplate(config.method, config.url);
-  if (key) record(endpoints, key, MAX_ENDPOINTS, at - startedAt, SLOW_REQUEST_MS, failed);
+  if (key) record(endpoints, key, MAX_ENDPOINTS, at - tracked.at, SLOW_REQUEST_MS, failed);
 }
 
 export function noteRenderCommit(name: string, ms: number): void {
@@ -252,6 +273,7 @@ export function stopPerfSampler(): void {
 }
 
 export function resetPerfProbes(): void {
+  perfEpoch += 1;
   endpoints.clear();
   renders.clear();
   realtimeTypes.clear();

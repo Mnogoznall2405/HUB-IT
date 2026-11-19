@@ -156,7 +156,7 @@ async function readAll(ownerId?: number): Promise<Entry[]> {
     catch { parsed = null; }
     if (!Array.isArray(parsed)) {
       if (raw) await quarantineNativeChatOutboxBlob(raw);
-      void recordDiagnosticEvent('native_file_error');
+      void recordDiagnosticEvent('native_file_error', undefined, { source: 'chat-outbox', stage: 'parse' });
       setNativeChatOutboxRowsCache([]);
       notify();
       return [];
@@ -165,7 +165,7 @@ async function readAll(ownerId?: number): Promise<Entry[]> {
   const { rows, dropped } = partitionNativeChatOutboxEntries(parsed, ownerId);
   if (dropped.length) {
     await writeAll(rows);
-    void recordDiagnosticEvent('native_file_error');
+    void recordDiagnosticEvent('native_file_error', undefined, { source: 'chat-outbox', stage: 'sanitize' });
     await deleteUnreferencedChatFiles(nativeChatOutboxUploadUris(dropped)).catch(() => undefined);
     return rows;
   }

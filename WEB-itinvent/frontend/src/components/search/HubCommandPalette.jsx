@@ -60,6 +60,11 @@ export default function HubCommandPalette({
 
   const activeOptionId = results[activeIndex] ? `${listId}-option-${activeIndex}` : undefined;
 
+  useEffect(() => {
+    if (!open || !activeOptionId || typeof document === 'undefined') return;
+    document.getElementById(activeOptionId)?.scrollIntoView?.({ block: 'nearest' });
+  }, [open, activeOptionId]);
+
   return (
     <Dialog
       open={Boolean(open)}

@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { withPreservedMailboxUnreadCount } from './mailMailboxModel';
 
 export default function useMailMailboxConfigRefresh({
   mailAPI,
@@ -16,7 +17,7 @@ export default function useMailMailboxConfigRefresh({
     setMailConfigLoading(true);
     try {
       const data = await mailAPI.getMyConfig({ mailbox_id: activeMailboxId || undefined });
-      setMailboxInfo(data || null);
+      setMailboxInfo((prev) => withPreservedMailboxUnreadCount(data || null, prev));
       setMailboxes((prev) => mergeMailboxEntries(prev, data || null));
       const resolvedMailboxId = getMailboxEntryId(data);
       if (resolvedMailboxId) {

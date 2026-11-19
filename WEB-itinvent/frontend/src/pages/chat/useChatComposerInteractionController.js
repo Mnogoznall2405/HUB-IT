@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 
 import { canEditChatMessage } from '../../components/chat/chatHelpers';
-import { startChatMessageEditing } from '../../components/chat/useChatMessageMenuActions';
+import { restoreChatEditDraft, startChatMessageEditing } from '../../components/chat/useChatMessageMenuActions';
 
 export function findLastEditableOwnMessage(messages) {
   const source = Array.isArray(messages) ? messages : [];
@@ -13,10 +13,12 @@ export function findLastEditableOwnMessage(messages) {
 
 export default function useChatComposerInteractionController({
   editingMessage = null,
+  editDraftSnapshotRef = null,
   emojiPickerOpen = false,
   focusComposer,
   handleComposerSend,
   isMobile = false,
+  latestDraftStorageKeyRef = null,
   latestMessageTextRef = null,
   messages = null,
   messagesHasNewer = false,
@@ -55,12 +57,17 @@ export default function useChatComposerInteractionController({
       setEditingMessage,
       setMessageText,
       setReplyMessage,
+      editDraftSnapshotRef,
+      latestDraftStorageKeyRef,
+      latestMessageTextRef,
     });
   }, [
     editingMessage,
+    editDraftSnapshotRef,
     emojiPickerOpen,
     focusComposer,
     isMobile,
+    latestDraftStorageKeyRef,
     latestMessageTextRef,
     messages,
     messagesHasNewer,
@@ -96,9 +103,11 @@ export default function useChatComposerInteractionController({
 
   const clearEditingMessage = useCallback(() => {
     setEditingMessage(null);
-    setMessageText('');
+    if (!restoreChatEditDraft({ editDraftSnapshotRef, latestDraftStorageKeyRef, setMessageText })) {
+      setMessageText('');
+    }
     focusComposer();
-  }, [focusComposer, setEditingMessage, setMessageText]);
+  }, [editDraftSnapshotRef, focusComposer, latestDraftStorageKeyRef, setEditingMessage, setMessageText]);
 
   return {
     clearEditingMessage,

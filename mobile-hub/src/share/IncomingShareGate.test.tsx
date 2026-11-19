@@ -4,6 +4,7 @@ import * as chatApi from '../api/chatApi';
 import { openPortalPath } from '../navigation/moduleRegistry';
 import { IncomingShareGate, describeShareFiles } from './IncomingShareGate';
 import {
+  clearIncomingShare,
   copyIncomingShareFiles,
   discardIncomingShare,
   getPendingIncomingTextShare,
@@ -11,12 +12,15 @@ import {
 } from './incomingShare';
 import { filterShareTargets } from './ShareChatPicker';
 
+let mockUserId = 7;
+let mockShareGeneration = 0;
+
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('../auth/AuthContext', () => ({
-  useAuth: () => ({ user: { id: 7 }, hasPermission: () => true }),
+  useAuth: () => ({ user: { id: mockUserId }, hasPermission: () => true }),
 }));
 jest.mock('../navigation/moduleRegistry', () => ({ openPortalPath: jest.fn() }));
-jest.mock('../api/chatApi', () => ({ getConversationPage: jest.fn() }));
+jest.mock('../api/chatApi', () => ({ getConversationPage: jest.fn(), listAllConversations: jest.fn() }));
 jest.mock('../chat/nativeChatInboxSnapshot', () => ({ readNativeChatInboxSnapshot: jest.fn(async () => null) }));
 jest.mock('./incomingShare', () => ({
   getPendingIncomingTextShare: jest.fn(),
@@ -24,6 +28,8 @@ jest.mock('./incomingShare', () => ({
   copyIncomingShareFiles: jest.fn(),
   queueIncomingShare: jest.fn(),
   discardIncomingShare: jest.fn(),
+  getIncomingShareGeneration: jest.fn(() => mockShareGeneration),
+  clearIncomingShare: jest.fn(async () => { mockShareGeneration += 1; }),
 }));
 
 const fileShare = {
@@ -41,14 +47,25 @@ const conversation = (id: string, title: string, extra: Record<string, unknown> 
   { id, title, kind: 'direct', last_message_at: '2026-10-06T10:00:00Z', ...extra }
 );
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
+  mockUserId = 7;
+  mockShareGeneration = 0;
   jest.mocked(getPendingIncomingTextShare).mockResolvedValue(fileShare);
   jest.mocked(chatApi.getConversationPage).mockResolvedValue({
     items: [conversation('c1', 'Иванов Иван'), conversation('c2', 'Группа ИТ', { kind: 'group' })],
     has_more: false,
     next_cursor: null,
   } as never);
+  jest.mocked(chatApi.listAllConversations).mockImplementation(async () => (
+    (await jest.mocked(chatApi.getConversationPage)({})).items
+  ));
 });
 
 describe('incoming file share', () => {
@@ -96,9 +113,44 @@ describe('incoming file share', () => {
     expect(openPortalPath).not.toHaveBeenCalled();
   });
 
+  it('does not queue or navigate when the share was cleared while files were copying', async () => {
+    const copy = deferred<Array<{ uri: string; name: string; mimeType: string; size: number; source: 'gallery' }>>();
+    jest.mocked(copyIncomingShareFiles).mockImplementationOnce(() => copy.promise);
+    const view = await render(<IncomingShareGate />);
+    await fireEvent.press(await view.findByText('Создать письмо'));
+
+    await act(async () => { await clearIncomingShare(); });
+    await act(async () => {
+      copy.resolve([{ uri: 'file:///cache/a.jpg', name: 'a.jpg', mimeType: 'image/jpeg', size: 10, source: 'gallery' }]);
+    });
+
+    expect(queueIncomingShare).not.toHaveBeenCalled();
+    expect(openPortalPath).not.toHaveBeenCalled();
+    expect(discardIncomingShare).toHaveBeenCalledWith(fileShare);
+  });
+
+  it('never shows a share that user A left pending to user B', async () => {
+    const gate = deferred<typeof fileShare>();
+    jest.mocked(getPendingIncomingTextShare)
+      .mockImplementationOnce(() => gate.promise)
+      .mockResolvedValue(null);
+    const view = await render(<IncomingShareGate />);
+    await act(async () => undefined);
+
+    await act(async () => {
+      mockUserId = 9;
+      view.rerender(<IncomingShareGate />);
+    });
+    await act(async () => { gate.resolve(fileShare); });
+
+    expect(discardIncomingShare).toHaveBeenCalledWith(fileShare);
+    expect(view.queryByText('Поделиться в HUB-IT')).toBeNull();
+    expect(view.queryByTestId('incoming-share-files')).toBeNull();
+  });
+
   it('discards the share when the user cancels', async () => {
     const view = await render(<IncomingShareGate />);
-    fireEvent.press(await view.findByText('Отменить'));
+    await fireEvent.press(await view.findByText('Отменить'));
     expect(discardIncomingShare).toHaveBeenCalledWith(fileShare);
     await act(async () => undefined);
     expect(view.queryByText('Отправить в чат')).toBeNull();

@@ -6,7 +6,7 @@ import * as api from '../api/chatApi';
 import type { ChatMessage } from '../api/types';
 import { clearNativeChatOutbox, createNativeChatOutbox, getNativeChatOutboxRuntimeState,
   getNativeChatQueueState, readNativeChatOutbox, resetNativeChatRetryBackoff, subscribeNativeChatOutbox } from './nativeChatOutbox';
-import { resetNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
+import { CHAT_OUTBOX_STORAGE_KEY, resetNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
 import { getChatSendTimingSummary, markChatSend, resetChatSendTiming } from '../diagnostics/chatSendTiming';
 import { getChatDeviceLogSnapshot, resetChatDeviceLog } from '../diagnostics/chatDeviceLog';
 
@@ -298,6 +298,28 @@ it('queues for later delivery without calling the network send', async () => {
   send.mockResolvedValueOnce({ ...message, id: 'server-one', local_status: undefined });
   await expect(restored.send(message, send)).resolves.toMatchObject({ id: 'server-one' });
   expect(send).toHaveBeenCalledTimes(1);
+});
+
+it('does not let a confirmed row block the next queued message in the dialog', async () => {
+  // A row can stay 'confirmed' in storage while its cleanup pass has not run
+  // yet (ack landed, durable rewrite pending). FIFO must ignore it.
+  const key = 'hubit_native_chat_outbox_v1';
+  const second: ChatMessage = { ...message, id: 'pending:two', client_message_id: 'two', body_text: 'Второе' };
+  await SecureStore.setItemAsync(key, JSON.stringify([
+    {
+      userId: 7,
+      message,
+      delivery: {
+        version: 1, state: 'confirmed', attempts: 1, notBefore: 0,
+        confirmed: { ...message, id: 'server-one' },
+      },
+    },
+    { userId: 7, message: second, delivery: { version: 1, state: 'queued', attempts: 0, notBefore: 0 } },
+  ]));
+  resetNativeChatOutboxRowsCache();
+  const outbox = createNativeChatOutbox(7, 'chat-a');
+  send.mockResolvedValueOnce({ ...second, id: 'server-two' });
+  await expect(outbox.send(second, send)).resolves.toMatchObject({ id: 'server-two' });
 });
 
 it('reconciles a lost acknowledgement only with an own server message in the same conversation', async () => {
@@ -617,4 +639,52 @@ it('releases only the transient backoffs of this user and leaves paused rows par
   expect(rows.find((row) => row.message.client_message_id === 'one')!.delivery).toMatchObject({ state: 'retry', notBefore: 0 });
   expect(rows.find((row) => row.message.client_message_id === 'two')!.delivery).toMatchObject({ state: 'paused' });
   expect(await resetNativeChatRetryBackoff(7)).toBe(0);
+});
+
+describe('acknowledge storage traffic', () => {
+  const key = CHAT_OUTBOX_STORAGE_KEY;
+  const clearStoreCalls = () => {
+    jest.mocked(SecureStore.getItemAsync).mockClear();
+    jest.mocked(SecureStore.setItemAsync).mockClear();
+    jest.mocked(SecureStore.deleteItemAsync).mockClear();
+  };
+  const outboxReads = () => jest.mocked(SecureStore.getItemAsync).mock.calls
+    .filter(([storedKey]) => storedKey === key);
+  const outboxWrites = () => [
+    ...jest.mocked(SecureStore.setItemAsync).mock.calls,
+    ...jest.mocked(SecureStore.deleteItemAsync).mock.calls,
+  ].filter(([storedKey]) => storedKey === key);
+
+  it('does not touch the outbox blob for an empty acknowledgement page', async () => {
+    const queue = createNativeChatOutbox(7, 'chat-a');
+    clearStoreCalls();
+    await queue.acknowledge([]);
+    expect(outboxReads()).toHaveLength(0);
+    expect(outboxWrites()).toHaveLength(0);
+  });
+
+  it('does not write the outbox blob when no queued row matches the page', async () => {
+    const queue = createNativeChatOutbox(7, 'chat-a');
+    clearStoreCalls();
+    // Own confirmed server message, but the outbox holds no row for it.
+    await queue.acknowledge([{ ...message, id: 'server-one' }]);
+    expect(outboxWrites()).toHaveLength(0);
+  });
+
+  it('still persists a matching acknowledgement and shows the confirmed message', async () => {
+    await SecureStore.setItemAsync(key, JSON.stringify([
+      { userId: 7, message, delivery: { version: 1, state: 'queued', attempts: 0, notBefore: 0 } },
+    ]));
+    resetNativeChatOutboxRowsCache();
+    const queue = createNativeChatOutbox(7, 'chat-a');
+    clearStoreCalls();
+    await queue.acknowledge([{ ...message, id: 'server-one', local_status: undefined }]);
+    const stored = JSON.parse(await SecureStore.getItemAsync(key) || '[]') as Array<{
+      delivery?: { state: string; confirmed?: ChatMessage };
+    }>;
+    expect(stored[0].delivery?.state).toBe('confirmed');
+    expect(stored[0].delivery?.confirmed?.id).toBe('server-one');
+    expect(outboxWrites().length).toBeGreaterThan(0);
+    expect(await queue.read()).toEqual([expect.objectContaining({ id: 'server-one' })]);
+  });
 });

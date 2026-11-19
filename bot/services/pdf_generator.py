@@ -9,10 +9,22 @@ import asyncio
 import time
 import gc
 import hashlib
+import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+from bot.config import config
+
 logger = logging.getLogger(__name__)
+
+
+_WORD_EXPORT_LOCK = threading.Lock()
+
+
+def _convert_serialized(convert, docx_path, pdf_path):
+    # docx2pdf drives one Word instance; parallel COM calls are not safe.
+    with _WORD_EXPORT_LOCK:
+        return convert(docx_path, pdf_path)
 
 
 def _iter_table_paragraphs(table: Any):
@@ -143,13 +155,13 @@ async def generate_transfer_act_pdf(
             return None
         
         # Путь к шаблону
-        template_path = "templates/docx_transfer_act.docx"
+        template_path = config.transfer.template_path
         if not os.path.exists(template_path):
             logger.error(f"Шаблон не найден: {template_path}")
             return None
         
         # Создаем директорию для актов если её нет
-        acts_dir = 'transfer_acts'
+        acts_dir = config.transfer.acts_dir
         if not os.path.exists(acts_dir):
             os.makedirs(acts_dir)
         
@@ -273,7 +285,7 @@ async def generate_transfer_act_pdf(
 
             # Конвертируем с таймаутом 60 секунд
             await asyncio.wait_for(
-                loop.run_in_executor(None, convert, docx_path, pdf_path),
+                loop.run_in_executor(None, _convert_serialized, convert, docx_path, pdf_path),
                 timeout=60.0
             )
 
@@ -283,7 +295,7 @@ async def generate_transfer_act_pdf(
             await asyncio.sleep(1.0)
 
             # Удаляем временный DOCX с механизмом повторных попыток
-            remove_file_with_retry(docx_path, max_attempts=5, delay=0.5)
+            await asyncio.to_thread(remove_file_with_retry, docx_path, max_attempts=5, delay=0.5)
 
             # Также удаляем временные файлы Word (~$*)
             remove_word_temp_files(docx_path)

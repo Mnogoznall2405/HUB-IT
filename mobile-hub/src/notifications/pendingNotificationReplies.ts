@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import * as chatApi from '../api/chatApi';
+import { getNativeChatDraft, setNativeChatDraft } from '../chat/chatDrafts';
 import { isRetryableOfflineError } from '../offline/offlineCommandQueue';
 
 const STORAGE_KEY = 'hubit_pending_notification_replies_v1';
@@ -82,7 +83,47 @@ function normalizeQueue(value: unknown, now = Date.now()): PendingChatReply[] {
 
 async function loadQueue(): Promise<PendingChatReply[]> {
   const raw = await SecureStore.getItemAsync(STORAGE_KEY);
-  return normalizeQueue(raw ? JSON.parse(raw) : []);
+  if (!raw) return [];
+  try {
+    return normalizeQueue(JSON.parse(raw));
+  } catch {
+    // A corrupt SecureStore value must not wedge the reply queue until logout:
+    // quarantine it like other durable stores do.
+    await SecureStore.deleteItemAsync(STORAGE_KEY).catch(() => undefined);
+    return [];
+  }
+}
+
+// normalizeQueue silently drops entries older than MAX_QUEUE_AGE_MS — but a
+// quick reply's typed text is user data. Readers that mutate the queue load
+// the expired tail too, salvage it into the conversation draft and then let
+// the next write drop the row for real.
+async function loadQueueWithExpired(): Promise<{ queue: PendingChatReply[]; expired: PendingChatReply[] }> {
+  const raw = await SecureStore.getItemAsync(STORAGE_KEY);
+  if (!raw) return { queue: [], expired: [] };
+  try {
+    const parsed = JSON.parse(raw);
+    const queue = normalizeQueue(parsed);
+    const activeIds = new Set(queue.map((item) => item.id));
+    // now=0 disables the age cutoff so only genuinely malformed rows are lost.
+    const expired = normalizeQueue(parsed, 0).filter((item) => !activeIds.has(item.id));
+    return { queue, expired };
+  } catch {
+    await SecureStore.deleteItemAsync(STORAGE_KEY).catch(() => undefined);
+    return { queue: [], expired: [] };
+  }
+}
+
+// Expired replies are discarded, but the typed text must not vanish silently:
+// it is appended to the conversation draft before the queue row is dropped.
+async function salvagePendingChatReply(item: PendingChatReply): Promise<void> {
+  try {
+    const existing = String(await getNativeChatDraft(item.userId, item.conversationId) || '').trim();
+    const merged = existing ? `${existing}\n\n${item.body}` : item.body;
+    await setNativeChatDraft(item.userId, item.conversationId, merged);
+  } catch {
+    // Best-effort: the discarded notification still replaces the dead retry.
+  }
 }
 
 function notify(count: number): void {
@@ -126,8 +167,15 @@ export async function queuePendingChatReply(
   const lease = generation;
   return withStorage(async () => {
     if (lease !== generation) throw new Error('Очередь ответов очищена');
-    const queue = await loadQueue();
+    const { queue, expired } = await loadQueueWithExpired();
+    for (const item of expired) await salvagePendingChatReply(item);
     const existing = queue.find((entry) => entry.id === normalized.id);
+    // Refuse instead of pushing an 11th row: normalizeQueue would silently
+    // evict the oldest stored reply — typed user text must never disappear
+    // without notice. The caller salvages the new body into a draft.
+    if (!existing && queue.length >= MAX_QUEUE_SIZE) {
+      throw new Error('Очередь быстрых ответов заполнена');
+    }
     if (!existing) queue.push(normalized);
     await saveQueue(queue);
     return existing || normalized;
@@ -140,9 +188,23 @@ export function retryPendingChatReply(id: string, userId: number): Promise<Pendi
   const existing = deliveries.get(key);
   if (existing) return existing;
   const operation = (async (): Promise<PendingReplyResult> => {
-    const queue = await withStorage(loadQueue);
+    const { queue, expired } = await withStorage(loadQueueWithExpired);
     const item = queue.find((entry) => entry.id === id && entry.userId === userId) || null;
-    if (!item || lease !== generation) return { status: 'discarded', item: null };
+    if (!item || lease !== generation) {
+      const expiredItem = lease === generation
+        ? expired.find((entry) => entry.id === id && entry.userId === userId) || null
+        : null;
+      if (expiredItem) {
+        // Salvage the text, then purge the row so a «Повторить» tap is replaced
+        // by a definitive failure instead of silently doing nothing.
+        await withStorage(async () => {
+          if (lease !== generation) return;
+          await salvagePendingChatReply(expiredItem);
+          await saveQueue(await loadQueue());
+        });
+      }
+      return { status: 'discarded', item: expiredItem };
+    }
     let status: PendingReplyResult['status'] = 'sent';
     try {
       await sendReply(item, () => lease === generation);
@@ -168,9 +230,14 @@ export async function drainPendingChatReplies(userId: number): Promise<PendingRe
   if (existing) return existing;
   const lease = generation;
   const operation = (async () => {
-    const queue = await withStorage(loadQueue);
+    const { queue, expired } = await withStorage(async () => {
+      const loaded = await loadQueueWithExpired();
+      for (const item of loaded.expired) await salvagePendingChatReply(item);
+      if (loaded.expired.length) await saveQueue(loaded.queue);
+      return loaded;
+    });
     const sent: PendingChatReply[] = [];
-    const discarded: PendingChatReply[] = [];
+    const discarded: PendingChatReply[] = expired.filter((item) => item.userId === userId);
     for (const item of queue) {
       if (lease !== generation) break;
       if (item.userId !== userId) continue;

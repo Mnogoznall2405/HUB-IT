@@ -12,6 +12,7 @@ import {
 import {
   getWarehouse1CCatalogStatus,
   searchWarehouse1CCatalog,
+  syncWarehouse1CCatalog,
   type Warehouse1CCatalogItem,
   type Warehouse1CCatalogKind,
   type Warehouse1CCatalogStatus,
@@ -43,11 +44,13 @@ function statusCopy(status: Warehouse1CCatalogStatus | null): { title: string; d
 export function NativeWarehouse1CCatalogPanel({
   tokens,
   canRead,
+  canSync = false,
   offline,
   active,
 }: {
   tokens: FluentTokens;
   canRead: boolean;
+  canSync?: boolean;
   offline: boolean;
   active: boolean;
 }) {
@@ -61,11 +64,21 @@ const navInset = useNativeBottomNavInset();
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [statusError, setStatusError] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [revision, setRevision] = useState(0);
   const [statusRevision, setStatusRevision] = useState(0);
   const searchGenerationRef = useRef(0);
   const searchAbortRef = useRef<AbortController | null>(null);
   const statusAbortRef = useRef<AbortController | null>(null);
+  const syncBusyRef = useRef(false);
+  const syncAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    searchAbortRef.current?.abort();
+    statusAbortRef.current?.abort();
+    syncAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -130,6 +143,34 @@ const navInset = useNativeBottomNavInset();
     setStatusRevision((value) => value + 1);
   }, [canRead, offline, query.length]);
 
+  // Web parity (Warehouse1C handleCatalogSync): admin-only, one POST at a
+  // time, the response already is the catalog status payload and the status
+  // is refetched once more afterwards.
+  const handleSync = useCallback(() => {
+    if (!canSync || offline || syncBusyRef.current) return;
+    syncBusyRef.current = true;
+    const controller = new AbortController();
+    syncAbortRef.current = controller;
+    setSyncing(true);
+    setSyncNote(null);
+    void syncWarehouse1CCatalog({ signal: controller.signal }).then((result) => {
+      if (controller.signal.aborted) return;
+      setStatus(result);
+      setSyncNote({
+        tone: 'ok',
+        text: `Синхронизация завершена · Номенклатура: ${result.nomenclature_count} · Склады: ${result.warehouses_count}`,
+      });
+    }).catch((cause) => {
+      if (controller.signal.aborted) return;
+      setSyncNote({ tone: 'error', text: formatApiError(cause, 'Не удалось синхронизировать каталог 1С.') });
+    }).finally(() => {
+      syncBusyRef.current = false;
+      if (controller.signal.aborted) return;
+      setSyncing(false);
+      setStatusRevision((value) => value + 1);
+    });
+  }, [canSync, offline]);
+
   const statusMessage = statusCopy(status);
   const statusColor = statusMessage.tone === 'error'
     ? tokens.error
@@ -177,6 +218,41 @@ const navInset = useNativeBottomNavInset();
             {statusMessage.title}{status && status.status !== 'unknown' ? ` · ${status.nomenclature_count} поз.` : ''}
           </Text>
         </View>
+        {canSync ? (
+          <View style={styles.syncRow}>
+            <Pressable
+              testID="native-warehouse-1c-catalog-sync"
+              onPress={handleSync}
+              disabled={syncing || offline || Boolean(status?.sync_in_progress)}
+              accessibilityRole="button"
+              accessibilityLabel="Синхронизировать каталог"
+              accessibilityState={{ disabled: syncing || offline || Boolean(status?.sync_in_progress), busy: syncing }}
+              style={[
+                styles.syncButton,
+                { borderColor: tokens.border, backgroundColor: tokens.panelSolid },
+                (syncing || offline || status?.sync_in_progress) ? styles.disabled : null,
+              ]}
+            >
+              {syncing ? (
+                <ActivityIndicator size="small" color={tokens.primary} />
+              ) : (
+                <MaterialCommunityIcons name="database-sync-outline" size={18} color={offline ? tokens.textTertiary : tokens.primary} />
+              )}
+              <Text style={[styles.syncButtonText, { color: tokens.primary }]}>
+                {syncing ? 'Синхронизация…' : 'Синхронизировать каталог'}
+              </Text>
+            </Pressable>
+            {syncNote ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                accessibilityRole={syncNote.tone === 'error' ? 'alert' : undefined}
+                style={[styles.syncNote, { color: syncNote.tone === 'error' ? tokens.error : tokens.textSecondary }]}
+              >
+                {syncNote.text}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
         {queryDraft.length > 0 && queryDraft.trim().length < 2 ? <Text style={[styles.hint, { color: tokens.textSecondary }]}>Введите минимум 2 символа — поиск начнётся сам.</Text> : null}
         {query.length >= 2 ? <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {items.length}</Text> : null}
         {items.length >= SEARCH_LIMIT ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Показаны первые {SEARCH_LIMIT} совпадений. Уточните запрос, если нужной записи нет.</Text> : null}
@@ -212,6 +288,20 @@ const styles = StyleSheet.create({
   fixedHeader: { gap: 8, paddingBottom: 8 },
   notice: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
   statusLine: { flex: 1, minWidth: 0, fontSize: 11, lineHeight: 16, fontWeight: '700' },
+  syncRow: { gap: 6 },
+  syncButton: {
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  syncButtonText: { fontSize: 13, fontWeight: '800' },
+  syncNote: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  disabled: { opacity: 0.5 },
   toolbar: { flexDirection: 'row', gap: 8 },
   modes: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
   search: { flex: 1, minHeight: 44, borderWidth: 1, borderRadius: 13, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },

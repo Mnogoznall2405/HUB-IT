@@ -5,6 +5,7 @@ import { NativeAddressBookScreen } from './NativeAddressBookScreen';
 import { openPortalPath } from '../../navigation/moduleRegistry';
 import { openAddressBookChat, openCachedAddressBookChat } from '../../addressBook/openAddressBookChat';
 import * as addressBookApi from '../../api/addressBookApi';
+import * as docflowApi from '../../api/docflowApi';
 import * as addressBookSnapshot from '../../cache/nativeAddressBookSnapshot';
 import * as snapshotCache from '../../cache/nativeSnapshotCache';
 import { DEFAULT_PREFERENCES, type UserPreferences } from '../../preferences/preferenceNormalizers';
@@ -56,9 +57,15 @@ jest.mock('../../cache/nativeAddressBookSnapshot', () => ({
   writeNativeAddressBookSnapshot: jest.fn(),
 }));
 
+jest.mock('../../api/docflowApi', () => ({
+  listDocflowAbsences: jest.fn(),
+}));
+
 jest.mock('../../cache/nativeSnapshotCache', () => ({
   readNativeEntitySnapshot: jest.fn(),
   writeNativeEntitySnapshot: jest.fn(),
+  readNativeCollectionSnapshot: jest.fn(),
+  writeNativeCollectionSnapshot: jest.fn(),
 }));
 
 const sampleItem = {
@@ -156,6 +163,28 @@ describe('NativeAddressBookScreen', () => {
     (addressBookSnapshot.writeNativeAddressBookSnapshot as jest.Mock).mockResolvedValue(true);
     (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
     (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockResolvedValue(undefined);
+    (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
+    (snapshotCache.writeNativeCollectionSnapshot as jest.Mock).mockResolvedValue(true);
+    (docflowApi.listDocflowAbsences as jest.Mock).mockResolvedValue({
+      status: 'available',
+      items: [{
+        id: 'docflow:abs-9',
+        employee_code: 'E-1',
+        matching_status: 'matched',
+        display_name: 'Alpha Alpovich',
+        starts_on: '2026-08-20',
+        ends_on: '2026-08-21',
+        kind: 'vacation',
+        label: 'Отпуск',
+        comment: 'Согласован в 1С',
+        will_handle_tasks: true,
+        differences: [],
+      }],
+      count: 1,
+      unresolved_count: 0,
+      as_of: '2026-08-24T10:00:00+05:00',
+      zup_comparison: 'available',
+    });
     (openAddressBookChat as jest.Mock).mockResolvedValue({ conversationId: 'c-42', peerUserId: 42 });
     (addressBookApi.getAddressBookStatus as jest.Mock).mockResolvedValue({
       count: 1,
@@ -312,6 +341,44 @@ describe('NativeAddressBookScreen', () => {
     expect(view.getByText('Рабочие')).toBeTruthy();
     expect(view.getByText('Личные')).toBeTruthy();
     expect(view.getByText('83452384202')).toBeTruthy();
+  });
+
+  it('loads the employee-scoped docflow absences inside the contact card', async () => {
+    setViewerAuth(['docflow.read']);
+    mockDirectory([codedItem('E-1', 'Alpha Alpovich')]);
+    const view = await render(<NativeAddressBookScreen />);
+
+    await waitFor(() => expect(view.getByText('Alpha Alpovich')).toBeTruthy());
+    await act(async () => {
+      fireEvent.press(view.getByTestId(entryRowId('Alpha Alpovich')));
+    });
+    await act(async () => {
+      fireEvent.press(await view.findByLabelText('Документооборот · отсутствия'));
+    });
+
+    await waitFor(() => {
+      expect(docflowApi.listDocflowAbsences).toHaveBeenCalledWith(
+        expect.objectContaining({ employeeCode: 'E-1' }),
+      );
+    });
+    await waitFor(() => expect(view.getByText('Отпуск · 20.08.2026 — 21.08.2026 включительно')).toBeTruthy());
+    expect(view.getByText('Согласован в 1С')).toBeTruthy();
+    expect(view.getByText('Будет разбирать задачи')).toBeTruthy();
+    expect(view.getByText(/Источник: 1С:Документооборот · 1 записей/)).toBeTruthy();
+  });
+
+  it('hides the docflow absences card without the docflow permission', async () => {
+    setViewerAuth();
+    mockDirectory([codedItem('E-1', 'Alpha Alpovich')]);
+    const view = await render(<NativeAddressBookScreen />);
+
+    await waitFor(() => expect(view.getByText('Alpha Alpovich')).toBeTruthy());
+    await act(async () => {
+      fireEvent.press(view.getByTestId(entryRowId('Alpha Alpovich')));
+    });
+    await waitFor(() => expect(view.getByTestId('address-book-entry-detail')).toBeTruthy());
+    expect(view.queryByLabelText('Документооборот · отсутствия')).toBeNull();
+    expect(docflowApi.listDocflowAbsences).not.toHaveBeenCalled();
   });
 
   it('does not render personal phones when the API omitted them', async () => {

@@ -143,6 +143,31 @@ describe('ChatSidebar', () => {
     expect(chatsTab.querySelector('[data-chat-folder-unread-badge]')).toHaveTextContent('3');
   });
 
+  it('does not double count aggregate folder keys in the Chats tab badge', () => {
+    renderWithTheme(buildProps({
+      workspace: 'ai',
+      onWorkspaceChange: vi.fn(),
+      showAiSection: true,
+      folderUnreadCounts: { all: 3, personal: 3, custom: 3 },
+    }));
+
+    const chatsTab = screen.getByRole('tab', { name: /Чаты/i });
+    expect(chatsTab.querySelector('[data-chat-folder-unread-badge]')).toHaveTextContent('3');
+  });
+
+  it('does not double count custom folder ids in the Chats tab badge', () => {
+    renderWithTheme(buildProps({
+      workspace: 'ai',
+      onWorkspaceChange: vi.fn(),
+      showAiSection: true,
+      customFolders: [{ id: 'cf-work', name: 'Работа' }],
+      folderUnreadCounts: { personal: 3, groups: 1, tasks: 0, 'cf-work': 2 },
+    }));
+
+    const chatsTab = screen.getByRole('tab', { name: /Чаты/i });
+    expect(chatsTab.querySelector('[data-chat-folder-unread-badge]')).toHaveTextContent('4');
+  });
+
   it.each([
     { compactMobile: false, isMobile: false, name: 'desktop' },
     { compactMobile: true, isMobile: true, name: 'mobile' },
