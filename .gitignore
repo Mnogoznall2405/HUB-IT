@@ -254,3 +254,10 @@ scripts/livekit/livekit.yaml
 /portal_upload_duplicates.tsv
 /VEL/
 /Microsoft/
+
+# Scratch/debug artifacts (_-prefix convention, not for VCS)
+scripts/_*
+tmp_*.py
+
+# Generated screenshot artifacts (NativeScreenshots test output)
+desktop/screenshots/
