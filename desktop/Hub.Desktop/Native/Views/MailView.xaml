@@ -241,10 +241,10 @@
         <Grid Grid.Row="2" Margin="20,10,20,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="MailRailColumn" Width="200" MinWidth="180" />
-                <ColumnDefinition Width="6" />
-                <ColumnDefinition Width="340" MinWidth="280" />
-                <ColumnDefinition Width="6" />
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="FolderSplitterColumn" Width="6" />
+                <ColumnDefinition x:Name="MailListColumn" Width="340" MinWidth="280" />
+                <ColumnDefinition x:Name="ListSplitterColumn" Width="6" />
+                <ColumnDefinition x:Name="MailReadingColumn" Width="*" />
             </Grid.ColumnDefinitions>
 
             <!-- Рейка папок -->
@@ -468,7 +468,8 @@
                 </Button>
             </Grid>
 
-            <GridSplitter Grid.Column="1"
+            <GridSplitter x:Name="FolderSplitter"
+                          Grid.Column="1"
                           Width="6"
                           HorizontalAlignment="Stretch"
                           Background="Transparent"
@@ -476,7 +477,7 @@
                           AutomationProperties.HelpText="Стрелки влево и вправо изменяют ширину панелей" />
 
             <!-- Список писем -->
-            <Grid Grid.Column="2">
+            <Grid x:Name="MailListPanel" Grid.Column="2">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
@@ -881,7 +882,8 @@
                 </Grid>
             </Grid>
 
-            <GridSplitter Grid.Column="3"
+            <GridSplitter x:Name="ListSplitter"
+                          Grid.Column="3"
                           Width="6"
                           HorizontalAlignment="Stretch"
                           Background="Transparent"
@@ -889,7 +891,8 @@
                           AutomationProperties.HelpText="Стрелки влево и вправо изменяют ширину панелей" />
 
             <!-- Чтение письма -->
-            <Border Grid.Column="4"
+            <Border x:Name="ReadingPaneBorder"
+                    Grid.Column="4"
                     Background="{DynamicResource HubSurfaceBrush}"
                     BorderBrush="{DynamicResource HubBorderDimBrush}"
                     BorderThickness="1"
@@ -1006,13 +1009,26 @@
                                           DataContext="{Binding Detail}">
                                 <StackPanel MaxWidth="1100"
                                             HorizontalAlignment="Stretch">
-                                    <!-- Тема + пилюли -->
+                                    <!-- Тема + пилюли + «Назад» (компакт) -->
                                     <Grid>
                                         <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock FontSize="20"
+                                        <!-- Компактный режим: вернуться к списку -->
+                                        <Button x:Name="CompactBackButton"
+                                                MinHeight="24"
+                                                Padding="8,2"
+                                                Margin="0,0,10,0"
+                                                VerticalAlignment="Top"
+                                                Visibility="Collapsed"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Click="CompactBackButton_Click"
+                                                Content="← К списку"
+                                                AutomationProperties.Name="Вернуться к списку писем" />
+                                        <TextBlock Grid.Column="1"
+                                                   FontSize="20"
                                                    FontWeight="Bold"
                                                    Text="{Binding Subject}"
                                                    TextWrapping="Wrap" />

@@ -52,6 +52,8 @@ public partial class MailView : UserControl
         Unloaded += MailView_Unloaded;
         // Ctrl+F — фокус в поиск по письмам (Gmail-стандарт).
         PreviewKeyDown += MailView_PreviewKeyDown;
+        // Адаптивность: компактный режим для узких окон.
+        SizeChanged += MailView_SizeChanged;
     }
 
     private void SearchInput_KeyDown(object sender, KeyEventArgs e)
@@ -91,6 +93,96 @@ public partial class MailView : UserControl
     }
 
     private bool IsComposeOpen() => (DataContext as MailViewModel)?.Composer is not null;
+
+    // ---- Адаптивность: компактный режим для узких окон (Outlook mobile pattern) ----
+
+    private bool _isCompactMode;
+    private const double CompactModeThreshold = 760;
+
+    /// <summary>
+    /// При ширине страницы ниже порога папки и чтение работают попеременно:
+    /// клик по письму показывает чтение, «← К списку» возвращает список.
+    /// Порог — ширина страницы (окно минус навигация минус поля).
+    /// </summary>
+    private void MailView_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        var compact = e.NewSize.Width < CompactModeThreshold;
+        if (_isCompactMode == compact)
+        {
+            return;
+        }
+
+        _isCompactMode = compact;
+        ApplyCompactMode(compact);
+    }
+
+    private void ApplyCompactMode(bool compact)
+    {
+        if (compact)
+        {
+            // Папки и сплиттеры сворачиваются; список занимает всю ширину.
+            SetFolderRailCollapsed(true);
+            MailRailColumn.Width = new GridLength(0);
+            MailRailColumn.MinWidth = 0;
+            FolderSplitterColumn.Width = new GridLength(0);
+            FolderSplitter.Width = 0;
+            ListSplitterColumn.Width = new GridLength(0);
+            ListSplitter.Width = 0;
+            MailListColumn.MinWidth = 0;
+            CompactBackButton.Visibility = Visibility.Collapsed;
+            UpdateCompactReadingVisibility();
+        }
+        else
+        {
+            // Полный трёхпанельный вид.
+            SetFolderRailCollapsed(false);
+            MailRailColumn.Width = new GridLength(200);
+            MailRailColumn.MinWidth = 180;
+            FolderSplitterColumn.Width = new GridLength(6);
+            FolderSplitter.Width = 6;
+            ListSplitterColumn.Width = new GridLength(6);
+            ListSplitter.Width = 6;
+            MailListColumn.MinWidth = 280;
+            MailListColumn.Width = new GridLength(340);
+            MailListPanel.Visibility = Visibility.Visible;
+            ReadingPaneBorder.Visibility = Visibility.Visible;
+            CompactBackButton.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>
+    /// Компактный режим: список ИЛИ чтение (не оба). Выбранное письмо
+    /// переключает на чтение; сброс выбора возвращает список.
+    /// </summary>
+    private void UpdateCompactReadingVisibility()
+    {
+        if (!_isCompactMode)
+        {
+            return;
+        }
+
+        var viewModel = DataContext as MailViewModel;
+        var hasSelection = viewModel?.SelectedItem is not null;
+        MailListPanel.Visibility = hasSelection ? Visibility.Collapsed : Visibility.Visible;
+        ReadingPaneBorder.Visibility = hasSelection ? Visibility.Visible : Visibility.Collapsed;
+        MailListColumn.Width = hasSelection
+            ? new GridLength(0)
+            : new GridLength(1, GridUnitType.Star);
+        MailReadingColumn.Width = hasSelection
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        CompactBackButton.Visibility = hasSelection ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>«← К списку» в компактном режиме: гасит выбор, возвращает список.</summary>
+    private void CompactBackButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MailViewModel viewModel)
+        {
+            viewModel.SelectedItem = null;
+            UpdateCompactReadingVisibility();
+        }
+    }
 
     /// <summary>
     /// Del в списке писем удаляет выбранное письмо — как в Outlook/Thunderbird;
@@ -544,6 +636,7 @@ public partial class MailView : UserControl
         if (_page is not null)
         {
             _page.PropertyChanged -= OnPagePropertyChanged;
+            _page.PropertyChanged -= OnCompactSelectionChanged;
         }
 
         _page = viewModel;
@@ -555,9 +648,20 @@ public partial class MailView : UserControl
             // Outlook-группировка списка писем по датам («Сегодня/Вчера/…»).
             EnableMessageDateGrouping(viewModel);
             WireDetail(viewModel.Detail);
+            // Компактный режим: выбор письма переключает панель.
+            viewModel.PropertyChanged += OnCompactSelectionChanged;
         }
 
         _ = RenderMailBodyAsync();
+    }
+
+    /// <summary>Компактный режим: при выборе/сбросе письма переключаем панели.</summary>
+    private void OnCompactSelectionChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(MailViewModel.SelectedItem))
+        {
+            UpdateCompactReadingVisibility();
+        }
     }
 
     private ICollectionView? _messageGroupView;

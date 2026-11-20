@@ -324,6 +324,36 @@ Grid перераспределяет ширину списку и чтению 
 точки 3–5 (шорт-прогон: 2 непрочитанных vs 5 в демо), бейджи 292–299,
 selected 1107–1403, аватары 0; Release-превью пересобрано — 0 ошибок.
 
+## Итерация 13 — адаптивность (компактный режим) + полный прогон 2037/2037
+
+### ЭТАП 5 — адаптивное поведение (Outlook mobile pattern)
+
+- **Порог**: `ActualWidth < 760px` → компактный режим (SizeChanged).
+- Компактный: папки/сплиттеры → 0, список **ИЛИ** чтение попеременно:
+  выбор письма скрывает список и разворачивает чтение;
+  кнопка **«← К списку»** в шапке чтения возвращает список (гасит SelectedItem).
+- Расширение окна выше порога → мгновенный возврат к трёхпанельному виду.
+- Все Grid-колонки именованы (`MailListColumn`, `MailReadingColumn`,
+  `FolderSplitter`, `ListSplitter`), панели — `MailListPanel`, `ReadingPaneBorder`,
+  кнопка — `CompactBackButton`.
+- `OnCompactSelectionChanged`: PropertyChanged на `SelectedItem` переключает
+  панели; отписка при Unloaded.
+
+### Полная верификация
+
+- **Все 2037 desktop-тестов — 0 провалов** (полный слать, не только почта):
+  NativeHubShell, NativeThemeManager, NativeChat, NativeTasks, NativeTickets,
+  NativeDocflow, NativeDatabase, NativeStatistics, NativeNews, NativeMfu,
+  NativeVcs, DesktopBridge, DesktopUpdate, NativeMail, NativeScreenshots —
+  все зелёные. Регрессий от HubWindow NavRail / HubTheme / палитр / MailView
+  compact mode — **нет**.
+- Пиксели: все маркеры стабильны (GreenDot 3-5, NeutralBadge 289-300,
+  RaisedBg 8065-8662, Star 62 — звезда видна ярче после HubCheckBoxStyle).
+- 12 кадров почты + dashboard — на месте.
+- HKCU `NavigationCollapsed` — не установлен (меню раскрыто по умолчанию,
+  скриншоты не пострадали).
+- **Release-превью: 0 ошибок** — `bin\mail-preview` содержит все итерации 1–13.
+
 ---
 
 ## Известные ограничения / риски
