@@ -48,6 +48,67 @@ def test_send_outgoing_email_uses_exchange_with_attachments(email_service, monke
     assert captured["attachments"][0] == ("act.pdf", b"%PDF-1.4")
 
 
+def test_send_outgoing_email_rejects_recipient_with_crlf(email_service, monkeypatch):
+    """CR/LF in recipient must reject the send, not silently mangle the address."""
+    monkeypatch.setenv("TASK_EMAIL_TRANSPORT", "smtp")
+    monkeypatch.setattr(
+        email_service,
+        "_send_via_smtp",
+        lambda **kwargs: pytest.fail("send must not run for a CR/LF recipient"),
+    )
+
+    ok = email_service.send_outgoing_email(
+        recipient_email="user@test.local\r\nBcc: attacker@evil.example",
+        subject="Акт №1",
+        body_text="Тело письма",
+    )
+
+    assert ok is False
+
+
+def test_send_outgoing_email_strips_crlf_from_headers(email_service, monkeypatch):
+    """A task title with CR/LF must not inject extra MIME headers via Subject/To."""
+    captured: dict = {}
+
+    def fake_send_via_smtp(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setenv("TASK_EMAIL_TRANSPORT", "smtp")
+    monkeypatch.setattr(email_service, "_send_via_smtp", fake_send_via_smtp)
+
+    ok = email_service.send_outgoing_email(
+        recipient_email="user@test.local",
+        subject="Акт №1\r\nBcc: attacker@evil.example",
+        body_text="Тело письма",
+        attachments=[('act";filename="x.pdf', b"%PDF")],
+    )
+
+    assert ok is True
+    assert "\r" not in captured["subject"]
+    assert "\n" not in captured["subject"]
+    filename = captured["attachments"][0][0]
+    assert '"' not in filename
+    assert "\r" not in filename and "\n" not in filename
+
+
+def test_send_outgoing_email_rejects_recipient_reduced_to_non_email(email_service, monkeypatch):
+    monkeypatch.setenv("TASK_EMAIL_TRANSPORT", "smtp")
+    monkeypatch.setattr(
+        email_service,
+        "_send_via_smtp",
+        lambda **kwargs: pytest.fail("send must not run for an invalid recipient"),
+    )
+
+    ok = email_service.send_outgoing_email(
+        recipient_email="not-an-email",
+        subject="Акт",
+        body_text="Тело письма",
+    )
+
+    assert ok is False
+
+
 def test_send_outgoing_files_delegates_to_task_email_service(monkeypatch, tmp_path):
     pdf_path = tmp_path / "act.pdf"
     pdf_path.write_bytes(b"%PDF")

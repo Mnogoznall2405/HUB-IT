@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     Accordion,
     AccordionDetails,
@@ -33,6 +33,7 @@ import ComputerIcon from '@mui/icons-material/Computer';
 import CopyIcon from '@mui/icons-material/ContentCopy';
 import DeleteIcon from '@mui/icons-material/Delete';
 import IpIcon from '@mui/icons-material/Dns';
+import DragIcon from '@mui/icons-material/DragIndicator';
 import DownloadIcon from '@mui/icons-material/Download';
 import EditIcon from '@mui/icons-material/Edit';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -82,6 +83,11 @@ const Vcs = () => {
     const [infoDialogOpen, setInfoDialogOpen] = useState(false);
     const [editTableData, setEditTableData] = useState([]);
     const [savingInfo, setSavingInfo] = useState(false);
+
+    // Card reorder state
+    const [draggingId, setDraggingId] = useState(null);
+    const [dragOverId, setDragOverId] = useState(null);
+    const dragIdRef = useRef(null);
 
     useEffect(() => {
         if (canReadVcs) {
@@ -361,6 +367,77 @@ const Vcs = () => {
         }
     };
 
+    const persistComputersOrder = (ordered) => {
+        setComputers(ordered);
+        vcsAPI.updateComputersOrder(ordered.map((comp) => comp.id)).catch((err) => {
+            console.error('Failed to save terminals order:', err);
+            setError('Не удалось сохранить порядок терминалов.');
+            fetchComputers();
+        });
+    };
+
+    const moveComputer = (sourceId, targetId) => {
+        if (!sourceId || sourceId === targetId) return;
+        const from = computers.findIndex((comp) => comp.id === sourceId);
+        const to = computers.findIndex((comp) => comp.id === targetId);
+        if (from < 0 || to < 0) return;
+        const next = [...computers];
+        const [moved] = next.splice(from, 1);
+        next.splice(to, 0, moved);
+        persistComputersOrder(next);
+    };
+
+    const moveComputerByOffset = (id, offset) => {
+        const index = computers.findIndex((comp) => comp.id === id);
+        const target = index + offset;
+        if (index < 0 || target < 0 || target >= computers.length) return;
+        const next = [...computers];
+        const [moved] = next.splice(index, 1);
+        next.splice(target, 0, moved);
+        persistComputersOrder(next);
+    };
+
+    const clearDragState = () => {
+        dragIdRef.current = null;
+        setDraggingId(null);
+        setDragOverId(null);
+    };
+
+    const handleCardDragStart = (event, id) => {
+        dragIdRef.current = id;
+        setDraggingId(id);
+        event.dataTransfer.effectAllowed = 'move';
+        try {
+            event.dataTransfer.setData('text/plain', id);
+        } catch {
+            // Некоторые браузеры не дают писать dataTransfer — id уже в ref.
+        }
+    };
+
+    const handleCardDragOver = (event, id) => {
+        if (!dragIdRef.current) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        if (dragOverId !== id) setDragOverId(id);
+    };
+
+    const handleCardDrop = (event, id) => {
+        event.preventDefault();
+        const sourceId = dragIdRef.current;
+        clearDragState();
+        moveComputer(sourceId, id);
+    };
+
+    const handleDragHandleKeyDown = (event, id) => {
+        const offset = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1
+            : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1
+            : 0;
+        if (offset !== 0) {
+            event.preventDefault();
+            moveComputerByOffset(id, offset);
+        }
+    };
+
     const glassCardStyle = {
         background: ui.panelSolid,
         backdropFilter: 'none',
@@ -535,8 +612,25 @@ const Vcs = () => {
                 ) : (
                     <Grid container spacing={3}>
                         {computers.map((comp) => (
-                            <Grid item xs={12} sm={6} md={4} lg={3} key={comp.id}>
-                                <Card sx={glassCardStyle}>
+                            <Grid
+                                item
+                                xs={12} sm={6} md={4} lg={3}
+                                key={comp.id}
+                                onDragStart={canManageVcs ? (event) => handleCardDragStart(event, comp.id) : undefined}
+                                onDragOver={canManageVcs ? (event) => handleCardDragOver(event, comp.id) : undefined}
+                                onDrop={canManageVcs ? (event) => handleCardDrop(event, comp.id) : undefined}
+                                onDragEnd={canManageVcs ? clearDragState : undefined}
+                            >
+                                <Card
+                                    sx={{
+                                        ...glassCardStyle,
+                                        opacity: draggingId === comp.id ? 0.5 : 1,
+                                        outline: dragOverId === comp.id && draggingId !== comp.id
+                                            ? `2px dashed ${theme.palette.primary.main}`
+                                            : 'none',
+                                        outlineOffset: 2,
+                                    }}
+                                >
                                     <CardContent>
                                         <Box display="flex" justifyContent="space-between" alignItems="flex-start" mb={2}>
                                             <Typography
@@ -623,7 +717,20 @@ const Vcs = () => {
                                         </Box>
 
                                         {canManageVcs && (
-                                            <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                <Tooltip title="Перетащите, чтобы изменить порядок">
+                                                    <IconButton
+                                                        aria-label={`Изменить позицию терминала ${comp.name}. Стрелки влево и вправо перемещают карточку.`}
+                                                        size="small"
+                                                        color="info"
+                                                        draggable
+                                                        onKeyDown={(event) => handleDragHandleKeyDown(event, comp.id)}
+                                                        sx={{ cursor: 'grab', '&:active': { cursor: 'grabbing' } }}
+                                                    >
+                                                        <DragIcon fontSize="small" />
+                                                    </IconButton>
+                                                </Tooltip>
+                                                <Box sx={{ flexGrow: 1 }} />
                                                 <IconButton aria-label={`Редактировать терминал ${comp.name}`} size="small" onClick={() => handleOpenDialog(comp)} color="info">
                                                     <EditIcon fontSize="small" />
                                                 </IconButton>

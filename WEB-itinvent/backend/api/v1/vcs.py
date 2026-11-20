@@ -30,6 +30,7 @@ VCS_STORE_KEY = "vcs_computers.json"
 VCS_CONFIG_KEY = "vcs_config.json"
 VCS_CONFIG_APP_KEY = "vcs_config"
 VCS_INFO_APP_KEY = "vcs_info"
+VCS_ORDER_APP_KEY = "vcs_computer_order"
 VCS_LAUNCH_TOKEN_NAMESPACE = "vcs_launch"
 VCS_LAUNCH_TOKEN_TTL_SECONDS = 60
 # JSON mode only: serializes read-modify-write of the whole list between request threads.
@@ -67,6 +68,9 @@ class VcsComputerUpdate(BaseModel):
     ip_address: Optional[str] = None
     location: Optional[str] = None
 
+class VcsComputersOrderUpdate(BaseModel):
+    order: List[str] = []
+
 class VcsConfig(BaseModel):
     password_hex: str = ""
     password_configured: bool = False
@@ -84,12 +88,27 @@ class VcsInfo(BaseModel):
 class VcsInfoUpdate(BaseModel):
     content: str
 
+def _load_computer_order_ids(session) -> List[str]:
+    row = session.get(AppGlobalSetting, VCS_ORDER_APP_KEY)
+    if row is None:
+        return []
+    try:
+        payload = json.loads(str(row.value_json or "{}"))
+    except Exception:
+        return []
+    order = payload.get("order") if isinstance(payload, dict) else None
+    if not isinstance(order, list):
+        return []
+    return [str(item).strip() for item in order if str(item or "").strip()]
+
+
 def _get_all_computers() -> List[dict]:
     if is_app_database_configured():
         initialize_app_schema()
         with app_session() as session:
             rows = session.scalars(select(AppVcsComputer).order_by(AppVcsComputer.created_at.asc(), AppVcsComputer.name.asc())).all()
-            return [
+            order_ids = _load_computer_order_ids(session)
+            items = [
                 {
                     "id": str(row.id),
                     "name": str(row.name),
@@ -100,6 +119,10 @@ def _get_all_computers() -> List[dict]:
                 }
                 for row in rows
             ]
+        if order_ids:
+            position = {computer_id: index for index, computer_id in enumerate(order_ids)}
+            items.sort(key=lambda item: position.get(item["id"], len(order_ids)))
+        return items
     store = get_local_store()
     data = store.load_json(VCS_STORE_KEY, default_content=[])
     if not isinstance(data, list):
@@ -135,6 +158,28 @@ def _save_all_computers(data: List[dict]) -> bool:
         return True
     store = get_local_store()
     return store.save_json(VCS_STORE_KEY, data)
+
+def _save_computers_order(order_ids: List[str]) -> bool:
+    """Persist card order; unknown ids are ignored and missing ids keep their tail order."""
+    normalized = [str(item or "").strip() for item in order_ids if str(item or "").strip()]
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            row = session.get(AppGlobalSetting, VCS_ORDER_APP_KEY)
+            if row is None:
+                row = AppGlobalSetting(key=VCS_ORDER_APP_KEY)
+                session.add(row)
+            row.value_json = json.dumps({"order": normalized}, ensure_ascii=False)
+            row.updated_at = datetime.now(timezone.utc)
+        return True
+    # JSON mode: the stored list order IS the display order.
+    with _JSON_STORE_LOCK:
+        computers = _get_all_computers()
+        by_id = {str(item.get("id") or ""): item for item in computers}
+        ordered = [by_id[item_id] for item_id in normalized if item_id in by_id]
+        ordered.extend(item for item in computers if str(item.get("id") or "") not in set(normalized))
+        return _save_all_computers(ordered)
+
 
 def _computer_row_to_dict(row: AppVcsComputer) -> dict:
     return {
@@ -411,6 +456,16 @@ async def create_vcs_computer(
         raise HTTPException(status_code=500, detail="Failed to save data")
 
     return new_comp
+
+@router.put("/computers/order")
+async def update_vcs_computers_order(
+    order_update: VcsComputersOrderUpdate,
+    current_user=Depends(require_permission(PERM_VCS_MANAGE))
+):
+    """Persist the display order of VCS terminal cards."""
+    if not await run_in_threadpool(_save_computers_order, order_update.order):
+        raise HTTPException(status_code=500, detail="Failed to save order")
+    return {"success": True}
 
 @router.put("/computers/{computer_id}", response_model=VcsComputer)
 async def update_vcs_computer(

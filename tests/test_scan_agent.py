@@ -737,7 +737,7 @@ def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_
     agent._roots = [root]
     monkeypatch.setattr(agent, "refresh_roots", lambda force=False: None)
     monkeypatch.setattr(agent, "_send_ingest", lambda payload: False)
-    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload, **kwargs: outbox_payloads.append(payload) or (root / "queued.json"))
+    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload, **kwargs: outbox_payloads.append(payload) or ((root / "queued.json"), ""))
     monkeypatch.setattr(agent, "_outbox_prune_limits", lambda: prune_calls.append("prune"))
     monkeypatch.setattr(agent, "_drain_outbox", lambda max_items=10: drain_calls.append(max_items) or 0)
     monkeypatch.setattr(agent, "_persist_state", lambda: None)
@@ -761,7 +761,7 @@ def test_failed_outbox_persistence_is_reported_as_incomplete(monkeypatch, temp_d
     path = Path(temp_dir) / "classified.txt"
     path.write_text("classified", encoding="utf-8")
     monkeypatch.setattr(agent, "_send_ingest", lambda payload: False)
-    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload, **kwargs: None)
+    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload, **kwargs: (None, "write_failed"))
 
     result = agent._scan_path(path, include_reasons=True)
 
@@ -787,7 +787,8 @@ def test_last_outbox_upload_sends_ingest_complete_before_removing_item(monkeypat
         "file_path": r"C:\Docs\classified.txt",
         "file_hash": "hash-1",
     }
-    assert agent._outbox_enqueue(payload) is not None
+    enqueued_path, _ = agent._outbox_enqueue(payload)
+    assert enqueued_path is not None
     agent._attach_task_result_to_outbox(
         "task-1",
         {"phase": "agent_outbox", "ingest_complete": False, "jobs_total": 1},
@@ -822,7 +823,7 @@ def test_upload_failure_keeps_persisted_outbox_until_ack(monkeypatch, tmp_path, 
         "event_id": "interrupted-upload", "source_kind": "text",
         "file_path": "report.txt", "file_hash": "isolated-hash",
     }
-    path = agent._outbox_enqueue(payload)
+    path, _ = agent._outbox_enqueue(payload)
     assert path is not None
 
     def failed_send(*args, **kwargs):
@@ -884,7 +885,7 @@ def test_outbox_requires_explicit_scan_ack(tmp_path, monkeypatch, source, reply)
             pass
 
     agent.session.mount("https://hubit.zsgp.ru/", Endpoint())
-    path = agent._outbox_enqueue(payload)
+    path, _ = agent._outbox_enqueue(payload)
     assert agent._drain_outbox() == 0
     assert len(uploads) == 1
     persisted = json.loads(path.read_text(encoding="utf-8"))
@@ -924,12 +925,42 @@ def test_pdf_transport_failure_defers_without_json_fallback(tmp_path, monkeypatc
         "file_path": "isolated.pdf", "file_hash": "isolated-hash",
         "pdf_slice_b64": "JVBERi0xLjQK",
     }
-    path = agent._outbox_enqueue(payload)
+    path, _ = agent._outbox_enqueue(payload)
     assert agent._drain_outbox() == 0
     assert len(uploads) == 1
     assert uploads[0].endswith("/ingest/pdf-slice")
     assert json.loads(path.read_text(encoding="utf-8"))["payload"] == payload
     assert not agent.state["files"]
+
+
+def test_watchdog_queue_waits_for_file_to_settle(tmp_path, monkeypatch):
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    monkeypatch.setattr(scan_agent, "OUTBOX_PENDING_PATH", pending)
+    monkeypatch.setattr(scan_agent, "_load_state", lambda: {"files": {}, "hashes": {}})
+    agent = scan_agent.ScanAgent(_make_config())
+    agent._roots = [tmp_path]
+    target = tmp_path / "fresh.txt"
+    target.write_text("still being written", encoding="utf-8")
+    scanned = []
+    monkeypatch.setattr(
+        agent,
+        "_scan_path",
+        lambda p, **kw: scanned.append(str(p))
+        or {"scanned": 1, "queued": 0, "skipped": 0, "deferred": 0, "deduped": 0},
+    )
+
+    agent.enqueue_path(target)
+    assert agent.process_watchdog_queue(10) == {
+        "scanned": 0, "queued": 0, "skipped": 0, "deferred": 0, "deduped": 0,
+    }
+    assert scanned == []
+
+    # Once the settle window passed, the same queued path is processed.
+    agent._pending_paths[scan_agent._norm_path(target)] = scan_agent.time.time() - 10
+    summary = agent.process_watchdog_queue(10)
+    assert scanned == [str(Path(scan_agent._norm_path(target)))]
+    assert summary["scanned"] == 1
 
 
 def test_heartbeat_reports_shared_agent_version(monkeypatch):

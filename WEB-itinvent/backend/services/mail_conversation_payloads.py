@@ -3,6 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from backend.services.mail_message_listing import (
+    _SEARCH_SCAN_SECONDS,
+    received_at_epoch,
+    scan_search_folders,
+)
+from backend.services.mail_message_serializer import item_display_attachment_stats
+from backend.services.mail_reference_codec import MAIL_FLAG_CATEGORY
+
+
+def _item_flagged(item: Any) -> bool:
+    categories = getattr(item, "categories", None) or []
+    return MAIL_FLAG_CATEGORY in categories
+
 
 def _normalize_text(value: Any, default: str = "") -> str:
     if value is None:
@@ -15,13 +28,11 @@ def _normalize_text(value: Any, default: str = "") -> str:
 
 
 def _item_attachment_hint(item: Any) -> tuple[bool, int]:
-    flag = getattr(item, "has_attachments", None)
-    if flag is not None:
-        has_attachments = bool(flag)
-        return has_attachments, (1 if has_attachments else 0)
-    attachments = getattr(item, "attachments", None) or []
-    count = len(list(attachments))
-    return count > 0, count
+    stats = item_display_attachment_stats(item)
+    if stats is not None:
+        return stats
+    has_attachments = bool(getattr(item, "has_attachments", False))
+    return has_attachments, (1 if has_attachments else 0)
 
 
 @dataclass(frozen=True)
@@ -29,6 +40,7 @@ class ConversationListResult:
     payload: dict[str, Any]
     searched_window: int
     search_limited: bool
+    skipped_folders: int = 0
 
 
 class MailConversationPayloadBuilder:
@@ -74,46 +86,33 @@ class MailConversationPayloadBuilder:
         safe_offset = max(0, int(offset or 0))
         normalized_folder = _normalize_text(folder, "inbox")
         normalized_scope = _normalize_text(folder_scope, "current")
-        filter_values = dict(filters or {})
-
-        scanned = 0
-        search_limited = False
-        search_budget = max(1, int(self.search_window_limit()))
-        grouped: dict[str, dict[str, Any]] = {}
-        targets = self.search_target_folders(
-            account,
-            folder=normalized_folder,
-            folder_scope=normalized_scope,
+        scan = scan_search_folders(
+            targets=self.search_target_folders(account, folder=normalized_folder, folder_scope=normalized_scope),
+            folder_queryset=self.folder_queryset,
+            message_matches_filters=self.message_matches_filters,
+            filters=filters or {},
+            batch_size=self.search_batch_size,
+            budget=max(1, int(self.search_window_limit())),
+            all_scope=normalized_scope.lower() == "all",
+            # No outer awaitable bounds this call — the scan must bound itself.
+            time_budget_seconds=_SEARCH_SCAN_SECONDS,
         )
-
-        for folder_obj, folder_key in targets:
-            queryset = self.folder_queryset(folder_obj, folder_key)
-            scan_offset = 0
-            while True:
-                if scanned >= search_budget:
-                    search_limited = True
-                    break
-                batch_limit = min(self.search_batch_size, search_budget - scanned)
-                batch_items = list(queryset[scan_offset: scan_offset + batch_limit])
-                if not batch_items:
-                    break
-                for item in batch_items:
-                    if not self.message_matches_filters(item, **filter_values):
-                        continue
-                    self._add_item_to_group(grouped, item)
-                scanned += len(batch_items)
-                scan_offset += len(batch_items)
-                if len(batch_items) < batch_limit:
-                    break
-            if search_limited:
-                break
+        grouped: dict[str, dict[str, Any]] = {}
+        for item, _folder_key in scan.matches:
+            self._add_item_to_group(grouped, item)
 
         conversations = [
             self._serialize_group(item)
             for item in grouped.values()
             if not unread_only or int(item["unread_count"]) > 0
         ]
-        conversations.sort(key=lambda item: item.get("last_received_at") or "", reverse=True)
+        conversations.sort(
+            key=lambda item: (
+                received_at_epoch(item.get("last_received_at")),
+                str(item.get("last_received_at") or ""),
+            ),
+            reverse=True,
+        )
         total = len(conversations)
         page_items = conversations[safe_offset: safe_offset + safe_limit]
         next_offset = safe_offset + len(page_items)
@@ -126,11 +125,13 @@ class MailConversationPayloadBuilder:
                 "total": total,
                 "has_more": next_offset < total,
                 "next_offset": next_offset if next_offset < total else None,
-                "search_limited": bool(search_limited),
-                "searched_window": scanned,
+                "search_limited": scan.search_limited,
+                "searched_window": scan.searched_window,
+                "skipped_folders": scan.skipped_folders,
             },
-            searched_window=scanned,
-            search_limited=bool(search_limited),
+            searched_window=scan.searched_window,
+            search_limited=scan.search_limited,
+            skipped_folders=scan.skipped_folders,
         )
 
     def _add_item_to_group(self, grouped: dict[str, dict[str, Any]], item: Any) -> None:
@@ -157,18 +158,19 @@ class MailConversationPayloadBuilder:
                 "last_received_at": received_iso,
                 "has_attachments": False,
                 "attachments_count": 0,
+                "is_flagged": False,
                 "preview": _normalize_text(getattr(item, "text_body", None))[:280],
             }
             grouped[key] = group
         group["messages_count"] += 1
+        group["is_flagged"] = bool(group["is_flagged"] or _item_flagged(item))
         if not bool(getattr(item, "is_read", False)):
             group["unread_count"] += 1
         has_attachments, attachments_count = _item_attachment_hint(item)
         group["has_attachments"] = bool(group["has_attachments"] or has_attachments)
         group["attachments_count"] = max(int(group["attachments_count"]), attachments_count)
-        if received_iso and (
-            not group.get("last_received_at")
-            or str(received_iso) > str(group.get("last_received_at"))
+        if received_iso and received_at_epoch(received_iso) > received_at_epoch(
+            group.get("last_received_at")
         ):
             group["last_received_at"] = received_iso
             group["preview"] = _normalize_text(getattr(item, "text_body", None))[:280]
@@ -196,6 +198,7 @@ class MailConversationPayloadBuilder:
             "last_received_at": item["last_received_at"],
             "has_attachments": bool(item["has_attachments"]),
             "attachments_count": int(item["attachments_count"]),
+            "is_flagged": bool(item["is_flagged"]),
             "preview": item["preview"],
         }
 
@@ -230,6 +233,7 @@ class MailConversationPayloadBuilder:
             "participant_people": participant_people,
             "messages_count": len(items),
             "unread_count": sum(1 for item in items if not item.get("is_read")),
+            "is_flagged": any(bool(item.get("is_flagged")) for item in items),
             "last_received_at": items[-1].get("received_at"),
             "items": items,
         }

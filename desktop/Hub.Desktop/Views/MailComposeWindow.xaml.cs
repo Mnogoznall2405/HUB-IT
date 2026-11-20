@@ -399,14 +399,19 @@ public partial class MailComposeWindow : Window, IDesktopHubWindow
             return;
         }
         e.Cancel = true;
-        if (_closeRequestPending) return;
-        var requestId = Guid.NewGuid().ToString("N");
-        if (_bridge?.TryRequestMailComposeWindowClose(requestId) == true)
+        if (!_closeRequestPending)
         {
-            _closeRequestId = requestId;
-            _closeRequestPending = true;
-            return;
+            var requestId = Guid.NewGuid().ToString("N");
+            if (_bridge?.TryRequestMailComposeWindowClose(requestId) == true)
+            {
+                _closeRequestId = requestId;
+                _closeRequestPending = true;
+                return;
+            }
         }
+        // The pending request may never resolve: the renderer can be recreated
+        // (recovery) or the page may hang before posting closeResult. A repeated
+        // close attempt must offer a way out instead of trapping the window.
         var forceClose = System.Windows.MessageBox.Show(
             this,
             "Не удалось запросить сохранение черновика. Закрыть окно без подтверждения сохранения?",
@@ -554,6 +559,10 @@ public partial class MailComposeWindow : Window, IDesktopHubWindow
         _bridge.MailComposeWindowSent -= Bridge_MailComposeWindowSent;
         _bridge.Dispose();
         _bridge = null;
+        // A close request sent over the disposed bridge can never be answered;
+        // the next close attempt must re-issue it against the new bridge.
+        _closeRequestPending = false;
+        _closeRequestId = string.Empty;
     }
 
     protected override void OnClosed(EventArgs e)

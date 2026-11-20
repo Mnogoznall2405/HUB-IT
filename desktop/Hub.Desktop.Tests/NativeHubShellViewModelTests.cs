@@ -187,6 +187,68 @@ public sealed class NativeHubShellViewModelTests
     }
 
     [Fact]
+    public async Task PresenceHeartbeatStartsAfterSignIn()
+    {
+        var api = new FakeHubApiClient
+        {
+            LoginResult = new HubLoginResult(HubLoginStatus.Authenticated, Session, null, []),
+            TasksPage = PageOf(),
+        };
+        var heartbeatSeen = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        api.PresenceHeartbeatHandler = _ =>
+        {
+            heartbeatSeen.TrySetResult();
+            return Task.FromResult(new HubDesktopPresence { Active = true, ExpiresInSeconds = 90 });
+        };
+        var model = new HubShellViewModel(api) { LoginUsername = "ivanov" };
+        // Цикл паркуется после первого тика — джиттер-интервал в тесте не ждём.
+        model.PresenceDelayAsync = (_, ct) => Task.Delay(Timeout.InfiniteTimeSpan, ct);
+
+        await model.SignInAsync("secret");
+        await heartbeatSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(HubShellState.Ready, model.State);
+        Assert.Equal(1, api.PresenceHeartbeatCallCount);
+    }
+
+    [Fact]
+    public async Task PresenceHeartbeatSurvivesTickErrors()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            TasksPage = PageOf(),
+            PresenceException = new InvalidOperationException("net down"),
+        };
+        var model = new HubShellViewModel(api);
+
+        // Ошибка тика не должна ронять сессию — presence best-effort.
+        await model.InitializeAsync();
+
+        Assert.Equal(HubShellState.Ready, model.State);
+        Assert.Equal(1, api.PresenceHeartbeatCallCount);
+    }
+
+    [Fact]
+    public async Task LogoutSendsPresenceDisconnectAndStopsHeartbeat()
+    {
+        var api = new FakeHubApiClient { StoredSession = Session, TasksPage = PageOf() };
+        var model = new HubShellViewModel(api);
+        model.PresenceDelayAsync = (_, ct) => Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        await model.InitializeAsync();
+        Assert.Equal(1, api.PresenceHeartbeatCallCount);
+
+        await ((NativeAsyncCommand)model.LogoutCommand).ExecuteAsync(null);
+
+        // Graceful disconnect await'ится до ревокации сессии в LogoutAsync.
+        Assert.True(api.PresenceDisconnectCallCount >= 1);
+        Assert.Equal(HubShellState.SignedOut, model.State);
+        // Цикл остановлен: парк Delay отменён, новых тиков нет.
+        Assert.Equal(1, api.PresenceHeartbeatCallCount);
+    }
+
+    [Fact]
     public async Task NavigateToPageCommandSwitchesCurrentPage()
     {
         var api = new FakeHubApiClient { StoredSession = Session, TasksPage = PageOf() };
@@ -1190,6 +1252,334 @@ public sealed class NativeHubShellViewModelTests
         Assert.Equal(string.Empty, model.Profile.UserName);
     }
 
+    // ---- Строительство ----
+
+    [Fact]
+    public async Task NavigateToPageCommandSwitchesToConstructionPage()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "ivanov",
+                Role = "viewer",
+                Permissions = ["construction.read"],
+            },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        Assert.True(model.IsDashboardPage);
+        Assert.True(model.IsConstructionVisible);
+
+        model.NavigateToPageCommand.Execute("construction");
+
+        Assert.True(model.IsConstructionPage);
+        Assert.Same(model.Construction, model.CurrentPage);
+        Assert.False(model.IsDashboardPage);
+    }
+
+    [Fact]
+    public async Task ConstructionSectionLoadsObjectsWithReadPermission()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "ivanov",
+                Role = "viewer",
+                Permissions = ["construction.read"],
+            },
+            ConstructionObjects = new HubConstructionObjectsResponse
+            {
+                Items =
+                [
+                    new HubConstructionObjectSummary
+                    {
+                        ObjectRef = "grp-1",
+                        Name = "ЖК Северный",
+                        Kind = "project",
+                        RequestCount = 5,
+                    },
+                ],
+            },
+        };
+        var model = new HubShellViewModel(api);
+
+        await model.InitializeAsync();
+
+        Assert.True(model.IsConstructionVisible);
+        Assert.Equal(1, api.ConstructionObjectsCallCount);
+        Assert.Equal("ЖК Северный", Assert.Single(model.Construction.Items).Title);
+    }
+
+    [Fact]
+    public async Task ConstructionNavHiddenWithoutReadPermission()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            // Права из /auth/me без construction.read — пункт скрыт, arm отдаёт дашборд.
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "ivanov",
+                Role = "viewer",
+                Permissions = ["tasks.read"],
+            },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+
+        Assert.False(model.IsConstructionVisible);
+        Assert.Equal(0, api.ConstructionObjectsCallCount);
+
+        model.NavigateToPageCommand.Execute("construction");
+
+        Assert.False(model.IsConstructionPage);
+        Assert.True(model.IsDashboardPage);
+    }
+
+    [Fact]
+    public async Task ConstructionNavVisibleForAdminWithoutExplicitPermission()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            // admin — как остальные read-гейты: все права неявно.
+            CurrentUser = new HubUser { Id = 1, Username = "root", Role = "admin" },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+
+        Assert.True(model.IsConstructionVisible);
+        Assert.Equal(1, api.ConstructionObjectsCallCount);
+    }
+
+    [Fact]
+    public async Task LogoutResetsConstructionPage()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            CurrentUser = new HubUser { Id = 1, Username = "root", Role = "admin" },
+            ConstructionObjects = new HubConstructionObjectsResponse
+            {
+                Items =
+                [
+                    new HubConstructionObjectSummary
+                    {
+                        ObjectRef = "grp-1",
+                        Name = "ЖК Северный",
+                        Kind = "project",
+                    },
+                ],
+            },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        Assert.NotEmpty(model.Construction.Items);
+
+        await ((NativeAsyncCommand)model.LogoutCommand).ExecuteAsync(null);
+
+        Assert.Empty(model.Construction.Items);
+        Assert.Null(model.Construction.Detail);
+        Assert.Null(model.Construction.SelectedObject);
+        Assert.Equal(HubShellState.SignedOut, model.State);
+    }
+
+    // ---- Склад 1С / Заявки ИТ ----
+
+    [Fact]
+    public async Task NavigateToPageCommandSwitchesToWarehousePage()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "ivanov",
+                Role = "viewer",
+                Permissions = ["warehouse_1c.read"],
+            },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        Assert.True(model.IsWarehouseVisible);
+
+        model.NavigateToPageCommand.Execute("warehouse");
+
+        Assert.True(model.IsWarehousePage);
+        Assert.Same(model.Warehouse, model.CurrentPage);
+    }
+
+    [Fact]
+    public async Task WarehouseSectionLoadsCatalogStatusWithReadPermission()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "ivanov",
+                Role = "viewer",
+                Permissions = ["warehouse_1c.read"],
+            },
+            Warehouse1cCatalogStatus = new HubWarehouse1cCatalogStatus
+            {
+                NomenclatureCount = 1234,
+                WarehousesCount = 12,
+                UpdatedAt = "2026-11-19T10:00:00Z",
+            },
+        };
+        var model = new HubShellViewModel(api);
+
+        await model.InitializeAsync();
+
+        Assert.True(model.IsWarehouseVisible);
+        // "N0" в ru-RU разделяет тысячи неразрывным пробелом — проверяем без него.
+        Assert.Contains("234", model.Warehouse.CatalogStatusText);
+        Assert.Contains("12", model.Warehouse.CatalogStatusText);
+    }
+
+    [Fact]
+    public async Task WarehouseNavHiddenWithoutReadPermission()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            // Без warehouse_1c.read пункт скрыт, arm отдаёт дашборд, 1С-запросов нет.
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "ivanov",
+                Role = "viewer",
+                Permissions = ["tasks.read"],
+            },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+
+        Assert.False(model.IsWarehouseVisible);
+        Assert.Empty(api.Warehouse1cBalancesCalls);
+
+        model.NavigateToPageCommand.Execute("warehouse");
+
+        Assert.False(model.IsWarehousePage);
+        Assert.True(model.IsDashboardPage);
+    }
+
+    [Fact]
+    public async Task WarehouseNavVisibleForAdminWithoutExplicitPermission()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            CurrentUser = new HubUser { Id = 1, Username = "root", Role = "admin" },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+
+        Assert.True(model.IsWarehouseVisible);
+        Assert.True(model.IsItRequestsVisible);
+    }
+
+    [Fact]
+    public async Task ItRequestsNavHasOwnPermissionGate()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            // warehouse_1c.read есть, it_requests.read — нет: только склад виден.
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "ivanov",
+                Role = "viewer",
+                Permissions = ["warehouse_1c.read"],
+            },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+
+        Assert.True(model.IsWarehouseVisible);
+        Assert.False(model.IsItRequestsVisible);
+        Assert.Empty(api.Warehouse1cItRequestsCalls);
+
+        model.NavigateToPageCommand.Execute("itrequests");
+
+        Assert.False(model.IsItRequestsPage);
+        Assert.True(model.IsDashboardPage);
+    }
+
+    [Fact]
+    public async Task NavigateToPageCommandSwitchesToItRequestsPage()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "ivanov",
+                Role = "viewer",
+                Permissions = ["warehouse_1c.it_requests.read"],
+            },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        Assert.True(model.IsItRequestsVisible);
+
+        model.NavigateToPageCommand.Execute("itrequests");
+
+        Assert.True(model.IsItRequestsPage);
+        Assert.Same(model.ItRequests, model.CurrentPage);
+    }
+
+    [Fact]
+    public async Task LogoutResetsWarehouseAndItRequestsPages()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            CurrentUser = new HubUser { Id = 1, Username = "root", Role = "admin" },
+            Warehouse1cBalances = new HubWarehouse1cBalancesResponse
+            {
+                Items =
+                [
+                    new HubWarehouse1cBalance
+                    {
+                        NomenclatureName = "Кабель ВВГ",
+                        WarehouseName = "ЦО",
+                        QtyBalance = 5,
+                    },
+                ],
+            },
+            Warehouse1cItRequests = new HubItRequestsResponse
+            {
+                Items = [new HubItRequestItem { RequestRef = "req-1", RequestNumber = "000-ИТ-1" }],
+            },
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        model.Warehouse.BalancesText = "кабель";
+        await ((NativeAsyncCommand)model.Warehouse.SearchBalancesCommand).ExecuteAsync(null);
+        Assert.NotEmpty(model.Warehouse.Balances);
+        Assert.NotEmpty(model.ItRequests.Items);
+
+        await ((NativeAsyncCommand)model.LogoutCommand).ExecuteAsync(null);
+
+        Assert.Empty(model.Warehouse.Balances);
+        Assert.Empty(model.ItRequests.Items);
+        Assert.Null(model.ItRequests.SelectedRequest);
+        Assert.Equal(HubShellState.SignedOut, model.State);
+    }
+
     // ---- Настройки ----
 
     [Fact]
@@ -1594,6 +1984,13 @@ public sealed class NativeHubShellViewModelTests
     [InlineData("/", "dashboard")]
     [InlineData("/mail", "mail")]
     [InlineData("/docflow", "docflow")]
+    [InlineData("/construction", "construction")]
+    [InlineData("/construction/objects/managed%3A17", "construction")]
+    [InlineData("/construction?object=grp-1", "construction")]
+    [InlineData("/warehouse-1c", "warehouse")]
+    [InlineData("/warehouse-1c?tab=movements", "warehouse")]
+    [InlineData("/it/requests", "itrequests")]
+    [InlineData("/it/requests/req-9", "itrequests")]
     [InlineData("/my-files", "myfiles")]
     [InlineData("/tickets", "tickets")]
     [InlineData("/tickets?request=42", "tickets")]
@@ -1891,6 +2288,185 @@ public sealed class NativeHubShellViewModelTests
         Assert.Equal(3, model.SelectedItem?.Id);
         Assert.Equal(3, model.Items.Count);
     }
+
+    // ---- Центр уведомлений: навигация по entity_type ----
+
+    [Fact]
+    public async Task NotificationOpenNavigatesToTaskAndMarksRead()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            TasksPage = PageOf(MakeTask(42, "Глубокая задача", "new")),
+            NotificationsPoll = NotificationFeed(
+                Notification("n-1", "task", "42", unread: 1),
+                unreadTotal: 1),
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        var item = Assert.Single(model.Notifications.Items);
+
+        await ((NativeAsyncCommand)model.Notifications.OpenCommand).ExecuteAsync(item);
+
+        await WaitFor(() => model.Tasks.SelectedItem?.Id == 42);
+        Assert.True(model.IsTasksPage);
+        Assert.False(item.IsUnread);
+        Assert.Equal(0, model.Notifications.UnreadTotal);
+        Assert.Single(api.NotificationReadMarkedIds);
+    }
+
+    [Fact]
+    public async Task DatabaseReminderTaskNavigatorOpensTasksPage()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            TasksPage = PageOf(MakeTask(901, "Загрузить подписанный акт", "new")),
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+
+        // «Открыть задачу» reminder-панелей страницы «База»: task_id строкой →
+        // переход на «Мои задачи» и выбор карточки — как у центра уведомлений.
+        var navigator = model.Database.ReminderTaskNavigator;
+        Assert.NotNull(navigator);
+        await navigator!("901", CancellationToken.None);
+
+        await WaitFor(() => model.Tasks.SelectedItem?.Id == 901);
+        Assert.True(model.IsTasksPage);
+
+        // Нечисловой task_id — без перехода и без исключения.
+        model.IsDashboardPage = true;
+        await navigator("rem-1", CancellationToken.None);
+        Assert.False(model.IsTasksPage);
+    }
+
+    [Fact]
+    public async Task NotificationOpenNavigatesToAnnouncementStrippingCommentAnchor()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            AnnouncementsPage = new HubAnnouncementListPage
+            {
+                Items =
+                [
+                    new HubAnnouncementItem { Id = "a1", Title = "Работы в ДЦ" },
+                ],
+                Total = 1,
+            },
+            NotificationsPoll = NotificationFeed(
+                Notification("n-2", "announcement", "a1#17", unread: 1),
+                unreadTotal: 3),
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        var item = Assert.Single(model.Notifications.Items);
+
+        await ((NativeAsyncCommand)model.Notifications.OpenCommand).ExecuteAsync(item);
+
+        // «a1#17» — ссылка на комментарий: открывается сама новость a1.
+        await WaitFor(() => model.News.SelectedItem?.Id == "a1");
+        Assert.True(model.IsNewsPage);
+        Assert.Equal(2, model.Notifications.UnreadTotal);
+        Assert.Equal("n-2", api.NotificationReadMarkedIds[0]);
+    }
+
+    [Fact]
+    public async Task NotificationOpenNavigatesToChatConversation()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            ChatConversations = new HubChatConversationList
+            {
+                Items =
+                [
+                    new HubChatConversation { Id = "c1", Kind = "group", Title = "IT-отдел" },
+                ],
+            },
+            NotificationsPoll = NotificationFeed(
+                Notification("n-3", "chat", "c1", unread: 0),
+                unreadTotal: 0),
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        var item = Assert.Single(model.Notifications.Items);
+
+        await ((NativeAsyncCommand)model.Notifications.OpenCommand).ExecuteAsync(item);
+
+        await WaitFor(() => model.Chat.SelectedConversation?.Id == "c1");
+        Assert.True(model.IsChatPage);
+        // Уже прочитанное: переход есть, POST /read не нужен.
+        Assert.Empty(api.NotificationReadMarkedIds);
+    }
+
+    [Fact]
+    public async Task NotificationOpenMailNavigatesToSection()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            NotificationsPoll = NotificationFeed(
+                Notification("n-4", "mail", "msg-9", unread: 0),
+                unreadTotal: 0),
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        var item = Assert.Single(model.Notifications.Items);
+
+        await ((NativeAsyncCommand)model.Notifications.OpenCommand).ExecuteAsync(item);
+
+        Assert.True(model.IsMailPage);
+    }
+
+    [Fact]
+    public async Task NotificationOpenUnknownTypeMarksReadWithoutNavigation()
+    {
+        var api = new FakeHubApiClient
+        {
+            StoredSession = Session,
+            NotificationsPoll = NotificationFeed(
+                Notification("n-5", "integration.1c", "doc-7", unread: 1),
+                unreadTotal: 1),
+        };
+        var model = new HubShellViewModel(api);
+        await model.InitializeAsync();
+        var item = Assert.Single(model.Notifications.Items);
+        var page = model.CurrentPage;
+
+        await ((NativeAsyncCommand)model.Notifications.OpenCommand).ExecuteAsync(item);
+
+        // Раздела под тип нет: страница не меняется, отметка прочитанным — да.
+        Assert.Same(page, model.CurrentPage);
+        Assert.False(item.IsUnread);
+        Assert.Single(api.NotificationReadMarkedIds);
+    }
+
+    private static HubNotificationItem Notification(
+        string id, string entityType, string entityId, int unread) =>
+        new()
+        {
+            Id = id,
+            EventType = entityType + ".test",
+            Title = "Уведомление " + id,
+            Body = "Текст",
+            EntityType = entityType,
+            EntityId = entityId,
+            CreatedAt = "2026-11-20T10:00:00Z",
+            Unread = unread,
+        };
+
+    private static HubNotificationPoll NotificationFeed(
+        HubNotificationItem item, int unreadTotal) =>
+        new()
+        {
+            Items = [item],
+            UnreadCounts = new HubNotificationUnreadCounts
+            {
+                NotificationsUnreadTotal = unreadTotal,
+            },
+        };
 
     private static async Task WaitFor(Func<bool> condition)
     {

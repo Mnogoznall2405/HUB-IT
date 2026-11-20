@@ -21,4 +21,15 @@ public partial class NewsView : UserControl
             e.Handled = true;
         }
     }
+
+    /// <summary>Кнопка «＋» у реакций: открывает её ContextMenu (аналог ContextMenu у сообщения чата).</summary>
+    private void ReactionMenu_Click(object sender, System.Windows.RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button { ContextMenu: { } menu })
+        {
+            menu.PlacementTarget = (System.Windows.Controls.Button)sender;
+            menu.IsOpen = true;
+            e.Handled = true;
+        }
+    }
 }

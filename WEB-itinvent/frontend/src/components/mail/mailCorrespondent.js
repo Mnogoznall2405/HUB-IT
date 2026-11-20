@@ -27,6 +27,12 @@ export function getMailRecipientPeople(message) {
   return [];
 }
 
+export function getMailCcRecipientPeople(message) {
+  if (Array.isArray(message?.cc_people) && message.cc_people.length > 0) return message.cc_people;
+  if (Array.isArray(message?.cc) && message.cc.length > 0) return message.cc;
+  return [];
+}
+
 export function isMailOutgoingMessage(message, { folder, mailboxEmails } = {}) {
   const contextFolder = normalizeFolder(folder || message?.folder);
   if (contextFolder === 'sent' || contextFolder === 'drafts') return true;

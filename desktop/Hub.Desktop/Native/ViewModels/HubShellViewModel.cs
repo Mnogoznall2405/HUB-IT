@@ -32,6 +32,11 @@ public sealed class HubShellViewModel : ObservableObject
     /// <summary>Первый hub.realtime.connected после старта — холодный коннект сразу
     /// за инициализацией страниц, повторный (reconnect) — догоняет пропущенное.</summary>
     private bool _hubRealtimeConnectedOnce;
+    /// <summary>CTS цикла heartbeat /desktop-presence — только в активной сессии.</summary>
+    private CancellationTokenSource? _presenceHeartbeat;
+
+    /// <summary>Тестовый шов задержки между heartbeat'ами (веб: 60 с ± 5 с джиттера).</summary>
+    internal Func<TimeSpan, CancellationToken, Task> PresenceDelayAsync { get; set; } = Task.Delay;
 
     private HubShellState _state = HubShellState.Boot;
     private object? _currentPage;
@@ -42,6 +47,19 @@ public sealed class HubShellViewModel : ObservableObject
     private string? _loginErrorText;
     private bool _isLoginBusy;
     private string _userDisplayName = string.Empty;
+    /// <summary>До чтения /auth/me пункт виден — как остальные разделы; см. IsConstructionVisible.</summary>
+    private bool _isConstructionVisible = true;
+    /// <summary>Гейт «Склад 1С» (warehouse_1c.read) — тот же паттерн, что у construction.</summary>
+    private bool _isWarehouseVisible = true;
+    /// <summary>Гейт «Заявки на МПЗ» (warehouse_1c.it_requests.read).</summary>
+    private bool _isItRequestsVisible = true;
+    /// <summary>
+    /// Гейт «🛡 DLP» — fail-closed, как /dlp (adminOnly) в вебе: пункт скрыт,
+    /// пока /auth/me не вернёт role=admin. Отличие от construction-гейтов:
+    /// здесь сервер режет сам раздел (DLP_READ = admin), поэтому «неизвестно»
+    /// трактуется как «нет доступа».
+    /// </summary>
+    private bool _isDlpVisible;
 
     public HubShellViewModel(IHubApiClient api)
         : this(api, hubRealtime: null)
@@ -64,6 +82,9 @@ public sealed class HubShellViewModel : ObservableObject
         Chat = new ChatViewModel(api);
         Mail = new MailViewModel(api);
         Docflow = new DocflowViewModel(api);
+        Construction = new ConstructionViewModel(api);
+        Warehouse = new WarehouseViewModel(api);
+        ItRequests = new ItRequestsViewModel(api);
         MyFiles = new MyFilesViewModel(api);
         Absences = new AbsencesViewModel(api);
         AddressBook = new AddressBookViewModel(api);
@@ -80,6 +101,27 @@ public sealed class HubShellViewModel : ObservableObject
         Help = new HelpViewModel(api);
         Settings = new SettingsViewModel(api);
         Admin = new AdminViewModel(api);
+        Dlp = new DlpViewModel(api);
+        Notifications = new NotificationsViewModel(api);
+        // «Обсудить в чате» из карточки задачи: conversation_id разговора kind=task
+        // открывается на странице «Чат» — как переход из центра уведомлений.
+        Tasks.DiscussionNavigator = async (conversationId, cancellationToken) =>
+        {
+            CurrentPage = Chat;
+            await Chat.SelectConversationByIdAsync(conversationId, cancellationToken);
+        };
+        // «Открыть задачу» reminder-панелей на странице «База»: task_id строкой
+        // (upload_reminder_task_id / reminder.task_id) — нечисловой id игнорим.
+        Database.ReminderTaskNavigator = async (taskId, cancellationToken) =>
+        {
+            if (!long.TryParse(
+                    taskId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedTaskId))
+            {
+                return;
+            }
+
+            await NavigateToTaskAsync(parsedTaskId, cancellationToken);
+        };
         // async-void: без try/catch сетевая ошибка ушла бы в DispatcherUnhandledException.
         Dashboard.TaskOpenRequested += async (_, taskId) =>
         {
@@ -101,6 +143,17 @@ public sealed class HubShellViewModel : ObservableObject
             catch (Exception exception)
             {
                 News.SetLoadError(TasksViewModel.DescribeError(exception));
+            }
+        };
+        Notifications.OpenRequested += async (_, item) =>
+        {
+            try
+            {
+                await OpenNotificationEntityAsync(item);
+            }
+            catch (Exception exception)
+            {
+                Notifications.SetLoadError(TasksViewModel.DescribeError(exception));
             }
         };
         _currentPage = Dashboard;
@@ -135,6 +188,13 @@ public sealed class HubShellViewModel : ObservableObject
                 UpdateNavBadges();
             }
         };
+        Notifications.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(NotificationsViewModel.UnreadTotal))
+            {
+                UpdateNavBadges();
+            }
+        };
 
         SignInCommand = new NativeAsyncCommand(
             (parameter, ct) => SignInAsync(parameter as string ?? string.Empty, ct),
@@ -147,6 +207,9 @@ public sealed class HubShellViewModel : ObservableObject
         LogoutCommand = new NativeAsyncCommand(
             async (_, ct) =>
             {
+                // Graceful disconnect presence, пока сессия ещё валидна;
+                // TTL на сервере — fallback, если вызов не дошёл.
+                await DisconnectPresenceBestEffortAsync(ct);
                 await _api.LogoutAsync(ct);
                 EnterSignedOut();
             },
@@ -161,6 +224,11 @@ public sealed class HubShellViewModel : ObservableObject
                 "chat" => Chat,
                 "mail" => Mail,
                 "docflow" => Docflow,
+                // Пункт скрыт без construction.read — и arm ведёт себя так же.
+                "construction" => IsConstructionVisible ? Construction : Dashboard,
+                // Те же гейты у складских разделов (warehouse_1c.read / it_requests.read).
+                "warehouse" => IsWarehouseVisible ? Warehouse : Dashboard,
+                "itrequests" => IsItRequestsVisible ? ItRequests : Dashboard,
                 "myfiles" => MyFiles,
                 "absences" => Absences,
                 "addressbook" => AddressBook,
@@ -178,6 +246,8 @@ public sealed class HubShellViewModel : ObservableObject
                 SettingsPageId => Settings,
                 ProfilePageId => Profile,
                 "admin" => Admin,
+                // Fail-closed: без IsDlpVisible маршрут «dlp» уходит на дашборд.
+                "dlp" => IsDlpVisible ? Dlp : Dashboard,
                 _ => Dashboard,
             });
         NavigateToTasksCommand = new NativeAsyncCommand(
@@ -219,6 +289,7 @@ public sealed class HubShellViewModel : ObservableObject
                 ChatViewModel => Chat.RefreshConversationsCommand,
                 MailViewModel => Mail.RefreshCommand,
                 DocflowViewModel => Docflow.RefreshCommand,
+                ConstructionViewModel => Construction.RefreshCommand,
                 MyFilesViewModel => MyFiles.RefreshCommand,
                 AbsencesViewModel => Absences.RefreshCommand,
                 AddressBookViewModel => AddressBook.RefreshCommand,
@@ -236,6 +307,7 @@ public sealed class HubShellViewModel : ObservableObject
                 SettingsViewModel => Settings.RefreshCommand,
                 ProfileViewModel => Profile.RefreshCommand,
                 AdminViewModel => Admin.RefreshCommand,
+                DlpViewModel => Dlp.RefreshCommand,
                 _ => Dashboard.RefreshCommand,
             };
             if (command.CanExecute(null))
@@ -252,6 +324,9 @@ public sealed class HubShellViewModel : ObservableObject
     public ChatViewModel Chat { get; }
     public MailViewModel Mail { get; }
     public DocflowViewModel Docflow { get; }
+    public ConstructionViewModel Construction { get; }
+    public WarehouseViewModel Warehouse { get; }
+    public ItRequestsViewModel ItRequests { get; }
     public MyFilesViewModel MyFiles { get; }
     public AbsencesViewModel Absences { get; }
     public AddressBookViewModel AddressBook { get; }
@@ -269,6 +344,9 @@ public sealed class HubShellViewModel : ObservableObject
     public SettingsViewModel Settings { get; }
     public ProfileViewModel Profile { get; }
     public AdminViewModel Admin { get; }
+    /// <summary>Страница «🛡 DLP» — мониторинг утечек (admin-only, как /dlp в вебе).</summary>
+    public DlpViewModel Dlp { get; }
+    public NotificationsViewModel Notifications { get; }
 
     public HubShellState State
     {
@@ -303,6 +381,9 @@ public sealed class HubShellViewModel : ObservableObject
                 OnPropertyChanged(nameof(IsChatPage));
                 OnPropertyChanged(nameof(IsMailPage));
                 OnPropertyChanged(nameof(IsDocflowPage));
+                OnPropertyChanged(nameof(IsConstructionPage));
+                OnPropertyChanged(nameof(IsWarehousePage));
+                OnPropertyChanged(nameof(IsItRequestsPage));
                 OnPropertyChanged(nameof(IsMyFilesPage));
                 OnPropertyChanged(nameof(IsAbsencesPage));
                 OnPropertyChanged(nameof(IsAddressBookPage));
@@ -320,6 +401,7 @@ public sealed class HubShellViewModel : ObservableObject
                 OnPropertyChanged(nameof(IsSettingsPage));
                 OnPropertyChanged(nameof(IsProfilePage));
                 OnPropertyChanged(nameof(IsAdminPage));
+                OnPropertyChanged(nameof(IsDlpPage));
             }
         }
     }
@@ -337,6 +419,10 @@ public sealed class HubShellViewModel : ObservableObject
     public bool HasDocflowUnread => Docflow.InboxCount > 0;
     public string DocflowBadgeText => FormatBadgeCount(Docflow.InboxCount);
     public string DocflowBadgeName => $"Входящих заданий 1С: {Docflow.InboxCount}";
+    /// <summary>Бейдж колокола: unread_counts.notifications_unread_total (как у веб-шелла).</summary>
+    public bool HasNotificationsUnread => Notifications.UnreadTotal > 0;
+    public string NotificationsUnreadBadgeText => FormatBadgeCount(Notifications.UnreadTotal);
+    public string NotificationsBadgeName => $"Непрочитанных уведомлений: {Notifications.UnreadTotal}";
 
     private static string FormatBadgeCount(int count) => count switch
     {
@@ -359,6 +445,9 @@ public sealed class HubShellViewModel : ObservableObject
         OnPropertyChanged(nameof(HasDocflowUnread));
         OnPropertyChanged(nameof(DocflowBadgeText));
         OnPropertyChanged(nameof(DocflowBadgeName));
+        OnPropertyChanged(nameof(HasNotificationsUnread));
+        OnPropertyChanged(nameof(NotificationsUnreadBadgeText));
+        OnPropertyChanged(nameof(NotificationsBadgeName));
     }
 
     public bool IsDashboardPage
@@ -401,6 +490,24 @@ public sealed class HubShellViewModel : ObservableObject
     {
         get => ReferenceEquals(CurrentPage, Docflow);
         set { if (value) CurrentPage = Docflow; }
+    }
+
+    public bool IsConstructionPage
+    {
+        get => ReferenceEquals(CurrentPage, Construction);
+        set { if (value) CurrentPage = Construction; }
+    }
+
+    public bool IsWarehousePage
+    {
+        get => ReferenceEquals(CurrentPage, Warehouse);
+        set { if (value) CurrentPage = Warehouse; }
+    }
+
+    public bool IsItRequestsPage
+    {
+        get => ReferenceEquals(CurrentPage, ItRequests);
+        set { if (value) CurrentPage = ItRequests; }
     }
 
     public bool IsMyFilesPage
@@ -503,6 +610,91 @@ public sealed class HubShellViewModel : ObservableObject
     {
         get => ReferenceEquals(CurrentPage, Admin);
         set { if (value) CurrentPage = Admin; }
+    }
+
+    /// <summary>
+    /// «🛡 DLP» — веб-маршрут /dlp (adminOnly). Сеттер fail-closed: клик по
+    /// скрытому пункту невозможен, а прямое присвоение без права игнорируется.
+    /// </summary>
+    public bool IsDlpPage
+    {
+        get => ReferenceEquals(CurrentPage, Dlp);
+        set { if (value && IsDlpVisible) CurrentPage = Dlp; }
+    }
+
+    /// <summary>
+    /// Роль admin из /auth/me — видимость пункта «🛡 DLP». Fail-closed:
+    /// пока роль неизвестна, раздел скрыт (серверные DLP-эндпоинты всё равно
+    /// требуют admin). При снятии гейта на открытой странице — уход на дашборд.
+    /// </summary>
+    public bool IsDlpVisible
+    {
+        get => _isDlpVisible;
+        private set
+        {
+            if (SetProperty(ref _isDlpVisible, value)
+                && !value
+                && ReferenceEquals(CurrentPage, Dlp))
+            {
+                CurrentPage = Dashboard;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Право construction.read из /auth/me — видимость пункта «🏗 Строительство»
+    /// в левой навигации (admin получает раздел неявно, как остальные read-гейты).
+    /// По умолчанию виден: права дочитываются уже после входа, а без права
+    /// сервер всё равно ответит 403 баннером страницы.
+    /// </summary>
+    public bool IsConstructionVisible
+    {
+        get => _isConstructionVisible;
+        private set
+        {
+            if (SetProperty(ref _isConstructionVisible, value)
+                && !value
+                && ReferenceEquals(CurrentPage, Construction))
+            {
+                CurrentPage = Dashboard;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Право warehouse_1c.read из /auth/me — пункт «📦 Склад 1С» (admin — неявно).
+    /// По умолчанию виден, как у IsConstructionVisible.
+    /// </summary>
+    public bool IsWarehouseVisible
+    {
+        get => _isWarehouseVisible;
+        private set
+        {
+            if (SetProperty(ref _isWarehouseVisible, value)
+                && !value
+                && ReferenceEquals(CurrentPage, Warehouse))
+            {
+                CurrentPage = Dashboard;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Право warehouse_1c.it_requests.read — пункт «🛒 Заявки ИТ»
+    /// (web-маршрут /it/requests; в десктопе — отдельный пункт, как в сайдбаре веба).
+    /// </summary>
+    public bool IsItRequestsVisible
+    {
+        get => _isItRequestsVisible;
+        private set
+        {
+            if (SetProperty(ref _isItRequestsVisible, value)
+                && !value
+                && ReferenceEquals(CurrentPage, ItRequests))
+            {
+                CurrentPage = Dashboard;
+            }
+        }
     }
 
     // ---- Логин ----
@@ -695,6 +887,58 @@ public sealed class HubShellViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Навигация из центра уведомлений: entity_type маппится на существующие
+    /// страницы и селекторы (нового роутинга не вводим). Немаппируемый тип или
+    /// битый entity_id — страница раздела без выбора либо вообще без перехода:
+    /// отметка прочитанным уже сделана моделью ленты.
+    /// </summary>
+    private async Task OpenNotificationEntityAsync(
+        NotificationItemViewModel item,
+        CancellationToken cancellationToken = default)
+    {
+        var entityId = item.EntityId.Trim();
+        switch (item.EntityType.Trim().ToLowerInvariant())
+        {
+            case "task":
+                CurrentPage = Tasks;
+                if (long.TryParse(
+                        entityId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var taskId))
+                {
+                    await Tasks.SelectTaskByIdAsync(taskId, cancellationToken);
+                }
+
+                break;
+            case "announcement":
+                CurrentPage = News;
+                // entity_id вида «42#17» — ссылка на комментарий: открываем саму новость.
+                var newsId = entityId.Split('#')[0].Trim();
+                if (newsId.Length > 0)
+                {
+                    await News.SelectNewsByIdAsync(newsId, cancellationToken);
+                }
+
+                break;
+            case "chat":
+                CurrentPage = Chat;
+                if (entityId.Length > 0)
+                {
+                    await Chat.SelectConversationByIdAsync(entityId, cancellationToken);
+                }
+
+                break;
+            case "mail":
+                CurrentPage = Mail;
+                break;
+            case "docflow":
+                CurrentPage = Docflow;
+                break;
+            default:
+                // Тип без нативного раздела — только отметка прочитанным.
+                break;
+        }
+    }
+
+    /// <summary>
     /// Веб-маршрут deep link'а → идентификатор нативной страницы
     /// (null — раздела в нативном клиенте нет, открывает web-шелл).
     /// </summary>
@@ -716,6 +960,30 @@ public sealed class HubShellViewModel : ObservableObject
         if (normalizedPath == "/admin" || normalizedPath.StartsWith("/admin/", StringComparison.Ordinal))
         {
             return "admin";
+        }
+
+        // /dlp — мониторинг утечек; гейт проверяется в NavigateToPageCommand.
+        if (normalizedPath == "/dlp" || normalizedPath.StartsWith("/dlp/", StringComparison.Ordinal))
+        {
+            return "dlp";
+        }
+
+        // /construction и вложенные маршруты (/construction/objects/:id, /directions/…).
+        if (normalizedPath == "/construction" || normalizedPath.StartsWith("/construction/", StringComparison.Ordinal))
+        {
+            return "construction";
+        }
+
+        // /warehouse-1c и вложенные deep-links (?tab=…&ref=…) — раздел «Склад 1С».
+        if (normalizedPath == "/warehouse-1c" || normalizedPath.StartsWith("/warehouse-1c/", StringComparison.Ordinal))
+        {
+            return "warehouse";
+        }
+
+        // /it/requests и вложенные (/it/requests/{ref}) — «Заявки на МПЗ».
+        if (normalizedPath == "/it/requests" || normalizedPath.StartsWith("/it/requests/", StringComparison.Ordinal))
+        {
+            return "itrequests";
         }
 
         return normalizedPath switch
@@ -747,6 +1015,25 @@ public sealed class HubShellViewModel : ObservableObject
 
     private async Task LoadPagesAsync(CancellationToken cancellationToken)
     {
+        // Гейт пункта «Строительство»: читаем права из /auth/me до загрузки страниц.
+        // Ошибка запроса не скрывает раздел — как и остальные, он покажет свой баннер.
+        try
+        {
+            var me = await _api.GetCurrentUserAsync(cancellationToken);
+            var isAdmin = string.Equals(me?.Role, "admin", StringComparison.OrdinalIgnoreCase);
+            IsConstructionVisible = isAdmin || me?.Permissions?.Contains("construction.read") == true;
+            IsWarehouseVisible = isAdmin || me?.Permissions?.Contains("warehouse_1c.read") == true;
+            IsItRequestsVisible = isAdmin || me?.Permissions?.Contains("warehouse_1c.it_requests.read") == true;
+            // DLP — только admin (как adminOnly-маршрут /dlp в вебе): без подтверждённой
+            // роли пункт остаётся скрыт — серверные эндпоинты всё равно ответили бы 403.
+            IsDlpVisible = isAdmin;
+        }
+        catch (Exception)
+        {
+            // Оставляем видимым: без ответа /auth/me скрывать пункт раньше времени нельзя.
+            // Исключение: DLP — fail-closed, без ответа /auth/me он уже скрыт.
+        }
+
         // Страницы грузятся последовательно — один HttpClient, предсказуемая нагрузка.
         try
         {
@@ -764,6 +1051,16 @@ public sealed class HubShellViewModel : ObservableObject
         catch (Exception ex)
         {
             Tasks.SetLoadError(TasksViewModel.DescribeError(ex));
+        }
+
+        // Лента колокола — рано: бейдж виден в хроме шелла на любой странице.
+        try
+        {
+            await Notifications.LoadAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            Notifications.SetLoadError(TasksViewModel.DescribeError(ex));
         }
 
         try
@@ -809,6 +1106,45 @@ public sealed class HubShellViewModel : ObservableObject
         catch (Exception ex)
         {
             Docflow.SetLoadError(TasksViewModel.DescribeError(ex));
+        }
+
+        // Пункт «Строительство» — только при праве construction.read (или admin).
+        // Без права грузить снапшот 1С не нужно: сервер ответил бы 403.
+        if (IsConstructionVisible)
+        {
+            try
+            {
+                await Construction.LoadAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Construction.SetLoadError(TasksViewModel.DescribeError(ex));
+            }
+        }
+
+        // Складские разделы — только при своих правах (без них 1С-запросы не идут).
+        if (IsWarehouseVisible)
+        {
+            try
+            {
+                await Warehouse.LoadAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Warehouse.SetLoadError(TasksViewModel.DescribeError(ex));
+            }
+        }
+
+        if (IsItRequestsVisible)
+        {
+            try
+            {
+                await ItRequests.LoadAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                ItRequests.SetLoadError(TasksViewModel.DescribeError(ex));
+            }
         }
 
         try
@@ -955,10 +1291,30 @@ public sealed class HubShellViewModel : ObservableObject
             Admin.SetLoadError(TasksViewModel.DescribeError(ex));
         }
 
+        // DLP — только при подтверждённой роли admin (гейт выше, fail-closed).
+        if (IsDlpVisible)
+        {
+            try
+            {
+                await Dlp.LoadAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Dlp.SetLoadError(TasksViewModel.DescribeError(ex));
+            }
+        }
+
         // Hub realtime — событийные обновления почты/задач/докфлоу/дашборда.
         // Старт после первичной загрузки: первый connected-кадр не дублирует её
         // (_hubRealtimeConnectedOnce), reconnect — догоняет пропущенное.
         await StartHubRealtimeSafelyAsync();
+
+        // Таймер-подстраховка ленты колокола: realtime — основной канал,
+        // но при его деградации poll всё равно доносит свежие уведомления.
+        Notifications.StartPolling();
+
+        // Heartbeat «десктоп онлайн» — как DesktopPresenceBootstrap веб-шелла.
+        StartPresenceHeartbeat();
     }
 
     private void ApplySession(NativeSession session)
@@ -986,6 +1342,11 @@ public sealed class HubShellViewModel : ObservableObject
                 _ = StopHubRealtimeSafelyAsync(realtime, dispose);
             }
 
+            // Heartbeat presence — остановить; graceful disconnect best-effort
+            // (на 401-путях сессия мертва — серверный TTL снимет presence сам).
+            StopPresenceHeartbeat();
+            _ = DisconnectPresenceBestEffortAsync();
+
             Tasks.Reset();
             Dashboard.Reset();
             Tickets.Reset();
@@ -993,6 +1354,10 @@ public sealed class HubShellViewModel : ObservableObject
             Chat.Reset();
             Mail.Reset();
             Docflow.Reset();
+            Construction.Reset();
+            Warehouse.Reset();
+            ItRequests.Reset();
+            Notifications.Reset();
             MyFiles.Reset();
             Absences.Reset();
             AddressBook.Reset();
@@ -1010,6 +1375,12 @@ public sealed class HubShellViewModel : ObservableObject
             Settings.Reset();
             Profile.Reset();
             Admin.Reset();
+            Dlp.Reset();
+            // Следующая сессия заново вычислит гейт по /auth/me.
+            IsConstructionVisible = true;
+            IsWarehouseVisible = true;
+            IsItRequestsVisible = true;
+            IsDlpVisible = false;
             UserDisplayName = string.Empty;
             TwoFactorCode = string.Empty;
             RequiresTwoFactor = false;
@@ -1065,6 +1436,70 @@ public sealed class HubShellViewModel : ObservableObject
         }
     }
 
+    // ---- Desktop presence heartbeat ----
+
+    /// <summary>
+    /// Heartbeat «десктоп онлайн»: как DesktopPresenceBootstrap веб-шелла — тик
+    /// каждые 60 с ± 5 с джиттера, ошибки глотаются (presence best-effort, TTL
+    /// на сервере — граница корректности). Старт после первичной загрузки страниц.
+    /// </summary>
+    private void StartPresenceHeartbeat()
+    {
+        if (_presenceHeartbeat is not null)
+        {
+            return;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _presenceHeartbeat = cancellation;
+        _ = PresenceHeartbeatLoopAsync(cancellation);
+    }
+
+    private void StopPresenceHeartbeat()
+    {
+        _presenceHeartbeat?.Cancel();
+        _presenceHeartbeat = null;
+    }
+
+    /// <summary>Один тик heartbeat; вынесен для тестов — цикл ниже гоняет его до отмены.</summary>
+    internal Task PresenceHeartbeatTickAsync(CancellationToken cancellationToken) =>
+        _api.SendDesktopPresenceHeartbeatAsync(cancellationToken);
+
+    private async Task PresenceHeartbeatLoopAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            while (!cancellation.IsCancellationRequested)
+            {
+                await PresenceHeartbeatTickAsync(cancellation.Token);
+                var delay = TimeSpan.FromSeconds(60 + Random.Shared.Next(-5, 6));
+                await PresenceDelayAsync(delay, cancellation.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Остановка при выходе из сессии — штатный путь.
+        }
+        catch
+        {
+            // Presence best-effort: ошибка цикла не роняет шелл; серверный TTL
+            // сам снимет presence. Цикл не перезапускаем — до следующего входа.
+        }
+    }
+
+    /// <summary>Graceful DELETE /desktop-presence/current; TTL — fallback при ошибке.</summary>
+    internal async Task DisconnectPresenceBestEffortAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _api.DisconnectDesktopPresenceAsync(cancellationToken);
+        }
+        catch
+        {
+            // Как в вебе: TTL остаётся границей корректности, если disconnect не дошёл.
+        }
+    }
+
     private void HubRealtime_EventReceived(object? sender, HubRealtimeEvent realtimeEvent) =>
         RunOnUi(() => HandleHubRealtimeEvent(realtimeEvent));
 
@@ -1086,6 +1521,7 @@ public sealed class HubShellViewModel : ObservableObject
             case "hub.notification.created":
                 // Тот же путь, что и mail.*: обновляет бейдж непрочитанных.
                 // Дашборд (агрегат «требует внимания») — как в веб-дашборде.
+                _ = Notifications.RefreshFromRealtimeAsync();
                 _ = Mail.RefreshFromRealtimeAsync();
                 _ = Dashboard.RefreshFromRealtimeAsync();
                 break;
@@ -1111,12 +1547,19 @@ public sealed class HubShellViewModel : ObservableObject
                     _ = Tasks.RefreshFromRealtimeAsync();
                     _ = Docflow.RefreshFromRealtimeAsync();
                     _ = Dashboard.RefreshFromRealtimeAsync();
+                    _ = Notifications.RefreshFromRealtimeAsync();
                 }
 
                 _hubRealtimeConnectedOnce = true;
                 break;
             default:
-                // integration.1c.* и прочие типы без нативного потребителя.
+                if (realtimeEvent.Type.StartsWith("integration.1c.", StringComparison.Ordinal))
+                {
+                    // integration.1c.sync.completed/failed: синхронизация меняет
+                    // агрегаты — тихий инвалидейт дашборда (как веб-дашборд).
+                    _ = Dashboard.RefreshFromRealtimeAsync();
+                }
+
                 break;
         }
     }

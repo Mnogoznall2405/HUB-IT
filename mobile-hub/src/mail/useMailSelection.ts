@@ -39,6 +39,7 @@ export function useMailSelection(options: {
   setSelected: Dispatch<SetStateAction<Set<string>>>;
   view: MailViewMode;
   folder: string;
+  folderScope?: string;
   mailboxId: string;
   offlineMode: boolean;
   listScope: string;
@@ -55,6 +56,7 @@ export function useMailSelection(options: {
     setSelected,
     view,
     folder,
+    folderScope = 'current',
     mailboxId,
     offlineMode,
     listScope,
@@ -102,7 +104,7 @@ export function useMailSelection(options: {
     const skipped: string[] = [];
     for (let index = 0; index < conversationIds.length; index += CONVERSATION_FETCH_BATCH) {
       const chunk = conversationIds.slice(index, index + CONVERSATION_FETCH_BATCH);
-      const results = await Promise.allSettled(chunk.map((id) => getMailConversation(id, { mailboxId, folder, folderScope: 'current' })));
+      const results = await Promise.allSettled(chunk.map((id) => getMailConversation(id, { mailboxId, folder, folderScope })));
       if (listGeneration !== listGenerationRef.current) return { messages: [], byConversation, skipped: [] };
       results.forEach((result, resultIndex) => {
         const conversationId = chunk[resultIndex];
@@ -119,7 +121,7 @@ export function useMailSelection(options: {
       });
     }
     return { messages: [...messages.values()], byConversation, skipped };
-  }, [folder, listGeneration, listGenerationRef, mailboxId]);
+  }, [folder, folderScope, listGeneration, listGenerationRef, mailboxId]);
 
   const runBulk = useCallback(async (action: 'read' | 'unread' | 'delete' | 'move', targetFolder = '', permanent = false) => {
     let ids = [...selected];
@@ -234,13 +236,24 @@ export function useMailSelection(options: {
           .map((entry) => String((entry as { result?: { message_id?: unknown } })?.result?.message_id || ''))
           .filter((id) => id && !trashIdSet.has(id));
         const restorableIds = ids.filter((id) => !trashIdSet.has(id));
+        const resolvedUndoIds = undoIds.length === restorableIds.length ? undoIds : restorableIds;
+        // Each selected message remembers its own folder: in «все папки» the
+        // open folder is not necessarily the source of every moved item.
+        const folderById = new Map(selectedMessages.map((entry) => [
+          entry.value.id,
+          String(entry.value.folder || folder),
+        ]));
         setUndo({
           kind: 'bulk',
           scope: listScope,
           mailboxId,
           action,
           messageIds: restorableIds,
-          undoIds: undoIds.length === restorableIds.length ? undoIds : restorableIds,
+          undoIds: resolvedUndoIds,
+          undoEntries: restorableIds.map((originalId, index) => ({
+            id: resolvedUndoIds[index] || originalId,
+            sourceFolder: folderById.get(originalId) || folder,
+          })),
           sourceFolder: folder,
           unreadDelta: appliedUnreadDelta,
           unreadDeltas,
@@ -271,25 +284,32 @@ export function useMailSelection(options: {
   }, [listGeneration, view, applyUnreadDelta, bulkBusy, expandConversationSelection, folder, items, listScope, load, mailboxId, offlineMode, selected, setError, setSelected, setUndo]);
 
   const confirmDelete = useCallback(() => {
+    const forConversations = view === 'conversations';
+    const scopeAll = String(folderScope) === 'all';
     const selectedMessages = items.filter((entry): entry is Extract<MailListItem, { kind: 'message' }> => (
       entry.kind === 'message' && selected.has(entry.value.id)
     ));
     const trashCount = selectedMessages.filter((entry) => (folder === 'trash' ? 'trash' : String(entry.value.folder || folder)) === 'trash').length;
-    const allTrash = trashCount > 0 && trashCount === selectedMessages.length;
-    const mixed = trashCount > 0 && !allTrash;
+    // In conversations view the real messages are expanded only after this
+    // dialog, so permanence must be judged by folder/scope, not rendered rows.
+    const allTrash = forConversations
+      ? folder === 'trash' && !scopeAll
+      : trashCount > 0 && trashCount === selectedMessages.length;
+    const mayHitTrash = forConversations ? scopeAll || folder === 'trash' : trashCount > 0;
+    const mixed = !allTrash && mayHitTrash;
     Alert.alert(
       allTrash ? 'Удалить выбранные письма навсегда?' : 'Удалить выбранные письма?',
       allTrash
         ? 'Это действие нельзя отменить.'
         : mixed
-          ? `Письма из «Удалённых» (${trashCount}) будут удалены навсегда, остальные — перемещены в папку «Удалённые».`
+          ? `Письма из «Удалённых»${trashCount ? ` (${trashCount})` : ''} будут удалены навсегда, остальные — перемещены в папку «Удалённые».`
           : 'Письма будут перемещены в папку «Удалённые».',
       [
         { text: 'Отмена', style: 'cancel' },
         { text: allTrash ? 'Удалить навсегда' : 'Удалить', style: 'destructive', onPress: () => { if (selectionGeneration === selectionGenerationRef.current) void runBulk('delete', '', allTrash); } },
       ],
     );
-  }, [folder, items, runBulk, selected, selectionGeneration]);
+  }, [folder, folderScope, items, runBulk, selected, selectionGeneration, view]);
 
   const markAllRead = useCallback(async (currentFolderUnread: number) => {
     if (bulkBusy || offlineMode) return;
@@ -298,7 +318,13 @@ export function useMailSelection(options: {
     try {
       const result = await markAllMailMessagesRead({ mailboxId, folder, folderScope: 'current' });
       const changed = Math.max(0, Number(result.changed ?? result.affected ?? currentFolderUnread));
-      applyUnreadDelta(-changed, mailboxId);
+      const failed = Math.max(0, Number(result.failed ?? 0));
+      if (result.ok === false || failed > 0) {
+        setError(failed
+          ? `Не удалось отметить ${failed} ${failed === 1 ? 'письмо' : 'писем'} прочитанными.`
+          : 'Не удалось отметить часть писем прочитанными.');
+      }
+      if (changed) applyUnreadDelta(-changed, mailboxId);
       await load({ reset: true });
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось отметить папку прочитанной.'));
@@ -329,7 +355,7 @@ export function useMailSelection(options: {
                 if (listGeneration !== listGenerationRef.current) return;
                 ids.push(...page.items.map((item) => item.id));
                 if (!page.has_more || !page.items.length || ids.length >= EMPTY_TRASH_MAX_MESSAGES) break;
-                offset += page.items.length;
+                offset = Number(page.next_offset ?? offset + page.items.length);
               }
               if (!ids.length) {
                 setError('В корзине нет писем.');
@@ -350,6 +376,9 @@ export function useMailSelection(options: {
                 }
               }
               await load({ reset: true });
+              if (listGeneration === listGenerationRef.current && ids.length >= EMPTY_TRASH_MAX_MESSAGES) {
+                setError(`Удалено не больше ${EMPTY_TRASH_MAX_MESSAGES} писем за раз. Если в корзине остались письма, повторите очистку.`);
+              }
             } catch (cause) {
               if (listGeneration === listGenerationRef.current) setError(formatApiError(cause, 'Не удалось очистить корзину.'));
             } finally {

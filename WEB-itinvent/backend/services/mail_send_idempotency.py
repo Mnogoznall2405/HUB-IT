@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import app_session, ensure_app_schema_initialized
@@ -344,6 +344,7 @@ class MailSendIdempotencyStore:
         now: datetime,
         lease_sec: int,
         lease_until: datetime,
+        retried: bool = False,
     ) -> MailSendIdempotencyClaim:
         if not hmac.compare_digest(str(row.request_payload_hash or ""), payload_hash):
             increment_mail_send_idempotency_metric("payload_conflict")
@@ -366,15 +367,35 @@ class MailSendIdempotencyStore:
                 internet_message_id=str(row.internet_message_id or ""),
             )
         if status == STATUS_FAILED:
-            row.status = STATUS_PROCESSING
-            row.processing_lease_until = lease_until
-            row.error_code = None
-            row.completed_at = None
-            row.updated_at = now
-            session.flush()
-            return _proceed_claim(
-                row_id=row.id,
-                internet_message_id=str(row.internet_message_id or "") or _new_internet_message_id(),
+            # Atomic transition: two retries that both read "failed" must not
+            # both become senders — only the UPDATE that matches wins.
+            claimed = session.execute(
+                update(AppMailSendIdempotency)
+                .where(
+                    AppMailSendIdempotency.id == row.id,
+                    AppMailSendIdempotency.status == STATUS_FAILED,
+                )
+                .values(
+                    status=STATUS_PROCESSING,
+                    processing_lease_until=lease_until,
+                    error_code=None,
+                    completed_at=None,
+                    updated_at=now,
+                )
+            ).rowcount
+            if claimed:
+                return _proceed_claim(
+                    row_id=row.id,
+                    internet_message_id=str(row.internet_message_id or "") or _new_internet_message_id(),
+                )
+            return self._reinterpret_after_race(
+                session,
+                row,
+                payload_hash=payload_hash,
+                now=now,
+                lease_sec=lease_sec,
+                lease_until=lease_until,
+                retried=retried,
             )
         if status in {STATUS_RESERVED, STATUS_PROCESSING}:
             lease = _as_utc(row.processing_lease_until)
@@ -389,27 +410,104 @@ class MailSendIdempotencyStore:
                     internet_message_id=str(row.internet_message_id or ""),
                 )
             if status == STATUS_RESERVED:
-                row.status = STATUS_PROCESSING
-                row.processing_lease_until = lease_until
-                row.updated_at = now
-                session.flush()
-                return _proceed_claim(
-                    row_id=row.id,
-                    internet_message_id=str(row.internet_message_id or "") or _new_internet_message_id(),
+                claimed = session.execute(
+                    update(AppMailSendIdempotency)
+                    .where(
+                        AppMailSendIdempotency.id == row.id,
+                        AppMailSendIdempotency.status == STATUS_RESERVED,
+                    )
+                    .values(
+                        status=STATUS_PROCESSING,
+                        processing_lease_until=lease_until,
+                        updated_at=now,
+                    )
+                ).rowcount
+                if claimed:
+                    return _proceed_claim(
+                        row_id=row.id,
+                        internet_message_id=str(row.internet_message_id or "") or _new_internet_message_id(),
+                    )
+                return self._reinterpret_after_race(
+                    session,
+                    row,
+                    payload_hash=payload_hash,
+                    now=now,
+                    lease_sec=lease_sec,
+                    lease_until=lease_until,
+                    retried=retried,
                 )
-            row.status = STATUS_UNKNOWN
-            row.updated_at = now
-            row.completed_at = now
-            session.flush()
-            increment_mail_send_idempotency_metric("send_unknown")
-            increment_mail_send_idempotency_metric("reconciliation_failed")
-            return MailSendIdempotencyClaim(
-                action="unknown",
-                row_id=row.id,
-                internet_message_id=str(row.internet_message_id or ""),
+            claimed = session.execute(
+                update(AppMailSendIdempotency)
+                .where(
+                    AppMailSendIdempotency.id == row.id,
+                    AppMailSendIdempotency.status == STATUS_PROCESSING,
+                )
+                .values(
+                    status=STATUS_UNKNOWN,
+                    completed_at=now,
+                    updated_at=now,
+                )
+            ).rowcount
+            if claimed:
+                increment_mail_send_idempotency_metric("send_unknown")
+                increment_mail_send_idempotency_metric("reconciliation_failed")
+                return MailSendIdempotencyClaim(
+                    action="unknown",
+                    row_id=row.id,
+                    internet_message_id=str(row.internet_message_id or ""),
+                )
+            return self._reinterpret_after_race(
+                session,
+                row,
+                payload_hash=payload_hash,
+                now=now,
+                lease_sec=lease_sec,
+                lease_until=lease_until,
+                retried=retried,
             )
         increment_mail_send_idempotency_metric("send_unknown")
         return MailSendIdempotencyClaim(action="unknown", row_id=row.id)
+
+    def _reinterpret_after_race(
+        self,
+        session,
+        row: AppMailSendIdempotency,
+        *,
+        payload_hash: str,
+        now: datetime,
+        lease_sec: int,
+        lease_until: datetime,
+        retried: bool,
+    ) -> MailSendIdempotencyClaim:
+        """A conditional UPDATE lost a race: another claim already transitioned
+        this row. Re-read it and interpret the new status. Bounded to one retry —
+        if the row is still under an active lease afterwards we stop rather than
+        risk becoming a duplicate sender."""
+        session.refresh(row)
+        if retried:
+            status = str(row.status or "").strip()
+            if status in {STATUS_RESERVED, STATUS_PROCESSING}:
+                increment_mail_send_idempotency_metric("duplicate_send_prevented")
+                return MailSendIdempotencyClaim(
+                    action="in_flight",
+                    row_id=row.id,
+                    internet_message_id=str(row.internet_message_id or ""),
+                )
+            if status == STATUS_UNKNOWN:
+                return MailSendIdempotencyClaim(
+                    action="unknown",
+                    row_id=row.id,
+                    internet_message_id=str(row.internet_message_id or ""),
+                )
+        return self._interpret_existing(
+            session,
+            row,
+            payload_hash=payload_hash,
+            now=now,
+            lease_sec=lease_sec,
+            lease_until=lease_until,
+            retried=True,
+        )
 
     def complete_sent(self, row_id: str, result: dict[str, Any] | None = None) -> None:
         self._finish(row_id, status=STATUS_SENT, result=result, error_code=None)
@@ -435,17 +533,24 @@ class MailSendIdempotencyStore:
         self._ready()
         now = self._now()
         with app_session(self._database_url) as session:
-            row = session.get(AppMailSendIdempotency, identifier)
-            if row is None:
-                return
-            if str(row.status or "") == STATUS_SENT:
-                return
-            row.status = status
-            row.updated_at = now
-            row.completed_at = now
-            row.processing_lease_until = None
+            values: dict[str, Any] = {
+                "status": status,
+                "updated_at": now,
+                "completed_at": now,
+                "processing_lease_until": None,
+            }
             if status == STATUS_SENT:
-                row.response_json = _dump_result(result)
-                row.error_code = None
+                values["response_json"] = _dump_result(result)
+                values["error_code"] = None
             else:
-                row.error_code = str(error_code or "MAIL_SEND_FAILED")[:64]
+                values["error_code"] = str(error_code or "MAIL_SEND_FAILED")[:64]
+            # Never overwrite a terminal "sent" row: a late failure from an
+            # earlier attempt must not hide a completed send.
+            session.execute(
+                update(AppMailSendIdempotency)
+                .where(
+                    AppMailSendIdempotency.id == identifier,
+                    AppMailSendIdempotency.status != STATUS_SENT,
+                )
+                .values(**values)
+            )

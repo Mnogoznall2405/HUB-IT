@@ -11,7 +11,7 @@ import { useTheme } from '@mui/material/styles';
 
 import MyFilesVersionHistory from './MyFilesVersionHistory';
 
-export default function MyFilesVersionsDialog({ open, file, onClose, canRestore = true }) {
+export default function MyFilesVersionsDialog({ open, file, onClose, canRestore = true, onCompare }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const fileId = String(file?.id || '');
@@ -30,6 +30,7 @@ export default function MyFilesVersionsDialog({ open, file, onClose, canRestore 
             fileName={fileName}
             canRestore={canRestore}
             onRestored={() => onClose?.(true)}
+            onCompare={onCompare}
           />
         ) : null}
       </DialogContent>

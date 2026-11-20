@@ -25,4 +25,26 @@ public partial class StatisticsView : UserControl
         menu.PlacementTarget = button;
         menu.IsOpen = true;
     }
+
+    /// <summary>Esc в диалоге непочищенных ПК: открыто подтверждение — отмена, иначе закрытие.</summary>
+    private void PcRemainingOverlay_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Escape
+            || DataContext is not ViewModels.StatisticsViewModel model
+            || model.PcRemaining is not { } dialog)
+        {
+            return;
+        }
+
+        if (dialog.IsConfirmOpen)
+        {
+            dialog.CancelConfirmCommand.Execute(null);
+        }
+        else
+        {
+            dialog.CloseCommand.Execute(null);
+        }
+
+        e.Handled = true;
+    }
 }

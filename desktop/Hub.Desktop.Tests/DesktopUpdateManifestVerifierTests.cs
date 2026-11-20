@@ -28,6 +28,22 @@ public sealed class DesktopUpdateManifestVerifierTests
     }
 
     [Fact]
+    public void LoadsRenewedProductionTlsCertificateWithoutPrivateKey()
+    {
+        using var certificate = DesktopUpdateTrust.TryLoadCertificate(DesktopUpdateTrust.TlsKeyId2027);
+        using var publicKey = certificate?.GetRSAPublicKey();
+
+        Assert.Equal("hubit-zsgp-ru-tls-2027-05", DesktopUpdateTrust.TlsKeyId2027);
+        Assert.NotNull(certificate);
+        Assert.Equal(
+            "B3D1AF5755A8A337BB7E5F293F6411B152691348",
+            certificate.Thumbprint);
+        Assert.Contains("CN=*.zsgp.ru", certificate.Subject, StringComparison.Ordinal);
+        Assert.False(certificate.HasPrivateKey);
+        Assert.NotNull(publicKey);
+    }
+
+    [Fact]
     public void LoadsDedicatedSigningCertificateWithoutPrivateKey()
     {
         using var certificate = DesktopUpdateTrust.TryLoadCertificate(DesktopUpdateTrust.SigningKeyId);

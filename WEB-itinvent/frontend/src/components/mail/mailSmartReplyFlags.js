@@ -3,7 +3,7 @@ const FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
 
 export const MAIL_SMART_REPLY_CHIPS_STORAGE_KEY = 'mail_smart_reply_chips';
 
-function parseFlag(raw, defaultValue = true) {
+function parseFlag(raw, defaultValue = false) {
   const text = String(raw ?? '').trim().toLowerCase();
   if (!text) return Boolean(defaultValue);
   if (TRUE_VALUES.has(text)) return true;
@@ -21,10 +21,10 @@ export function isMailSmartReplyChipsEnabled({
   try {
     const stored = resolvedStorage?.getItem?.(MAIL_SMART_REPLY_CHIPS_STORAGE_KEY);
     if (stored != null && String(stored).trim() !== '') {
-      return parseFlag(stored, true);
+      return parseFlag(stored, false);
     }
   } catch {
     // ignore storage access errors
   }
-  return parseFlag(envValue, true);
+  return parseFlag(envValue, false);
 }

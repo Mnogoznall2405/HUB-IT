@@ -129,6 +129,18 @@ export const NativeMailInboxMessageRow = memo(function NativeMailInboxMessageRow
           </View>
           {busy ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>Изменяем письмо…</Text> : showPreview ? <Text numberOfLines={compact ? 1 : 2} maxFontSizeMultiplier={2} style={[styles.preview, { color: tokens.textSecondary }]}>{String(item.body_preview || 'Без текста')}</Text> : null}
         </View>
+        <Pressable
+          testID={`native-mail-star-${item.id}`}
+          onPress={(event) => { event.stopPropagation(); void onAction(item, 'toggle-flag'); }}
+          disabled={actionsDisabled || selectionMode}
+          accessibilityRole="button"
+          accessibilityLabel={item.is_flagged ? 'Снять пометку со звёздочки' : 'Пометить звёздочкой'}
+          accessibilityState={{ disabled: actionsDisabled || selectionMode, selected: Boolean(item.is_flagged) }}
+          hitSlop={8}
+          style={[styles.star, { opacity: actionsDisabled ? 0.4 : 1 }]}
+        >
+          <MaterialCommunityIcons name={item.is_flagged ? 'star' : 'star-outline'} size={21} color={item.is_flagged ? '#f4b400' : tokens.iconMuted} />
+        </Pressable>
       </Pressable>
     </NativeMailSwipeRow>
   );
@@ -140,6 +152,8 @@ export const NativeMailInboxConversationRow = memo(function NativeMailInboxConve
   showPreview,
   compact,
   onOpen,
+  onFlag,
+  flagDisabled = false,
   selected = false, selectionMode = false, onToggleSelected,
 }: {
   item: MailConversationPreview;
@@ -148,6 +162,8 @@ export const NativeMailInboxConversationRow = memo(function NativeMailInboxConve
   compact: boolean;
   selected?: boolean; selectionMode?: boolean; onToggleSelected?: (id: string) => void;
   onOpen: (item: MailConversationPreview) => void;
+  onFlag?: (item: MailConversationPreview) => void;
+  flagDisabled?: boolean;
 }) {
   const unread = Number(item.unread_count || 0);
   const participants = (item.participant_people || []).map((person) => person.display || person.name || person.email).filter(Boolean);
@@ -159,7 +175,7 @@ export const NativeMailInboxConversationRow = memo(function NativeMailInboxConve
       onLongPress={() => onToggleSelected?.(item.conversation_id)}
       accessibilityState={{ selected }}
       accessibilityRole="button"
-      accessibilityLabel={`${unread ? `Непрочитанных: ${unread}. ` : ''}${mailSubject(item)}. Сообщений: ${item.messages_count || 0}`}
+      accessibilityLabel={`${unread ? `Непрочитанных: ${unread}. ` : ''}${item.is_flagged ? 'Помечено звёздочкой. ' : ''}${mailSubject(item)}. Сообщений: ${item.messages_count || 0}`}
       style={({ pressed }) => [styles.row, compact && styles.rowCompact, { backgroundColor: selected ? tokens.selected : unread ? tokens.accentSoft : tokens.panelSolid, opacity: pressed ? 0.78 : 1 }]}
     >
       <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`Выбрать цепочку: ${mailSubject(item)}`} onPress={(event) => { event.stopPropagation(); onToggleSelected?.(item.conversation_id); }} style={[styles.avatar, { backgroundColor: unread ? tokens.primary : tokens.panelInset }]}>
@@ -169,17 +185,28 @@ export const NativeMailInboxConversationRow = memo(function NativeMailInboxConve
         <View style={styles.topLine}>
           <View style={styles.senderLine}>
             {unread ? <View accessibilityLabel="Есть непрочитанные" style={[styles.unreadDot, { backgroundColor: tokens.primary }]} /> : null}
-            <Text numberOfLines={1} maxFontSizeMultiplier={2} style={[styles.sender, { color: tokens.textPrimary, fontWeight: unread ? '700' : '600' }]}>{people}</Text>
+            <Text numberOfLines={1} maxFontSizeMultiplier={2} style={[styles.sender, { color: tokens.textPrimary, fontWeight: unread ? '700' : '600' }]}>{people}{Number(item.messages_count || 0) > 1 ? ` (${item.messages_count})` : ''}</Text>
           </View>
           <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82} style={[styles.date, { color: unread ? tokens.primary : tokens.textSecondary }]}>{mailDateLabel(item.last_received_at)}</Text>
         </View>
         <View style={styles.subjectLine}>
           <Text numberOfLines={1} maxFontSizeMultiplier={2} style={[styles.subject, { color: tokens.textPrimary, fontWeight: unread ? '600' : '500' }]}>{mailSubject(item)}</Text>
-          <Text style={[styles.count, { color: tokens.textSecondary }]}>{item.messages_count || 0}</Text>
           {item.has_attachments ? <MaterialCommunityIcons accessibilityLabel="Есть вложения" name="paperclip" size={15} color={tokens.iconMuted} /> : null}
         </View>
         {showPreview ? <Text numberOfLines={compact ? 1 : 2} maxFontSizeMultiplier={2} style={[styles.preview, { color: tokens.textSecondary }]}>{String(item.preview || 'Без текста')}</Text> : null}
       </View>
+      <Pressable
+        testID={`native-mail-star-${item.conversation_id}`}
+        onPress={(event) => { event.stopPropagation(); onFlag?.(item); }}
+        disabled={flagDisabled || selectionMode || !onFlag}
+        accessibilityRole="button"
+        accessibilityLabel={item.is_flagged ? 'Снять пометку со звёздочки' : 'Пометить звёздочкой'}
+        accessibilityState={{ disabled: flagDisabled || selectionMode || !onFlag, selected: Boolean(item.is_flagged) }}
+        hitSlop={8}
+        style={[styles.star, { opacity: flagDisabled ? 0.4 : 1 }]}
+      >
+        <MaterialCommunityIcons name={item.is_flagged ? 'star' : 'star-outline'} size={21} color={item.is_flagged ? '#f4b400' : tokens.iconMuted} />
+      </Pressable>
     </Pressable>
   );
 });
@@ -202,6 +229,7 @@ const styles = StyleSheet.create({
   subjectLine: { marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 5 },
   subject: { flex: 1, minWidth: 0, fontSize: 14, lineHeight: 19 },
   preview: { marginTop: 2, fontSize: 13, lineHeight: 18 },
+  star: { alignSelf: 'flex-end', paddingLeft: 8, paddingBottom: 1 },
   count: { fontSize: 11, lineHeight: 16, fontWeight: '800' },
   divider: { height: StyleSheet.hairlineWidth, marginLeft: 70 },
 });

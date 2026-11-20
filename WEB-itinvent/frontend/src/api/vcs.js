@@ -28,6 +28,11 @@ export const vcsAPI = {
         return response.data;
     },
 
+    updateComputersOrder: async (orderedIds) => {
+        const response = await apiClient.put('/vcs/computers/order', { order: orderedIds });
+        return response.data;
+    },
+
     getConfig: async () => {
         const response = await apiClient.get('/vcs/config');
         return response.data;

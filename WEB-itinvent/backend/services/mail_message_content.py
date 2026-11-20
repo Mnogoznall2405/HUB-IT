@@ -51,16 +51,20 @@ class MailMessageContent:
 
         if isinstance(attachment, FileAttachment):
             content = attachment.content
-            if not content:
+            if content is None:
                 account.protocol.get_attachments([attachment])
                 content = attachment.content
+            if content is None:
+                # Content genuinely unavailable: report None so callers can
+                # distinguish a failed download from a legitimate 0-byte file.
+                return None
             return (
                 self.attachment_download_filename(
                     getattr(attachment, "name", None),
                     default_name="attachment.bin",
                 ),
                 _normalize_text(getattr(attachment, "content_type", "application/octet-stream")),
-                bytes(content or b""),
+                bytes(content),
             )
 
         if isinstance(attachment, ItemAttachment):

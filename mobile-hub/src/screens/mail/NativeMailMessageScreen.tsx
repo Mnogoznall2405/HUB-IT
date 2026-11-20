@@ -20,6 +20,7 @@ import {
   moveMailMessage,
   restoreMailMessage,
   sendMailMessage,
+  setMailMessageFlag,
   setMailMessageImportance,
   summarizeMailMessage,
   type MailAttachment,
@@ -437,6 +438,58 @@ function NativeMailMessageContent() {
     );
   }, [mailboxIdParam, message, mutate]);
 
+  const toggleFlag = useCallback(() => {
+    if (!message) return;
+    const flagged = !message.is_flagged;
+    void mutate(
+      () => setMailMessageFlag(message.id, flagged, String(message.mailbox_id || mailboxIdParam)),
+      'Не удалось изменить пометку.',
+      () => setMessage((current) => current ? { ...current, is_flagged: flagged } : current),
+    );
+  }, [mailboxIdParam, message, mutate]);
+
+  const toggleReadState = useCallback(() => {
+    if (!message) return;
+    const wasRead = Boolean(message.is_read);
+    void mutate(
+      () => wasRead
+        ? markMailMessageUnread(message.id, String(message.mailbox_id || mailboxIdParam))
+        : markMailMessageRead(message.id, String(message.mailbox_id || mailboxIdParam)),
+      'Не удалось изменить статус письма.',
+      () => {
+        setMessage((current) => current ? { ...current, is_read: !wasRead } : current);
+        setThreadStats((current) => current ? {
+          ...current,
+          unread: Math.max(0, current.unread + (wasRead ? 1 : -1)),
+        } : current);
+        if (String(message.folder || folderParam || 'inbox') === 'inbox') {
+          publishNativeMailUnreadDelta(wasRead ? 1 : -1, {
+            mailboxId: String(message.mailbox_id || mailboxIdParam),
+            folder: 'inbox',
+          });
+        }
+      },
+    );
+  }, [folderParam, mailboxIdParam, message, mutate]);
+
+  const archiveMessage = useCallback(() => {
+    if (!message) return;
+    void mutate(
+      () => moveMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), 'archive'),
+      'Не удалось архивировать письмо.',
+      () => goBackOrReplace('/(shell)/mail'),
+    );
+  }, [mailboxIdParam, message, mutate]);
+
+  const restoreMessage = useCallback(() => {
+    if (!message) return;
+    void mutate(
+      () => restoreMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), message.restore_hint_folder || 'inbox'),
+      'Не удалось восстановить письмо.',
+      () => goBackOrReplace('/(shell)/mail'),
+    );
+  }, [mailboxIdParam, message, mutate]);
+
   const confirmDelete = useCallback(() => {
     if (!message) return;
     const permanent = message.folder === 'trash';
@@ -582,38 +635,65 @@ function NativeMailMessageContent() {
           <MaterialCommunityIcons name="chevron-left" size={38} color={tokens.textPrimary} />
         </Pressable>
         <View style={styles.readerTopSpacer} />
-        <Pressable
-          testID="native-mail-previous-message"
-          onPress={() => openAdjacentMessage(previousMessageId)}
-          disabled={!previousMessageId}
-          accessibilityRole="button"
-          accessibilityLabel="Предыдущее письмо"
-          accessibilityState={{ disabled: !previousMessageId }}
-          style={[styles.readerTopAction, !previousMessageId ? styles.readerTopActionDisabled : null]}
-        >
-          <MaterialCommunityIcons name="chevron-up" size={38} color={tokens.textPrimary} />
-        </Pressable>
-        <Pressable
-          testID="native-mail-next-message"
-          onPress={() => openAdjacentMessage(nextMessageId)}
-          disabled={!nextMessageId}
-          accessibilityRole="button"
-          accessibilityLabel="Следующее письмо"
-          accessibilityState={{ disabled: !nextMessageId }}
-          style={[styles.readerTopAction, !nextMessageId ? styles.readerTopActionDisabled : null]}
-        >
-          <MaterialCommunityIcons name="chevron-down" size={38} color={tokens.textPrimary} />
-        </Pressable>
         {message && message.folder !== 'drafts' && !message.draft_context ? (
-          <Pressable
-            testID="native-mail-message-file-actions"
-            onPress={() => setFileActionsOpen(true)}
-            accessibilityRole="button"
-            accessibilityLabel="Ещё действия с письмом"
-            style={styles.readerTopAction}
-          >
-            <MaterialCommunityIcons name="dots-horizontal" size={30} color={tokens.textPrimary} />
-          </Pressable>
+          <>
+            {message.folder === 'trash' ? (
+              <Pressable
+                testID="native-mail-restore"
+                onPress={restoreMessage}
+                disabled={busy || offlineMode}
+                accessibilityRole="button"
+                accessibilityLabel="Восстановить"
+                accessibilityState={{ disabled: busy || offlineMode }}
+                style={[styles.readerTopAction, (busy || offlineMode) ? styles.readerTopActionDisabled : null]}
+              >
+                <MaterialCommunityIcons name="restore" size={30} color={tokens.textPrimary} />
+              </Pressable>
+            ) : message.can_archive !== false && message.folder !== 'archive' ? (
+              <Pressable
+                testID="native-mail-archive"
+                onPress={archiveMessage}
+                disabled={busy || offlineMode}
+                accessibilityRole="button"
+                accessibilityLabel="Архивировать"
+                accessibilityState={{ disabled: busy || offlineMode }}
+                style={[styles.readerTopAction, (busy || offlineMode) ? styles.readerTopActionDisabled : null]}
+              >
+                <MaterialCommunityIcons name="archive-arrow-down-outline" size={28} color={tokens.textPrimary} />
+              </Pressable>
+            ) : null}
+            <Pressable
+              testID="native-mail-delete"
+              onPress={confirmDelete}
+              disabled={busy || offlineMode}
+              accessibilityRole="button"
+              accessibilityLabel={message.folder === 'trash' ? 'Удалить навсегда' : 'Удалить'}
+              accessibilityState={{ disabled: busy || offlineMode }}
+              style={[styles.readerTopAction, (busy || offlineMode) ? styles.readerTopActionDisabled : null]}
+            >
+              <MaterialCommunityIcons name="trash-can-outline" size={26} color={tokens.textPrimary} />
+            </Pressable>
+            <Pressable
+              testID="native-mail-toggle-read"
+              onPress={toggleReadState}
+              disabled={busy || offlineMode}
+              accessibilityRole="button"
+              accessibilityLabel={message.is_read ? 'Отметить непрочитанным' : 'Отметить прочитанным'}
+              accessibilityState={{ disabled: busy || offlineMode }}
+              style={[styles.readerTopAction, (busy || offlineMode) ? styles.readerTopActionDisabled : null]}
+            >
+              <MaterialCommunityIcons name={message.is_read ? 'email-outline' : 'email-open-outline'} size={27} color={tokens.textPrimary} />
+            </Pressable>
+            <Pressable
+              testID="native-mail-message-file-actions"
+              onPress={() => setFileActionsOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Ещё действия с письмом"
+              style={styles.readerTopAction}
+            >
+              <MaterialCommunityIcons name="dots-horizontal" size={30} color={tokens.textPrimary} />
+            </Pressable>
+          </>
         ) : null}
       </View>
       <KeyboardAvoidingView
@@ -638,7 +718,21 @@ function NativeMailMessageContent() {
       {message ? (
         <>
           <View style={styles.subjectBlock}>
-            <Text testID="native-mail-reader-subject" accessibilityRole="header" style={[styles.subject, { color: tokens.textPrimary }]}>{mailSubject(message)}</Text>
+            <View style={styles.subjectRow}>
+              <Text testID="native-mail-reader-subject" accessibilityRole="header" style={[styles.subject, styles.subjectFlex, { color: tokens.textPrimary }]}>{mailSubject(message)}</Text>
+              <Pressable
+                testID="native-mail-star"
+                onPress={toggleFlag}
+                disabled={busy || offlineMode}
+                accessibilityRole="button"
+                accessibilityLabel={message.is_flagged ? 'Снять пометку со звёздочки' : 'Пометить звёздочкой'}
+                accessibilityState={{ disabled: busy || offlineMode, selected: Boolean(message.is_flagged) }}
+                hitSlop={8}
+                style={styles.starButton}
+              >
+                <MaterialCommunityIcons name={message.is_flagged ? 'star' : 'star-outline'} size={26} color={message.is_flagged ? '#f4b400' : tokens.iconMuted} />
+              </Pressable>
+            </View>
             <View testID="native-mail-thread-meta" style={styles.metaRow}>
               <Text style={[styles.threadMetaText, { color: tokens.textSecondary }]}>
                 {threadStats?.messages || 1} {plural(threadStats?.messages || 1, 'письмо', 'письма', 'писем')}
@@ -703,6 +797,18 @@ function NativeMailMessageContent() {
                   </Pressable>
                 </View>
                 <ScrollView style={styles.actionList} contentContainerStyle={styles.actionListContent}>
+                  {previousMessageId ? (
+                    <ActionRow testID="native-mail-previous-message" icon="chevron-up" label="Предыдущее письмо" disabled={false} tokens={tokens} onPress={() => {
+                      setFileActionsOpen(false);
+                      openAdjacentMessage(previousMessageId);
+                    }} />
+                  ) : null}
+                  {nextMessageId ? (
+                    <ActionRow testID="native-mail-next-message" icon="chevron-down" label="Следующее письмо" disabled={false} tokens={tokens} onPress={() => {
+                      setFileActionsOpen(false);
+                      openAdjacentMessage(nextMessageId);
+                    }} />
+                  ) : null}
                   {message.folder !== 'drafts' && !message.draft_context ? (
                     <ActionRow icon="reply-all-outline" label="Ответить всем" disabled={false} tokens={tokens} onPress={() => {
                       setFileActionsOpen(false);
@@ -716,26 +822,7 @@ function NativeMailMessageContent() {
                     tokens={tokens}
                     onPress={() => {
                       setFileActionsOpen(false);
-                      const wasRead = Boolean(message.is_read);
-                      void mutate(
-                        () => wasRead
-                          ? markMailMessageUnread(message.id, String(message.mailbox_id || mailboxIdParam))
-                          : markMailMessageRead(message.id, String(message.mailbox_id || mailboxIdParam)),
-                        'Не удалось изменить статус письма.',
-                        () => {
-                          setMessage((current) => current ? { ...current, is_read: !wasRead } : current);
-                          setThreadStats((current) => current ? {
-                            ...current,
-                            unread: Math.max(0, current.unread + (wasRead ? 1 : -1)),
-                          } : current);
-                          if (String(message.folder || folderParam || 'inbox') === 'inbox') {
-                            publishNativeMailUnreadDelta(wasRead ? 1 : -1, {
-                              mailboxId: String(message.mailbox_id || mailboxIdParam),
-                              folder: 'inbox',
-                            });
-                          }
-                        },
-                      );
+                      toggleReadState();
                     }}
                   />
                   <ActionRow
@@ -751,20 +838,12 @@ function NativeMailMessageContent() {
                   {message.folder === 'trash' ? (
                     <ActionRow icon="restore" label="Восстановить" disabled={busy || offlineMode} tokens={tokens} onPress={() => {
                       setFileActionsOpen(false);
-                      void mutate(
-                        () => restoreMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), message.restore_hint_folder || 'inbox'),
-                        'Не удалось восстановить письмо.',
-                        () => goBackOrReplace('/(shell)/mail'),
-                      );
+                      restoreMessage();
                     }} />
                   ) : message.can_archive !== false ? (
                     <ActionRow icon="archive-arrow-down-outline" label="Переместить в архив" disabled={busy || offlineMode} tokens={tokens} onPress={() => {
                       setFileActionsOpen(false);
-                      void mutate(
-                        () => moveMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), 'archive'),
-                        'Не удалось архивировать письмо.',
-                        () => goBackOrReplace('/(shell)/mail'),
-                      );
+                      archiveMessage();
                     }} />
                   ) : null}
                   {message.can_move !== false && moveTargets.length ? (
@@ -908,34 +987,8 @@ function NativeMailMessageContent() {
         ) : (
           <View testID="native-mail-reader-bottom-actions" style={styles.bottomActions}>
             <BottomAction testID="native-mail-reply" icon="reply-outline" label="Ответить" tokens={tokens} onPress={() => setQuickReplyOpen(true)} />
+            <BottomAction testID="native-mail-reply-all" icon="reply-all-outline" label="Ответить всем" tokens={tokens} onPress={() => compose('reply_all')} />
             <BottomAction testID="native-mail-forward" icon="forward" label="Переслать" tokens={tokens} onPress={() => compose('forward')} />
-            <BottomAction
-              testID="native-mail-importance"
-              icon={message.importance === 'high' ? 'alert-circle' : 'alert-circle-outline'}
-              label="Важное"
-              active={message.importance === 'high'}
-              disabled={busy || offlineMode}
-              tokens={tokens}
-              onPress={toggleImportance}
-            />
-            {message.folder === 'trash' ? (
-              <BottomAction testID="native-mail-restore" icon="restore" label="Восстановить" disabled={busy || offlineMode} tokens={tokens} onPress={() => {
-                void mutate(
-                  () => restoreMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), message.restore_hint_folder || 'inbox'),
-                  'Не удалось восстановить письмо.',
-                  () => goBackOrReplace('/(shell)/mail'),
-                );
-              }} />
-            ) : message.can_archive !== false && message.folder !== 'archive' ? (
-              <BottomAction testID="native-mail-archive" icon="archive-arrow-down-outline" label="Архив" disabled={busy || offlineMode} tokens={tokens} onPress={() => {
-                void mutate(
-                  () => moveMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), 'archive'),
-                  'Не удалось архивировать письмо.',
-                  () => goBackOrReplace('/(shell)/mail'),
-                );
-              }} />
-            ) : null}
-            <BottomAction testID="native-mail-delete" icon="trash-can-outline" label="Удалить" danger disabled={busy || offlineMode} tokens={tokens} onPress={confirmDelete} />
           </View>
         )}
         </View>
@@ -990,7 +1043,10 @@ const styles = StyleSheet.create({
   error: { marginBottom: 8, fontSize: 13, lineHeight: 18, fontWeight: '700' },
   warning: { marginBottom: 8, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   subjectBlock: { marginBottom: 26, paddingHorizontal: 4 },
+  subjectRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   subject: { fontSize: 29, lineHeight: 36, fontWeight: '600', letterSpacing: -0.4 },
+  subjectFlex: { flex: 1, minWidth: 0 },
+  starButton: { paddingTop: 5 },
   metaRow: { marginTop: 13, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 9 },
   threadMetaText: { fontSize: 16, lineHeight: 22, fontWeight: '500' },
   unreadDot: { width: 9, height: 9, borderRadius: 5 },

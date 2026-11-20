@@ -12,6 +12,7 @@
                 <ResourceDictionary Source="../Themes/HubTheme.xaml" />
             </ResourceDictionary.MergedDictionaries>
             <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
             <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
 
             <Style x:Key="HeaderCellStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
@@ -27,6 +28,10 @@
             </Style>
             <Style x:Key="ChipRadioStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}">
                 <Setter Property="Margin" Value="0,0,6,6" />
+            </Style>
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
             </Style>
             <!-- Пилюля статуса: StatusTone success|warning|error|primary|info|muted → кисти темы. -->
             <Style x:Key="StatusPillStyle" TargetType="Border">
@@ -73,6 +78,25 @@
                         <Setter Property="Foreground" Value="{DynamicResource HubAccentBrush}" />
                     </DataTrigger>
                     <DataTrigger Binding="{Binding RoleTone}" Value="muted">
+                        <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+            <!-- Полоса заполнения квоты: цвет по StatusTone success|warning|error|muted. -->
+            <Style x:Key="QuotaBarStyle" TargetType="ProgressBar">
+                <Setter Property="Height" Value="6" />
+                <Setter Property="Minimum" Value="0" />
+                <Setter Property="Maximum" Value="100" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="warning">
+                        <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="error">
+                        <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="muted">
                         <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
                     </DataTrigger>
                 </Style.Triggers>
@@ -266,6 +290,17 @@
                                 Visibility="{Binding IsUsersSection, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Таблица пользователей HUB">
                             <StackPanel>
+                                <StackPanel Margin="0,0,0,6" Orientation="Horizontal" Visibility="{Binding CanCreateUsers, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{StaticResource HubMutedTextStyle}"
+                                               FontSize="12"
+                                               Text="Учётные записи доступа к HUB" />
+                                    <Button Margin="10,0,0,0"
+                                            Style="{StaticResource HubSecondaryButtonStyle}"
+                                            Command="{Binding CreateUserCommand}"
+                                            Content="+ Новый пользователь"
+                                            AutomationProperties.Name="Создать пользователя HUB" />
+                                </StackPanel>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="2*" MinWidth="180" />
@@ -273,12 +308,14 @@
                                         <ColumnDefinition Width="110" />
                                         <ColumnDefinition Width="*" MinWidth="140" />
                                         <ColumnDefinition Width="90" />
+                                        <ColumnDefinition Width="90" />
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Style="{StaticResource HeaderCellStyle}" Text="ПОЛЬЗОВАТЕЛЬ" />
                                     <TextBlock Grid.Column="1" Style="{StaticResource HeaderCellStyle}" Text="РОЛЬ" />
                                     <TextBlock Grid.Column="2" Style="{StaticResource HeaderCellStyle}" Text="ПОДКЛЮЧЕНИЕ" />
                                     <TextBlock Grid.Column="3" Style="{StaticResource HeaderCellStyle}" Text="ПОЧТА" />
                                     <TextBlock Grid.Column="4" Style="{StaticResource HeaderCellStyle}" Text="СТАТУС" />
+                                    <TextBlock Grid.Column="5" Style="{StaticResource HeaderCellStyle}" HorizontalAlignment="Right" Text="ДЕЙСТВИЯ" />
                                 </Grid>
                                 <ScrollViewer Margin="0,4,0,0"
                                               Style="{StaticResource HubScrollViewerStyle}"
@@ -294,6 +331,7 @@
                                                         <ColumnDefinition Width="100" />
                                                         <ColumnDefinition Width="110" />
                                                         <ColumnDefinition Width="*" MinWidth="140" />
+                                                        <ColumnDefinition Width="90" />
                                                         <ColumnDefinition Width="90" />
                                                     </Grid.ColumnDefinitions>
                                                     <StackPanel VerticalAlignment="Center">
@@ -334,6 +372,15 @@
                                                         <TextBlock Style="{StaticResource StatusPillTextStyle}"
                                                                    Text="{Binding StatusText}" />
                                                     </Border>
+                                                    <Button Grid.Column="5"
+                                                            HorizontalAlignment="Right"
+                                                            VerticalAlignment="Center"
+                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                            Command="{Binding DataContext.EditUserCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}"
+                                                            Content="Изменить"
+                                                            Visibility="{Binding CanEdit, Converter={StaticResource BoolToVisibility}}"
+                                                            AutomationProperties.Name="{Binding AutomationName, StringFormat='Изменить {0}'}" />
                                                 </Grid>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -400,6 +447,13 @@
                                                      Background="{DynamicResource HubSurfaceRaisedBrush}"
                                                      Visibility="{Binding IsDepartmentDetailLoading, Converter={StaticResource BoolToVisibility}}"
                                                      AutomationProperties.Name="Индикатор загрузки состава отдела" />
+                                        <Button Margin="10,0,0,0"
+                                                VerticalAlignment="Center"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding EditDepartmentManagersCommand}"
+                                                Content="Руководители…"
+                                                Visibility="{Binding CanManageDepartments, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Назначить руководителей отдела" />
                                     </StackPanel>
                                     <TextBlock Margin="0,8,0,0"
                                                Foreground="{DynamicResource HubErrorTextBrush}"
@@ -557,21 +611,34 @@
                                 Visibility="{Binding IsAiBotsSection, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Таблица AI-ботов">
                             <StackPanel>
+                                <StackPanel Margin="0,0,0,6" Orientation="Horizontal" Visibility="{Binding CanManageAiBots, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{StaticResource HubMutedTextStyle}"
+                                               FontSize="12"
+                                               Text="AI-агенты корпоративного чата" />
+                                    <Button Margin="10,0,0,0"
+                                            Style="{StaticResource HubSecondaryButtonStyle}"
+                                            Command="{Binding CreateAiBotCommand}"
+                                            Content="+ Новый бот"
+                                            AutomationProperties.Name="Создать AI-бота" />
+                                </StackPanel>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="1.6*" MinWidth="150" />
-                                        <ColumnDefinition Width="*" MinWidth="110" />
+                                        <ColumnDefinition Width="1.6*" MinWidth="130" />
+                                        <ColumnDefinition Width="*" MinWidth="90" />
+                                        <ColumnDefinition Width="90" />
                                         <ColumnDefinition Width="100" />
-                                        <ColumnDefinition Width="110" />
-                                        <ColumnDefinition Width="130" />
-                                        <ColumnDefinition Width="130" />
+                                        <ColumnDefinition Width="105" />
+                                        <ColumnDefinition Width="115" />
+                                        <ColumnDefinition Width="80" />
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Style="{StaticResource HeaderCellStyle}" Text="БОТ" />
                                     <TextBlock Grid.Column="1" Style="{StaticResource HeaderCellStyle}" Text="МОДЕЛЬ" />
                                     <TextBlock Grid.Column="2" Style="{StaticResource HeaderCellStyle}" Text="СТАТУС" />
                                     <TextBlock Grid.Column="3" Style="{StaticResource HeaderCellStyle}" Text="НАСТРОЙКА" />
-                                    <TextBlock Grid.Column="4" Style="{StaticResource HeaderCellStyle}" Text="ПОСЛЕДНИЙ ЗАПУСК" />
+                                    <TextBlock Grid.Column="4" Style="{StaticResource HeaderCellStyle}" Text="ПОСЛЕДН. ЗАПУСК" />
                                     <TextBlock Grid.Column="5" Style="{StaticResource HeaderCellStyle}" Text="ОБНОВЛЁН" />
+                                    <TextBlock Grid.Column="6" Style="{StaticResource HeaderCellStyle}" HorizontalAlignment="Right" Text="ДЕЙСТВИЯ" />
                                 </Grid>
                                 <ScrollViewer Margin="0,4,0,0"
                                               Style="{StaticResource HubScrollViewerStyle}"
@@ -583,12 +650,13 @@
                                                 <Grid Margin="0,6,0,0"
                                                       AutomationProperties.Name="{Binding AutomationName}">
                                                     <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="1.6*" MinWidth="150" />
-                                                        <ColumnDefinition Width="*" MinWidth="110" />
+                                                        <ColumnDefinition Width="1.6*" MinWidth="130" />
+                                                        <ColumnDefinition Width="*" MinWidth="90" />
+                                                        <ColumnDefinition Width="90" />
                                                         <ColumnDefinition Width="100" />
-                                                        <ColumnDefinition Width="110" />
-                                                        <ColumnDefinition Width="130" />
-                                                        <ColumnDefinition Width="130" />
+                                                        <ColumnDefinition Width="105" />
+                                                        <ColumnDefinition Width="115" />
+                                                        <ColumnDefinition Width="80" />
                                                     </Grid.ColumnDefinitions>
                                                     <StackPanel VerticalAlignment="Center">
                                                         <TextBlock FontSize="12.5"
@@ -599,6 +667,10 @@
                                                                    Foreground="{DynamicResource HubTextSecondaryBrush}"
                                                                    Text="{Binding SlugText}"
                                                                    Visibility="{Binding SlugText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                        <TextBlock FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding TypeText}"
+                                                                   TextTrimming="CharacterEllipsis" />
                                                     </StackPanel>
                                                     <TextBlock Grid.Column="1"
                                                                VerticalAlignment="Center"
@@ -628,6 +700,15 @@
                                                                FontSize="12"
                                                                Foreground="{DynamicResource HubTextSecondaryBrush}"
                                                                Text="{Binding UpdatedText}" />
+                                                    <Button Grid.Column="6"
+                                                            HorizontalAlignment="Right"
+                                                            VerticalAlignment="Center"
+                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                            Command="{Binding DataContext.EditAiBotCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}"
+                                                            Content="Изменить"
+                                                            Visibility="{Binding CanEdit, Converter={StaticResource BoolToVisibility}}"
+                                                            AutomationProperties.Name="{Binding AutomationName, StringFormat='Изменить {0}'}" />
                                                 </Grid>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -704,6 +785,167 @@
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
                             </ScrollViewer>
+                        </StackPanel>
+
+                        <!-- Раздел «Новости»: чипы статуса (серверный фильтр) + таблица публикаций -->
+                        <StackPanel Visibility="{Binding IsNewsSection, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Раздел новостей">
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ItemsControl ItemsSource="{Binding NewsChips}"
+                                              AutomationProperties.Name="Фильтр статусов новостей">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <RadioButton GroupName="AdminNewsStatus"
+                                                         Style="{StaticResource ChipRadioStyle}"
+                                                         IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                                         Content="{Binding LabelText}"
+                                                         AutomationProperties.Name="{Binding LabelText, StringFormat='Фильтр новостей: {0}'}" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Button Grid.Column="1"
+                                        Style="{StaticResource HubSecondaryButtonStyle}"
+                                        Command="{Binding CreateNewsCommand}"
+                                        Content="+ Новость"
+                                        Visibility="{Binding CanCreateNews, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Создать новость" />
+                            </Grid>
+                            <Border Style="{StaticResource SectionPanelStyle}"
+                                    AutomationProperties.Name="Таблица новостей">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120" />
+                                            <ColumnDefinition Width="2*" MinWidth="200" />
+                                            <ColumnDefinition Width="140" />
+                                            <ColumnDefinition Width="110" />
+                                            <ColumnDefinition Width="Auto" MinWidth="300" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource HeaderCellStyle}" Text="СТАТУС" />
+                                        <TextBlock Grid.Column="1" Style="{StaticResource HeaderCellStyle}" Text="ЗАГОЛОВОК" />
+                                        <TextBlock Grid.Column="2" Style="{StaticResource HeaderCellStyle}" Text="АВТОР" />
+                                        <TextBlock Grid.Column="3" Style="{StaticResource HeaderCellStyle}" Text="ДАТА" />
+                                        <TextBlock Grid.Column="4" Style="{StaticResource HeaderCellStyle}" HorizontalAlignment="Right" Text="ДЕЙСТВИЯ" />
+                                    </Grid>
+                                    <ScrollViewer Margin="0,4,0,0"
+                                                  Style="{StaticResource HubScrollViewerStyle}"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <ItemsControl ItemsSource="{Binding News}"
+                                                      AutomationProperties.Name="Строки новостей">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,6,0,0"
+                                                          AutomationProperties.Name="{Binding AutomationName}">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="120" />
+                                                            <ColumnDefinition Width="2*" MinWidth="200" />
+                                                            <ColumnDefinition Width="140" />
+                                                            <ColumnDefinition Width="110" />
+                                                            <ColumnDefinition Width="Auto" MinWidth="300" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <Border VerticalAlignment="Center"
+                                                                Style="{StaticResource StatusPillStyle}">
+                                                            <TextBlock Style="{StaticResource StatusPillTextStyle}"
+                                                                       Text="{Binding StatusText}" />
+                                                        </Border>
+                                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock FontSize="12.5"
+                                                                           FontWeight="SemiBold"
+                                                                           Text="{Binding Title}"
+                                                                           TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Margin="4,0,0,0"
+                                                                           VerticalAlignment="Center"
+                                                                           FontSize="12"
+                                                                           Text="📌"
+                                                                           Visibility="{Binding IsPinned, Converter={StaticResource BoolToVisibility}}" />
+                                                            </StackPanel>
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding PreviewText}"
+                                                                       Visibility="{Binding PreviewText, Converter={StaticResource NonEmptyStringToVisibility}}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="{Binding CategoryText}"
+                                                                           Visibility="{Binding CategoryText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="{Binding TagsText, StringFormat=' · {0}'}"
+                                                                           Visibility="{Binding TagsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{DynamicResource HubAccentBrush}"
+                                                                           Text=" · требует подтверждения"
+                                                                           Visibility="{Binding HasRequiresAck, Converter={StaticResource BoolToVisibility}}" />
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="2"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding AuthorText}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Column="3"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding DateText}" />
+                                                        <StackPanel Grid.Column="4"
+                                                                    HorizontalAlignment="Right"
+                                                                    VerticalAlignment="Center"
+                                                                    Orientation="Horizontal">
+                                                            <Button Style="{StaticResource HubGhostButtonStyle}"
+                                                                    Command="{Binding DataContext.NewsStatsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    Content="Статистика"
+                                                                    Visibility="{Binding CanViewStats, Converter={StaticResource BoolToVisibility}}"
+                                                                    AutomationProperties.Name="{Binding AutomationName, StringFormat='Статистика {0}'}" />
+                                                            <Button Margin="4,0,0,0"
+                                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                                    Command="{Binding DataContext.EditNewsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    Content="Изменить"
+                                                                    Visibility="{Binding CanEdit, Converter={StaticResource BoolToVisibility}}"
+                                                                    AutomationProperties.Name="{Binding AutomationName, StringFormat='Изменить {0}'}" />
+                                                            <Button Margin="4,0,0,0"
+                                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                                    Command="{Binding DataContext.PublishNewsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    Content="Опубликовать"
+                                                                    Visibility="{Binding CanPublish, Converter={StaticResource BoolToVisibility}}"
+                                                                    AutomationProperties.Name="{Binding AutomationName, StringFormat='Опубликовать {0}'}" />
+                                                            <Button Margin="4,0,0,0"
+                                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                                    Command="{Binding DataContext.ArchiveNewsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    Content="В архив"
+                                                                    Visibility="{Binding CanArchive, Converter={StaticResource BoolToVisibility}}"
+                                                                    AutomationProperties.Name="{Binding AutomationName, StringFormat='Архивировать {0}'}" />
+                                                            <Button Margin="4,0,0,0"
+                                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                                    Command="{Binding DataContext.DeleteNewsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    Content="{Binding DeleteText}"
+                                                                    Visibility="{Binding CanDelete, Converter={StaticResource BoolToVisibility}}"
+                                                                    AutomationProperties.Name="{Binding AutomationName, StringFormat='Удалить {0}'}" />
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
 
                         <!-- Раздел «Система»: сводка + топ маршрутов -->
@@ -799,6 +1041,197 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- Раздел «Почтовые квоты»: снимок, сводка-пилюли, строки с пагинацией -->
+                        <Border Style="{StaticResource SectionPanelStyle}"
+                                Visibility="{Binding IsMailQuotaContentVisible, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Раздел квот почтовых ящиков">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <!-- Карточка сводки: снимок/селектор + счётчики-пилюли -->
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock VerticalAlignment="Center"
+                                               FontSize="12.5"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding QuotaSnapshotInfoText}"
+                                               AutomationProperties.Name="Информация о снимке квот" />
+                                    <ComboBox Grid.Column="1"
+                                              Width="210"
+                                              Margin="12,0,0,0"
+                                              ItemsSource="{Binding MailQuotaSnapshots}"
+                                              SelectedItem="{Binding SelectedMailQuotaSnapshot}"
+                                              DisplayMemberPath="Label"
+                                              Background="{DynamicResource HubSurfaceAltBrush}"
+                                              Foreground="{DynamicResource HubTextBrush}"
+                                              AutomationProperties.Name="Выбор снимка квот" />
+                                </Grid>
+                                <ItemsControl Grid.Row="1"
+                                              Margin="0,8,0,0"
+                                              ItemsSource="{Binding MailQuotaStats}"
+                                              AutomationProperties.Name="Сводка квот почтовых ящиков">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,8,4"
+                                                    Style="{StaticResource StatusPillStyle}">
+                                                <TextBlock Style="{StaticResource StatusPillTextStyle}"
+                                                           Text="{Binding Text}" />
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- Фильтры строк: чипы статуса + база Exchange -->
+                                <StackPanel Grid.Row="2"
+                                            Margin="0,4,0,6"
+                                            Orientation="Horizontal">
+                                    <ItemsControl ItemsSource="{Binding MailQuotaChips}"
+                                                  AutomationProperties.Name="Фильтр статусов квот">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <RadioButton GroupName="AdminMailQuotaFilter"
+                                                             Style="{StaticResource ChipRadioStyle}"
+                                                             IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                                             Content="{Binding LabelText}"
+                                                             AutomationProperties.Name="{Binding LabelText, StringFormat='Фильтр квот: {0}'}" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <ComboBox Width="190"
+                                              VerticalAlignment="Top"
+                                              ItemsSource="{Binding MailQuotaDatabaseOptions}"
+                                              SelectedItem="{Binding SelectedMailQuotaDatabase}"
+                                              DisplayMemberPath="Label"
+                                              Background="{DynamicResource HubSurfaceAltBrush}"
+                                              Foreground="{DynamicResource HubTextBrush}"
+                                              AutomationProperties.Name="Фильтр базы Exchange" />
+                                </StackPanel>
+
+                                <!-- Таблица строк -->
+                                <Grid Grid.Row="3">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="2*" MinWidth="180" />
+                                            <ColumnDefinition Width="120" />
+                                            <ColumnDefinition Width="90" />
+                                            <ColumnDefinition Width="120" />
+                                            <ColumnDefinition Width="90" />
+                                            <ColumnDefinition Width="110" />
+                                            <ColumnDefinition Width="110" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource HeaderCellStyle}" Text="ЯЩИК" />
+                                        <TextBlock Grid.Column="1" Style="{StaticResource HeaderCellStyle}" Text="СТАТУС" />
+                                        <TextBlock Grid.Column="2" Style="{StaticResource HeaderCellStyle}" HorizontalAlignment="Right" Text="ЗАНЯТО" />
+                                        <TextBlock Grid.Column="3" Style="{StaticResource HeaderCellStyle}" HorizontalAlignment="Right" Text="ЛИМИТ" />
+                                        <TextBlock Grid.Column="4" Style="{StaticResource HeaderCellStyle}" HorizontalAlignment="Right" Text="ОСТАЛОСЬ" />
+                                        <TextBlock Grid.Column="5" Style="{StaticResource HeaderCellStyle}" HorizontalAlignment="Right" Text="ЗАПОЛНЕНИЕ" />
+                                        <TextBlock Grid.Column="6" Style="{StaticResource HeaderCellStyle}" Text="БД" />
+                                    </Grid>
+                                    <ScrollViewer Grid.Row="1"
+                                                  Margin="0,4,0,0"
+                                                  Style="{StaticResource HubScrollViewerStyle}"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <ItemsControl ItemsSource="{Binding MailQuotaRows}"
+                                                      AutomationProperties.Name="Строки квот почтовых ящиков">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,6,0,0"
+                                                          AutomationProperties.Name="{Binding AutomationName}">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="2*" MinWidth="180" />
+                                                            <ColumnDefinition Width="120" />
+                                                            <ColumnDefinition Width="90" />
+                                                            <ColumnDefinition Width="120" />
+                                                            <ColumnDefinition Width="90" />
+                                                            <ColumnDefinition Width="110" />
+                                                            <ColumnDefinition Width="110" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel VerticalAlignment="Center">
+                                                            <TextBlock FontSize="12.5"
+                                                                       FontWeight="SemiBold"
+                                                                       Text="{Binding Title}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding EmailText}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                        </StackPanel>
+                                                        <Border Grid.Column="1"
+                                                                VerticalAlignment="Center"
+                                                                Style="{StaticResource StatusPillStyle}">
+                                                            <TextBlock Style="{StaticResource StatusPillTextStyle}"
+                                                                       Text="{Binding StatusText}" />
+                                                        </Border>
+                                                        <TextBlock Grid.Column="2"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12.5"
+                                                                   HorizontalAlignment="Right"
+                                                                   Text="{Binding UsedText}" />
+                                                        <TextBlock Grid.Column="3"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12.5"
+                                                                   HorizontalAlignment="Right"
+                                                                   Text="{Binding QuotaText}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Column="4"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12.5"
+                                                                   HorizontalAlignment="Right"
+                                                                   Text="{Binding FreeText}" />
+                                                        <StackPanel Grid.Column="5" VerticalAlignment="Center">
+                                                            <TextBlock FontSize="11.5"
+                                                                       HorizontalAlignment="Right"
+                                                                       Text="{Binding PercentText}" />
+                                                            <ProgressBar Margin="0,3,0,0"
+                                                                         Style="{StaticResource QuotaBarStyle}"
+                                                                         Value="{Binding PercentValue}" />
+                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="6"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding DatabaseText}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </Grid>
+
+                                <Button Grid.Row="4"
+                                        Margin="0,8,0,0"
+                                        Style="{StaticResource HubSecondaryButtonStyle}"
+                                        Command="{Binding LoadMoreMailQuotaRowsCommand}"
+                                        Content="{Binding QuotaMoreButtonText}"
+                                        Visibility="{Binding QuotaHasMore, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Показать ещё ящики" />
+                            </Grid>
+                        </Border>
+
                         <!-- Подсказка «Недостаточно прав» по конкретному разделу (403). -->
                         <StackPanel HorizontalAlignment="Center"
                                     VerticalAlignment="Center"
@@ -852,6 +1285,998 @@
                                TextAlignment="Center"
                                Text="{Binding AccessDeniedText}" />
                 </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Диалог правки/создания пользователя: модальный оверлей поверх страницы -->
+        <Grid Grid.ColumnSpan="2"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="UserEditorOverlay_PreviewKeyDown"
+              Visibility="{Binding IsUserEditorOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="520"
+                    MaxHeight="640"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding UserEditor}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding SubtitleText}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог пользователя" />
+                    </Grid>
+
+                    <!-- Self-edit: свою роль/активность менять нельзя (сервер 403/400) -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubAccentBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasSelfHint, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock FontSize="12"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding SelfHintText}"
+                                   TextWrapping="Wrap" />
+                    </Border>
+
+                    <!-- Ошибка валидации/сервера: диалог и поля сохраняются -->
+                    <Border Grid.Row="2"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <StackPanel Grid.Row="3" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор сохранения пользователя" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding StatusText}"
+                                   Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="4"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- Логин — только при создании -->
+                            <StackPanel Visibility="{Binding IsUsernameVisible, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Логин *" />
+                                <TextBox Margin="0,4,0,0"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Логин пользователя" />
+                            </StackPanel>
+
+                            <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="ФИО" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding FullName, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="ФИО пользователя" />
+
+                            <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Email" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Email пользователя" />
+
+                            <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Отдел" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Department, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Отдел пользователя" />
+
+                            <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Должность" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding JobTitle, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Должность пользователя" />
+
+                            <!-- Привилегированные поля — только admin (не-admin видит форму выше) -->
+                            <StackPanel Visibility="{Binding CanEditPrivileged, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Роль" />
+                                <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
+                                    <RadioButton GroupName="UserEditorRole"
+                                                 Style="{StaticResource ChipRadioStyle}"
+                                                 IsChecked="{Binding IsRoleAdmin, Mode=TwoWay}"
+                                                 IsEnabled="{Binding ArePrivilegedInputsEnabled}"
+                                                 Content="Админ"
+                                                 AutomationProperties.Name="Роль: админ" />
+                                    <RadioButton GroupName="UserEditorRole"
+                                                 Style="{StaticResource ChipRadioStyle}"
+                                                 IsChecked="{Binding IsRoleOperator, Mode=TwoWay}"
+                                                 IsEnabled="{Binding ArePrivilegedInputsEnabled}"
+                                                 Content="Оператор"
+                                                 AutomationProperties.Name="Роль: оператор" />
+                                    <RadioButton GroupName="UserEditorRole"
+                                                 Style="{StaticResource ChipRadioStyle}"
+                                                 IsChecked="{Binding IsRoleViewer, Mode=TwoWay}"
+                                                 IsEnabled="{Binding ArePrivilegedInputsEnabled}"
+                                                 Content="Просмотр"
+                                                 AutomationProperties.Name="Роль: просмотр" />
+                                </StackPanel>
+
+                                <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
+                                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                                  IsChecked="{Binding IsActive, Mode=TwoWay}"
+                                                  IsEnabled="{Binding ArePrivilegedInputsEnabled}"
+                                                  Content="Активен"
+                                                  AutomationProperties.Name="Пользователь активен" />
+                                </StackPanel>
+
+                                <TextBlock Margin="0,12,0,0"
+                                           Style="{StaticResource MetaLabelStyle}"
+                                           Text="{Binding PasswordLabelText}" />
+                                <PasswordBox x:Name="UserEditorPasswordBox"
+                                             Margin="0,4,0,0"
+                                             Style="{StaticResource HubPasswordBoxStyle}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             AutomationProperties.Name="Пароль пользователя" />
+
+                                <Border Margin="0,10,0,0"
+                                        Padding="10,8"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1"
+                                        Visibility="{Binding HasCustomPermissions, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding CustomPermissionsHintText}"
+                                               TextWrapping="Wrap" />
+                                </Border>
+
+                                <Button Margin="0,12,0,0"
+                                        HorizontalAlignment="Left"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding ResetTwoFactorCommand}"
+                                        Content="{Binding ResetTwoFactorText}"
+                                        Visibility="{Binding IsResetAvailable, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Сбросить двухфакторную аутентификацию" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Подвал: Отмена / Сохранить -->
+                    <Grid Grid.Row="5" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить изменения пользователя" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Click="UserEditorSave_Click"
+                                Content="Сохранить"
+                                AutomationProperties.Name="Сохранить пользователя" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Диалог правки/создания AI-бота: модальный оверлей поверх страницы -->
+        <Grid Grid.ColumnSpan="2"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="AiBotEditorOverlay_PreviewKeyDown"
+              Visibility="{Binding IsAiBotEditorOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="520"
+                    MaxHeight="640"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding AiBotEditor}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding SubtitleText}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог AI-бота" />
+                    </Grid>
+
+                    <!-- Sandbox: в вебе у OpenCode правятся только название и описание -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubAccentBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding IsSandboxMode, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock FontSize="12"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding SandboxHintText}"
+                                   TextWrapping="Wrap" />
+                    </Border>
+
+                    <!-- Ошибка валидации/сервера: диалог и поля сохраняются -->
+                    <Border Grid.Row="2"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <StackPanel Grid.Row="3" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор сохранения AI-бота" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding StatusText}"
+                                   Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="4"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- Slug — только при создании -->
+                            <StackPanel Visibility="{Binding IsSlugVisible, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Slug *" />
+                                <TextBox Margin="0,4,0,0"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding Slug, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Slug AI-бота" />
+                            </StackPanel>
+
+                            <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Название *" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Название AI-бота" />
+
+                            <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Описание" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Описание AI-бота" />
+
+                            <StackPanel Visibility="{Binding AreMainFieldsVisible, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Инструкция агенту" />
+                                <TextBox Margin="0,4,0,0"
+                                         MinHeight="72"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding SystemPrompt, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Инструкция AI-бота" />
+
+                                <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Модель" />
+                                <TextBox Margin="0,4,0,0"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding Model, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Модель AI-бота" />
+
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Вариативность ответа (0–2)" />
+                                        <TextBox Margin="0,4,0,0"
+                                                 Style="{StaticResource HubTextBoxStyle}"
+                                                 IsEnabled="{Binding AreInputsEnabled}"
+                                                 Text="{Binding TemperatureText, UpdateSourceTrigger=PropertyChanged}"
+                                                 AutomationProperties.Name="Вариативность ответа AI-бота" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Лимит токенов ответа" />
+                                        <TextBox Margin="0,4,0,0"
+                                                 Style="{StaticResource HubTextBoxStyle}"
+                                                 IsEnabled="{Binding AreInputsEnabled}"
+                                                 Text="{Binding MaxTokensText, UpdateSourceTrigger=PropertyChanged}"
+                                                 AutomationProperties.Name="Лимит токенов AI-бота" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="KB scope (через запятую)" />
+                                <TextBox Margin="0,4,0,0"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding AllowedKbScope, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="KB scope AI-бота" />
+
+                                <StackPanel Margin="0,10,0,0" Orientation="Horizontal">
+                                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                                  IsChecked="{Binding AllowFileInput, Mode=TwoWay}"
+                                                  IsEnabled="{Binding AreInputsEnabled}"
+                                                  Content="Принимать файлы"
+                                                  AutomationProperties.Name="AI-бот принимает файлы" />
+                                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                                  IsChecked="{Binding AllowGeneratedArtifacts, Mode=TwoWay}"
+                                                  IsEnabled="{Binding AreInputsEnabled}"
+                                                  Content="Генерировать файлы"
+                                                  AutomationProperties.Name="AI-бот генерирует файлы" />
+                                </StackPanel>
+                                <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
+                                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                                  IsChecked="{Binding AllowKbDocumentDelivery, Mode=TwoWay}"
+                                                  IsEnabled="{Binding AreInputsEnabled}"
+                                                  Content="Отправлять файлы базы знаний"
+                                                  AutomationProperties.Name="AI-бот отправляет файлы базы знаний" />
+                                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                                  IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                                  IsEnabled="{Binding AreInputsEnabled}"
+                                                  Content="Включён"
+                                                  AutomationProperties.Name="AI-бот включён" />
+                                </StackPanel>
+
+                                <Border Margin="0,10,0,0"
+                                        Padding="10,8"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1">
+                                    <TextBlock FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding ToolsHintText}"
+                                               TextWrapping="Wrap" />
+                                </Border>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Подвал: Отмена / Сохранить -->
+                    <Grid Grid.Row="5" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить изменения AI-бота" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Click="AiBotEditorSave_Click"
+                                Content="Сохранить"
+                                AutomationProperties.Name="Сохранить AI-бота" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Диалог «Руководители отдела»: чекбоксы по составу, PUT полным набором -->
+        <Grid Grid.ColumnSpan="2"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="DepartmentManagersOverlay_PreviewKeyDown"
+              Visibility="{Binding IsDepartmentManagersEditorOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="520"
+                    MaxHeight="640"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding DepartmentManagersEditor}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding SubtitleText}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог руководителей" />
+                    </Grid>
+
+                    <!-- Ошибка сервера: диалог и отметки сохраняются -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор сохранения руководителей" />
+                        <Grid Margin="0,4,0,0">
+                            <TextBlock FontSize="11"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding CountText}" />
+                            <TextBlock HorizontalAlignment="Right"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding StatusText}"
+                                       Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}" />
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Список участников с чекбоксом «Начальник» -->
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,6,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                       FontSize="12.5"
+                                       Text="{Binding EmptyText}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}" />
+                            <ItemsControl ItemsSource="{Binding Rows}"
+                                          AutomationProperties.Name="Участники отдела для назначения руководителей">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Margin="0,6,0,0"
+                                                  IsChecked="{Binding IsManager, Mode=TwoWay}"
+                                                  IsEnabled="{Binding DataContext.AreInputsEnabled, RelativeSource={RelativeSource AncestorType=Border}}"
+                                                  AutomationProperties.Name="{Binding AutomationName}">
+                                            <StackPanel>
+                                                <TextBlock FontSize="12.5"
+                                                           Text="{Binding Title}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock FontSize="11"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding JobTitleText}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                        </CheckBox>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Подвал: Отмена / Сохранить -->
+                    <Grid Grid.Row="4" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить изменения руководителей" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Click="DepartmentManagersSave_Click"
+                                Content="Сохранить"
+                                AutomationProperties.Name="Сохранить руководителей отдела" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Редактор новости «+ Новость»/«Изменить»: модальный оверлей поверх страницы -->
+        <Grid Grid.ColumnSpan="2"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="NewsEditorOverlay_PreviewKeyDown"
+              Visibility="{Binding IsNewsEditorOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="560"
+                    MaxHeight="680"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding NewsEditor}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding SubtitleText}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть редактор новости" />
+                    </Grid>
+
+                    <!-- Ошибка валидации/сервера: форма и поля сохраняются -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор сохранения новости" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding StatusText}"
+                                   Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Заголовок *" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Заголовок новости" />
+
+                            <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Превью" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Preview, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Превью новости" />
+
+                            <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Текст новости" />
+                            <TextBox Margin="0,4,0,0"
+                                     MinHeight="110"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Body, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Текст новости" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Приоритет" />
+                            <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
+                                <RadioButton GroupName="NewsEditorPriority"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsPriorityLow, Mode=TwoWay}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Content="Низкий"
+                                             AutomationProperties.Name="Приоритет новости: низкий" />
+                                <RadioButton GroupName="NewsEditorPriority"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsPriorityNormal, Mode=TwoWay}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Content="Обычный"
+                                             AutomationProperties.Name="Приоритет новости: обычный" />
+                                <RadioButton GroupName="NewsEditorPriority"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsPriorityHigh, Mode=TwoWay}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Content="Высокий"
+                                             AutomationProperties.Name="Приоритет новости: высокий" />
+                            </StackPanel>
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Категория" />
+                            <ComboBox Margin="0,4,0,0"
+                                      ItemsSource="{Binding CategoryOptions}"
+                                      SelectedItem="{Binding SelectedCategory, Mode=TwoWay}"
+                                      DisplayMemberPath="Name"
+                                      IsEnabled="{Binding AreInputsEnabled}"
+                                      AutomationProperties.Name="Категория новости" />
+                            <TextBox Margin="0,6,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding NewCategoryName, UpdateSourceTrigger=PropertyChanged}"
+                                     Visibility="{Binding CanCreateCategories, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Новая категория новости" />
+                            <TextBlock Margin="0,3,0,0"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="Новая категория (необязательно): создастся при сохранении"
+                                       Visibility="{Binding CanCreateCategories, Converter={StaticResource BoolToVisibility}}" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Теги (через запятую)" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding TagsText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Теги новости" />
+                            <ItemsControl Margin="0,6,0,0"
+                                          ItemsSource="{Binding KnownTags}"
+                                          Visibility="{Binding HasKnownTags, Converter={StaticResource BoolToVisibility}}"
+                                          AutomationProperties.Name="Известные теги новостей">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Margin="0,0,6,6"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding DataContext.AppendTagCommand, RelativeSource={RelativeSource AncestorType=Border}}"
+                                                CommandParameter="{Binding}"
+                                                Content="{Binding Name}"
+                                                AutomationProperties.Name="{Binding Name, StringFormat='Добавить тег {0}'}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
+                                <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                              IsChecked="{Binding RequiresAck, Mode=TwoWay}"
+                                              IsEnabled="{Binding AreInputsEnabled}"
+                                              Content="Требует подтверждения"
+                                              AutomationProperties.Name="Новость требует подтверждения" />
+                                <ToggleButton Margin="8,0,0,0"
+                                              Style="{StaticResource HubChipToggleStyle}"
+                                              IsChecked="{Binding IsPinned, Mode=TwoWay}"
+                                              IsEnabled="{Binding AreInputsEnabled}"
+                                              Content="Закрепить"
+                                              AutomationProperties.Name="Закрепить новость" />
+                            </StackPanel>
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Вложения" />
+                            <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
+                                <Button Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding AddFilesCommand}"
+                                        Content="📎 Прикрепить"
+                                        AutomationProperties.Name="Прикрепить файлы к новости" />
+                                <TextBlock Margin="10,0,0,0"
+                                           VerticalAlignment="Center"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="до 20 МБ на файл" />
+                            </StackPanel>
+                            <ItemsControl Margin="0,6,0,0"
+                                          ItemsSource="{Binding Attachments}"
+                                          AutomationProperties.Name="Новые вложения новости">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,6,6"
+                                                Padding="8,4"
+                                                CornerRadius="8"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                BorderThickness="1">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock VerticalAlignment="Center"
+                                                           FontSize="12"
+                                                           Text="{Binding Name}" />
+                                                <TextBlock Margin="6,0,0,0"
+                                                           VerticalAlignment="Center"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding SizeText}" />
+                                                <Button Margin="6,0,0,0"
+                                                        Padding="6,0"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.RemoveAttachmentCommand, RelativeSource={RelativeSource AncestorType=Border}}"
+                                                        CommandParameter="{Binding}"
+                                                        Content="✕"
+                                                        AutomationProperties.Name="{Binding Name, StringFormat='Убрать файл {0}'}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <ItemsControl Margin="0,6,0,0"
+                                          ItemsSource="{Binding ExistingAttachments}"
+                                          Visibility="{Binding HasExistingAttachments, Converter={StaticResource BoolToVisibility}}"
+                                          AutomationProperties.Name="Вложения новости">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,6,6"
+                                                Padding="8,4"
+                                                CornerRadius="8"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                BorderThickness="1">
+                                            <TextBlock FontSize="12" Text="{Binding DisplayText}" />
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Подвал: Отмена / [В черновик] / Опубликовать|Сохранить -->
+                    <Grid Grid.Row="4" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить изменения новости" />
+                        <Button Grid.Column="2"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding SaveDraftCommand}"
+                                Content="В черновик"
+                                Visibility="{Binding IsCreateMode, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Сохранить черновик новости" />
+                        <Button Grid.Column="3"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SubmitCommand}"
+                                Content="{Binding SubmitText}"
+                                AutomationProperties.Name="Сохранить новость" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Оверлей «Статистика» новости: прочтения/подтверждения из analytics -->
+        <Grid Grid.ColumnSpan="2"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="NewsStatsOverlay_PreviewKeyDown"
+              Visibility="{Binding IsNewsStatsOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="520"
+                    MaxHeight="560"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding NewsStats}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding TitleText}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть статистику новости" />
+                    </Grid>
+
+                    <StackPanel Grid.Row="1" Margin="18,10,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор загрузки статистики новости" />
+                        <TextBlock Margin="0,6,0,0"
+                                   FontSize="12.5"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding SummaryText}"
+                                   TextWrapping="Wrap"
+                                   Visibility="{Binding SummaryText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                        <TextBlock Margin="0,3,0,0"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding ReactionsText}"
+                                   TextWrapping="Wrap"
+                                   Visibility="{Binding ReactionsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                        <TextBlock Margin="0,6,0,0"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource HubErrorTextBrush}"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="2"
+                                  Grid.RowSpan="2"
+                                  Margin="18,10,18,14"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                       FontSize="12.5"
+                                       Text="Читателей пока нет"
+                                       Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}" />
+                            <ItemsControl ItemsSource="{Binding Readers}"
+                                          AutomationProperties.Name="Читатели новости">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,6,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel VerticalAlignment="Center">
+                                                <TextBlock FontSize="12.5"
+                                                           FontWeight="SemiBold"
+                                                           Text="{Binding Title}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock FontSize="11"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding UsernameText}"
+                                                           Visibility="{Binding UsernameText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                <TextBlock FontSize="11"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding AckText}"
+                                                           Visibility="{Binding AckText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            </StackPanel>
+                                            <Border Grid.Column="1"
+                                                    Margin="8,0,0,0"
+                                                    VerticalAlignment="Center"
+                                                    Style="{StaticResource StatusPillStyle}">
+                                                <TextBlock Style="{StaticResource StatusPillTextStyle}"
+                                                           Text="{Binding StatusText}" />
+                                            </Border>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
             </Border>
         </Grid>
     </Grid>

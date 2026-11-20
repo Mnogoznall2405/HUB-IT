@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -371,7 +372,12 @@ def test_disable_message_probes_stops_tasks_processes_and_persists_flags(monkeyp
 
     stopped_tasks = []
     monkeypatch.setattr(agent_installer, "stop_scheduled_task", lambda name, *a, **k: stopped_tasks.append(name))
-    monkeypatch.setattr(agent_installer, "stop_agent_processes", lambda *a, **k: [111, 222])
+    stop_calls = []
+    monkeypatch.setattr(
+        agent_installer,
+        "stop_agent_processes",
+        lambda *a, **k: stop_calls.append(k) or [111, 222],
+    )
     env_file = tmp_path / "agent.env"
     monkeypatch.setattr(agent_installer, "resolve_install_dir", lambda raw: tmp_path)
     monkeypatch.setattr(agent_installer, "resolve_env_file_path", lambda install_dir, raw: env_file)
@@ -388,6 +394,15 @@ def test_disable_message_probes_stops_tasks_processes_and_persists_flags(monkeyp
     assert written["ITINV_TELEGRAM_PROBE_ENABLED"] == "0"
     assert written["ITINV_MAX_PROBE_ENABLED"] == "0"
     assert written["OTHER_KEY"] == "x"
+    # The kill set must cover only the messenger probes: terminating the full
+    # runtime set kills this agent before the task result reaches the server.
+    assert len(stop_calls) == 1
+    only_names = {name.lower() for name in stop_calls[0]["only_names"]}
+    assert only_names == {
+        agent_installer.TELEGRAM_PROBE_EXECUTABLE_NAME.lower(),
+        agent_installer.MAX_PROBE_EXECUTABLE_NAME.lower(),
+    }
+    assert stop_calls[0]["skip_pid"] == os.getpid()
 
 
 def test_disable_message_probes_task_reports_completed(monkeypatch, tmp_path):

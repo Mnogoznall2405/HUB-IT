@@ -21,6 +21,7 @@ const MyFilesEditorShell = forwardRef(function MyFilesEditorShell({
   onTitle,
   onSessionState,
   active = true,
+  compareVersion = '',
 }, ref) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -177,7 +178,7 @@ const MyFilesEditorShell = forwardRef(function MyFilesEditorShell({
         <Box data-testid="my-files-live-surface" aria-hidden={historyActive || undefined} {...(historyActive ? { inert: '' } : {})}
           sx={{ display: 'flex', flex: 1, minWidth: 0, minHeight: 0, visibility: historyActive || !active ? 'hidden' : 'visible' }}>
           <MyFilesEditorSurface
-            key={fileId} ref={editorRef} fileId={fileId} onConfig={handleConfig}
+            key={fileId} ref={editorRef} fileId={fileId} initialCompare={compareVersion} onConfig={handleConfig}
             active={active} onStatusChange={handleStatus} onRequestClose={onClose} onTitleChange={handleTitle}
             onRequestHistory={() => { if (active) setNativeHistoryScope(scope); }}
             onRequestRename={title => actionsRef.current?.rename(title)}
@@ -210,6 +211,7 @@ const MyFilesEditorShell = forwardRef(function MyFilesEditorShell({
                 canRestore={canEdit}
                 refreshKey={historyKey}
                 onRestored={handleRestored}
+                onCompare={(row) => { setHistoryOpen(false); editorRef.current?.startCompare?.(row.id); }}
               />
             </Box>
           </>

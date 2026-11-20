@@ -252,3 +252,52 @@ def test_vcs_json_mode_concurrent_changes_do_not_lose_rows(monkeypatch):
         thread.join()
     assert sorted(item["id"] for item in store.data) == [f"vcs-{i}" for i in range(4, 8)]
     assert all(item["location"] == "L" for item in store.data)
+
+
+def test_vcs_computers_order_persists_and_requires_manage(temp_dir, monkeypatch):
+    """PUT /computers/order must not be swallowed by PUT /computers/{computer_id}."""
+    monkeypatch.setattr("backend.appdb.db.config.app_db.database_url", _sqlite_url(temp_dir), raising=False)
+    seeded = [_seed("Alpha", "vcs-a"), _seed("Beta", "vcs-b"), _seed("Gamma", "vcs-c")]
+    assert vcs_module._save_all_computers(seeded) is True
+
+    read_client = _vcs_client(_make_user(permissions=["vcs.read"]))
+    manage_client = _vcs_client(_make_user(permissions=["vcs.read", "vcs.manage"]))
+
+    denied = read_client.put("/vcs/computers/order", json={"order": ["vcs-c", "vcs-a"]})
+    assert denied.status_code == 403
+
+    saved = manage_client.put("/vcs/computers/order", json={"order": ["vcs-c", "vcs-a"]})
+    assert saved.status_code == 200
+
+    listed = manage_client.get("/vcs/computers")
+    assert listed.status_code == 200
+    # Unknown-to-the-order ids (vcs-b) keep their tail position.
+    assert [item["id"] for item in listed.json()] == ["vcs-c", "vcs-a", "vcs-b"]
+
+    # A terminal absent from the saved order still appears after the ordered ones.
+    created = manage_client.post("/vcs/computers", json={"name": "Delta", "ip_address": "10.0.0.4"})
+    assert created.status_code == 200
+    ids = [item["id"] for item in manage_client.get("/vcs/computers").json()]
+    assert ids[:3] == ["vcs-c", "vcs-a", "vcs-b"]
+    assert created.json()["id"] == ids[-1]
+
+
+def test_vcs_json_mode_order_rewrites_stored_list(monkeypatch):
+    class Store:
+        def __init__(self):
+            self.data = []
+
+        def load_json(self, key, default_content=None):
+            return [dict(item) for item in self.data]
+
+        def save_json(self, key, data):
+            self.data = [dict(item) for item in data]
+            return True
+
+    store = Store()
+    store.data = [_seed("Alpha", "vcs-a"), _seed("Beta", "vcs-b"), _seed("Gamma", "vcs-c")]
+    monkeypatch.setattr(vcs_module, "is_app_database_configured", lambda: False)
+    monkeypatch.setattr(vcs_module, "get_local_store", lambda: store)
+
+    assert vcs_module._save_computers_order(["vcs-c", "vcs-a", "missing-id"]) is True
+    assert [item["id"] for item in store.data] == ["vcs-c", "vcs-a", "vcs-b"]

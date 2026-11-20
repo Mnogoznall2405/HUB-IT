@@ -257,3 +257,75 @@ def test_draft_lifecycle_delete_loads_subject_only():
     assert folder.last_only_fields == ("subject",)
     assert folder.only_get_ids == ["draft-existing"]
     assert folder.full_get_ids == []
+
+
+class _FailingDraftsFolder:
+    def __init__(self, error):
+        self.error = error
+
+    def all(self):
+        return self
+
+    def only(self, *fields):
+        return self
+
+    def get(self, *, id: str):
+        raise self.error
+
+
+def test_draft_lifecycle_upsert_fails_on_transient_lookup_error_without_creating_duplicate():
+    FakeMessage.created = []
+    account = SimpleNamespace(drafts=_FailingDraftsFolder(TimeoutError("EWS request timed out")))
+    lifecycle = MailDraftLifecycle(exchange_classes_factory=_factory)
+
+    with pytest.raises(MailDraftLifecycleError):
+        lifecycle.upsert_draft(
+            account=account,
+            draft_plan=_plan(),
+            attachments=[],
+            draft_exchange_id="draft-existing",
+        )
+
+    assert FakeMessage.created == []
+
+
+def test_draft_lifecycle_upsert_recreates_draft_when_item_is_gone():
+    from exchangelib.errors import DoesNotExist
+
+    FakeMessage.created = []
+    account = SimpleNamespace(drafts=_FailingDraftsFolder(DoesNotExist("item not found")))
+    lifecycle = MailDraftLifecycle(exchange_classes_factory=_factory)
+
+    draft = lifecycle.upsert_draft(
+        account=account,
+        draft_plan=_plan(),
+        attachments=[],
+        draft_exchange_id="draft-deleted-elsewhere",
+    )
+
+    assert draft is FakeMessage.created[0]
+
+
+def test_draft_lifecycle_delete_is_idempotent_when_item_is_gone():
+    from exchangelib.errors import DoesNotExist
+
+    account = SimpleNamespace(drafts=_FailingDraftsFolder(DoesNotExist("item not found")))
+
+    MailDraftLifecycle.delete_draft(account=account, draft_exchange_id="draft-deleted-elsewhere")
+
+
+def test_draft_lifecycle_delete_wraps_transient_delete_errors():
+    class _FoundFolder:
+        def all(self):
+            return self
+
+        def only(self, *fields):
+            return self
+
+        def get(self, *, id: str):
+            return SimpleNamespace(delete=lambda: (_ for _ in ()).throw(TimeoutError("timed out")))
+
+    account = SimpleNamespace(drafts=_FoundFolder())
+
+    with pytest.raises(MailDraftLifecycleError):
+        MailDraftLifecycle.delete_draft(account=account, draft_exchange_id="draft-existing")

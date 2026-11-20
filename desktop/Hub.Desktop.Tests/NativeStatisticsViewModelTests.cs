@@ -456,4 +456,210 @@ public sealed class NativeStatisticsViewModelTests
         Assert.False(model.IsLoading);
         Assert.False(model.ShowMfuTab);
     }
+
+    // ---- «ПК без чистки» (PcRemainingDialog) ----
+
+    private static HubPcCleaningRemaining RemainingList() => new()
+    {
+        Branch = "ЦО",
+        PeriodDays = 90,
+        TotalPc = 6,
+        RemainingPc = 2,
+        RemainingPcs =
+        [
+            new HubPcCleaningRemainingPc
+            {
+                InvNo = "100234",
+                SerialNo = "SN-1",
+                Location = "Кабинет 101",
+                ModelName = "HP ProDesk 400",
+                Employee = "Петров Пётр",
+                LastCleanedAt = "2025-06-01T09:00:00Z",
+                EquipmentId = 5,
+                Manufacturer = "HP",
+            },
+            new HubPcCleaningRemainingPc
+            {
+                InvNo = "100235",
+                SerialNo = "SN-2",
+                HwSerialNo = "HW-2",
+                Location = "Кабинет 102",
+                ModelName = "Dell OptiPlex",
+                Employee = "Иванова Анна",
+                LastCleanedAt = null,
+            },
+        ],
+    };
+
+    private static async Task WaitFor(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(20);
+        }
+
+        Assert.True(condition(), "Условие не наступило за отведённое время.");
+    }
+
+    private static async Task<PcRemainingViewModel> OpenRemainingAsync(
+        FakeHubApiClient api, StatisticsViewModel model, int rowIndex = 0)
+    {
+        model.OpenPcRemainingCommand.Execute(model.PcBranches[rowIndex]);
+        Assert.True(model.IsPcRemainingOpen);
+        var dialog = model.PcRemaining!;
+        await WaitFor(() => dialog.Items.Count > 0 || dialog.HasError);
+        return dialog;
+    }
+
+    [Fact]
+    public async Task BranchRowOpensRemainingDialogWithBranchAndPeriod()
+    {
+        var api = new FakeHubApiClient
+        {
+            PcCleaningStatistics = PcStats(),
+            PcCleaningRemaining = RemainingList(),
+        };
+        var model = new StatisticsViewModel(api);
+        await model.LoadAsync();
+
+        var dialog = await OpenRemainingAsync(api, model);
+
+        Assert.Equal("Не почищены: ЦО", dialog.TitleText);
+        Assert.Equal((90, "ЦО"), Assert.Single(api.PcCleaningRemainingCalls));
+        Assert.Equal("2 из 6 ПК без чистки за выбранный период", dialog.SummaryText);
+        Assert.Equal(2, dialog.Items.Count);
+        var row = dialog.Items[0];
+        Assert.Equal("100234", row.InvNoText);
+        Assert.Equal("SN-1", row.SerialText);
+        Assert.Equal("HP ProDesk 400", row.ModelText);
+        Assert.Equal("Кабинет 101", row.LocationText);
+        Assert.Equal("Петров Пётр", row.EmployeeText);
+        Assert.Equal("warning", row.LastCleanedTone);
+        Assert.Equal("Не чистили", dialog.Items[1].LastCleanedText);
+        Assert.Equal("error", dialog.Items[1].LastCleanedTone);
+    }
+
+    [Fact]
+    public async Task RemainingDialogQueryFiltersRowsLocally()
+    {
+        var api = new FakeHubApiClient
+        {
+            PcCleaningStatistics = PcStats(),
+            PcCleaningRemaining = RemainingList(),
+        };
+        var model = new StatisticsViewModel(api);
+        await model.LoadAsync();
+        var dialog = await OpenRemainingAsync(api, model);
+
+        dialog.QueryText = "иванова";
+
+        var row = Assert.Single(dialog.Items);
+        Assert.Equal("100235", row.InvNoText);
+        dialog.QueryText = "нет такого";
+        Assert.Empty(dialog.Items);
+        Assert.True(dialog.ShowEmpty);
+        Assert.Equal("Нет ПК по выбранному фильтру", dialog.EmptyText);
+        // Повторный запрос не нужен — filterRemainingPcs клиентский.
+        Assert.Single(api.PcCleaningRemainingCalls);
+    }
+
+    [Fact]
+    public async Task ConfirmCleanRegistersWorkRemovesRowAndReloadsStats()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = UserWithPermissions("database.read", "database.write"),
+            PcCleaningStatistics = PcStats(),
+            PcCleaningRemaining = RemainingList(),
+        };
+        var model = new StatisticsViewModel(api);
+        await model.LoadAsync();
+        var dialog = await OpenRemainingAsync(api, model);
+        Assert.True(dialog.CanWrite);
+
+        dialog.RequestCleanCommand.Execute(dialog.Items[0]);
+        Assert.True(dialog.IsConfirmOpen);
+        Assert.Contains("100234", dialog.ConfirmText);
+
+        await ((NativeAsyncCommand)dialog.ConfirmCleanCommand).ExecuteAsync(null);
+
+        var request = Assert.Single(api.RegisterCleaningWorkRequests);
+        Assert.Equal("SN-1", request.SerialNumber);
+        Assert.Equal("Петров Пётр", request.Employee);
+        Assert.Equal("ЦО", request.Branch);
+        Assert.Equal("Кабинет 101", request.Location);
+        Assert.Equal("100234", request.InvNo);
+        Assert.Equal<long?>(5, request.EquipmentId);
+        Assert.Equal("HP", request.Manufacturer);
+        Assert.False(dialog.IsConfirmOpen);
+        var row = Assert.Single(dialog.Items);
+        Assert.Equal("100235", row.InvNoText);
+        Assert.Equal("1 из 6 ПК без чистки за выбранный период", dialog.SummaryText);
+        // Чистка сдвинула покрытие — раздел перечитан (CleaningSaved → LoadAsync).
+        await WaitFor(() => api.PcCleaningStatisticsCalls.Count == 2);
+    }
+
+    [Fact]
+    public async Task RemainingDialogWithoutWritePermissionCannotClean()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = UserWithPermissions("database.read"),
+            PcCleaningStatistics = PcStats(),
+            PcCleaningRemaining = RemainingList(),
+        };
+        var model = new StatisticsViewModel(api);
+        await model.LoadAsync();
+        var dialog = await OpenRemainingAsync(api, model);
+
+        // Колонка «Чистка» и подтверждение доступны только при database.write —
+        // без права VM помечена CanWrite=false, UI кнопку не показывает.
+        Assert.False(dialog.CanWrite);
+        Assert.True(dialog.Items[0].CanClean);
+    }
+
+    [Fact]
+    public async Task RemainingDialogErrorSetsErrorText()
+    {
+        var api = new FakeHubApiClient
+        {
+            PcCleaningStatistics = PcStats(),
+            PcCleaningRemainingException = new HubApiException(
+                HubApiErrorKind.Transport, "network down"),
+        };
+        var model = new StatisticsViewModel(api);
+        await model.LoadAsync();
+
+        model.OpenPcRemainingCommand.Execute(model.PcBranches[0]);
+        var dialog = model.PcRemaining!;
+        await WaitFor(() => dialog.HasError);
+
+        Assert.True(dialog.HasError);
+        Assert.False(dialog.ShowEmpty);
+        Assert.Empty(dialog.Items);
+    }
+
+    [Fact]
+    public async Task ResetClosesRemainingDialog()
+    {
+        var api = new FakeHubApiClient
+        {
+            PcCleaningStatistics = PcStats(),
+            PcCleaningRemaining = RemainingList(),
+        };
+        var model = new StatisticsViewModel(api);
+        await model.LoadAsync();
+        await OpenRemainingAsync(api, model);
+
+        model.Reset();
+
+        Assert.False(model.IsPcRemainingOpen);
+        Assert.Null(model.PcRemaining);
+    }
 }

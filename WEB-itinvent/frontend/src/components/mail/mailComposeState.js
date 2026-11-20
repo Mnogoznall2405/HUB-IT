@@ -126,6 +126,9 @@ export const readStoredComposeState = ({
       composeBody: String(splitBody?.primaryHtml || ''),
       composeQuotedOriginalHtml: String(splitBody?.quotedHtml || ''),
       draftAttachments: Array.isArray(parsed.draft_attachments) ? parsed.draft_attachments : [],
+      composeError: Array.isArray(parsed.local_attachment_names) && parsed.local_attachment_names.length > 0
+        ? `Вложения не сохранены. Прикрепите их заново: ${parsed.local_attachment_names.join(', ')}.`
+        : '',
       forwardAttachments: Array.isArray(parsed.forward_attachments) ? parsed.forward_attachments : [],
       forwardAttachmentsPruned: parsed.forward_attachments_pruned === true,
       draftId: String(parsed.draft_id || ''),

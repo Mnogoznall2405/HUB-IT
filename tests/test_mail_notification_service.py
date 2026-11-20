@@ -380,6 +380,42 @@ def test_should_not_emit_when_reading_latest_reveals_an_older_message():
     )
 
 
+def test_should_emit_when_newer_message_arrives_with_older_wall_clock_tz():
+    """Cross-tz regression: '08:00+00:00' is newer than '10:00+03:00' in UTC
+    even though the wall-clock string sorts earlier."""
+    service = notification_module.MailNotificationService()
+
+    assert service._should_emit(
+        previous=notification_module.MailNotificationSnapshot(
+            unread_count=0,
+            last_message_id="msg-1",
+            last_received_at="2026-07-23T10:00:00+03:00",
+        ),
+        current=notification_module.MailNotificationSnapshot(
+            unread_count=0,
+            last_message_id="msg-2",
+            last_received_at="2026-07-23T08:00:00+00:00",
+        ),
+    )
+
+
+def test_should_not_emit_when_older_message_arrives_with_newer_wall_clock_tz():
+    service = notification_module.MailNotificationService()
+
+    assert not service._should_emit(
+        previous=notification_module.MailNotificationSnapshot(
+            unread_count=0,
+            last_message_id="msg-1",
+            last_received_at="2026-07-23T08:30:00+00:00",
+        ),
+        current=notification_module.MailNotificationSnapshot(
+            unread_count=0,
+            last_message_id="msg-2",
+            last_received_at="2026-07-23T10:00:00+03:00",
+        ),
+    )
+
+
 def test_worker_notification_feed_includes_read_messages(monkeypatch):
     service = notification_module.MailNotificationService()
     calls = []

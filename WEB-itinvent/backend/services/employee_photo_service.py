@@ -69,8 +69,27 @@ class EmployeePhotoResolver:
     def _normalize_email(value: Any) -> str:
         return str(value or "").strip().lower()
 
+    @staticmethod
+    def _stored_photo_codes() -> set[str]:
+        """Quoted employee codes that have a stored photo — one directory scan."""
+        try:
+            return {path.stem for path in _photos_dir().glob("*.jpg")}
+        except Exception:
+            return set()
+
     def _build_index(self) -> dict[str, str]:
         index: dict[str, str] = {}
+        photo_codes = self._stored_photo_codes()
+
+        def photo_url(code: Any) -> str | None:
+            normalized = _normalize_code(code)
+            if not normalized or not is_safe_employee_code(normalized):
+                return None
+            quoted = quote(normalized, safe="")
+            if quoted not in photo_codes:
+                return None
+            return f"{PHOTO_URL_PREFIX}/{quoted}"
+
         # 1) Address book: work e-mail -> employee photo (canonical ZUP photo).
         try:
             from backend.services.address_book_service import address_book_service
@@ -78,7 +97,7 @@ class EmployeePhotoResolver:
             for item in (cache or {}).get("items") or []:
                 if not isinstance(item, dict):
                     continue
-                url = employee_photo_url(item.get("employee_code"))
+                url = photo_url(item.get("employee_code"))
                 if not url:
                     continue
                 for entry in item.get("work_emails") or []:

@@ -83,6 +83,42 @@ describe('HubDesktopDeploySection', () => {
     expect(scanTasksAPI.createTask.mock.calls[0][0].payload).toEqual({ package_id: 'hub-desktop' });
   });
 
+  it('marks a host outdated when a newer package exists despite an old completed install task', async () => {
+    // Regression: a completed install_package task used to pin the row to
+    // "Актуальная" forever, hiding "Обновить" after a newer package publish.
+    scanInstallPackagesAPI.getPackages.mockResolvedValue({
+      configured: true, error: '',
+      packages: [{ ...PACKAGE, version: '0.1.51', filename: 'HUB-Desktop-Setup-0.1.51-win-x64.exe' }],
+    });
+    scanInstallPackagesAPI.getDeployment.mockResolvedValue({
+      package: { ...PACKAGE, version: '0.1.51' },
+      tasks: {
+        'PC-OK': {
+          status: 'completed',
+          payload: { package_id: 'hub-desktop', version: '0.1.50' },
+          result: { phase: 'already_installed', installed_version: '0.1.50' },
+          is_active: false,
+        },
+      },
+    });
+    computersSoftwareAPI.getSoftwarePresence.mockResolvedValue({
+      items: [
+        { hostname: 'PC-OK', installed_version: '0.1.50', collected_at: '2026-11-11', has_software_inventory: true, branch_name: 'Тюмень' },
+      ],
+      total: 1,
+    });
+    scanAgentsAPI.getAgents.mockResolvedValue([AGENTS[0]]);
+
+    render(<HubDesktopDeploySection canScanTasks />);
+    // The status filter force-expands matching groups regardless of persisted branch state.
+    fireEvent.click(await screen.findByRole('button', { name: 'Устаревшие: 1' }));
+    await screen.findByText('PC-OK');
+
+    expect(screen.queryByRole('button', { name: 'Актуальные: 1' })).not.toBeInTheDocument();
+    const row = screen.getByText('PC-OK').closest('tr');
+    expect(within(row).getByRole('button', { name: 'Обновить' })).toBeInTheDocument();
+  });
+
   it('queues the package for every host without it via the bulk action', async () => {
     render(<HubDesktopDeploySection canScanTasks />);
     fireEvent.click(await screen.findByRole('button', { name: /Курган/ }));

@@ -498,10 +498,602 @@ public sealed class MfuMaintenanceItemViewModel
     public string DetailText { get; }
 }
 
+// ---- Складские расходники (справочник /equipment/consumables/lookup + запись) ----
+
+/// <summary>
+/// Строка складского расходника из /equipment/consumables/lookup: модель, тип,
+/// адрес склада (филиал/локация) и остаток. В отличие от SNMP-снабженцев строка
+/// несёт item_id/inv_no — только по ней можно списывать и править остаток.
+/// </summary>
+public sealed class MfuConsumableItemViewModel : ObservableObject
+{
+    private int _qty;
+
+    public MfuConsumableItemViewModel(HubConsumableLookupItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        Id = item.Id;
+        InvNo = (item.InvNo ?? string.Empty).Trim();
+        Name = MfuFormat.FormatReplacementItemName(
+            MfuFormat.FirstNonEmpty(item.ModelName, item.TypeName) ?? string.Empty);
+        TypeText = (item.TypeName ?? string.Empty).Trim();
+        var place = string.Join(" / ", new[] { item.BranchName, item.LocationName }
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .Select(part => part!.Trim()));
+        PlaceText = place.Length > 0 ? place : "-";
+        InvNoText = InvNo.Length > 0 ? $"Инв.: {InvNo}" : string.Empty;
+        _qty = item.Qty;
+    }
+
+    /// <summary>ITEMS.ID — первичная идентификация (0 — только inv_no).</summary>
+    public long Id { get; }
+    public string InvNo { get; }
+    public string Name { get; }
+    public string TypeText { get; }
+    public string PlaceText { get; }
+    public string InvNoText { get; }
+
+    /// <summary>item_id или inv_no — без идентичности позицию серверу не передать.</summary>
+    public bool HasIdentity => Id > 0 || InvNo.Length > 0;
+
+    public int Qty
+    {
+        get => _qty;
+        private set
+        {
+            if (SetProperty(ref _qty, value))
+            {
+                OnPropertyChanged(nameof(QtyText));
+                OnPropertyChanged(nameof(AutomationName));
+            }
+        }
+    }
+
+    public string QtyText => $"Остаток: {Qty}";
+    public string AutomationName => $"{Name}, {PlaceText}, {QtyText}";
+
+    /// <summary>Остаток после записи — ответ qty_new или локальный расчёт.</summary>
+    public void ApplyQty(int qty) => Qty = Math.Max(0, qty);
+}
+
+/// <summary>Режим диалога над позицией: выдача (consume) или точный остаток (qty).</summary>
+public enum MfuConsumableActionKind
+{
+    Consume,
+    SetQty,
+}
+
+/// <summary>Итог успешной записи над расходником — новый остаток позиции.</summary>
+public sealed class MfuConsumableActionCompletedEventArgs : EventArgs
+{
+    public MfuConsumableActionCompletedEventArgs(long? itemId, string? invNo, int newQty)
+    {
+        ItemId = itemId;
+        InvNo = invNo;
+        NewQty = newQty;
+    }
+
+    public long? ItemId { get; }
+    public string? InvNo { get; }
+    public int NewQty { get; }
+}
+
+/// <summary>
+/// Диалог «Выдать расходник» (POST /equipment/consumables/consume) и «Изменить
+/// количество» (PATCH /equipment/consumables/qty) — как веб-диалоги: только
+/// количество + подписи позиции, валидация до запроса, форма не закрывается
+/// при ошибке. Ошибки API — ErrorText; успех — Completed(newQty).
+/// </summary>
+public sealed class MfuConsumableActionViewModel : ObservableObject
+{
+    private readonly IHubApiClient _api;
+    private readonly MfuConsumableActionKind _kind;
+    private string _qtyText;
+    private bool _isBusy;
+    private string? _errorText;
+
+    public MfuConsumableActionViewModel(
+        IHubApiClient api,
+        MfuConsumableItemViewModel item,
+        MfuConsumableActionKind kind)
+    {
+        _api = api ?? throw new ArgumentNullException(nameof(api));
+        ArgumentNullException.ThrowIfNull(item);
+        Item = item;
+        _kind = kind;
+
+        TitleText = kind == MfuConsumableActionKind.Consume
+            ? "Выдать расходник"
+            : "Изменить количество";
+        ItemNameText = item.Name;
+        // Подпись идентичности — как «Инв. № X | ID Y» у веб-диалога.
+        ItemMetaText = $"Инв. № {(item.InvNo.Length > 0 ? item.InvNo : "-")} | ID "
+            + (item.Id > 0 ? item.Id.ToString(CultureInfo.InvariantCulture) : "-");
+        AvailableText = kind == MfuConsumableActionKind.Consume
+            ? $"Доступно: {item.Qty}"
+            : string.Empty;
+        QtyLabelText = kind == MfuConsumableActionKind.Consume
+            ? "Количество к выдаче *"
+            : "Новый остаток *";
+        _qtyText = kind == MfuConsumableActionKind.Consume
+            ? "1"
+            : Math.Max(0, item.Qty).ToString(CultureInfo.InvariantCulture);
+
+        CloseCommand = new NativeRelayCommand(RequestClose);
+        SubmitCommand = new NativeAsyncCommand(
+            (_, ct) => SubmitAsync(ct),
+            ex => ErrorText = TasksViewModel.DescribeError(ex));
+    }
+
+    /// <summary>Позиция, над которой действие — родитель обновляет её остаток.</summary>
+    public MfuConsumableItemViewModel Item { get; }
+    public string TitleText { get; }
+    public string ItemNameText { get; }
+    public string ItemMetaText { get; }
+    public string AvailableText { get; }
+    public bool HasAvailableText => AvailableText.Length > 0;
+    public string QtyLabelText { get; }
+
+    public string QtyText
+    {
+        get => _qtyText;
+        set => SetProperty(ref _qtyText, value ?? string.Empty);
+    }
+
+    public bool IsBusy
+    {
+        get => _isBusy;
+        private set
+        {
+            if (SetProperty(ref _isBusy, value))
+            {
+                OnPropertyChanged(nameof(AreInputsEnabled));
+                OnPropertyChanged(nameof(SubmitButtonText));
+            }
+        }
+    }
+
+    /// <summary>Поле доступно, пока запрос не в полёте.</summary>
+    public bool AreInputsEnabled => !IsBusy;
+
+    public string SubmitButtonText => IsBusy
+        ? "Отправка…"
+        : _kind == MfuConsumableActionKind.Consume ? "Выдать" : "Сохранить";
+
+    public string? ErrorText
+    {
+        get => _errorText;
+        private set
+        {
+            if (SetProperty(ref _errorText, value))
+            {
+                OnPropertyChanged(nameof(HasError));
+            }
+        }
+    }
+
+    public bool HasError => !string.IsNullOrEmpty(ErrorText);
+
+    public ICommand SubmitCommand { get; }
+    public ICommand CloseCommand { get; }
+
+    /// <summary>Успешная запись: родитель применяет новый остаток и закрывает.</summary>
+    public event EventHandler<MfuConsumableActionCompletedEventArgs>? Completed;
+
+    /// <summary>✕/Отмена/Esc — родитель убирает оверлей.</summary>
+    public event EventHandler? Closed;
+
+    /// <summary>Закрытие родителем (смена выбора/сброс): единственный запрос в полёте не отменяем — сервер доведёт его (operation_id идемпотентен).</summary>
+    public void Close()
+    {
+    }
+
+    private void RequestClose()
+    {
+        Close();
+        Closed?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal async Task SubmitAsync(CancellationToken cancellationToken)
+    {
+        if (IsBusy)
+        {
+            return;
+        }
+
+        ErrorText = null;
+        var isConsume = _kind == MfuConsumableActionKind.Consume;
+        var qtyError = isConsume
+            ? "Количество должно быть больше 0."
+            : "Количество должно быть целым числом 0 или больше.";
+        if (!int.TryParse((_qtyText ?? string.Empty).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var qty))
+        {
+            ErrorText = qtyError;
+            return;
+        }
+
+        if (isConsume)
+        {
+            if (qty <= 0)
+            {
+                ErrorText = qtyError;
+                return;
+            }
+
+            if (qty > Item.Qty)
+            {
+                ErrorText = $"Нельзя выдать больше остатка ({Item.Qty}).";
+                return;
+            }
+        }
+        else if (qty < 0)
+        {
+            ErrorText = qtyError;
+            return;
+        }
+
+        if (!Item.HasIdentity)
+        {
+            ErrorText = "Не удалось определить ID или инвентарный номер расходника.";
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            int? newQty;
+            if (isConsume)
+            {
+                var response = await _api.ConsumeConsumableAsync(
+                    new HubConsumableConsumeRequest
+                    {
+                        ItemId = Item.Id > 0 ? Item.Id : null,
+                        InvNo = Item.InvNo.Length > 0 ? Item.InvNo : null,
+                        Qty = qty,
+                        // Причина как у веб-работ (cartridge/component); ручная
+                        // выдача с экрана МФУ — отдельная метка «mfu».
+                        Reason = "mfu",
+                        // Durable-путь сервера: повторы не спишут дважды.
+                        OperationId = Guid.NewGuid().ToString("N"),
+                    },
+                    cancellationToken);
+                newQty = response.QtyNew;
+            }
+            else
+            {
+                var response = await _api.UpdateConsumableQtyAsync(
+                    new HubConsumableQtyUpdateRequest
+                    {
+                        ItemId = Item.Id > 0 ? Item.Id : null,
+                        InvNo = Item.InvNo.Length > 0 ? Item.InvNo : null,
+                        Qty = qty,
+                    },
+                    cancellationToken);
+                newQty = response.QtyNew ?? qty;
+            }
+
+            Completed?.Invoke(this, new MfuConsumableActionCompletedEventArgs(
+                Item.Id > 0 ? Item.Id : null,
+                Item.InvNo.Length > 0 ? Item.InvNo : null,
+                newQty ?? Item.Qty));
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+}
+
+/// <summary>Опция типа расходника диалога создания (ci_type=4 из /equipment/types).</summary>
+public sealed class MfuConsumableTypeOption
+{
+    public MfuConsumableTypeOption(HubEquipmentType type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        TypeNo = type.TypeNo;
+        Name = (type.TypeName ?? string.Empty).Trim();
+    }
+
+    public int TypeNo { get; }
+    public string Name { get; }
+}
+
+/// <summary>
+/// Диалог «Добавить расходник» (POST /equipment/consumables/create, CI_TYPE=4):
+/// филиал → локация (подгружается по филиалу), тип, модель-свободный текст
+/// (бэкенд создаст её при отсутствии), количество ≥ 1 и опциональные поля.
+/// Валидация и тексты — buildAddConsumablePayload веба. Ошибка — форма не
+/// закрывается; успех — Completed(response).
+/// </summary>
+public sealed class MfuConsumableCreateViewModel : ObservableObject
+{
+    private readonly IHubApiClient _api;
+    private CancellationTokenSource? _locationsCancellation;
+    private TransferBranchOption? _selectedBranch;
+    private TransferLocationOption? _selectedLocation;
+    private MfuConsumableTypeOption? _selectedType;
+    private string _modelName = string.Empty;
+    private string _qtyText = "1";
+    private string _partNoText = string.Empty;
+    private string _descriptionText = string.Empty;
+    private bool _isBusy;
+    private bool _isLocationsLoading;
+    private string? _errorText;
+
+    public MfuConsumableCreateViewModel(
+        IHubApiClient api,
+        IReadOnlyList<HubEquipmentBranch>? branches,
+        IReadOnlyList<HubEquipmentType>? types)
+    {
+        _api = api ?? throw new ArgumentNullException(nameof(api));
+        TitleText = "Добавить расходник";
+
+        foreach (var branch in branches ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(branch.Name))
+            {
+                BranchOptions.Add(new TransferBranchOption(branch));
+            }
+        }
+
+        // Только расходники (ci_type=4) — как consumableTypeOptions веба.
+        foreach (var type in types ?? [])
+        {
+            if (type.CiType is 4 && type.TypeNo > 0)
+            {
+                TypeOptions.Add(new MfuConsumableTypeOption(type));
+            }
+        }
+
+        CloseCommand = new NativeRelayCommand(RequestClose);
+        SubmitCommand = new NativeAsyncCommand(
+            (_, ct) => SubmitAsync(ct),
+            ex => ErrorText = TasksViewModel.DescribeError(ex));
+    }
+
+    public string TitleText { get; }
+
+    /// <summary>Подсказка об обязательных полях — как в веб-диалоге.</summary>
+    public string HintText => "Обязательные поля: филиал, местоположение, тип, модель и количество.";
+
+    public ObservableCollection<TransferBranchOption> BranchOptions { get; } = [];
+
+    public TransferBranchOption? SelectedBranch
+    {
+        get => _selectedBranch;
+        set
+        {
+            if (SetProperty(ref _selectedBranch, value))
+            {
+                OnPropertyChanged(nameof(AreLocationsEnabled));
+                // Смена филиала — локация перечитывается для нового контекста.
+                ResetLocationOptions();
+                if (!string.IsNullOrEmpty(value?.IdText))
+                {
+                    _ = LoadLocationsSafelyAsync(value.IdText);
+                }
+            }
+        }
+    }
+
+    /// <summary>Локация активна после выбора филиала и вне полёта сабмита.</summary>
+    public bool AreLocationsEnabled =>
+        !string.IsNullOrEmpty(_selectedBranch?.IdText) && AreInputsEnabled;
+
+    private void ResetLocationOptions()
+    {
+        LocationOptions.Clear();
+        SelectedLocation = null;
+    }
+
+    public ObservableCollection<TransferLocationOption> LocationOptions { get; } = [];
+
+    public TransferLocationOption? SelectedLocation
+    {
+        get => _selectedLocation;
+        set => SetProperty(ref _selectedLocation, value);
+    }
+
+    public bool IsLocationsLoading
+    {
+        get => _isLocationsLoading;
+        private set => SetProperty(ref _isLocationsLoading, value);
+    }
+
+    public ObservableCollection<MfuConsumableTypeOption> TypeOptions { get; } = [];
+
+    public MfuConsumableTypeOption? SelectedType
+    {
+        get => _selectedType;
+        set => SetProperty(ref _selectedType, value);
+    }
+
+    /// <summary>model_name: свободный текст — бэкенд создаст модель при отсутствии.</summary>
+    public string ModelName
+    {
+        get => _modelName;
+        set => SetProperty(ref _modelName, value ?? string.Empty);
+    }
+
+    public string QtyText
+    {
+        get => _qtyText;
+        set => SetProperty(ref _qtyText, value ?? string.Empty);
+    }
+
+    public string PartNoText
+    {
+        get => _partNoText;
+        set => SetProperty(ref _partNoText, value ?? string.Empty);
+    }
+
+    public string DescriptionText
+    {
+        get => _descriptionText;
+        set => SetProperty(ref _descriptionText, value ?? string.Empty);
+    }
+
+    public bool IsBusy
+    {
+        get => _isBusy;
+        private set
+        {
+            if (SetProperty(ref _isBusy, value))
+            {
+                OnPropertyChanged(nameof(AreInputsEnabled));
+                OnPropertyChanged(nameof(AreLocationsEnabled));
+                OnPropertyChanged(nameof(SubmitButtonText));
+            }
+        }
+    }
+
+    /// <summary>Поля формы доступны, пока запрос не в полёте.</summary>
+    public bool AreInputsEnabled => !IsBusy;
+
+    public string SubmitButtonText => IsBusy ? "Сохранение…" : "Добавить";
+
+    public string? ErrorText
+    {
+        get => _errorText;
+        private set
+        {
+            if (SetProperty(ref _errorText, value))
+            {
+                OnPropertyChanged(nameof(HasError));
+            }
+        }
+    }
+
+    public bool HasError => !string.IsNullOrEmpty(ErrorText);
+
+    public ICommand SubmitCommand { get; }
+    public ICommand CloseCommand { get; }
+
+    /// <summary>Успешное создание — родитель закрывает и перечитывает справочник.</summary>
+    public event EventHandler<HubConsumableCreateResponse>? Completed;
+
+    /// <summary>✕/Отмена/Esc — родитель убирает оверлей.</summary>
+    public event EventHandler? Closed;
+
+    /// <summary>Закрытие родителем: гасим летящую загрузку локаций.</summary>
+    public void Close() => _locationsCancellation?.Cancel();
+
+    private void RequestClose()
+    {
+        Close();
+        Closed?.Invoke(this, EventArgs.Empty);
+    }
+
+    // ---- Локации выбранного филиала (паттерн диалога передачи) ----
+
+    private async Task LoadLocationsSafelyAsync(string branchId)
+    {
+        _locationsCancellation?.Cancel();
+        var cancellation = new CancellationTokenSource();
+        _locationsCancellation = cancellation;
+        IsLocationsLoading = true;
+        try
+        {
+            var locations = await _api.GetEquipmentLocationsAsync(branchId, cancellation.Token);
+            if (cancellation.IsCancellationRequested || _selectedBranch?.IdText != branchId)
+            {
+                return;
+            }
+
+            LocationOptions.Clear();
+            foreach (var location in locations ?? [])
+            {
+                if (!string.IsNullOrWhiteSpace(location.LocName))
+                {
+                    LocationOptions.Add(new TransferLocationOption(location));
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            ErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            if (ReferenceEquals(_locationsCancellation, cancellation))
+            {
+                IsLocationsLoading = false;
+            }
+        }
+    }
+
+    internal async Task SubmitAsync(CancellationToken cancellationToken)
+    {
+        if (IsBusy)
+        {
+            return;
+        }
+
+        ErrorText = null;
+        // Порядок проверок — buildAddConsumablePayload веба.
+        if (SelectedType is not { TypeNo: > 0 })
+        {
+            ErrorText = "Выберите тип расходника.";
+            return;
+        }
+
+        var modelName = (_modelName ?? string.Empty).Trim();
+        if (modelName.Length == 0)
+        {
+            ErrorText = "Укажите модель расходника.";
+            return;
+        }
+
+        if (SelectedBranch is not { Id: { } branchNo })
+        {
+            ErrorText = "Выберите филиал.";
+            return;
+        }
+
+        if (SelectedLocation is not { LocNo: { } locNo })
+        {
+            ErrorText = "Выберите местоположение.";
+            return;
+        }
+
+        if (!int.TryParse((_qtyText ?? string.Empty).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var qty)
+            || qty <= 0)
+        {
+            ErrorText = "Количество должно быть больше 0.";
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            var response = await _api.CreateConsumableAsync(
+                new HubConsumableCreateRequest
+                {
+                    BranchNo = branchNo,
+                    LocNo = locNo,
+                    TypeNo = SelectedType.TypeNo,
+                    Qty = qty,
+                    ModelName = modelName,
+                    PartNo = string.IsNullOrWhiteSpace(_partNoText) ? null : _partNoText.Trim(),
+                    Description = string.IsNullOrWhiteSpace(_descriptionText) ? null : _descriptionText.Trim(),
+                },
+                cancellationToken);
+            Completed?.Invoke(this, response);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+}
+
 /// <summary>
 /// Деталь устройства: инвентарные поля, ping, SNMP-расходники по группам,
 /// device_info, дополнительные датчики, лотки, помесячная печать (догружается
-/// отдельным запросом /mfu/pages/monthly) и история работ.
+/// отдельным запросом /mfu/pages/monthly), складские расходники и история работ.
 /// </summary>
 public sealed class MfuDeviceDetailViewModel : ObservableObject
 {
@@ -510,6 +1102,8 @@ public sealed class MfuDeviceDetailViewModel : ObservableObject
     private string _currentPagesText = "Текущий: -";
     private string _monthlyCheckedAtText = "Дата счетчика: -";
     private string _trackingStartText = "Начало учета: -";
+    private bool _isConsumablesLoading;
+    private string? _consumablesErrorText;
 
     public MfuDeviceDetailViewModel(HubMfuDevice device)
     {
@@ -611,6 +1205,12 @@ public sealed class MfuDeviceDetailViewModel : ObservableObject
         {
             OnPropertyChanged(nameof(IsMonthlyEmpty));
             OnPropertyChanged(nameof(HasMonthlyItems));
+        };
+
+        WarehouseConsumables.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HasConsumables));
+            OnPropertyChanged(nameof(IsConsumablesEmpty));
         };
     }
 
@@ -745,6 +1345,69 @@ public sealed class MfuDeviceDetailViewModel : ObservableObject
     /// <summary>Снять индикатор загрузки при отмене запроса (смена выбора/сброс).</summary>
     public void CancelMonthlyLoading() => IsMonthlyLoading = false;
 
+    // ---- Складские расходники (/equipment/consumables/lookup — догружается при выборе) ----
+
+    public ObservableCollection<MfuConsumableItemViewModel> WarehouseConsumables { get; } = [];
+
+    public bool IsConsumablesLoading
+    {
+        get => _isConsumablesLoading;
+        private set
+        {
+            if (SetProperty(ref _isConsumablesLoading, value))
+            {
+                OnPropertyChanged(nameof(IsConsumablesEmpty));
+            }
+        }
+    }
+
+    public string? ConsumablesErrorText
+    {
+        get => _consumablesErrorText;
+        private set
+        {
+            if (SetProperty(ref _consumablesErrorText, value))
+            {
+                OnPropertyChanged(nameof(HasConsumablesError));
+                OnPropertyChanged(nameof(IsConsumablesEmpty));
+            }
+        }
+    }
+
+    public bool HasConsumablesError => !string.IsNullOrEmpty(ConsumablesErrorText);
+    public bool HasConsumables => WarehouseConsumables.Count > 0;
+    public bool IsConsumablesEmpty =>
+        !IsConsumablesLoading && WarehouseConsumables.Count == 0 && !HasConsumablesError;
+
+    public void SetConsumablesLoading()
+    {
+        IsConsumablesLoading = true;
+        ConsumablesErrorText = null;
+    }
+
+    /// <summary>Применить строки справочника к секции склада (сортировка уже сделана родителем).</summary>
+    public void ApplyConsumables(IEnumerable<MfuConsumableItemViewModel> items)
+    {
+        WarehouseConsumables.Clear();
+        foreach (var item in items)
+        {
+            WarehouseConsumables.Add(item);
+        }
+
+        IsConsumablesLoading = false;
+        ConsumablesErrorText = null;
+    }
+
+    /// <summary>Ошибка загрузки справочника — показывается только в секции.</summary>
+    public void SetConsumablesError(string message)
+    {
+        ConsumablesErrorText = message;
+        IsConsumablesLoading = false;
+    }
+
+    /// <summary>Снять индикатор загрузки при отмене запроса (смена выбора/сброс).</summary>
+    public void CancelConsumablesLoading() => IsConsumablesLoading = false;
+
     // ---- История работ ----
 
     public ObservableCollection<MfuMaintenanceItemViewModel> MaintenanceItems { get; } = [];
@@ -771,6 +1434,12 @@ public sealed class MfuViewModel : ObservableObject
     /// <summary>Период статистики работ /json/works/mfu/statistics.</summary>
     private const int WorksPeriodDays = 90;
 
+    /// <summary>Право записи базы — как canWrite=hasPermission('database.write') веб-МФУ.</summary>
+    private const string DatabaseWritePermission = "database.write";
+
+    /// <summary>Порог выборки /equipment/consumables/lookup — limit=500 веб-страницы.</summary>
+    private const int ConsumablesLimit = 500;
+
     internal static readonly MfuFilterItem AllBranches = new("all", "Все");
     internal static readonly MfuFilterItem AllPings = new("all", "Все");
     internal static readonly MfuFilterItem AllSnmp = new("all", "Все");
@@ -780,6 +1449,16 @@ public sealed class MfuViewModel : ObservableObject
 
     private readonly IHubApiClient _api;
     private CancellationTokenSource? _monthlyLoadCancellation;
+    private CancellationTokenSource? _consumablesLoadCancellation;
+
+    /// <summary>Кэш справочника склада на страницу — consumableOptions веба.</summary>
+    private IReadOnlyList<HubConsumableLookupItem>? _consumablesCache;
+
+    /// <summary>database.write из /auth/me — узнаём один раз, как у DatabaseViewModel.</summary>
+    private bool _permissionsLoaded;
+    private bool _canWriteConsumables;
+    private MfuConsumableActionViewModel? _consumableAction;
+    private MfuConsumableCreateViewModel? _consumableCreate;
 
     /// <summary>Кэш помесячной печати по ключу — monthlyDataByKey веба.</summary>
     private readonly Dictionary<string, HubMfuMonthlyPages> _monthlyCache = new(StringComparer.Ordinal);
@@ -845,6 +1524,19 @@ public sealed class MfuViewModel : ObservableObject
             }
         });
         DismissBannerCommand = new NativeRelayCommand(() => BannerErrorText = null);
+        RefreshConsumablesCommand = new NativeAsyncCommand(
+            (_, ct) => LoadConsumablesSafelyAsync(force: true, ct),
+            ex => { if (Detail is { } detail) detail.SetConsumablesError(TasksViewModel.DescribeError(ex)); },
+            _ => SelectedDevice is not null);
+        OpenConsumeDialogCommand = new NativeAsyncCommand(
+            (parameter, ct) => OpenConsumableDialogAsync(parameter, MfuConsumableActionKind.Consume, ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        OpenQtyDialogCommand = new NativeAsyncCommand(
+            (parameter, ct) => OpenConsumableDialogAsync(parameter, MfuConsumableActionKind.SetQty, ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        OpenCreateConsumableCommand = new NativeAsyncCommand(
+            (_, ct) => OpenCreateConsumableAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex));
         Items.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(IsEmpty));
@@ -865,17 +1557,23 @@ public sealed class MfuViewModel : ObservableObject
         {
             if (SetProperty(ref _selectedDevice, value))
             {
+                // Диалоги привязаны к карточке: смена выбора закрывает их.
+                CloseConsumableAction();
+                CloseConsumableCreate();
                 Detail = value is null ? null : new MfuDeviceDetailViewModel(value.Device);
                 if (value is not null)
                 {
                     _ = LoadMonthlySafelyAsync(value.Key, force: false);
+                    _ = LoadConsumablesSafelyAsync(force: false);
                 }
                 else
                 {
                     _monthlyLoadCancellation?.Cancel();
+                    _consumablesLoadCancellation?.Cancel();
                 }
 
                 ((NativeAsyncCommand)RefreshMonthlyCommand).RaiseCanExecuteChanged();
+                ((NativeAsyncCommand)RefreshConsumablesCommand).RaiseCanExecuteChanged();
             }
         }
     }
@@ -1107,14 +1805,59 @@ public sealed class MfuViewModel : ObservableObject
 
     public ICommand RefreshCommand { get; }
     public ICommand RefreshMonthlyCommand { get; }
+    public ICommand RefreshConsumablesCommand { get; }
     public ICommand SelectBranchFilterCommand { get; }
     public ICommand SelectPingFilterCommand { get; }
     public ICommand SelectSnmpFilterCommand { get; }
     public ICommand DismissBannerCommand { get; }
+    public ICommand OpenConsumeDialogCommand { get; }
+    public ICommand OpenQtyDialogCommand { get; }
+    public ICommand OpenCreateConsumableCommand { get; }
+
+    // ---- Запись расходников (database.write; диалоги как у веб-экрана) ----
+
+    /// <summary>Право записи: admin или database.write из /auth/me; при ошибке /me — закрыто.</summary>
+    public bool CanWriteConsumables
+    {
+        get => _canWriteConsumables;
+        private set => SetProperty(ref _canWriteConsumables, value);
+    }
+
+    /// <summary>Открытый диалог «Выдать»/«Изменить количество»; null — закрыт.</summary>
+    public MfuConsumableActionViewModel? ConsumableAction
+    {
+        get => _consumableAction;
+        private set
+        {
+            if (SetProperty(ref _consumableAction, value))
+            {
+                OnPropertyChanged(nameof(IsConsumableActionOpen));
+            }
+        }
+    }
+
+    public bool IsConsumableActionOpen => ConsumableAction is not null;
+
+    /// <summary>Открытый диалог «Добавить расходник»; null — закрыт.</summary>
+    public MfuConsumableCreateViewModel? ConsumableCreate
+    {
+        get => _consumableCreate;
+        private set
+        {
+            if (SetProperty(ref _consumableCreate, value))
+            {
+                OnPropertyChanged(nameof(IsConsumableCreateOpen));
+            }
+        }
+    }
+
+    public bool IsConsumableCreateOpen => ConsumableCreate is not null;
 
     /// <summary>Первичная загрузка/обновление снимка МФУ + статистики работ.</summary>
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        // Права для кнопок записи расходников — разовый запрос /auth/me (как у «Базы»).
+        await EnsurePermissionsAsync(cancellationToken);
         IsLoading = true;
         try
         {
@@ -1333,6 +2076,248 @@ public sealed class MfuViewModel : ObservableObject
         OnPropertyChanged(nameof(IsEmpty));
     }
 
+    // ---- Складские расходники ----
+
+    /// <summary>
+    /// Право database.write узнаём один раз из /auth/me (матрица как у веба:
+    /// admin видит всё, иначе — явное право). Ошибка /me закрывает запись.
+    /// </summary>
+    private async Task EnsurePermissionsAsync(CancellationToken cancellationToken)
+    {
+        if (_permissionsLoaded)
+        {
+            return;
+        }
+
+        _permissionsLoaded = true;
+        try
+        {
+            var user = await _api.GetCurrentUserAsync(cancellationToken);
+            var isAdmin = string.Equals(user.Role?.Trim(), "admin", StringComparison.OrdinalIgnoreCase);
+            CanWriteConsumables = isAdmin || user.Permissions?.Contains(DatabaseWritePermission) == true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            CanWriteConsumables = false;
+        }
+    }
+
+    /// <summary>
+    /// Справочник складских расходников — общий для страницы (у SNMP-строк
+    /// нет item_id/inv_no). По выбранному устройству сортировка локальных
+    /// позиций вперёд — приоритет филиала/локации из веб-подбора.
+    /// </summary>
+    private async Task LoadConsumablesSafelyAsync(bool force, CancellationToken cancellationToken = default)
+    {
+        var detail = Detail;
+        if (detail is null)
+        {
+            return;
+        }
+
+        if (!force && _consumablesCache is { } cached)
+        {
+            detail.ApplyConsumables(BuildConsumableRows(cached));
+            return;
+        }
+
+        _consumablesLoadCancellation?.Cancel();
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _consumablesLoadCancellation = cancellation;
+        detail.SetConsumablesLoading();
+        try
+        {
+            // only_positive_qty=true — как lookupConsumables веб-экрана МФУ.
+            var rows = await _api.GetConsumablesLookupAsync(
+                onlyPositiveQty: true, ConsumablesLimit, cancellation.Token);
+            _consumablesCache = rows;
+            if (ReferenceEquals(Detail, detail))
+            {
+                detail.ApplyConsumables(BuildConsumableRows(rows));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (ReferenceEquals(Detail, detail))
+            {
+                detail.SetConsumablesError(TasksViewModel.DescribeError(ex));
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_consumablesLoadCancellation, cancellation))
+            {
+                detail.CancelConsumablesLoading();
+            }
+        }
+    }
+
+    /// <summary>Строки секции: локация устройства → филиал → имя модели (ru).</summary>
+    private IEnumerable<MfuConsumableItemViewModel> BuildConsumableRows(
+        IReadOnlyList<HubConsumableLookupItem>? rows)
+    {
+        var device = _selectedDevice?.Device;
+        var branch = MfuFormat.NormalizeText(device?.BranchName);
+        var location = MfuFormat.NormalizeText(device?.LocationName);
+        return (rows ?? [])
+            .Select(row => (
+                ViewModel: new MfuConsumableItemViewModel(row),
+                SameLocation: location.Length > 0
+                    && MfuFormat.NormalizeText(row.LocationName) == location,
+                SameBranch: branch.Length > 0
+                    && MfuFormat.NormalizeText(row.BranchName) == branch))
+            .OrderBy(entry => entry.SameLocation ? 0 : 1)
+            .ThenBy(entry => entry.SameBranch ? 0 : 1)
+            .ThenBy(entry => entry.ViewModel.Name, RussianComparer)
+            .Select(entry => entry.ViewModel);
+    }
+
+    /// <summary>Открытие «Выдать»/«Остаток» по строке склада — право + диалог.</summary>
+    private async Task OpenConsumableDialogAsync(
+        object? parameter,
+        MfuConsumableActionKind kind,
+        CancellationToken cancellationToken)
+    {
+        if (ConsumableAction is not null || ConsumableCreate is not null
+            || parameter is not MfuConsumableItemViewModel item)
+        {
+            return;
+        }
+
+        await EnsurePermissionsAsync(cancellationToken);
+        if (!CanWriteConsumables)
+        {
+            BannerErrorText = "Недостаточно прав для изменения данных.";
+            return;
+        }
+
+        var dialog = new MfuConsumableActionViewModel(_api, item, kind);
+        dialog.Completed += ConsumableAction_Completed;
+        dialog.Closed += ConsumableAction_Closed;
+        ConsumableAction = dialog;
+    }
+
+    /// <summary>Открытие «Добавить расходник»: право + справочники филиалов/типов.</summary>
+    private async Task OpenCreateConsumableAsync(CancellationToken cancellationToken)
+    {
+        if (ConsumableAction is not null || ConsumableCreate is not null)
+        {
+            return;
+        }
+
+        await EnsurePermissionsAsync(cancellationToken);
+        if (!CanWriteConsumables)
+        {
+            BannerErrorText = "Недостаточно прав для изменения данных.";
+            return;
+        }
+
+        // Справочники опциональны: их сбой не блокирует диалог — пустые списки.
+        IReadOnlyList<HubEquipmentBranch> branches;
+        IReadOnlyList<HubEquipmentType> types;
+        try
+        {
+            branches = await _api.GetEquipmentBranchesAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            branches = [];
+        }
+
+        try
+        {
+            types = await _api.GetEquipmentTypesAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            types = [];
+        }
+
+        var dialog = new MfuConsumableCreateViewModel(_api, branches, types);
+        dialog.Completed += ConsumableCreate_Completed;
+        dialog.Closed += ConsumableCreate_Closed;
+        ConsumableCreate = dialog;
+    }
+
+    /// <summary>Успешная запись: точечно правим строку и кэш (как у веб-патча).</summary>
+    private void ConsumableAction_Completed(
+        object? sender,
+        MfuConsumableActionCompletedEventArgs e)
+    {
+        if (sender is MfuConsumableActionViewModel dialog)
+        {
+            dialog.Item.ApplyQty(e.NewQty);
+        }
+
+        if (_consumablesCache is { } cache)
+        {
+            _consumablesCache = cache
+                .Select(row => e.ItemId is { } itemId && row.Id == itemId
+                    ? row with { Qty = e.NewQty }
+                    : e.ItemId is null && e.InvNo is { } invNo
+                        && string.Equals(row.InvNo, invNo, StringComparison.Ordinal)
+                        ? row with { Qty = e.NewQty }
+                        : row)
+                .ToArray();
+        }
+
+        CloseConsumableAction();
+    }
+
+    private void ConsumableAction_Closed(object? sender, EventArgs e) => CloseConsumableAction();
+
+    /// <summary>Новая позиция создана: перечитываем справочник целиком (inv_no от сервера).</summary>
+    private void ConsumableCreate_Completed(object? sender, HubConsumableCreateResponse e)
+    {
+        CloseConsumableCreate();
+        _consumablesCache = null;
+        if (Detail is not null)
+        {
+            _ = LoadConsumablesSafelyAsync(force: true);
+        }
+    }
+
+    private void ConsumableCreate_Closed(object? sender, EventArgs e) => CloseConsumableCreate();
+
+    private void CloseConsumableAction()
+    {
+        if (ConsumableAction is { } dialog)
+        {
+            dialog.Completed -= ConsumableAction_Completed;
+            dialog.Closed -= ConsumableAction_Closed;
+            dialog.Close();
+        }
+
+        ConsumableAction = null;
+    }
+
+    private void CloseConsumableCreate()
+    {
+        if (ConsumableCreate is { } dialog)
+        {
+            dialog.Completed -= ConsumableCreate_Completed;
+            dialog.Closed -= ConsumableCreate_Closed;
+            dialog.Close();
+        }
+
+        ConsumableCreate = null;
+    }
+
     // ---- Печать по месяцам ----
 
     /// <summary>Кнопка «Обновить» в секции помесячной печати — принудительный перезапрос.</summary>
@@ -1401,6 +2386,13 @@ public sealed class MfuViewModel : ObservableObject
         _monthlyLoadCancellation?.Cancel();
         _monthlyLoadCancellation = null;
         _monthlyCache.Clear();
+        _consumablesLoadCancellation?.Cancel();
+        _consumablesLoadCancellation = null;
+        _consumablesCache = null;
+        _permissionsLoaded = false;
+        CanWriteConsumables = false;
+        CloseConsumableAction();
+        CloseConsumableCreate();
         _groups = [];
         _devicesTotal = 0;
         _filteredCount = 0;

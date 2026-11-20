@@ -98,6 +98,35 @@
                     </DataTrigger>
                 </Style.Triggers>
             </Style>
+            <!-- Кликабельная строка филиала (cursor: pointer + hover в веб-таблице). -->
+            <Style x:Key="PcBranchRowButtonStyle" TargetType="Button">
+                <Setter Property="Margin" Value="0,6,0,0" />
+                <Setter Property="Padding" Value="0,2" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border Padding="{TemplateBinding Padding}"
+                                    CornerRadius="4"
+                                    Background="{TemplateBinding Background}">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                                </Trigger>
+                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -369,39 +398,44 @@
                                       AutomationProperties.Name="Строки статистики чистки ПК">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,6,0,0"
-                                          AutomationProperties.Name="{Binding AutomationName}">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="2*" MinWidth="160" />
-                                            <ColumnDefinition Width="90" />
-                                            <ColumnDefinition Width="90" />
-                                            <ColumnDefinition Width="90" />
-                                            <ColumnDefinition Width="130" />
-                                            <ColumnDefinition Width="90" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock FontSize="12.5"
-                                                   FontWeight="SemiBold"
-                                                   Text="{Binding Branch}"
-                                                   TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="1"
-                                                   FontSize="12.5"
-                                                   HorizontalAlignment="Right"
-                                                   Text="{Binding TotalPcText}" />
-                                        <TextBlock Grid.Column="2"
-                                                   FontSize="12.5"
-                                                   HorizontalAlignment="Right"
-                                                   Text="{Binding CleanedPcText}" />
-                                        <TextBlock Grid.Column="3"
-                                                   Style="{StaticResource RemainingTextStyle}"
-                                                   Text="{Binding RemainingPcText}" />
-                                        <TextBlock Grid.Column="4"
-                                                   FontSize="12.5"
-                                                   HorizontalAlignment="Right"
-                                                   Text="{Binding CleaningsPeriodText}" />
-                                        <TextBlock Grid.Column="5"
-                                                   Style="{StaticResource CoverageTextStyle}"
-                                                   Text="{Binding CoverageText}" />
-                                    </Grid>
+                                    <Button Style="{StaticResource PcBranchRowButtonStyle}"
+                                            Command="{Binding DataContext.OpenPcRemainingCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            ToolTip="ПК без чистки за период"
+                                            AutomationProperties.Name="{Binding AutomationName}">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="2*" MinWidth="160" />
+                                                <ColumnDefinition Width="90" />
+                                                <ColumnDefinition Width="90" />
+                                                <ColumnDefinition Width="90" />
+                                                <ColumnDefinition Width="130" />
+                                                <ColumnDefinition Width="90" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock FontSize="12.5"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding Branch}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="1"
+                                                       FontSize="12.5"
+                                                       HorizontalAlignment="Right"
+                                                       Text="{Binding TotalPcText}" />
+                                            <TextBlock Grid.Column="2"
+                                                       FontSize="12.5"
+                                                       HorizontalAlignment="Right"
+                                                       Text="{Binding CleanedPcText}" />
+                                            <TextBlock Grid.Column="3"
+                                                       Style="{StaticResource RemainingTextStyle}"
+                                                       Text="{Binding RemainingPcText}" />
+                                            <TextBlock Grid.Column="4"
+                                                       FontSize="12.5"
+                                                       HorizontalAlignment="Right"
+                                                       Text="{Binding CleaningsPeriodText}" />
+                                            <TextBlock Grid.Column="5"
+                                                       Style="{StaticResource CoverageTextStyle}"
+                                                       Text="{Binding CoverageText}" />
+                                        </Grid>
+                                    </Button>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
@@ -573,5 +607,250 @@
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>
+
+        <!-- «Не почищены: {филиал}» — порт PcRemainingDialog веб-статистики -->
+        <Grid Grid.RowSpan="3"
+              Panel.ZIndex="2"
+              Background="#B3000000"
+              PreviewKeyDown="PcRemainingOverlay_PreviewKeyDown"
+              Visibility="{Binding IsPcRemainingOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="860"
+                    MaxHeight="560"
+                    VerticalAlignment="Center"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding PcRemaining}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}"
+                                       AutomationProperties.Name="Заголовок непочищенных ПК" />
+                            <TextBlock Margin="0,4,0,0"
+                                       FontSize="12"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding SummaryText}"
+                                       AutomationProperties.Name="Сводка непочищенных ПК" />
+                        </StackPanel>
+                        <Button HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть список непочищенных ПК" />
+                    </Grid>
+
+                    <Grid Grid.Row="1" Margin="18,10,18,0">
+                        <TextBox x:Name="PcRemainingSearchInput"
+                                 Width="280"
+                                 HorizontalAlignment="Left"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Text="{Binding QueryText, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="Фильтр непочищенных ПК" />
+                        <TextBlock Margin="13,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="Инв. №, серийник, локация или сотрудник">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=PcRemainingSearchInput}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <ProgressBar HorizontalAlignment="Right"
+                                     Width="80"
+                                     Height="3"
+                                     VerticalAlignment="Center"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор загрузки непочищенных ПК" />
+                    </Grid>
+
+                    <Grid Grid.Row="2" Margin="18,10,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MinWidth="130" />
+                            <ColumnDefinition Width="*" MinWidth="110" />
+                            <ColumnDefinition Width="*" MinWidth="110" />
+                            <ColumnDefinition Width="*" MinWidth="110" />
+                            <ColumnDefinition Width="150" />
+                            <ColumnDefinition Width="80" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Style="{StaticResource HeaderCellStyle}" Text="ИНВ / СЕРИЙНИК" />
+                        <TextBlock Grid.Column="1" Style="{StaticResource HeaderCellStyle}" Text="МОДЕЛЬ" />
+                        <TextBlock Grid.Column="2" Style="{StaticResource HeaderCellStyle}" Text="ЛОКАЦИЯ" />
+                        <TextBlock Grid.Column="3" Style="{StaticResource HeaderCellStyle}" Text="СОТРУДНИК" />
+                        <TextBlock Grid.Column="4" Style="{StaticResource HeaderCellStyle}" Text="ПОСЛЕДНЯЯ ЧИСТКА" />
+                        <TextBlock Grid.Column="5"
+                                   Style="{StaticResource HeaderCellStyle}"
+                                   HorizontalAlignment="Right"
+                                   Text="ЧИСТКА"
+                                   Visibility="{Binding CanWrite, Converter={StaticResource BoolToVisibility}}" />
+                    </Grid>
+
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,2,18,0"
+                                  Style="{StaticResource HubScrollViewerStyle}"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Margin="0,6,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubErrorTextBrush}"
+                                       Text="{Binding ErrorText}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}"
+                                       AutomationProperties.Name="Ошибка списка непочищенных ПК" />
+                            <TextBlock Margin="0,10,0,10"
+                                       FontSize="12.5"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding EmptyText}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding ShowEmpty, Converter={StaticResource BoolToVisibility}}"
+                                       AutomationProperties.Name="Пустой список непочищенных ПК" />
+                            <ItemsControl ItemsSource="{Binding Items}"
+                                          AutomationProperties.Name="Строки непочищенных ПК">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,4,0,0"
+                                              AutomationProperties.Name="{Binding AutomationName}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" MinWidth="130" />
+                                                <ColumnDefinition Width="*" MinWidth="110" />
+                                                <ColumnDefinition Width="*" MinWidth="110" />
+                                                <ColumnDefinition Width="*" MinWidth="110" />
+                                                <ColumnDefinition Width="150" />
+                                                <ColumnDefinition Width="80" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock FontSize="12.5"
+                                                           FontWeight="SemiBold"
+                                                           Text="{Binding InvNoText}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock FontSize="11"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding SerialText}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="12.5"
+                                                       Text="{Binding ModelText}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="2"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="12.5"
+                                                       Text="{Binding LocationText}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="3"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="12.5"
+                                                       Text="{Binding EmployeeText}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="4"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="12"
+                                                       Text="{Binding LastCleanedText}">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding LastCleanedTone}" Value="warning">
+                                                                <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding LastCleanedTone}" Value="error">
+                                                                <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                            <Button Grid.Column="5"
+                                                    Margin="8,0,0,0"
+                                                    HorizontalAlignment="Right"
+                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding DataContext.RequestCleanCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                    CommandParameter="{Binding}"
+                                                    Content="Чистка"
+                                                    Visibility="{Binding DataContext.CanWrite, RelativeSource={RelativeSource AncestorType=ItemsControl}, Converter={StaticResource BoolToVisibility}}"
+                                                    IsEnabled="{Binding CanClean}"
+                                                    AutomationProperties.Name="Поставить чистку ПК" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <StackPanel Grid.Row="4" Margin="18,10,18,14">
+                        <Button HorizontalAlignment="Right"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Закрыть"
+                                AutomationProperties.Name="Закрыть диалог непочищенных ПК" />
+                    </StackPanel>
+
+                    <!-- Подтверждение постановки чистки (ConfirmDialog веба) -->
+                    <Grid Grid.RowSpan="5"
+                          Panel.ZIndex="2"
+                          Background="#66000000"
+                          Visibility="{Binding IsConfirmOpen, Converter={StaticResource BoolToVisibility}}">
+                        <Border MaxWidth="380"
+                                VerticalAlignment="Center"
+                                Padding="18,14"
+                                CornerRadius="10"
+                                Background="{DynamicResource HubSurfaceBrush}"
+                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                BorderThickness="1"
+                                AutomationProperties.Name="Подтверждение чистки ПК">
+                            <StackPanel>
+                                <TextBlock FontSize="13.5"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding ConfirmText}"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Margin="0,8,0,0"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding ConfirmErrorText}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding HasConfirmError, Converter={StaticResource BoolToVisibility}}"
+                                           AutomationProperties.Name="Ошибка постановки чистки"
+                                           AutomationProperties.LiveSetting="Assertive" />
+                                <StackPanel Margin="0,12,0,0"
+                                            Orientation="Horizontal"
+                                            HorizontalAlignment="Right">
+                                    <Button Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding CancelConfirmCommand}"
+                                            Content="Отмена"
+                                            AutomationProperties.Name="Отмена постановки чистки" />
+                                    <Button Margin="8,0,0,0"
+                                            Style="{StaticResource HubPrimaryButtonStyle}"
+                                            Command="{Binding ConfirmCleanCommand}"
+                                            Content="{Binding ConfirmButtonText}"
+                                            AutomationProperties.Name="Подтвердить постановку чистки" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
 </UserControl>

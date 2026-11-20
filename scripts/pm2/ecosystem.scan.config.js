@@ -119,6 +119,55 @@ module.exports = {
       },
     },
     {
+      // Local Ollama server: /v1/systemone typed-decision API (nimble/d3 models).
+      // Feeds itinvent-scan-llm-worker when SCAN_LLM_BACKEND=systemone; the
+      // worker idles without it, so this is a leaf dependency, not a hard one.
+      name: 'itinvent-ollama',
+      cwd: PROJECT_ROOT,
+      script: path.join(PROJECT_ROOT, 'tools', 'ollama', 'dist', 'ollama.exe'),
+      args: 'serve',
+      interpreter: 'none',
+      windowsHide: true,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      kill_timeout: 15000,
+      max_memory_restart: '10G',
+      env: {
+        OLLAMA_HOST: '127.0.0.1:11434',
+        OLLAMA_NUM_PARALLEL: '2',
+        // Keep the model resident: after the 5m default each review reload
+        // respawns llama-server/gpu-discover with a visible console window
+        // (flashing on the interactive session) plus ~10s cold-start latency.
+        OLLAMA_KEEP_ALIVE: '-1',
+        // Models live outside the ollama dist dir so a tools/ollama update
+        // doesn't touch ~30 GB of weights. Resolved real path (not the
+        // Image_scan junction): ollama's manifest walk trips on it.
+        OLLAMA_MODELS: 'C:\\Project\\HUB-IT-main\\models\\ollama',
+      },
+    },
+    {
+      // Local LLM second-opinion reviewer for incidents (shadow mode). Idles while
+      // SCAN_LLM_REVIEW_ENABLED=0; model path/layers come from the root .env.
+      name: 'itinvent-scan-llm-worker',
+      cwd: PROJECT_ROOT,
+      script: PYTHON,
+      args: '-m scan_server.llm_review_main',
+      interpreter: 'none',
+      windowsHide: true,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      kill_timeout: 15000,
+      max_memory_restart: '6G',
+      env: {
+        PYTHONUNBUFFERED: '1',
+        SCAN_LLM_INTERVAL_SEC: '5',
+        SCAN_LLM_MAX_ATTEMPTS: '3',
+        ...sharedDbEnv,
+      },
+    },
+    {
       // Dedicated system-metrics retention (24h). Independent of itinvent-scan-worker restart storm.
       name: 'itinvent-scan-system-metrics-retention-worker',
       cwd: PROJECT_ROOT,

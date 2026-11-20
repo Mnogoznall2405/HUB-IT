@@ -246,6 +246,13 @@ class MailTemplateStore:
         params.append(normalize_text(template_id))
 
         with self.lock, self.connect() as conn:
+            if "code" in payload:
+                duplicate = conn.execute(
+                    f"SELECT id FROM {self.table} WHERE code = ? AND id != ?",
+                    (code, normalize_text(template_id)),
+                ).fetchone()
+                if duplicate is not None:
+                    raise TemplateStoreError(f"Template code already exists: {code}")
             conn.execute(
                 f"UPDATE {self.table} SET {', '.join(fields)} WHERE id = ?",
                 tuple(params),

@@ -39,7 +39,7 @@ def _scrub_sqlite(*, db_path: Path, batch_size: int, vacuum: bool) -> Dict[str, 
                 """
                 SELECT id, payload_json
                 FROM scan_jobs
-                WHERE instr(payload_json, 'pdf_slice_b64') > 0
+                WHERE instr(payload_json, '"pdf_slice_b64"') > 0
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 """,
@@ -47,11 +47,18 @@ def _scrub_sqlite(*, db_path: Path, batch_size: int, vacuum: bool) -> Dict[str, 
             ).fetchall()
             if not rows:
                 break
+            batch_updated = 0
             for row in rows:
                 scanned_rows += 1
                 if _scrub_one(conn, row):
                     updated_rows += 1
+                    batch_updated += 1
             conn.commit()
+            # The quoted-key match can still hit a literal inside text_excerpt
+            # (e.g. a scanned JSON export). Such rows never scrub, so a batch
+            # with zero updates means only false-positives remain — stop.
+            if batch_updated == 0:
+                break
 
         if vacuum:
             conn.execute("VACUUM")
@@ -76,7 +83,7 @@ def _scrub_postgres(*, database_url: str, batch_size: int) -> Dict[str, int]:
                 """
                 SELECT id, payload_json
                 FROM scan_jobs
-                WHERE position('pdf_slice_b64' in payload_json) > 0
+                WHERE position('"pdf_slice_b64"' in payload_json) > 0
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 """,
@@ -84,11 +91,15 @@ def _scrub_postgres(*, database_url: str, batch_size: int) -> Dict[str, int]:
             ).fetchall()
             if not rows:
                 break
+            batch_updated = 0
             for row in rows:
                 scanned_rows += 1
                 if _scrub_one(conn, row):
                     updated_rows += 1
+                    batch_updated += 1
             conn.commit()
+            if batch_updated == 0:
+                break
 
     return {
         "updated_rows": int(updated_rows),

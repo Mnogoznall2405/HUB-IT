@@ -194,6 +194,36 @@ def test_message_actions_mark_all_read_uses_is_read_only_queryset():
     assert first.is_read is True
 
 
+def test_message_actions_mark_all_read_counts_enumeration_failures():
+    """A folder that fails to enumerate is a failure, not an empty folder
+    (MAIL-07): otherwise the API claims success while nothing was marked."""
+    first = FakeItem(item_id="first", is_read=False)
+    good = FakeFolder(key="inbox", items={"first": first})
+    good.filter = lambda **kwargs: [first]
+
+    class BrokenFolder:
+        def filter(self, **_kwargs):
+            raise RuntimeError("timeout while reading folder")
+
+    actions = _build_actions({})
+    result = actions.mark_all_read(
+        folder_targets=[(good, "inbox"), (BrokenFolder(), "archive")]
+    )
+    assert result.changed == 1
+    assert result.failed == 1
+
+
+def test_message_actions_mark_all_read_counts_unavailable_scope_targets():
+    """Listing-style targets carry the enumeration error itself; it must be
+    reported rather than silently dropped (MAIL-07)."""
+    actions = _build_actions({})
+    result = actions.mark_all_read(
+        folder_targets=[(RuntimeError("hierarchy walk failed"), "hierarchy:archive")]
+    )
+    assert result.changed == 0
+    assert result.failed == 1
+
+
 def test_message_actions_delete_message_deletes_existing_item():
     item = FakeItem(item_id="msg-1")
     folder = FakeFolder(key="trash", items={"msg-1": item})

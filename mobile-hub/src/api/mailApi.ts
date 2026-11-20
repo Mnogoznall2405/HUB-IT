@@ -42,6 +42,7 @@ export type MailMessagePreview = {
   body_preview?: string | null;
   importance?: 'low' | 'normal' | 'high' | string;
   categories?: string[];
+  is_flagged?: boolean;
 };
 
 export type MailComposeVariant = {
@@ -102,6 +103,7 @@ export type MailMessagePage = {
   next_offset?: number | null;
   search_limited?: boolean;
   searched_window?: number;
+  skipped_folders?: number;
 };
 
 export type MailConversationPreview = {
@@ -114,6 +116,7 @@ export type MailConversationPreview = {
   last_received_at?: string | null;
   has_attachments?: boolean;
   attachments_count?: number;
+  is_flagged?: boolean;
   preview?: string | null;
 };
 
@@ -127,6 +130,7 @@ export type MailConversationPage = {
   next_offset?: number | null;
   search_limited?: boolean;
   searched_window?: number;
+  skipped_folders?: number;
 };
 
 export type MailConversationDetail = Omit<MailConversationPreview, 'has_attachments' | 'attachments_count' | 'preview'> & {
@@ -483,6 +487,19 @@ export async function setMailMessageImportance(
   return data;
 }
 
+export async function setMailMessageFlag(
+  messageId: string,
+  flagged: boolean,
+  mailboxId = '',
+): Promise<MailActionResult> {
+  const id = normalizeId(messageId, 'Не указан идентификатор письма', 8_192);
+  const { data } = await apiClient.post<MailActionResult>(`/mail/messages/${encodeURIComponent(id)}/flag`, {
+    flagged,
+    mailbox_id: String(mailboxId || '').trim() || undefined,
+  });
+  return data;
+}
+
 export async function moveMailMessage(messageId: string, mailboxId: string, targetFolder: string): Promise<MailActionResult> {
   const id = normalizeId(messageId, 'Не указан идентификатор письма', 8_192);
   const folder = normalizeId(targetFolder, 'Не указана папка назначения', 2_048);
@@ -650,9 +667,17 @@ export async function deleteMailTemplate(templateId: string): Promise<MailAction
   return data;
 }
 
-export async function sendMailItRequest(payload: MailItRequestPayload): Promise<Record<string, unknown>> {
+export async function sendMailItRequest(
+  payload: MailItRequestPayload,
+  options: { idempotencyKey?: string; signal?: AbortSignal } = {},
+): Promise<Record<string, unknown>> {
+  const key = options.idempotencyKey
+    ? normalizeId(options.idempotencyKey, 'Не удалось подготовить безопасную отправку заявки', 256)
+    : '';
   const { data } = await apiClient.post<Record<string, unknown>>('/mail/messages/send-it-request', payload, {
     timeout: 120_000,
+    headers: key ? { 'Idempotency-Key': key } : undefined,
+    signal: options.signal,
   });
   return data;
 }

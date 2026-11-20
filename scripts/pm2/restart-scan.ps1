@@ -1,6 +1,6 @@
 param(
     [int]$Port = 8011,
-    [string[]]$ProcessNames = @('itinvent-scan', 'itinvent-scan-worker')
+    [string[]]$ProcessNames = @('itinvent-scan', 'itinvent-scan-worker', 'itinvent-ollama', 'itinvent-scan-llm-worker')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,16 +77,28 @@ function Get-ScanProcessRoots {
 }
 
 function Stop-OrphanScanProcesses {
-    param([int]$ListenPort)
+    param(
+        [int]$ListenPort,
+        [bool]$IncludeApi,
+        [bool]$IncludeWorker
+    )
 
-    $listenerPids = Get-PortListenerPids -ListenPort $ListenPort
-    foreach ($listenerPid in $listenerPids) {
-        Write-Host "Killing scan listener on port $ListenPort (PID $listenerPid)..." -ForegroundColor Yellow
-        taskkill /PID $listenerPid /T /F 2>$null | Out-Null
+    # The port listener belongs to itinvent-scan: killing it on a worker/ollama
+    # restart drops the API mid-flight. Cleanup is scoped to restarted services.
+    $listenerPids = @()
+    if ($IncludeApi) {
+        $listenerPids = Get-PortListenerPids -ListenPort $ListenPort
+        foreach ($listenerPid in $listenerPids) {
+            Write-Host "Killing scan listener on port $ListenPort (PID $listenerPid)..." -ForegroundColor Yellow
+            taskkill /PID $listenerPid /T /F 2>$null | Out-Null
+        }
     }
 
     $scanProcs = Get-ScanPythonProcesses
-    foreach ($proc in @($scanProcs.Api + $scanProcs.Worker)) {
+    $targets = @()
+    if ($IncludeApi) { $targets += $scanProcs.Api }
+    if ($IncludeWorker) { $targets += $scanProcs.Worker }
+    foreach ($proc in $targets) {
         if ($listenerPids -contains $proc.ProcessId) {
             continue
         }
@@ -96,6 +108,9 @@ function Stop-OrphanScanProcesses {
 }
 
 $pm2Cmd = Resolve-Pm2Command
+
+$restartApi = $ProcessNames -contains 'itinvent-scan'
+$restartWorker = $ProcessNames -contains 'itinvent-scan-worker'
 
 Write-Host "PM2: stopping $($ProcessNames -join ', ')..." -ForegroundColor Cyan
 foreach ($name in $ProcessNames) {
@@ -108,16 +123,18 @@ foreach ($name in $ProcessNames) {
 Start-Sleep -Seconds 2
 
 Write-Host "PM2: clearing scan orphans (port $Port + leftover python -m scan_server*)..." -ForegroundColor Cyan
-Stop-OrphanScanProcesses -ListenPort $Port
+Stop-OrphanScanProcesses -ListenPort $Port -IncludeApi:$restartApi -IncludeWorker:$restartWorker
 Start-Sleep -Seconds 1
 
-$remainingListeners = Get-PortListenerPids -ListenPort $Port
-if ($remainingListeners.Count -gt 0) {
-    throw "Port $Port is still in use by PID(s): $($remainingListeners -join ', ')"
+if ($restartApi) {
+    $remainingListeners = Get-PortListenerPids -ListenPort $Port
+    if ($remainingListeners.Count -gt 0) {
+        throw "Port $Port is still in use by PID(s): $($remainingListeners -join ', ')"
+    }
 }
 
 $leftover = Get-ScanPythonProcesses
-if ($leftover.Api.Count -gt 0 -or $leftover.Worker.Count -gt 0) {
+if (($restartApi -and $leftover.Api.Count -gt 0) -or ($restartWorker -and $leftover.Worker.Count -gt 0)) {
     $ids = @($leftover.Api + $leftover.Worker | ForEach-Object { $_.ProcessId }) -join ', '
     throw "Scan python process(es) still running after cleanup: $ids"
 }
@@ -151,14 +168,21 @@ $running = Get-ScanPythonProcesses
 # be tearing down when the new instance has already bound the port, and the dying copy
 # would otherwise be counted as an extra root.
 $reloadCutoff = $reloadStarted.AddSeconds(-3)
-$freshApi = @($running.Api | Where-Object { -not $_.CreationDate -or $_.CreationDate -ge $reloadCutoff })
-$freshWorker = @($running.Worker | Where-Object { -not $_.CreationDate -or $_.CreationDate -ge $reloadCutoff })
-$apiRoots = @(Get-ScanProcessRoots $freshApi)
-$workerRoots = @(Get-ScanProcessRoots $freshWorker)
-if ($apiRoots.Count -ne 1 -or $workerRoots.Count -ne 1) {
+$apiRoots = @($running.Api)
+$workerRoots = @($running.Worker)
+if ($restartApi) {
+    $freshApi = @($running.Api | Where-Object { -not $_.CreationDate -or $_.CreationDate -ge $reloadCutoff })
+    $apiRoots = @(Get-ScanProcessRoots $freshApi)
+}
+if ($restartWorker) {
+    $freshWorker = @($running.Worker | Where-Object { -not $_.CreationDate -or $_.CreationDate -ge $reloadCutoff })
+    $workerRoots = @(Get-ScanProcessRoots $freshWorker)
+}
+if ($apiRoots.Count -lt 1 -or $workerRoots.Count -lt 1 -or `
+    ($restartApi -and $apiRoots.Count -ne 1) -or ($restartWorker -and $workerRoots.Count -ne 1)) {
     $apiDesc = ($running.Api | ForEach-Object { "$($_.ProcessId)@$($_.CreationDate)" }) -join ','
     $workerDesc = ($running.Worker | ForEach-Object { "$($_.ProcessId)@$($_.CreationDate)" }) -join ','
-    throw "Expected 1 scan API + 1 worker after reload; got api=$($apiRoots.Count) worker=$($workerRoots.Count) (api: $apiDesc | worker: $workerDesc)"
+    throw "Expected live scan API + worker after reload; got api=$($apiRoots.Count) worker=$($workerRoots.Count) (api: $apiDesc | worker: $workerDesc)"
 }
 
 Write-Host "Port $Port listener PID: $($listener[0]) (api=$($apiRoots[0].ProcessId) worker=$($workerRoots[0].ProcessId))" -ForegroundColor Green

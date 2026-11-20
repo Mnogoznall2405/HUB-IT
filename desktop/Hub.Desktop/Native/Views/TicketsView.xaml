@@ -147,6 +147,15 @@
                                  CommandParameter="dashboard"
                                  Content="Дашборд"
                                  AutomationProperties.Name="Режим: сводка по заявкам" />
+                    <!-- «Управление» — админские вкладки, только при tickets.write/admin (как веб). -->
+                    <RadioButton GroupName="TicketsViewMode"
+                                 Style="{StaticResource ChipRadioStyle}"
+                                 IsChecked="{Binding IsAdminMode, Mode=TwoWay}"
+                                 Command="{Binding SelectViewModeCommand}"
+                                 CommandParameter="admin"
+                                 Content="Управление"
+                                 Visibility="{Binding CanWriteTickets, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Режим: управление билетами" />
                     <Button Margin="10,0,0,0"
                             Style="{StaticResource HubPrimaryButtonStyle}"
                             Command="{Binding NewTicketCommand}"
@@ -203,6 +212,16 @@
                 <ColumnDefinition Width="6" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
+
+            <!-- Режим «Управление»: админские вкладки во всю ширину.
+                 Visibility на обёртке: у самой вью DataContext — Admin VM,
+                 биндинг IsAdminMode на ней резолвился бы в Admin.IsAdminMode
+                 и при null падал бы в Visible по умолчанию. -->
+            <Grid Grid.Column="0"
+                  Grid.ColumnSpan="3"
+                  Visibility="{Binding IsAdminMode, Converter={StaticResource BoolToVisibility}}">
+                <local:TicketAdminView DataContext="{Binding Admin}" />
+            </Grid>
 
             <!-- Режим «Канбан»: доска колонок во всю ширину (лежит под карточкой-оверлеем) -->
             <Grid Grid.Column="0"
@@ -884,11 +903,26 @@
                                            TextWrapping="Wrap"
                                            Visibility="{Binding NoteText, Converter={StaticResource NonEmptyStringToVisibility}}" />
 
-                                <TextBlock Margin="0,18,0,6"
-                                           Style="{StaticResource HubSectionTitleStyle}"
-                                           FontSize="14"
-                                           Text="Файлы"
-                                           Visibility="{Binding HasAttachments, Converter={StaticResource BoolToVisibility}}" />
+                                <!-- Файлы: чипы скачивания + «📎 Прикрепить» и «✕» при tickets.write -->
+                                <Grid Margin="0,18,0,6"
+                                      Visibility="{Binding ShowFilesSection, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{StaticResource HubSectionTitleStyle}"
+                                               FontSize="14"
+                                               Text="Файлы" />
+                                    <Button Grid.Column="1"
+                                            Padding="8,2"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding DataContext.AttachDetailFilesCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            Content="{Binding AttachButtonText}"
+                                            IsEnabled="{Binding CanAttach}"
+                                            Visibility="{Binding CanWrite, Converter={StaticResource BoolToVisibility}}"
+                                            AutomationProperties.Name="Прикрепить файл к заявке" />
+                                </Grid>
                                 <ItemsControl ItemsSource="{Binding Attachments}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
@@ -897,18 +931,29 @@
                                     </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <Button Margin="0,0,6,6"
-                                                    Padding="8,3"
-                                                    Style="{StaticResource HubGhostButtonStyle}"
-                                                    Command="{Binding DataContext.OpenAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                                    CommandParameter="{Binding}"
-                                                    IsEnabled="{Binding IsDownloadEnabled}"
-                                                    AutomationProperties.Name="{Binding Name, StringFormat='Скачать файл {0}'}">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBlock FontSize="12" Text="📄 " />
-                                                    <TextBlock FontSize="12" Text="{Binding DisplayText}" />
-                                                </StackPanel>
-                                            </Button>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Margin="0,0,2,6"
+                                                        Padding="8,3"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.OpenAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}"
+                                                        IsEnabled="{Binding IsDownloadEnabled}"
+                                                        AutomationProperties.Name="{Binding Name, StringFormat='Скачать файл {0}'}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock FontSize="12" Text="📄 " />
+                                                        <TextBlock FontSize="12" Text="{Binding DisplayText}" />
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button Margin="0,0,6,6"
+                                                        Padding="6,3"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.DeleteAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}"
+                                                        IsEnabled="{Binding IsDeleteEnabled}"
+                                                        Content="{Binding DeleteText}"
+                                                        Visibility="{Binding DataContext.CanWriteTickets, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
+                                                        AutomationProperties.Name="{Binding Name, StringFormat='Удалить файл {0}'}" />
+                                            </StackPanel>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>

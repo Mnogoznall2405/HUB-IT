@@ -72,6 +72,7 @@ export default function useMailMarkAllRead({
           return;
         }
         let changed = 0;
+        let failedCount = 0;
         if (viewMode === 'conversations') {
           const results = await Promise.allSettled(unreadIds.map((conversationId) => (
             mailAPI.markConversationAsRead(conversationId, {
@@ -80,7 +81,12 @@ export default function useMailMarkAllRead({
               folder_scope: folderScope || 'current',
             })
           )));
-          changed = results.filter((entry) => entry.status === 'fulfilled').length;
+          changed = results.filter(
+            (entry) => entry.status === 'fulfilled'
+              && entry.value?.ok !== false
+              && Number(entry.value?.failed || 0) === 0,
+          ).length;
+          failedCount = unreadIds.length - changed;
           if (changed === 0) {
             throw results[0]?.reason || new Error('mark-all-read failed');
           }
@@ -90,10 +96,15 @@ export default function useMailMarkAllRead({
             message_ids: unreadIds,
             action: 'mark_read',
           });
-          changed = Number(data?.succeeded ?? data?.changed ?? 0) || unreadIds.length;
+          changed = Number(data?.succeeded ?? data?.changed ?? 0);
+          failedCount = Number(data?.failed || 0);
         }
         applySelectedReadState();
         await afterListMutation({ clearBulkSelection: false });
+        if (failedCount > 0) {
+          setError(`Не удалось отметить письма как прочитанные: ${failedCount}.`);
+          if (changed === 0) return;
+        }
         notifyMailSuccess(`Отмечено как прочитанное: ${changed}.`);
         return;
       }
@@ -107,8 +118,16 @@ export default function useMailMarkAllRead({
         folder,
         folder_scope: folderScope || 'current',
       });
+      const failedCount = Number(data?.failed || 0);
       applySelectedReadState();
       await afterListMutation({ clearBulkSelection: false });
+      if (data?.ok === false || failedCount > 0) {
+        setError(
+          `Не удалось отметить часть писем как прочитанные: ${failedCount || 1}. `
+          + 'Повторите действие позже.',
+        );
+        if (Number(data?.changed || 0) <= 0) return;
+      }
       notifyMailSuccess(`Отмечено как прочитанное: ${Number(data?.changed || 0)}.`);
     } catch (requestError) {
       if (!(await handleMailCredentialsRequired(requestError, 'Не удалось отметить письма как прочитанные.'))) {

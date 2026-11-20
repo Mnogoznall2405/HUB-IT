@@ -251,7 +251,7 @@ if ($coldStart -and $resurrected -and $resolvedChatMode -eq 'dual' -and -not $No
     # nodes and the main backend start first; the ARR farm needs chat ready
     # as early as possible to stop the 502.4 handshake storm.
     $deferredWorkers = @(
-        'itinvent-scan', 'itinvent-scan-worker', 'itinvent-inventory',
+        'itinvent-scan', 'itinvent-scan-worker', 'itinvent-ollama', 'itinvent-scan-llm-worker', 'itinvent-inventory',
         'itinvent-monitoring-worker', 'itinvent-mail-notification-worker', 'itinvent-my-files-worker',
         'itinvent-ai-chat-worker', 'itinvent-bot'
     )

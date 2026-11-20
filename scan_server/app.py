@@ -19,9 +19,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -219,6 +220,9 @@ watchdog_thread: Optional[threading.Thread] = None
 startup_maintenance_thread: Optional[threading.Thread] = None
 ingest_semaphore: Optional[asyncio.Semaphore] = None
 ingest_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
+# Held while the embedded worker runs so a standalone scan_server.worker_main
+# cannot double-run claims/requeues alongside it (same lock file it takes).
+worker_lock_handle: Optional[Any] = None
 dashboard_cache_lock = threading.Lock()
 dashboard_cache_payload: Optional[Dict[str, Any]] = None
 dashboard_cache_ts = 0.0
@@ -896,12 +900,50 @@ def _run_startup_maintenance() -> None:
         logger.exception("Scan startup maintenance failed: %s", exc)
 
 
+_WORKER_LOCK_UNLOCKED = object()  # sentinel: lock file unavailable → run without exclusivity
+
+
+def _acquire_worker_singleton_lock() -> Optional[Any]:
+    """Best-effort ``scan_worker.lock`` acquisition for the embedded worker.
+
+    Mirrors ``worker_main._acquire_singleton_lock``: whichever process holds
+    the file lock owns job claiming. Returns ``None`` only when the lock is
+    held by another process; an unavailable lock file must not silently
+    disable embedded job processing, so it degrades to ``_WORKER_LOCK_UNLOCKED``.
+    """
+    lock_path = config.db_path.parent / "scan_worker.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except OSError:
+        logger.warning("Cannot open %s; embedded worker runs without singleton lock", lock_path)
+        return _WORKER_LOCK_UNLOCKED
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.lockf(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()).encode("ascii"))
+        handle.flush()
+        return handle
+    except OSError:
+        handle.close()
+        return None
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     stop_event.clear()
     watchdog_stop_event.clear()
     _install_listener_death_handler()
-    global startup_maintenance_thread, metrics_sampler
+    global startup_maintenance_thread, metrics_sampler, worker_lock_handle
     startup_maintenance_thread = None
     if worker is None:
         startup_maintenance_thread = threading.Thread(
@@ -913,7 +955,13 @@ async def lifespan(_: FastAPI):
     else:
         _run_startup_maintenance()
     if worker is not None and not worker.is_alive():
-        worker.start()
+        worker_lock_handle = _acquire_worker_singleton_lock()
+        if worker_lock_handle is None:
+            logger.warning(
+                "Another scan worker already holds scan_worker.lock; embedded worker not started"
+            )
+        else:
+            worker.start()
     global watchdog_thread
     watchdog_thread = None
     if config.watchdog_enabled:
@@ -947,6 +995,11 @@ async def lifespan(_: FastAPI):
         metrics_sampler.join(timeout=5)
     if worker is not None and worker.is_alive():
         worker.join(timeout=5)
+    if worker_lock_handle is not None:
+        try:
+            worker_lock_handle.close()
+        except Exception:
+            pass
     logger.info("Scan server stopped")
 
 
@@ -1007,6 +1060,47 @@ class _ScanUploadDisconnectMiddleware:
 
 
 app.add_middleware(_ScanUploadDisconnectMiddleware)
+
+
+def _scan_api_body_max_bytes() -> int:
+    try:
+        value = int(os.getenv("SCAN_API_BODY_MAX_BYTES", "4194304") or 4194304)
+    except ValueError:
+        value = 4194304
+    return max(1024, value)
+
+
+class _ScanBodyLimitMiddleware:
+    """Reject oversized bodies by Content-Length for non-ingest scan routes.
+
+    The ingest endpoints have their own admission+streaming limits; every
+    other POST (heartbeat, task results, acks) was read unbounded into memory.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["method"] in {"POST", "PUT", "PATCH"}:
+            path = scope["path"]
+            if path.startswith("/api/v1/scan/") and not path.startswith("/api/v1/scan/ingest"):
+                raw_len = b""
+                for name, value in scope["headers"]:
+                    if name == b"content-length":
+                        raw_len = value
+                        break
+                if raw_len:
+                    try:
+                        if int(raw_len) > _scan_api_body_max_bytes():
+                            response = JSONResponse(status_code=413, content={"detail": "Request body too large"})
+                            await response(scope, receive, send)
+                            return
+                    except ValueError:
+                        pass
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_ScanBodyLimitMiddleware)
 
 
 @app.get("/health")
@@ -1207,7 +1301,10 @@ async def ingest(
     # only once an ingest slot is free (waiting requests stay unread in the transport buffers).
     async with _ingest_slot():
         try:
-            raw = json.loads(await _read_body_limited(request, _ingest_json_max_bytes()))
+            # The body can carry base64 of a whole document; parsing it must
+            # not stall the event loop.
+            body = await _read_body_limited(request, _ingest_json_max_bytes())
+            raw = await run_in_threadpool(json.loads, body)
             data = _model_dump(IngestPayload(**raw)) if isinstance(raw, dict) else None
         except ValidationError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=json.loads(exc.json())) from exc
@@ -1614,10 +1711,10 @@ def host_scan_runs(
     hostname: str,
     limit: int = Query(30, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    view: Optional[str] = Query("detail"),
+    view: Optional[str] = Query("summary"),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    resolved_view = _parse_scan_list_view(view, default=ScanListView.detail.value)
+    resolved_view = _parse_scan_list_view(view, default=ScanListView.summary.value)
     return store.list_host_scan_runs(
         hostname=hostname, limit=limit, offset=offset, view=resolved_view
     )

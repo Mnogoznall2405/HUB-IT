@@ -52,6 +52,9 @@ def normalize_text(value: Any, default: str = "") -> str:
     return text or default
 
 
+_DISPLAY_NAME_ADDR_RE = re.compile(r"<([^<>\s]+@[^<>\s]+)>")
+
+
 def parse_recipients(value: str | Iterable[Any] | None) -> list[str]:
     if value is None:
         parts: Iterable[Any] = []
@@ -64,7 +67,11 @@ def parse_recipients(value: str | Iterable[Any] | None) -> list[str]:
     seen: set[str] = set()
     for raw_part in parts:
         for part in re.split(r"[;,]+", str(raw_part or "")):
-            email = normalize_text(part).lower()
+            token = normalize_text(part)
+            # Outlook-style paste ("Фамилия И. <user@corp>") must yield the
+            # address, not the whole display string — Exchange rejects it.
+            match = _DISPLAY_NAME_ADDR_RE.search(token)
+            email = normalize_text(match.group(1) if match else token).lower()
             if not email or email in seen:
                 continue
             seen.add(email)

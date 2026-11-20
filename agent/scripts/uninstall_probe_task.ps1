@@ -3,21 +3,21 @@ param(
     [string]$TaskName
 )
 
-# Removes a user-session probe task (Telegram/MAX) that the MSI no longer registers.
+# Removes a legacy user-session DLP probe task without deleting its runtime data.
 # Idempotent: a missing task is not an error, so upgrades can call it on every install.
 $ErrorActionPreference = "Stop"
 
-$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+$task = Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -eq $TaskName }
 if ($null -eq $task) {
     Write-Host "Scheduled task '$TaskName' is not registered; nothing to remove."
     exit 0
 }
 
 try {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    $task | Stop-ScheduledTask -ErrorAction Stop
 } catch {
-    Write-Warning "Stop-ScheduledTask '$TaskName' failed: $($_.Exception.Message)"
+    throw "Cannot stop legacy DLP task '$TaskName': $($_.Exception.Message)"
 }
 
-Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+$task | Unregister-ScheduledTask -Confirm:$false -ErrorAction Stop
 Write-Host "Scheduled task '$TaskName' removed."

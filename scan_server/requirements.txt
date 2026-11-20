@@ -12,3 +12,6 @@ psutil>=7.1.1
 sqlalchemy>=2.0.36
 psycopg[binary]>=3.2.0
 alembic>=1.14.0
+# Second-opinion reviewer backend (GGUF chat model; CPU build is enough,
+# n_gpu_layers flips to CUDA after the NVIDIA driver update).
+llama-cpp-python>=0.3.0

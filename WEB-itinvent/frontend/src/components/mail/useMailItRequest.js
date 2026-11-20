@@ -1,4 +1,6 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { createMailSendIdempotencyKey } from './mailSendIdempotency';
+import { classifyMailSendError, getMailSendErrorMessage, MAIL_SEND_OUTCOME } from './mailSendOutcome';
 
 export function buildItRequestFieldDefaults(template) {
   const defaults = {};
@@ -26,6 +28,8 @@ export default function useMailItRequest({
   const [itTemplateId, setItTemplateId] = useState('');
   const [itFieldValues, setItFieldValues] = useState({});
   const [itSending, setItSending] = useState(false);
+  const sendLock = useRef(false);
+  const sendAttempt = useRef(null);
 
   const activeTemplate = useMemo(
     () => (Array.isArray(templates) ? templates : [])
@@ -62,25 +66,36 @@ export default function useMailItRequest({
   }, []);
 
   const submitItRequest = useCallback(async () => {
+    if (sendLock.current) return false;
     if (!itTemplateId) {
       onError?.('Выберите шаблон IT-заявки.');
       return false;
     }
+    const fields = itFieldValues || {};
+    const fingerprint = JSON.stringify([itTemplateId, Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))]);
+    if (sendAttempt.current?.fingerprint !== fingerprint) {
+      sendAttempt.current = { fingerprint, key: createMailSendIdempotencyKey() };
+    }
+    sendLock.current = true;
     setItSending(true);
     try {
-      await sendItRequest?.({ template_id: itTemplateId, fields: itFieldValues || {} });
+      await sendItRequest?.({ template_id: itTemplateId, fields, idempotencyKey: sendAttempt.current.key });
+      sendAttempt.current = null;
       setItOpen(false);
       onMessage?.('IT-заявка отправлена.');
       return true;
     } catch (requestError) {
       if (!(await handleMailCredentialsRequired?.(requestError, 'Не удалось отправить IT-заявку.'))) {
-        const detail = getMailErrorDetail
+        const detail = classifyMailSendError(requestError) === MAIL_SEND_OUTCOME.MAYBE_SENT
+          ? getMailSendErrorMessage(requestError)
+          : getMailErrorDetail
           ? getMailErrorDetail(requestError, 'Не удалось отправить IT-заявку.')
           : (requestError?.response?.data?.detail || 'Не удалось отправить IT-заявку.');
         onError?.(detail);
       }
       return false;
     } finally {
+      sendLock.current = false;
       setItSending(false);
     }
   }, [

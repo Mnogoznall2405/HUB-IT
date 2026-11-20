@@ -155,6 +155,44 @@ describe('useMailMarkAllRead', () => {
     expect(deps.notifyMailSuccess).toHaveBeenCalledWith('Отмечено как прочитанное: 2.');
   });
 
+  it('reports bulk mark_read failures instead of claiming the request count', async () => {
+    // Regression (MAIL-07): succeeded=0 + failed=2 must not be shown as
+    // "Отмечено как прочитанное: 2".
+    const deps = createDeps({
+      hasNarrowingFilters: true,
+      listItems: [
+        { id: 'msg-1', is_read: false },
+        { id: 'msg-2', is_read: false },
+      ],
+      mailAPI: {
+        markAllRead: vi.fn(async () => ({ changed: 99 })),
+        bulkMessageAction: vi.fn(async () => ({ ok: false, succeeded: 0, failed: 2 })),
+      },
+      selectedMessage: null,
+    });
+    const { result } = renderHook(() => useMailMarkAllRead(deps));
+
+    await result.current();
+
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining('2'));
+    expect(deps.notifyMailSuccess).not.toHaveBeenCalled();
+  });
+
+  it('surfaces partial mark-all failures returned by the folder endpoint', async () => {
+    const deps = createDeps({
+      mailAPI: {
+        markAllRead: vi.fn(async () => ({ ok: false, changed: 3, failed: 1 })),
+      },
+      selectedMessage: null,
+    });
+    const { result } = renderHook(() => useMailMarkAllRead(deps));
+
+    await result.current();
+
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining('1'));
+    expect(deps.notifyMailSuccess).toHaveBeenCalledWith('Отмечено как прочитанное: 3.');
+  });
+
   it('marks only unread loaded conversations while filters are active', async () => {
     const deps = createDeps({
       hasNarrowingFilters: true,

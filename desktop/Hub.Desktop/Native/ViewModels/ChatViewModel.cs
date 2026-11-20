@@ -2,10 +2,14 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Input;
 using Hub.Desktop.Native.Api;
 using System.Windows;
+// ImplicitUsings тянут System.Drawing — там тоже есть Brush/ImageSource.
+using Brush = System.Windows.Media.Brush;
+using ImageSource = System.Windows.Media.ImageSource;
 
 namespace Hub.Desktop.Native.ViewModels;
 
@@ -34,6 +38,7 @@ public sealed class ChatViewModel : ObservableObject
     private readonly IHubApiClient _api;
     private readonly AuthImageLoader _imageLoader;
     private readonly SynchronizationContext? _syncContext;
+    private readonly Thread _syncContextThread;
     private readonly List<ConversationItemViewModel> _allConversations = [];
     private readonly IHubChatRealtime? _injectedRealtime;
 
@@ -66,7 +71,45 @@ public sealed class ChatViewModel : ObservableObject
     private bool _isSearchingGlobal;
     private bool _isForwardPanelOpen;
     private ChatMessageViewModel? _forwardingMessage;
+    private IReadOnlyList<ChatMessageViewModel>? _forwardingMessages;
     private bool _isForwarding;
+    // Отдельный фильтр панели пересылки: свой список по всем диалогам,
+    // чтобы поиск внутри пикера не трогал общий SearchText/sidebar.
+    private string _forwardSearchText = string.Empty;
+    // Подтверждение удаления (tg-modal): снапшот целей на момент клика «Удалить».
+    private List<ChatMessageViewModel>? _pendingDelete;
+    private bool _isDeleteConfirmOpen;
+    private bool _isDeleting;
+    // Драг файлов над лентой: оверлей tg-drop («Перетащите файлы…»).
+    private bool _isFileDropOverlayOpen;
+    // Вспышка якорного пузыря после перехода (reply/pinned/search) — маркер
+    // гасит устаревшие тики таймера, как у черновиков.
+    private int _highlightMarker;
+    private bool _isSelectionMode;
+    private readonly List<ChatMessageViewModel> _selectedMessages = [];
+    private int _scrollToEndSignal;
+    // Просмотрщик изображений: плоский список image-вложений ленты + позиция.
+    private readonly List<(string MessageId, ChatAttachmentItemViewModel Item)> _mediaViewerItems = [];
+    private int _mediaViewerIndex = -1;
+    private int _mediaViewerLoadMarker;
+    private bool _isMediaViewerOpen;
+    private bool _isMediaViewerLoading;
+    private ImageSource? _mediaViewerImage;
+    // «Печатает…» по диалогам: маркер таймера на conversation_id —
+    // новый started/stopped гасит висящее автоснятие прежнего кадра.
+    private readonly Dictionary<string, int> _conversationTypingMarkers = new(StringComparer.Ordinal);
+    // Клиентские черновики (как web chatDraftsStorage): память в _drafts,
+    // диск через INativeChatDraftStore; дебаунс записи ~320 мс.
+    private readonly INativeChatDraftStore? _injectedDraftStore;
+    private readonly Dictionary<string, string> _drafts = new(StringComparer.Ordinal);
+    private INativeChatDraftStore? _draftStore;
+    private long? _draftUserId;
+    private bool _draftsInitialized;
+    private int _draftSyncMarker;
+    private bool _suppressDraftSync;
+    // Снапшот черновика на время правки сообщения: пока в composer тело edit,
+    // в сторадж/строку идёт исходный черновик (см. editDraftSnapshotRef в web).
+    private (string ConversationId, string Text)? _editDraftSnapshot;
     private bool _isReadersPanelOpen;
     private bool _isLoadingReaders;
     private string? _readersTitleText;
@@ -83,6 +126,64 @@ public sealed class ChatViewModel : ObservableObject
     private CancellationTokenSource? _memberSearchCancellation;
     private ConversationItemViewModel? _membersPanelConversation;
     private bool _isExportingConversation;
+
+    // «Отправить позже»: серверный флаг из GET /chat/config (раз на загрузку,
+    // до 3 попыток как в web), список отложенных, панель и редактор времени.
+    private bool _chatConfigRequested;
+    private bool _scheduledMessagesEnabled;
+    private object _scheduledScope = new();
+    private bool _isScheduledPanelOpen;
+    private bool _isLoadingScheduled;
+    private bool _isScheduledBusy;
+    private string? _scheduledErrorText;
+    private bool _isScheduleEditorOpen;
+    private ChatScheduledMessageItemViewModel? _editingScheduled;
+    private string _scheduleDraftBody = string.Empty;
+    private DateTime? _scheduleDraftDate;
+    private string _scheduleDraftTime = string.Empty;
+    private string? _scheduleDraftErrorText;
+    private string? _scheduleDraftHint;
+    private ChatScheduledMessageItemViewModel? _armedScheduledCancel;
+
+    // ---- Модерация и настройки группы ----
+    // Гейты вычисляются только из серверной viewer_member_role последнего
+    // detail-ответа (fail-closed: без роли управление скрыто).
+    private bool _canManageGroupOwners;
+    private bool _isGroupSettingsOpen;
+    private ConversationItemViewModel? _groupSettingsConversation;
+    private string _groupTitleDraft = string.Empty;
+    private string _groupDescriptionDraft = string.Empty;
+    private bool _hasGroupAvatar;
+    private string? _groupInviteLink;
+    private bool _groupDeleteArmed;
+    private bool _inviteRevokeArmed;
+    private bool _isGroupActionBusy;
+    private int _joinRequestsOpenCount;
+    private int _reportsOpenCount;
+
+    // Панель «Заявки на вступление».
+    private bool _isJoinRequestsPanelOpen;
+    private bool _isLoadingJoinRequests;
+    private bool _isJoinApprovalRequired;
+    private bool _isJoinApprovalBusy;
+    private bool _suppressJoinApprovalSync;
+
+    // Панель «Жалобы».
+    private bool _isReportsPanelOpen;
+    private bool _isLoadingReports;
+
+    // Диалог «Пожаловаться на сообщение».
+    private bool _isReportDialogOpen;
+    private ChatMessageViewModel? _reportTarget;
+    private string _reportReason = "spam";
+    private string _reportComment = string.Empty;
+    private bool _isSubmittingReport;
+
+    // Панель «Поделиться задачей».
+    private bool _isTaskShareOpen;
+    private string _taskShareSearchText = string.Empty;
+    private bool _isTaskShareLoading;
+    private CancellationTokenSource? _taskShareCancellation;
 
     // Медиагалерея диалога: вкладки «Медиа» (image+video), «Файлы», «Аудио» —
     // как attachmentStreams в web; у каждого kind свой курсор пагинации.
@@ -137,16 +238,89 @@ public sealed class ChatViewModel : ObservableObject
     private readonly Dictionary<string, Task<HubChatLinkPreview?>> _linkPreviewRequests = new(StringComparer.Ordinal);
 
     // «Печатает…»: исходящие кадры троттлим и помечаем целевой диалог,
-    // входящий индикатор гасит маркер-таймер. Поля — только из UI-потока.
+    // входящий индикатор гасит маркер-таймер per conversation_id.
+    // Поля — только из UI-потока.
     private string? _typingSentToConversationId;
     private DateTime _lastTypingSentAt = DateTime.MinValue;
     private string? _typingText;
-    private int _typingMarker;
 
     // Presence: последний известный статус по user_id (DTO + chat.presence.updated)
     // и текущий набор chat.watch_presence — оба живут только на UI-потоке.
     private readonly Dictionary<long, HubChatPresence> _presenceByUserId = [];
     private long[] _presenceWatchUserIds = [];
+
+    // ---- Папки диалогов (parity web ChatFolderTabs/chatFolderUtils) ----
+    // «Все» — виртуальная вкладка tg-main (web ALL_CHAT_FOLDER_TAB): первой в
+    // полосе, показывает все не-архивные диалоги; не серверная папка.
+    // System-вкладки Личные/Беседы/Задачи + пользовательские папки сервера;
+    // членство — карта folder_id → conversation_ids (serverMap ∪ folder.conversation_ids).
+    internal const string AllFolderKey = "all";
+    internal const string PersonalFolderKey = "personal";
+    internal const string GroupsFolderKey = "groups";
+    internal const string TasksFolderKey = "tasks";
+
+    private static readonly (string Key, string Title)[] SystemFolderTabs =
+    [
+        (AllFolderKey, "Все"),
+        (PersonalFolderKey, "Личные"),
+        (GroupsFolderKey, "Беседы"),
+        (TasksFolderKey, "Задачи"),
+    ];
+
+    // Вкладка по умолчанию — «Все» (как «All chats» верхним пунктом в tg-main).
+    private string _activeFolderKey = AllFolderKey;
+    private readonly ObservableCollection<ChatFolderTabViewModel> _customFolderTabs = [];
+    private readonly Dictionary<string, List<string>> _conversationIdsByFolder = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _serverFolderUnreadCounts = new(StringComparer.Ordinal);
+    private bool _isFolderManagerOpen;
+    private bool _isFolderBusy;
+    private string _newFolderName = string.Empty;
+    private string? _folderErrorText;
+    private ChatFolderTabViewModel? _renamingFolder;
+    private string _renamingFolderName = string.Empty;
+    private bool _isFolderMembershipOpen;
+    private ChatFolderTabViewModel? _membershipFolder;
+
+    // ---- Стикеры (панель composer'а, parity web TelegramStickersTab) ----
+    private bool _isStickerPanelOpen;
+    private bool _isLoadingStickers;
+    private bool _stickersLoaded;
+    private string? _stickerErrorText;
+    private bool _isSendingSticker;
+    private string _stickerImportSource = string.Empty;
+    private bool _isImportingStickerPack;
+    private ChatStickerPackViewModel? _selectedStickerPack;
+    private bool _isEmojiTab;
+
+    // ---- Правая панель «Информация» (клик по шапке, tdesktop profile) ----
+    private bool _isPeerCardOpen;
+    private bool _isCompactInfoOverlay;
+    private ConversationItemViewModel? _peerPanelConversation;
+    private string? _peerMembersTitleText;
+    private string? _peerDescriptionText;
+    private const int PeerPanelPreviewLimit = 4;
+
+    // ---- @mention-автокомплит composer'а (parity ChatComposer.jsx) ----
+    private const int MentionQueryLimit = 32;
+    private const int MentionResultLimit = 8;
+    private readonly List<ChatGroupMemberItemViewModel> _mentionSource = [];
+    private string? _mentionConversationId;
+    private string? _mentionQuery;
+    private int _mentionStart;
+    private int _mentionEnd;
+    private bool _isMentionPopupOpen;
+    private bool _isLoadingMentions;
+    private ChatGroupMemberItemViewModel? _selectedMentionSuggestion;
+
+    // ---- ИИ-ассистент (/chat/ai/*) ----
+    private static readonly TimeSpan AiStatusPollInterval = TimeSpan.FromSeconds(2);
+    private bool _isAiPanelOpen;
+    private bool _isLoadingAiBots;
+    private bool _aiBotsLoaded;
+    private string? _aiErrorText;
+    private bool _isAiActionBusy;
+    private HubChatAiStatus? _aiStatus;
+    private CancellationTokenSource? _aiStatusPolling;
 
     private ConversationItemViewModel? _selectedConversation;
     private string _searchText = string.Empty;
@@ -159,6 +333,7 @@ public sealed class ChatViewModel : ObservableObject
     private string? _uploadStatusText;
     private bool _hasOlder;
     private string? _bannerErrorText;
+    private string? _historyErrorText;
     private string _connectionStatusText = "офлайн";
     private string _connectionTone = HubStatusTone.Muted;
 
@@ -168,12 +343,23 @@ public sealed class ChatViewModel : ObservableObject
     }
 
     public ChatViewModel(IHubApiClient api, IHubChatRealtime? realtime)
+        : this(api, realtime, draftStore: null)
+    {
+    }
+
+    public ChatViewModel(
+        IHubApiClient api,
+        IHubChatRealtime? realtime,
+        INativeChatDraftStore? draftStore)
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
         _imageLoader = new AuthImageLoader(api);
         _syncContext = SynchronizationContext.Current;
+        _syncContextThread = Thread.CurrentThread;
         _injectedRealtime = realtime;
         _realtime = realtime;
+        _injectedDraftStore = draftStore;
+        _draftStore = draftStore;
 
         Messages.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsMessagesEmpty));
 
@@ -189,19 +375,35 @@ public sealed class ChatViewModel : ObservableObject
             },
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
             _ => CanAttach);
+        // Пути из ОС-драга/вставки картинки — та же upload-сессия, что у «скрепки».
+        AttachDroppedFilesCommand = new NativeAsyncCommand(
+            (parameter, ct) => AttachFilesAsync(NormalizeDroppedPaths(parameter), ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            parameter => NormalizeDroppedPaths(parameter).Count > 0 && CanAttach);
         LoadOlderCommand = new NativeAsyncCommand(
             (_, ct) => LoadOlderAsync(ct),
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
             _ => HasOlder && !IsLoadingOlder && HasConversation);
         RetryCommand = new NativeAsyncCommand(
-            (_, ct) => LoadConversationsCoreAsync(ct),
+            (_, ct) => HasHistoryError && SelectedConversation is { } retryConversation
+                ? LoadMessagesSafelyAsync(retryConversation)
+                : LoadConversationsCoreAsync(ct),
             ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        // Повтор именно истории текущего диалога — для панели ошибки в ленте;
+        // баннерный RetryCommand сам направляется сюда, пока висит HasHistoryError.
+        RetryHistoryCommand = new NativeAsyncCommand(
+            (_, _) => SelectedConversation is { } conversation
+                ? LoadMessagesSafelyAsync(conversation)
+                : Task.CompletedTask,
+            ex => HistoryErrorText = TasksViewModel.DescribeError(ex),
+            _ => HasConversation && !IsLoadingMessages);
         DismissBannerCommand = new NativeRelayCommand(() => BannerErrorText = null);
         BeginReplyCommand = new NativeRelayCommand(parameter =>
         {
             if (parameter is ChatMessageViewModel { CanReply: true } message)
             {
-                EditingMessage = null;
+                // Очищает и edit со снапшотом черновика, если правка была активна.
+                ClearComposerContext();
                 ReplyingTo = message;
             }
         });
@@ -210,23 +412,36 @@ public sealed class ChatViewModel : ObservableObject
             if (parameter is ChatMessageViewModel { CanEditOrDelete: true } message)
             {
                 ReplyingTo = null;
+                // Черновик прячем в снапшот ДО подмены composer телом правки —
+                // тело edit не должно затереть черновик ни в памяти, ни на диске.
+                if (_selectedConversation is { } editConversation)
+                {
+                    _editDraftSnapshot = (editConversation.Id, _composerText);
+                }
+
                 EditingMessage = message;
                 ComposerText = message.EditableBody ?? string.Empty;
             }
         });
         CancelComposerContextCommand = new NativeRelayCommand(ClearComposerContext);
+        // Telegram: «Удалить» из меню пузыря спрашивает подтверждение — открываем
+        // модал «Удалить сообщение?»; сам DELETE уходит из ConfirmDeleteCommand.
         DeleteMessageCommand = new NativeAsyncCommand(
-            async (parameter, cancellationToken) =>
+            (parameter, _) =>
             {
-                if (parameter is ChatMessageViewModel { CanEditOrDelete: true } message
-                    && _selectedConversation is { } conversation)
+                if (parameter is ChatMessageViewModel { CanEditOrDelete: true } message)
                 {
-                    var result = await _api.DeleteChatMessageAsync(
-                        conversation.Id, message.Id, cancellationToken);
-                    message.Update(result);
+                    OpenDeleteConfirm([message]);
                 }
+
+                return Task.CompletedTask;
             },
             ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        ConfirmDeleteCommand = new NativeAsyncCommand(
+            (_, ct) => ConfirmDeleteAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => _pendingDelete is { Count: > 0 } && !IsDeleting);
+        CancelDeleteCommand = new NativeRelayCommand(CloseDeleteConfirm);
         CopyMessageTextCommand = new NativeRelayCommand(parameter =>
         {
             if (parameter is ChatMessageViewModel { EditableBody.Length: > 0 } message)
@@ -337,7 +552,10 @@ public sealed class ChatViewModel : ObservableObject
                 CloseMessageSearch();
                 CloseMembersPanel();
                 CloseMediaPanel();
+                _forwardingMessages = null;
                 ForwardingMessage = message;
+                _forwardSearchText = string.Empty;
+                RebuildForwardTargets();
                 IsForwardPanelOpen = true;
             }
         });
@@ -346,6 +564,117 @@ public sealed class ChatViewModel : ObservableObject
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
             parameter => parameter is ConversationItemViewModel && !IsForwarding);
         CloseForwardPanelCommand = new NativeRelayCommand(CloseForwardPanel);
+        // Режим мультивыбора сообщений (Telegram: «Выделить» в меню пузыря).
+        BeginSelectCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is ChatMessageViewModel { IsSystem: false } message)
+            {
+                IsSelectionMode = true;
+                if (!message.IsSelected)
+                {
+                    ToggleMessageSelection(message);
+                }
+            }
+        });
+        ToggleMessageSelectionCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is ChatMessageViewModel { IsSystem: false } message)
+            {
+                ToggleMessageSelection(message);
+            }
+        });
+        ExitSelectionCommand = new NativeRelayCommand(ExitMessageSelection);
+        CopySelectedCommand = new NativeRelayCommand(() =>
+        {
+            var text = string.Join(
+                "\n",
+                _selectedMessages
+                    .OrderBy(message => message.CreatedAt)
+                    .Select(message => message.EditableBody)
+                    .Where(body => !string.IsNullOrEmpty(body)));
+            if (text.Length > 0)
+            {
+                System.Windows.Clipboard.SetText(text);
+            }
+
+            ExitMessageSelection();
+        });
+        // Мультивыбор «🗑»: та же подтверждающая модал, пачка — в _pendingDelete.
+        DeleteSelectedCommand = new NativeAsyncCommand(
+            (_, _) =>
+            {
+                var targets = _selectedMessages
+                    .Where(message => message.CanEditOrDelete && !string.IsNullOrEmpty(message.Id))
+                    .OrderBy(message => message.CreatedAt)
+                    .ToList();
+                if (targets.Count > 0)
+                {
+                    OpenDeleteConfirm(targets);
+                }
+
+                return Task.CompletedTask;
+            },
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => _selectedMessages.Count > 0);
+        ForwardSelectedCommand = new NativeRelayCommand(() =>
+        {
+            var targets = _selectedMessages
+                .Where(message => message.CanReply && !string.IsNullOrEmpty(message.Id))
+                .OrderBy(message => message.CreatedAt)
+                .ToList();
+            if (targets.Count == 0)
+            {
+                return;
+            }
+
+            CloseMessageSearch();
+            CloseMembersPanel();
+            CloseMediaPanel();
+            _forwardingMessages = targets;
+            ForwardingMessage = null;
+            _forwardSearchText = string.Empty;
+            RebuildForwardTargets();
+            IsForwardPanelOpen = true;
+            ExitMessageSelection();
+        });
+        // ☰-меню: «Новый диалог»/«Новая группа» открывают панель создания
+        // в нужном режиме — та же механика, что у кнопки «＋».
+        BeginNewDirectCommand = new NativeRelayCommand(() => OpenNewConversationMode(group: false));
+        BeginNewGroupCommand = new NativeRelayCommand(() => OpenNewConversationMode(group: true));
+        // «Ночной режим» — та же подмена палитры, что в настройках (NativeThemeManager).
+        ToggleNightThemeCommand = new NativeAsyncCommand(
+            (_, ct) => ToggleNightThemeSafelyAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        // Скоуп «Глобальный поиск» в выдаче списка — открывает существующую панель,
+        // запрос уже синхронизирован из SearchText.
+        OpenGlobalSearchScopeCommand = new NativeRelayCommand(() =>
+        {
+            CloseNewConversation();
+            IsGlobalSearchOpen = true;
+        });
+        // FAB «вниз»: инкремент сигнала → attached-поведение докручивает ленту.
+        ScrollToEndCommand = new NativeRelayCommand(() => ScrollToEndSignal++);
+        // Просмотрщик изображений (media viewer Telegram): навигация, закрытие, ⬇.
+        CloseMediaViewerCommand = new NativeRelayCommand(CloseMediaViewer);
+        MediaViewerPrevCommand = new NativeRelayCommand(() => MoveMediaViewer(-1));
+        MediaViewerNextCommand = new NativeRelayCommand(() => MoveMediaViewer(1));
+        SaveMediaViewerCommand = new NativeRelayCommand(() =>
+        {
+            if (_mediaViewerIndex >= 0 && _mediaViewerIndex < _mediaViewerItems.Count)
+            {
+                var (messageId, item) = _mediaViewerItems[_mediaViewerIndex];
+                _ = DownloadAndOpenAttachmentAsync(messageId, item.Model, item.FileName);
+            }
+        });
+        Conversations.CollectionChanged += (_, _) =>
+            OnPropertyChanged(nameof(IsConversationSearchEmpty));
+        GlobalSearchResults.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(IsConversationSearchEmpty));
+            OnPropertyChanged(nameof(HasGlobalSearchResults));
+        };
+        NativeThemeManager.EffectiveThemeChanged += (_, _) =>
+            RunOnUi(() => OnPropertyChanged(nameof(IsNightTheme)));
         ShowMessageReadersCommand = new NativeAsyncCommand(
             (parameter, ct) => ShowMessageReadersAsync(parameter as ChatMessageViewModel, ct),
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
@@ -354,6 +683,225 @@ public sealed class ChatViewModel : ObservableObject
         OpenNotesCommand = new NativeAsyncCommand(
             (_, ct) => OpenNotesAsync(ct),
             ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        OpenSupportCommand = new NativeAsyncCommand(
+            (_, ct) => OpenSupportAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        ToggleGroupSettingsCommand = new NativeAsyncCommand(
+            (_, ct) => ToggleGroupSettingsAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        CloseGroupSettingsCommand = new NativeRelayCommand(CloseGroupSettings);
+        SaveGroupProfileCommand = new NativeAsyncCommand(
+            (_, ct) => SaveGroupProfileAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => !IsGroupActionBusy);
+        UploadGroupAvatarCommand = new NativeAsyncCommand(
+            (_, ct) => UploadGroupAvatarAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanManageGroupOwners && !IsGroupActionBusy);
+        RemoveGroupAvatarCommand = new NativeAsyncCommand(
+            (_, ct) => RemoveGroupAvatarAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanManageGroupOwners && HasGroupAvatar && !IsGroupActionBusy);
+        CreateInviteLinkCommand = new NativeAsyncCommand(
+            (_, ct) => CreateInviteLinkAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanManageGroupMembers && !IsGroupActionBusy);
+        CopyInviteLinkCommand = new NativeRelayCommand(() =>
+        {
+            if (_groupInviteLink is { } link)
+            {
+                System.Windows.Clipboard.SetText(link);
+            }
+        });
+        RevokeInviteLinkCommand = new NativeAsyncCommand(
+            (_, ct) => RevokeInviteLinkAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanManageGroupMembers && !IsGroupActionBusy);
+        DeleteGroupCommand = new NativeAsyncCommand(
+            (_, ct) => DeleteGroupConversationAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanManageGroupOwners && !IsGroupActionBusy);
+        ToggleJoinRequestsPanelCommand = new NativeAsyncCommand(
+            (_, ct) => ToggleJoinRequestsPanelAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanManageGroupMembers);
+        CloseJoinRequestsPanelCommand = new NativeRelayCommand(CloseJoinRequestsPanel);
+        ToggleReportsPanelCommand = new NativeAsyncCommand(
+            (_, ct) => ToggleReportsPanelAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanManageGroupMembers);
+        CloseReportsPanelCommand = new NativeRelayCommand(CloseReportsPanel);
+        BeginReportCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is ChatMessageViewModel { CanReport: true } message)
+            {
+                BeginReport(message);
+            }
+        });
+        SubmitReportCommand = new NativeAsyncCommand(
+            (_, ct) => SubmitReportAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => IsReportDialogOpen && !IsSubmittingReport);
+        CancelReportCommand = new NativeRelayCommand(CloseReportDialog);
+        OpenTaskShareCommand = new NativeAsyncCommand(
+            (_, ct) => ToggleTaskShareAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => HasConversation);
+        CloseTaskShareCommand = new NativeRelayCommand(CloseTaskShare);
+        OpenScheduleEditorCommand = new NativeRelayCommand(
+            _ => OpenScheduleEditor(),
+            _ => CanScheduleMessage);
+        CloseScheduleEditorCommand = new NativeRelayCommand(CloseScheduleEditor);
+        ConfirmScheduleCommand = new NativeAsyncCommand(
+            (_, ct) => ConfirmScheduleAsync(ct),
+            ex => ScheduledErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanConfirmSchedule);
+        ApplySchedulePresetCommand = new NativeRelayCommand(parameter =>
+            ApplySchedulePreset(parameter as string));
+        ToggleScheduledPanelCommand = new NativeAsyncCommand(
+            (_, ct) => ToggleScheduledPanelAsync(ct),
+            ex => ScheduledErrorText = TasksViewModel.DescribeError(ex));
+        CloseScheduledPanelCommand = new NativeRelayCommand(CloseScheduledPanel);
+        SelectFolderCommand = new NativeAsyncCommand(
+            (parameter, _) =>
+            {
+                SelectFolder(parameter as ChatFolderTabViewModel);
+                return Task.CompletedTask;
+            },
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        ToggleFolderManagerCommand = new NativeRelayCommand(() =>
+        {
+            if (IsFolderManagerOpen)
+            {
+                CloseFolderManager();
+            }
+            else
+            {
+                OpenFolderManager();
+            }
+        });
+        CloseFolderManagerCommand = new NativeRelayCommand(CloseFolderManager);
+        CreateFolderCommand = new NativeAsyncCommand(
+            (_, ct) => CreateFolderAsync(ct),
+            ex => FolderErrorText = TasksViewModel.DescribeError(ex),
+            _ => !IsFolderBusy && !string.IsNullOrWhiteSpace(NewFolderName));
+        BeginFolderRenameCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is ChatFolderTabViewModel { IsSystem: false } folder)
+            {
+                RenamingFolder = folder;
+                RenamingFolderName = folder.Title;
+            }
+        });
+        CancelFolderRenameCommand = new NativeRelayCommand(() => RenamingFolder = null);
+        SaveFolderRenameCommand = new NativeAsyncCommand(
+            (_, ct) => SaveFolderRenameAsync(ct),
+            ex => FolderErrorText = TasksViewModel.DescribeError(ex),
+            _ => !IsFolderBusy && RenamingFolder is not null
+                && !string.IsNullOrWhiteSpace(RenamingFolderName));
+        DeleteFolderCommand = new NativeAsyncCommand(
+            (parameter, ct) => DeleteFolderAsync(parameter as ChatFolderTabViewModel, ct),
+            ex => FolderErrorText = TasksViewModel.DescribeError(ex),
+            parameter => !IsFolderBusy && parameter is ChatFolderTabViewModel { IsSystem: false });
+        MoveFolderUpCommand = new NativeAsyncCommand(
+            (parameter, ct) => MoveFolderAsync(parameter as ChatFolderTabViewModel, -1, ct),
+            ex => FolderErrorText = TasksViewModel.DescribeError(ex),
+            parameter => !IsFolderBusy && parameter is ChatFolderTabViewModel { IsSystem: false });
+        MoveFolderDownCommand = new NativeAsyncCommand(
+            (parameter, ct) => MoveFolderAsync(parameter as ChatFolderTabViewModel, +1, ct),
+            ex => FolderErrorText = TasksViewModel.DescribeError(ex),
+            parameter => !IsFolderBusy && parameter is ChatFolderTabViewModel { IsSystem: false });
+        OpenFolderMembershipCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is ChatFolderTabViewModel { IsSystem: false } folder)
+            {
+                OpenFolderMembership(folder);
+            }
+        });
+        CloseFolderMembershipCommand = new NativeRelayCommand(CloseFolderMembership);
+        SaveFolderMembershipCommand = new NativeAsyncCommand(
+            (_, ct) => SaveFolderMembershipAsync(ct),
+            ex => FolderErrorText = TasksViewModel.DescribeError(ex),
+            _ => !IsFolderBusy && IsFolderMembershipOpen);
+        ToggleStickerPanelCommand = new NativeAsyncCommand(
+            (_, ct) => ToggleStickerPanelAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => HasConversation);
+        CloseStickerPanelCommand = new NativeRelayCommand(CloseStickerPanel);
+        SelectStickerPackCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is ChatStickerPackViewModel pack)
+            {
+                SelectedStickerPack = pack;
+            }
+        });
+        ImportStickerPackCommand = new NativeAsyncCommand(
+            (_, ct) => ImportStickerPackAsync(ct),
+            ex => StickerErrorText = TasksViewModel.DescribeError(ex),
+            _ => !IsImportingStickerPack && !string.IsNullOrWhiteSpace(StickerImportSource));
+        SelectStickerTabCommand = new NativeRelayCommand(parameter =>
+            IsEmojiTab = string.Equals(parameter as string, "emoji", StringComparison.Ordinal));
+        InsertEmojiCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is string emoji)
+            {
+                ComposerText += emoji;
+            }
+        });
+        TogglePeerCardCommand = new NativeRelayCommand(_ =>
+        {
+            if (IsPeerCardOpen)
+            {
+                ClosePeerCard();
+            }
+            else if (HasConversation)
+            {
+                OpenPeerCard();
+            }
+        });
+        ClosePeerCardCommand = new NativeRelayCommand(ClosePeerCard);
+        InsertMentionCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is ChatGroupMemberItemViewModel candidate)
+            {
+                InsertMention(candidate);
+            }
+        });
+        CloseMentionPopupCommand = new NativeRelayCommand(CloseMentionPopup);
+        ToggleAiPanelCommand = new NativeAsyncCommand(
+            (_, ct) => ToggleAiPanelAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex));
+        CloseAiPanelCommand = new NativeRelayCommand(CloseAiPanel);
+        SelectAiConversationCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is ConversationItemViewModel conversation)
+            {
+                CloseAiPanel();
+                SelectedConversation = conversation;
+            }
+        });
+        DeleteAiConversationCommand = new NativeAsyncCommand(
+            (parameter, ct) => DeleteAiConversationAsync(parameter as ConversationItemViewModel, ct),
+            ex => AiErrorText = TasksViewModel.DescribeError(ex),
+            parameter => parameter is ConversationItemViewModel && !IsAiActionBusy);
+        CreateGeneralAiConversationCommand = new NativeAsyncCommand(
+            (_, ct) => CreateGeneralAiConversationAsync(ct),
+            ex => AiErrorText = TasksViewModel.DescribeError(ex),
+            _ => !IsAiActionBusy);
+        StopAiRunCommand = new NativeAsyncCommand(
+            (_, ct) => StopAiRunAsync(ct),
+            ex => AiErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanStopAiRun && !IsAiActionBusy);
+        RetryAiRunCommand = new NativeAsyncCommand(
+            (_, ct) => RetryAiRunAsync(ct),
+            ex => AiErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanRetryAiRun && !IsAiActionBusy);
+        ResetAiContextCommand = new NativeAsyncCommand(
+            (_, ct) => ResetAiContextAsync(ct),
+            ex => AiErrorText = TasksViewModel.DescribeError(ex),
+            _ => IsAiConversation && !IsAiActionBusy);
+        // Системные вкладки существуют всегда — сидируем до первой загрузки папок.
+        RebuildFolderTabs();
     }
 
     /// <summary>Входящее чужое сообщение: слой окна решает, показывать ли toast.</summary>
@@ -378,6 +926,7 @@ public sealed class ChatViewModel : ObservableObject
         get => _selectedConversation;
         set
         {
+            var previousConversation = _selectedConversation;
             if (!SetProperty(ref _selectedConversation, value))
             {
                 return;
@@ -392,21 +941,70 @@ public sealed class ChatViewModel : ObservableObject
             }
 
             // «Печатает…» привязан к диалогу: прежнему шлём stopped,
-            // чужой входящий индикатор гасим вместе с таймером.
+            // чужой входящий индикатор гасим вместе с таймером — а у нового
+            // диалога подхватываем его «печатает…», если оно ещё живо.
             StopTypingIfSent();
             ClearTypingIndicator();
+            TypingText = value?.IsTyping == true ? value.TypingText : null;
 
-            // Переключение диалога отменяет ответ/правку и поиск — цель из другой ленты.
-            ClearComposerContext();
+            // Черновик прежнего диалога фиксируем ДО очистки композитора
+            // (ClearComposerContext вернёт снапшот правки, если она была);
+            // подмена composer текстом целевого диалога идёт под suppress,
+            // чтобы старый текст не записался под новый convId — см.
+            // useChatConversationDraftRestore (suppress + restore на next tick).
+            _suppressDraftSync = true;
+            try
+            {
+                // Переключение диалога отменяет ответ/правку и поиск — цель из другой ленты.
+                ClearComposerContext();
+                if (previousConversation is { } previous
+                    && !ReferenceEquals(previous, value))
+                {
+                    PersistDraftNow(previous.Id, _composerText);
+                }
+
+                var restoredDraft = value is { } target
+                    && _drafts.TryGetValue(target.Id, out var draft)
+                    ? draft
+                    : null;
+                ComposerText = restoredDraft ?? string.Empty;
+                if (!string.IsNullOrEmpty(restoredDraft))
+                {
+                    // tdesktop ставит курсор в композитор с восстановленным черновиком.
+                    FocusComposer?.Invoke();
+                }
+            }
+            finally
+            {
+                _suppressDraftSync = false;
+            }
+
             CloseMessageSearch();
             CloseForwardPanel();
+            CloseDeleteConfirm();
             IsReadersPanelOpen = false;
             CloseMembersPanel();
             CloseMediaPanel();
+            CloseGroupSettings();
+            CloseJoinRequestsPanel();
+            CloseReportsPanel();
+            CloseReportDialog();
+            CloseTaskShare();
+            CloseStickerPanel();
+            ClosePeerCard();
+            CloseMentionPopup();
+            CloseMediaViewer();
             ClearPinnedState();
+            ExitMessageSelection();
+            SetFileDropOverlay(false);
+            // Гасим отложенный тик вспышки якоря прошлого диалога.
+            _highlightMarker++;
+            ResetScheduledState();
             SelectedMessage = null;
             OnPropertyChanged(nameof(HasConversation));
             OnPropertyChanged(nameof(IsMessagesEmpty));
+            RaiseScrollFabBadge();
+            RefreshAiConversationState();
             RaiseCommandStates();
             // Room-подписка: события диалога (read-галочки, чужие реакции) идут
             // только подписчикам комнаты — смена выбора переключает подписку.
@@ -414,6 +1012,7 @@ public sealed class ChatViewModel : ObservableObject
             if (value is not null)
             {
                 _ = LoadMessagesSafelyAsync(value);
+                _ = LoadScheduledSafelyAsync(value);
             }
             else
             {
@@ -421,6 +1020,7 @@ public sealed class ChatViewModel : ObservableObject
                 Messages.Clear();
                 HasOlder = false;
                 _olderCursor = null;
+                HistoryErrorText = null;
             }
         }
     }
@@ -438,11 +1038,30 @@ public sealed class ChatViewModel : ObservableObject
         {
             if (SetProperty(ref _searchText, value))
             {
+                OnPropertyChanged(nameof(IsConversationSearchActive));
+                OnPropertyChanged(nameof(IsConversationSearchEmpty));
+                OnPropertyChanged(nameof(IsEmpty));
                 RebuildVisibleConversations();
                 ScheduleConversationSearch(value);
+                // Тот же запрос кормит раздел «Сообщения» — переиспользуем
+                // существующий глобальный поиск (debounce внутри ScheduleGlobalSearch).
+                GlobalSearchText = value;
             }
         }
     }
+
+    /// <summary>Непустой SearchText: список меняется на выдачу «В чатах» (tg-search).</summary>
+    public bool IsConversationSearchActive => !string.IsNullOrWhiteSpace(_searchText);
+
+    /// <summary>Выдача пуста и поиск завершён — показать «Ничего не найдено».</summary>
+    public bool IsConversationSearchEmpty =>
+        IsConversationSearchActive
+        && !IsSearchingGlobal
+        && Conversations.Count == 0
+        && GlobalSearchResults.Count == 0;
+
+    /// <summary>Есть строки в секции «Сообщения» поисковой выдачи.</summary>
+    public bool HasGlobalSearchResults => GlobalSearchResults.Count > 0;
 
     public string ComposerText
     {
@@ -451,8 +1070,10 @@ public sealed class ChatViewModel : ObservableObject
         {
             if (SetProperty(ref _composerText, value))
             {
+                OnPropertyChanged(nameof(HasComposerText));
                 RaiseCommandStates();
                 NotifyTypingState();
+                ScheduleDraftSync();
             }
         }
     }
@@ -472,6 +1093,88 @@ public sealed class ChatViewModel : ObservableObject
 
     /// <summary>Индикатор набора текста виден.</summary>
     public bool HasTypingText => !string.IsNullOrEmpty(TypingText);
+
+    /// <summary>
+    /// Бейдж на FAB «вниз» (tg-main): «@»-упоминания открытого диалога,
+    /// иначе счётчик непрочитанных; null — бейдж скрыт.
+    /// </summary>
+    public string? ScrollFabBadgeText =>
+        _selectedConversation is { } conversation
+            ? conversation.UnreadMentionCount switch
+            {
+                > 99 => "@99+",
+                > 0 => "@" + conversation.UnreadMentionCount.ToString(CultureInfo.InvariantCulture),
+                _ => conversation.UnreadCount switch
+                {
+                    > 99 => "99+",
+                    > 0 => conversation.UnreadCount.ToString(CultureInfo.InvariantCulture),
+                    _ => null,
+                },
+            }
+            : null;
+
+    /// <summary>Показывать счётчик/«@» на FAB прокрутки вниз.</summary>
+    public bool HasScrollFabBadge => !string.IsNullOrEmpty(ScrollFabBadgeText);
+
+    /// <summary>Изменился счётчик упоминаний/непрочитанных выбранного диалога.</summary>
+    private void RaiseScrollFabBadge()
+    {
+        OnPropertyChanged(nameof(ScrollFabBadgeText));
+        OnPropertyChanged(nameof(HasScrollFabBadge));
+    }
+
+    /// <summary>Подпись режима «Архив» над списком: «Архив · N диалогов».</summary>
+    public string ArchiveHeaderText =>
+        $"Архив · {Conversations.Count} "
+        + ChatPlural.Of(Conversations.Count, "диалог", "диалога", "диалогов");
+
+    // ---- Просмотрщик изображений (media viewer Telegram) ----
+
+    /// <summary>Открыт полноэкранный просмотрщик image-вложения.</summary>
+    public bool IsMediaViewerOpen
+    {
+        get => _isMediaViewerOpen;
+        private set => SetProperty(ref _isMediaViewerOpen, value);
+    }
+
+    /// <summary>Текущая картинка просмотрщика (null, пока докачивается).</summary>
+    public ImageSource? MediaViewerImage
+    {
+        get => _mediaViewerImage;
+        private set => SetProperty(ref _mediaViewerImage, value);
+    }
+
+    /// <summary>Заголовок под картинкой — имя файла.</summary>
+    public string? MediaViewerTitle =>
+        _mediaViewerIndex >= 0 && _mediaViewerIndex < _mediaViewerItems.Count
+            ? _mediaViewerItems[_mediaViewerIndex].Item.FileName
+            : null;
+
+    /// <summary>Счётчик «N из M» — виден, когда image-вложений больше одного.</summary>
+    public string? MediaViewerCounterText =>
+        _mediaViewerItems.Count > 1 && _mediaViewerIndex >= 0
+            ? $"{_mediaViewerIndex + 1} из {_mediaViewerItems.Count}"
+            : null;
+
+    public bool MediaViewerCanGoBack => _mediaViewerIndex > 0;
+
+    public bool MediaViewerCanGoForward =>
+        _mediaViewerIndex >= 0 && _mediaViewerIndex < _mediaViewerItems.Count - 1;
+
+    /// <summary>Картинка ещё скачивается — под каркасом крутится подсказка.</summary>
+    public bool IsMediaViewerLoading
+    {
+        get => _isMediaViewerLoading;
+        private set => SetProperty(ref _isMediaViewerLoading, value);
+    }
+
+    public ICommand CloseMediaViewerCommand { get; }
+
+    public ICommand MediaViewerPrevCommand { get; }
+
+    public ICommand MediaViewerNextCommand { get; }
+
+    public ICommand SaveMediaViewerCommand { get; }
 
     // ---- Состояния ----
 
@@ -495,6 +1198,7 @@ public sealed class ChatViewModel : ObservableObject
             if (SetProperty(ref _isLoadingMessages, value))
             {
                 OnPropertyChanged(nameof(IsMessagesEmpty));
+                RaiseCommandStates();
             }
         }
     }
@@ -551,8 +1255,30 @@ public sealed class ChatViewModel : ObservableObject
 
     public bool HasBannerError => !string.IsNullOrEmpty(BannerErrorText);
 
-    /// <summary>«Диалогов пока нет» — только после загрузки и без баннера ошибки.</summary>
-    public bool IsEmpty => !IsLoading && Conversations.Count == 0 && !HasBannerError;
+    /// <summary>
+    /// Ошибка загрузки истории выбранного диалога. Отделена от баннера: «Повторить»
+    /// при ней перезапрашивает историю этого диалога, а пустое состояние ленты
+    /// подменяется панелью ошибки — «Сообщений пока нет» не утверждается.
+    /// </summary>
+    public string? HistoryErrorText
+    {
+        get => _historyErrorText;
+        private set
+        {
+            if (SetProperty(ref _historyErrorText, value))
+            {
+                OnPropertyChanged(nameof(HasHistoryError));
+                OnPropertyChanged(nameof(IsMessagesEmpty));
+            }
+        }
+    }
+
+    public bool HasHistoryError => !string.IsNullOrEmpty(HistoryErrorText);
+
+    /// <summary>«Диалогов пока нет» — только после загрузки, без баннера и вне поиска
+    /// (в режиме поиска пустую выдачу рисует «Ничего не найдено» — IsConversationSearchEmpty).</summary>
+    public bool IsEmpty => !IsLoading && Conversations.Count == 0 && !HasBannerError
+        && !IsConversationSearchActive;
 
     /// <summary>Сервер вернул has_more — за первой страницей диалогов есть продолжение.</summary>
     public bool HasMoreConversations
@@ -584,7 +1310,7 @@ public sealed class ChatViewModel : ObservableObject
     public string ConversationsMoreText =>
         IsLoadingMoreConversations ? "Загружаем…" : "Показать ещё";
 
-    public bool IsMessagesEmpty => HasConversation && !IsLoadingMessages && Messages.Count == 0;
+    public bool IsMessagesEmpty => HasConversation && !IsLoadingMessages && !HasHistoryError && Messages.Count == 0;
 
     public string ConnectionStatusText
     {
@@ -643,8 +1369,21 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>Открытие ссылки из карточки превью; null — Process.Start браузером ОС.</summary>
     public Func<string, Task>? LinkOpener { get; set; }
 
+    /// <summary>
+    /// Запрос фокуса в поле ввода (view ставит хук на ComposerInput.Focus);
+    /// дергается при восстановлении черновика после смены диалога.
+    /// </summary>
+    public Action? FocusComposer { get; set; }
+
+    /// <summary>Просьба прокрутить ленту к сообщению (view → ScrollIntoView);
+    /// дергается при переходе к якорю reply/pinned/search.</summary>
+    public Action<ChatMessageViewModel>? RequestScrollToMessage { get; set; }
+
     public bool CanSend =>
         HasConversation && !IsSending && !IsUploading && !string.IsNullOrWhiteSpace(ComposerText);
+
+    /// <summary>Текст в composer — FAB показывает ➤ (пусто — 🎤, как tdesktop).</summary>
+    public bool HasComposerText => !string.IsNullOrWhiteSpace(ComposerText);
 
     /// <summary>«Скрепка» доступна при открытом диалоге и без активной отправки/загрузки.</summary>
     public bool CanAttach => HasConversation && !IsSending && !IsUploading;
@@ -654,9 +1393,16 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>Выбрать файлы и отправить сообщение с вложениями (upload-session).</summary>
     public ICommand AttachCommand { get; }
 
+    /// <summary>Файлы из drag&amp;drop на ленту/вставки картинки — тот же пайплайн
+    /// upload-session, что и «скрепка» (параметр — пути файлов).</summary>
+    public ICommand AttachDroppedFilesCommand { get; }
+
     public ICommand LoadOlderCommand { get; }
 
     public ICommand RetryCommand { get; }
+
+    /// <summary>Повтор загрузки истории выбранного диалога (панель ошибки в ленте).</summary>
+    public ICommand RetryHistoryCommand { get; }
 
     public ICommand LoadMoreConversationsCommand { get; }
 
@@ -696,7 +1442,9 @@ public sealed class ChatViewModel : ObservableObject
 
     /// <summary>Список диалогов активен: ни «Новый диалог», ни глобальный поиск
     /// не открыты — Tab/клики не должны уходить под оверлей.</summary>
-    public bool IsConversationListActive => !IsNewConversationOpen && !IsGlobalSearchOpen;
+    /// <summary>Список активен только без overlay-панелей (новый диалог, поиск, папки, ИИ).</summary>
+    public bool IsConversationListActive => !IsNewConversationOpen && !IsGlobalSearchOpen
+        && !IsFolderManagerOpen && !IsFolderMembershipOpen && !IsAiPanelOpen;
 
     private bool _showArchived;
 
@@ -712,6 +1460,7 @@ public sealed class ChatViewModel : ObservableObject
                 OnPropertyChanged(nameof(IsArchiveView));
                 OnPropertyChanged(nameof(EmptyTitle));
                 OnPropertyChanged(nameof(EmptyHint));
+                OnPropertyChanged(nameof(ArchiveHeaderText));
                 RebuildVisibleConversations();
             }
         }
@@ -825,6 +1574,8 @@ public sealed class ChatViewModel : ObservableObject
         OnPropertyChanged(nameof(ComposerContextTitle));
         OnPropertyChanged(nameof(ComposerContextText));
         OnPropertyChanged(nameof(SendButtonText));
+        OnPropertyChanged(nameof(CanScheduleMessage));
+        (OpenScheduleEditorCommand as NativeRelayCommand)?.RaiseCanExecuteChanged();
     }
 
     private void ClearComposerContext()
@@ -834,8 +1585,100 @@ public sealed class ChatViewModel : ObservableObject
         EditingMessage = null;
         if (wasEditing)
         {
-            ComposerText = string.Empty;
+            // После правки композитор возвращает снапшот черновика (tdesktop),
+            // а не пустую строку — иначе исходный черновик терялся бы.
+            ComposerText = _editDraftSnapshot?.Text ?? string.Empty;
         }
+
+        _editDraftSnapshot = null;
+    }
+
+    /// <summary>
+    /// ↑ в пустом composer — правка последнего собственного сообщения
+    /// (tdesktop: Up в пустом поле открывает edit ближайшего своего текста).
+    /// </summary>
+    public void BeginEditLastOwnMessage()
+    {
+        var message = Messages.LastOrDefault(m => m.CanEditOrDelete);
+        if (message is not null)
+        {
+            BeginEditCommand.Execute(message);
+        }
+    }
+
+    /// <summary>
+    /// Alt+↑/↓ (и Ctrl+PgUp/PgDn) — выбор соседнего диалога в списке,
+    /// как клавиатурная навигация tdesktop по чатам.
+    /// </summary>
+    public void SelectAdjacentConversation(int direction)
+    {
+        if (Conversations.Count == 0 || direction == 0)
+        {
+            return;
+        }
+
+        var index = Conversations.IndexOf(SelectedConversation!);
+        var next = index < 0
+            ? (direction > 0 ? 0 : Conversations.Count - 1)
+            : Math.Clamp(index + Math.Sign(direction), 0, Conversations.Count - 1);
+        SelectedConversation = Conversations[next];
+    }
+
+    /// <summary>
+    /// Ctrl+B/Ctrl+I/Ctrl+K — markdown-обёртка выделения composer (tdesktop):
+    /// **жирный**, *курсив*, `код`. Повторное нажатие снимает обёртку.
+    /// </summary>
+    public void ToggleComposerWrap(string marker, int selectionStart, int selectionLength)
+    {
+        if (string.IsNullOrEmpty(marker))
+        {
+            return;
+        }
+
+        var text = ComposerText ?? string.Empty;
+        selectionStart = Math.Clamp(selectionStart, 0, text.Length);
+        selectionLength = Math.Clamp(selectionLength, 0, text.Length - selectionStart);
+        var markerLength = marker.Length;
+
+        if (selectionLength > 0)
+        {
+            // Маркеры вплотную СНАРУЖИ выделения → снять их.
+            if (selectionStart >= markerLength
+                && selectionStart + selectionLength + markerLength <= text.Length
+                && string.CompareOrdinal(text, selectionStart - markerLength, marker, 0, markerLength) == 0
+                && string.CompareOrdinal(text, selectionStart + selectionLength, marker, 0, markerLength) == 0)
+            {
+                ComposerText = text
+                    .Remove(selectionStart + selectionLength, markerLength)
+                    .Remove(selectionStart - markerLength, markerLength);
+                RequestComposerSelection?.Invoke(selectionStart - markerLength, selectionLength);
+                return;
+            }
+
+            // Маркеры по краям ВНУТРИ выделения → снять их.
+            if (selectionLength >= markerLength * 2
+                && string.CompareOrdinal(text, selectionStart, marker, 0, markerLength) == 0
+                && string.CompareOrdinal(
+                    text, selectionStart + selectionLength - markerLength, marker, 0, markerLength) == 0)
+            {
+                ComposerText = text
+                    .Remove(selectionStart + selectionLength - markerLength, markerLength)
+                    .Remove(selectionStart, markerLength);
+                RequestComposerSelection?.Invoke(selectionStart, selectionLength - markerLength * 2);
+                return;
+            }
+
+            ComposerText = text
+                .Insert(selectionStart + selectionLength, marker)
+                .Insert(selectionStart, marker);
+            // Выделение остаётся на внутреннем тексте — как в tdesktop после Ctrl+B.
+            RequestComposerSelection?.Invoke(selectionStart + markerLength, selectionLength);
+            return;
+        }
+
+        // Без выделения — парные маркеры, каретка между ними.
+        ComposerText = text.Insert(selectionStart, marker + marker);
+        RequestComposerSelection?.Invoke(selectionStart + markerLength, 0);
     }
 
     /// <summary>Toggle реакции по сообщению через API; результат применяем к пузырю.</summary>
@@ -1007,7 +1850,20 @@ public sealed class ChatViewModel : ObservableObject
     public ChatMessageViewModel? SelectedMessage
     {
         get => _selectedMessage;
-        set => SetProperty(ref _selectedMessage, value);
+        set
+        {
+            // Режим мультивыбора: клик по пузырю переключает галочку сообщения,
+            // а не ListBox-выделение — как в Telegram Desktop.
+            if (IsSelectionMode && value is { IsSystem: false } message)
+            {
+                _selectedMessage = null;
+                OnPropertyChanged();
+                ToggleMessageSelection(message);
+                return;
+            }
+
+            SetProperty(ref _selectedMessage, value);
+        }
     }
 
     private void CloseMessageSearch()
@@ -1165,6 +2021,47 @@ public sealed class ChatViewModel : ObservableObject
     public ICommand CloseForwardPanelCommand { get; }
 
     /// <summary>
+    /// Строка поиска внутри пикера пересылки (tg-forward «Forward to…»):
+    /// свой фильтр, не трогает общий SearchText и вкладки папок.
+    /// </summary>
+    public string ForwardSearchText
+    {
+        get => _forwardSearchText;
+        set
+        {
+            if (SetProperty(ref _forwardSearchText, value))
+            {
+                RebuildForwardTargets();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Цели пересылки: все не-архивные диалоги (как вкладка «Все»),
+    /// отфильтрованные ForwardSearchText, в том же порядке, что и список.
+    /// </summary>
+    public ObservableCollection<ConversationItemViewModel> ForwardTargets { get; } = [];
+
+    /// <summary>В пикере нет ни одной цели — показать пустую подпись.</summary>
+    public bool HasForwardTargets => ForwardTargets.Count > 0;
+
+    private void RebuildForwardTargets()
+    {
+        ForwardTargets.Clear();
+        foreach (var item in _allConversations
+                     .Where(item => !item.IsArchived)
+                     .Where(item => item.MatchesFilter(_forwardSearchText))
+                     .OrderByDescending(item => item.IsPinned)
+                     .ThenByDescending(item => item.LastMessageAt ?? DateTimeOffset.MinValue)
+                     .ThenBy(item => item.Title, StringComparer.CurrentCultureIgnoreCase))
+        {
+            ForwardTargets.Add(item);
+        }
+
+        OnPropertyChanged(nameof(HasForwardTargets));
+    }
+
+    /// <summary>
     /// Пересылка в выбранный диалог: client_message_id генерируется как при отправке —
     /// realtime-эхо дедупится по нему. После успеха — переход в целевой диалог (как web).
     /// </summary>
@@ -1172,11 +2069,13 @@ public sealed class ChatViewModel : ObservableObject
         ConversationItemViewModel? target,
         CancellationToken cancellationToken)
     {
-        var message = _forwardingMessage;
-        if (target is null
-            || message is null
-            || string.IsNullOrEmpty(message.Id)
-            || IsForwarding)
+        // Пакет мультивыбора приоритетнее одиночного сообщения.
+        var batch = _forwardingMessages is { Count: > 0 }
+            ? _forwardingMessages
+            : _forwardingMessage is { Id.Length: > 0 } single
+                ? [single]
+                : null;
+        if (target is null || batch is null || IsForwarding)
         {
             return;
         }
@@ -1184,23 +2083,36 @@ public sealed class ChatViewModel : ObservableObject
         IsForwarding = true;
         try
         {
-            var forwarded = await _api.ForwardChatMessageAsync(
-                target.Id,
-                message.Id,
-                body: null,
-                clientMessageId: Guid.NewGuid().ToString("N"),
-                replyToMessageId: null,
-                cancellationToken);
-            CloseForwardPanel();
-            target.UpdateLastMessage(NormalizePollBody(forwarded));
-            RebuildVisibleConversations();
-            if (ReferenceEquals(_selectedConversation, target))
+            HubChatMessage? forwarded = null;
+            foreach (var message in batch)
             {
-                InsertMessage(forwarded, target.IsGroupLike);
+                if (string.IsNullOrEmpty(message.Id))
+                {
+                    continue;
+                }
+
+                forwarded = await _api.ForwardChatMessageAsync(
+                    target.Id,
+                    message.Id,
+                    body: null,
+                    clientMessageId: Guid.NewGuid().ToString("N"),
+                    replyToMessageId: null,
+                    cancellationToken);
             }
-            else
+
+            CloseForwardPanel();
+            if (forwarded is not null)
             {
-                SelectedConversation = target;
+                target.UpdateLastMessage(NormalizePollBody(forwarded));
+                RebuildVisibleConversations();
+                if (ReferenceEquals(_selectedConversation, target))
+                {
+                    InsertMessage(forwarded, target.IsGroupLike);
+                }
+                else
+                {
+                    SelectedConversation = target;
+                }
             }
 
             BannerErrorText = null;
@@ -1215,6 +2127,380 @@ public sealed class ChatViewModel : ObservableObject
     {
         IsForwardPanelOpen = false;
         ForwardingMessage = null;
+        _forwardingMessages = null;
+        _forwardSearchText = string.Empty;
+        ForwardTargets.Clear();
+        OnPropertyChanged(nameof(HasForwardTargets));
+    }
+
+    // ---- Мультивыбор сообщений (Telegram «Выделить») ----
+
+    /// <summary>Активен режим выделения: кружки-чеки у пузырей, шапка и низ меняются.</summary>
+    public bool IsSelectionMode
+    {
+        get => _isSelectionMode;
+        private set
+        {
+            if (SetProperty(ref _isSelectionMode, value))
+            {
+                RaiseSelectionChanged();
+            }
+        }
+    }
+
+    /// <summary>Сколько сообщений отмечено.</summary>
+    public int SelectedCount => _selectedMessages.Count;
+
+    /// <summary>Заголовок шапки в режиме выделения: «N выбрано».</summary>
+    public string SelectionHeaderText =>
+        $"{SelectedCount} выбрано";
+
+    /// <summary>Подпись нижней панели: «Выбрано: N».</summary>
+    public string SelectedCountText => $"Выбрано: {SelectedCount}";
+
+    /// <summary>Подписи акцентных пилюль шапки в режиме выделения (tg-multiselect).</summary>
+    public string ForwardSelectedText => $"ПЕРЕСЛАТЬ {SelectedCount}";
+
+    public string DeleteSelectedText => $"УДАЛИТЬ {SelectedCount}";
+
+    /// <summary>Пункт «Выделить» контекстного меню пузыря.</summary>
+    public ICommand BeginSelectCommand { get; }
+
+    /// <summary>Клик по пузырю в режиме выделения — toggle галочки.</summary>
+    public ICommand ToggleMessageSelectionCommand { get; }
+
+    /// <summary>✕ в шапке — выход из режима выделения.</summary>
+    public ICommand ExitSelectionCommand { get; }
+
+    /// <summary>⧉ скопировать текст выделенных сообщений.</summary>
+    public ICommand CopySelectedCommand { get; }
+
+    /// <summary>↪ переслать выделенные — переиспользует панель выбора диалога.</summary>
+    public ICommand ForwardSelectedCommand { get; }
+
+    /// <summary>🗑 удалить выделенные (только свои, как и одиночное удаление).</summary>
+    public ICommand DeleteSelectedCommand { get; }
+
+    /// <summary>Toggle галочки сообщения; снятие последней выходит из режима.</summary>
+    private void ToggleMessageSelection(ChatMessageViewModel message)
+    {
+        if (message.IsSelected)
+        {
+            message.IsSelected = false;
+            _selectedMessages.Remove(message);
+        }
+        else
+        {
+            message.IsSelected = true;
+            _selectedMessages.Add(message);
+        }
+
+        RaiseSelectionChanged();
+        if (_selectedMessages.Count == 0)
+        {
+            IsSelectionMode = false;
+        }
+    }
+
+    /// <summary>Снять галочки со всех и выйти из режима выделения.</summary>
+    private void ExitMessageSelection()
+    {
+        foreach (var message in _selectedMessages)
+        {
+            message.IsSelected = false;
+        }
+
+        _selectedMessages.Clear();
+        RaiseSelectionChanged();
+        IsSelectionMode = false;
+    }
+
+    private void RaiseSelectionChanged()
+    {
+        OnPropertyChanged(nameof(SelectedCount));
+        OnPropertyChanged(nameof(SelectionHeaderText));
+        OnPropertyChanged(nameof(SelectedCountText));
+        OnPropertyChanged(nameof(ForwardSelectedText));
+        OnPropertyChanged(nameof(DeleteSelectedText));
+        (DeleteSelectedCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
+    // ---- Подтверждение удаления (модал tg-main «Удалить сообщение?») ----
+
+    /// <summary>Открыт модал подтверждения удаления поверх ленты.</summary>
+    public bool IsDeleteConfirmOpen
+    {
+        get => _isDeleteConfirmOpen;
+        private set => SetProperty(ref _isDeleteConfirmOpen, value);
+    }
+
+    /// <summary>Идёт DELETE — «Удалить»/«Отмена» блокируются.</summary>
+    public bool IsDeleting
+    {
+        get => _isDeleting;
+        private set
+        {
+            if (SetProperty(ref _isDeleting, value))
+            {
+                (ConfirmDeleteCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Заголовок модала: «Удалить сообщение»/«Удалить сообщения».</summary>
+    public string DeleteConfirmTitle =>
+        _pendingDelete is { Count: > 1 } ? "Удалить сообщения" : "Удалить сообщение";
+
+    /// <summary>Текст модала с плюрализацией числа сообщений.</summary>
+    public string DeleteConfirmText =>
+        _pendingDelete is { Count: > 1 } batch
+            ? $"Вы уверены, что хотите удалить {batch.Count} {ChatPlural.Of(batch.Count, "сообщение", "сообщения", "сообщений")}?"
+            : "Вы уверены, что хотите удалить сообщение?";
+
+    /// <summary>Сколько сообщений ждёт удаления в модале.</summary>
+    public int PendingDeleteCount => _pendingDelete?.Count ?? 0;
+
+    /// <summary>Красная «Удалить» модала — реальный DELETE по каждой цели.</summary>
+    public ICommand ConfirmDeleteCommand { get; }
+
+    /// <summary>«Отмена» модала — закрыть без удаления.</summary>
+    public ICommand CancelDeleteCommand { get; }
+
+    private void OpenDeleteConfirm(List<ChatMessageViewModel> targets)
+    {
+        _pendingDelete = targets;
+        IsDeleteConfirmOpen = true;
+        OnPropertyChanged(nameof(DeleteConfirmTitle));
+        OnPropertyChanged(nameof(DeleteConfirmText));
+        OnPropertyChanged(nameof(PendingDeleteCount));
+        (ConfirmDeleteCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
+    private void CloseDeleteConfirm()
+    {
+        IsDeleteConfirmOpen = false;
+        _pendingDelete = null;
+        (ConfirmDeleteCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
+    // ---- Оверлей drag&drop файлов на ленту (tg-drop prompt) ----
+
+    /// <summary>Над лентой тащат файлы — показываем затемнение с подписью.</summary>
+    public bool IsFileDropOverlayOpen
+    {
+        get => _isFileDropOverlayOpen;
+        private set => SetProperty(ref _isFileDropOverlayOpen, value);
+    }
+
+    /// <summary>«Перетащите файлы, чтобы отправить их в …» — цель из заголовка чата.</summary>
+    public string FileDropTargetText =>
+        $"Перетащите файлы, чтобы отправить их в {SelectedConversation?.Title ?? "чат"}";
+
+    /// <summary>View дёргает на DragEnter/DragLeave/Drop: счётчик DragEnter
+    /// дочерних элементов ведёт сам view, сюда приходит уже сведённый флаг.</summary>
+    public void SetFileDropOverlay(bool open)
+    {
+        IsFileDropOverlayOpen = open;
+        OnPropertyChanged(nameof(FileDropTargetText));
+    }
+
+    /// <summary>Подтверждённое удаление: тот же DELETE по одному сообщению, как было.</summary>
+    private async Task ConfirmDeleteAsync(CancellationToken cancellationToken)
+    {
+        var targets = _pendingDelete;
+        if (targets is null || _selectedConversation is not { } conversation || IsDeleting)
+        {
+            return;
+        }
+
+        IsDeleting = true;
+        try
+        {
+            foreach (var message in targets)
+            {
+                if (string.IsNullOrEmpty(message.Id))
+                {
+                    continue;
+                }
+
+                var result = await _api.DeleteChatMessageAsync(
+                    conversation.Id, message.Id, cancellationToken);
+                message.Update(result);
+            }
+
+            CloseDeleteConfirm();
+            // Отмена оставляет выделение на месте (как tg), успех — снимает.
+            ExitMessageSelection();
+        }
+        finally
+        {
+            IsDeleting = false;
+        }
+    }
+
+    // ---- Меню ☰ в шапке списка диалогов ----
+
+    private string? _menuProfileName;
+    private string? _menuProfileUsername;
+    private Brush? _menuProfileBrush;
+    private string _menuProfileInitials = "•";
+    private bool _menuProfileRequested;
+
+    /// <summary>Имя текущего пользователя — шапка ☰-меню (tg-menu).</summary>
+    public string? MenuProfileName
+    {
+        get => _menuProfileName;
+        private set
+        {
+            if (SetProperty(ref _menuProfileName, value))
+            {
+                OnPropertyChanged(nameof(HasMenuProfile));
+            }
+        }
+    }
+
+    /// <summary>@username / почта — вторая строка шапки ☰-меню.</summary>
+    public string? MenuProfileUsername
+    {
+        get => _menuProfileUsername;
+        private set => SetProperty(ref _menuProfileUsername, value);
+    }
+
+    /// <summary>Градиент аватара текущего пользователя (та же палитра пиров).</summary>
+    public Brush? MenuProfileBrush
+    {
+        get => _menuProfileBrush;
+        private set => SetProperty(ref _menuProfileBrush, value);
+    }
+
+    /// <summary>Инициалы на градиентном аватаре шапки ☰-меню.</summary>
+    public string MenuProfileInitials
+    {
+        get => _menuProfileInitials;
+        private set => SetProperty(ref _menuProfileInitials, value);
+    }
+
+    private ImageSource? _menuProfileAvatarImage;
+
+    /// <summary>Фото-аватар текущего пользователя (/auth/me avatar_url); null — инициалы.</summary>
+    public ImageSource? MenuProfileAvatarImage
+    {
+        get => _menuProfileAvatarImage;
+        private set
+        {
+            if (SetProperty(ref _menuProfileAvatarImage, value))
+            {
+                OnPropertyChanged(nameof(HasMenuProfileAvatarImage));
+            }
+        }
+    }
+
+    /// <summary>Фото загружено — поверх градиента рисуется ImageBrush-круг.</summary>
+    public bool HasMenuProfileAvatarImage => MenuProfileAvatarImage is not null;
+
+    public bool HasMenuProfile => MenuProfileName is not null;
+
+    /// <summary>Пункт «Новый диалог» ☰-меню — та же панель создания, режим direct.</summary>
+    public ICommand BeginNewDirectCommand { get; }
+
+    /// <summary>Пункт «Новая группа» ☰-меню — та же панель создания, режим group.</summary>
+    public ICommand BeginNewGroupCommand { get; }
+
+    /// <summary>Чекбокс «Ночной режим»: тёмная палитра сейчас применена.</summary>
+    public bool IsNightTheme => NativeThemeManager.EffectiveMode == "dark";
+
+    /// <summary>Пункт «Ночной режим» — переключает палитру и сохраняет в настройках.</summary>
+    public ICommand ToggleNightThemeCommand { get; }
+
+    /// <summary>Скоуп «Глобальный поиск» в выдаче — открывает панель поиска по сообщениям.</summary>
+    public ICommand OpenGlobalSearchScopeCommand { get; }
+
+    /// <summary>Круглый FAB «вниз» — инкрементирует сигнал для attached-скролла.</summary>
+    public ICommand ScrollToEndCommand { get; }
+
+    /// <summary>Сигнал «прокрутить вниз»: view следит за изменением и скроллит ленту.</summary>
+    public int ScrollToEndSignal
+    {
+        get => _scrollToEndSignal;
+        private set => SetProperty(ref _scrollToEndSignal, value);
+    }
+
+    /// <summary>Открыть панель создания в конкретном режиме (direct/group).</summary>
+    private void OpenNewConversationMode(bool group)
+    {
+        if (!IsNewConversationOpen)
+        {
+            OpenNewConversation();
+        }
+
+        IsNewGroupMode = group;
+    }
+
+    /// <summary>
+    /// GET /auth/me один раз за сессию — имя и username для шапки ☰-меню.
+    /// Профильная карточка вспомогательная: ошибка не блокирует список.
+    /// </summary>
+    private async Task LoadMenuProfileSafelyAsync(CancellationToken cancellationToken)
+    {
+        if (_menuProfileRequested)
+        {
+            return;
+        }
+
+        _menuProfileRequested = true;
+        try
+        {
+            var user = await _api.GetCurrentUserAsync(cancellationToken);
+            RunOnUi(() =>
+            {
+                var name = string.IsNullOrWhiteSpace(user.FullName) ? user.Username : user.FullName;
+                MenuProfileName = string.IsNullOrWhiteSpace(name) ? "Профиль" : name;
+                MenuProfileUsername = string.IsNullOrWhiteSpace(user.Username)
+                    ? user.Email
+                    : "@" + user.Username;
+                MenuProfileBrush = ChatPeerPalette.AvatarBrush(MenuProfileName);
+                MenuProfileInitials = ChatPeerPalette.Initials(MenuProfileName);
+                if (!string.IsNullOrWhiteSpace(user.AvatarUrl))
+                {
+                    var avatarUrl = user.AvatarUrl;
+                    _ = Task.Run(async () =>
+                    {
+                        var image = await _imageLoader.LoadAsync(avatarUrl, decodePixelWidth: 96);
+                        if (image is not null)
+                        {
+                            MenuProfileAvatarImage = image;
+                        }
+                    });
+                }
+            });
+        }
+        catch
+        {
+            // Шапка меню покажет плейсхолдер — данные не критичны.
+        }
+    }
+
+    /// <summary>
+    /// «Ночной режим»: локально переключает палитру (как Settings → внешний вид)
+    /// и best-effort сохраняет выбор через PATCH /settings/me.
+    /// </summary>
+    private async Task ToggleNightThemeSafelyAsync(CancellationToken cancellationToken)
+    {
+        var mode = IsNightTheme ? "light" : "dark";
+        NativeThemeManager.Apply(mode);
+        try
+        {
+            var settings = await _api.GetMySettingsAsync(cancellationToken);
+            await _api.UpdateMySettingsAsync(
+                mode,
+                settings.FontFamily ?? "Aptos",
+                settings.FontScale ?? 1.0,
+                cancellationToken);
+        }
+        catch
+        {
+            // Локальное переключение уже применено — сохранение не блокирует.
+        }
     }
 
     // ---- Глобальный поиск по сообщениям ----
@@ -1259,6 +2545,7 @@ public sealed class ChatViewModel : ObservableObject
             if (SetProperty(ref _isSearchingGlobal, value))
             {
                 OnPropertyChanged(nameof(GlobalSearchHint));
+                OnPropertyChanged(nameof(IsConversationSearchEmpty));
             }
         }
     }
@@ -1514,6 +2801,23 @@ public sealed class ChatViewModel : ObservableObject
             if (SetProperty(ref _canManageGroupMembers, value))
             {
                 (PickMemberCandidateCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+                RaiseGroupCommandStates();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Владелец группы: назначение ролей, передача владения, название/фото,
+    /// posting_policy и удаление группы (canManageOwners в web).
+    /// </summary>
+    public bool CanManageGroupOwners
+    {
+        get => _canManageGroupOwners;
+        private set
+        {
+            if (SetProperty(ref _canManageGroupOwners, value))
+            {
+                RaiseGroupCommandStates();
             }
         }
     }
@@ -1652,8 +2956,9 @@ public sealed class ChatViewModel : ObservableObject
         var selfId = _api.CurrentSession?.UserId;
         var viewerRole = NormalizeGroupMemberRole(
             detail.ViewerMemberRole ?? conversation.ViewerMemberRole);
-        CanManageGroupMembers = string.Equals(conversation.Kind, "group", StringComparison.Ordinal)
-            && viewerRole is "owner" or "moderator";
+        var isGroup = string.Equals(conversation.Kind, "group", StringComparison.Ordinal);
+        CanManageGroupMembers = isGroup && (viewerRole is "owner" or "moderator");
+        CanManageGroupOwners = isGroup && viewerRole == "owner";
         GroupMembers.Clear();
         foreach (var member in detail.Members ?? [])
         {
@@ -1666,13 +2971,26 @@ public sealed class ChatViewModel : ObservableObject
                 && (viewerRole == "owner" || memberRole == "member");
             // «Сделать владельцем» — как canTransferSelectedOwnership в web:
             // только owner и только чужая строка (владелец один — сам viewer).
-            var canTransferOwnership = viewerRole == "owner"
+            var canTransferOwnership = CanManageGroupOwners
                 && memberUserId > 0
                 && selfId != memberUserId
                 && memberRole != "owner";
+            // Меню модерации — гейты ChatContextPanel: роли меняет только owner,
+            // ограничение действует по той же иерархии, что исключение.
+            var moderation = new ChatGroupMemberModeration(
+                CanPromote: CanManageGroupOwners && memberRole == "member",
+                CanDemote: CanManageGroupOwners && memberRole == "moderator",
+                CanRestrict: canRemove,
+                RoleHandler: SetGroupMemberRoleAsync,
+                RestrictHandler: RestrictGroupMemberAsync,
+                LiftRestrictionHandler: LiftGroupMemberRestrictionAsync);
             GroupMembers.Add(new ChatGroupMemberItemViewModel(
                 member, canRemove, RemoveGroupMemberAsync,
-                canTransferOwnership, TransferGroupOwnershipAsync));
+                canTransferOwnership, TransferGroupOwnershipAsync,
+                moderation)
+            {
+                AvatarLoader = _imageLoader,
+            });
         }
 
         MembersTitleText = $"Участники: {GroupMembers.Count}";
@@ -1754,6 +3072,106 @@ public sealed class ChatViewModel : ObservableObject
         {
             IsMemberActionBusy = false;
         }
+    }
+
+    /// <summary>
+    /// Назначить/снять модератора (PATCH members/{id}/role); только owner.
+    /// Ответ — свежий detail, права пересчитываются из него.
+    /// </summary>
+    private async Task SetGroupMemberRoleAsync(ChatGroupMemberItemViewModel member, string role)
+    {
+        var conversation = _membersPanelConversation;
+        if (conversation is null || member.UserId <= 0 || IsMemberActionBusy
+            || role is not ("member" or "moderator"))
+        {
+            return;
+        }
+
+        IsMemberActionBusy = true;
+        try
+        {
+            var detail = await _api.UpdateChatGroupMemberRoleAsync(
+                conversation.Id, member.UserId, role, CancellationToken.None);
+            RunOnUi(() => ApplyMemberMutationDetail(conversation, detail));
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+        finally
+        {
+            IsMemberActionBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Ограничить отправку (PUT members/{id}/restriction);
+    /// durationSeconds: 3600/86400/604800, null — бессрочно до снятия.
+    /// </summary>
+    private async Task RestrictGroupMemberAsync(ChatGroupMemberItemViewModel member, int? durationSeconds)
+    {
+        var conversation = _membersPanelConversation;
+        if (conversation is null || member.UserId <= 0 || !member.CanRestrict || IsMemberActionBusy)
+        {
+            return;
+        }
+
+        IsMemberActionBusy = true;
+        try
+        {
+            var detail = await _api.RestrictChatGroupMemberAsync(
+                conversation.Id, member.UserId, durationSeconds, CancellationToken.None);
+            RunOnUi(() => ApplyMemberMutationDetail(conversation, detail));
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+        finally
+        {
+            IsMemberActionBusy = false;
+        }
+    }
+
+    /// <summary>Снять ограничение (DELETE members/{id}/restriction).</summary>
+    private async Task LiftGroupMemberRestrictionAsync(ChatGroupMemberItemViewModel member)
+    {
+        var conversation = _membersPanelConversation;
+        if (conversation is null || member.UserId <= 0 || !member.CanRestrict || IsMemberActionBusy)
+        {
+            return;
+        }
+
+        IsMemberActionBusy = true;
+        try
+        {
+            var detail = await _api.LiftChatGroupMemberRestrictionAsync(
+                conversation.Id, member.UserId, CancellationToken.None);
+            RunOnUi(() => ApplyMemberMutationDetail(conversation, detail));
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+        finally
+        {
+            IsMemberActionBusy = false;
+        }
+    }
+
+    /// <summary>Свежий detail от мутации участника — в строку списка и в панель.</summary>
+    private void ApplyMemberMutationDetail(
+        ConversationItemViewModel conversation,
+        HubChatConversationDetail detail)
+    {
+        if (!ReferenceEquals(_membersPanelConversation, conversation))
+        {
+            return;
+        }
+
+        conversation.Update(detail);
+        RebuildVisibleConversations();
+        ApplyGroupMembers(detail);
     }
 
     /// <summary>Добавление кандидата (POST members); ответ — свежий detail.</summary>
@@ -1845,7 +3263,10 @@ public sealed class ChatViewModel : ObservableObject
                 {
                     if (!existingIds.Contains(user.Id))
                     {
-                        MemberCandidateResults.Add(new ChatUserItemViewModel(user));
+                        MemberCandidateResults.Add(new ChatUserItemViewModel(user)
+                        {
+                            AvatarLoader = _imageLoader,
+                        });
                     }
                 }
 
@@ -1880,6 +3301,7 @@ public sealed class ChatViewModel : ObservableObject
         IsSearchingMemberCandidates = false;
         IsLoadingMembers = false;
         CanManageGroupMembers = false;
+        CanManageGroupOwners = false;
         IsMemberActionBusy = false;
         MembersTitleText = null;
     }
@@ -2343,6 +3765,27 @@ public sealed class ChatViewModel : ObservableObject
         }
     }
 
+    /// <summary>Заголовок Telegram-плашки закрепа (первая строка, акцентная).</summary>
+    public string PinnedBarTitleText => "Закреплённое сообщение";
+
+    /// <summary>Вторая строка плашки: «Автор: превью» без пиктограммы (она слева-полосой).</summary>
+    public string PinnedBarPreviewText
+    {
+        get
+        {
+            var top = PinnedMessages.FirstOrDefault();
+            if (top is null)
+            {
+                return string.Empty;
+            }
+
+            var preview = string.IsNullOrWhiteSpace(top.Preview) ? "Сообщение" : top.Preview;
+            return string.IsNullOrWhiteSpace(top.SenderName)
+                ? preview
+                : $"{top.SenderName}: {preview}";
+        }
+    }
+
     private ICommand? _jumpToPinnedCommand;
 
     /// <summary>Клик по плашке закрепа — переход к верхнему закреплённому.</summary>
@@ -2436,6 +3879,7 @@ public sealed class ChatViewModel : ObservableObject
 
         OnPropertyChanged(nameof(HasPinnedMessages));
         OnPropertyChanged(nameof(PinnedBarText));
+        OnPropertyChanged(nameof(PinnedBarPreviewText));
     }
 
     /// <summary>Debounce 350 мс: серверный поиск по сообщениям выбранного диалога.</summary>
@@ -2485,7 +3929,10 @@ public sealed class ChatViewModel : ObservableObject
                 {
                     // Пузыри результатов без действий — только превью и переход.
                     SearchResults.Add(new ChatMessageViewModel(
-                        NormalizePollBody(dto), conversation.IsGroupLike));
+                        NormalizePollBody(dto), conversation.IsGroupLike)
+                    {
+                        ImageLoader = _imageLoader,
+                    });
                 }
 
                 OnPropertyChanged(nameof(MessageSearchHint));
@@ -2544,7 +3991,7 @@ public sealed class ChatViewModel : ObservableObject
                 foreach (var dto in (page.Items ?? [])
                              .OrderBy(m => m.CreatedAt ?? DateTimeOffset.MinValue))
                 {
-                    Messages.Add(CreateMessageViewModel(dto, conversation.IsGroupLike));
+                    InsertMessageItem(Messages.Count, CreateMessageViewModel(dto, conversation.IsGroupLike));
                 }
 
                 HasOlder = page.HasOlder;
@@ -2552,6 +3999,13 @@ public sealed class ChatViewModel : ObservableObject
                 var anchorId = page.InitialAnchorMessageId ?? messageId;
                 SelectedMessage = Messages.FirstOrDefault(
                     m => string.Equals(m.Id, anchorId, StringComparison.Ordinal));
+                if (SelectedMessage is { } anchor)
+                {
+                    // Скролл + акцентная вспышка пузыря — «go to anchor» как в tdesktop.
+                    RequestScrollToMessage?.Invoke(anchor);
+                    FlashMessageHighlight(anchor);
+                }
+
                 if (closeSearch)
                 {
                     CloseMessageSearch();
@@ -2569,6 +4023,10 @@ public sealed class ChatViewModel : ObservableObject
                 {
                     _ = MarkReadSafelyAsync(conversation.Id, lastId);
                 }
+
+                // Статусы якорного среза могли устареть за время прыжка —
+                // догружаем read/реакции точечно, как hydrateThread в web.
+                _ = HydrateLoadedMessagesSafelyAsync(conversation, cancellationToken);
             });
         }
         catch (OperationCanceledException)
@@ -2578,6 +4036,68 @@ public sealed class ChatViewModel : ObservableObject
         {
             RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
         }
+    }
+
+    /// <summary>Клик по цитате ответа: к оригиналу — прокрутка к уже
+    /// загруженному, подгрузка старших страниц (не больше 5 итераций), а
+    /// если цель вне истории — thread-bootstrap как у pinned/search.</summary>
+    private async Task OpenReplyTargetAsync(
+        ChatMessageViewModel? message,
+        CancellationToken cancellationToken)
+    {
+        var conversation = _selectedConversation;
+        var targetId = message?.ReplyToMessageId;
+        if (conversation is null || string.IsNullOrEmpty(targetId))
+        {
+            return;
+        }
+
+        ChatMessageViewModel? FindTarget() => Messages.FirstOrDefault(
+            item => string.Equals(item.Id, targetId, StringComparison.Ordinal));
+
+        var target = FindTarget();
+        // Подгружаем старшие страницы ограниченно: «далекий» оригинал дешевле
+        // открыть одним thread-bootstrap, чем тянуть всю историю.
+        for (var attempt = 0;
+             target is null && attempt < 5 && HasOlder && _olderCursor is not null;
+             attempt++)
+        {
+            await LoadOlderAsync(cancellationToken);
+            if (cancellationToken.IsCancellationRequested
+                || !ReferenceEquals(_selectedConversation, conversation))
+            {
+                return;
+            }
+
+            target = FindTarget();
+        }
+
+        if (target is null)
+        {
+            // Цель старше подгруженной истории — тот же якорный переход,
+            // что у pinned-бара и поиска по сообщениям.
+            await JumpToAnchorAsync(conversation, targetId, closeSearch: false, cancellationToken);
+            return;
+        }
+
+        SelectedMessage = target;
+        RequestScrollToMessage?.Invoke(target);
+        FlashMessageHighlight(target);
+    }
+
+    /// <summary>Секундная акцентная вспышка пузыря после перехода к якорю;
+    /// маркер гасит устаревшие тики, чтобы повторный прыжок продлевал свечение.</summary>
+    internal void FlashMessageHighlight(ChatMessageViewModel message)
+    {
+        var marker = ++_highlightMarker;
+        message.IsHighlighted = true;
+        RunDelayed(TimeSpan.FromMilliseconds(1100), () =>
+        {
+            if (_highlightMarker == marker)
+            {
+                message.IsHighlighted = false;
+            }
+        });
     }
 
     private void OpenNewConversation()
@@ -2709,7 +4229,10 @@ public sealed class ChatViewModel : ObservableObject
             FoundUsers.Clear();
             foreach (var user in list.Items ?? [])
             {
-                var item = new ChatUserItemViewModel(user);
+                var item = new ChatUserItemViewModel(user)
+                {
+                    AvatarLoader = _imageLoader,
+                };
                 // Повторный поиск в режиме группы: галочки уже выбранных сохраняем.
                 item.IsSelected = SelectedGroupMembers.Any(member => member.Id == user.Id);
                 FoundUsers.Add(item);
@@ -2774,6 +4297,13 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>Список диалогов + запуск realtime-цикла (ошибки старта не фатальны).</summary>
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        // Флаги чата (scheduled_messages_enabled и др.) — фоном, параллельно
+        // списку диалогов: «Отправить позже» появляется, когда конфиг придёт.
+        _ = LoadChatConfigSafelyAsync();
+        // Папки диалогов — тоже фоном: вкладки появятся над списком по готовности.
+        _ = LoadChatFoldersSafelyAsync();
+        // Профиль шапки ☰-меню — один GET на сессию.
+        _ = LoadMenuProfileSafelyAsync(cancellationToken);
         try
         {
             await LoadConversationsCoreAsync(cancellationToken);
@@ -2782,6 +4312,9 @@ public sealed class ChatViewModel : ObservableObject
         {
             await StartRealtimeSafelyAsync();
         }
+
+        // Черновики — после списка: строкам сразу проставляем «Черновик: ».
+        InitializeDrafts();
     }
 
     /// <summary>Ошибка загрузки, выставленная шеллом при автономной инициализации.</summary>
@@ -2831,15 +4364,29 @@ public sealed class ChatViewModel : ObservableObject
         ComposerText = string.Empty;
         ClearComposerContext();
         ClearTypingIndicator();
+        _conversationTypingMarkers.Clear();
+        // Клиентские черновики не переживают сессию — как clearAllDrafts в web.
+        ClearAllDrafts();
+        // Кэш фото — тоже: после смены пользователя чужие аватары не должны висеть.
+        _imageLoader.Clear();
+        // ComposerText в самом конце цепочки: если правка была активна,
+        // ClearComposerContext вернул снапшот — после ClearAllDrafts его уже
+        // нет, но свойство осталось заполненным; гасим явно (сессия сброшена,
+        // ScheduleDraftSync здесь no-op — выбранного диалога нет).
+        ComposerText = string.Empty;
+        CloseMediaViewer();
         CloseMessageSearch();
         CloseGlobalSearch();
         CloseForwardPanel();
+        CloseDeleteConfirm();
+        IsDeleting = false;
         IsForwarding = false;
         IsReadersPanelOpen = false;
         IsLoadingReaders = false;
         ReadersTitleText = null;
         MessageReaders.Clear();
         ClearPinnedState();
+        ExitMessageSelection();
         SelectedMessage = null;
         ShowArchived = false;
         SearchText = string.Empty;
@@ -2863,7 +4410,54 @@ public sealed class ChatViewModel : ObservableObject
         OnPropertyChanged(nameof(NewGroupTitle));
         CloseMembersPanel();
         CloseMediaPanel();
+        CloseGroupSettings();
+        CloseJoinRequestsPanel();
+        CloseReportsPanel();
+        CloseReportDialog();
+        CloseTaskShare();
+        _taskShareCancellation?.Cancel();
         _linkPreviewRequests.Clear();
+        ResetScheduledState();
+        IsScheduledMessagesEnabled = false;
+        _chatConfigRequested = false;
+        // Папки/стикеры/ИИ — сессионное состояние не переживает выход.
+        CloseFolderManager();
+        FolderMembershipItems.Clear();
+        IsFolderBusy = false;
+        _newFolderName = string.Empty;
+        OnPropertyChanged(nameof(NewFolderName));
+        _renamingFolderName = string.Empty;
+        OnPropertyChanged(nameof(RenamingFolderName));
+        _menuProfileRequested = false;
+        MenuProfileName = null;
+        MenuProfileUsername = null;
+        MenuProfileBrush = null;
+        MenuProfileInitials = "•";
+        MenuProfileAvatarImage = null;
+        _customFolderTabs.Clear();
+        _conversationIdsByFolder.Clear();
+        _serverFolderUnreadCounts.Clear();
+        _activeFolderKey = AllFolderKey;
+        OnPropertyChanged(nameof(ActiveFolderKey));
+        RebuildFolderTabs();
+        CloseStickerPanel();
+        IsPeerCardOpen = false;
+        StickerPacks.Clear();
+        SelectedStickerPack = null;
+        _stickersLoaded = false;
+        IsLoadingStickers = false;
+        IsSendingSticker = false;
+        _stickerImportSource = string.Empty;
+        OnPropertyChanged(nameof(StickerImportSource));
+        IsImportingStickerPack = false;
+        CloseAiPanel();
+        StopAiStatusPolling();
+        AiConversations.Clear();
+        AiBots.Clear();
+        _aiBotsLoaded = false;
+        IsLoadingAiBots = false;
+        AiErrorText = null;
+        IsAiActionBusy = false;
         ApplyConnectionState(HubChatRealtimeState.Disconnected);
     }
 
@@ -3045,12 +4639,23 @@ public sealed class ChatViewModel : ObservableObject
         var source = _serverSearchResults
             ?? _allConversations
                 .Where(item => item.IsArchived == ShowArchived)
+                .Where(MatchesActiveFolder)
                 .Where(item => item.MatchesFilter(_searchText));
         var desired = source
             .OrderByDescending(item => item.IsPinned)
             .ThenByDescending(item => item.LastMessageAt ?? DateTimeOffset.MinValue)
             .ThenBy(item => item.Title, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+
+        // Открытый диалог не закрывается от фильтра поиска: держим его первым
+        // в выдаче, как в Telegram — иначе SelectedItem=Null у ListBox
+        // заталкивает null обратно в SelectedConversation и гасит ленту.
+        if (!string.IsNullOrWhiteSpace(_searchText)
+            && _selectedConversation is { } open
+            && !desired.Contains(open))
+        {
+            desired.Insert(0, open);
+        }
 
         var desiredSet = new HashSet<ConversationItemViewModel>(desired);
         for (var i = Conversations.Count - 1; i >= 0; i--)
@@ -3082,6 +4687,12 @@ public sealed class ChatViewModel : ObservableObject
 
         OnPropertyChanged(nameof(IsEmpty));
         OnPropertyChanged(nameof(TotalUnreadCount));
+        OnPropertyChanged(nameof(ArchiveHeaderText));
+        RaiseScrollFabBadge();
+        // Бейджи вкладок без серверного покрытия — локальный пересчёт;
+        // список AI-диалогов панели держим синхронным с общим.
+        RefreshFolderTabStates();
+        RefreshAiConversationList();
     }
 
     // ---- Сообщения ----
@@ -3095,6 +4706,7 @@ public sealed class ChatViewModel : ObservableObject
         Messages.Clear();
         HasOlder = false;
         _olderCursor = null;
+        HistoryErrorText = null;
         try
         {
             var page = await _api.GetChatMessagesAsync(
@@ -3112,12 +4724,15 @@ public sealed class ChatViewModel : ObservableObject
             Messages.Clear();
             foreach (var message in (page.Items ?? []).OrderBy(m => m.CreatedAt ?? DateTimeOffset.MinValue))
             {
-                Messages.Add(CreateMessageViewModel(message, conversation.IsGroupLike));
+                InsertMessageItem(Messages.Count, CreateMessageViewModel(message, conversation.IsGroupLike));
             }
 
             HasOlder = page.HasOlder;
             _olderCursor = page.OlderCursorMessageId;
             BannerErrorText = null;
+            // Полоса «Непрочитанные сообщения» — до ClearUnread, пока счётчик
+            // строки жив: one-shot unread bar, realtime её не дублирует.
+            ApplyUnreadDivider(conversation.UnreadCount, page.ViewerLastReadMessageId);
             conversation.ClearUnread();
             OnPropertyChanged(nameof(TotalUnreadCount));
 
@@ -3128,6 +4743,7 @@ public sealed class ChatViewModel : ObservableObject
             }
 
             _ = LoadPinnedMessagesSafelyAsync(conversation, cancellation.Token);
+            _ = HydrateLoadedMessagesSafelyAsync(conversation, cancellation.Token);
         }
         catch (OperationCanceledException)
         {
@@ -3136,7 +4752,11 @@ public sealed class ChatViewModel : ObservableObject
         {
             if (ReferenceEquals(_selectedConversation, conversation))
             {
-                BannerErrorText = TasksViewModel.DescribeError(ex);
+                var errorText = TasksViewModel.DescribeError(ex);
+                // Ошибка истории — и в баннер (с диспетчером RetryCommand), и в
+                // панель ленты: «Сообщений пока нет» при ней не показывается.
+                HistoryErrorText = errorText;
+                BannerErrorText = errorText;
             }
         }
         finally
@@ -3145,6 +4765,72 @@ public sealed class ChatViewModel : ObservableObject
             {
                 IsLoadingMessages = false;
             }
+        }
+    }
+
+    /// <summary>
+    /// Unread bar tdesktop: полоса «Непрочитанные сообщения» над первым
+    /// непрочитанным входящим — один раз при открытии диалога. Якорь —
+    /// viewer_last_read_message_id из ответа; если его нет или он вне
+    /// загруженной страницы — отсчитываем UnreadCount входящих с конца ленты.
+    /// </summary>
+    private void ApplyUnreadDivider(int unreadCount, string? viewerLastReadMessageId)
+    {
+        if (unreadCount <= 0 || Messages.Count == 0)
+        {
+            return;
+        }
+
+        var index = -1;
+        if (!string.IsNullOrEmpty(viewerLastReadMessageId))
+        {
+            for (var i = 0; i < Messages.Count; i++)
+            {
+                if (!string.Equals(Messages[i].Id, viewerLastReadMessageId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                for (var j = i + 1; j < Messages.Count; j++)
+                {
+                    if (!Messages[j].IsOwn)
+                    {
+                        index = j;
+                        break;
+                    }
+                }
+
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            // Запасной путь: UnreadCount-е входящее с конца; когда счётчик
+            // больше входящих страницы — полоса над первым входящим.
+            var seen = 0;
+            var firstIncoming = -1;
+            for (var i = Messages.Count - 1; i >= 0; i--)
+            {
+                if (Messages[i].IsOwn)
+                {
+                    continue;
+                }
+
+                firstIncoming = i;
+                if (++seen == unreadCount)
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            index = index >= 0 ? index : firstIncoming;
+        }
+
+        if (index >= 0)
+        {
+            Messages[index].ShowUnreadDivider = true;
         }
     }
 
@@ -3180,7 +4866,7 @@ public sealed class ChatViewModel : ObservableObject
                     continue;
                 }
 
-                Messages.Insert(index++, CreateMessageViewModel(message, conversation.IsGroupLike));
+                InsertMessageItem(index++, CreateMessageViewModel(message, conversation.IsGroupLike));
             }
 
             HasOlder = page.HasOlder;
@@ -3218,8 +4904,8 @@ public sealed class ChatViewModel : ObservableObject
                     text,
                     cancellationToken);
                 editing.Update(updated);
+                // ClearComposerContext сам вернёт снапшот черновика в composer.
                 ClearComposerContext();
-                ComposerText = string.Empty;
                 StopTypingIfSent();
                 BannerErrorText = null;
                 return;
@@ -3244,6 +4930,9 @@ public sealed class ChatViewModel : ObservableObject
             // Успешная отправка снимает «печатает…» явно — даже если диалог
             // за время await сменился и composer не чистили.
             StopTypingIfSent();
+            // Черновик отправленного диалога сгорает — даже если выбор уже
+            // ушёл на другой диалог (removeDraft on submit в web).
+            PersistDraftNow(conversation.Id, null);
             conversation.UpdateLastMessage(message);
             RebuildVisibleConversations();
             BannerErrorText = null;
@@ -3258,6 +4947,16 @@ public sealed class ChatViewModel : ObservableObject
             IsSending = false;
         }
     }
+
+    /// <summary>Параметр команды дропа/вставки: string[], перечисление или один путь.</summary>
+    private static IReadOnlyList<string> NormalizeDroppedPaths(object? parameter) =>
+        parameter switch
+        {
+            IReadOnlyList<string> list => list,
+            IEnumerable<string> enumerable => enumerable.ToList(),
+            string single => [single],
+            _ => [],
+        };
 
     /// <summary>
     /// Отправка файлов как вложений: POST upload-session → чанки по chunk_size_bytes →
@@ -3378,6 +5077,8 @@ public sealed class ChatViewModel : ObservableObject
                 ClearComposerContext();
             }
 
+            // Вложение ушло — черновик диалога сгорает, как при обычной отправке.
+            PersistDraftNow(conversation.Id, null);
             conversation.UpdateLastMessage(message);
             RebuildVisibleConversations();
             BannerErrorText = null;
@@ -3396,11 +5097,107 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>Вложения, которые скачиваются прямо сейчас — второй клик не дублирует запрос.</summary>
     private readonly HashSet<string> _attachmentDownloadsInFlight = new(StringComparer.Ordinal);
 
-    /// <summary>Чип вложения нажат: скачиваем в temp и открываем ассоциацией ОС.</summary>
+    /// <summary>
+    /// Чип вложения нажат: image — полноэкранный просмотрщик (Telegram),
+    /// прочие виды — скачивание в temp и открытие ассоциацией ОС.
+    /// </summary>
     private Task OpenAttachmentAsync(
         ChatMessageViewModel message,
-        ChatAttachmentItemViewModel item) =>
-        DownloadAndOpenAttachmentAsync(message.Id, item.Model, item.FileName);
+        ChatAttachmentItemViewModel item)
+    {
+        if (item.IsImage && !string.IsNullOrEmpty(message.Id))
+        {
+            OpenMediaViewer(message, item);
+            return Task.CompletedTask;
+        }
+
+        return DownloadAndOpenAttachmentAsync(message.Id, item.Model, item.FileName);
+    }
+
+    /// <summary>
+    /// Открыть просмотрщик на нажатом image-вложении: список — все image-вложения
+    /// ленты в порядке сообщений, стрелки листают его в обе стороны.
+    /// </summary>
+    private void OpenMediaViewer(ChatMessageViewModel message, ChatAttachmentItemViewModel clicked)
+    {
+        _mediaViewerItems.Clear();
+        foreach (var entry in Messages)
+        {
+            if (string.IsNullOrEmpty(entry.Id))
+            {
+                continue;
+            }
+
+            foreach (var attachment in entry.AttachmentItems)
+            {
+                if (attachment.IsImage && !string.IsNullOrEmpty(attachment.Id))
+                {
+                    _mediaViewerItems.Add((entry.Id!, attachment));
+                }
+            }
+        }
+
+        var index = _mediaViewerItems.FindIndex(entry => ReferenceEquals(entry.Item, clicked));
+        if (index < 0)
+        {
+            return;
+        }
+
+        IsMediaViewerOpen = true;
+        _ = ShowMediaViewerItemAsync(index);
+    }
+
+    /// <summary>Показать элемент просмотрщика: имя, счётчик, докачка через AuthImageLoader.</summary>
+    private async Task ShowMediaViewerItemAsync(int index)
+    {
+        if (index < 0 || index >= _mediaViewerItems.Count || !IsMediaViewerOpen)
+        {
+            return;
+        }
+
+        _mediaViewerIndex = index;
+        OnPropertyChanged(nameof(MediaViewerTitle));
+        OnPropertyChanged(nameof(MediaViewerCounterText));
+        OnPropertyChanged(nameof(MediaViewerCanGoBack));
+        OnPropertyChanged(nameof(MediaViewerCanGoForward));
+
+        var marker = ++_mediaViewerLoadMarker;
+        MediaViewerImage = null;
+        IsMediaViewerLoading = true;
+        var (messageId, item) = _mediaViewerItems[index];
+        // Полный размер нужен только на экран: ~1600px покрывает и ретину ноутбука.
+        var image = await _imageLoader.LoadAsync(
+            "chat/messages/" + Uri.EscapeDataString(messageId)
+            + "/attachments/" + Uri.EscapeDataString(item.Id) + "/file",
+            decodePixelWidth: 1600);
+        if (marker != _mediaViewerLoadMarker)
+        {
+            // Успели листнуть/закрыть — результат уже не актуален.
+            return;
+        }
+
+        IsMediaViewerLoading = false;
+        MediaViewerImage = image;
+    }
+
+    private void MoveMediaViewer(int delta) =>
+        _ = ShowMediaViewerItemAsync(_mediaViewerIndex + delta);
+
+    /// <summary>✕ / Esc / смена диалога — закрыть просмотрщик и сбросить список.</summary>
+    private void CloseMediaViewer()
+    {
+        if (!IsMediaViewerOpen && _mediaViewerItems.Count == 0)
+        {
+            return;
+        }
+
+        _mediaViewerLoadMarker++;
+        IsMediaViewerOpen = false;
+        IsMediaViewerLoading = false;
+        MediaViewerImage = null;
+        _mediaViewerItems.Clear();
+        _mediaViewerIndex = -1;
+    }
 
     /// <summary>
     /// Общий путь открытия вложения: чип в пузыре и плитка медиагалереи —
@@ -3529,8 +5326,33 @@ public sealed class ChatViewModel : ObservableObject
             index--;
         }
 
-        Messages.Insert(index, CreateMessageViewModel(message, isGroupConversation));
+        InsertMessageItem(index, CreateMessageViewModel(message, isGroupConversation));
         return true;
+    }
+
+    /// <summary>
+    /// Вставка/добавление сообщения с пересчётом визуальной группировки
+    /// (пилюля дня, серия одного отправителя) у нового элемента и соседей.
+    /// </summary>
+    private void InsertMessageItem(int index, ChatMessageViewModel item)
+    {
+        Messages.Insert(index, item);
+        RefreshMessageGroupingAt(index - 1);
+        RefreshMessageGroupingAt(index);
+        RefreshMessageGroupingAt(index + 1);
+    }
+
+    /// <summary>Пересчитать флаги группировки сообщения по его соседям в ленте.</summary>
+    private void RefreshMessageGroupingAt(int index)
+    {
+        if (index < 0 || index >= Messages.Count)
+        {
+            return;
+        }
+
+        var previous = index > 0 ? Messages[index - 1] : null;
+        var next = index + 1 < Messages.Count ? Messages[index + 1] : null;
+        Messages[index].ApplyGrouping(previous, next);
     }
 
     /// <summary>Пузырь с провайдерами действий — пункты меню вызывают API через VM.</summary>
@@ -3546,19 +5368,35 @@ public sealed class ChatViewModel : ObservableObject
             LinkPreviewHandler = OpenLinkPreviewAsync,
             PollVoteHandler = VotePollAsync,
             PollCloseHandler = ClosePollAsync,
+            ReplyTargetHandler = message => OpenReplyTargetAsync(message, CancellationToken.None),
+            ActionConfirmHandler = ConfirmAiActionAsync,
+            ActionCancelHandler = CancelAiActionAsync,
+            ActionResultOpenHandler = OpenAiActionResultAsync,
+            ImageLoader = _imageLoader,
             IsPinned = message.Id is not null && _pinnedMessageIds.Contains(message.Id),
         };
 
     /// <summary>
     /// Строка диалога: меню вызывает PATCH settings, GET export и POST leave для групп.
     /// </summary>
-    private ConversationItemViewModel CreateConversationViewModel(HubChatConversation conversation) =>
-        new(conversation)
+    private ConversationItemViewModel CreateConversationViewModel(HubChatConversation conversation)
+    {
+        var item = new ConversationItemViewModel(conversation)
         {
             SettingsHandler = ToggleConversationSettingAsync,
             LeaveHandler = LeaveGroupConversationAsync,
             ExportHandler = ExportConversationAsync,
+            AvatarLoader = _imageLoader,
         };
+        // Строка сразу получает черновик — иначе поздние страницы списка
+        // (подгрузка, пересборка фильтра) теряли бы «Черновик: ».
+        if (_drafts.TryGetValue(item.Id, out var draft))
+        {
+            item.SetDraft(draft);
+        }
+
+        return item;
+    }
 
     /// <summary>
     /// Экспорт истории диалога (GET export): формат выбирает SaveFileDialog по FilterIndex,
@@ -3710,29 +5548,210 @@ public sealed class ChatViewModel : ObservableObject
         _realtime?.SendTyping(conversationId, isTyping: false);
     }
 
-    /// <summary>Прятать входящий индикатор и гасить висящий таймер авто-сброса.</summary>
+    /// <summary>Прятать индикатор шапки открытого диалога и гасить его таймер авто-сброса.</summary>
     private void ClearTypingIndicator()
     {
-        _typingMarker++;
+        // Маркер шапки и строки общий: смена диалога не трогает «печатает…» на
+        // строке списка — то состояние живёт своим таймером до expires_in_ms.
+        if (_selectedConversation is { } current)
+        {
+            _conversationTypingMarkers[current.Id] =
+                _conversationTypingMarkers.GetValueOrDefault(current.Id) + 1;
+        }
+
         TypingText = null;
+    }
+
+    // ── Клиентские черновики (parity web chatDraftsStorage.js) ─────────────
+
+    /// <summary>Дебаунс записи черновика — как draftWriteTimeout в web (~320 мс).</summary>
+    private const int DraftDebounceMs = 320;
+
+    /// <summary>
+    /// Подмена стора черновиков для харнессов (скриншоты держат демо-VM без
+    /// инъекции — иначе ленивый стор писал бы в реальный %LocalAppData%).
+    /// </summary>
+    internal INativeChatDraftStore? DraftStore
+    {
+        get => _draftStore;
+        set => _draftStore = value;
+    }
+
+    /// <summary>
+    /// Ленивая привязка стораджа к текущему пользователю: файл — отдельный на
+    /// userId (как chat:draft:&lt;userId&gt;:… в web localStorage). Без сессии
+    /// черновики живут только в памяти — чужой файл не трогаем.
+    /// </summary>
+    private INativeChatDraftStore? EnsureDraftStore()
+    {
+        if (_draftStore is not null)
+        {
+            return _draftStore;
+        }
+
+        var userId = _api.CurrentSession?.UserId;
+        if (userId is null)
+        {
+            return null;
+        }
+
+        _draftStore = new NativeChatDraftStore(userId.Value);
+        _draftUserId = userId.Value;
+        return _draftStore;
+    }
+
+    /// <summary>
+    /// Одноразовая загрузка черновиков после первой загрузки диалогов: store
+    /// сам подметает TTL/лимит (sweep в web). Строкам черновик подставляет и
+    /// CreateConversationViewModel — поздние страницы списка не теряют его.
+    /// </summary>
+    private void InitializeDrafts()
+    {
+        if (_draftsInitialized)
+        {
+            return;
+        }
+
+        var store = EnsureDraftStore();
+        if (store is null)
+        {
+            return;
+        }
+
+        _draftsInitialized = true;
+        _draftUserId = _api.CurrentSession?.UserId;
+        foreach (var (conversationId, text) in store.Load())
+        {
+            _drafts[conversationId] = text;
+            FindConversation(conversationId)?.SetDraft(text);
+        }
+    }
+
+    /// <summary>
+    /// Изменение composer'а → отложенная запись черновика активного диалога.
+    /// Молчим при переключении диалога (suppress) и без выбранного диалога.
+    /// </summary>
+    private void ScheduleDraftSync()
+    {
+        if (_suppressDraftSync
+            || _selectedConversation is not { } conversation
+            || string.IsNullOrEmpty(conversation.Id))
+        {
+            return;
+        }
+
+        var marker = ++_draftSyncMarker;
+        var conversationId = conversation.Id;
+        _ = PersistDraftDebouncedAsync(conversationId, DraftTextFor(conversationId), marker);
+    }
+
+    /// <summary>
+    /// Текст черновика для диалога: пока открыта правка — снапшот (тело edit в
+    /// composer не является черновиком, parity editDraftSnapshotRef из web).
+    /// </summary>
+    private string DraftTextFor(string conversationId) =>
+        _editDraftSnapshot is { } snapshot
+        && string.Equals(snapshot.ConversationId, conversationId, StringComparison.Ordinal)
+            ? snapshot.Text
+            : _composerText;
+
+    /// <summary>
+    /// Отложенная запись: маркер гасит устаревшие тики (новый ввод, смена
+    /// диалога, выход). Задержка вне UI, применение — через RunOnUi.
+    /// </summary>
+    private async Task PersistDraftDebouncedAsync(string conversationId, string text, int marker)
+    {
+        await Task.Delay(DraftDebounceMs).ConfigureAwait(false);
+        if (_syncContext is System.Windows.Threading.DispatcherSynchronizationContext
+            && !_syncContextThread.IsAlive)
+        {
+            // Пост на мёртвый UI-поток воссоздаёт его message-only HWND уже на
+            // чужом потоке — WndProc на выгрузке валит процесс (SubclassWndProc).
+            return;
+        }
+
+        RunOnUi(() =>
+        {
+            if (marker != _draftSyncMarker)
+            {
+                return;
+            }
+
+            PersistDraftNow(conversationId, text);
+        });
+    }
+
+    /// <summary>
+    /// Мгновенный коммит черновика: память → диск → строка списка. Пустой текст
+    /// стирает запись (черновик храним только для непустого composer'а).
+    /// </summary>
+    private void PersistDraftNow(string conversationId, string? text)
+    {
+        if (string.IsNullOrEmpty(conversationId))
+        {
+            return;
+        }
+
+        var draft = string.IsNullOrWhiteSpace(text) ? null : text;
+        if (draft is null)
+        {
+            _drafts.Remove(conversationId);
+        }
+        else
+        {
+            _drafts[conversationId] = draft;
+        }
+
+        // Save(null) в сторадже — no-op при отсутствии записи, поэтому можно
+        // звать без проверки: не создаём и не трогаем файл без необходимости.
+        EnsureDraftStore()?.Save(conversationId, draft);
+        FindConversation(conversationId)?.SetDraft(draft);
+    }
+
+    /// <summary>
+    /// Выход/сброс сессии: сносим все черновики (clearAllDrafts в web), гасим
+    /// отложенные записи маркером и отвязываем стор — при следующем логине он
+    /// создастся заново под нового пользователя.
+    /// </summary>
+    private void ClearAllDrafts()
+    {
+        _draftSyncMarker++;
+        _drafts.Clear();
+        _editDraftSnapshot = null;
+        foreach (var item in _allConversations)
+        {
+            item.SetDraft(null);
+        }
+
+        (_draftStore ?? _injectedDraftStore)?.ClearAll();
+        _draftStore = _injectedDraftStore;
+        _draftsInitialized = false;
+        _draftUserId = null;
     }
 
     /// <summary>
     /// chat.typing.started: conversation_id живёт на уровне конверта (в payload его нет),
-    /// payload — {user_id, sender_name, is_typing, expires_in_ms}. Индикатор снимает
-    /// stopped либо таймер по expires_in_ms — что раньше.
+    /// payload — {user_id, sender_name, is_typing, expires_in_ms}. Индикатор — и на
+    /// строке диалога в списке, и в шапке открытого; снимает stopped либо таймер
+    /// по expires_in_ms — что раньше.
     /// </summary>
     private void HandleTypingStarted(HubChatRealtimeEvent realtimeEvent)
     {
-        if (!IsRelevantTypingEvent(realtimeEvent))
+        if (!TryGetTypingTarget(realtimeEvent, out var conversationId))
         {
             return;
         }
 
         var senderName = GetStringProperty(realtimeEvent.Payload, "sender_name");
-        TypingText = string.IsNullOrWhiteSpace(senderName)
+        var text = string.IsNullOrWhiteSpace(senderName)
             ? "Собеседник печатает…"
             : $"{senderName.Trim()} печатает…";
+
+        FindConversation(conversationId)?.SetTyping(text);
+        if (IsSelectedConversation(conversationId))
+        {
+            TypingText = text;
+        }
 
         var expiresMs = realtimeEvent.Payload.TryGetProperty("expires_in_ms", out var expiresElement)
             && expiresElement.ValueKind == JsonValueKind.Number
@@ -3740,32 +5759,39 @@ public sealed class ChatViewModel : ObservableObject
             && parsedMs > 0
                 ? parsedMs
                 : TypingDefaultExpiresMs;
-        var marker = ++_typingMarker;
-        _ = ClearTypingAfterAsync(marker, expiresMs);
+        var marker = _conversationTypingMarkers[conversationId] =
+            _conversationTypingMarkers.GetValueOrDefault(conversationId) + 1;
+        _ = ClearTypingAfterAsync(conversationId, marker, expiresMs);
     }
 
     /// <summary>chat.typing.stopped: тот же конвертный фильтр, индикатор гасим сразу.</summary>
     private void HandleTypingStopped(HubChatRealtimeEvent realtimeEvent)
     {
-        if (!IsRelevantTypingEvent(realtimeEvent))
+        if (!TryGetTypingTarget(realtimeEvent, out var conversationId))
         {
             return;
         }
 
-        ClearTypingIndicator();
+        _conversationTypingMarkers[conversationId] =
+            _conversationTypingMarkers.GetValueOrDefault(conversationId) + 1;
+        FindConversation(conversationId)?.SetTyping(null);
+        if (IsSelectedConversation(conversationId))
+        {
+            TypingText = null;
+        }
     }
 
     /// <summary>
     /// Общий фильтр typing-событий: conversation_id конверта (fallback — из payload)
-    /// обязан совпадать с открытым диалогом; кадры с нашим user_id пропускаем.
+    /// обязан быть непустым; кадры с нашим user_id пропускаем. Индикатор вешается
+    /// на строку списка найденного диалога и на шапку, если он открыт.
     /// </summary>
-    private bool IsRelevantTypingEvent(HubChatRealtimeEvent realtimeEvent)
+    private bool TryGetTypingTarget(HubChatRealtimeEvent realtimeEvent, out string conversationId)
     {
-        var conversationId = realtimeEvent.ConversationId
-            ?? GetStringProperty(realtimeEvent.Payload, "conversation_id");
-        if (_selectedConversation is null
-            || !string.Equals(
-                _selectedConversation.Id, conversationId, StringComparison.OrdinalIgnoreCase))
+        conversationId = realtimeEvent.ConversationId
+            ?? GetStringProperty(realtimeEvent.Payload, "conversation_id")
+            ?? string.Empty;
+        if (conversationId.Length == 0)
         {
             return false;
         }
@@ -3778,13 +5804,23 @@ public sealed class ChatViewModel : ObservableObject
             || senderUserId != currentUserId.Value;
     }
 
+    private bool IsSelectedConversation(string conversationId) =>
+        _selectedConversation is { } selected
+        && string.Equals(selected.Id, conversationId, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Авто-сброс «печатает…» по expires_in_ms: новый started/stopped гасит старый таймер.</summary>
-    private async Task ClearTypingAfterAsync(int marker, int delayMs)
+    private async Task ClearTypingAfterAsync(string conversationId, int marker, int delayMs)
     {
         await Task.Delay(Math.Max(delayMs, 0));
         RunOnUi(() =>
         {
-            if (_typingMarker == marker)
+            if (_conversationTypingMarkers.GetValueOrDefault(conversationId) != marker)
+            {
+                return;
+            }
+
+            FindConversation(conversationId)?.SetTyping(null);
+            if (IsSelectedConversation(conversationId))
             {
                 TypingText = null;
             }
@@ -4020,6 +6056,12 @@ public sealed class ChatViewModel : ObservableObject
         if (poll is not null)
         {
             message.ApplyPoll(poll);
+        }
+
+        // action_card — частичный патч: поле присутствует только при смене карточки.
+        if (element.Value.TryGetProperty("action_card", out var actionCardNode))
+        {
+            message.ApplyActionCard(DeserializeActionCard(actionCardNode));
         }
     }
 
@@ -4319,6 +6361,25 @@ public sealed class ChatViewModel : ObservableObject
         }
     }
 
+    /// <summary>action_card из realtime-патча (может быть явным null — карточку сняли).</summary>
+    private static HubChatActionCard? DeserializeActionCard(JsonElement element)
+    {
+        if (element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<HubChatActionCard>(
+                element.GetRawText(), JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private static string? GetStringProperty(JsonElement element, string name) =>
         element.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
             ? property.GetString()
@@ -4354,6 +6415,3924 @@ public sealed class ChatViewModel : ObservableObject
         return null;
     }
 
+    // ---- Папки диалогов ----
+
+    /// <summary>Вкладки папок над списком диалогов (системные + пользовательские).</summary>
+    public ObservableCollection<ChatFolderTabViewModel> FolderTabs { get; } = [];
+
+    /// <summary>Только пользовательские папки — строки панели «Управление папками».</summary>
+    public ObservableCollection<ChatFolderTabViewModel> CustomFolderTabs => _customFolderTabs;
+
+    /// <summary>Активная вкладка: system key (all|personal|groups|tasks) или id папки.</summary>
+    public string ActiveFolderKey
+    {
+        get => _activeFolderKey;
+        set
+        {
+            var normalized = string.IsNullOrWhiteSpace(value) ? PersonalFolderKey : value.Trim();
+            // «Архив» — не вкладка, а отдельный вид списка (как в web) — маппим
+            // на «Личные»; «Все» — живая системная вкладка tg-main.
+            if (normalized is "archived")
+            {
+                normalized = PersonalFolderKey;
+            }
+
+            if (SetProperty(ref _activeFolderKey, normalized))
+            {
+                RefreshFolderTabStates();
+                RebuildVisibleConversations();
+            }
+        }
+    }
+
+    /// <summary>Переключение вкладки: фильтр списка диалогов + подсветка чипа.</summary>
+    public ICommand SelectFolderCommand { get; }
+
+    /// <summary>«Управление папками»: создать/переименовать/удалить/состав.</summary>
+    public ICommand ToggleFolderManagerCommand { get; }
+
+    public ICommand CloseFolderManagerCommand { get; }
+
+    /// <summary>Создать папку по имени из поля «Новая папка».</summary>
+    public ICommand CreateFolderCommand { get; }
+
+    /// <summary>Начать переименование строки папки в менеджере.</summary>
+    public ICommand BeginFolderRenameCommand { get; }
+
+    public ICommand CancelFolderRenameCommand { get; }
+
+    /// <summary>Сохранить новое имя (PATCH folders/{id}).</summary>
+    public ICommand SaveFolderRenameCommand { get; }
+
+    /// <summary>Удалить пользовательскую папку (диалоги остаются — как в web).</summary>
+    public ICommand DeleteFolderCommand { get; }
+
+    /// <summary>Перестановка папки вверх/вниз — PATCH sort_order соседей.</summary>
+    public ICommand MoveFolderUpCommand { get; }
+
+    public ICommand MoveFolderDownCommand { get; }
+
+    /// <summary>Открыть «Состав папки»: чек-лист всех диалогов → PUT membership.</summary>
+    public ICommand OpenFolderMembershipCommand { get; }
+
+    public ICommand CloseFolderMembershipCommand { get; }
+
+    /// <summary>Сохранить состав папки (полная замена членства).</summary>
+    public ICommand SaveFolderMembershipCommand { get; }
+
+    /// <summary>Панель «Управление папками» поверх списка диалогов.</summary>
+    public bool IsFolderManagerOpen
+    {
+        get => _isFolderManagerOpen;
+        private set
+        {
+            if (SetProperty(ref _isFolderManagerOpen, value))
+            {
+                OnPropertyChanged(nameof(IsConversationListActive));
+            }
+        }
+    }
+
+    /// <summary>Идёт вызов API папок — кнопки менеджера блокируются.</summary>
+    public bool IsFolderBusy
+    {
+        get => _isFolderBusy;
+        private set
+        {
+            if (SetProperty(ref _isFolderBusy, value))
+            {
+                RaiseFolderCommandStates();
+            }
+        }
+    }
+
+    /// <summary>Имя новой папки в менеджере.</summary>
+    public string NewFolderName
+    {
+        get => _newFolderName;
+        set
+        {
+            if (SetProperty(ref _newFolderName, value))
+            {
+                RaiseFolderCommandStates();
+            }
+        }
+    }
+
+    /// <summary>Ошибка операций с папками — строка в менеджере.</summary>
+    public string? FolderErrorText
+    {
+        get => _folderErrorText;
+        private set
+        {
+            if (SetProperty(ref _folderErrorText, value))
+            {
+                OnPropertyChanged(nameof(HasFolderError));
+            }
+        }
+    }
+
+    public bool HasFolderError => !string.IsNullOrEmpty(FolderErrorText);
+
+    /// <summary>Папка в режиме переименования (inline-поле вместо заголовка).</summary>
+    public ChatFolderTabViewModel? RenamingFolder
+    {
+        get => _renamingFolder;
+        private set
+        {
+            var previous = _renamingFolder;
+            if (SetProperty(ref _renamingFolder, value))
+            {
+                if (previous is not null)
+                {
+                    previous.IsRenaming = false;
+                }
+
+                if (value is not null)
+                {
+                    value.IsRenaming = true;
+                }
+
+                OnPropertyChanged(nameof(RenamingFolderId));
+                RaiseFolderCommandStates();
+            }
+        }
+    }
+
+    /// <summary>Id переименовываемой папки — строка менеджера сверяется с ней.</summary>
+    public string? RenamingFolderId => RenamingFolder?.FolderId;
+
+    public string RenamingFolderName
+    {
+        get => _renamingFolderName;
+        set
+        {
+            if (SetProperty(ref _renamingFolderName, value))
+            {
+                RaiseFolderCommandStates();
+            }
+        }
+    }
+
+    /// <summary>«Состав папки» — чек-лист диалогов поверх списка.</summary>
+    public bool IsFolderMembershipOpen
+    {
+        get => _isFolderMembershipOpen;
+        private set
+        {
+            if (SetProperty(ref _isFolderMembershipOpen, value))
+            {
+                OnPropertyChanged(nameof(IsConversationListActive));
+            }
+        }
+    }
+
+    /// <summary>Папка, чей состав правится (заголовок панели).</summary>
+    public string MembershipFolderTitle => _membershipFolder?.Title ?? "папки";
+
+    /// <summary>Строки чек-листа: все не-архивные диалоги с галочкой членства.</summary>
+    public ObservableCollection<ChatFolderMembershipItemViewModel> FolderMembershipItems { get; } = [];
+
+    /// <summary>Фильтр активной папки (parity web filterSidebarConversationsByFolder).</summary>
+    private bool MatchesActiveFolder(ConversationItemViewModel item)
+    {
+        if (ShowArchived || _serverSearchResults is not null)
+        {
+            // Вид «Архив» и серверная выдача поиска — вне вкладок папок.
+            return true;
+        }
+
+        return _activeFolderKey switch
+        {
+            // «Все»: без фильтра kind — все диалоги видимого (не-архивного) списка.
+            AllFolderKey => true,
+            PersonalFolderKey => item.Kind is "direct" or "notes" or "ai",
+            GroupsFolderKey => string.Equals(item.Kind, "group", StringComparison.Ordinal),
+            TasksFolderKey => string.Equals(item.Kind, "task", StringComparison.Ordinal),
+            var customKey => _conversationIdsByFolder.TryGetValue(customKey, out var ids)
+                && ids.Contains(item.Id, StringComparer.Ordinal),
+        };
+    }
+
+    /// <summary>GET /chat/folders: фон, без блокировки списка (ошибки молчим — вкладки системные живут).</summary>
+    private async Task LoadChatFoldersSafelyAsync()
+    {
+        try
+        {
+            var list = await _api.GetChatFoldersAsync(CancellationToken.None);
+            RunOnUi(() => ApplyFolderList(list));
+        }
+        catch
+        {
+            // Папки — необязательная надстройка: при сбое остаются системные вкладки.
+        }
+    }
+
+    /// <summary>Слияние ответа GET/мутаций папок: вкладки, карта членства, бейджи.</summary>
+    private void ApplyFolderList(HubChatFolderList list)
+    {
+        _serverFolderUnreadCounts.Clear();
+        foreach (var pair in list.FolderUnreadCounts ?? (IReadOnlyDictionary<string, int>)new Dictionary<string, int>())
+        {
+            if (!string.IsNullOrEmpty(pair.Key) && pair.Value > 0)
+            {
+                _serverFolderUnreadCounts[pair.Key] = pair.Value;
+            }
+        }
+
+        var folders = (list.Items ?? [])
+            .Where(folder => !string.IsNullOrEmpty(folder.Id))
+            .ToList();
+
+        // Карта членства: conversation_ids_by_folder ∪ folder.conversation_ids
+        // (как buildConversationIdsByFolder в web).
+        _conversationIdsByFolder.Clear();
+        foreach (var folder in folders)
+        {
+            var ids = new List<string>();
+            if (list.ConversationIdsByFolder is not null
+                && list.ConversationIdsByFolder.TryGetValue(folder.Id, out var serverIds)
+                && serverIds is not null)
+            {
+                ids.AddRange(serverIds);
+            }
+
+            if (folder.ConversationIds is not null)
+            {
+                ids.AddRange(folder.ConversationIds);
+            }
+
+            _conversationIdsByFolder[folder.Id] = ids
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        }
+
+        // Пользовательские вкладки — после системных, по sort_order (Telegram-style).
+        _customFolderTabs.Clear();
+        foreach (var folder in folders
+                     .OrderBy(folder => folder.SortOrder)
+                     .ThenBy(folder => folder.Name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            var existing = _customFolderTabs.FirstOrDefault(tab => tab.FolderId == folder.Id)
+                ?? FolderTabs.FirstOrDefault(tab => tab.FolderId == folder.Id);
+            if (existing is not null)
+            {
+                existing.Title = folder.Name ?? "Папка";
+                existing.ConversationCount = _conversationIdsByFolder.TryGetValue(folder.Id, out var ids)
+                    ? ids.Count
+                    : folder.ConversationCount;
+                _customFolderTabs.Add(existing);
+            }
+            else
+            {
+                _customFolderTabs.Add(CreateFolderTab(folder));
+            }
+        }
+
+        RebuildFolderTabs();
+        RebuildFolderMenuItems();
+
+        // Активная вкладка удалена на сервере — fallback на «Личные» (как web).
+        if (!FolderTabs.Any(tab => tab.Key == _activeFolderKey))
+        {
+            ActiveFolderKey = PersonalFolderKey;
+        }
+        else
+        {
+            RebuildVisibleConversations();
+        }
+    }
+
+    private ChatFolderTabViewModel CreateFolderTab(HubChatFolder folder)
+    {
+        var tab = new ChatFolderTabViewModel(
+            folder.Id,
+            string.IsNullOrWhiteSpace(folder.Name) ? "Папка" : folder.Name,
+            folder.Id,
+            folder.SortOrder,
+            SelectFolderTabAsync)
+        {
+            ConversationCount = _conversationIdsByFolder.TryGetValue(folder.Id, out var ids)
+                ? ids.Count
+                : folder.ConversationCount,
+        };
+        return tab;
+    }
+
+    private Task SelectFolderTabAsync(ChatFolderTabViewModel tab)
+    {
+        SelectFolder(tab);
+        return Task.CompletedTask;
+    }
+
+    private void SelectFolder(ChatFolderTabViewModel? tab)
+    {
+        if (tab is not null)
+        {
+            ActiveFolderKey = tab.Key;
+        }
+    }
+
+    /// <summary>Состав вкладок: системные всегда первые, дальше пользовательские.</summary>
+    private void RebuildFolderTabs()
+    {
+        for (var i = FolderTabs.Count - 1; i >= SystemFolderTabs.Length; i--)
+        {
+            FolderTabs.RemoveAt(i);
+        }
+
+        while (FolderTabs.Count < SystemFolderTabs.Length)
+        {
+            var (key, title) = SystemFolderTabs[FolderTabs.Count];
+            FolderTabs.Add(new ChatFolderTabViewModel(
+                key, title, folderId: null, sortOrder: 0, SelectFolderTabAsync));
+        }
+
+        var index = SystemFolderTabs.Length;
+        foreach (var tab in _customFolderTabs)
+        {
+            FolderTabs.Insert(index++, tab);
+        }
+
+        RefreshFolderTabStates();
+    }
+
+    /// <summary>Выделение и бейджи непрочитанных вкладок (server counts ∪ локальный расчёт).</summary>
+    private void RefreshFolderTabStates()
+    {
+        foreach (var tab in FolderTabs)
+        {
+            tab.IsSelected = string.Equals(tab.Key, _activeFolderKey, StringComparison.Ordinal);
+            tab.UnreadCount = ResolveFolderUnread(tab.Key);
+        }
+    }
+
+    /// <summary>
+    /// Бейдж вкладки: серверный folder_unread_counts — источник истины;
+    /// для ключей без серверного значения — локальный расчёт по списку
+    /// (buildFolderUnreadCounts: архивные и действующий mute не считаются).
+    /// </summary>
+    private int ResolveFolderUnread(string key) =>
+        _serverFolderUnreadCounts.TryGetValue(key, out var serverCount)
+            ? serverCount
+            : ComputeLocalFolderUnread(key);
+
+    private int ComputeLocalFolderUnread(string key)
+    {
+        var items = _allConversations.Where(item => !item.IsEffectivelyMuted);
+        return key switch
+        {
+            "all" => items.Where(item => !item.IsArchived).Sum(item => item.UnreadCount),
+            "archived" => items.Where(item => item.IsArchived).Sum(item => item.UnreadCount),
+            PersonalFolderKey => items
+                .Where(item => !item.IsArchived && item.Kind is "direct" or "notes")
+                .Sum(item => item.UnreadCount),
+            GroupsFolderKey => items
+                .Where(item => !item.IsArchived && item.Kind == "group")
+                .Sum(item => item.UnreadCount),
+            TasksFolderKey => items
+                .Where(item => !item.IsArchived && item.Kind == "task")
+                .Sum(item => item.UnreadCount),
+            "ai" => items
+                .Where(item => !item.IsArchived && item.Kind == "ai")
+                .Sum(item => item.UnreadCount),
+            _ => _conversationIdsByFolder.TryGetValue(key, out var ids)
+                ? items
+                    .Where(item => !item.IsArchived && ids.Contains(item.Id, StringComparer.Ordinal))
+                    .Sum(item => item.UnreadCount)
+                : 0,
+        };
+    }
+
+    /// <summary>
+    /// Подменю «Добавить в папку» на строках диалогов пересобирается при смене
+    /// папок/карты членства (галочки членства + свежие названия).
+    /// </summary>
+    private void RebuildFolderMenuItems()
+    {
+        foreach (var conversation in _allConversations)
+        {
+            RebuildFolderMenuItems(conversation);
+        }
+    }
+
+    private void RebuildFolderMenuItems(ConversationItemViewModel conversation)
+    {
+        conversation.FolderMenuItems.Clear();
+        foreach (var folder in _customFolderTabs)
+        {
+            if (folder.FolderId is not { } folderId)
+            {
+                continue;
+            }
+
+            var included = _conversationIdsByFolder.TryGetValue(folderId, out var ids)
+                && ids.Contains(conversation.Id, StringComparer.Ordinal);
+            var captured = folder;
+            conversation.FolderMenuItems.Add(new ChatFolderMenuItemViewModel(
+                folderId,
+                folder.Title,
+                included,
+                menuItem => ToggleFolderMembershipAsync(conversation, captured, menuItem)));
+        }
+
+        conversation.RaiseFolderMenuItemsChanged();
+    }
+
+    /// <summary>
+    /// Toggle диалога в папке из контекстного меню строки:
+    /// POST/DELETE …/folders/{id}/conversations/{cid}, ответ — свежая карта.
+    /// </summary>
+    private async Task ToggleFolderMembershipAsync(
+        ConversationItemViewModel conversation,
+        ChatFolderTabViewModel folder,
+        ChatFolderMenuItemViewModel menuItem)
+    {
+        if (folder.FolderId is not { } folderId || IsFolderBusy)
+        {
+            return;
+        }
+
+        try
+        {
+            var mutation = menuItem.IsIncluded
+                ? await _api.RemoveChatFolderConversationAsync(
+                    folderId, conversation.Id, CancellationToken.None)
+                : await _api.AddChatFolderConversationAsync(
+                    folderId, conversation.Id, CancellationToken.None);
+            RunOnUi(() =>
+            {
+                ApplyFolderMembership(folder, mutation.Item);
+                FolderErrorText = null;
+            });
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+    }
+
+    /// <summary>Обновить карту членства из ответа мутации (item.conversation_ids — канон).</summary>
+    private void ApplyFolderMembership(ChatFolderTabViewModel folder, HubChatFolder? item)
+    {
+        if (folder.FolderId is not { } folderId)
+        {
+            return;
+        }
+
+        if (item?.ConversationIds is { } ids)
+        {
+            _conversationIdsByFolder[folderId] = ids
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            folder.ConversationCount = item.ConversationIds.Count;
+        }
+        else if (item is not null)
+        {
+            folder.ConversationCount = item.ConversationCount;
+        }
+
+        RebuildFolderMenuItems();
+        RefreshFolderTabStates();
+        // Правила видимости текущей вкладки могли измениться для этого диалога.
+        RebuildVisibleConversations();
+    }
+
+    private void OpenFolderManager()
+    {
+        CloseNewConversation();
+        CloseGlobalSearch();
+        CloseAiPanel();
+        FolderErrorText = null;
+        RenamingFolder = null;
+        IsFolderManagerOpen = true;
+    }
+
+    private void CloseFolderManager()
+    {
+        RenamingFolder = null;
+        FolderErrorText = null;
+        IsFolderManagerOpen = false;
+        CloseFolderMembership();
+    }
+
+    private async Task CreateFolderAsync(CancellationToken cancellationToken)
+    {
+        var name = NewFolderName.Trim();
+        if (name.Length == 0)
+        {
+            return;
+        }
+
+        IsFolderBusy = true;
+        try
+        {
+            var mutation = await _api.CreateChatFolderAsync(name, cancellationToken);
+            FolderErrorText = null;
+            if (mutation.Item is { } item)
+            {
+                _conversationIdsByFolder.TryAdd(item.Id, []);
+                var tab = CreateFolderTab(item);
+                _customFolderTabs.Add(tab);
+                RebuildFolderTabs();
+                RebuildFolderMenuItems();
+                NewFolderName = string.Empty;
+            }
+        }
+        catch (Exception exception)
+        {
+            FolderErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsFolderBusy = false;
+        }
+    }
+
+    private async Task SaveFolderRenameAsync(CancellationToken cancellationToken)
+    {
+        var folder = RenamingFolder;
+        var name = RenamingFolderName.Trim();
+        if (folder?.FolderId is not { } folderId || name.Length == 0)
+        {
+            return;
+        }
+
+        IsFolderBusy = true;
+        try
+        {
+            var mutation = await _api.UpdateChatFolderAsync(
+                folderId, name, sortOrder: null, cancellationToken);
+            FolderErrorText = null;
+            if (mutation.Item is { } item)
+            {
+                folder.Title = item.Name ?? name;
+            }
+            else
+            {
+                folder.Title = name;
+            }
+
+            RenamingFolder = null;
+            RebuildFolderMenuItems();
+        }
+        catch (Exception exception)
+        {
+            FolderErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsFolderBusy = false;
+        }
+    }
+
+    private async Task DeleteFolderAsync(
+        ChatFolderTabViewModel? folder,
+        CancellationToken cancellationToken)
+    {
+        if (folder?.FolderId is not { } folderId)
+        {
+            return;
+        }
+
+        IsFolderBusy = true;
+        try
+        {
+            await _api.DeleteChatFolderAsync(folderId, cancellationToken);
+            FolderErrorText = null;
+            _customFolderTabs.Remove(folder);
+            _conversationIdsByFolder.Remove(folderId);
+            if (ReferenceEquals(_renamingFolder, folder))
+            {
+                RenamingFolder = null;
+            }
+
+            RebuildFolderTabs();
+            RebuildFolderMenuItems();
+            // Активная папка удалена — фильтрация возвращается на «Личные».
+            if (string.Equals(_activeFolderKey, folderId, StringComparison.Ordinal))
+            {
+                ActiveFolderKey = PersonalFolderKey;
+            }
+            else
+            {
+                RebuildVisibleConversations();
+            }
+        }
+        catch (Exception exception)
+        {
+            FolderErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsFolderBusy = false;
+        }
+    }
+
+    /// <summary>Перестановка: меняем sort_order с соседом (PATCH обеих строк — как web reorder).</summary>
+    private async Task MoveFolderAsync(
+        ChatFolderTabViewModel? folder,
+        int direction,
+        CancellationToken cancellationToken)
+    {
+        if (folder?.FolderId is not { } folderId)
+        {
+            return;
+        }
+
+        var index = _customFolderTabs.IndexOf(folder);
+        var neighborIndex = index + direction;
+        if (index < 0 || neighborIndex < 0 || neighborIndex >= _customFolderTabs.Count)
+        {
+            return;
+        }
+
+        var neighbor = _customFolderTabs[neighborIndex];
+        IsFolderBusy = true;
+        try
+        {
+            // Обмениваем sort_order пары; при равных значениях раздвигаем вручную.
+            var folderOrder = folder.SortOrder == neighbor.SortOrder
+                ? neighbor.SortOrder + (direction > 0 ? 1 : -1)
+                : neighbor.SortOrder;
+            await _api.UpdateChatFolderAsync(
+                folderId, name: null, folderOrder, cancellationToken);
+            if (neighbor.FolderId is { } neighborId)
+            {
+                await _api.UpdateChatFolderAsync(
+                    neighborId, name: null, folder.SortOrder, cancellationToken);
+            }
+
+            FolderErrorText = null;
+            // Сервер — источник порядка: перечитываем список папок и пересобираем вкладки.
+            var refreshed = await _api.GetChatFoldersAsync(cancellationToken);
+            ApplyFolderList(refreshed);
+        }
+        catch (Exception exception)
+        {
+            FolderErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsFolderBusy = false;
+        }
+    }
+
+    /// <summary>«Состав папки»: чек-лист всех не-архивных диалогов.</summary>
+    private void OpenFolderMembership(ChatFolderTabViewModel folder)
+    {
+        _membershipFolder = folder;
+        OnPropertyChanged(nameof(MembershipFolderTitle));
+        FolderMembershipItems.Clear();
+        var memberIds = _conversationIdsByFolder.TryGetValue(folder.Key, out var ids)
+            ? ids
+            : [];
+        foreach (var conversation in _allConversations.Where(item => !item.IsArchived))
+        {
+            FolderMembershipItems.Add(new ChatFolderMembershipItemViewModel(
+                conversation, memberIds.Contains(conversation.Id, StringComparer.Ordinal)));
+        }
+
+        FolderErrorText = null;
+        IsFolderMembershipOpen = true;
+    }
+
+    private void CloseFolderMembership()
+    {
+        _membershipFolder = null;
+        IsFolderMembershipOpen = false;
+    }
+
+    /// <summary>Полная замена членства папки выбранными в чек-листе диалогами.</summary>
+    private async Task SaveFolderMembershipAsync(CancellationToken cancellationToken)
+    {
+        var folder = _membershipFolder;
+        if (folder?.FolderId is not { } folderId)
+        {
+            return;
+        }
+
+        var ids = FolderMembershipItems
+            .Where(item => item.IsIncluded)
+            .Select(item => item.ConversationId)
+            .ToList();
+        IsFolderBusy = true;
+        try
+        {
+            var mutation = await _api.ReplaceChatFolderConversationsAsync(
+                folderId, ids, cancellationToken);
+            FolderErrorText = null;
+            ApplyFolderMembership(folder, mutation.Item ?? new HubChatFolder
+            {
+                Id = folderId,
+                ConversationIds = ids,
+                ConversationCount = ids.Count,
+            });
+            CloseFolderMembership();
+        }
+        catch (Exception exception)
+        {
+            FolderErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsFolderBusy = false;
+        }
+    }
+
+    private void RaiseFolderCommandStates()
+    {
+        (CreateFolderCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (SaveFolderRenameCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (DeleteFolderCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (MoveFolderUpCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (MoveFolderDownCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (SaveFolderMembershipCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
+    // ---- Стикеры ----
+
+    /// <summary>Панель стикеров над composer'ом.</summary>
+    public bool IsStickerPanelOpen
+    {
+        get => _isStickerPanelOpen;
+        private set => SetProperty(ref _isStickerPanelOpen, value);
+    }
+
+    /// <summary>Активная вкладка панели: true — «Эмодзи» (сетка вставки), false — «Стикеры».</summary>
+    public bool IsEmojiTab
+    {
+        get => _isEmojiTab;
+        private set => SetProperty(ref _isEmojiTab, value);
+    }
+
+    /// <summary>
+    /// Вкладка «Эмодзи» — категоризованные секции как в tg-stickers
+    /// («Улыбки»/«Жесты и люди»/«Символы и объекты»); InsertEmojiCommand
+    /// дописывает выбранный эмодзи в composer.
+    /// </summary>
+    public IReadOnlyList<ChatEmojiSectionViewModel> EmojiSections { get; } =
+    [
+        new ChatEmojiSectionViewModel("Улыбки",
+        [
+            "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "🥲", "☺️",
+            "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗",
+            "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓",
+            "😎", "🥸", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕",
+            "🙁", "☹️", "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤",
+            "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰",
+        ]),
+        new ChatEmojiSectionViewModel("Жесты и люди",
+        [
+            "👋", "🤚", "🖐", "✋", "🖖", "👌", "🤌", "🤏", "✌️", "🤞",
+            "🫰", "🤟", "🤘", "🤙", "👈", "👉", "👆", "🖕", "👇", "☝️",
+            "👍", "👎", "✊", "👊", "🤛", "🤜", "👏", "🙌", "🫶", "👐",
+            "🤲", "🤝", "🙏", "✍️", "💅", "🤳", "💪", "🫵", "🦾", "👀",
+            "👁️", "🧠", "👶", "🧒", "👦", "👧", "🧑", "👱", "👨", "👩",
+        ]),
+        new ChatEmojiSectionViewModel("Символы и объекты",
+        [
+            "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔",
+            "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "💯", "💢",
+            "💥", "💫", "💦", "💨", "🔥", "⚡", "🌟", "⭐", "✨", "☀️",
+            "🌙", "☁️", "🌈", "🎉", "🎊", "🎈", "🎁", "🏆", "🥇", "🥈",
+            "🥉", "☕", "🍕", "🎂", "🍰", "🍬", "🍭", "🍿", "🥂", "🍾",
+            "🎵", "🎶", "📌", "📎", "✅", "❌", "➕", "🔔", "⏰", "💡",
+        ]),
+    ];
+
+    /// <summary>
+    /// Правая панель «Информация» (tdesktop profile panel): открывается кликом
+    /// по имени диалога, закрывается ✕/сменой диалога; лента сжимается колонкой.
+    /// </summary>
+    public bool IsPeerCardOpen
+    {
+        get => _isPeerCardOpen;
+        private set => SetProperty(ref _isPeerCardOpen, value);
+    }
+
+    /// <summary>
+    /// Компактная раскладка (UI-002): панель «Информация» не отнимает колонку
+    /// у ленты, а становится оверлеем поверх неё — как профиль tdesktop на
+    /// узком окне. Флаг выставляет вью по фактической ширине области чата.
+    /// </summary>
+    public bool IsCompactInfoOverlay
+    {
+        get => _isCompactInfoOverlay;
+        set => SetProperty(ref _isCompactInfoOverlay, value);
+    }
+
+    /// <summary>Top-4 участника для превью «N участников» правой панели (группы).</summary>
+    public ObservableCollection<ChatGroupMemberItemViewModel> PeerPanelMembers { get; } = [];
+
+    /// <summary>Подпись секции участников панели: «12 участников».</summary>
+    public string? PeerMembersTitleText
+    {
+        get => _peerMembersTitleText;
+        private set => SetProperty(ref _peerMembersTitleText, value);
+    }
+
+    /// <summary>Описание группы из detail — инфо-строка панели (null — скрыто).</summary>
+    public string? PeerDescriptionText
+    {
+        get => _peerDescriptionText;
+        private set
+        {
+            if (SetProperty(ref _peerDescriptionText, value))
+            {
+                OnPropertyChanged(nameof(HasPeerDescription));
+            }
+        }
+    }
+
+    public bool HasPeerDescription => !string.IsNullOrWhiteSpace(PeerDescriptionText);
+
+    /// <summary>Кандидаты @mention-попапа — участники активной группы, до 8.</summary>
+    public ObservableCollection<ChatGroupMemberItemViewModel> MentionSuggestions { get; } = [];
+
+    /// <summary>Попап @упоминаний над composer — триггер активен и есть что показать.</summary>
+    public bool IsMentionPopupOpen
+    {
+        get => _isMentionPopupOpen;
+        private set => SetProperty(ref _isMentionPopupOpen, value);
+    }
+
+    /// <summary>Идёт подгрузка участников для меншнов — попап показывает состояние.</summary>
+    public bool IsLoadingMentions
+    {
+        get => _isLoadingMentions;
+        private set => SetProperty(ref _isLoadingMentions, value);
+    }
+
+    /// <summary>Подсвеченный кандидат (↑↓ навигация и клик; Enter/Tab вставляют его).</summary>
+    public ChatGroupMemberItemViewModel? SelectedMentionSuggestion
+    {
+        get => _selectedMentionSuggestion;
+        set => SetProperty(ref _selectedMentionSuggestion, value);
+    }
+
+    /// <summary>
+    /// View ставит каретку composer'а после вставки меншна (FocusComposer —
+    /// только в конец; тут нужен точный индекс).
+    /// </summary>
+    public Action<int>? RequestComposerCaret { get; set; }
+
+    /// <summary>
+    /// View восстанавливает выделение composer'а после markdown-обёртки
+    /// (Ctrl+B/I/K): аргументы — start и length в новом тексте.
+    /// </summary>
+    public Action<int, int>? RequestComposerSelection { get; set; }
+
+    /// <summary>Паки стикеров — вкладки полосы + сетка активного пака.</summary>
+    public ObservableCollection<ChatStickerPackViewModel> StickerPacks { get; } = [];
+
+    /// <summary>Активный пак — его стикеры рисует сетка панели.</summary>
+    public ChatStickerPackViewModel? SelectedStickerPack
+    {
+        get => _selectedStickerPack;
+        set
+        {
+            if (SetProperty(ref _selectedStickerPack, value))
+            {
+                foreach (var pack in StickerPacks)
+                {
+                    pack.IsSelected = ReferenceEquals(pack, value);
+                }
+            }
+        }
+    }
+
+    public bool IsLoadingStickers
+    {
+        get => _isLoadingStickers;
+        private set => SetProperty(ref _isLoadingStickers, value);
+    }
+
+    /// <summary>Идёт отправка стикера — повторный клик не дублирует запрос.</summary>
+    public bool IsSendingSticker
+    {
+        get => _isSendingSticker;
+        private set => SetProperty(ref _isSendingSticker, value);
+    }
+
+    /// <summary>Ошибка панели стикеров (загрузка паков/импорт/отправка).</summary>
+    public string? StickerErrorText
+    {
+        get => _stickerErrorText;
+        private set
+        {
+            if (SetProperty(ref _stickerErrorText, value))
+            {
+                OnPropertyChanged(nameof(HasStickerError));
+            }
+        }
+    }
+
+    public bool HasStickerError => !string.IsNullOrEmpty(StickerErrorText);
+
+    /// <summary>Ссылка/short_name пака Telegram для импорта.</summary>
+    public string StickerImportSource
+    {
+        get => _stickerImportSource;
+        set
+        {
+            if (SetProperty(ref _stickerImportSource, value))
+            {
+                (ImportStickerPackCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsImportingStickerPack
+    {
+        get => _isImportingStickerPack;
+        private set
+        {
+            if (SetProperty(ref _isImportingStickerPack, value))
+            {
+                (ImportStickerPackCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public ICommand ToggleStickerPanelCommand { get; }
+
+    public ICommand CloseStickerPanelCommand { get; }
+
+    public ICommand SelectStickerPackCommand { get; }
+
+    /// <summary>Переключение вкладок «Эмодзи»/«Стикеры» (parameter: "emoji"|"stickers").</summary>
+    public ICommand SelectStickerTabCommand { get; }
+
+    /// <summary>Вставка эмодзи из сетки панели в текст composer'а.</summary>
+    public ICommand InsertEmojiCommand { get; }
+
+    /// <summary>Клик по заголовку диалога — правая панель «Информация».</summary>
+    public ICommand TogglePeerCardCommand { get; }
+
+    /// <summary>Крестик правой панели.</summary>
+    public ICommand ClosePeerCardCommand { get; }
+
+    /// <summary>Выбор кандидата меншна — вставка «@handle » в composer.</summary>
+    public ICommand InsertMentionCommand { get; }
+
+    /// <summary>Esc/смена контекста — закрыть попап @упоминаний.</summary>
+    public ICommand CloseMentionPopupCommand { get; }
+
+    /// <summary>Импорт пака по ссылке/short_name (POST sticker-packs/import).</summary>
+    public ICommand ImportStickerPackCommand { get; }
+
+    private async Task ToggleStickerPanelAsync(CancellationToken cancellationToken)
+    {
+        if (IsStickerPanelOpen)
+        {
+            CloseStickerPanel();
+            return;
+        }
+
+        StickerErrorText = null;
+        IsStickerPanelOpen = true;
+        // Открывшаяся панель перекрывает composer-оверлеи — попап меншнов гасим.
+        CloseMentionPopup();
+        if (!_stickersLoaded)
+        {
+            await LoadStickerPacksSafelyAsync(cancellationToken);
+        }
+    }
+
+    private void CloseStickerPanel()
+    {
+        IsStickerPanelOpen = false;
+        StickerErrorText = null;
+        // Панель закрывает composer-оверлеи — попап меншнов тоже гасим.
+        CloseMentionPopup();
+    }
+
+    // ---- Правая панель «Информация» (tdesktop: шапка диалога → профиль справа) ----
+
+    private void OpenPeerCard()
+    {
+        _peerPanelConversation = _selectedConversation;
+        IsPeerCardOpen = true;
+        _ = EnsurePeerPanelDataSafelyAsync(_peerPanelConversation);
+    }
+
+    private void ClosePeerCard()
+    {
+        IsPeerCardOpen = false;
+        _peerPanelConversation = null;
+        PeerPanelMembers.Clear();
+        PeerMembersTitleText = null;
+        PeerDescriptionText = null;
+    }
+
+    /// <summary>
+    /// Данные правой панели: для групп — detail (описание + top-4 участника
+    /// под «Показать всех»); у direct всё уже в строке диалога — без запроса.
+    /// </summary>
+    private async Task EnsurePeerPanelDataSafelyAsync(ConversationItemViewModel? conversation)
+    {
+        if (conversation is null || !conversation.IsGroupLike || !IsPeerCardOpen)
+        {
+            return;
+        }
+
+        PeerPanelMembers.Clear();
+        PeerMembersTitleText = "Участники";
+        try
+        {
+            var detail = await _api.GetChatConversationMembersAsync(
+                conversation.Id, CancellationToken.None);
+            if (!ReferenceEquals(_peerPanelConversation, conversation) || !IsPeerCardOpen)
+            {
+                return;
+            }
+
+            PeerDescriptionText = detail.Description;
+            var memberCount = detail.MemberCount > 0
+                ? detail.MemberCount
+                : conversation.MemberCount;
+            PeerMembersTitleText = memberCount > 0
+                ? $"{memberCount} {ChatPlural.Of(memberCount, "участник", "участника", "участников")}"
+                : "Участники";
+            foreach (var member in (detail.Members ?? []).Take(PeerPanelPreviewLimit))
+            {
+                PeerPanelMembers.Add(new ChatGroupMemberItemViewModel(
+                    member, canRemove: false, removeHandler: null)
+                {
+                    AvatarLoader = _imageLoader,
+                });
+            }
+        }
+        catch (Exception exception)
+        {
+            if (ReferenceEquals(_peerPanelConversation, conversation) && IsPeerCardOpen)
+            {
+                BannerErrorText = TasksViewModel.DescribeError(exception);
+            }
+        }
+    }
+
+    // ---- @mention-автокомплит (parity ChatComposer.jsx getComposerMentionTrigger) ----
+
+    /// <summary>
+    /// Триггер упоминания как в web: '@' в начале строки или после пробела,
+    /// запрос — непробельные символы до каретки (≤32). null — триггера нет.
+    /// </summary>
+    internal static (int Start, int End, string Query)? ParseMentionTrigger(
+        string? text, int caretIndex)
+    {
+        var value = text ?? string.Empty;
+        var caret = Math.Clamp(caretIndex, 0, value.Length);
+        var beforeCaret = value[..caret];
+        var atIndex = beforeCaret.LastIndexOf('@');
+        if (atIndex < 0)
+        {
+            return null;
+        }
+
+        if (atIndex > 0 && !char.IsWhiteSpace(beforeCaret[atIndex - 1]))
+        {
+            return null;
+        }
+
+        var query = beforeCaret[(atIndex + 1)..];
+        if (query.Length > MentionQueryLimit || query.Any(char.IsWhiteSpace))
+        {
+            return null;
+        }
+
+        return (atIndex, caret, query);
+    }
+
+    /// <summary>
+    /// Handle как в web getPersonMentionHandle: username без '@', иначе
+    /// full_name → «Имя_Фамилия» (пробелы → '_', мусор вычищен, ≤48).
+    /// </summary>
+    internal static string MentionHandle(string? username, string? displayName)
+    {
+        var handle = (username ?? string.Empty).Trim().TrimStart('@');
+        if (handle.Length > 0)
+        {
+            return handle;
+        }
+
+        var derived = new StringBuilder(48);
+        var pendingUnderscore = false;
+        foreach (var ch in (displayName ?? string.Empty).Trim())
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                pendingUnderscore = derived.Length > 0;
+                continue;
+            }
+
+            if (!char.IsLetterOrDigit(ch) && ch is not ('_' or '.' or '-'))
+            {
+                continue;
+            }
+
+            if (pendingUnderscore)
+            {
+                derived.Append('_');
+                pendingUnderscore = false;
+            }
+
+            derived.Append(ch);
+        }
+
+        return derived.Length > 48 ? derived.ToString(0, 48) : derived.ToString();
+    }
+
+    /// <summary>
+    /// Фильтр кандидата как в web filterMentionCandidates: нормализованный
+    /// запрос — подстрока «handle displayName» без учёта регистра.
+    /// </summary>
+    internal static bool MentionMatches(string? query, string? handle, string? displayName)
+    {
+        var normalized = (query ?? string.Empty).Trim().TrimStart('@');
+        if (normalized.Length == 0)
+        {
+            return true;
+        }
+
+        var haystack = string.Concat(handle, " ", displayName);
+        return haystack.Contains(normalized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Каретка/текст composer'а → состояние попапа @упоминаний. View зовёт на
+    /// TextChanged/SelectionChanged; только группы — в direct меншн выключен.
+    /// </summary>
+    public void UpdateMentionTrigger(string? text, int caretIndex)
+    {
+        var trigger = _selectedConversation is { IsGroupLike: true }
+            ? ParseMentionTrigger(text, caretIndex)
+            : null;
+        if (trigger is null)
+        {
+            CloseMentionPopup();
+            return;
+        }
+
+        _mentionStart = trigger.Value.Start;
+        _mentionEnd = trigger.Value.End;
+        _mentionQuery = trigger.Value.Query;
+        RebuildMentionSuggestions();
+        if (_selectedConversation is { } conversation
+            && !string.Equals(_mentionConversationId, conversation.Id, StringComparison.Ordinal))
+        {
+            _ = EnsureMentionCandidatesSafelyAsync(conversation);
+        }
+
+        IsMentionPopupOpen = MentionSuggestions.Count > 0 || IsLoadingMentions;
+    }
+
+    /// <summary>↑↓ по кандидатам — циклически, как web activeMentionIndex.</summary>
+    public void MoveMentionSelection(int delta)
+    {
+        if (MentionSuggestions.Count == 0)
+        {
+            return;
+        }
+
+        var index = SelectedMentionSuggestion is { } current
+            ? MentionSuggestions.IndexOf(current)
+            : -1;
+        index = index < 0
+            ? (delta >= 0 ? 0 : MentionSuggestions.Count - 1)
+            : (index + delta + MentionSuggestions.Count) % MentionSuggestions.Count;
+        SelectedMentionSuggestion = MentionSuggestions[index];
+    }
+
+    /// <summary>
+    /// Вставка «@handle » вместо триггера и каретка за ней — web insertMention
+    /// (@username при наличии, иначе производный из имени).
+    /// </summary>
+    public void InsertMention(ChatGroupMemberItemViewModel? candidate)
+    {
+        if (candidate is null || _mentionQuery is null)
+        {
+            return;
+        }
+
+        var handle = MentionHandle(candidate.Username, candidate.DisplayName);
+        if (handle.Length == 0)
+        {
+            return;
+        }
+
+        var insertText = "@" + handle + " ";
+        var text = _composerText;
+        var start = Math.Clamp(_mentionStart, 0, text.Length);
+        var end = Math.Clamp(_mentionEnd, start, text.Length);
+        var nextCaret = start + insertText.Length;
+        ComposerText = string.Concat(text.AsSpan(0, start), insertText, text.AsSpan(end));
+        CloseMentionPopup();
+        RequestComposerCaret?.Invoke(nextCaret);
+    }
+
+    /// <summary>Закрытие попапа меншнов; источник кандидатов кэширован на диалог.</summary>
+    public void CloseMentionPopup()
+    {
+        _mentionQuery = null;
+        IsLoadingMentions = false;
+        IsMentionPopupOpen = false;
+        MentionSuggestions.Clear();
+        SelectedMentionSuggestion = null;
+    }
+
+    /// <summary>Запрос после триггера: haystack «handle displayName» до 8 строк.</summary>
+    private void RebuildMentionSuggestions()
+    {
+        var query = _mentionQuery ?? string.Empty;
+        MentionSuggestions.Clear();
+        foreach (var item in _mentionSource)
+        {
+            var handle = MentionHandle(item.Username, item.DisplayName);
+            if (handle.Length == 0 && item.DisplayName.Length == 0)
+            {
+                continue;
+            }
+
+            if (!MentionMatches(query, handle, item.DisplayName))
+            {
+                continue;
+            }
+
+            MentionSuggestions.Add(item);
+            if (MentionSuggestions.Count == MentionResultLimit)
+            {
+                break;
+            }
+        }
+
+        // Активная строка — первая, как web activeMentionIndex=0.
+        SelectedMentionSuggestion = MentionSuggestions.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Ленивая подгрузка участников диалога для меншнов (тот же GET members,
+    /// что и панель «Участники»); себя исключаем — как web currentUserId.
+    /// </summary>
+    private async Task EnsureMentionCandidatesSafelyAsync(ConversationItemViewModel conversation)
+    {
+        _mentionConversationId = conversation.Id;
+        IsLoadingMentions = true;
+        IsMentionPopupOpen = _mentionQuery is not null;
+        try
+        {
+            var detail = await _api.GetChatConversationMembersAsync(
+                conversation.Id, CancellationToken.None);
+            // За запрос триггер/диалог мог умереть — кандидаты не применяем.
+            if (!string.Equals(_mentionConversationId, conversation.Id, StringComparison.Ordinal)
+                || _mentionQuery is null)
+            {
+                return;
+            }
+
+            var selfId = _api.CurrentSession?.UserId;
+            _mentionSource.Clear();
+            var seen = new HashSet<int>();
+            foreach (var member in detail.Members ?? [])
+            {
+                var user = member.User;
+                if (user is null || user.Id <= 0 || user.Id == selfId || !seen.Add(user.Id))
+                {
+                    continue;
+                }
+
+                _mentionSource.Add(new ChatGroupMemberItemViewModel(
+                    member, canRemove: false, removeHandler: null)
+                {
+                    AvatarLoader = _imageLoader,
+                });
+            }
+
+            RebuildMentionSuggestions();
+        }
+        catch (Exception exception)
+        {
+            if (_mentionQuery is not null)
+            {
+                BannerErrorText = TasksViewModel.DescribeError(exception);
+            }
+        }
+        finally
+        {
+            IsLoadingMentions = false;
+            // web: попап жив, пока триггер активен и есть строки/загрузка.
+            IsMentionPopupOpen = _mentionQuery is not null
+                && (MentionSuggestions.Count > 0 || IsLoadingMentions);
+        }
+    }
+
+    /// <summary>GET /chat/sticker-packs: паки + превью через AuthImageLoader (лениво).</summary>
+    private async Task LoadStickerPacksSafelyAsync(CancellationToken cancellationToken)
+    {
+        IsLoadingStickers = true;
+        try
+        {
+            var list = await _api.GetChatStickerPacksAsync(cancellationToken);
+            ApplyStickerPacks(list);
+            _stickersLoaded = true;
+            StickerErrorText = null;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            StickerErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsLoadingStickers = false;
+        }
+    }
+
+    private void ApplyStickerPacks(HubChatStickerPackList list)
+    {
+        var selectedId = SelectedStickerPack?.Id;
+        StickerPacks.Clear();
+        foreach (var pack in (list.Items ?? []).Where(pack => !string.IsNullOrEmpty(pack.Id)))
+        {
+            StickerPacks.Add(new ChatStickerPackViewModel(pack, SendStickerAsync, _imageLoader));
+        }
+
+        SelectedStickerPack = StickerPacks.FirstOrDefault(pack => pack.Id == selectedId)
+            ?? StickerPacks.FirstOrDefault();
+    }
+
+    /// <summary>Отправка стикера как в web sendSticker: sticker_id + reply контекст.</summary>
+    private async Task SendStickerAsync(ChatStickerItemViewModel sticker)
+    {
+        var conversation = SelectedConversation;
+        if (conversation is null || IsSendingSticker || IsSending || IsUploading)
+        {
+            return;
+        }
+
+        IsSendingSticker = true;
+        try
+        {
+            var clientMessageId = Guid.NewGuid().ToString("N");
+            var message = await _api.SendChatStickerMessageAsync(
+                conversation.Id,
+                sticker.Id,
+                clientMessageId,
+                ReplyingTo?.Id,
+                CancellationToken.None);
+            // Диалог мог смениться за время await — чужую ленту не трогаем.
+            if (ReferenceEquals(_selectedConversation, conversation))
+            {
+                InsertMessage(message, conversation.IsGroupLike);
+                ClearComposerContext();
+            }
+
+            conversation.UpdateLastMessage(message);
+            RebuildVisibleConversations();
+            BannerErrorText = null;
+            StickerErrorText = null;
+        }
+        catch (Exception exception)
+        {
+            StickerErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsSendingSticker = false;
+        }
+    }
+
+    /// <summary>Импорт пака: сервер возвращает свежий список — пересобираем вкладки.</summary>
+    private async Task ImportStickerPackAsync(CancellationToken cancellationToken)
+    {
+        var source = StickerImportSource.Trim();
+        if (source.Length == 0)
+        {
+            return;
+        }
+
+        IsImportingStickerPack = true;
+        try
+        {
+            var list = await _api.ImportChatStickerPackAsync(source, cancellationToken);
+            ApplyStickerPacks(list);
+            StickerImportSource = string.Empty;
+            StickerErrorText = null;
+        }
+        catch (Exception exception)
+        {
+            StickerErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsImportingStickerPack = false;
+        }
+    }
+
+    // ---- ИИ-ассистент ----
+
+    /// <summary>Панель «ИИ-ассистент» поверх списка диалогов: боты и диалоги с ними.</summary>
+    public bool IsAiPanelOpen
+    {
+        get => _isAiPanelOpen;
+        private set
+        {
+            if (SetProperty(ref _isAiPanelOpen, value))
+            {
+                OnPropertyChanged(nameof(IsConversationListActive));
+            }
+        }
+    }
+
+    /// <summary>Диалоги с ассистентами (kind="ai") — верхний блок панели.</summary>
+    public ObservableCollection<ConversationItemViewModel> AiConversations { get; } = [];
+
+    /// <summary>Доступные боты из GET /chat/ai/bots.</summary>
+    public ObservableCollection<ChatAiBotItemViewModel> AiBots { get; } = [];
+
+    public bool IsLoadingAiBots
+    {
+        get => _isLoadingAiBots;
+        private set => SetProperty(ref _isLoadingAiBots, value);
+    }
+
+    /// <summary>Ошибка AI-операций — строка в панели/под шапкой.</summary>
+    public string? AiErrorText
+    {
+        get => _aiErrorText;
+        private set
+        {
+            if (SetProperty(ref _aiErrorText, value))
+            {
+                OnPropertyChanged(nameof(HasAiError));
+            }
+        }
+    }
+
+    public bool HasAiError => !string.IsNullOrEmpty(AiErrorText);
+
+    /// <summary>Вызов AI-API в полёте (open/create/delete/stop/retry/reset).</summary>
+    public bool IsAiActionBusy
+    {
+        get => _isAiActionBusy;
+        private set
+        {
+            if (SetProperty(ref _isAiActionBusy, value))
+            {
+                RaiseAiCommandStates();
+            }
+        }
+    }
+
+    public ICommand ToggleAiPanelCommand { get; }
+
+    public ICommand CloseAiPanelCommand { get; }
+
+    /// <summary>Перейти в диалог с ассистентом из панели.</summary>
+    public ICommand SelectAiConversationCommand { get; }
+
+    /// <summary>Удалить диалог с ассистентом (DELETE /chat/ai/conversations/{id}).</summary>
+    public ICommand DeleteAiConversationCommand { get; }
+
+    /// <summary>Общий чат с ассистентом без привязки к боту (web GENERAL_AI_OPENING_ID).</summary>
+    public ICommand CreateGeneralAiConversationCommand { get; }
+
+    /// <summary>Остановить запуск ассистента (queued|running).</summary>
+    public ICommand StopAiRunCommand { get; }
+
+    /// <summary>Повторить запуск после failed/cancelled (кнопка «Повторить» в web).</summary>
+    public ICommand RetryAiRunCommand { get; }
+
+    /// <summary>Сброс контекста ассистента — старые сообщения перестают учитываться.</summary>
+    public ICommand ResetAiContextCommand { get; }
+
+    /// <summary>Открыт AI-диалог — плашка статуса запуска и кнопки управления.</summary>
+    public bool IsAiConversation => SelectedConversation?.Kind == "ai";
+
+    /// <summary>Есть данные о запуске — плашка статуса видна.</summary>
+    public bool HasAiStatus => _aiStatus is not null;
+
+    /// <summary>Статус запуска текстом (status → русская подпись, status_text приоритетнее).</summary>
+    public string? AiStatusText
+    {
+        get
+        {
+            var status = _aiStatus;
+            if (status is null)
+            {
+                return null;
+            }
+
+            if (!string.IsNullOrWhiteSpace(status.StatusText))
+            {
+                return status.StatusText;
+            }
+
+            return status.Status switch
+            {
+                "queued" => "Ассистент в очереди…",
+                "running" => "Ассистент отвечает…",
+                "completed" => "Ответ готов",
+                "cancelled" => "Запуск остановлен",
+                "failed" => "Запуск завершился ошибкой",
+                _ => null,
+            };
+        }
+    }
+
+    /// <summary>Этап запуска (stage) или текст ошибки — вторая строка плашки.</summary>
+    public string? AiStatusHint => _aiStatus?.Stage ?? _aiStatus?.ErrorText;
+
+    /// <summary>Запуск активен — кнопка «Остановить» доступна.</summary>
+    public bool CanStopAiRun => _aiStatus?.Status is "queued" or "running";
+
+    /// <summary>Запуск упал/отменён — кнопка «Повторить» доступна.</summary>
+    public bool CanRetryAiRun => _aiStatus?.Status is "failed" or "cancelled";
+
+    /// <summary>Агент выключен (agent_read_only) — composer беседы read-only, плашка-предупреждение.</summary>
+    public bool IsAiReadOnly => _aiStatus?.AgentReadOnly == true;
+
+    public string? AiReadOnlyText => IsAiReadOnly
+        ? "Ассистент отключён администратором — диалог доступен только для чтения."
+        : null;
+
+    private async Task ToggleAiPanelAsync(CancellationToken cancellationToken)
+    {
+        if (IsAiPanelOpen)
+        {
+            CloseAiPanel();
+            return;
+        }
+
+        CloseNewConversation();
+        CloseGlobalSearch();
+        CloseFolderManager();
+        AiErrorText = null;
+        RefreshAiConversationList();
+        IsAiPanelOpen = true;
+        if (!_aiBotsLoaded)
+        {
+            await LoadAiBotsSafelyAsync(cancellationToken);
+        }
+    }
+
+    private void CloseAiPanel() => IsAiPanelOpen = false;
+
+    /// <summary>Блок «Диалоги с ассистентами» — текущие kind="ai" из общего списка.</summary>
+    private void RefreshAiConversationList()
+    {
+        AiConversations.Clear();
+        foreach (var conversation in _allConversations.Where(item => item.Kind == "ai"))
+        {
+            AiConversations.Add(conversation);
+        }
+    }
+
+    /// <summary>GET /chat/ai/bots: список помощников; 403/пусто — панель показывает ошибку.</summary>
+    private async Task LoadAiBotsSafelyAsync(CancellationToken cancellationToken)
+    {
+        IsLoadingAiBots = true;
+        try
+        {
+            var list = await _api.GetChatAiBotsAsync(cancellationToken);
+            AiBots.Clear();
+            foreach (var bot in (list.Items ?? []).Where(bot => !string.IsNullOrEmpty(bot.Id)))
+            {
+                AiBots.Add(new ChatAiBotItemViewModel(bot, OpenAiBotConversationAsync));
+            }
+
+            _aiBotsLoaded = true;
+            AiErrorText = null;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            AiErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsLoadingAiBots = false;
+        }
+    }
+
+    /// <summary>Открыть существующий или создать новый диалог с ботом (как web).</summary>
+    private async Task OpenAiBotConversationAsync(
+        ChatAiBotItemViewModel bot,
+        bool createNew)
+    {
+        if (IsAiActionBusy)
+        {
+            return;
+        }
+
+        IsAiActionBusy = true;
+        try
+        {
+            var conversation = createNew
+                ? await _api.CreateChatAiBotConversationAsync(bot.Id, CancellationToken.None)
+                : await _api.OpenChatAiBotConversationAsync(bot.Id, CancellationToken.None);
+            ApplyOpenedAiConversation(conversation);
+            AiErrorText = null;
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => AiErrorText = TasksViewModel.DescribeError(exception));
+        }
+        finally
+        {
+            IsAiActionBusy = false;
+        }
+    }
+
+    /// <summary>Общий диалог с ассистентом (без конкретного бота).</summary>
+    private async Task CreateGeneralAiConversationAsync(CancellationToken cancellationToken)
+    {
+        if (IsAiActionBusy)
+        {
+            return;
+        }
+
+        IsAiActionBusy = true;
+        try
+        {
+            var conversation = await _api.CreateChatAiConversationAsync(cancellationToken);
+            ApplyOpenedAiConversation(conversation);
+            AiErrorText = null;
+        }
+        catch (Exception exception)
+        {
+            AiErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsAiActionBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Диалог с ассистентом пришёл из open/create: upsert в список, переход в него —
+    /// AI-диалоги живут во вкладке «Личные» (секция ИИ как в web).
+    /// </summary>
+    private void ApplyOpenedAiConversation(HubChatConversation conversation)
+    {
+        var item = UpsertConversationItem(conversation);
+        RefreshAiConversationList();
+        if (item.IsArchived != ShowArchived)
+        {
+            ShowArchived = item.IsArchived;
+        }
+
+        // AI-диалог виден в «Личные» и «Все» — только остальные вкладки сбрасываем.
+        if (ActiveFolderKey is not (PersonalFolderKey or AllFolderKey))
+        {
+            ActiveFolderKey = PersonalFolderKey;
+        }
+
+        if (!string.IsNullOrEmpty(_searchText))
+        {
+            SearchText = string.Empty;
+        }
+
+        RebuildVisibleConversations();
+        CloseAiPanel();
+        SelectedConversation = item;
+        BannerErrorText = null;
+    }
+
+    private async Task DeleteAiConversationAsync(
+        ConversationItemViewModel? conversation,
+        CancellationToken cancellationToken)
+    {
+        if (conversation is null || IsAiActionBusy)
+        {
+            return;
+        }
+
+        IsAiActionBusy = true;
+        try
+        {
+            var deleted = await _api.DeleteChatAiConversationAsync(conversation.Id, cancellationToken);
+            if (deleted)
+            {
+                AiConversations.Remove(conversation);
+                RemoveConversationLocally(conversation);
+                AiErrorText = null;
+            }
+            else
+            {
+                AiErrorText = "Не удалось удалить диалог с ассистентом.";
+            }
+        }
+        catch (Exception exception)
+        {
+            AiErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsAiActionBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Выбор AI-диалога: запускаем опрос ai-status (queued|running — интервал,
+    /// как shouldPollActiveAiThread в web); обычный диалог — поллинг гасим.
+    /// </summary>
+    private void RefreshAiConversationState()
+    {
+        OnPropertyChanged(nameof(IsAiConversation));
+        if (SelectedConversation is { Kind: "ai" } conversation)
+        {
+            StartAiStatusPolling(conversation);
+        }
+        else
+        {
+            StopAiStatusPolling();
+        }
+    }
+
+    private void StartAiStatusPolling(ConversationItemViewModel conversation)
+    {
+        _aiStatusPolling?.Cancel();
+        var cancellation = _aiStatusPolling = new CancellationTokenSource();
+        _ = PollAiStatusLoopAsync(conversation, cancellation.Token);
+    }
+
+    private void StopAiStatusPolling()
+    {
+        _aiStatusPolling?.Cancel();
+        _aiStatusPolling = null;
+        ApplyAiStatus(null);
+    }
+
+    /// <summary>Первый запрос сразу; дальше — пока статус queued|running.</summary>
+    private async Task PollAiStatusLoopAsync(
+        ConversationItemViewModel conversation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var status = await _api.GetChatAiStatusAsync(conversation.Id, cancellationToken);
+                if (cancellationToken.IsCancellationRequested
+                    || !ReferenceEquals(_selectedConversation, conversation))
+                {
+                    return;
+                }
+
+                var shouldContinue = status.Status is "queued" or "running";
+                RunOnUi(() =>
+                {
+                    if (ReferenceEquals(_selectedConversation, conversation))
+                    {
+                        ApplyAiStatus(status);
+                    }
+                });
+                if (!shouldContinue)
+                {
+                    return;
+                }
+
+                await Task.Delay(AiStatusPollInterval, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            // Статус — вспомогательная плашка: сбой не блокирует ленту,
+            // показываем текст и не повторяем.
+            RunOnUi(() => AiErrorText = TasksViewModel.DescribeError(exception));
+        }
+    }
+
+    private void ApplyAiStatus(HubChatAiStatus? status)
+    {
+        _aiStatus = status;
+        OnPropertyChanged(nameof(HasAiStatus));
+        OnPropertyChanged(nameof(AiStatusText));
+        OnPropertyChanged(nameof(AiStatusHint));
+        OnPropertyChanged(nameof(IsAiReadOnly));
+        OnPropertyChanged(nameof(AiReadOnlyText));
+        RaiseAiCommandStates();
+    }
+
+    private async Task StopAiRunAsync(CancellationToken cancellationToken)
+    {
+        var conversation = SelectedConversation;
+        if (conversation is null)
+        {
+            return;
+        }
+
+        IsAiActionBusy = true;
+        try
+        {
+            var status = await _api.StopChatAiConversationAsync(conversation.Id, cancellationToken);
+            ApplyAiStatus(status);
+            AiErrorText = null;
+        }
+        catch (Exception exception)
+        {
+            AiErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsAiActionBusy = false;
+        }
+    }
+
+    /// <summary>Повтор запуска: сервер возвращает новый статус — поллинг возобновляем.</summary>
+    private async Task RetryAiRunAsync(CancellationToken cancellationToken)
+    {
+        var conversation = SelectedConversation;
+        if (conversation is null)
+        {
+            return;
+        }
+
+        IsAiActionBusy = true;
+        try
+        {
+            var status = await _api.RetryChatAiConversationAsync(conversation.Id, cancellationToken);
+            ApplyAiStatus(status);
+            AiErrorText = null;
+            if (status.Status is "queued" or "running")
+            {
+                StartAiStatusPolling(conversation);
+            }
+        }
+        catch (Exception exception)
+        {
+            AiErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsAiActionBusy = false;
+        }
+    }
+
+    private async Task ResetAiContextAsync(CancellationToken cancellationToken)
+    {
+        var conversation = SelectedConversation;
+        if (conversation is null)
+        {
+            return;
+        }
+
+        IsAiActionBusy = true;
+        try
+        {
+            await _api.ResetChatAiContextAsync(conversation.Id, cancellationToken);
+            AiErrorText = null;
+        }
+        catch (Exception exception)
+        {
+            AiErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsAiActionBusy = false;
+        }
+    }
+
+    private void RaiseAiCommandStates()
+    {
+        OnPropertyChanged(nameof(CanStopAiRun));
+        OnPropertyChanged(nameof(CanRetryAiRun));
+        (StopAiRunCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (RetryAiRunCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (ResetAiContextCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (DeleteAiConversationCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (CreateGeneralAiConversationCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>Подтверждение карточки действия: choice|format|scope → confirm API.</summary>
+    private async Task ConfirmAiActionAsync(
+        ChatMessageViewModel message,
+        ChatActionCardViewModel card,
+        string? choice,
+        string? format,
+        string? scope)
+    {
+        try
+        {
+            var updated = await _api.ConfirmChatAiActionAsync(
+                card.Id, choice, format, scope, CancellationToken.None);
+            RunOnUi(() => message.ApplyActionCard(updated));
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+    }
+
+    /// <summary>Отмена карточки действия → cancel API, ответ — свежий статус карточки.</summary>
+    private async Task CancelAiActionAsync(
+        ChatMessageViewModel message,
+        ChatActionCardViewModel card)
+    {
+        try
+        {
+            var updated = await _api.CancelChatAiActionAsync(card.Id, CancellationToken.None);
+            RunOnUi(() => message.ApplyActionCard(updated));
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+    }
+
+    /// <summary>Открытие result_url карточки: только http/https — как OpenLinkPreviewAsync.</summary>
+    private async Task OpenAiActionResultAsync(ChatMessageViewModel message, string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+        {
+            return;
+        }
+
+        try
+        {
+            if (LinkOpener is not null)
+            {
+                await LinkOpener(uri.AbsoluteUri);
+                return;
+            }
+
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception exception)
+        {
+            BannerErrorText = TasksViewModel.DescribeError(exception);
+        }
+    }
+
+    // ---- Настройки группы ----
+
+    /// <summary>
+    /// Панель «Настройки группы» поверх ленты: название/описание/фото,
+    /// ссылка-приглашение и удаление. Гейты — viewer_member_role последнего
+    /// detail-ответа (fail-closed), backend проверку дублирует.
+    /// </summary>
+    public bool IsGroupSettingsOpen
+    {
+        get => _isGroupSettingsOpen;
+        private set => SetProperty(ref _isGroupSettingsOpen, value);
+    }
+
+    /// <summary>Черновик названия группы (редактирует только владелец).</summary>
+    public string GroupTitleDraft
+    {
+        get => _groupTitleDraft;
+        set
+        {
+            if (SetProperty(ref _groupTitleDraft, value))
+            {
+                OnPropertyChanged(nameof(CanSaveGroupProfile));
+            }
+        }
+    }
+
+    /// <summary>Черновик описания (owner/moderator — как в web).</summary>
+    public string GroupDescriptionDraft
+    {
+        get => _groupDescriptionDraft;
+        set => SetProperty(ref _groupDescriptionDraft, value);
+    }
+
+    /// <summary>Название отличается от текущего — «Сохранить» активна.</summary>
+    public bool CanSaveGroupProfile =>
+        IsGroupSettingsOpen
+        && !IsGroupActionBusy
+        && ((CanManageGroupOwners
+             && !string.IsNullOrWhiteSpace(_groupTitleDraft)
+             && !string.Equals(_groupTitleDraft.Trim(), _groupSettingsConversation?.Title, StringComparison.Ordinal))
+            || (CanManageGroupMembers
+                && !string.Equals(
+                    _groupDescriptionDraft.Trim(), _groupDescriptionOriginal, StringComparison.Ordinal)));
+
+    private string _groupDescriptionOriginal = string.Empty;
+
+    /// <summary>У группы есть фото — «Удалить фото» доступна.</summary>
+    public bool HasGroupAvatar
+    {
+        get => _hasGroupAvatar;
+        private set
+        {
+            if (SetProperty(ref _hasGroupAvatar, value))
+            {
+                RaiseGroupCommandStates();
+            }
+        }
+    }
+
+    /// <summary>Любое действие настроек в полёте — кнопки блокируем.</summary>
+    public bool IsGroupActionBusy
+    {
+        get => _isGroupActionBusy;
+        private set
+        {
+            if (SetProperty(ref _isGroupActionBusy, value))
+            {
+                RaiseGroupCommandStates();
+                OnPropertyChanged(nameof(CanSaveGroupProfile));
+            }
+        }
+    }
+
+    /// <summary>Ссылка-приглашение после «Создать ссылку» (видна и копируется).</summary>
+    public string? GroupInviteLink
+    {
+        get => _groupInviteLink;
+        private set
+        {
+            if (SetProperty(ref _groupInviteLink, value))
+            {
+                OnPropertyChanged(nameof(HasGroupInviteLink));
+            }
+        }
+    }
+
+    public bool HasGroupInviteLink => GroupInviteLink is not null;
+
+    /// <summary>Подпись «Отозвать ссылку»: armed-подтверждение вторым нажатием.</summary>
+    public string InviteRevokeText => _inviteRevokeArmed ? "Точно отозвать?" : "Отозвать ссылку";
+
+    /// <summary>Подпись «Удалить группу»: armed-подтверждение вторым нажатием.</summary>
+    public string DeleteGroupText => _groupDeleteArmed ? "Точно удалить группу?" : "Удалить группу";
+
+    /// <summary>Открытые заявки — бейдж на кнопке «Заявки» (null без данных).</summary>
+    public string? JoinRequestsBadgeText =>
+        _joinRequestsOpenCount > 0 ? _joinRequestsOpenCount.ToString(CultureInfo.InvariantCulture) : null;
+
+    /// <summary>Открытые жалобы — бейдж на кнопке «Жалобы» (null без данных).</summary>
+    public string? ReportsBadgeText =>
+        _reportsOpenCount > 0 ? _reportsOpenCount.ToString(CultureInfo.InvariantCulture) : null;
+
+    /// <summary>Кнопка ⚙ в шапке группового диалога — открыть/закрыть настройки.</summary>
+    public ICommand ToggleGroupSettingsCommand { get; }
+
+    public ICommand CloseGroupSettingsCommand { get; }
+
+    /// <summary>«Сохранить» — PATCH profile {title?, description?} по гейтам ролей.</summary>
+    public ICommand SaveGroupProfileCommand { get; }
+
+    /// <summary>«Сменить фото» — OpenFileDialog (view) → POST avatar multipart.</summary>
+    public ICommand UploadGroupAvatarCommand { get; }
+
+    /// <summary>«Удалить фото» — DELETE avatar.</summary>
+    public ICommand RemoveGroupAvatarCommand { get; }
+
+    /// <summary>«Создать ссылку» — POST invite-link → показ + буфер обмена.</summary>
+    public ICommand CreateInviteLinkCommand { get; }
+
+    /// <summary>«Копировать» — ссылка-приглашение в буфер обмена.</summary>
+    public ICommand CopyInviteLinkCommand { get; }
+
+    /// <summary>«Отозвать ссылку» — armed DELETE invite-link.</summary>
+    public ICommand RevokeInviteLinkCommand { get; }
+
+    /// <summary>«Удалить группу» — armed DELETE conversations/{id} (только владелец).</summary>
+    public ICommand DeleteGroupCommand { get; }
+
+    /// <summary>Провайдер выбора файла аватара — инжектит view (OpenFileDialog image/*).</summary>
+    public Func<string?>? GroupAvatarPicker { get; set; }
+
+    private async Task ToggleGroupSettingsAsync(CancellationToken cancellationToken)
+    {
+        if (IsGroupSettingsOpen)
+        {
+            CloseGroupSettings();
+            return;
+        }
+
+        if (_selectedConversation is not { Kind: "group" } conversation)
+        {
+            return;
+        }
+
+        // Оверлеи ленты взаимоисключающие.
+        CloseForwardPanel();
+        CloseMessageSearch();
+        IsReadersPanelOpen = false;
+        CloseMediaPanel();
+        CloseJoinRequestsPanel();
+        CloseReportsPanel();
+        _groupSettingsConversation = conversation;
+        IsGroupSettingsOpen = true;
+        GroupTitleDraft = conversation.Title;
+        GroupDescriptionDraft = string.Empty;
+        _groupDescriptionOriginal = string.Empty;
+        HasGroupAvatar = false;
+        GroupInviteLink = null;
+        _groupDeleteArmed = false;
+        _inviteRevokeArmed = false;
+        OnPropertyChanged(nameof(DeleteGroupText));
+        OnPropertyChanged(nameof(InviteRevokeText));
+        _joinRequestsOpenCount = 0;
+        _reportsOpenCount = 0;
+        OnPropertyChanged(nameof(JoinRequestsBadgeText));
+        OnPropertyChanged(nameof(ReportsBadgeText));
+        IsGroupActionBusy = true;
+        try
+        {
+            // Свежее описание/роль — из detail; счётчики бейджей — только
+            // для owner/moderator (для member запросы не делаем, как в web).
+            var detail = await _api.GetChatConversationMembersAsync(conversation.Id, cancellationToken);
+            if (!ReferenceEquals(_groupSettingsConversation, conversation) || !IsGroupSettingsOpen)
+            {
+                return;
+            }
+
+            conversation.Update(detail);
+            RebuildVisibleConversations();
+            var viewerRole = NormalizeGroupMemberRole(
+                detail.ViewerMemberRole ?? conversation.ViewerMemberRole);
+            var isGroup = string.Equals(conversation.Kind, "group", StringComparison.Ordinal);
+            CanManageGroupMembers = isGroup && (viewerRole is "owner" or "moderator");
+            CanManageGroupOwners = isGroup && viewerRole == "owner";
+            GroupTitleDraft = detail.Title ?? conversation.Title;
+            GroupDescriptionDraft = detail.Description ?? string.Empty;
+            _groupDescriptionOriginal = GroupDescriptionDraft;
+            HasGroupAvatar = !string.IsNullOrWhiteSpace(detail.AvatarUrl);
+            OnPropertyChanged(nameof(CanSaveGroupProfile));
+            if (CanManageGroupMembers)
+            {
+                _ = LoadModerationCountsSafelyAsync(conversation);
+            }
+        }
+        finally
+        {
+            IsGroupActionBusy = false;
+        }
+    }
+
+    /// <summary>Бейджи заявок и жалоб — фоновая догрузка для owner/moderator.</summary>
+    private async Task LoadModerationCountsSafelyAsync(ConversationItemViewModel conversation)
+    {
+        try
+        {
+            var requests = await _api.GetChatJoinRequestsAsync(conversation.Id, CancellationToken.None);
+            var reports = await _api.GetChatMessageReportsAsync(conversation.Id, CancellationToken.None);
+            RunOnUi(() =>
+            {
+                if (!ReferenceEquals(_groupSettingsConversation, conversation))
+                {
+                    return;
+                }
+
+                _joinRequestsOpenCount = requests.OpenCount;
+                _reportsOpenCount = reports.OpenCount;
+                OnPropertyChanged(nameof(JoinRequestsBadgeText));
+                OnPropertyChanged(nameof(ReportsBadgeText));
+            });
+        }
+        catch (Exception)
+        {
+            // Бейджи необязательны — сбой не показываем баннером.
+        }
+    }
+
+    private void CloseGroupSettings()
+    {
+        IsGroupSettingsOpen = false;
+        _groupSettingsConversation = null;
+        _groupTitleDraft = string.Empty;
+        OnPropertyChanged(nameof(GroupTitleDraft));
+        _groupDescriptionDraft = string.Empty;
+        OnPropertyChanged(nameof(GroupDescriptionDraft));
+        _groupDescriptionOriginal = string.Empty;
+        _hasGroupAvatar = false;
+        _groupInviteLink = null;
+        OnPropertyChanged(nameof(HasGroupInviteLink));
+        OnPropertyChanged(nameof(HasGroupAvatar));
+        _groupDeleteArmed = false;
+        _inviteRevokeArmed = false;
+        OnPropertyChanged(nameof(DeleteGroupText));
+        OnPropertyChanged(nameof(InviteRevokeText));
+        _joinRequestsOpenCount = 0;
+        _reportsOpenCount = 0;
+        OnPropertyChanged(nameof(JoinRequestsBadgeText));
+        OnPropertyChanged(nameof(ReportsBadgeText));
+        IsGroupActionBusy = false;
+    }
+
+    /// <summary>PATCH profile: название — только owner, описание — owner/moderator.</summary>
+    private async Task SaveGroupProfileAsync(CancellationToken cancellationToken)
+    {
+        var conversation = _groupSettingsConversation;
+        if (conversation is null || IsGroupActionBusy)
+        {
+            return;
+        }
+
+        var title = CanManageGroupOwners && !string.IsNullOrWhiteSpace(_groupTitleDraft)
+            && !string.Equals(_groupTitleDraft.Trim(), conversation.Title, StringComparison.Ordinal)
+            ? _groupTitleDraft.Trim()
+            : null;
+        var description = CanManageGroupMembers
+            && !string.Equals(_groupDescriptionDraft.Trim(), _groupDescriptionOriginal, StringComparison.Ordinal)
+            ? _groupDescriptionDraft.Trim()
+            : null;
+        if (title is null && description is null)
+        {
+            return;
+        }
+
+        IsGroupActionBusy = true;
+        try
+        {
+            var detail = await _api.UpdateChatGroupProfileAsync(
+                conversation.Id, title, description, null, null, null, cancellationToken);
+            if (!ReferenceEquals(_groupSettingsConversation, conversation))
+            {
+                return;
+            }
+
+            conversation.Update(detail);
+            RebuildVisibleConversations();
+            GroupTitleDraft = detail.Title ?? conversation.Title;
+            GroupDescriptionDraft = detail.Description ?? string.Empty;
+            _groupDescriptionOriginal = GroupDescriptionDraft;
+            OnPropertyChanged(nameof(CanSaveGroupProfile));
+        }
+        finally
+        {
+            IsGroupActionBusy = false;
+        }
+    }
+
+    /// <summary>Фото группы: image-файл ≤ 5 МБ → multipart POST avatar.</summary>
+    private async Task UploadGroupAvatarAsync(CancellationToken cancellationToken)
+    {
+        var conversation = _groupSettingsConversation;
+        var picker = GroupAvatarPicker;
+        if (conversation is null || !CanManageGroupOwners || IsGroupActionBusy || picker is null)
+        {
+            return;
+        }
+
+        var path = picker();
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        IsGroupActionBusy = true;
+        try
+        {
+            var mime = GuessMimeType(Path.GetExtension(path));
+            if (!mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                BannerErrorText = "Выберите изображение: JPG, PNG или WebP.";
+                return;
+            }
+
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            const int maxBytes = 5 * 1024 * 1024;
+            if (bytes.Length > maxBytes)
+            {
+                BannerErrorText = "Фото группы не должно быть больше 5 МБ.";
+                return;
+            }
+
+            HubChatConversationDetail detail;
+            await using (var stream = new MemoryStream(bytes))
+            {
+                detail = await _api.UploadChatGroupAvatarAsync(
+                    conversation.Id, Path.GetFileName(path), stream, mime, cancellationToken);
+            }
+
+            if (!ReferenceEquals(_groupSettingsConversation, conversation))
+            {
+                return;
+            }
+
+            conversation.Update(detail);
+            RebuildVisibleConversations();
+            HasGroupAvatar = !string.IsNullOrWhiteSpace(detail.AvatarUrl);
+        }
+        finally
+        {
+            IsGroupActionBusy = false;
+        }
+    }
+
+    private async Task RemoveGroupAvatarAsync(CancellationToken cancellationToken)
+    {
+        var conversation = _groupSettingsConversation;
+        if (conversation is null || !CanManageGroupOwners || IsGroupActionBusy)
+        {
+            return;
+        }
+
+        IsGroupActionBusy = true;
+        try
+        {
+            var detail = await _api.DeleteChatGroupAvatarAsync(conversation.Id, cancellationToken);
+            if (!ReferenceEquals(_groupSettingsConversation, conversation))
+            {
+                return;
+            }
+
+            conversation.Update(detail);
+            RebuildVisibleConversations();
+            HasGroupAvatar = !string.IsNullOrWhiteSpace(detail.AvatarUrl);
+        }
+        finally
+        {
+            IsGroupActionBusy = false;
+        }
+    }
+
+    /// <summary>Ссылка действует 7 дней; новая инвалидирует прежнюю (backend).</summary>
+    private async Task CreateInviteLinkAsync(CancellationToken cancellationToken)
+    {
+        var conversation = _groupSettingsConversation;
+        if (conversation is null || !CanManageGroupMembers || IsGroupActionBusy)
+        {
+            return;
+        }
+
+        IsGroupActionBusy = true;
+        try
+        {
+            var link = await _api.CreateChatGroupInviteLinkAsync(conversation.Id, cancellationToken);
+            if (!ReferenceEquals(_groupSettingsConversation, conversation)
+                || string.IsNullOrWhiteSpace(link.Token))
+            {
+                return;
+            }
+
+            // Ссылка на web-страницу чата — desktop открывает её по deep link'у join=.
+            GroupInviteLink = new Uri(
+                _api.BaseUri, "chat?join=" + Uri.EscapeDataString(link.Token)).AbsoluteUri;
+            _inviteRevokeArmed = false;
+            OnPropertyChanged(nameof(InviteRevokeText));
+        }
+        finally
+        {
+            IsGroupActionBusy = false;
+        }
+    }
+
+    private async Task RevokeInviteLinkAsync(CancellationToken cancellationToken)
+    {
+        var conversation = _groupSettingsConversation;
+        if (conversation is null || !CanManageGroupMembers || IsGroupActionBusy)
+        {
+            return;
+        }
+
+        // Armed-подтверждение: первое нажатие меняет подпись, второе вызывает API.
+        if (!_inviteRevokeArmed)
+        {
+            _inviteRevokeArmed = true;
+            OnPropertyChanged(nameof(InviteRevokeText));
+            return;
+        }
+
+        IsGroupActionBusy = true;
+        try
+        {
+            await _api.RevokeChatGroupInviteLinkAsync(conversation.Id, cancellationToken);
+            GroupInviteLink = null;
+            _inviteRevokeArmed = false;
+            OnPropertyChanged(nameof(InviteRevokeText));
+        }
+        finally
+        {
+            IsGroupActionBusy = false;
+        }
+    }
+
+    /// <summary>Armed-удаление: первое нажатие меняет подпись, второе — DELETE.</summary>
+    private async Task DeleteGroupConversationAsync(CancellationToken cancellationToken)
+    {
+        var conversation = _groupSettingsConversation;
+        if (conversation is null || !CanManageGroupOwners || IsGroupActionBusy)
+        {
+            return;
+        }
+
+        if (!_groupDeleteArmed)
+        {
+            _groupDeleteArmed = true;
+            OnPropertyChanged(nameof(DeleteGroupText));
+            return;
+        }
+
+        IsGroupActionBusy = true;
+        try
+        {
+            await _api.DeleteChatConversationAsync(conversation.Id, cancellationToken);
+            RunOnUi(() =>
+            {
+                CloseGroupSettings();
+                RemoveConversationLocally(conversation);
+            });
+        }
+        finally
+        {
+            IsGroupActionBusy = false;
+        }
+    }
+
+    // ---- Заявки на вступление ----
+
+    /// <summary>Открытые заявки на вступление (owner/moderator).</summary>
+    public ObservableCollection<ChatJoinRequestItemViewModel> JoinRequests { get; } = [];
+
+    public bool IsJoinRequestsPanelOpen
+    {
+        get => _isJoinRequestsPanelOpen;
+        private set => SetProperty(ref _isJoinRequestsPanelOpen, value);
+    }
+
+    public bool IsLoadingJoinRequests
+    {
+        get => _isLoadingJoinRequests;
+        private set => SetProperty(ref _isLoadingJoinRequests, value);
+    }
+
+    /// <summary>
+    /// «Вступление по заявкам» — свитч из web-диалога заявок; запись PUT
+    /// join-approval только на пользовательский toggle (load — под suppress'ом).
+    /// </summary>
+    public bool IsJoinApprovalRequired
+    {
+        get => _isJoinApprovalRequired;
+        set
+        {
+            if (SetProperty(ref _isJoinApprovalRequired, value) && !_suppressJoinApprovalSync)
+            {
+                _ = SetJoinApprovalSafelyAsync(value);
+            }
+        }
+    }
+
+    /// <summary>Запись режима в полёте — повторный toggle ждёт завершения.</summary>
+    public bool IsJoinApprovalBusy
+    {
+        get => _isJoinApprovalBusy;
+        private set => SetProperty(ref _isJoinApprovalBusy, value);
+    }
+
+    public ICommand ToggleJoinRequestsPanelCommand { get; }
+
+    public ICommand CloseJoinRequestsPanelCommand { get; }
+
+    private async Task ToggleJoinRequestsPanelAsync(CancellationToken cancellationToken)
+    {
+        if (IsJoinRequestsPanelOpen)
+        {
+            CloseJoinRequestsPanel();
+            return;
+        }
+
+        var conversation = _groupSettingsConversation
+            ?? (_selectedConversation is { Kind: "group" } selected ? selected : null);
+        if (conversation is null || !CanManageGroupMembers)
+        {
+            return;
+        }
+
+        CloseReportsPanel();
+        _groupSettingsConversation ??= conversation;
+        IsJoinRequestsPanelOpen = true;
+        JoinRequests.Clear();
+        IsLoadingJoinRequests = true;
+        try
+        {
+            var list = await _api.GetChatJoinRequestsAsync(conversation.Id, cancellationToken);
+            if (!IsJoinRequestsPanelOpen)
+            {
+                return;
+            }
+
+            JoinRequests.Clear();
+            foreach (var request in list.Items ?? [])
+            {
+                JoinRequests.Add(new ChatJoinRequestItemViewModel(request, ResolveJoinRequestAsync));
+            }
+
+            _joinRequestsOpenCount = list.OpenCount;
+            OnPropertyChanged(nameof(JoinRequestsBadgeText));
+            _suppressJoinApprovalSync = true;
+            IsJoinApprovalRequired = list.ApprovalRequired;
+            _suppressJoinApprovalSync = false;
+        }
+        finally
+        {
+            IsLoadingJoinRequests = false;
+        }
+    }
+
+    private void CloseJoinRequestsPanel()
+    {
+        IsJoinRequestsPanelOpen = false;
+        JoinRequests.Clear();
+        IsLoadingJoinRequests = false;
+        IsJoinApprovalBusy = false;
+        _suppressJoinApprovalSync = true;
+        IsJoinApprovalRequired = false;
+        _suppressJoinApprovalSync = false;
+    }
+
+    /// <summary>Решение по заявке: approve|reject → строка убирается из списка.</summary>
+    private async Task ResolveJoinRequestAsync(
+        ChatJoinRequestItemViewModel request,
+        string decision)
+    {
+        var conversation = _groupSettingsConversation
+            ?? (_selectedConversation is { Kind: "group" } selected ? selected : null);
+        if (conversation is null || !CanManageGroupMembers || request.IsResolving
+            || decision is not ("approve" or "reject"))
+        {
+            return;
+        }
+
+        request.IsResolving = true;
+        try
+        {
+            await _api.ResolveChatJoinRequestAsync(
+                conversation.Id, request.Id, decision, CancellationToken.None);
+            RunOnUi(() =>
+            {
+                JoinRequests.Remove(request);
+                if (_joinRequestsOpenCount > 0)
+                {
+                    _joinRequestsOpenCount--;
+                    OnPropertyChanged(nameof(JoinRequestsBadgeText));
+                }
+
+                // Одобренный пополнил состав — обновим строку и панель участников.
+                if (string.Equals(decision, "approve", StringComparison.Ordinal))
+                {
+                    _ = RefreshMembersAfterApprovalAsync(conversation);
+                }
+            });
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+        finally
+        {
+            request.IsResolving = false;
+        }
+    }
+
+    /// <summary>После approve перечитываем detail: member_count/состав меняются.</summary>
+    private async Task RefreshMembersAfterApprovalAsync(ConversationItemViewModel conversation)
+    {
+        try
+        {
+            var detail = await _api.GetChatConversationMembersAsync(
+                conversation.Id, CancellationToken.None);
+            RunOnUi(() =>
+            {
+                conversation.Update(detail);
+                RebuildVisibleConversations();
+                if (ReferenceEquals(_membersPanelConversation, conversation))
+                {
+                    ApplyGroupMembers(detail);
+                }
+            });
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+    }
+
+    private async Task SetJoinApprovalSafelyAsync(bool required)
+    {
+        var conversation = _groupSettingsConversation
+            ?? (_selectedConversation is { Kind: "group" } selected ? selected : null);
+        if (conversation is null || !CanManageGroupMembers || IsJoinApprovalBusy)
+        {
+            return;
+        }
+
+        IsJoinApprovalBusy = true;
+        try
+        {
+            await _api.SetChatJoinApprovalAsync(conversation.Id, required, CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() =>
+            {
+                // Откат свитча к факту, чтобы UI не врал о режиме.
+                _suppressJoinApprovalSync = true;
+                IsJoinApprovalRequired = !required;
+                _suppressJoinApprovalSync = false;
+                BannerErrorText = TasksViewModel.DescribeError(exception);
+            });
+        }
+        finally
+        {
+            IsJoinApprovalBusy = false;
+        }
+    }
+
+    // ---- Жалобы на сообщения ----
+
+    /// <summary>Открытые жалобы на сообщения диалога (owner/moderator).</summary>
+    public ObservableCollection<ChatMessageReportItemViewModel> MessageReports { get; } = [];
+
+    public bool IsReportsPanelOpen
+    {
+        get => _isReportsPanelOpen;
+        private set => SetProperty(ref _isReportsPanelOpen, value);
+    }
+
+    public bool IsLoadingReports
+    {
+        get => _isLoadingReports;
+        private set => SetProperty(ref _isLoadingReports, value);
+    }
+
+    public ICommand ToggleReportsPanelCommand { get; }
+
+    public ICommand CloseReportsPanelCommand { get; }
+
+    private async Task ToggleReportsPanelAsync(CancellationToken cancellationToken)
+    {
+        if (IsReportsPanelOpen)
+        {
+            CloseReportsPanel();
+            return;
+        }
+
+        var conversation = _groupSettingsConversation
+            ?? (_selectedConversation is { Kind: "group" } selected ? selected : null);
+        if (conversation is null || !CanManageGroupMembers)
+        {
+            return;
+        }
+
+        CloseJoinRequestsPanel();
+        _groupSettingsConversation ??= conversation;
+        IsReportsPanelOpen = true;
+        MessageReports.Clear();
+        IsLoadingReports = true;
+        try
+        {
+            var list = await _api.GetChatMessageReportsAsync(conversation.Id, cancellationToken);
+            if (!IsReportsPanelOpen)
+            {
+                return;
+            }
+
+            MessageReports.Clear();
+            foreach (var report in list.Items ?? [])
+            {
+                MessageReports.Add(new ChatMessageReportItemViewModel(report, ResolveMessageReportAsync));
+            }
+
+            _reportsOpenCount = list.OpenCount;
+            OnPropertyChanged(nameof(ReportsBadgeText));
+        }
+        finally
+        {
+            IsLoadingReports = false;
+        }
+    }
+
+    private void CloseReportsPanel()
+    {
+        IsReportsPanelOpen = false;
+        MessageReports.Clear();
+        IsLoadingReports = false;
+    }
+
+    /// <summary>Решение по жалобе: resolved|dismissed → строка убирается из списка.</summary>
+    private async Task ResolveMessageReportAsync(
+        ChatMessageReportItemViewModel report,
+        string resolution)
+    {
+        var conversation = _groupSettingsConversation
+            ?? (_selectedConversation is { Kind: "group" } selected ? selected : null);
+        if (conversation is null || !CanManageGroupMembers || report.IsResolving
+            || resolution is not ("resolved" or "dismissed"))
+        {
+            return;
+        }
+
+        report.IsResolving = true;
+        try
+        {
+            await _api.ResolveChatMessageReportAsync(
+                conversation.Id, report.Id, resolution, CancellationToken.None);
+            RunOnUi(() =>
+            {
+                MessageReports.Remove(report);
+                if (_reportsOpenCount > 0)
+                {
+                    _reportsOpenCount--;
+                    OnPropertyChanged(nameof(ReportsBadgeText));
+                }
+            });
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+        finally
+        {
+            report.IsResolving = false;
+        }
+    }
+
+    // ---- Диалог «Пожаловаться на сообщение» ----
+
+    /// <summary>Диалог жалобы поверх ленты (reason + необязательный комментарий).</summary>
+    public bool IsReportDialogOpen
+    {
+        get => _isReportDialogOpen;
+        private set => SetProperty(ref _isReportDialogOpen, value);
+    }
+
+    /// <summary>Причина: spam|abuse|illegal|other (enum ChatMessageReportRequest).</summary>
+    public string ReportReason
+    {
+        get => _reportReason;
+        set => SetProperty(ref _reportReason, value);
+    }
+
+    public bool IsReportReasonSpam
+    {
+        get => ReportReason == "spam";
+        set { if (value) { ReportReason = "spam"; } }
+    }
+
+    public bool IsReportReasonAbuse
+    {
+        get => ReportReason == "abuse";
+        set { if (value) { ReportReason = "abuse"; } }
+    }
+
+    public bool IsReportReasonIllegal
+    {
+        get => ReportReason == "illegal";
+        set { if (value) { ReportReason = "illegal"; } }
+    }
+
+    public bool IsReportReasonOther
+    {
+        get => ReportReason == "other";
+        set { if (value) { ReportReason = "other"; } }
+    }
+
+    /// <summary>Комментарий жалобы (≤500 символов — как в схеме).</summary>
+    public string ReportComment
+    {
+        get => _reportComment;
+        set => SetProperty(ref _reportComment, value);
+    }
+
+    /// <summary>Отправка жалобы в полёте.</summary>
+    public bool IsSubmittingReport
+    {
+        get => _isSubmittingReport;
+        private set => SetProperty(ref _isSubmittingReport, value);
+    }
+
+    /// <summary>Пункт меню «Пожаловаться» (чужие сообщения в группе).</summary>
+    public ICommand BeginReportCommand { get; }
+
+    /// <summary>«Отправить» — POST messages/{id}/report.</summary>
+    public ICommand SubmitReportCommand { get; }
+
+    /// <summary>«Отмена» диалога жалобы.</summary>
+    public ICommand CancelReportCommand { get; }
+
+    private void BeginReport(ChatMessageViewModel message)
+    {
+        _reportTarget = message;
+        ReportReason = "spam";
+        ReportComment = string.Empty;
+        IsReportDialogOpen = true;
+    }
+
+    private void CloseReportDialog()
+    {
+        IsReportDialogOpen = false;
+        _reportTarget = null;
+        IsSubmittingReport = false;
+    }
+
+    private async Task SubmitReportAsync(CancellationToken cancellationToken)
+    {
+        var message = _reportTarget;
+        var conversation = _selectedConversation;
+        if (message is null || conversation is null || IsSubmittingReport)
+        {
+            return;
+        }
+
+        var reason = ReportReason is "spam" or "abuse" or "illegal" ? ReportReason : "other";
+        var comment = _reportComment.Trim();
+        if (comment.Length > 500)
+        {
+            comment = comment[..500];
+        }
+
+        IsSubmittingReport = true;
+        try
+        {
+            var result = await _api.ReportChatMessageAsync(
+                conversation.Id, message.Id, reason,
+                comment.Length > 0 ? comment : null, cancellationToken);
+            RunOnUi(() =>
+            {
+                CloseReportDialog();
+                BannerErrorText = null;
+                UploadStatusText = result.AlreadyReported
+                    ? "Вы уже жаловались на это сообщение."
+                    : "Жалоба отправлена владельцу группы.";
+            });
+        }
+        finally
+        {
+            IsSubmittingReport = false;
+        }
+    }
+
+    // ---- «Поделиться задачей» ----
+
+    /// <summary>Задачи для выбора в панели (GET shareable-tasks).</summary>
+    public ObservableCollection<ChatShareableTaskItemViewModel> ShareableTasks { get; } = [];
+
+    /// <summary>Панель «Поделиться задачей» поверх ленты.</summary>
+    public bool IsTaskShareOpen
+    {
+        get => _isTaskShareOpen;
+        private set => SetProperty(ref _isTaskShareOpen, value);
+    }
+
+    /// <summary>Идёт загрузка задач.</summary>
+    public bool IsTaskShareLoading
+    {
+        get => _isTaskShareLoading;
+        private set => SetProperty(ref _isTaskShareLoading, value);
+    }
+
+    /// <summary>Строка фильтра задач — debounce-запрос shareable-tasks?q=.</summary>
+    public string TaskShareSearchText
+    {
+        get => _taskShareSearchText;
+        set
+        {
+            if (SetProperty(ref _taskShareSearchText, value))
+            {
+                ScheduleTaskShareSearch();
+            }
+        }
+    }
+
+    /// <summary>Кнопка 📋 в composer'е — панель задач для отправки.</summary>
+    public ICommand OpenTaskShareCommand { get; }
+
+    public ICommand CloseTaskShareCommand { get; }
+
+    private async Task ToggleTaskShareAsync(CancellationToken cancellationToken)
+    {
+        if (IsTaskShareOpen)
+        {
+            CloseTaskShare();
+            return;
+        }
+
+        if (_selectedConversation is null)
+        {
+            return;
+        }
+
+        // Оверлеи ленты взаимоисключающие.
+        CloseForwardPanel();
+        CloseMessageSearch();
+        IsReadersPanelOpen = false;
+        CloseMembersPanel();
+        CloseMediaPanel();
+        IsTaskShareOpen = true;
+        ShareableTasks.Clear();
+        await LoadShareableTasksAsync(_taskShareSearchText.Trim(), cancellationToken);
+    }
+
+    private void CloseTaskShare()
+    {
+        _taskShareCancellation?.Cancel();
+        IsTaskShareOpen = false;
+        ShareableTasks.Clear();
+        IsTaskShareLoading = false;
+    }
+
+    private void ScheduleTaskShareSearch()
+    {
+        _taskShareCancellation?.Cancel();
+        if (!IsTaskShareOpen)
+        {
+            return;
+        }
+
+        var cancellation = _taskShareCancellation = new CancellationTokenSource();
+        _ = LoadShareableTasksDebouncedSafelyAsync(_taskShareSearchText.Trim(), cancellation.Token);
+    }
+
+    private async Task LoadShareableTasksDebouncedSafelyAsync(
+        string query,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(UserSearchDebounce, cancellationToken);
+            await LoadShareableTasksAsync(query, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task LoadShareableTasksAsync(string query, CancellationToken cancellationToken)
+    {
+        var conversation = _selectedConversation;
+        if (conversation is null || !IsTaskShareOpen)
+        {
+            return;
+        }
+
+        IsTaskShareLoading = true;
+        try
+        {
+            var list = await _api.GetChatShareableTasksAsync(
+                conversation.Id, query, 50, cancellationToken);
+            RunOnUi(() =>
+            {
+                if (!IsTaskShareOpen
+                    || !string.Equals(_taskShareSearchText.Trim(), query, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                ShareableTasks.Clear();
+                foreach (var task in list.Items ?? [])
+                {
+                    ShareableTasks.Add(new ChatShareableTaskItemViewModel(task, ShareTaskAsync));
+                }
+
+                IsTaskShareLoading = false;
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            RunOnUi(() => IsTaskShareLoading = false);
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() =>
+            {
+                IsTaskShareLoading = false;
+                BannerErrorText = TasksViewModel.DescribeError(exception);
+            });
+        }
+    }
+
+    /// <summary>«Поделиться» — POST messages/task-share; ответ вставляем в ленту.</summary>
+    private async Task ShareTaskAsync(ChatShareableTaskItemViewModel item)
+    {
+        var conversation = _selectedConversation;
+        if (conversation is null || string.IsNullOrEmpty(item.TaskId) || item.IsSharing)
+        {
+            return;
+        }
+
+        item.IsSharing = true;
+        try
+        {
+            var clientMessageId = "task-share-" + Guid.NewGuid().ToString("N");
+            var message = await _api.SendChatTaskShareAsync(
+                conversation.Id, item.TaskId, clientMessageId,
+                ReplyingTo?.Id, CancellationToken.None);
+            RunOnUi(() =>
+            {
+                CloseTaskShare();
+                ReplyingTo = null;
+                InsertMessage(message, conversation.IsGroupLike);
+                conversation.UpdateLastMessage(message);
+                RebuildVisibleConversations();
+            });
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+        finally
+        {
+            item.IsSharing = false;
+        }
+    }
+
+    // ---- «Поддержка» ----
+
+    /// <summary>Кнопка 🛟 в шапке списка диалогов — чат с поддержкой портала.</summary>
+    public ICommand OpenSupportCommand { get; }
+
+    /// <summary>Get-or-create support-диалога и переход в него — зеркало OpenNotes.</summary>
+    private async Task OpenSupportAsync(CancellationToken cancellationToken)
+    {
+        var conversation = await _api.CreateChatSupportConversationAsync(cancellationToken);
+        var item = UpsertConversationItem(conversation);
+        if (item.IsArchived != ShowArchived)
+        {
+            ShowArchived = item.IsArchived;
+        }
+
+        if (!string.IsNullOrEmpty(_searchText))
+        {
+            SearchText = string.Empty;
+        }
+
+        RebuildVisibleConversations();
+        SelectedConversation = item;
+        BannerErrorText = null;
+    }
+
+    // ---- Отложенные сообщения («Отправить позже») ----
+    //
+    // Parity web (chatScheduled.js + useChatScheduledMessages + ChatScheduledMessages.jsx):
+    // фича режется серверным флагом GET /chat/config → scheduled_messages_enabled;
+    // список — свои отложенные открытого диалога (status scheduled|sending|failed);
+    // создание — с текстом composer и контекстом ответа; правка времени/текста и
+    // armed-отмена из панели; список перечитывается при смене диалога и сразу после
+    // наступления ближайшего срока (сообщение уходит в ленту обычным событием).
+
+    /// <summary>Отложенные сообщения открытого диалога (панель «Запланированные»).</summary>
+    public ObservableCollection<ChatScheduledMessageItemViewModel> ScheduledMessages { get; } = [];
+
+    /// <summary>Серверный выключатель «Отправить позже» (scheduled_messages_enabled).</summary>
+    public bool IsScheduledMessagesEnabled
+    {
+        get => _scheduledMessagesEnabled;
+        private set
+        {
+            if (SetProperty(ref _scheduledMessagesEnabled, value))
+            {
+                OnPropertyChanged(nameof(CanScheduleMessage));
+                OnPropertyChanged(nameof(HasScheduledBar));
+                (OpenScheduleEditorCommand as NativeRelayCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Кнопка 🕐 у composer и меню «Отправить позже»: фича включена, диалог
+    /// обычный (не ai — сервер такие отклоняет) и composer не в режиме правки.
+    /// Текст не обязателен: в редакторе есть своё поле сообщения.
+    /// </summary>
+    public bool CanScheduleMessage =>
+        IsScheduledMessagesEnabled
+        && _selectedConversation is { Kind: not "ai" }
+        && EditingMessage is null
+        && !IsSending
+        && !IsUploading;
+
+    /// <summary>Плашка «Запланировано: N · ближайшее …» над composer видна.</summary>
+    public bool HasScheduledBar =>
+        IsScheduledMessagesEnabled
+        && (ScheduledMessages.Count > 0 || HasScheduledError);
+
+    /// <summary>Текст плашки: счётчики ожидающих/неотправленных или ошибка загрузки.</summary>
+    public string ScheduledBarText
+    {
+        get
+        {
+            if (HasScheduledError)
+            {
+                return ScheduledErrorText!;
+            }
+
+            var parts = new List<string>(2);
+            var nearest = ScheduledMessages
+                .FirstOrDefault(item => item.Status is "scheduled" or "sending")?.ScheduledFor;
+            var waiting = ScheduledMessages.Count(item => item.Status is "scheduled" or "sending");
+            var failed = ScheduledMessages.Count(item => item.Status is "failed");
+            if (waiting > 0)
+            {
+                var text = $"Запланировано: {waiting}";
+                if (nearest is { } when)
+                {
+                    text += $" · ближайшее {ChatScheduleTime.Format(when)}";
+                }
+
+                parts.Add(text);
+            }
+
+            if (failed > 0)
+            {
+                parts.Add($"не отправлено: {failed}");
+            }
+
+            return string.Join(" · ", parts);
+        }
+    }
+
+    /// <summary>Плашка красная — есть неотправленные или ошибка списка.</summary>
+    public bool ScheduledBarIsError =>
+        HasScheduledError || ScheduledMessages.Any(item => item.Status is "failed");
+
+    /// <summary>Панель «Запланированные» поверх ленты.</summary>
+    public bool IsScheduledPanelOpen
+    {
+        get => _isScheduledPanelOpen;
+        private set => SetProperty(ref _isScheduledPanelOpen, value);
+    }
+
+    public bool IsLoadingScheduled
+    {
+        get => _isLoadingScheduled;
+        private set => SetProperty(ref _isLoadingScheduled, value);
+    }
+
+    /// <summary>
+    /// Ошибка списка/операций отложенных — изолирована от BannerErrorText:
+    /// показывается в плашке и панели/редакторе (web единый error хука).
+    /// </summary>
+    public string? ScheduledErrorText
+    {
+        get => _scheduledErrorText;
+        private set
+        {
+            if (SetProperty(ref _scheduledErrorText, value))
+            {
+                OnPropertyChanged(nameof(HasScheduledError));
+                OnPropertyChanged(nameof(HasScheduledBar));
+                OnPropertyChanged(nameof(ScheduledBarText));
+                OnPropertyChanged(nameof(ScheduledBarIsError));
+                OnPropertyChanged(nameof(IsScheduledListEmpty));
+            }
+        }
+    }
+
+    public bool HasScheduledError => !string.IsNullOrEmpty(ScheduledErrorText);
+
+    /// <summary>«Запланированных сообщений нет» — панель открыта, пусто и без ошибки.</summary>
+    public bool IsScheduledListEmpty =>
+        IsScheduledPanelOpen && !IsLoadingScheduled
+        && ScheduledMessages.Count == 0 && !HasScheduledError;
+
+    /// <summary>Запись (создать/правка/отмена) в полёте — действия списка и editor'а глушим.</summary>
+    public bool IsScheduledBusy
+    {
+        get => _isScheduledBusy;
+        private set
+        {
+            if (SetProperty(ref _isScheduledBusy, value))
+            {
+                foreach (var item in ScheduledMessages)
+                {
+                    item.IsBusy = value;
+                }
+
+                OnPropertyChanged(nameof(CanConfirmSchedule));
+                (ConfirmScheduleCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Оверлей выбора текста и момента отправки (create или правка).</summary>
+    public bool IsScheduleEditorOpen
+    {
+        get => _isScheduleEditorOpen;
+        private set
+        {
+            if (SetProperty(ref _isScheduleEditorOpen, value))
+            {
+                OnPropertyChanged(nameof(CanConfirmSchedule));
+                (ConfirmScheduleCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Заголовок редактора: «Отправить позже» / «Изменить запланированное».</summary>
+    public string ScheduleEditorTitle =>
+        _editingScheduled is null ? "Отправить позже" : "Изменить запланированное";
+
+    /// <summary>Подпись подтверждения: «Запланировать» / «Сохранить».</summary>
+    public string ScheduleEditorConfirmText =>
+        _editingScheduled is null ? "Запланировать" : "Сохранить";
+
+    /// <summary>Текст отложенного сообщения (при создании предзаполнен composer'ом).</summary>
+    public string ScheduleDraftBody
+    {
+        get => _scheduleDraftBody;
+        set
+        {
+            if (SetProperty(ref _scheduleDraftBody, value))
+            {
+                RefreshScheduleDraftValidity();
+            }
+        }
+    }
+
+    /// <summary>Дата отправки (DatePicker; локальная).</summary>
+    public DateTime? ScheduleDraftDate
+    {
+        get => _scheduleDraftDate;
+        set
+        {
+            if (SetProperty(ref _scheduleDraftDate, value))
+            {
+                RefreshScheduleDraftValidity();
+            }
+        }
+    }
+
+    /// <summary>Время отправки «ЧЧ:ММ» (текстовое поле — в web input datetime-local).</summary>
+    public string ScheduleDraftTime
+    {
+        get => _scheduleDraftTime;
+        set
+        {
+            if (SetProperty(ref _scheduleDraftTime, value))
+            {
+                RefreshScheduleDraftValidity();
+            }
+        }
+    }
+
+    /// <summary>Ошибка валидации даты/времени/текста — подсказка под полем (красная).</summary>
+    public string? ScheduleDraftErrorText
+    {
+        get => _scheduleDraftErrorText;
+        private set
+        {
+            if (SetProperty(ref _scheduleDraftErrorText, value))
+            {
+                OnPropertyChanged(nameof(HasScheduleDraftError));
+                OnPropertyChanged(nameof(CanConfirmSchedule));
+                (ConfirmScheduleCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool HasScheduleDraftError => !string.IsNullOrEmpty(ScheduleDraftErrorText);
+
+    /// <summary>При валидном времени — «Будет отправлено завтра в 9:00» (helperText web).</summary>
+    public string? ScheduleDraftHint
+    {
+        get => _scheduleDraftHint;
+        private set => SetProperty(ref _scheduleDraftHint, value);
+    }
+
+    /// <summary>Подтвердить можно при заполненном тексте и валидном будущем времени.</summary>
+    public bool CanConfirmSchedule =>
+        IsScheduleEditorOpen && !IsScheduledBusy
+        && !string.IsNullOrWhiteSpace(ScheduleDraftBody)
+        && !HasScheduleDraftError
+        && ResolveScheduleDraftTime() is not null;
+
+    /// <summary>Открыть редактор «Отправить позже» (кнопка 🕐 у composer / меню отправки).</summary>
+    public ICommand OpenScheduleEditorCommand { get; }
+
+    public ICommand CloseScheduleEditorCommand { get; }
+
+    /// <summary>«Запланировать»/«Сохранить» — POST или PATCH по режиму редактора.</summary>
+    public ICommand ConfirmScheduleCommand { get; }
+
+    /// <summary>Быстрые чипы времени (hour|tomorrow|monday — как в web-диалоге).</summary>
+    public ICommand ApplySchedulePresetCommand { get; }
+
+    /// <summary>Плашка «Запланировано…» — открыть панель списка.</summary>
+    public ICommand ToggleScheduledPanelCommand { get; }
+
+    public ICommand CloseScheduledPanelCommand { get; }
+
+    /// <summary>
+    /// GET /chat/config раз на загрузку (web кеширует на сессию): до 3 попыток
+    /// с нарастающей паузой; сбой — фича остаётся скрытой без баннера.
+    /// </summary>
+    private async Task LoadChatConfigSafelyAsync()
+    {
+        if (_chatConfigRequested)
+        {
+            return;
+        }
+
+        _chatConfigRequested = true;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                if (attempt > 0)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5) * attempt);
+                }
+
+                var config = await _api.GetChatConfigAsync(CancellationToken.None);
+                RunOnUi(() =>
+                {
+                    IsScheduledMessagesEnabled = config.ScheduledMessagesEnabled;
+                    if (IsScheduledMessagesEnabled && _selectedConversation is { } conversation)
+                    {
+                        _ = LoadScheduledSafelyAsync(conversation);
+                    }
+                });
+                return;
+            }
+            catch (Exception)
+            {
+                // Конфиг — вспомогательный запрос: молчим и повторяем, как web.
+            }
+        }
+    }
+
+    /// <summary>GET …/scheduled для диалога; список пересобирается и вешает due-таймер.</summary>
+    private async Task LoadScheduledSafelyAsync(ConversationItemViewModel conversation)
+    {
+        if (!IsScheduledMessagesEnabled || conversation.Kind == "ai")
+        {
+            return;
+        }
+
+        var scope = _scheduledScope;
+        try
+        {
+            var list = await _api.GetChatScheduledMessagesAsync(
+                conversation.Id, CancellationToken.None);
+            RunOnUi(() =>
+            {
+                if (!ReferenceEquals(_scheduledScope, scope)
+                    || !ReferenceEquals(_selectedConversation, conversation))
+                {
+                    return;
+                }
+
+                ApplyScheduledItems(conversation, list.Items ?? []);
+                ScheduledErrorText = null;
+            });
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() =>
+            {
+                if (ReferenceEquals(_scheduledScope, scope)
+                    && ReferenceEquals(_selectedConversation, conversation))
+                {
+                    ScheduledErrorText = TasksViewModel.DescribeError(exception);
+                }
+            });
+        }
+    }
+
+    /// <summary>Список отложенных пересобран: пункты + due-таймер ближайшего срока.</summary>
+    private void ApplyScheduledItems(
+        ConversationItemViewModel conversation,
+        IReadOnlyList<HubChatScheduledMessage> items)
+    {
+        ScheduledMessages.Clear();
+        _armedScheduledCancel = null;
+        foreach (var model in items)
+        {
+            if (string.IsNullOrEmpty(model.Id))
+            {
+                continue;
+            }
+
+            ScheduledMessages.Add(new ChatScheduledMessageItemViewModel(
+                model,
+                item => BeginEditScheduledAsync(item),
+                item => CancelScheduledSafelyAsync(item))
+            {
+                IsBusy = IsScheduledBusy,
+            });
+        }
+
+        OnPropertyChanged(nameof(HasScheduledBar));
+        OnPropertyChanged(nameof(ScheduledBarText));
+        OnPropertyChanged(nameof(ScheduledBarIsError));
+        OnPropertyChanged(nameof(IsScheduledListEmpty));
+        ScheduleDueReload(conversation);
+    }
+
+    /// <summary>
+    /// Перечитать список сразу после ближайшего срока отправки (+3 с — web reload
+    /// at due+3s): ушедшее сообщение покидает список без ручного refresh.
+    /// </summary>
+    private void ScheduleDueReload(ConversationItemViewModel conversation)
+    {
+        var due = ScheduledMessages
+            .Where(item => item.Status is "scheduled" or "sending" && item.ScheduledFor is not null)
+            .Select(item => item.ScheduledFor!.Value)
+            .DefaultIfEmpty()
+            .Min();
+        if (due == default)
+        {
+            return;
+        }
+
+        var scope = _scheduledScope;
+        var delay = due - DateTimeOffset.Now + TimeSpan.FromSeconds(3);
+        if (delay < TimeSpan.FromSeconds(3))
+        {
+            delay = TimeSpan.FromSeconds(3);
+        }
+
+        _ = ReloadScheduledAtDueAsync(conversation, scope, delay);
+    }
+
+    private async Task ReloadScheduledAtDueAsync(
+        ConversationItemViewModel conversation,
+        object scope,
+        TimeSpan delay)
+    {
+        try
+        {
+            await Task.Delay(delay);
+            if (ReferenceEquals(_scheduledScope, scope)
+                && ReferenceEquals(_selectedConversation, conversation)
+                && IsScheduledMessagesEnabled)
+            {
+                await LoadScheduledSafelyAsync(conversation);
+            }
+        }
+        catch (Exception)
+        {
+            // Таймер — фоновая освежалка: любой сбой гасим, список перечитают действия.
+        }
+    }
+
+    /// <summary>
+    /// Общий прогон записи (web run()): busy → запрос → перечитать список;
+    /// ошибка — в изолированный ScheduledErrorText, состояние гуардам по scope.
+    /// </summary>
+    private async Task<T?> RunScheduledAsync<T>(
+        Func<CancellationToken, Task<T>> action,
+        string fallback) where T : class
+    {
+        var scope = _scheduledScope;
+        RunOnUi(() =>
+        {
+            IsScheduledBusy = true;
+            ScheduledErrorText = null;
+        });
+        try
+        {
+            var result = await action(CancellationToken.None);
+            if (!ReferenceEquals(_scheduledScope, scope))
+            {
+                return null;
+            }
+
+            if (_selectedConversation is { } conversation)
+            {
+                await LoadScheduledSafelyAsync(conversation);
+            }
+
+            return ReferenceEquals(_scheduledScope, scope) ? result : null;
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() =>
+            {
+                if (ReferenceEquals(_scheduledScope, scope))
+                {
+                    ScheduledErrorText = exception is HubApiException
+                        ? TasksViewModel.DescribeError(exception)
+                        : fallback;
+                }
+            });
+            return null;
+        }
+        finally
+        {
+            RunOnUi(() =>
+            {
+                if (ReferenceEquals(_scheduledScope, scope))
+                {
+                    IsScheduledBusy = false;
+                }
+            });
+        }
+    }
+
+    /// <summary>Редактор создания: текст из composer'а, время — ближайший пресет.</summary>
+    private void OpenScheduleEditor()
+    {
+        if (!CanScheduleMessage)
+        {
+            return;
+        }
+
+        _editingScheduled = null;
+        ScheduleDraftBody = ComposerText;
+        var preset = ChatScheduleTime.Presets()[0].When.LocalDateTime;
+        ScheduleDraftDate = preset.Date;
+        ScheduleDraftTime = preset.ToString("HH:mm", CultureInfo.InvariantCulture);
+        ScheduledErrorText = null;
+        OnPropertyChanged(nameof(ScheduleEditorTitle));
+        OnPropertyChanged(nameof(ScheduleEditorConfirmText));
+        IsScheduleEditorOpen = true;
+        RefreshScheduleDraftValidity();
+    }
+
+    /// <summary>Правка из панели: подставить текст и время, панель закрыть (web-флоу).</summary>
+    private Task BeginEditScheduledAsync(ChatScheduledMessageItemViewModel item)
+    {
+        if (!CanScheduleMessage && _selectedConversation is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        CloseScheduledPanel();
+        _editingScheduled = item;
+        ScheduleDraftBody = item.Body;
+        var local = item.ScheduledFor?.LocalDateTime ?? DateTime.Now.AddHours(1);
+        ScheduleDraftDate = local.Date;
+        ScheduleDraftTime = local.ToString("HH:mm", CultureInfo.InvariantCulture);
+        ScheduledErrorText = null;
+        OnPropertyChanged(nameof(ScheduleEditorTitle));
+        OnPropertyChanged(nameof(ScheduleEditorConfirmText));
+        IsScheduleEditorOpen = true;
+        RefreshScheduleDraftValidity();
+        return Task.CompletedTask;
+    }
+
+    private void CloseScheduleEditor()
+    {
+        IsScheduleEditorOpen = false;
+        _editingScheduled = null;
+        ScheduledErrorText = null;
+    }
+
+    /// <summary>Чип пресета: подставить дату/время выбранного варианта.</summary>
+    private void ApplySchedulePreset(string? key)
+    {
+        var preset = ChatScheduleTime.Presets()
+            .FirstOrDefault(candidate => candidate.Key == key);
+        if (preset.Key is null)
+        {
+            return;
+        }
+
+        var local = preset.When.LocalDateTime;
+        ScheduleDraftDate = local.Date;
+        ScheduleDraftTime = local.ToString("HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>Живая валидация даты/времени: ошибка либо подсказка «Будет отправлено …».</summary>
+    private void RefreshScheduleDraftValidity()
+    {
+        var when = ResolveScheduleDraftTime();
+        if (when is { } valid)
+        {
+            ScheduleDraftErrorText = null;
+            ScheduleDraftHint = $"Будет отправлено {ChatScheduleTime.Format(valid)}";
+        }
+        else
+        {
+            ScheduleDraftHint = null;
+        }
+
+        OnPropertyChanged(nameof(CanConfirmSchedule));
+        (ConfirmScheduleCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// Дата + «ЧЧ:ММ» → локальный момент отправки или null (ошибка попадает
+    /// в ScheduleDraftErrorText, как helperText datetime-local в web).
+    /// </summary>
+    private DateTimeOffset? ResolveScheduleDraftTime()
+    {
+        string? error = null;
+        DateTimeOffset? when = null;
+        if (_scheduleDraftDate is not { } date)
+        {
+            error = "Укажите дату и время";
+        }
+        else if (!TimeSpan.TryParseExact(
+                     (_scheduleDraftTime ?? string.Empty).Trim(),
+                     ["h\\:mm", "hh\\:mm"],
+                     CultureInfo.InvariantCulture,
+                     out var timeOfDay)
+                 || timeOfDay >= TimeSpan.FromDays(1))
+        {
+            error = "Укажите дату и время";
+        }
+        else
+        {
+            var candidate = new DateTimeOffset(date.Date + timeOfDay);
+            var validation = ChatScheduleTime.Validate(candidate);
+            if (validation.Length > 0)
+            {
+                error = validation;
+            }
+            else
+            {
+                when = candidate;
+            }
+        }
+
+        ScheduleDraftErrorText = error;
+        return when;
+    }
+
+    /// <summary>Подтверждение редактора: POST нового или PATCH существующего.</summary>
+    private async Task ConfirmScheduleAsync(CancellationToken cancellationToken)
+    {
+        var body = ScheduleDraftBody.Trim();
+        var when = ResolveScheduleDraftTime();
+        if (body.Length == 0)
+        {
+            ScheduleDraftErrorText = "Введите текст сообщения";
+            return;
+        }
+
+        if (when is not { } scheduledFor)
+        {
+            return;
+        }
+
+        if (_editingScheduled is { } editing)
+        {
+            var updated = await RunScheduledAsync(
+                ct => _api.UpdateChatScheduledMessageAsync(
+                    editing.Id, body, scheduledFor, ct),
+                "Не удалось изменить сообщение.");
+            if (updated is not null)
+            {
+                CloseScheduleEditor();
+            }
+
+            return;
+        }
+
+        var conversation = _selectedConversation;
+        if (conversation is null || !CanScheduleMessage)
+        {
+            return;
+        }
+
+        var created = await RunScheduledAsync(
+            ct => _api.CreateChatScheduledMessageAsync(
+                conversation.Id, body, scheduledFor, ReplyingTo?.Id, ct),
+            "Не удалось запланировать сообщение.");
+        if (created is null)
+        {
+            return;
+        }
+
+        CloseScheduleEditor();
+        // Успешное планирование очищает composer и контекст ответа (web-флоу).
+        if (ReferenceEquals(_selectedConversation, conversation))
+        {
+            ComposerText = string.Empty;
+            ClearComposerContext();
+        }
+
+        // Текст ушёл в отложенное — черновик этого диалога тоже сгорает.
+        PersistDraftNow(conversation.Id, null);
+    }
+
+    /// <summary>Отмена отложенного — armed: первое нажатие взводит, второе DELETE.</summary>
+    private async Task CancelScheduledSafelyAsync(ChatScheduledMessageItemViewModel item)
+    {
+        if (item.IsBusy)
+        {
+            return;
+        }
+
+        if (!item.CancelArmed)
+        {
+            if (_armedScheduledCancel is { } previous && !ReferenceEquals(previous, item))
+            {
+                previous.CancelArmed = false;
+            }
+
+            _armedScheduledCancel = item;
+            item.CancelArmed = true;
+            return;
+        }
+
+        item.CancelArmed = false;
+        _armedScheduledCancel = null;
+        await RunScheduledAsync(
+            ct => _api.CancelChatScheduledMessageAsync(item.Id, ct),
+            "Не удалось отменить сообщение.");
+    }
+
+    /// <summary>Плашка/кнопка «Запланировано…» — открыть/закрыть панель со списком.</summary>
+    private async Task ToggleScheduledPanelAsync(CancellationToken cancellationToken)
+    {
+        if (IsScheduledPanelOpen)
+        {
+            CloseScheduledPanel();
+            return;
+        }
+
+        if (!IsScheduledMessagesEnabled || _selectedConversation is not { Kind: not "ai" } conversation)
+        {
+            return;
+        }
+
+        // Оверлеи ленты взаимоисключающие.
+        CloseForwardPanel();
+        CloseMessageSearch();
+        IsReadersPanelOpen = false;
+        CloseMembersPanel();
+        CloseMediaPanel();
+        CloseGroupSettings();
+        CloseJoinRequestsPanel();
+        CloseReportsPanel();
+        CloseReportDialog();
+        CloseTaskShare();
+        IsScheduledPanelOpen = true;
+        IsLoadingScheduled = true;
+        try
+        {
+            var list = await _api.GetChatScheduledMessagesAsync(conversation.Id, cancellationToken);
+            if (IsScheduledPanelOpen && ReferenceEquals(_selectedConversation, conversation))
+            {
+                ApplyScheduledItems(conversation, list.Items ?? []);
+                ScheduledErrorText = null;
+            }
+        }
+        finally
+        {
+            IsLoadingScheduled = false;
+        }
+    }
+
+    private void CloseScheduledPanel()
+    {
+        IsScheduledPanelOpen = false;
+        IsLoadingScheduled = false;
+    }
+
+    /// <summary>Смена диалога/Reset: список, панель, редактор и armed-отмена не переживают ленту.</summary>
+    private void ResetScheduledState()
+    {
+        _scheduledScope = new object();
+        _armedScheduledCancel = null;
+        ScheduledMessages.Clear();
+        IsScheduledPanelOpen = false;
+        IsScheduleEditorOpen = false;
+        _editingScheduled = null;
+        IsLoadingScheduled = false;
+        IsScheduledBusy = false;
+        ScheduledErrorText = null;
+        _scheduleDraftBody = string.Empty;
+        OnPropertyChanged(nameof(ScheduleDraftBody));
+        _scheduleDraftDate = null;
+        OnPropertyChanged(nameof(ScheduleDraftDate));
+        _scheduleDraftTime = string.Empty;
+        OnPropertyChanged(nameof(ScheduleDraftTime));
+        ScheduleDraftErrorText = null;
+        ScheduleDraftHint = null;
+        OnPropertyChanged(nameof(HasScheduledBar));
+        OnPropertyChanged(nameof(ScheduledBarText));
+        OnPropertyChanged(nameof(ScheduledBarIsError));
+        OnPropertyChanged(nameof(IsScheduledListEmpty));
+        OnPropertyChanged(nameof(CanScheduleMessage));
+    }
+
+    // ---- Вступление по ссылке-приглашению (deep link ?join=) ----
+
+    /// <summary>
+    /// Deep link «/chat?join=TOKEN»: POST invite-links/{token}/join.
+    /// joined → upsert + выбор; при режиме «по заявкам» — requested: ждём решения.
+    /// </summary>
+    public async Task JoinConversationByInviteTokenAsync(
+        string token,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return;
+        }
+
+        try
+        {
+            var result = await _api.JoinChatByInviteLinkAsync(token, cancellationToken);
+            RunOnUi(() =>
+            {
+                if (result.Joined && result.Conversation is { } joined)
+                {
+                    var item = UpsertConversationItem(joined);
+                    if (item.IsArchived != ShowArchived)
+                    {
+                        ShowArchived = item.IsArchived;
+                    }
+
+                    if (!string.IsNullOrEmpty(_searchText))
+                    {
+                        SearchText = string.Empty;
+                    }
+
+                    RebuildVisibleConversations();
+                    SelectedConversation = item;
+                    BannerErrorText = null;
+                }
+                else if (result.Requested)
+                {
+                    // Группа пускает по заявкам: участник ждёт решения owner/moderator.
+                    BannerErrorText = "Заявка на вступление отправлена владельцу группы.";
+                }
+                else
+                {
+                    BannerErrorText = "Не удалось вступить по ссылке-приглашению.";
+                }
+            });
+        }
+        catch (Exception exception)
+        {
+            RunOnUi(() => BannerErrorText = TasksViewModel.DescribeError(exception));
+        }
+    }
+
+    // ---- Гидратация статусов загруженных сообщений ----
+
+    /// <summary>
+    /// GET …/messages/hydrate?message_ids= — догрузка read_by_count/delivery/
+    /// reactions для видимого среза: после bootstrap-переходов (глобальный поиск,
+    /// deep link, закреп) серверные статусы успевают устареть за полёт запросов.
+    /// </summary>
+    private async Task HydrateLoadedMessagesSafelyAsync(
+        ConversationItemViewModel conversation,
+        CancellationToken cancellationToken)
+    {
+        var ids = Messages
+            .Select(message => message.Id)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Take(200)
+            .ToList();
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var result = await _api.HydrateChatMessagesAsync(
+                conversation.Id, ids, cancellationToken);
+            if (!ReferenceEquals(_selectedConversation, conversation)
+                || cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            var fresh = (result.Items ?? [])
+                .Where(item => !string.IsNullOrEmpty(item.MessageId))
+                .ToDictionary(item => item.MessageId!, StringComparer.Ordinal);
+            foreach (var message in Messages)
+            {
+                if (fresh.TryGetValue(message.Id, out var item))
+                {
+                    message.ApplyDelivery(item.ReadByCount, item.DeliveryStatus);
+                    message.ApplyReactions(item.Reactions);
+                    // Hydrate отдаёт action_card частичным патчем — отсутствие
+                    // поля не значит удаления карточки (как realtime-апдейт).
+                    if (item.ActionCard is not null)
+                    {
+                        message.ApplyActionCard(item.ActionCard);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception)
+        {
+            // Гидратация — фоновое уточнение статусов: сбой гасим без баннера.
+        }
+    }
+
+    private void RaiseGroupCommandStates()
+    {
+        (SaveGroupProfileCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (UploadGroupAvatarCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (RemoveGroupAvatarCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (CreateInviteLinkCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (RevokeInviteLinkCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (DeleteGroupCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (ToggleJoinRequestsPanelCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (ToggleReportsPanelCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
     private void RunOnUi(Action action)
     {
         if (_syncContext is null || SynchronizationContext.Current == _syncContext)
@@ -4377,20 +10356,45 @@ public sealed class ChatViewModel : ObservableObject
         }, null);
     }
 
+    /// <summary>Отложенный UI-тик (гасить вспышку якоря): задержка вне
+    /// UI-потока, сам тик — через RunOnUi; умерший тестовый контекст гасим.</summary>
+    private void RunDelayed(TimeSpan delay, Action action)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(delay).ConfigureAwait(false);
+                RunOnUi(action);
+            }
+            catch (Exception)
+            {
+                // UI-контекст мог умереть (конец теста) — отложенный тик теряем.
+            }
+        });
+    }
+
     private void RaiseCommandStates()
     {
         (SendCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (AttachCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (AttachDroppedFilesCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (LoadOlderCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (LoadMoreConversationsCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (RetryHistoryCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (OpenScheduleEditorCommand as NativeRelayCommand)?.RaiseCanExecuteChanged();
+        (ConfirmScheduleCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
     }
 }
 
 /// <summary>Строка панели «Кто прочитал»: имя и локальное время прочтения.</summary>
 public sealed class ChatReadReceiptItemViewModel
 {
+    private readonly int _userId;
+
     public ChatReadReceiptItemViewModel(HubChatReadReceipt receipt)
     {
+        _userId = receipt.User?.Id ?? 0;
         DisplayName = receipt.User?.FullName
             ?? receipt.User?.Username
             ?? "Пользователь";
@@ -4406,4 +10410,11 @@ public sealed class ChatReadReceiptItemViewModel
 
     /// <summary>Сегодня → HH:mm, иначе dd.MM.yyyy HH:mm.</summary>
     public string? ReadAtText { get; }
+
+    /// <summary>Градиентный круг аватара — палитра пиров по id пользователя.</summary>
+    public System.Windows.Media.Brush AvatarBrush => ChatPeerPalette.AvatarBrush(
+        _userId.ToString(CultureInfo.InvariantCulture));
+
+    /// <summary>Двухбуквенные инициалы на градиентном аватаре.</summary>
+    public string AvatarInitials => ChatPeerPalette.Initials(DisplayName);
 }

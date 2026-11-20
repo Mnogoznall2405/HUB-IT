@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Hub.Desktop.Native.Api;
 
 namespace Hub.Desktop.Native.ViewModels;
@@ -72,6 +74,7 @@ public sealed class MyFileEntryViewModel : ObservableObject
 {
     private bool _isDownloading;
     private bool _isShared;
+    private bool _purgeArmed;
 
     private MyFileEntryViewModel()
     {
@@ -88,6 +91,8 @@ public sealed class MyFileEntryViewModel : ObservableObject
     public string StatusText { get; private init; } = string.Empty;
     /// <summary>Скачивание разрешено только у готовых файлов (backend: ready only).</summary>
     public bool CanOpen { get; private init; }
+    /// <summary>Кнопка «Просмотр» — сервер отдаёт /preview/content и тип — image.</summary>
+    public bool CanPreview { get; private init; }
 
     /// <summary>Флаг «качается»: второй клик по чипу не даст параллельный FileStream.</summary>
     public bool IsDownloading
@@ -103,7 +108,33 @@ public sealed class MyFileEntryViewModel : ObservableObject
         internal set => SetProperty(ref _isShared, value);
     }
 
-    public static MyFileEntryViewModel FromFolder(HubMyFileFolder folder)
+    /// <summary>Подпись «Удалить навсегда» в корзине: armed-паттерн — «Удалить?».</summary>
+    public string PurgeText => _purgeArmed ? "Удалить?" : "Удалить навсегда";
+
+    /// <summary>Первое нажатие взводит (true → команда уже может удалять навсегда).</summary>
+    public bool ArmPurge()
+    {
+        if (_purgeArmed)
+        {
+            return true;
+        }
+
+        _purgeArmed = true;
+        OnPropertyChanged(nameof(PurgeText));
+        return false;
+    }
+
+    /// <summary>Папка восстановлена/удалена навсегда — флаг сбрасывается с обновлением списка.</summary>
+    public void DisarmPurge()
+    {
+        if (_purgeArmed)
+        {
+            _purgeArmed = false;
+            OnPropertyChanged(nameof(PurgeText));
+        }
+    }
+
+    public static MyFileEntryViewModel FromFolder(HubMyFileFolder folder, bool forTrash = false)
     {
         ArgumentNullException.ThrowIfNull(folder);
         var count = Math.Max(0, folder.FileCount);
@@ -115,12 +146,12 @@ public sealed class MyFileEntryViewModel : ObservableObject
             IconGlyph = "📁",
             SizeText = count == 0 ? "пусто" : FormatCount(count),
             ModifiedText = FormatDate(folder.UpdatedAt ?? folder.CreatedAt),
-            CanOpen = true,
+            CanOpen = !forTrash,
             IsShared = folder.IsShared,
         };
     }
 
-    public static MyFileEntryViewModel FromFile(HubMyFileItem file)
+    public static MyFileEntryViewModel FromFile(HubMyFileItem file, bool forTrash = false)
     {
         ArgumentNullException.ThrowIfNull(file);
         var name = string.IsNullOrWhiteSpace(file.OriginalFileName)
@@ -137,7 +168,10 @@ public sealed class MyFileEntryViewModel : ObservableObject
             SizeText = MyFilesViewModel.FormatSize(file.OriginalSizeBytes),
             ModifiedText = FormatDate(file.UpdatedAt ?? file.CreatedAt),
             StatusText = ready ? string.Empty : StatusLabel(status),
-            CanOpen = ready,
+            CanOpen = ready && !forTrash,
+            CanPreview = !forTrash
+                && file.PreviewAvailable
+                && string.Equals((file.PreviewKind ?? string.Empty).Trim(), "image", StringComparison.OrdinalIgnoreCase),
             IsShared = file.IsShared,
         };
     }
@@ -274,6 +308,18 @@ public sealed class MyFilesViewModel : ObservableObject
     private string _shareUrl = string.Empty;
     private bool _shareLinkCopied;
     private MyFileEntryViewModel? _shareTarget;
+    private bool _isTrashView;
+    private string? _trashLibraryId;
+    private bool _emptyTrashArmed;
+    private bool _canManageLibraries;
+    private readonly Dictionary<string, HubMyFileLibrary> _libraryById = new(StringComparer.Ordinal);
+    private HubMyFileQuota? _quota;
+    private MyFilesLibraryEditorViewModel? _libraryEditor;
+    private MyFilesLibraryMembersViewModel? _membersEditor;
+    private bool _isPreviewOpen;
+    private bool _isPreviewLoading;
+    private ImageSource? _previewImage;
+    private string _previewTitle = string.Empty;
 
     public MyFilesViewModel(IHubApiClient api)
     {
@@ -366,6 +412,69 @@ public sealed class MyFilesViewModel : ObservableObject
             CopyShareLink,
             () => ShareUrl.Length > 0);
         CloseSharePanelCommand = new NativeRelayCommand(CloseSharePanel);
+        ShowTrashCommand = new NativeAsyncCommand(
+            (_, ct) => ShowTrashAsync(forcePersonal: false, ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanShowLocationTrash);
+        ShowPersonalTrashCommand = new NativeAsyncCommand(
+            (_, ct) => ShowTrashAsync(forcePersonal: true, ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => !IsPersonalTrash);
+        ShowFilesCommand = new NativeAsyncCommand(
+            (_, ct) => ShowFilesAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => IsTrashView);
+        EmptyTrashCommand = new NativeAsyncCommand(
+            (_, ct) => EmptyTrashAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => IsTrashView && Items.Count > 0);
+        RestoreEntryCommand = new NativeAsyncCommand(
+            (parameter, ct) => RestoreEntryAsync(
+                parameter as MyFileEntryViewModel ?? SelectedItem, ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            parameter => IsTrashView
+                && (parameter as MyFileEntryViewModel ?? SelectedItem) is not null);
+        PurgeEntryCommand = new NativeAsyncCommand(
+            (parameter, ct) => PurgeEntryAsync(
+                parameter as MyFileEntryViewModel ?? SelectedItem, ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            parameter => IsTrashView
+                && (parameter as MyFileEntryViewModel ?? SelectedItem) is not null);
+        CopyEntryCommand = new NativeAsyncCommand(
+            (parameter, ct) => CopyEntryAsync(
+                parameter as MyFileEntryViewModel ?? SelectedItem, ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            parameter => IsFileView
+                && (parameter as MyFileEntryViewModel ?? SelectedItem) is { IsFolder: false, CanOpen: true });
+        DownloadArchiveCommand = new NativeAsyncCommand(
+            (parameter, ct) => DownloadFolderArchiveAsync(
+                parameter as MyFileEntryViewModel ?? SelectedItem),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            parameter => IsFileView
+                && (parameter as MyFileEntryViewModel ?? SelectedItem) is { IsFolder: true });
+        PreviewEntryCommand = new NativeAsyncCommand(
+            (parameter, ct) => PreviewEntryAsync(
+                parameter as MyFileEntryViewModel ?? SelectedItem, ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            parameter => IsFileView
+                && (parameter as MyFileEntryViewModel ?? SelectedItem) is { IsFolder: false, CanPreview: true });
+        ClosePreviewCommand = new NativeRelayCommand(ClosePreview);
+        NewLibraryCommand = new NativeRelayCommand(
+            () => OpenLibraryEditor(null),
+            () => CanManageLibraries);
+        EditLibraryCommand = new NativeRelayCommand(
+            () =>
+            {
+                if (_currentLibraryId is { } id && _libraryById.TryGetValue(id, out var library))
+                {
+                    OpenLibraryEditor(library);
+                }
+            },
+            () => CanEditCurrentLibrary);
+        LibraryMembersCommand = new NativeAsyncCommand(
+            (_, ct) => OpenMembersEditorAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanManageMembersHere);
         DismissBannerCommand = new NativeRelayCommand(() => BannerErrorText = null);
         Items.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsEmpty));
         ShareLinks.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasShareLinks));
@@ -472,11 +581,148 @@ public sealed class MyFilesViewModel : ObservableObject
     /// <summary>Пустая выдача без ошибки и не в процессе загрузки.</summary>
     public bool IsEmpty => !IsLoading && Items.Count == 0 && !HasBannerError;
 
-    public string EmptyTitleText => "Здесь пока пусто";
+    // ---- Корзина ----
 
-    public string EmptyHintText => CanWrite
-        ? "Загрузите файлы или создайте папку."
-        : "В этой папке пока нет файлов.";
+    /// <summary>Сейчас показана корзина (Items — удалённые файлы/папки, без навигации вглубь).</summary>
+    public bool IsTrashView
+    {
+        get => _isTrashView;
+        private set
+        {
+            if (SetProperty(ref _isTrashView, value))
+            {
+                OnPropertyChanged(nameof(IsFileView));
+                OnPropertyChanged(nameof(IsPersonalTrash));
+                OnPropertyChanged(nameof(AreFileActionsVisible));
+                OnPropertyChanged(nameof(EmptyTitleText));
+                OnPropertyChanged(nameof(EmptyHintText));
+            }
+        }
+    }
+
+    /// <summary>Обычный список файлов (не корзина).</summary>
+    public bool IsFileView => !IsTrashView;
+
+    /// <summary>Корзина личного диска (а не корзина библиотеки).</summary>
+    public bool IsPersonalTrash => IsTrashView && _trashLibraryId is null;
+
+    /// <summary>Файловые действия (загрузка/папки/удаление/поделиться) скрыты в корзине.</summary>
+    public bool AreFileActionsVisible => CanWrite && !IsTrashView;
+
+    /// <summary>Корзину можно открыть у диска и у библиотеки с my_role=manage.</summary>
+    public bool CanShowLocationTrash => !IsTrashView
+        && (_selectedLocation is null
+            || _selectedLocation.IsPersonal
+            || string.Equals(_selectedLocation.Role, "manage", StringComparison.Ordinal));
+
+    /// <summary>Подпись «Очистить корзину»: armed-паттерн второго нажатия.</summary>
+    public string EmptyTrashText => _emptyTrashArmed ? "Очистить корзину?" : "Очистить корзину";
+
+    // ---- Квота личного диска ----
+
+    /// <summary>Квота загружена — показываем индикатор занятого места в рейке.</summary>
+    public bool IsQuotaVisible => _quota is not null;
+
+    /// <summary>Процент занятого (0-100) для ProgressBar рейки.</summary>
+    public double QuotaPercent => _quota is { LimitBytes: > 0 } quota
+        ? Math.Min(100d, quota.UsedBytes / (double)quota.LimitBytes * 100d)
+        : 0d;
+
+    /// <summary>«3,2 ГБ из 10 ГБ».</summary>
+    public string QuotaText => _quota is null
+        ? string.Empty
+        : $"{FormatSize(_quota.UsedBytes)} из {FormatSize(_quota.LimitBytes)}";
+
+    // ---- Библиотеки: редактор и участники ----
+
+    /// <summary>can_manage из GET /my-files/libraries — показывает «+ Общая папка» и «Настроить».</summary>
+    public bool CanManageLibraries
+    {
+        get => _canManageLibraries;
+        private set
+        {
+            if (SetProperty(ref _canManageLibraries, value))
+            {
+                ((NativeRelayCommand)NewLibraryCommand).RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanEditCurrentLibrary));
+            }
+        }
+    }
+
+    /// <summary>Управляющий может править параметры открытой библиотеки.</summary>
+    public bool CanEditCurrentLibrary => CanManageLibraries && _currentLibraryId is not null && !IsTrashView;
+
+    /// <summary>«Участники» доступны управляющему или члену библиотеки с ролью manage.</summary>
+    public bool CanManageMembersHere => _currentLibraryId is not null
+        && !IsTrashView
+        && (CanManageLibraries || string.Equals(_selectedLocation?.Role, "manage", StringComparison.Ordinal));
+
+    /// <summary>VM диалога создания/переименования библиотеки; null — диалог закрыт.</summary>
+    public MyFilesLibraryEditorViewModel? LibraryEditor
+    {
+        get => _libraryEditor;
+        private set
+        {
+            if (SetProperty(ref _libraryEditor, value))
+            {
+                OnPropertyChanged(nameof(IsLibraryEditorOpen));
+            }
+        }
+    }
+
+    public bool IsLibraryEditorOpen => LibraryEditor is not null;
+
+    /// <summary>VM диалога участников текущей библиотеки; null — диалог закрыт.</summary>
+    public MyFilesLibraryMembersViewModel? MembersEditor
+    {
+        get => _membersEditor;
+        private set
+        {
+            if (SetProperty(ref _membersEditor, value))
+            {
+                OnPropertyChanged(nameof(IsMembersEditorOpen));
+            }
+        }
+    }
+
+    public bool IsMembersEditorOpen => MembersEditor is not null;
+
+    // ---- Предпросмотр изображения ----
+
+    /// <summary>Оверлей предпросмотра открыт.</summary>
+    public bool IsPreviewOpen
+    {
+        get => _isPreviewOpen;
+        private set => SetProperty(ref _isPreviewOpen, value);
+    }
+
+    /// <summary>Идёт скачивание preview/content (индикатор в оверлее).</summary>
+    public bool IsPreviewLoading
+    {
+        get => _isPreviewLoading;
+        private set => SetProperty(ref _isPreviewLoading, value);
+    }
+
+    /// <summary>Картинка превью (BitmapImage из авторизованного потока).</summary>
+    public ImageSource? PreviewImage
+    {
+        get => _previewImage;
+        private set => SetProperty(ref _previewImage, value);
+    }
+
+    public string PreviewTitle
+    {
+        get => _previewTitle;
+        private set => SetProperty(ref _previewTitle, value);
+    }
+
+    public string EmptyTitleText => IsTrashView ? "Корзина пуста" : "Здесь пока пусто";
+
+    public string EmptyHintText => IsTrashView
+        ? "Удалённые объекты хранятся ограниченное время."
+        : CanWrite
+            ? "Загрузите файлы или создайте папку."
+            : "В этой папке пока нет файлов.";
 
     // ---- Редактор имени (создать папку / переименовать) ----
 
@@ -615,6 +861,24 @@ public sealed class MyFilesViewModel : ObservableObject
     /// <summary>Скопировать текущий URL через шов ClipboardSetter.</summary>
     public ICommand CopyShareLinkCommand { get; }
     public ICommand CloseSharePanelCommand { get; }
+    /// <summary>Тулбарная «Корзина»: корзина текущего места (диск либо библиотека manage).</summary>
+    public ICommand ShowTrashCommand { get; }
+    /// <summary>«Корзина» в левой рейке — всегда личная корзина диска.</summary>
+    public ICommand ShowPersonalTrashCommand { get; }
+    public ICommand ShowFilesCommand { get; }
+    public ICommand EmptyTrashCommand { get; }
+    public ICommand RestoreEntryCommand { get; }
+    public ICommand PurgeEntryCommand { get; }
+    /// <summary>«Создать копию» у файла — POST /my-files/{id}/copy в текущую папку.</summary>
+    public ICommand CopyEntryCommand { get; }
+    /// <summary>«Скачать архивом» у папки — archive-grant + авторизованная выкачка zip.</summary>
+    public ICommand DownloadArchiveCommand { get; }
+    /// <summary>«Просмотр» у изображения — GET /my-files/{id}/preview + /preview/content.</summary>
+    public ICommand PreviewEntryCommand { get; }
+    public ICommand ClosePreviewCommand { get; }
+    public ICommand NewLibraryCommand { get; }
+    public ICommand EditLibraryCommand { get; }
+    public ICommand LibraryMembersCommand { get; }
     public ICommand DismissBannerCommand { get; }
 
     /// <summary>
@@ -622,6 +886,12 @@ public sealed class MyFilesViewModel : ObservableObject
     /// потоковое скачивание в %TEMP% + Process.Start.
     /// </summary>
     public Func<MyFileEntryViewModel, Task>? FileSaver { get; set; }
+
+    /// <summary>
+    /// Шов сохранения архива папки (SaveFileDialog у view): аргумент — запись
+    /// папки; задача — скачать zip через archive-grant. null → %TEMP% + открыть ОС.
+    /// </summary>
+    public Func<MyFileEntryViewModel, Task>? ArchiveSaver { get; set; }
 
     /// <summary>
     /// Шов выбора файлов для загрузки — view ставит OpenFileDialog,
@@ -663,9 +933,19 @@ public sealed class MyFilesViewModel : ObservableObject
         try
         {
             await LoadLibrariesSafelyAsync(cancellationToken);
-            var page = await _api.GetMyFilesAsync(
-                _currentFolderId, _currentLibraryId, cancellationToken);
-            ApplyPage(page);
+            if (IsTrashView)
+            {
+                var trash = await _api.GetMyFilesTrashAsync(_trashLibraryId, cancellationToken);
+                ApplyTrashPage(trash);
+            }
+            else
+            {
+                var page = await _api.GetMyFilesAsync(
+                    _currentFolderId, _currentLibraryId, cancellationToken);
+                ApplyPage(page);
+            }
+
+            await LoadQuotaSafelyAsync(cancellationToken);
             BannerErrorText = null;
         }
         catch (Exception ex)
@@ -708,21 +988,91 @@ public sealed class MyFilesViewModel : ObservableObject
 
     private void ApplyLibraries(HubMyFileLibraryList list)
     {
+        _libraryById.Clear();
         Locations.Clear();
         Locations.Add(MyFilesLocationViewModel.Personal);
         foreach (var library in list.Items ?? [])
         {
+            if (!string.IsNullOrEmpty(library.Id))
+            {
+                _libraryById[library.Id] = library;
+            }
+
             Locations.Add(MyFilesLocationViewModel.FromLibrary(library));
         }
 
+        CanManageLibraries = list.CanManage;
         var selected = Locations.FirstOrDefault(
             l => string.Equals(l.LibraryId, _currentLibraryId, StringComparison.Ordinal))
             ?? MyFilesLocationViewModel.Personal;
         _selectedLocation = selected;
         OnPropertyChanged(nameof(SelectedLocation));
         OnPropertyChanged(nameof(CanWrite));
-        HeaderText = selected.Name;
+        OnPropertyChanged(nameof(CanShowLocationTrash));
+        OnPropertyChanged(nameof(CanManageMembersHere));
+        OnPropertyChanged(nameof(CanEditCurrentLibrary));
+        HeaderText = IsTrashView ? "Корзина · " + selected.Name : selected.Name;
         RaiseCommandStates();
+    }
+
+    /// <summary>GET /my-files/trash: плоский список (папки первыми), крошки — корень + «Корзина».</summary>
+    private void ApplyTrashPage(HubMyFileTrash trash)
+    {
+        Items.Clear();
+        foreach (var folder in trash.Folders ?? [])
+        {
+            Items.Add(MyFileEntryViewModel.FromFolder(folder, forTrash: true));
+        }
+        foreach (var file in trash.Items ?? [])
+        {
+            Items.Add(MyFileEntryViewModel.FromFile(file, forTrash: true));
+        }
+
+        Breadcrumbs.Clear();
+        Breadcrumbs.Add(new MyFileCrumbViewModel(
+            null, _selectedLocation?.Name ?? "Мои файлы", showSeparator: false));
+        Breadcrumbs.Add(new MyFileCrumbViewModel("__trash__", "Корзина"));
+
+        OnPropertyChanged(nameof(CanGoUp));
+        ((NativeAsyncCommand)GoUpCommand).RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(IsEmpty));
+        ((NativeAsyncCommand)EmptyTrashCommand).RaiseCanExecuteChanged();
+    }
+
+    /// <summary>Квота только для личного диска; отказ квоты не ломает список.</summary>
+    private async Task LoadQuotaSafelyAsync(CancellationToken cancellationToken)
+    {
+        if (_currentLibraryId is not null)
+        {
+            SetQuota(null);
+            return;
+        }
+
+        try
+        {
+            SetQuota(await _api.GetMyFilesQuotaAsync(cancellationToken));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            SetQuota(null);
+        }
+    }
+
+    private void SetQuota(HubMyFileQuota? quota)
+    {
+        if (Equals(_quota, quota))
+        {
+            return;
+        }
+
+        _quota = quota;
+        OnPropertyChanged(nameof(IsQuotaVisible));
+        OnPropertyChanged(nameof(QuotaPercent));
+        OnPropertyChanged(nameof(QuotaText));
     }
 
     private void EnsurePersonalLocation()
@@ -786,6 +1136,13 @@ public sealed class MyFilesViewModel : ObservableObject
         _downloadsInFlight.Clear();
         CloseNameEditor();
         CloseSharePanel();
+        ExitTrashView();
+        ClosePreview();
+        LibraryEditor = null;
+        MembersEditor = null;
+        SetQuota(null);
+        CanManageLibraries = false;
+        _libraryById.Clear();
         RetentionDays = 1;
         HeaderText = "Мои файлы";
         OnPropertyChanged(nameof(CanWrite));
@@ -807,6 +1164,8 @@ public sealed class MyFilesViewModel : ObservableObject
         _currentLibraryId = location.LibraryId;
         _currentFolderId = null;
         SelectedItem = null;
+        ExitTrashView();
+        ClosePreview();
         HeaderText = location.Name;
         OnPropertyChanged(nameof(CanWrite));
         OnPropertyChanged(nameof(CanGoUp));
@@ -829,7 +1188,7 @@ public sealed class MyFilesViewModel : ObservableObject
 
     private Task OpenEntryAsync(MyFileEntryViewModel? item, CancellationToken cancellationToken)
     {
-        if (item is null)
+        if (item is null || IsTrashView)
         {
             return Task.CompletedTask;
         }
@@ -842,6 +1201,15 @@ public sealed class MyFilesViewModel : ObservableObject
     /// <summary>Навигация в папку (null — корень текущей локации).</summary>
     private Task GoToFolderAsync(string? folderId, CancellationToken cancellationToken)
     {
+        if (IsTrashView)
+        {
+            // В корзине крошки «Локация › Корзина»: корень возвращает к файлам,
+            // сама «Корзина» — no-op (плоский список без вложенности).
+            return string.Equals(folderId, "__trash__", StringComparison.Ordinal)
+                ? Task.CompletedTask
+                : ShowFilesAsync(cancellationToken);
+        }
+
         if (string.Equals(folderId, _currentFolderId, StringComparison.Ordinal)
             && Items.Count > 0)
         {
@@ -1491,6 +1859,287 @@ public sealed class MyFilesViewModel : ObservableObject
         ShareLinkCopied = false;
     }
 
+    // ---- Корзина ----
+
+    /// <summary>
+    /// Переход в корзину текущего места (диск или manage-библиотека).
+    /// forcePersonal — «Корзина» левой рейки, всегда корзина диска.
+    /// </summary>
+    private async Task ShowTrashAsync(bool forcePersonal, CancellationToken cancellationToken)
+    {
+        _trashLibraryId = forcePersonal ? null : _currentLibraryId;
+        if (forcePersonal)
+        {
+            _selectedLocation = MyFilesLocationViewModel.Personal;
+            _currentLibraryId = null;
+            OnPropertyChanged(nameof(SelectedLocation));
+            OnPropertyChanged(nameof(CanWrite));
+        }
+
+        _currentFolderId = null;
+        SelectedItem = null;
+        _emptyTrashArmed = false;
+        OnPropertyChanged(nameof(EmptyTrashText));
+        IsTrashView = true;
+        OnPropertyChanged(nameof(CanShowLocationTrash));
+        OnPropertyChanged(nameof(CanManageMembersHere));
+        OnPropertyChanged(nameof(CanEditCurrentLibrary));
+        HeaderText = "Корзина · " + (_selectedLocation?.Name ?? "Мои файлы");
+        OnPropertyChanged(nameof(CanGoUp));
+        ((NativeAsyncCommand)GoUpCommand).RaiseCanExecuteChanged();
+        RaiseCommandStates();
+        await LoadAsync(cancellationToken);
+    }
+
+    /// <summary>«К файлам» — выход из корзины в корень той же локации.</summary>
+    private Task ShowFilesAsync(CancellationToken cancellationToken)
+    {
+        ExitTrashView();
+        _currentFolderId = null;
+        SelectedItem = null;
+        HeaderText = _selectedLocation?.Name ?? "Мои файлы";
+        OnPropertyChanged(nameof(CanShowLocationTrash));
+        OnPropertyChanged(nameof(CanManageMembersHere));
+        OnPropertyChanged(nameof(CanEditCurrentLibrary));
+        OnPropertyChanged(nameof(CanGoUp));
+        ((NativeAsyncCommand)GoUpCommand).RaiseCanExecuteChanged();
+        RaiseCommandStates();
+        return LoadAsync(cancellationToken);
+    }
+
+    private void ExitTrashView()
+    {
+        if (!IsTrashView && !_emptyTrashArmed)
+        {
+            return;
+        }
+
+        IsTrashView = false;
+        _trashLibraryId = null;
+        _emptyTrashArmed = false;
+        OnPropertyChanged(nameof(EmptyTrashText));
+    }
+
+    /// <summary>POST /my-files/trash/empty — armed: второе нажатие очищает корзину.</summary>
+    private async Task EmptyTrashAsync(CancellationToken cancellationToken)
+    {
+        if (!_emptyTrashArmed)
+        {
+            _emptyTrashArmed = true;
+            OnPropertyChanged(nameof(EmptyTrashText));
+            return;
+        }
+
+        _emptyTrashArmed = false;
+        OnPropertyChanged(nameof(EmptyTrashText));
+        await _api.EmptyMyFilesTrashAsync(_trashLibraryId, cancellationToken);
+        await LoadAsync(cancellationToken);
+    }
+
+    /// <summary>Восстановить запись из корзины в исходное место (restore endpoints).</summary>
+    private async Task RestoreEntryAsync(MyFileEntryViewModel? item, CancellationToken cancellationToken)
+    {
+        if (item is null || !IsTrashView)
+        {
+            return;
+        }
+
+        if (item.IsFolder)
+        {
+            await _api.RestoreMyFileFolderAsync(item.Id, cancellationToken);
+        }
+        else
+        {
+            await _api.RestoreMyFileAsync(item.Id, cancellationToken);
+        }
+
+        await LoadAsync(cancellationToken);
+    }
+
+    /// <summary>Удаление навсегда — armed на записи: «Удалить навсегда» → «Удалить?».</summary>
+    private async Task PurgeEntryAsync(MyFileEntryViewModel? item, CancellationToken cancellationToken)
+    {
+        if (item is null || !IsTrashView)
+        {
+            return;
+        }
+
+        if (!item.ArmPurge())
+        {
+            return;
+        }
+
+        if (item.IsFolder)
+        {
+            await _api.PurgeMyFileFolderAsync(item.Id, cancellationToken);
+        }
+        else
+        {
+            await _api.PurgeMyFileAsync(item.Id, cancellationToken);
+        }
+
+        await LoadAsync(cancellationToken);
+    }
+
+    // ---- Копия и архив ----
+
+    /// <summary>POST /my-files/{id}/copy — копия файла в текущую папку текущего места.</summary>
+    private async Task CopyEntryAsync(MyFileEntryViewModel? item, CancellationToken cancellationToken)
+    {
+        if (item is null || item.IsFolder || !item.CanOpen)
+        {
+            return;
+        }
+
+        await _api.CopyMyFileAsync(item.Id, _currentFolderId, _currentLibraryId, cancellationToken);
+        await LoadAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// POST /my-files/folders/{id}/archive-grant + авторизованный GET download_path.
+    /// View подставляет SaveFileDialog; без шва — %TEMP%/hub-desktop/my-files + ОС.
+    /// </summary>
+    private async Task DownloadFolderArchiveAsync(MyFileEntryViewModel? item)
+    {
+        if (item is null || !item.IsFolder)
+        {
+            return;
+        }
+
+        if (ArchiveSaver is not null)
+        {
+            await ArchiveSaver(item);
+            return;
+        }
+
+        var directory = Path.Combine(Path.GetTempPath(), "hub-desktop", "my-files");
+        Directory.CreateDirectory(directory);
+        var safeName = string.Concat(
+            (item.Name + ".zip").Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+        if (safeName.Length == 0)
+        {
+            safeName = "archive.zip";
+        }
+
+        var target = Path.Combine(directory, $"{item.Id}-{safeName}");
+        await using (var destination = new FileStream(
+            target, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
+        {
+            await _api.DownloadMyFileFolderArchiveAsync(item.Id, destination, CancellationToken.None);
+        }
+
+        Process.Start(new ProcessStartInfo { FileName = target, UseShellExecute = true });
+    }
+
+    // ---- Предпросмотр изображения ----
+
+    /// <summary>
+    /// GET /my-files/{id}/preview: image → авторизованное скачивание /preview/content
+    /// в BitmapImage. Текст/PDF/xlsx не показываем (skipped scope) — баннер-подсказка.
+    /// </summary>
+    private async Task PreviewEntryAsync(MyFileEntryViewModel? item, CancellationToken cancellationToken)
+    {
+        if (item is null || item.IsFolder)
+        {
+            return;
+        }
+
+        IsPreviewLoading = true;
+        PreviewTitle = item.Name;
+        try
+        {
+            var meta = await _api.GetMyFilePreviewAsync(item.Id, cancellationToken);
+            var kind = (meta.PreviewKind ?? string.Empty).Trim();
+            if (!string.Equals(kind, "image", StringComparison.OrdinalIgnoreCase)
+                || meta.PreviewUrl is null)
+            {
+                BannerErrorText = "Предпросмотр этого типа пока не поддержан — откройте файл скачиванием.";
+                return;
+            }
+
+            await using var stream = new MemoryStream();
+            await _api.DownloadMyFilePreviewContentAsync(item.Id, stream, cancellationToken);
+            stream.Position = 0;
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = stream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            PreviewImage = bitmap;
+            IsPreviewOpen = true;
+        }
+        finally
+        {
+            IsPreviewLoading = false;
+        }
+    }
+
+    private void ClosePreview()
+    {
+        IsPreviewOpen = false;
+        PreviewImage = null;
+        IsPreviewLoading = false;
+    }
+
+    // ---- Библиотеки: редакторы ----
+
+    /// <summary>«+ Общая папка» (null) или «Настроить» у открытой библиотеки.</summary>
+    private void OpenLibraryEditor(HubMyFileLibrary? source)
+    {
+        var editor = source is null
+            ? new MyFilesLibraryEditorViewModel(_api)
+            : new MyFilesLibraryEditorViewModel(_api, source);
+        editor.Saved += _library =>
+        {
+            LibraryEditor = null;
+            _librariesLoaded = false;
+            _ = ReloadSafelyAsync();
+        };
+        editor.Deleted += _library =>
+        {
+            LibraryEditor = null;
+            _librariesLoaded = false;
+            _ = SelectLocationSafelyAsync(MyFilesLocationViewModel.Personal);
+        };
+        editor.Closed += () => LibraryEditor = null;
+        LibraryEditor = editor;
+    }
+
+    /// <summary>«Участники» открытой библиотеки — GET members + поиск сотрудников/отделов.</summary>
+    private async Task OpenMembersEditorAsync(CancellationToken cancellationToken)
+    {
+        if (_currentLibraryId is not { } id || !_libraryById.TryGetValue(id, out var library))
+        {
+            return;
+        }
+
+        var editor = new MyFilesLibraryMembersViewModel(_api, library);
+        // Сохранение не закрывает диалог («Сохранено»): рейку обновляем в фоне —
+        // у библиотеки мог измениться members_count.
+        editor.Saved += () =>
+        {
+            _librariesLoaded = false;
+            _ = ReloadSafelyAsync();
+        };
+        editor.Closed += () => MembersEditor = null;
+        MembersEditor = editor;
+        await editor.LoadAsync(cancellationToken);
+    }
+
+    /// <summary>Перечитать файлы/библиотеки после правок диалогов (ошибки — в баннер).</summary>
+    private async Task ReloadSafelyAsync()
+    {
+        try
+        {
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            BannerErrorText = TasksViewModel.DescribeError(ex);
+        }
+    }
+
     // ---- Служебное ----
 
     /// <summary>«1,2 МБ» — тот же формат, что у вложений почты/чата.</summary>
@@ -1512,5 +2161,16 @@ public sealed class MyFilesViewModel : ObservableObject
         ((NativeAsyncCommand)DownloadEntryCommand).RaiseCanExecuteChanged();
         ((NativeAsyncCommand)OpenEntryCommand).RaiseCanExecuteChanged();
         ((NativeAsyncCommand)BeginShareCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)ShowTrashCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)ShowPersonalTrashCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)ShowFilesCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)EmptyTrashCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)RestoreEntryCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)PurgeEntryCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)CopyEntryCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)DownloadArchiveCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)PreviewEntryCommand).RaiseCanExecuteChanged();
+        ((NativeRelayCommand)EditLibraryCommand).RaiseCanExecuteChanged();
+        ((NativeAsyncCommand)LibraryMembersCommand).RaiseCanExecuteChanged();
     }
 }

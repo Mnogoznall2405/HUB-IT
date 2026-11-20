@@ -11,6 +11,7 @@ import re
 import shutil
 import struct
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -485,6 +486,9 @@ class ChatService:
 
         self._attachments_root = Path(hub_service.data_dir) / "chat_message_attachments"
         self._attachments_root.mkdir(parents=True, exist_ok=True)
+        self._delete_cleanup_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="chat-delete-cleanup"
+        )
         self._attachment_media = ChatAttachmentMedia(
             attachments_root=lambda: self._attachments_root,
             logger=logger,
@@ -1538,13 +1542,10 @@ class ChatService:
             "member_user_ids": member_user_ids,
         }
 
-    def _cleanup_deleted_conversation_storage(self, *, conversation_id: str, member_user_ids: list[int]) -> None:
+    def _cleanup_deleted_conversation_storage(self, *, conversation_id: str) -> None:
+        """Post-commit IO cleanup; runs off the request path via the async wrapper."""
         from backend.chat.chat_attachment_preview_service import chat_attachment_preview_service
 
-        self._invalidate_conversation_views_for_users(
-            conversation_id=conversation_id,
-            user_ids=member_user_ids,
-        )
         shutil.rmtree(self._attachments_root / conversation_id, ignore_errors=True)
         avatar_stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in conversation_id)
         if avatar_stem:
@@ -1565,6 +1566,30 @@ class ChatService:
                 conversation_id,
                 exc_info=True,
             )
+
+    def _cleanup_deleted_conversation_storage_async(self, *, conversation_id: str) -> None:
+        def _run() -> None:
+            try:
+                self._cleanup_deleted_conversation_storage(conversation_id=conversation_id)
+            except Exception:
+                logger.warning(
+                    "chat.delete_conversation async cleanup failed conversation_id=%s",
+                    conversation_id,
+                    exc_info=True,
+                )
+
+        self._delete_cleanup_executor.submit(_run)
+
+    def _after_delete_conversation_commit(self, *, deleted: dict[str, Any]) -> None:
+        # Cache invalidation stays synchronous (cheap, keeps lists consistent);
+        # the heavy filesystem/notification cleanup runs in the background.
+        self._invalidate_conversation_views_for_users(
+            conversation_id=deleted["conversation_id"],
+            user_ids=deleted["member_user_ids"],
+        )
+        self._cleanup_deleted_conversation_storage_async(
+            conversation_id=deleted["conversation_id"],
+        )
 
     def delete_conversation(self, *, current_user_id: int, conversation_id: str) -> dict[str, Any]:
         self._ensure_available()
@@ -1593,10 +1618,7 @@ class ChatService:
                     raise PermissionError("Only group owner can delete the conversation")
             deleted = self._delete_conversation_rows(session=session, conversation=conversation)
 
-        self._cleanup_deleted_conversation_storage(
-            conversation_id=deleted["conversation_id"],
-            member_user_ids=deleted["member_user_ids"],
-        )
+        self._after_delete_conversation_commit(deleted=deleted)
         return deleted
 
     def rename_ai_conversation(
@@ -1641,10 +1663,7 @@ class ChatService:
             if _normalize_text(conversation.kind).lower() != "ai":
                 raise ValueError("Conversation is not an AI chat")
             deleted = self._delete_conversation_rows(session=session, conversation=conversation)
-        self._cleanup_deleted_conversation_storage(
-            conversation_id=deleted["conversation_id"],
-            member_user_ids=deleted["member_user_ids"],
-        )
+        self._after_delete_conversation_commit(deleted=deleted)
         return deleted
 
     def delete_task_conversation(self, *, task_id: str) -> Optional[dict[str, Any]]:
@@ -1664,10 +1683,7 @@ class ChatService:
                 return None
             deleted = self._delete_conversation_rows(session=session, conversation=conversation)
 
-        self._cleanup_deleted_conversation_storage(
-            conversation_id=deleted["conversation_id"],
-            member_user_ids=deleted["member_user_ids"],
-        )
+        self._after_delete_conversation_commit(deleted=deleted)
         return deleted
 
     def _extract_mention_handles(self, body: object) -> set[str]:

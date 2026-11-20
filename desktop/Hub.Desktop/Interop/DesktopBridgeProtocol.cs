@@ -34,6 +34,7 @@ public enum DesktopInboundMessageType
     ClearNotificationGroup,
     DiagnoseMicrophone,
     OpenMediaSettings,
+    UpdateWorkspaceChrome,
 }
 
 public enum DesktopThemeMode
@@ -42,6 +43,28 @@ public enum DesktopThemeMode
     Dark,
     HighContrast,
 }
+
+/// <summary>Команды нативной вкладочной полосы второго окна → странице workspace.</summary>
+public enum DesktopWorkspaceChromeCommand
+{
+    Activate,
+    Close,
+    History,
+}
+
+/// <summary>Одна вкладка документа, присланная страницей workspace.</summary>
+public sealed record DesktopWorkspaceChromeDocument(string Id, string Title, bool Dirty);
+
+/// <summary>
+/// Снимок вкладочной полосы редактора документов: список вкладок, активная и
+/// доступность кнопки «История» (frameReady/online/не заблокировано на стороне веба).
+/// Пустой <see cref="DesktopWorkspaceChromeState.Documents"/> — страница ушла с workspace,
+/// нативная полоса скрывается.
+/// </summary>
+public sealed record DesktopWorkspaceChromeState(
+    IReadOnlyList<DesktopWorkspaceChromeDocument> Documents,
+    string ActiveId,
+    bool HistoryEnabled);
 
 public sealed record DesktopNotificationRequest(string Id, string Title, string Body, string Route);
 public sealed record DesktopMailComposeWindowCommand(string RequestId, string Route = "", string Status = "");
@@ -68,7 +91,8 @@ public sealed record DesktopInboundMessage(
     DesktopOpenFileDialogCommand? OpenFileDialog = null,
     string? NotificationGroup = null,
     string? RequestId = null,
-    DesktopMediaSettingsKind? MediaSettings = null);
+    DesktopMediaSettingsKind? MediaSettings = null,
+    DesktopWorkspaceChromeState? WorkspaceChrome = null);
 
 public static class DesktopBridgeProtocol
 {
@@ -87,6 +111,10 @@ public static class DesktopBridgeProtocol
     public const int MaximumNotificationGroupLength = 64;
     public const string NotificationClearGroupCapability = "notification-clear-group";
     public const string MicrophoneDiagnosticsCapability = "microphone-diagnostics";
+    /// <summary>Окно рисует вкладки документов само — веб-полоса workspace скрывается.</summary>
+    public const string WorkspaceChromeCapability = "workspace-chrome";
+    public const int MaximumWorkspaceDocuments = 16;
+    public const int MaximumWorkspaceDocumentTitleLength = 128;
     private const string ReadyMessageType = "desktop.ready";
     private const string ShowNotificationMessageType = "notification.show";
     private const string ClearNotificationGroupMessageType = "notification.clearGroup";
@@ -126,6 +154,8 @@ public static class DesktopBridgeProtocol
     private const string MailComposeWindowCompletedMessageType = "mail.composeWindow.completed";
     private const string WorkspaceWindowOpenMessageType = "workspace.window.open";
     private const string WorkspaceWindowResultMessageType = "workspace.window.result";
+    private const string WorkspaceChromeMessageType = "workspace.chrome";
+    private const string WorkspaceChromeCommandMessageType = "workspace.chrome.command";
     private const string MicrophoneDiagnoseMessageType = "media.microphoneDiagnose";
     private const string MicrophoneDiagnosisMessageType = "media.microphoneDiagnosis";
     private const string OpenMediaSettingsMessageType = "media.openSettings";
@@ -193,6 +223,7 @@ public static class DesktopBridgeProtocol
                     out message),
                 MailComposeWindowOpenMessageType => TryParseMailComposeWindowOpen(root, out message),
                 WorkspaceWindowOpenMessageType => TryParseWorkspaceWindowOpen(root, out message),
+                WorkspaceChromeMessageType => TryParseWorkspaceChrome(root, out message),
                 MailComposeWindowCloseResultMessageType => TryParseMailComposeWindowCloseResult(root, out message),
                 MailComposeWindowSentMessageType => TryParseExactCommand(
                     root,
@@ -253,7 +284,7 @@ public static class DesktopBridgeProtocol
     /// Builds the <c>desktop.capabilities</c> message. <c>notification-clear-group</c> is advertised
     /// only when notifications are available (same value as <c>notifications</c> in host-ready).
     /// </summary>
-    public static string CreateCapabilitiesMessage(bool notificationsAvailable)
+    public static string CreateCapabilitiesMessage(bool notificationsAvailable, bool workspaceChrome = false)
     {
         var capabilities = new List<string>
         {
@@ -277,6 +308,10 @@ public static class DesktopBridgeProtocol
             "vnc-preflight",
             "workspace-window",
         });
+        if (workspaceChrome)
+        {
+            capabilities.Add(WorkspaceChromeCapability);
+        }
 
         return JsonSerializer.Serialize(new
         {
@@ -480,6 +515,38 @@ public static class DesktopBridgeProtocol
         });
     }
 
+    /// <summary>
+    /// Сообщение нативной полосы → странице workspace: activate/close несут id вкладки,
+    /// history идёт без id (действует на активный документ).
+    /// </summary>
+    public static string CreateWorkspaceChromeCommandMessage(
+        DesktopWorkspaceChromeCommand command,
+        string? id)
+    {
+        if (command is DesktopWorkspaceChromeCommand.History)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                type = WorkspaceChromeCommandMessageType,
+                version = CurrentVersion,
+                command = "history",
+            });
+        }
+
+        if (string.IsNullOrEmpty(id) || !IsValidWorkspaceDocumentId(id))
+        {
+            throw new ArgumentException("Invalid workspace document id.", nameof(id));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = WorkspaceChromeCommandMessageType,
+            version = CurrentVersion,
+            command = command == DesktopWorkspaceChromeCommand.Activate ? "activate" : "close",
+            id,
+        });
+    }
+
     public static string CreateMailComposeWindowResultMessage(string requestId, string status)
     {
         if (!IsValidRequestId(requestId)
@@ -652,6 +719,80 @@ public static class DesktopBridgeProtocol
             WorkspaceWindow: new DesktopWorkspaceWindowCommand(requestId, route));
         return true;
     }
+
+    private static bool TryParseWorkspaceChrome(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "documents", "activeId", "history")
+            || !root.TryGetProperty("documents", out var documentsElement)
+            || documentsElement.ValueKind != JsonValueKind.Array
+            || documentsElement.GetArrayLength() > MaximumWorkspaceDocuments
+            || !root.TryGetProperty("activeId", out var activeIdElement)
+            || activeIdElement.ValueKind != JsonValueKind.String
+            || !TryGetBoolean(root, "history", out var historyEnabled))
+        {
+            return false;
+        }
+
+        var activeId = activeIdElement.GetString() ?? string.Empty;
+        if (activeId.Length > 64 || activeId.Any(char.IsControl)
+            || (activeId.Length > 0 && !IsValidWorkspaceDocumentId(activeId)))
+        {
+            return false;
+        }
+
+        var documents = new List<DesktopWorkspaceChromeDocument>(documentsElement.GetArrayLength());
+        var documentIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var documentElement in documentsElement.EnumerateArray())
+        {
+            if (documentElement.ValueKind != JsonValueKind.Object
+                || !HasExactProperties(documentElement, "id", "title", "dirty")
+                || !TryGetBoundedString(documentElement, "id", 64, out var id)
+                || !IsValidWorkspaceDocumentId(id)
+                || !TryGetWorkspaceDocumentTitle(documentElement, out var title)
+                || !TryGetBoolean(documentElement, "dirty", out var dirty)
+                || !documentIds.Add(id))
+            {
+                return false;
+            }
+
+            documents.Add(new DesktopWorkspaceChromeDocument(id, title, dirty));
+        }
+
+        // Активная вкладка обязана ссылаться на существующий документ (или быть пустой).
+        if (activeId.Length > 0 && !documentIds.Contains(activeId))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.UpdateWorkspaceChrome,
+            WorkspaceChrome: new DesktopWorkspaceChromeState(documents, activeId, historyEnabled));
+        return true;
+    }
+
+    /// <summary>Заголовок вкладки — строка (может быть пустой до первого rename), без control-символов.</summary>
+    private static bool TryGetWorkspaceDocumentTitle(JsonElement root, out string title)
+    {
+        title = string.Empty;
+        if (!root.TryGetProperty("title", out var element) || element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var text = element.GetString() ?? string.Empty;
+        if (text.Length > MaximumWorkspaceDocumentTitleLength || text.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        title = text;
+        return true;
+    }
+
+    private static bool IsValidWorkspaceDocumentId(string value) =>
+        value.Length is > 0 and <= 64
+        && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
 
     private static bool TryParseMailComposeWindowOpen(JsonElement root, out DesktopInboundMessage message)
     {

@@ -3,7 +3,7 @@ import { Dialog } from '@mui/material';
 
 import MyFilesEditorShell from './MyFilesEditorShell';
 
-export default function MyFilesOfficeEditorDialog({ open, file, onClose, onDownload }) {
+export default function MyFilesOfficeEditorDialog({ open, file, compareVersion = '', onClose, onDownload }) {
   const fileId = String(file?.id || '');
   const fileName = String(file?.original_file_name || file?.file_name || 'документ');
   const editorRef = useRef(null);
@@ -19,6 +19,7 @@ export default function MyFilesOfficeEditorDialog({ open, file, onClose, onDownl
           ref={editorRef}
           fileId={fileId}
           fileName={fileName}
+          compareVersion={compareVersion}
           onClose={onClose}
           onDownload={onDownload ? () => onDownload(file) : undefined}
         />

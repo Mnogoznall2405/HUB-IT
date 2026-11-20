@@ -35,6 +35,21 @@ def _get_folder_item(folder_obj: Any, exchange_id: str, *, only_fields: tuple[st
         return folder_obj.get(id=exchange_id)
 
 
+def _is_item_not_found(exc: BaseException) -> bool:
+    try:
+        from exchangelib.errors import DoesNotExist, ErrorItemNotFound
+    except Exception:
+        return False
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, (DoesNotExist, ErrorItemNotFound)):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _default_exchange_classes() -> tuple[Any, Any, Any, Any]:
     try:
         from exchangelib import HTMLBody, Mailbox, Message
@@ -65,8 +80,10 @@ class MailDraftLifecycle:
                 draft_exchange_id,
                 only_fields=DRAFT_MUTATION_FIELDS,
             )
-        except Exception:
-            return None
+        except Exception as exc:
+            if _is_item_not_found(exc):
+                return None
+            raise
 
     def upsert_draft(
         self,
@@ -77,13 +94,13 @@ class MailDraftLifecycle:
         draft_exchange_id: str = "",
     ) -> Any:
         HTMLBody, Mailbox, Message, FileAttachment = self.exchange_classes_factory()
-        existing_item = self._existing_draft(account=account, draft_exchange_id=draft_exchange_id)
         to_recipients = [Mailbox(email_address=email) for email in draft_plan.recipients.to]
         cc_recipients = [Mailbox(email_address=email) for email in draft_plan.recipients.cc]
         bcc_recipients = [Mailbox(email_address=email) for email in draft_plan.recipients.bcc]
         body_payload = HTMLBody(draft_plan.body) if draft_plan.is_html else draft_plan.body
 
         try:
+            existing_item = self._existing_draft(account=account, draft_exchange_id=draft_exchange_id)
             if existing_item is None:
                 draft_item = Message(
                     account=account,
@@ -133,4 +150,6 @@ class MailDraftLifecycle:
             )
             item.delete()
         except Exception as exc:
+            if _is_item_not_found(exc):
+                return
             raise MailDraftLifecycleError(str(exc)) from exc

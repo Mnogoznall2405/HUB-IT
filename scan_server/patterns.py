@@ -100,7 +100,11 @@ def _load_defs() -> Tuple[List[Dict[str, Any]], Dict[str, float], Dict[str, floa
         pattern_raw = str(row.get("pattern") or "")
         if not pattern_id or not pattern_raw:
             continue
-        weight = float(row.get("weight") or 1.0)
+        try:
+            weight = float(row.get("weight") or 1.0)
+        except (TypeError, ValueError):
+            logger.warning("pattern weight is not numeric id=%s value=%r; using 1.0", pattern_id, row.get("weight"))
+            weight = 1.0
         flags = _re_flags(row.get("flags"))
         try:
             regex = re.compile(pattern_raw, flags)
@@ -124,8 +128,12 @@ def _load_defs() -> Tuple[List[Dict[str, Any]], Dict[str, float], Dict[str, floa
 
     scoring = payload.get("scoring") if isinstance(payload, dict) else {}
     thresholds = scoring.get("thresholds") if isinstance(scoring, dict) else {}
-    dsp_threshold = float((thresholds or {}).get("dsp") or 1.0)
-    review_threshold = float((thresholds or {}).get("review") or 0.8)
+    try:
+        dsp_threshold = float((thresholds or {}).get("dsp") or 1.0)
+        review_threshold = float((thresholds or {}).get("review") or 0.8)
+    except (TypeError, ValueError) as exc:
+        logger.warning("scoring thresholds are not numeric (%s); using defaults", exc)
+        dsp_threshold, review_threshold = 1.0, 0.8
 
     logger.info("Loaded strict patterns: count=%s file=%s", len(defs), path)
     return defs, weights, {"dsp": dsp_threshold, "review": review_threshold}
@@ -188,10 +196,43 @@ _SPACED_CYRILLIC_WORD_RE = re.compile(r"(?<!\w)(?:[а-яё][ \t]){3,}[а-яё](?
 _DSP_FURNITURE_RE = re.compile(
     r"(?i)(?:"
     r"столешниц|мебел|шкаф|тумб|вешалк|сидень|обивк|каркас|фасад|"
-    r"материал|покрыти|пластик|пенополиуретан|ламинат|оргтехник|"
+    r"материал|покр|пласт|панел|пенополиуретан|ламинат|оргтехник|"
     r"плит[аыеу]?|дсп\s*лист|лист[аы]?\s*дсп|"
     r"\bмдф\b|\bhdf\b|дсп\s*22\s*мм|дсп\s*[+с]\s*пластик|\b\d+\s*мм\b"
     r")"
+)
+# Construction-drawing vocabulary around "ДСП": material schedules and floor
+# plans where the abbreviation is particle board (observed on prod: floor plans,
+# elevation drawings like "Поликлиника 3 этаж" flagged by the LLM as FP).
+_DSP_CONSTRUCTION_RE = re.compile(
+    r"(?i)(?:"
+    r"ведомост[ьи]\s+материал|спецификаци|маркировк|"
+    r"железобетон|монолит|арматур|бетон|кирпич|кладк|стяжк|"
+    r"гипсокартон|\bгвл\b|\bгкл\b|утеплит|"
+    r"перекрыти|фундамент|кровл|стропил|разрез|"
+    r"этаж|в\s+осях|ос[ияеях]\s*\d|помещени|коридор|"
+    r"смет[аы]|подрядч|заказчик|генподряд|строител|"
+    r"проектн\w*\s+документац|рабоч\w*\s+документац|"
+    r"снип|штукатурк|облицовк|отделк|"
+    r"светильник|светодиодн|освещени|ватт|\bвт\b|ip\s*\d{2}|ламп|"
+    r"люмен|optima|flagman|надтап|астз|пылевлагозащ"
+    r")"
+)
+# "дсп" followed by a digit/dash = luminaire model code (ДСП-40, ДСП52-32-101),
+# not a stamp. Right variant is positional; snippet variant for stored snippets.
+_DSP_MODEL_RIGHT_RE = re.compile(r"\s*[-–—]?\s*\d{2}|\s*[-–—]\s*\d")
+_DSP_MODEL_SNIPPET_RE = re.compile(
+    r"(?i)дсп\s*[-–—]?\s*\d{2}|дсп\s*[-–—]\s*\d"
+)
+# Registration-number references like "исх. № ГФ/КАС-480 ДСП от 30.06.2026":
+# the suffix marks the cited letter's secrecy, not this document. The left
+# variant anchors at the match start; the snippet variant is for stored
+# snippets where the match position is unknown.
+_DSP_REFNUM_LEFT_RE = re.compile(
+    r"(?:[\w]+(?:[/\\\-–—][\w]+)+|\d{3,}[\d/\\\-–—]*)\s*$"
+)
+_DSP_REFNUM_SNIPPET_RE = re.compile(
+    r"(?i)(?:[\w]+(?:[/\\\-–—][\w]+)+|\d{3,}[\d/\\\-–—]*)\s*дсп(?![а-яёa-z])"
 )
 # Clearance / NDA boilerplate mentioning secrecy level — not a document classification stamp.
 _SECRET_CLEARANCE_CONTEXT_RE = re.compile(
@@ -222,14 +263,30 @@ def normalize_scan_text(value: Any) -> str:
 
 
 def is_furniture_dsp_context(text: str) -> bool:
-    """True when nearby context looks like particle-board furniture, not a secrecy mark."""
-    return bool(_DSP_FURNITURE_RE.search(str(text or "")))
+    """True when nearby context looks like particle-board furniture or a
+    construction drawing's material schedule, not a secrecy mark."""
+    text = str(text or "")
+    return bool(_DSP_FURNITURE_RE.search(text) or _DSP_CONSTRUCTION_RE.search(text))
+
+
+def is_refnum_dsp_context(text: str) -> bool:
+    """True when text contains "дсп" as a cited letter's registration suffix."""
+    return bool(_DSP_REFNUM_SNIPPET_RE.search(str(text or "")))
+
+
+def is_model_dsp_context(text: str) -> bool:
+    """True when text contains "дсп" as a luminaire/model code (ДСП-40)."""
+    return bool(_DSP_MODEL_SNIPPET_RE.search(str(text or "")))
 
 
 def _is_excluded_dsp_context(text: str, start: int, end: int) -> bool:
-    left = max(0, start - 80)
+    left_pos = max(0, start - 80)
+    if _DSP_REFNUM_LEFT_RE.search(text[left_pos:start]):
+        return True
+    if _DSP_MODEL_RIGHT_RE.match(text[end:end + 40]):
+        return True
     right = min(len(text), end + 80)
-    return is_furniture_dsp_context(text[left:right])
+    return is_furniture_dsp_context(text[left_pos:right])
 
 
 def is_secret_clearance_context(text: str) -> bool:

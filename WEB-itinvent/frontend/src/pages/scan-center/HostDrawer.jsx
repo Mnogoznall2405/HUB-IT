@@ -25,7 +25,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import DownloadIcon from '@mui/icons-material/Download';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import { formatIncidentUncPath } from '../../lib/scanIncidentInbox';
+import { formatIncidentUncPath, formatSeverityLabel } from '../../lib/scanIncidentInbox';
 import { scanTasksAPI } from '../../api/scanTasks';
 
 const OBSERVATION_LABELS = {
@@ -75,7 +75,7 @@ function taskStatusColor(status) {
 function fileStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase();
   return RESOLVED_STATUS_LABELS[normalized]
-    || (normalized === 'new' ? 'Актуален' : (normalized === 'ack' ? 'ACK' : normalized || '-'));
+    || (normalized === 'new' ? 'Новый' : (normalized === 'ack' ? 'Просмотрен' : normalized || '-'));
 }
 
 function fileStatusColor(status) {
@@ -276,7 +276,7 @@ function MetricsSparkline({ points, color = '#1976d2' }) {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   return (
-    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="sparkline">
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Мини-график метрик">
       <polyline fill="none" stroke={color} strokeWidth="2" points={coords.join(' ')} />
     </svg>
   );
@@ -436,6 +436,7 @@ function ScanRunsTab({
                     <Box
                       role="button"
                       tabIndex={0}
+                      aria-expanded={expanded}
                       onClick={toggleRun}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
@@ -587,11 +588,11 @@ function IncidentList({
         return (
           <Paper key={incident.id} variant="outlined" sx={{ p: 1.2 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: 0.6 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{incident.severity || '-'} · {formatTs(incident.created_at)}</Typography>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{formatSeverityLabel(incident.severity)} · {formatTs(incident.created_at)}</Typography>
               <Stack direction="row" spacing={1} alignItems="center">
                 <Chip size="small" color={fileStatusColor(incident.status)} label={fileStatusLabel(incident.status)} />
                 {canScanAck && String(incident.status || '').toLowerCase() === 'new' && (
-                  <Button type="button" size="small" variant="outlined" disabled={busyIncident === incident.id} onClick={() => onAckIncident(incident)}>ACK</Button>
+                  <Button type="button" size="small" variant="outlined" disabled={busyIncident === incident.id} onClick={() => onAckIncident(incident)}>Просмотрено</Button>
                 )}
               </Stack>
             </Stack>
@@ -662,15 +663,15 @@ function AllFindingsTab({
           <FormControl size="small" fullWidth>
             <InputLabel>Статус</InputLabel>
             <Select value={filters.status} label="Статус" onChange={(event) => onFilterChange('status', event.target.value)}>
-              <MenuItem value="all">Все</MenuItem><MenuItem value="new">NEW</MenuItem><MenuItem value="ack">ACK</MenuItem>
+              <MenuItem value="all">Все</MenuItem><MenuItem value="new">Новый</MenuItem><MenuItem value="ack">Просмотрен</MenuItem>
             </Select>
           </FormControl>
         </Grid>
         <Grid item xs={6}>
           <FormControl size="small" fullWidth>
             <InputLabel>Severity</InputLabel>
-            <Select value={filters.severity} label="Severity" onChange={(event) => onFilterChange('severity', event.target.value)}>
-              <MenuItem value="all">Все</MenuItem><MenuItem value="high">High</MenuItem><MenuItem value="medium">Medium</MenuItem><MenuItem value="low">Low</MenuItem>
+            <Select value={filters.severity} label="Риск" onChange={(event) => onFilterChange('severity', event.target.value)}>
+              <MenuItem value="all">Все</MenuItem><MenuItem value="high">Высокий</MenuItem><MenuItem value="medium">Средний</MenuItem><MenuItem value="low">Низкий</MenuItem>
             </Select>
           </FormControl>
         </Grid>
@@ -750,13 +751,14 @@ export default function HostDrawer({
       anchor="right"
       open={open}
       onClose={onClose}
+      aria-labelledby="host-drawer-title"
       PaperProps={{ sx: { width: { xs: '100%', sm: 760, md: 860 }, maxWidth: '100vw' } }}
     >
       <Box sx={{ p: { xs: 1.5, sm: 2.2 } }}>
         <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
           <Box sx={{ minWidth: 0 }}>
             <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 800 }}>Карточка расследования</Typography>
-            <Typography variant="h6" sx={{ fontWeight: 800 }}>{host || 'Компьютер'}</Typography>
+            <Typography variant="h6" id="host-drawer-title" sx={{ fontWeight: 800 }}>{host || 'Компьютер'}</Typography>
             <Typography variant="body2" color="text.secondary">Запуски сканирования, изменения файлов и подтверждённые находки.</Typography>
           </Box>
           <IconButton type="button" aria-label="Закрыть карточку компьютера" onClick={onClose} edge="end">

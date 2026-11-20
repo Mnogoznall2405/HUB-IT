@@ -1,9 +1,14 @@
 import apiClient from './http';
+import { takeMailSendIdempotencyKey, withMailSendIdempotencyHeaders } from '../components/mail/mailSendIdempotency';
 import { withMailSendTimeout } from '../components/mail/mailSendOutcome';
 
 export const mailItRequestsAPI = {
   sendItRequest: async (payload) => {
-    const response = await apiClient.post('/mail/messages/send-it-request', payload, withMailSendTimeout());
+    const { key, body } = takeMailSendIdempotencyKey(payload);
+    const headers = withMailSendIdempotencyHeaders({}, key);
+    const response = await apiClient.post('/mail/messages/send-it-request', body, withMailSendTimeout(
+      key ? { headers } : {},
+    ));
     return response.data;
   },
 
@@ -13,6 +18,7 @@ export const mailItRequestsAPI = {
     files,
     onUploadProgress,
     signal,
+    idempotencyKey,
   }) => {
     const formData = new FormData();
     formData.append('template_id', String(templateId || ''));
@@ -25,9 +31,9 @@ export const mailItRequestsAPI = {
       });
     }
     const response = await apiClient.post('/mail/messages/send-it-request-multipart', formData, withMailSendTimeout({
-      headers: {
+      headers: withMailSendIdempotencyHeaders({
         'Content-Type': 'multipart/form-data',
-      },
+      }, idempotencyKey),
       onUploadProgress,
       signal,
     }));

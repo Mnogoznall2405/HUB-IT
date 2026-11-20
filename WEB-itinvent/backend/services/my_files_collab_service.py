@@ -7,11 +7,13 @@ balanced and the existing purge/expiry paths can release history through
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -47,6 +49,9 @@ from backend.services.my_files_service import (
 logger = logging.getLogger("backend.services.my_files_collab_service")
 
 MAX_COLLABORATORS = 200
+
+# A converted export must fit a single spool file; conversions run synchronously on Document Server.
+EXPORT_MAX_BYTES = 200 * 1024 * 1024
 
 # Saves of the same session merge into its version while the same editor keeps saving inside this
 # window; a different author or a longer pause retires the previous content into a new version.
@@ -267,6 +272,43 @@ class MyFilesCollabService:
                 raise MyFilesNotFoundError("File not found")
             return self.files._download_payload_for_row_locked(session, row)
 
+    def export_document(self, *, settings: oo.OnlyOfficeSettings, file_id: str, user_id: int,
+                        output_format: str) -> DownloadPayload:
+        """Convert the HUB-saved content via ConvertService; the payload streams a spool file once."""
+        output = str(output_format or "").strip().lower()
+        if output not in oo.EXPORT_OUTPUT_TYPES:
+            raise MyFilesValidationError("Этот формат экспорта не поддерживается")
+        session = self.get_editor_session(file_id=file_id, user_id=user_id)
+        file_name = session["file_name"]
+        output_ext, media_type = oo.EXPORT_OUTPUT_TYPES[output]
+        source_token = oo.make_source_token(settings, file_id=file_id, blob_id=session["blob_id"])
+        source_url = f"{settings.app_base_url}/api/v1/my-files/office/source?t={quote(source_token)}"
+        key = hashlib.sha256(f"{file_id}:{session['revision']}:export:{output}".encode()).hexdigest()[:40]
+        result_url = oo.request_conversion(
+            settings,
+            filetype=oo.editable_extension(file_name).lstrip("."),
+            key=key,
+            outputtype=output_ext,
+            title=f"{Path(file_name).stem}.{output_ext}",
+            url=source_url,
+        )
+        target = self.files.new_spool_path(f"export.{output_ext}")
+        try:
+            written = oo.fetch_document(settings, result_url, target, max_bytes=EXPORT_MAX_BYTES)
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        stem = Path(file_name).stem or "document"
+        return DownloadPayload(
+            path=target,
+            mode=STORAGE_STORED,
+            file_name=f"{stem}.{output_ext}",
+            media_type=media_type,
+            download_size_bytes=written,
+            file_id=file_id,
+            cleanup_after=True,
+        )
+
     def close_session(self, *, file_id: str, document_key: str) -> None:
         """Status 4: the session closed without saving; release the pinned key for the next editor."""
         database_url = self.files._database_url_or_raise()
@@ -300,6 +342,22 @@ class MyFilesCollabService:
         if editor_session["role"] not in oo.WRITING_ROLES:
             raise MyFilesNotFoundError("File not found")
         return oo.request_forcesave(settings, key=editor_session["document_key"], userdata=str(int(user_id)))
+
+    def session_editors(self, *, settings: oo.OnlyOfficeSettings, file_id: str, user_id: int) -> dict[str, Any]:
+        """Other people inside the live editor session; feeds the co-editing warning banner."""
+        editor_session = self.get_editor_session(file_id=file_id, user_id=user_id)
+        others = {
+            uid
+            for uid in oo.request_session_info(settings, key=editor_session["document_key"])
+            if uid != str(int(user_id))
+        }
+        names: list[str] = []
+        ids = sorted(int(uid) for uid in others if str(uid).isdigit())
+        if ids:
+            database_url = self.files._database_url_or_raise()
+            with app_session(database_url) as session:
+                names = _user_labels(session, ids)
+        return {"others": names, "others_count": len(others)}
 
     # -- saving -----------------------------------------------------------------------------
 

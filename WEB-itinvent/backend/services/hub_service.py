@@ -68,6 +68,9 @@ from backend.services.user_service import user_service
 logger = logging.getLogger(__name__)
 
 _HUB_PUSH_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="hub-push")
+# Single worker: committed file removals off the request path (delete_task,
+# delete_announcement) so they don't serialize on fsync/antivirus.
+_HUB_IO_CLEANUP_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hub-io-cleanup")
 
 
 class _CountingSqliteConnection:
@@ -5543,8 +5546,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             conn.execute(f"DELETE FROM {self._ANN_TABLE} WHERE id = ?", (ann_id,))
             conn.commit()
 
-        self._remove_relative_files(attachment_paths)
-        self._remove_dir_quiet(self.announcement_attachments_root / ann_id)
+        attachments_dir = self.announcement_attachments_root / ann_id
+
+        def _cleanup_announcement_files() -> None:
+            try:
+                self._remove_relative_files(attachment_paths)
+                self._remove_dir_quiet(attachments_dir)
+            except Exception:
+                logger.warning("hub delete_announcement file cleanup failed announcement_id=%s", ann_id, exc_info=True)
+
+        _HUB_IO_CLEANUP_EXECUTOR.submit(_cleanup_announcement_files)
         return True
 
     def list_announcements(
@@ -7997,9 +8008,18 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             conn.execute(f"DELETE FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,))
             conn.commit()
 
-        self._remove_relative_files(file_paths)
-        self._remove_dir_quiet(self.task_attachments_root / normalized_id)
-        self._remove_dir_quiet(self.task_attachment_previews_root / normalized_id)
+        task_attachments_dir = self.task_attachments_root / normalized_id
+        task_previews_dir = self.task_attachment_previews_root / normalized_id
+
+        def _cleanup_task_files() -> None:
+            try:
+                self._remove_relative_files(file_paths)
+                self._remove_dir_quiet(task_attachments_dir)
+                self._remove_dir_quiet(task_previews_dir)
+            except Exception:
+                logger.warning("hub delete_task file cleanup failed task_id=%s", normalized_id, exc_info=True)
+
+        _HUB_IO_CLEANUP_EXECUTOR.submit(_cleanup_task_files)
         self._publish_task_realtime(
             task=None,
             previous_task=task,

@@ -215,7 +215,10 @@ class SingleflightGroup:
         try:
             call.result = producer()
             return call.result
-        except Exception as exc:
+        except BaseException as exc:
+            # A non-Exception failure (e.g. KeyboardInterrupt inside the worker)
+            # must still release waiters with the error instead of handing them
+            # a None "result" below.
             call.error = exc
             raise
         finally:

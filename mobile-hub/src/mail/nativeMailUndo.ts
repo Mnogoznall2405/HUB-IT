@@ -14,6 +14,12 @@ export type NativeMailUndo = {
       messageIds: string[];
       /** Ids to use when reversing a move/delete (server assigns new ids on move). */
       undoIds: string[];
+      /**
+       * Authoritative undo plan: the new id plus the source folder of each
+       * message — for selections spanning folders («все папки»), where a
+       * single `sourceFolder` would restore items to the wrong place.
+       */
+      undoEntries?: { id: string; sourceFolder: string }[];
       /** Folder the selected items lived in before the action. */
       sourceFolder: string;
       /** Unread delta that was applied to counters; undo applies the inverse. */

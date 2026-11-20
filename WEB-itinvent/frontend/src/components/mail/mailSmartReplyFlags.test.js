@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { isMailSmartReplyChipsEnabled } from './mailSmartReplyFlags';
 
 describe('isMailSmartReplyChipsEnabled', () => {
-  it('defaults to on when env and storage are empty', () => {
+  it('defaults to off when env and storage are empty', () => {
     expect(isMailSmartReplyChipsEnabled({
       storage: { getItem: () => null },
       envValue: '',
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it('hides chips when storage flag is false', () => {

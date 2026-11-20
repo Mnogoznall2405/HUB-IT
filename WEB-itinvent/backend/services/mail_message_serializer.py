@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from backend.services.mail_outgoing_html import plain_text_to_html
 from backend.services.mail_reference_codec import (
+    MAIL_FLAG_CATEGORY,
     build_inline_attachment_src,
     encode_attachment_token,
     encode_message_id,
@@ -194,12 +195,26 @@ def item_conversation_key(item: Any) -> str:
     return normalize_subject_for_conversation(getattr(item, "subject", ""))
 
 
-def item_attachments_count(item: Any) -> int:
+def _is_display_attachment(attachment: Any) -> bool:
+    if bool(getattr(attachment, "is_inline", False)):
+        return False
+    content_id = normalize_attachment_content_id(getattr(attachment, "content_id", None))
+    content_type = _normalize_text(getattr(attachment, "content_type", "")).lower()
+    return not (content_id and content_type.startswith("image/"))
+
+
+def item_display_attachment_stats(item: Any) -> tuple[bool, int] | None:
     attachments = getattr(item, "attachments", None)
-    if attachments is not None:
-        count = len(list(attachments))
-        if count > 0:
-            return count
+    if not isinstance(attachments, (list, tuple)):
+        return None
+    visible = [att for att in attachments if _is_display_attachment(att)]
+    return bool(visible), len(visible)
+
+
+def item_attachments_count(item: Any) -> int:
+    stats = item_display_attachment_stats(item)
+    if stats is not None:
+        return stats[1]
     return 1 if bool(getattr(item, "has_attachments", False)) else 0
 
 
@@ -368,6 +383,7 @@ class MailMessageSerializer:
         restore_hint_folder: str | None = None,
         draft_context: dict[str, Any] | None = None,
         include_inline_data_urls: bool = False,
+        inline_embed_budget: int | None = None,
     ) -> dict[str, Any]:
         received = getattr(item, "datetime_received", None) or getattr(item, "datetime_created", None)
         received_iso = received.isoformat() if received else None
@@ -381,6 +397,7 @@ class MailMessageSerializer:
         referenced_content_ids = referenced_inline_content_ids(body_html)
 
         attachments = []
+        remaining_inline_budget = inline_embed_budget
         for att in (getattr(item, "attachments", None) or []):
             attachment_raw_id = extract_attachment_raw_id(att)
             download_token = encode_attachment_token(attachment_raw_id, resolved_mailbox_id)
@@ -390,6 +407,13 @@ class MailMessageSerializer:
                 or (content_id and content_id in referenced_content_ids)
             )
             is_downloadable = bool((download_token or attachment_raw_id) and self.is_downloadable_attachment(att))
+            inline_data_url = None
+            if include_inline_data_urls and is_inline:
+                candidate = self.build_inline_attachment_data_url(att)
+                if candidate and (remaining_inline_budget is None or len(candidate) <= remaining_inline_budget):
+                    inline_data_url = candidate
+                    if remaining_inline_budget is not None:
+                        remaining_inline_budget -= len(candidate)
             if not is_downloadable:
                 logger.warning(
                     "Mail attachment is not downloadable: name=%s mailbox_id=%s message_exchange_id=%s attachment_type=%s stable_id=%s",
@@ -413,9 +437,7 @@ class MailMessageSerializer:
                         message_id=encoded_message_id,
                         attachment_ref=download_token or attachment_raw_id,
                     ) if is_inline and (download_token or attachment_raw_id) else None,
-                    "inline_data_url": self.build_inline_attachment_data_url(att)
-                    if include_inline_data_urls and is_inline
-                    else None,
+                    "inline_data_url": inline_data_url,
                 }
             )
 
@@ -426,6 +448,7 @@ class MailMessageSerializer:
         compose_context = self.build_compose_context(item, mailbox_email, resolved_mailbox_id, folder_key)
 
         sender_email = _normalize_text(sender_person.get("email")).lower()
+        categories = [str(value).strip() for value in (getattr(item, "categories", None) or []) if str(value).strip()]
         return {
             "id": encoded_message_id,
             "mailbox_id": resolved_mailbox_id or None,
@@ -460,7 +483,8 @@ class MailMessageSerializer:
             "body_html": body_html,
             "body_text": body_text,
             "importance": item_importance(item),
-            "categories": [str(value).strip() for value in (getattr(item, "categories", None) or []) if str(value).strip()],
+            "categories": categories,
+            "is_flagged": MAIL_FLAG_CATEGORY in categories,
             "reminder_is_set": bool(getattr(item, "reminder_is_set", False)),
             "reminder_due_by": (
                 getattr(item, "reminder_due_by", None).isoformat()
@@ -492,10 +516,12 @@ class MailMessageSerializer:
         if not body_text:
             body_text = _normalize_text(getattr(item, "body", None))
         body_preview = body_text[:350]
-        has_attachments = bool(getattr(item, "has_attachments", False))
+        attachment_stats = item_display_attachment_stats(item)
+        has_attachments = attachment_stats[0] if attachment_stats is not None else bool(getattr(item, "has_attachments", False))
         sender_person = draft_sender_person_fallback(folder_key, mailbox_email, item_sender_person(item))
         recipient_people = item_recipient_people(item)
         sender_email = _normalize_text(sender_person.get("email")).lower()
+        categories = [str(value).strip() for value in (getattr(item, "categories", None) or []) if str(value).strip()]
         return {
             "id": encode_message_id(folder_key, _normalize_text(getattr(item, "id", "")), _normalize_text(mailbox_id)),
             "mailbox_id": _normalize_text(mailbox_id) or None,
@@ -515,5 +541,6 @@ class MailMessageSerializer:
             "attachments_count": item_attachments_count(item),
             "body_preview": body_preview,
             "importance": item_importance(item),
-            "categories": [str(value).strip() for value in (getattr(item, "categories", None) or []) if str(value).strip()],
+            "categories": categories,
+            "is_flagged": MAIL_FLAG_CATEGORY in categories,
         }

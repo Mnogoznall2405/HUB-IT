@@ -10,6 +10,7 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import CompareRoundedIcon from '@mui/icons-material/CompareRounded';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded';
 
@@ -71,6 +72,7 @@ export default function MyFilesVersionHistory({
   fileName = 'файл',
   canRestore = true,
   onRestored,
+  onCompare,
   refreshKey = 0,
 }) {
   const theme = useTheme();
@@ -170,6 +172,8 @@ export default function MyFilesVersionHistory({
   }, [rows]);
 
   const currentBackground = alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.08);
+  // Document comparison is a text-editor feature: spreadsheets and slides keep download/restore only.
+  const canCompare = typeof onCompare === 'function' && String(fileName).toLowerCase().endsWith('.docx');
 
   return (
     <Box data-testid="my-files-version-history">
@@ -217,6 +221,21 @@ export default function MyFilesVersionHistory({
               </Box>
               {row.isCurrent ? null : (
                 <Stack direction="row" className="version-actions" sx={{ flexShrink: 0 }}>
+                  {canCompare ? (
+                    <Tooltip title="Сравнить эту версию с текущей в редакторе">
+                      <span>
+                        <IconButton
+                          size="small"
+                          aria-label={`Сравнить версию ${row.version_no} с текущей`}
+                          disabled={Boolean(busyId)}
+                          onClick={() => onCompare(row)}
+                          data-testid={`my-files-version-compare-${row.version_no}`}
+                        >
+                          <CompareRoundedIcon fontSize="small" />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  ) : null}
                   <Tooltip title="Скачать эту версию">
                     <span>
                       <IconButton

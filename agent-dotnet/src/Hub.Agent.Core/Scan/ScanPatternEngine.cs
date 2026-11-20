@@ -25,9 +25,33 @@ public sealed class ScanPatternEngine
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex DspFurniture = new(
-        @"(?i)(?:столешниц|мебел|шкаф|тумб|вешалк|сидень|обивк|каркас|фасад|материал|покрыти|пластик|" +
+        @"(?i)(?:столешниц|мебел|шкаф|тумб|вешалк|сидень|обивк|каркас|фасад|материал|покр|пласт|панел|" +
         @"пенополиуретан|ламинат|оргтехник|плит[аыеу]?|дсп\s*лист|лист[аы]?\s*дсп|\bмдф\b|\bhdf\b|" +
         @"дсп\s*22\s*мм|дсп\s*[+с]\s*пластик|\b\d+\s*мм\b)",
+        RegexOptions.CultureInvariant);
+
+    // Construction-drawing vocabulary: "ДСП" in material schedules = particle board.
+    private static readonly Regex DspConstruction = new(
+        @"(?i)(?:ведомост[ьи]\s+материал|спецификаци|маркировк|" +
+        @"железобетон|монолит|арматур|бетон|кирпич|кладк|стяжк|" +
+        @"гипсокартон|\bгвл\b|\bгкл\b|утеплит|" +
+        @"перекрыти|фундамент|кровл|стропил|разрез|" +
+        @"этаж|в\s+осях|ос[ияеях]\s*\d|помещени|коридор|" +
+        @"смет[аы]|подрядч|заказчик|генподряд|строител|" +
+        @"проектн\w*\s+документац|рабоч\w*\s+документац|" +
+        @"снип|штукатурк|облицовк|отделк|" +
+        @"светильник|светодиодн|освещени|ватт|\bвт\b|ip\s*\d{2}|ламп|" +
+        @"люмен|optima|flagman|надтап|астз|пылевлагозащ)",
+        RegexOptions.CultureInvariant);
+
+    // "дсп" followed by a digit/dash = luminaire model code (ДСП-40, ДСП52-32-101).
+    private static readonly Regex DspModelRight = new(
+        @"^\s*[-–—]?\s*\d{2}|^\s*[-–—]\s*\d",
+        RegexOptions.CultureInvariant);
+
+    // "дсп" glued/spaced after a registration number = cited letter's secrecy, not this doc's.
+    private static readonly Regex DspRefNumLeft = new(
+        @"(?:[\w]+(?:[/\\\-–—][\w]+)+|\d{3,}[\d/\\\-–—]*)\s*$",
         RegexOptions.CultureInvariant);
 
     private static readonly Regex HyphenInsideWord = new(@"(?<=\w)[\-‐‑–—]\s*(?=\w)", RegexOptions.CultureInvariant);
@@ -180,7 +204,11 @@ public sealed class ScanPatternEngine
                     var contextStart = Math.Max(0, match.Index - 80);
                     var contextEnd = Math.Min(candidate.Length, match.Index + match.Length + 80);
                     var context = candidate[contextStart..contextEnd];
-                    if (pattern.Id == "dsp_with_exclusion" && DspFurniture.IsMatch(context))
+                    if (pattern.Id == "dsp_with_exclusion"
+                        && (DspFurniture.IsMatch(context)
+                            || DspConstruction.IsMatch(context)
+                            || DspRefNumLeft.IsMatch(candidate[contextStart..match.Index])
+                            || DspModelRight.IsMatch(candidate[(match.Index + match.Length)..Math.Min(candidate.Length, match.Index + match.Length + 40)])))
                     {
                         continue;
                     }

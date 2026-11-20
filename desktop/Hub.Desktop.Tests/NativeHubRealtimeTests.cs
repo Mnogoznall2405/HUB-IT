@@ -330,21 +330,40 @@ public sealed class NativeHubRealtimeTests
     }
 
     [Fact]
-    public async Task NotificationEventRefreshesMailBadge()
+    public async Task NotificationEventRefreshesFeedAndMailBadge()
     {
         var api = new FakeHubApiClient
         {
             StoredSession = Session,
             MailUnreadCount = new HubMailUnreadCount { Count = 2 },
+            NotificationsPoll = new HubNotificationPoll
+            {
+                Items =
+                [
+                    new HubNotificationItem
+                    {
+                        Id = "n-1",
+                        Title = "Назначена задача",
+                        EntityType = "task",
+                        EntityId = "11",
+                        CreatedAt = "2026-11-20T10:00:00Z",
+                        Unread = 1,
+                    },
+                ],
+                UnreadCounts = new HubNotificationUnreadCounts { NotificationsUnreadTotal = 1 },
+            },
         };
         var realtime = new FakeHubRealtime();
         var model = new HubShellViewModel(api, realtime);
         await model.InitializeAsync();
         var unreadCalls = api.MailUnreadCountCallCount;
+        var notificationCalls = api.NotificationsPollCallCount;
 
         realtime.RaiseEvent("hub.notification.created", "{\"event_id\":\"n-1\"}");
 
-        await WaitFor(() => api.MailUnreadCountCallCount > unreadCalls);
+        // Тот же триггер обновляет ленту колокола и почтовый бейдж.
+        await WaitFor(() => api.NotificationsPollCallCount > notificationCalls
+            && api.MailUnreadCountCallCount > unreadCalls);
     }
 
     [Fact]
@@ -358,6 +377,7 @@ public sealed class NativeHubRealtimeTests
         var taskCalls = api.TasksCallCount;
         var docflowCalls = api.DocflowTasksCallCount;
         var dashboardCalls = api.DashboardCallCount;
+        var notificationCalls = api.NotificationsPollCallCount;
 
         realtime.RaiseEvent("hub.realtime.connected", "{\"connection_id\":\"c-1\"}");
         await Task.Delay(150);
@@ -367,6 +387,7 @@ public sealed class NativeHubRealtimeTests
         Assert.Equal(taskCalls, api.TasksCallCount);
         Assert.Equal(docflowCalls, api.DocflowTasksCallCount);
         Assert.Equal(dashboardCalls, api.DashboardCallCount);
+        Assert.Equal(notificationCalls, api.NotificationsPollCallCount);
 
         // Второй — reconnect: за разрыв могли пропустить события, догоняем.
         realtime.RaiseEvent("hub.realtime.connected", "{\"connection_id\":\"c-2\"}");
@@ -374,7 +395,27 @@ public sealed class NativeHubRealtimeTests
         await WaitFor(() => api.MailUnreadCountCallCount > mailCalls
             && api.TasksCallCount > taskCalls
             && api.DocflowTasksCallCount > docflowCalls
-            && api.DashboardCallCount > dashboardCalls);
+            && api.DashboardCallCount > dashboardCalls
+            && api.NotificationsPollCallCount > notificationCalls);
+    }
+
+    [Fact]
+    public async Task IntegrationEventInvalidatesDashboard()
+    {
+        var api = new FakeHubApiClient { StoredSession = Session };
+        var realtime = new FakeHubRealtime();
+        var model = new HubShellViewModel(api, realtime);
+        await model.InitializeAsync();
+        var dashboardCalls = api.DashboardCallCount;
+        var mailCalls = api.MailUnreadCountCallCount;
+        var taskCalls = api.TasksCallCount;
+
+        realtime.RaiseEvent("integration.1c.sync.completed", "{\"event_id\":\"i-1\"}");
+
+        await WaitFor(() => api.DashboardCallCount > dashboardCalls);
+        await Task.Delay(100);
+        Assert.Equal(mailCalls, api.MailUnreadCountCallCount);
+        Assert.Equal(taskCalls, api.TasksCallCount);
     }
 
     [Fact]
@@ -388,7 +429,7 @@ public sealed class NativeHubRealtimeTests
         var taskCalls = api.TasksCallCount;
         var dashboardCalls = api.DashboardCallCount;
 
-        realtime.RaiseEvent("integration.1c.sync.completed", "{\"event_id\":\"i-1\"}");
+        realtime.RaiseEvent("something.unknown", "{\"event_id\":\"u-1\"}");
         realtime.RaiseEvent("tasks.presence.snapshot", "{}");
         await Task.Delay(150);
 
@@ -414,12 +455,15 @@ public sealed class NativeHubRealtimeTests
         // Отписка: события после выхода не инициируют REST-рефреши.
         var mailCalls = api.MailUnreadCountCallCount;
         var taskCalls = api.TasksCallCount;
+        var notificationCalls = api.NotificationsPollCallCount;
         realtime.RaiseEvent("mail.message.received", "{\"event_id\":\"m-3\"}");
         realtime.RaiseEvent("tasks.task.created", "{\"event_id\":\"t-9\"}");
+        realtime.RaiseEvent("hub.notification.created", "{\"event_id\":\"n-9\"}");
         await Task.Delay(150);
 
         Assert.Equal(mailCalls, api.MailUnreadCountCallCount);
         Assert.Equal(taskCalls, api.TasksCallCount);
+        Assert.Equal(notificationCalls, api.NotificationsPollCallCount);
     }
 
     // ---- helpers ----

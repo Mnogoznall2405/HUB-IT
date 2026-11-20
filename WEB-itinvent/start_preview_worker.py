@@ -51,6 +51,14 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _cleanup_interval_seconds() -> int:
+    return _positive_int_env(
+        "PREVIEW_CLEANUP_INTERVAL_SEC",
+        900,
+        maximum=86400,
+    )
+
+
 _PREVIEW_JOB_HANDLERS = (
     lambda worker_id: chat_attachment_preview_service.process_next_job(worker_id=worker_id),
     lambda worker_id: task_attachment_preview_service.process_next_job(worker_id=worker_id),
@@ -95,6 +103,23 @@ def _run_worker_loop(*, worker_id: str, stop_event: threading.Event) -> None:
                 document_preview_job_service.poll_interval_ms,
             ) / 1000.0
         )
+
+
+def _run_cleanup_loop(*, stop_event: threading.Event, interval_seconds: int) -> None:
+    """Periodic retention enforcement for document preview jobs.
+
+    ``cleanup_expired`` is the only path that deletes expired job rows and
+    their artifact files; without a caller every mail/docflow/1C preview
+    would accumulate in the table and on disk forever.
+    """
+    while not stop_event.is_set():
+        try:
+            removed = document_preview_job_service.cleanup_expired()
+            if removed:
+                logger.info("Preview cleanup removed %s expired jobs", removed)
+        except Exception:
+            logger.exception("Preview worker cleanup failed")
+        stop_event.wait(max(1, int(interval_seconds)))
 
 
 def main() -> int:
@@ -159,8 +184,18 @@ def main() -> int:
         )
         for index in range(concurrency)
     ]
+    cleanup_thread = threading.Thread(
+        target=_run_cleanup_loop,
+        kwargs={
+            "stop_event": stop_event,
+            "interval_seconds": _cleanup_interval_seconds(),
+        },
+        name="preview-worker-cleanup",
+        daemon=True,
+    )
     for thread in threads:
         thread.start()
+    cleanup_thread.start()
 
     try:
         while not stop_event.wait(0.5):
@@ -171,6 +206,7 @@ def main() -> int:
         stop_event.set()
         for thread in threads:
             thread.join(timeout=10.0)
+        cleanup_thread.join(timeout=10.0)
     logger.info("Preview worker stopped")
     return 0
 

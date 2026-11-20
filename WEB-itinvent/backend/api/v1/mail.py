@@ -490,6 +490,7 @@ def _mail_metrics_log_context(metrics: dict[str, Any] | None = None) -> dict[str
         "singleflight_hit": payload.get("singleflight_hit"),
         "search_limited": payload.get("search_limited"),
         "searched_window": payload.get("searched_window"),
+        "folders_skipped": payload.get("folders_skipped"),
         "mailbox_unread_deferred": payload.get("mailbox_unread_deferred"),
         "filtered_path": payload.get("filtered_path"),
         "account_reused": payload.get("account_reused"),
@@ -639,6 +640,11 @@ class MarkAllReadPayload(BaseModel):
 
 class MessageImportancePayload(BaseModel):
     importance: str = Field(..., min_length=3, max_length=10)
+    mailbox_id: Optional[str] = None
+
+
+class MessageFlagPayload(BaseModel):
+    flagged: bool
     mailbox_id: Optional[str] = None
 
 
@@ -1348,6 +1354,32 @@ async def set_mail_message_importance(
             message_id=message_id,
             mailbox_id=payload.mailbox_id,
             operation="importance",
+        )
+        return result
+    except MailServiceError as exc:
+        raise _mail_http_exception(exc, current_user=current_user) from exc
+
+
+@router.post("/messages/{message_id}/flag")
+async def set_mail_message_flag(
+    message_id: str,
+    payload: MessageFlagPayload,
+    current_user: User = Depends(get_current_mail_user),
+):
+    try:
+        result = await _run_mail_call(
+            mail_service.set_message_flag,
+            user_id=int(current_user.id),
+            mailbox_id=_normalize_text(payload.mailbox_id) or None,
+            message_id=message_id,
+            flagged=payload.flagged,
+        )
+        _publish_mail_realtime(
+            user_id=int(current_user.id),
+            event_type=HUB_MAIL_MESSAGE_STATE_CHANGED_EVENT,
+            message_id=message_id,
+            mailbox_id=payload.mailbox_id,
+            operation="flag",
         )
         return result
     except MailServiceError as exc:
@@ -2221,6 +2253,7 @@ async def delete_mail_draft(
 async def send_it_request_message(
     payload: SendItRequestPayload,
     current_user: User = Depends(get_current_mail_user),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     try:
         return await _run_mail_send_call(
@@ -2228,6 +2261,7 @@ async def send_it_request_message(
             user_id=int(current_user.id),
             template_id=_normalize_text(payload.template_id),
             fields=payload.fields or {},
+            idempotency_key=_normalize_text(idempotency_key),
         )
     except MailPayloadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
@@ -2242,6 +2276,7 @@ async def send_it_request_message_multipart(
     fields_json: str = Form("{}"),
     files: list[UploadFile] = File(default=[]),
     current_user: User = Depends(get_current_mail_user),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     started_at = time.perf_counter()
     request_id = _request_id_from_headers(request)
@@ -2268,6 +2303,7 @@ async def send_it_request_message_multipart(
             template_id=_normalize_text(template_id),
             fields=parsed_fields,
             attachments=attachments,
+            idempotency_key=_normalize_text(idempotency_key),
         )
     except MailPayloadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc

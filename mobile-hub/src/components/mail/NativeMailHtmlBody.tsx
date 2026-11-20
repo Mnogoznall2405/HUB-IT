@@ -63,6 +63,7 @@ export function NativeMailHtmlBody({
   const [allowExternalImages, setAllowExternalImages] = useState(false);
   const [contentHeight, setContentHeight] = useState(compact ? 260 : 420);
   const [longContent, setLongContent] = useState(false);
+  const [measured, setMeasured] = useState(false);
   const prepared = useMemo(() => prepareNativeMailHtml(bodyHtml, attachments, {
     allowExternalImages,
     dark: tokens.pageBg === '#0f1115',
@@ -75,6 +76,7 @@ export function NativeMailHtmlBody({
   useEffect(() => {
     setContentHeight(compact ? 260 : 420);
     setLongContent(false);
+    setMeasured(false);
   }, [bodyHtml, compact]);
 
   useEffect(() => {
@@ -156,6 +158,7 @@ export function NativeMailHtmlBody({
               const payload = JSON.parse(String(event.nativeEvent.data || '')) as { type?: string; height?: number; url?: string };
               const nextHeight = Number(payload.height || 0);
               if (payload.type === 'mail-height' && Number.isFinite(nextHeight) && nextHeight > 0) {
+                setMeasured(true);
                 if (nextHeight > 20_000) {
                   setLongContent(true);
                   setContentHeight(longContentHeight);
@@ -182,7 +185,11 @@ export function NativeMailHtmlBody({
           scrollEnabled={longContent}
           textZoom={textZoom}
           accessibilityLabel={String(plainText || '').trim() || 'Содержимое HTML-письма'}
-          style={{ height: longContent ? longContentHeight : contentHeight, backgroundColor: flat ? tokens.pageBg : tokens.panelSolid }}
+          style={{
+            height: longContent ? longContentHeight : contentHeight,
+            opacity: measured ? 1 : 0,
+            backgroundColor: flat ? tokens.pageBg : tokens.panelSolid,
+          }}
         />
       </View>}
       {longContent && !textOnly && !renderFailed ? (

@@ -137,15 +137,24 @@ function resolveRow(agent, pkg, installed, task) {
   const online = Boolean(agent?.is_online);
   const taskActive = Boolean(task && (task.is_active || ACTIVE_STATUSES.has(String(task.status || '').toLowerCase())));
   const installedVersion = String(installed?.version || task?.result?.installed_version || '').trim();
+  const taskVersion = String(task?.payload?.version || '').trim();
   const taskOk = task && String(task.status) === 'completed'
     && ['installed', 'already_installed'].includes(String(task?.result?.phase || ''));
+  // A finished task proves "current" only for the package it actually deployed:
+  // an old completed install must not pin the row to "Актуальная" after a newer
+  // package is published. Unversioned tasks keep the previous optimistic reading.
+  const taskProvesCurrent = taskOk
+    && (!pkg.version || !taskVersion || versionCmp(taskVersion, pkg.version) >= 0);
   const taskFailed = task && ['failed', 'expired'].includes(String(task.status));
   const supported = !agentVersion || versionCmp(agentVersion, MIN_INSTALL_AGENT_VERSION) >= 0;
 
   let status = 'not_installed';
   if (taskActive) status = 'installing';
-  else if (taskOk || (installedVersion && pkg.version && versionCmp(installedVersion, pkg.version) >= 0)) status = 'current';
-  else if (installedVersion) status = 'outdated';
+  else if (
+    (installedVersion && pkg.version && versionCmp(installedVersion, pkg.version) >= 0)
+    || taskProvesCurrent
+  ) status = 'current';
+  else if (installedVersion || taskOk) status = 'outdated';
   else if (taskFailed) status = 'failed';
   else if (!supported) status = 'unsupported';
   // No software inventory at all → "нет данных", not a confident "не установлен".

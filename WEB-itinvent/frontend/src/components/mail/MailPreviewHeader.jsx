@@ -35,6 +35,7 @@ import {
 import { formatMailPersonWithEmail, getMailPersonEmail } from './mailPeople';
 import {
   formatMailRecipientSummary,
+  getMailCcRecipientPeople,
   getMailRecipientPeople,
   getMailSenderPerson,
   isMailOutgoingMessage,
@@ -145,8 +146,11 @@ export default function MailPreviewHeader({
   const senderPerson = getMailSenderPerson(selectedMessage);
   const toPeople = getMailRecipientPeople(selectedMessage);
   const outgoing = isMailOutgoingMessage(selectedMessage, { folder, mailboxEmails });
+  const ccPeople = getMailCcRecipientPeople(selectedMessage);
   const visibleToPeople = toPeople.slice(0, 2);
+  const visibleCcPeople = ccPeople.slice(0, 2);
   const hiddenRecipientCount = Math.max(0, toPeople.length - 2);
+  const hiddenCcCount = Math.max(0, ccPeople.length - 2);
   const recipientsFallback = outgoing ? 'Без получателя' : 'Вы';
   const title = isConversation
     ? String(selectedConversation?.subject || selectedMessage.subject || '(без темы)')
@@ -326,6 +330,71 @@ export default function MailPreviewHeader({
                 ) : null}
               </Box>
             ) : null}
+            {!isConversation && ccPeople.length > 0 ? (
+              <Box
+                data-testid="mail-preview-cc-label"
+                sx={{
+                  ...getMailMetaTextSx(tokens, { mt: 0.2, lineHeight: 1.45 }),
+                  display: 'block',
+                  width: '100%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={() => setRecipientsExpanded((prev) => !prev)}
+                  aria-expanded={recipientsExpanded}
+                  aria-label={`Показать копию, ${formatRuRecipientCount(ccPeople.length)}`}
+                  sx={{
+                    border: 0,
+                    p: 0,
+                    background: 'none',
+                    cursor: 'pointer',
+                    font: 'inherit',
+                    fontWeight: 700,
+                    color: tokens.textPrimary,
+                  }}
+                >
+                  Копия:
+                </Box>
+                {' '}
+                {visibleCcPeople.map((person, index) => (
+                  <Box component="span" key={`${getMailPersonEmail(person) || index}`}>
+                    {index > 0 ? ', ' : null}
+                    <MailPersonLink
+                      person={person}
+                      mailboxEmails={mailboxEmails}
+                      onComposeToPerson={onComposeToPerson}
+                      fallback=""
+                    />
+                  </Box>
+                ))}
+                {hiddenCcCount > 0 ? (
+                  <Box
+                    component="button"
+                    type="button"
+                    data-testid="mail-preview-cc-more"
+                    onClick={() => setRecipientsExpanded((prev) => !prev)}
+                    aria-label={`Ещё ${hiddenCcCount}`}
+                    sx={{
+                      border: 0,
+                      p: 0,
+                      ml: 0.5,
+                      background: 'none',
+                      cursor: 'pointer',
+                      font: 'inherit',
+                      fontWeight: 700,
+                      color: 'inherit',
+                    }}
+                  >
+                    {`+${hiddenCcCount}`}
+                  </Box>
+                ) : null}
+              </Box>
+            ) : null}
             <Typography data-testid="mail-preview-date" noWrap sx={getMailMetaTextSx(tokens, { mt: 0.2, lineHeight: 1.45 })}>
               {formatFullDate(selectedMessage.received_at)}
             </Typography>
@@ -408,7 +477,7 @@ export default function MailPreviewHeader({
         </Box>
 
         {!isConversation && recipientsExpanded ? (
-          <Box sx={{ pt: 0.75 }}>
+          <Box data-testid="mail-preview-recipients-expanded" sx={{ pt: 0.75, maxHeight: 'min(40vh, 320px)', overflowY: 'auto' }}>
             {recipients.length > 0 ? recipients.map((item, index) => {
               const line = formatMailPersonWithEmail(item.value);
               const email = getMailPersonEmail(item.value);

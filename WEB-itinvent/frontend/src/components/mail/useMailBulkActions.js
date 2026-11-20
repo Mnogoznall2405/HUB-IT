@@ -12,6 +12,7 @@ export default function useMailBulkActions({
   mailAPI,
   activeMailboxId = '',
   folder = 'inbox',
+  messageItems = [],
   selectedItems = [],
   setSelectedItems,
   setMoveTarget,
@@ -65,8 +66,19 @@ export default function useMailBulkActions({
     successMessage = '',
   }) => {
     if (selectedMessageIds.length === 0) return;
-    if (action === 'delete' && permanent && !confirmPermanentDelete({ count: selectedMessageIds.length })) {
-      return;
+    let deletePermanently = permanent;
+    let deleteRestoreFolder = folder;
+    if (action === 'delete') {
+      const actualFolders = new Map(messageItems.map((item) => [String(item.id), item.folder]));
+      const selectedFolders = selectedMessageIds.map((id) => actualFolders.get(id) || folder);
+      const trashCount = selectedFolders.filter((key) => key === 'trash').length;
+      if (trashCount > 0 && trashCount < selectedMessageIds.length) {
+        onError?.('Выберите письма из «Удалённых» отдельно от писем в других папках.');
+        return;
+      }
+      deletePermanently = trashCount === selectedMessageIds.length;
+      deleteRestoreFolder = new Set(selectedFolders).size === 1 ? selectedFolders[0] : '';
+      if (deletePermanently && !confirmPermanentDelete({ count: selectedMessageIds.length })) return;
     }
     setBulkActionLoading(true);
     try {
@@ -75,26 +87,50 @@ export default function useMailBulkActions({
         message_ids: selectedMessageIds,
         action,
         target_folder: targetFolder || undefined,
-        permanent,
+        permanent: deletePermanently,
       });
       if (selectedMessage?.id && selectedMessageIds.includes(String(selectedMessage.id))) {
         clearSelection?.({ mode: viewMode });
       }
       await afterListMutation();
-      if (action === 'delete' && !permanent) {
+      if (action === 'delete' && Number(result?.failed) > 0) {
+        onError?.(`Не удалось удалить письма: ${result.failed}.`);
+        if (deletePermanently || !Number(result.succeeded)) return;
+      }
+      if (action === 'delete' && !deletePermanently) {
         const restoreIds = extractBulkTrashRestoreIds(result);
         onRecoverableDelete?.({
           messageIds: restoreIds,
-          restoreFolder: folder,
+          restoreFolder: deleteRestoreFolder,
           count: restoreIds.length || selectedMessageIds.length,
         });
       } else if (action === 'move') {
-        onRecoverableMove?.({
-          messageIds: selectedMessageIds,
-          restoreFolder: folder,
-          folderLabel: getFolderLabel?.(targetFolder) || targetFolder,
-          count: selectedMessageIds.length,
-        });
+        // Only messages the server actually moved get an undo entry; each entry
+        // uses the new id and that message's own source folder.
+        const actualFolders = new Map(messageItems.map((item) => [String(item.id), item.folder]));
+        const moves = (Array.isArray(result?.results) ? result.results : [])
+          .map((entry) => {
+            const originalId = String(entry?.message_id || '');
+            const movedId = String(entry?.result?.message_id || originalId);
+            const sourceFolder = String(
+              entry?.result?.source_folder || actualFolders.get(originalId) || folder
+            );
+            return movedId ? { id: movedId, restoreFolder: sourceFolder } : null;
+          })
+          .filter(Boolean);
+        const failedCount = Number(result?.failed || 0);
+        if (failedCount > 0) {
+          onError?.(`Не удалось переместить письма: ${failedCount}.`);
+        }
+        if (moves.length > 0) {
+          onRecoverableMove?.({
+            moves,
+            folderLabel: getFolderLabel?.(targetFolder) || targetFolder,
+            count: moves.length,
+          });
+        }
+      } else if (action === 'delete' && deletePermanently) {
+        onMessage?.('Выбранные письма удалены навсегда.');
       } else if (successMessage) {
         onMessage?.(successMessage);
       }
@@ -117,6 +153,7 @@ export default function useMailBulkActions({
     getMailErrorDetail,
     handleMailCredentialsRequired,
     mailAPI,
+    messageItems,
     onError,
     onMessage,
     onRecoverableDelete,
@@ -141,27 +178,49 @@ export default function useMailBulkActions({
     if (!targetFolder || ids.length === 0) return;
     if (targetFolder === folder) return;
 
+    const actualFolders = new Map(messageItems.map((item) => [String(item.id), item.folder]));
     try {
+      let moves = [];
+      let failedCount = 0;
       if (ids.length === 1) {
-        await mailAPI?.moveMessage?.(ids[0], withActiveMailboxPayload?.({ target_folder: targetFolder }));
+        const moveResult = await mailAPI?.moveMessage?.(ids[0], withActiveMailboxPayload?.({ target_folder: targetFolder }));
+        moves = [{
+          id: String(moveResult?.message_id || ids[0]),
+          restoreFolder: String(moveResult?.source_folder || actualFolders.get(ids[0]) || folder),
+        }];
       } else {
-        await mailAPI?.bulkMessageAction?.({
+        const result = await mailAPI?.bulkMessageAction?.({
           mailbox_id: activeMailboxId || undefined,
           message_ids: ids,
           action: 'move',
           target_folder: targetFolder,
         });
+        failedCount = Number(result?.failed || 0);
+        moves = (Array.isArray(result?.results) ? result.results : [])
+          .map((entry) => {
+            const originalId = String(entry?.message_id || '');
+            const movedId = String(entry?.result?.message_id || originalId);
+            const sourceFolder = String(
+              entry?.result?.source_folder || actualFolders.get(originalId) || folder
+            );
+            return movedId ? { id: movedId, restoreFolder: sourceFolder } : null;
+          })
+          .filter(Boolean);
       }
       if (selectedMessage?.id && ids.includes(String(selectedMessage.id))) {
         clearSelection?.({ mode: viewMode });
       }
       await afterListMutation();
-      onRecoverableMove?.({
-        messageIds: ids,
-        restoreFolder: folder,
-        folderLabel: getFolderLabel?.(targetFolder) || targetFolder,
-        count: ids.length,
-      });
+      if (failedCount > 0) {
+        onError?.(`Не удалось переместить письма: ${failedCount}.`);
+      }
+      if (moves.length > 0) {
+        onRecoverableMove?.({
+          moves,
+          folderLabel: getFolderLabel?.(targetFolder) || targetFolder,
+          count: moves.length,
+        });
+      }
     } catch (requestError) {
       if (!(await handleMailCredentialsRequired?.(requestError, 'Не удалось переместить письма.'))) {
         const detail = getMailErrorDetail
@@ -178,6 +237,7 @@ export default function useMailBulkActions({
     getMailErrorDetail,
     handleMailCredentialsRequired,
     mailAPI,
+    messageItems,
     onError,
     onRecoverableMove,
     getFolderLabel,

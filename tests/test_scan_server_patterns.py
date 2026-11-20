@@ -94,6 +94,64 @@ def test_dsp_particle_board_specs_are_excluded():
         assert not any(item["pattern"] == "dsp_with_exclusion" for item in matches), sample
 
 
+def test_dsp_construction_drawing_context_is_excluded():
+    """«ДСП» on floor plans / material schedules = particle board, not a stamp."""
+    samples = [
+        "Ведомость материалов: ДСП, железобетон, перекрытие, 3 этаж",
+        "План этажа в осях 1-4, ДСП, отделка помещений",
+        "Маркировка окон и дверей ДСП, здание поликлиники, этаж 2",
+        "Спецификация ДСП, монолитная стяжка, фундамент",
+        "Коридор, помещение 305, ДСП, гипсокартон ГВЛ",
+    ]
+
+    for sample in samples:
+        matches = patterns.scan_text(sample)
+        assert not any(item["pattern"] == "dsp_with_exclusion" for item in matches), sample
+
+
+def test_dsp_registration_number_references_are_excluded():
+    """«ДСП» в регистрационном номере — гриф цитируемого письма, не этого документа."""
+    samples = [
+        "направлено письмо исх. № ГФ/КАС-480ДСП от 30.06.2026",
+        "исх. №448/3477дсп от 15.03.2024 в адрес заказчика",
+        "ответ на письмо от 24.09.2025 № СФ/50676-дсп",
+        "письмом от 13.11.2024 № 153/5/17256дсп",
+        "протокола №260дсп от 24.05.2024 шифр объекта",
+        "запрос Исх. ФКП/СФ/628 дсп от 25.05.26г, предоставлена",
+    ]
+
+    for sample in samples:
+        matches = patterns.scan_text(sample)
+        assert not any(item["pattern"] == "dsp_with_exclusion" for item in matches), sample
+
+
+def test_dsp_luminaire_model_codes_are_excluded():
+    """«ДСП-40»/«ДСП52-32-101» — серия светильников (пылевлагозащита), не гриф."""
+    samples = [
+        "светильник освещения котельной ДСП-40",
+        "светодиодные светильники ДСП-40 40Вт, установленные",
+        "светильник светодиодный ДСП44-38-042 Надтап Е 840",
+        "светодиодный, 48Вт, ~220В, IP65 ДСП52-48-201 Optima 840",
+        "накладной с СД 32 Вт, IP65 ДСП 44-38-003 Flagman F",
+    ]
+
+    for sample in samples:
+        matches = patterns.scan_text(sample)
+        assert not any(item["pattern"] == "dsp_with_exclusion" for item in matches), sample
+
+
+def test_dsp_after_small_number_still_matches():
+    """«Экз. № 2 ДСП» — реальный гриф, двузначный номер экземпляра ≠ регномер."""
+    matches = patterns.scan_text("Гриф: ДСП\nЭкз. № 2")
+    assert any(item["pattern"] == "dsp_with_exclusion" for item in matches)
+
+    matches = patterns.scan_text("Экземпляр № 2 ДСП")
+    assert any(item["pattern"] == "dsp_with_exclusion" for item in matches)
+
+    matches = patterns.scan_text("Гриф — ДСП\nЭкз. № 2")
+    assert any(item["pattern"] == "dsp_with_exclusion" for item in matches)
+
+
 def test_standalone_dsp_secrecy_mark_still_matches():
     matches = patterns.scan_text("Гриф: ДСП\nЭкз. № 2\nТолько для служебного пользования")
 

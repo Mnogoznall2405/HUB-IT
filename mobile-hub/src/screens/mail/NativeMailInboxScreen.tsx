@@ -1,5 +1,6 @@
 import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import * as Crypto from 'expo-crypto';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -18,12 +19,14 @@ import { initialWindowMetrics, SafeAreaInsetsContext, SafeAreaView } from 'react
 import {
   bulkMailMessageAction,
   deleteMailMessage,
+  getMailConversation,
   listMailTemplates,
   markMailMessageRead,
   markMailMessageUnread,
   moveMailMessage,
   restoreMailMessage,
   sendMailItRequest,
+  setMailMessageFlag,
   type MailConversationPreview,
   type MailItTemplate,
   type MailMessagePreview,
@@ -211,6 +214,7 @@ export function NativeMailInboxScreen() {
   const [itError, setItError] = useState('');
   const itTemplatesRequestRef = useRef(false);
   const itSendInFlightRef = useRef(false);
+  const itSendKeyRef = useRef({ fingerprint: '', key: '' });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [swipeBusyId, setSwipeBusyId] = useState('');
   const swipeBusyRef = useRef(false);
@@ -274,6 +278,7 @@ export function NativeMailInboxScreen() {
     setSelected,
     view,
     folder,
+    folderScope: advancedFilters.folderScope,
     mailboxId,
     offlineMode,
     listScope,
@@ -375,9 +380,39 @@ export function NativeMailInboxScreen() {
   const openConversation = useCallback((item: MailConversationPreview) => {
     router.push({
       pathname: '/(shell)/mail/conversation/[conversationId]',
-      params: { conversationId: item.conversation_id, mailboxId, folder },
+      params: { conversationId: item.conversation_id, mailboxId, folder, folderScope: advancedFilters.folderScope },
     } as never);
-  }, [folder, mailboxId]);
+  }, [advancedFilters.folderScope, folder, mailboxId]);
+
+  const toggleConversationFlag = useCallback(async (item: MailConversationPreview) => {
+    if (offlineMode || selectionMode || swipeBusyRef.current || swipeBusyId) return;
+    const nextFlagged = !item.is_flagged;
+    swipeBusyRef.current = true;
+    setError('');
+    try {
+      setItems((current) => current.map((entry) => entry.kind === 'conversation' && entry.value.conversation_id === item.conversation_id
+        ? { ...entry, value: { ...entry.value, is_flagged: nextFlagged } }
+        : entry));
+      const detail = await getMailConversation(item.conversation_id, { mailboxId, folder, folderScope: advancedFilters.folderScope });
+      if (listScope !== listScopeRef.current) return;
+      const targets = nextFlagged
+        ? detail.items.slice(-1)
+        : detail.items.filter((message) => message.is_flagged);
+      if (!targets.length) {
+        if (nextFlagged) throw new Error('В цепочке нет писем для пометки.');
+        return;
+      }
+      await Promise.all(targets.map((message) => setMailMessageFlag(message.id, nextFlagged, String(message.mailbox_id || mailboxId))));
+    } catch (cause) {
+      if (listScope !== listScopeRef.current) return;
+      setItems((current) => current.map((entry) => entry.kind === 'conversation' && entry.value.conversation_id === item.conversation_id
+        ? { ...entry, value: { ...entry.value, is_flagged: item.is_flagged } }
+        : entry));
+      setError(formatApiError(cause, 'Не удалось изменить пометку.'));
+    } finally {
+      swipeBusyRef.current = false;
+    }
+  }, [advancedFilters.folderScope, folder, listScope, listScopeRef, mailboxId, offlineMode, selectionMode, setError, setItems, swipeBusyId]);
 
   const openAccountMenu = useCallback(() => {
     setAccountMenuOpen(true);
@@ -432,7 +467,8 @@ export function NativeMailInboxScreen() {
     const scopedMailboxId = String(item.mailbox_id || mailboxId);
     swipeBusyRef.current = true;
     setSwipeBusyId(item.id);
-    setUndo(null);
+    // Пометка звездой не отменяет висевший undo предыдущего действия.
+    if (action !== 'toggle-flag') setUndo(null);
     setError('');
     try {
       if (action === 'toggle-read') {
@@ -477,6 +513,12 @@ export function NativeMailInboxScreen() {
           targetFolder: String(item.folder || folder),
           label: 'Письмо перемещено в архив.',
         });
+      } else if (action === 'toggle-flag') {
+        const nextFlagged = !item.is_flagged;
+        setItems((current) => current.map((entry) => entry.kind === 'message' && entry.value.id === item.id
+          ? { ...entry, value: { ...entry.value, is_flagged: nextFlagged } }
+          : entry));
+        await setMailMessageFlag(item.id, nextFlagged, scopedMailboxId);
       } else {
         const result = await deleteMailMessage(item.id, scopedMailboxId, false);
         if (listScope !== listScopeRef.current) return;
@@ -503,7 +545,12 @@ export function NativeMailInboxScreen() {
         setError('Результат действия не подтверждён. Проверьте список писем и подключение перед повтором.');
         return;
       }
-      setError(formatApiError(cause, action === 'archive' ? 'Не удалось переместить письмо в архив.' : action === 'delete' ? 'Не удалось удалить письмо.' : 'Не удалось изменить статус письма.'));
+      if (action === 'toggle-flag') {
+        setItems((current) => current.map((entry) => entry.kind === 'message' && entry.value.id === item.id
+          ? { ...entry, value: { ...entry.value, is_flagged: item.is_flagged } }
+          : entry));
+      }
+      setError(formatApiError(cause, action === 'archive' ? 'Не удалось переместить письмо в архив.' : action === 'delete' ? 'Не удалось удалить письмо.' : action === 'toggle-flag' ? 'Не удалось изменить пометку.' : 'Не удалось изменить статус письма.'));
     } finally {
       swipeBusyRef.current = false;
       setSwipeBusyId('');
@@ -524,12 +571,19 @@ export function NativeMailInboxScreen() {
         } else if (pending.action === 'unread') {
           await bulkMailMessageAction({ mailboxId: pending.mailboxId, action: 'read', messageIds: pending.messageIds });
         } else {
-          await bulkMailMessageAction({
-            mailboxId: pending.mailboxId,
-            action: 'move',
-            messageIds: pending.undoIds.length ? pending.undoIds : pending.messageIds,
-            targetFolder: pending.sourceFolder,
-          });
+          // Restore each message to the folder it came from: in «все папки»
+          // selections can span folders, so a single targetFolder is wrong.
+          const entries = pending.undoEntries?.length
+            ? pending.undoEntries
+            : (pending.undoIds.length ? pending.undoIds : pending.messageIds).map((id) => ({ id, sourceFolder: pending.sourceFolder }));
+          const groups = new Map<string, string[]>();
+          for (const entry of entries) {
+            const targetFolder = String(entry.sourceFolder || pending.sourceFolder);
+            groups.set(targetFolder, [...(groups.get(targetFolder) || []), entry.id]);
+          }
+          for (const [targetFolder, messageIds] of groups) {
+            await bulkMailMessageAction({ mailboxId: pending.mailboxId, action: 'move', messageIds, targetFolder });
+          }
         }
         if (pending.scope !== listScopeRef.current) return;
         Object.entries(pending.unreadDeltas || (pending.unreadDelta ? { [pending.sourceFolder]: pending.unreadDelta } : {}))
@@ -675,8 +729,23 @@ export function NativeMailInboxScreen() {
     setItError('');
     const scope = listScope;
     try {
-      await sendMailItRequest({ template_id: itTemplateId, fields: itFieldValues });
+      // Stable key per unchanged form content: a retry after a timeout replays
+      // the same submission, while editing any field starts a new send.
+      const fingerprint = `${itTemplateId}:${JSON.stringify(itFieldValues)}`;
+      if (itSendKeyRef.current.fingerprint !== fingerprint) {
+        itSendKeyRef.current = {
+          fingerprint,
+          key: `it-request-${Crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
+        };
+      }
+      await sendMailItRequest(
+        { template_id: itTemplateId, fields: itFieldValues },
+        { idempotencyKey: itSendKeyRef.current.key },
+      );
       if (scope !== listScopeRef.current) return;
+      // A successful send retires the key: a genuinely new identical request
+      // must not collapse into a replay of the first one.
+      itSendKeyRef.current = { fingerprint: '', key: '' };
       setItRequestOpen(false);
       setItTemplateId('');
       setItFieldValues({});
@@ -880,7 +949,7 @@ export function NativeMailInboxScreen() {
               onToggleSelected={toggleSelected}
               onAction={runSwipeAction}
             />
-          ) : <NativeMailInboxConversationRow selected={selected.has(item.value.conversation_id)} selectionMode={selectionMode} onToggleSelected={toggleSelected} item={item.value} tokens={tokens} showPreview={mailViewPreferences.show_preview_snippets} compact={mailViewPreferences.density === 'compact'} onOpen={openConversation} />}
+          ) : <NativeMailInboxConversationRow selected={selected.has(item.value.conversation_id)} selectionMode={selectionMode} onToggleSelected={toggleSelected} item={item.value} tokens={tokens} showPreview={mailViewPreferences.show_preview_snippets} compact={mailViewPreferences.density === 'compact'} onOpen={openConversation} onFlag={(value) => { void toggleConversationFlag(value); }} flagDisabled={offlineMode || Boolean(swipeBusyId)} />}
         />
       )}
       {!selectionMode && !undo ? (

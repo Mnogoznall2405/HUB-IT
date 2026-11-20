@@ -90,12 +90,14 @@ export default function useMailSelectedPreviewActions({
     );
   }, [mailAPI, runSelectedMessageMutation, selectedMessage?.restore_hint_folder, withActiveMailboxPayload]);
 
-  const handleDeleteSelectedMessage = useCallback(async (permanent) => {
+  const handleDeleteSelectedMessage = useCallback(async (permanentHint) => {
+    const itemFolder = selectedMessage?.folder;
+    const permanent = itemFolder ? itemFolder === 'trash' : Boolean(permanentHint);
     if (permanent && !confirmPermanentDelete({ count: 1 })) return;
     let restoreMessageId = '';
     const ok = await runSelectedMessageMutation(
       async (messageId) => {
-        const result = await mailAPI.deleteMessage(messageId, withActiveMailboxPayload({ permanent: Boolean(permanent) }));
+        const result = await mailAPI.deleteMessage(messageId, withActiveMailboxPayload({ permanent }));
         restoreMessageId = extractTrashRestoreMessageId(result);
       },
       'Не удалось удалить письмо.'
@@ -103,7 +105,7 @@ export default function useMailSelectedPreviewActions({
     if (ok && !permanent) {
       onRecoverableDelete?.({
         messageIds: restoreMessageId ? [restoreMessageId] : [],
-        restoreFolder: folder,
+        restoreFolder: itemFolder || folder,
         count: 1,
       });
     }
@@ -113,6 +115,7 @@ export default function useMailSelectedPreviewActions({
     mailAPI,
     onRecoverableDelete,
     runSelectedMessageMutation,
+    selectedMessage?.folder,
     withActiveMailboxPayload,
   ]);
 
@@ -120,14 +123,19 @@ export default function useMailSelectedPreviewActions({
     const resolvedTarget = String(targetOverride || moveTarget || '');
     if (!resolvedTarget) return;
     const messageId = String(selectedMessage?.id || '').trim();
+    let moveResult = null;
     const ok = await runSelectedMessageMutation(
-      (id) => mailAPI.moveMessage(id, withActiveMailboxPayload({ target_folder: resolvedTarget })),
+      async (id) => {
+        moveResult = await mailAPI.moveMessage(id, withActiveMailboxPayload({ target_folder: resolvedTarget }));
+      },
       'Не удалось переместить письмо.'
     );
     if (ok && messageId) {
       onRecoverableMove?.({
-        messageIds: [messageId],
-        restoreFolder: folder,
+        moves: [{
+          id: String(moveResult?.message_id || messageId),
+          restoreFolder: String(moveResult?.source_folder || selectedMessage?.folder || folder),
+        }],
         folderLabel: getFolderLabel?.(resolvedTarget) || resolvedTarget,
         count: 1,
       });
@@ -139,6 +147,7 @@ export default function useMailSelectedPreviewActions({
     moveTarget,
     onRecoverableMove,
     runSelectedMessageMutation,
+    selectedMessage?.folder,
     selectedMessage?.id,
     withActiveMailboxPayload,
   ]);

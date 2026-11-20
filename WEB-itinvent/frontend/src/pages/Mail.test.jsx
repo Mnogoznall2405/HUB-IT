@@ -1339,6 +1339,30 @@ describe('Mail read-state behavior', () => {
     expect(screen.queryByText(/Temporary mail backend issue/i)).toBeNull();
   });
 
+  it('updates the incomplete-folder notice when refresh leaves the same messages', async () => {
+    const page = buildMessagePage(['msg-42'], { total: 1, has_more: false });
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({ messages: page }));
+    mockGetMessages.mockResolvedValue(page);
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByTestId('mail-item-msg-42');
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    mockGetMessages.mockResolvedValue({ ...page, skipped_folders: 1 });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
+    });
+
+    await screen.findByText('Недоступные папки: 1');
+    expect(screen.getByTestId('mail-item-msg-42')).toBeTruthy();
+  });
+
   it('does not keep inbox messages visible when switching to an uncached empty custom folder', async () => {
     const customFolderDeferred = createDeferred();
     const customFolderTree = {
@@ -4072,6 +4096,7 @@ describe('Mail read-state behavior', () => {
     fireEvent.change(screen.getByTestId('mail-it-field-comment'), {
       target: { value: 'Need VPN access' },
     });
+    mockSendItRequest.mockRejectedValueOnce({ response: { status: 504 } });
     fireEvent.click(screen.getByTestId('mail-it-submit'));
 
     await waitFor(() => {
@@ -4081,8 +4106,14 @@ describe('Mail read-state behavior', () => {
           inventory_number: '101795',
           comment: 'Need VPN access',
         },
+        idempotencyKey: expect.any(String),
       });
     });
+    await waitFor(() => expect(screen.getByTestId('mail-it-submit')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('mail-it-submit'));
+    await waitFor(() => expect(mockSendItRequest).toHaveBeenCalledTimes(2));
+    expect(mockSendItRequest.mock.calls[1][0].idempotencyKey)
+      .toBe(mockSendItRequest.mock.calls[0][0].idempotencyKey);
   });
 
   it('does not send an IT request without a selected template', async () => {

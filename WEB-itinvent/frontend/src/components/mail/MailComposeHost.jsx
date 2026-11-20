@@ -433,7 +433,10 @@ export default function MailComposeHost({
       draft_attachments: Array.isArray(state.composeDraftAttachments) ? state.composeDraftAttachments : [],
       forward_attachments: Array.isArray(state.composeForwardAttachments) ? state.composeForwardAttachments : [],
       forward_attachments_pruned: state.composeForwardAttachmentsPruned === true,
-      local_attachment_names: (Array.isArray(state.composeFiles) ? state.composeFiles : []).map((file) => String(file?.name || '')).filter(Boolean),
+      local_attachment_names: [
+        ...state.composeFiles.map((file) => file.name),
+        ...getReferencedInlineFiles(state).map(({ file }) => file.name),
+      ].filter(Boolean),
     };
     const result = writeStoredComposeState({
       composeDraftKey,
@@ -582,11 +585,13 @@ export default function MailComposeHost({
   // тоже предупреждаем, иначе повторная отправка пойдёт с новым ключом
   // идемпотентности и может создать дубль.
   useEffect(() => {
-    if (!composeState.composeSending && composeState.composeFiles.length === 0) return undefined;
+    if (!composeState.composeSending && composeState.composeFiles.length === 0 && composeState.composeInlineFiles.length === 0) {
+      return undefined;
+    }
     const warn = (event) => { event.preventDefault(); event.returnValue = ''; };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [composeState.composeFiles.length, composeState.composeSending]);
+  }, [composeState.composeFiles.length, composeState.composeInlineFiles.length, composeState.composeSending]);
 
   const finishCloseCompose = useCallback(() => {
     const afterClose = pendingAfterCloseRef.current;
@@ -681,20 +686,29 @@ export default function MailComposeHost({
   ]);
 
   const handleSaveAndCloseCompose = useCallback(async () => {
+    if (closeFlowLockRef.current) return;
+    closeFlowLockRef.current = true;
     setCloseDraftPromptOpen(false);
     try {
       await flushComposeDraft({ includeFiles: true });
       await notifyDraftSaved();
     } catch {
+      const state = composeStateRef.current;
+      if (state.composeFiles.length > 0 || getReferencedInlineFiles(state).length > 0) {
+        patchComposeState({ composeError: 'Вложения не сохранены. Окно оставлено открытым. Повторите сохранение, когда связь восстановится.' });
+        return;
+      }
       onComposeWarning?.({
         id: 'draft_local_only',
         severity: 'info',
         title: 'Черновик',
         message: 'Черновик сохранён локально. В папке «Черновики» его может не быть, пока нет связи с почтой.',
       });
+    } finally {
+      closeFlowLockRef.current = false;
     }
     finishCloseCompose();
-  }, [finishCloseCompose, flushComposeDraft, notifyDraftSaved, onComposeWarning]);
+  }, [finishCloseCompose, flushComposeDraft, notifyDraftSaved, onComposeWarning, patchComposeState]);
 
   const handleDiscardAndCloseCompose = useCallback(async () => {
     setCloseDraftPromptOpen(false);

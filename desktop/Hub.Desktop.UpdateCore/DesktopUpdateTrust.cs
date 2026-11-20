@@ -7,8 +7,14 @@ public static class DesktopUpdateTrust
     /// <summary>Legacy key: the production TLS certificate also signs update manifests.</summary>
     public const string TlsKeyId = "hubit-zsgp-ru-tls-2026-04";
 
+    /// <summary>Renewed production TLS certificate (2026-11 reissue) that also signs update manifests.</summary>
+    public const string TlsKeyId2027 = "hubit-zsgp-ru-tls-2027-05";
+
     /// <summary>Dedicated long-lived update signing key, independent from TLS.</summary>
     public const string SigningKeyId = "hub-update-signing-2026-10";
+
+    private const string PublicCertificate2027Base64 =
+        "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";
 
     private const string SigningPublicCertificateBase64 =
         "MIIETDCCArSgAwIBAgIQHXloOhrof61JyuKIwUo3OzANBgkqhkiG9w0BAQsFADA+MQ8wDQYDVQQKDAZIVUItSVQxKzApBgNVBAMMIkhVQiBEZXNrdG9wIFVwZGF0ZSBTaWduaW5nIDIwMjYtMTAwHhcNMjYxMDEyMDQ1MTM0WhcNMzYxMDEyMDUwMTM0WjA+MQ8wDQYDVQQKDAZIVUItSVQxKzApBgNVBAMMIkhVQiBEZXNrdG9wIFVwZGF0ZSBTaWduaW5nIDIwMjYtMTAwggGiMA0GCSqGSIb3DQEBAQUAA4IBjwAwggGKAoIBgQDFCFBdMSZHcRnXjyfTQ86+7F2Wh/TmlC8fr8HwMIjMEbXiZxaGjInMoGgmW+OszeYCOEeUCltXJxEXH3ZCY2l9/hK8Ef573CUCZGg6I7gQGLa5n09bE/mMVpSyecNFDJE6w57zrjIiuAqWjzQG32uZj6zmXQ/I0jIReLLpVSiMqbU9qYP/xpWZd+BCrnGgOJeUFNnh77PICHNP6Mkeb16x1PG423CWtbzVvSBrFKFOCZzL1FSYa6NdQ6CwbU4WGqa7QpWOk3IzcrJlmU2T4+tr8mDVaJ+JRsdCRbpE5O4FJuJFebJYZ06UQqXfilz7D1ZxYKWhLhnDV08rP5pqucOjtf29syh4oCDL8Tt2r0WP2hBPen9afEx0V7xZfNILgeA60yUIRroA+csoGbfiBeSXQwwOL+xEqWgCX2GKJBytePTL5XEpNE3WeC97Rpdc7StNIwAbggzlxxmgQ+H002kcniEEZzKUimgG+HAKjpkcJQtGE6b3+bUNiY20Catkpc0CAwEAAaNGMEQwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMDMB0GA1UdDgQWBBQFvO5cm6Atwc8WwbV7FEYURlaVVzANBgkqhkiG9w0BAQsFAAOCAYEAs/SP0/lAXjV0p7izwkbKnOeg2R/zzy/S1AbKiTJtjBzmnvTDwNBBMcC+zPDQCqJ3BoYxuwihIEumnCBLx/7Sdk0eX1lyXW8n2OOAKm8a28pVYJjCWOBd272qwepZNhXG8OkPPZBZFKzrHQHRvj06+fbETbB4t2XgrfK3TVVcGY2xTh6aCK/IMGnXBNSqVaGWikuXIuPOP75XhqpP1cQB0tsqiJvjxSss1A+QM5n2X1b2pDpUbWGPxoaNCwQs99kGSb2X0K/Vm8+UTZJxOowv5el5Uk8f3U70QBOIwa6AdrJCqZ7OetkSBde0FYJAUxgGTi35RWts/8n8mNp9ZGUgM5rvNGtgtzHDd5yd7Py7IX5WwR7WvsUSCLozVkm21ldTEUfMsj6TFguECpkpTI+UB2AW056KphMYq5PA8ynF+SfXQ5yzbJNm8ajtPtOo+sAG/dheWol2r9z6eZJW8MrsioHHLKfF4bL/3QvTYtLwKLa/rSdA16oZ/ItvK6Brkdii";
@@ -19,6 +25,7 @@ public static class DesktopUpdateTrust
     public static IReadOnlyCollection<string> TrustedKeyIds { get; } = new[]
     {
         TlsKeyId,
+        TlsKeyId2027,
         SigningKeyId,
     };
 
@@ -35,6 +42,11 @@ public static class DesktopUpdateTrust
         if (string.Equals(keyId, TlsKeyId, StringComparison.Ordinal))
         {
             return LoadCertificate();
+        }
+
+        if (string.Equals(keyId, TlsKeyId2027, StringComparison.Ordinal))
+        {
+            return new X509Certificate2(Convert.FromBase64String(PublicCertificate2027Base64));
         }
 
         if (string.Equals(keyId, SigningKeyId, StringComparison.Ordinal))

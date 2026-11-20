@@ -3,6 +3,7 @@ import conftest
 
 import importlib
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -415,7 +416,23 @@ def test_delete_direct_conversation_removes_history_for_all_members(chat_env):
         assert session.get(chat_models_module.ChatMessage, message["id"]) is None
     assert service.list_conversations(current_user_id=1, limit=20)["items"] == []
     assert service.list_conversations(current_user_id=2, limit=20)["items"] == []
-    remaining_notifications = hub_service.poll_notifications(user_id=2, limit=50)["items"]
+    # Post-commit cleanup (notifications, files) runs in a background thread —
+    # poll until it lands instead of assuming synchronous completion.
+    deadline = time.time() + 5
+    remaining_notifications = []
+    while True:
+        remaining_notifications = hub_service.poll_notifications(user_id=2, limit=50)["items"]
+        if all(
+            not (
+                item.get("entity_type") == "chat"
+                and item.get("entity_id") == conversation["id"]
+            )
+            for item in remaining_notifications
+        ):
+            break
+        if time.time() >= deadline:
+            break
+        time.sleep(0.05)
     assert all(
         not (
             item.get("entity_type") == "chat"

@@ -497,6 +497,7 @@ class DocumentPreviewJobService:
             PreviewArtifact,
             build_office_preview_artifact,
             classify_office_source,
+            office_preview_max_bytes,
         )
 
         temp_path: Path | None = None
@@ -508,6 +509,8 @@ class DocumentPreviewJobService:
 
         try:
             filename, content_type, content = self._load_source(job)
+            if len(content) > office_preview_max_bytes():
+                raise ValueError("Attachment is too large for document preview")
             is_pdf = content_type.lower() == "application/pdf" or filename.lower().endswith(".pdf")
             if is_pdf:
                 artifact = PreviewArtifact(
@@ -576,22 +579,32 @@ class DocumentPreviewJobService:
                 select(AppDocumentPreviewJob)
                 .where(
                     AppDocumentPreviewJob.expires_at <= now,
-                    AppDocumentPreviewJob.status != PREVIEW_STATUS_PROCESSING,
+                    or_(
+                        AppDocumentPreviewJob.status != PREVIEW_STATUS_PROCESSING,
+                        AppDocumentPreviewJob.lease_expires_at.is_(None),
+                        AppDocumentPreviewJob.lease_expires_at <= now,
+                    ),
                 )
                 .order_by(AppDocumentPreviewJob.expires_at.asc())
                 .limit(max(1, int(limit or 50)))
                 .with_for_update(skip_locked=True)
             ).all()
             for row in rows:
+                # The publish path is deterministic (scope/job-id.pdf): a worker that
+                # crashed after writing the artifact but before _mark_ready leaves an
+                # untracked file — remove it together with the recorded path.
+                artifact_paths.append(self._artifact_path(f"{row.scope}/{row.id}.pdf"))
                 if _normalize_text(row.artifact_rel_path):
                     artifact_paths.append(self._artifact_path(row.artifact_rel_path))
                 session.delete(row)
-        for path in artifact_paths:
+        deleted = 0
+        for path in dict.fromkeys(artifact_paths):
             try:
                 path.unlink(missing_ok=True)
+                deleted += 1
             except OSError:
                 logger.warning("failed to delete expired preview artifact path=%s", path)
-        return len(artifact_paths)
+        return deleted
 
     def process_next_job(self, *, worker_id: str | None = None) -> bool:
         job = self.claim_next_job(worker_id=worker_id)

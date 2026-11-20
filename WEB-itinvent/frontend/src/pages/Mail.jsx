@@ -1331,6 +1331,7 @@ function MailWorkspace() {
     mailAPI,
     activeMailboxId,
     folder,
+    messageItems: listData?.items,
     selectedItems,
     setSelectedItems,
     setMoveTarget,
@@ -1941,6 +1942,20 @@ function MailWorkspace() {
                 ) : null}
               </Stack>
             ) : null}
+            <Box role="status">
+              {listData?.search_limited ? (
+                <Typography variant="caption" color="warning.main" display="block">
+                  {hasActiveFilters
+                    ? 'Выдача неполная: уточните запрос или период поиска.'
+                    : 'Показана часть писем: достигнут лимит обработки.'}
+                </Typography>
+              ) : null}
+              {listData?.skipped_folders > 0 ? (
+                <Typography variant="caption" color="warning.main" display="block">
+                  Недоступные папки: {listData.skipped_folders}
+                </Typography>
+              ) : null}
+            </Box>
           </Box>
         </Stack>
       </Box>
@@ -2356,6 +2371,7 @@ function MailWorkspace() {
           onEmailChange={setMailCredentialsEmail}
           onPasswordChange={setMailCredentialsPassword}
           onSave={handleSaveMailCredentials}
+          onClose={closeMailCredentialsDialog}
         />
 
         {signatureOpen ? (
@@ -2982,6 +2998,7 @@ function MailWorkspace() {
           onEmailChange={setMailCredentialsEmail}
           onPasswordChange={setMailCredentialsPassword}
           onSave={handleSaveMailCredentials}
+          onClose={closeMailCredentialsDialog}
         />
 
         {attachmentPreview?.open ? (

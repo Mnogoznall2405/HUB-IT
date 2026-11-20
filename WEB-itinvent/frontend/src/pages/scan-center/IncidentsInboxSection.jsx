@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Accordion,
   AccordionDetails,
@@ -39,6 +39,21 @@ function sourceLabel(value) {
   if (source.includes('text') || source === 'pdf') return 'Текстовый слой / документ';
   if (source.includes('image')) return 'Изображение';
   return value || 'Источник не указан';
+}
+
+function llmVerdictLabel(verdict) {
+  const value = String(verdict || '').toLowerCase();
+  if (value === 'true_positive') return 'Подтверждено';
+  if (value === 'false_positive') return 'Ложное срабатывание';
+  if (value === 'uncertain') return 'Не определено';
+  return verdict || '—';
+}
+
+function llmVerdictColor(verdict) {
+  const value = String(verdict || '').toLowerCase();
+  if (value === 'false_positive') return 'success';
+  if (value === 'true_positive') return 'error';
+  return 'default';
 }
 
 async function copyTextToClipboard(text) {
@@ -85,6 +100,7 @@ export default function IncidentsInboxSection({
     severityColor,
   } = formatters;
   const [pathCopied, setPathCopied] = useState(false);
+  const statusBeforeNewRef = useRef('all');
   const selectedSource = selectedIncident ? getSourceKind(selectedIncident) : '';
   const selectedPage = Number(selectedIncident?.page_number || selectedIncident?.page || selectedIncident?.metadata?.page_number || 0);
   const selectedPatternLabel = selectedIncident
@@ -117,16 +133,32 @@ export default function IncidentsInboxSection({
             Инциденты · загружено {Number(inbox.loaded || 0)} из {Number(inbox.total || 0)}
           </Typography>
         </Box>
-        <Button
-          type="button"
-          size="small"
-          variant="outlined"
-          startIcon={<DoneOutlinedIcon />}
-          onClick={onAckFiltered}
-          disabled={!canScanAck || busyAckInbox || newCount.loadingInitial || newCount.total <= 0}
+        <Tooltip
+          title={
+            !canScanAck
+              ? 'Недостаточно прав для отметки инцидентов'
+              : busyAckInbox
+                ? 'Массовая отметка уже выполняется'
+                : newCount.loadingInitial
+                  ? 'Идёт подсчёт новых инцидентов'
+                  : newCount.total <= 0
+                    ? 'По текущим фильтрам нет новых инцидентов'
+                    : ''
+          }
         >
-          {newCount.total > 0 ? `Просмотрено по фильтру (${newCount.total})` : 'Просмотрено по фильтру'}
-        </Button>
+          <span>
+            <Button
+              type="button"
+              size="small"
+              variant="outlined"
+              startIcon={<DoneOutlinedIcon />}
+              onClick={onAckFiltered}
+              disabled={!canScanAck || busyAckInbox || newCount.loadingInitial || newCount.total <= 0}
+            >
+              {newCount.total > 0 ? `Просмотрено по фильтру (${newCount.total})` : 'Просмотрено по фильтру'}
+            </Button>
+          </span>
+        </Tooltip>
       </Box>
 
       {(inbox.loadingInitial || inbox.loadingMore) ? (
@@ -140,7 +172,7 @@ export default function IncidentsInboxSection({
       <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
         <Grid container spacing={1} alignItems="center">
           <Grid item xs={12} md={4}>
-            <TextField size="small" fullWidth label="Поиск" value={filters.q} onChange={(event) => onFilterChange('q', event.target.value)} placeholder="Файл, компьютер, фрагмент или пользователь" />
+            <TextField size="small" fullWidth label="Поиск" value={filters.q} onChange={(event) => onFilterChange('q', event.target.value)} placeholder="Файл, компьютер, фрагмент или пользователь" helperText={filters.q && filters.q.trim().length > 0 && filters.q.trim().length < 2 ? 'Поиск сработает от 2 символов' : ''} />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
             <FormControl size="small" fullWidth>
@@ -154,7 +186,14 @@ export default function IncidentsInboxSection({
             </FormControl>
           </Grid>
           <Grid item xs={4} sm={2} md={1}>
-            <Button type="button" fullWidth size="small" variant={filters.status === 'new' ? 'contained' : 'outlined'} onClick={() => onFilterChange('status', filters.status === 'new' ? 'all' : 'new')}>Новые</Button>
+            <Button type="button" fullWidth size="small" variant={filters.status === 'new' ? 'contained' : 'outlined'} onClick={() => {
+              if (filters.status === 'new') {
+                onFilterChange('status', statusBeforeNewRef.current || 'all');
+              } else {
+                statusBeforeNewRef.current = filters.status || 'all';
+                onFilterChange('status', 'new');
+              }
+            }}>Новые</Button>
           </Grid>
           <Grid item xs={4} sm={2} md={2}>
             <Button type="button" fullWidth size="small" color="error" variant={filters.severity === 'high' ? 'contained' : 'outlined'} onClick={() => onFilterChange('severity', filters.severity === 'high' ? 'all' : 'high')}>Высокий</Button>
@@ -172,7 +211,7 @@ export default function IncidentsInboxSection({
         <AccordionDetails>
           <Grid container spacing={1}>
             <Grid item xs={6} md={2}>
-              <FormControl size="small" fullWidth><InputLabel>Статус</InputLabel><Select value={filters.status} label="Статус" onChange={(event) => onFilterChange('status', event.target.value)}><MenuItem value="all">Все</MenuItem><MenuItem value="new">Новые</MenuItem><MenuItem value="ack">Просмотрены</MenuItem><MenuItem value="resolved_deleted">Удалён</MenuItem><MenuItem value="resolved_clean">Очищен</MenuItem><MenuItem value="resolved_moved">Перемещён</MenuItem></Select></FormControl>
+              <FormControl size="small" fullWidth><InputLabel>Статус</InputLabel><Select value={filters.status} label="Статус" onChange={(event) => onFilterChange('status', event.target.value)}><MenuItem value="all">Все</MenuItem><MenuItem value="new">Новые</MenuItem><MenuItem value="ack">Просмотрены</MenuItem><MenuItem value="resolved_deleted">Удалён</MenuItem><MenuItem value="resolved_clean">Очищен</MenuItem><MenuItem value="resolved_moved">Перемещён</MenuItem><MenuItem value="llm_auto">Отсеяно LLM</MenuItem></Select></FormControl>
             </Grid>
             <Grid item xs={6} md={2}>
               <FormControl size="small" fullWidth><InputLabel>Риск</InputLabel><Select value={filters.severity} label="Риск" onChange={(event) => onFilterChange('severity', event.target.value)}><MenuItem value="all">Все</MenuItem><MenuItem value="high">Высокий</MenuItem><MenuItem value="medium">Средний</MenuItem><MenuItem value="low">Низкий</MenuItem></Select></FormControl>
@@ -197,7 +236,7 @@ export default function IncidentsInboxSection({
             <Box sx={{ px: 1.5, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>Находки</Typography>
             </Box>
-            {rows.length === 0 && !inbox.loadingInitial ? (
+            {rows.length === 0 && !inbox.loadingInitial && !inbox.error ? (
               <Box sx={{ p: 3 }}><Typography variant="subtitle1" sx={{ fontWeight: 750 }}>Инциденты не найдены</Typography><Typography variant="body2" color="text.secondary">Измените фильтры или запустите новый скан.</Typography></Box>
             ) : (
               <Box sx={{ height: 'calc(100% - 45px)' }}>
@@ -249,6 +288,9 @@ export default function IncidentsInboxSection({
                   <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" justifyContent="flex-end">
                     <Chip size="small" color={severityColor(selectedIncident.severity)} label={formatSeverityLabel(selectedIncident.severity)} />
                     <Chip size="small" color={fileStatusColor(selectedIncident.status)} label={fileStatusLabel(selectedIncident.status)} />
+                    {String(selectedIncident.ack_by || '') === 'llm-auto-fp' ? (
+                      <Chip size="small" variant="outlined" color="info" label="Отсеяно LLM" />
+                    ) : null}
                   </Stack>
                 </Stack>
 
@@ -264,6 +306,23 @@ export default function IncidentsInboxSection({
                   <Typography variant="subtitle2" sx={{ fontWeight: 850, mb: 0.8 }}>Доказательство срабатывания</Typography>
                   {renderFragments(selectedIncident)}
                 </Box>
+
+                {selectedIncident.llm_verdict ? (
+                  <Box>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 850, mb: 0.8 }}>Оценка LLM</Typography>
+                    <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap" sx={{ alignItems: 'center' }}>
+                      <Chip size="small" color={llmVerdictColor(selectedIncident.llm_verdict)} label={llmVerdictLabel(selectedIncident.llm_verdict)} />
+                      {Number.isFinite(Number(selectedIncident.llm_confidence)) ? (
+                        <Typography variant="caption" color="text.secondary">
+                          {Math.round(Number(selectedIncident.llm_confidence) * 100)}% уверенности
+                        </Typography>
+                      ) : null}
+                    </Stack>
+                    {selectedIncident.llm_reason ? (
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.6 }}>{selectedIncident.llm_reason}</Typography>
+                    ) : null}
+                  </Box>
+                ) : null}
 
                 {String(selectedIncident.status || '').toLowerCase() === 'new' ? (
                   <Button type="button" variant="contained" startIcon={<DoneOutlinedIcon />} disabled={!canScanAck || busyIncident === selectedIncident.id} onClick={() => onAckIncident(selectedIncident)} sx={{ alignSelf: 'flex-start' }}>

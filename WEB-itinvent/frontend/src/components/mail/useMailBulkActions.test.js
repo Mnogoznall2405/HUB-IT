@@ -34,6 +34,21 @@ const createProps = (overrides = {}) => ({
 });
 
 describe('useMailBulkActions permanent delete confirm', () => {
+  it('does not delete a selection mixing trash and other folders', async () => {
+    const props = createProps({
+      folder: 'inbox',
+      messageItems: [{ id: 'msg-1', folder: 'trash' }, { id: 'msg-2', folder: 'archive' }],
+    });
+    const { result } = renderHook(() => useMailBulkActions(props));
+
+    await act(async () => {
+      await result.current.runBulkAction({ action: 'delete', permanent: false });
+    });
+
+    expect(props.mailAPI.bulkMessageAction).not.toHaveBeenCalled();
+    expect(props.onError).toHaveBeenCalledWith(expect.stringContaining('Удалённых'));
+  });
+
   it('asks once for a bulk permanent delete then calls the API', async () => {
     const props = createProps();
     const { result } = renderHook(() => useMailBulkActions(props));
@@ -89,6 +104,46 @@ describe('useMailBulkActions permanent delete confirm', () => {
       count: 2,
     });
     expect(props.onMessage).not.toHaveBeenCalled();
+  });
+
+  it('builds move undo entries only for messages the server actually moved', async () => {
+    const props = createProps({
+      folder: 'inbox',
+      messageItems: [
+        { id: 'msg-1', folder: 'inbox' },
+        { id: 'msg-2', folder: 'archive' },
+        { id: 'msg-3', folder: 'inbox' },
+      ],
+      selectedItems: ['msg-1', 'msg-2', 'msg-3'],
+      mailAPI: {
+        bulkMessageAction: vi.fn(async () => ({
+          ok: false,
+          succeeded: 2,
+          failed: 1,
+          results: [
+            { message_id: 'msg-1', result: { message_id: 'sent-1', folder: 'sent', source_folder: 'inbox' } },
+            { message_id: 'msg-2', result: { message_id: 'sent-2', folder: 'sent', source_folder: 'archive' } },
+          ],
+          errors: [{ message_id: 'msg-3', detail: 'move failed' }],
+        })),
+      },
+      onRecoverableMove: vi.fn(),
+    });
+    const { result } = renderHook(() => useMailBulkActions(props));
+
+    await act(async () => {
+      await result.current.runBulkAction({ action: 'move', targetFolder: 'sent' });
+    });
+
+    expect(props.onError).toHaveBeenCalledWith(expect.stringContaining('1'));
+    expect(props.onRecoverableMove).toHaveBeenCalledWith({
+      moves: [
+        { id: 'sent-1', restoreFolder: 'inbox' },
+        { id: 'sent-2', restoreFolder: 'archive' },
+      ],
+      folderLabel: 'sent',
+      count: 2,
+    });
   });
 
   it('skips the bulk API when permanent confirm is cancelled', async () => {

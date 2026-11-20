@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "dgSpecHash": "1GnxnsaYilE=",
+  "success": true,
+  "projectFilePath": "C:\\Project\\HUB-IT-main\\desktop\\Hub.Desktop.Tests\\Hub.Desktop.Tests.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.codecoverage\\18.8.1\\microsoft.codecoverage.18.8.1.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.net.test.sdk\\18.8.1\\microsoft.net.test.sdk.18.8.1.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.testplatform.objectmodel\\18.8.1\\microsoft.testplatform.objectmodel.18.8.1.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.testplatform.testhost\\18.8.1\\microsoft.testplatform.testhost.18.8.1.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.web.webview2\\1.0.4078.44\\microsoft.web.webview2.1.0.4078.44.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.windows.sdk.buildtools\\10.0.26100.4654\\microsoft.windows.sdk.buildtools.10.0.26100.4654.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.windows.sdk.buildtools.msix\\1.7.20250829.1\\microsoft.windows.sdk.buildtools.msix.1.7.20250829.1.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.windowsappsdk.base\\1.8.251216001\\microsoft.windowsappsdk.base.1.8.251216001.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.windowsappsdk.foundation\\1.8.260709000\\microsoft.windowsappsdk.foundation.1.8.260709000.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.windowsappsdk.interactiveexperiences\\1.8.260708001\\microsoft.windowsappsdk.interactiveexperiences.1.8.260708001.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\system.collections.immutable\\8.0.0\\system.collections.immutable.8.0.0.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\system.reflection.metadata\\8.0.0\\system.reflection.metadata.8.0.0.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\xunit\\2.9.3\\xunit.2.9.3.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\xunit.abstractions\\2.0.3\\xunit.abstractions.2.0.3.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\xunit.analyzers\\1.18.0\\xunit.analyzers.1.18.0.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\xunit.assert\\2.9.3\\xunit.assert.2.9.3.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\xunit.core\\2.9.3\\xunit.core.2.9.3.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\xunit.extensibility.core\\2.9.3\\xunit.extensibility.core.2.9.3.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\xunit.extensibility.execution\\2.9.3\\xunit.extensibility.execution.2.9.3.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\xunit.runner.visualstudio\\3.1.5\\xunit.runner.visualstudio.3.1.5.nupkg.sha512",
+    "C:\\Users\\Администратор\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.17763.56\\microsoft.windows.sdk.net.ref.10.0.17763.56.nupkg.sha512"
+  ],
+  "logs": []
+}

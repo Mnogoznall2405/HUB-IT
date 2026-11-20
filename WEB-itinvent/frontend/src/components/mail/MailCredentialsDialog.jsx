@@ -51,9 +51,10 @@ export default function MailCredentialsDialog({
   onEmailChange,
   onPasswordChange,
   onSave,
+  onClose,
 } = {}) {
   return (
-    <Dialog open={open} maxWidth="xs" fullWidth disableEscapeKeyDown PaperProps={{ sx: getMailDialogPaperSx(ui) }}>
+    <Dialog open={open} maxWidth="xs" fullWidth onClose={onClose} PaperProps={{ sx: getMailDialogPaperSx(ui) }}>
       <DialogTitle sx={getMailDialogTitleSx(ui)}>
         {credentialsTitle(reason)}
       </DialogTitle>
@@ -95,6 +96,11 @@ export default function MailCredentialsDialog({
         </Stack>
       </DialogContent>
       <DialogActions sx={getMailDialogActionsSx(ui)}>
+        {onClose ? (
+          <Button onClick={onClose} disabled={saving}>
+            Отмена
+          </Button>
+        ) : null}
         <Button variant="contained" onClick={onSave} disabled={saving}>
           {saving ? 'Проверяем...' : 'Сохранить и открыть почту'}
         </Button>

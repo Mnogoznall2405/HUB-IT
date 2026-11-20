@@ -7,7 +7,7 @@ import type {
   MailPerson,
 } from '../api/mailApi';
 
-export type NativeMailSwipeAction = 'toggle-read' | 'archive' | 'delete' | 'delete-forever' | null;
+export type NativeMailSwipeAction = 'toggle-read' | 'toggle-flag' | 'archive' | 'delete' | 'delete-forever' | null;
 
 /** User-configurable swipe target stored locally; 'delete-forever' stays Trash-only. */
 export type NativeMailSwipeSetting = 'toggle-read' | 'archive' | 'delete' | 'none';
@@ -196,7 +196,7 @@ export function parseNativeMailSearchQuery(raw: unknown): ParsedNativeMailSearch
     return '';
   };
   const rest = String(raw || '').replace(
-    /(от|кому|тема|from|to|subject)\s*:\s*"([^"]*)"|(от|кому|тема|from|to|subject)\s*:\s*'([^']*)'|(от|кому|тема|from|to|subject)\s*:\s*(\S+)/gi,
+    /(?:^|\s)(от|кому|тема|from|to|subject)\s*:\s*"([^"]*)"|(?:^|\s)(от|кому|тема|from|to|subject)\s*:\s*'([^']*)'|(?:^|\s)(от|кому|тема|from|to|subject)\s*:\s*(\S+)/gi,
     (_match, quotedKey, quotedValue, singleKey, singleValue, bareKey, bareValue) => {
       const field = operatorField(String(quotedKey || singleKey || bareKey || '').toLowerCase());
       const value = String(quotedValue ?? singleValue ?? bareValue ?? '').trim();
@@ -205,9 +205,10 @@ export function parseNativeMailSearchQuery(raw: unknown): ParsedNativeMailSearch
     },
   );
   let query = rest.replace(/\s+/g, ' ');
-  if (/с\s+файлами|с\s+вложениями|has\s*:\s*attachments?/i.test(query)) {
+  const attachmentsMarker = /(?:^|\s)с\s+файлами|(?:^|\s)с\s+вложениями|(?:^|\s)has\s*:\s*attachments?/i;
+  if (attachmentsMarker.test(query)) {
     parsed.hasAttachments = true;
-    query = query.replace(/с\s+файлами|с\s+вложениями|has\s*:\s*attachments?/gi, ' ');
+    query = query.replace(new RegExp(attachmentsMarker.source, 'gi'), ' ');
   }
   parsed.q = query.replace(/\s+/g, ' ').trim();
   return parsed;

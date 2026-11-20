@@ -75,7 +75,21 @@ describe('native mail HTML isolation', () => {
     expect(embedded.document).toContain('data:image/jpeg;base64,aGVsbG8=');
     expect(embedded.usedInlineAttachmentRefs).toEqual(new Set(['inline-legacy']));
     expect(remote.document).not.toContain('tracker.example');
-    expect(remote.document).toContain('Изображение недоступно');
+    expect(remote.document).toContain('Изображение во вложениях');
+  });
+
+  it('labels a CID image that is a known but not embeddable attachment', () => {
+    const result = prepareNativeMailHtml('<img src="cid:logo-cid">', [
+      {
+        id: 'attachment-big',
+        name: 'Схема сети.png',
+        content_id: '<logo-cid>',
+        is_inline: true,
+      },
+    ]);
+
+    expect(result.document).toContain('Изображение во вложениях: Схема сети.png');
+    expect(result.usedInlineAttachmentRefs.size).toBe(0);
   });
 
   it('allows remote images only after explicit opt-in while navigation stays local', () => {

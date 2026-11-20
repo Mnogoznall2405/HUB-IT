@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import MyFilesEditorWorkspace from '../components/myFiles/MyFilesEditorWorkspace';
 import { buildEditorRoute } from '../lib/myFilesEditorLink';
@@ -11,6 +11,8 @@ export default function MyFilesEditor() {
   const { fileId = '' } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const compareVersion = searchParams.get('compare') || '';
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const { downloadFile } = useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning });
   const [title, setTitle] = useState('');
@@ -27,7 +29,7 @@ export default function MyFilesEditor() {
     if (!window.closed) navigate('/my-files', { replace: true });
   }, [navigate]);
 
-  return <MyFilesEditorWorkspace fileId={fileId} requestKey={location.key} onTitle={setTitle} onCloseLast={handleClose}
+  return <MyFilesEditorWorkspace fileId={fileId} compareVersion={compareVersion} requestKey={location.key} onTitle={setTitle} onCloseLast={handleClose}
     onActiveDocumentChange={id => { if (id !== fileId) navigate(buildEditorRoute(id), { replace: true }); }}
     onDownload={id => downloadFile({ id })} />;
 }

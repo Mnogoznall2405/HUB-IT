@@ -261,6 +261,7 @@ export default function MyFiles() {
   const [auditDialogFile, setAuditDialogFile] = useState(null);
   const [officeStatus, setOfficeStatus] = useState({ enabled: false, editable_extensions: [] });
   const [officeEditorFile, setOfficeEditorFile] = useState(null);
+  const [officeEditorCompare, setOfficeEditorCompare] = useState('');
   const [collaboratorsFile, setCollaboratorsFile] = useState(null);
   const [collaboratorsFolder, setCollaboratorsFolder] = useState(null);
   const [versionsFile, setVersionsFile] = useState(null);
@@ -268,6 +269,7 @@ export default function MyFiles() {
   const [confirmBusy, setConfirmBusy] = useState(false);
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const { downloadingFileId, downloadFile: handleDownload } = useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning });
+  const [exportingFileId, setExportingFileId] = useState('');
   const {
     documentPreview,
     openDocumentPreview,
@@ -380,14 +382,15 @@ export default function MyFiles() {
   // free to work in. Without either (an older Desktop, a blocked pop-up) it opens in a window over the list.
   const editorTabOpenedRef = useRef(false);
   const lastEditorOpenRef = useRef({ fileId: '', at: 0 });
-  const openOfficeEditor = useCallback(async (file) => {
+  const openOfficeEditor = useCallback(async (file, { compare = '' } = {}) => {
     const fileId = String(file?.id || '');
     if (!fileId) return;
     // Двойной клик по строке даёт два вызова подряд — без защиты открываются две вкладки редактора.
     const now = Date.now();
     if (lastEditorOpenRef.current.fileId === fileId && now - lastEditorOpenRef.current.at < 1500) return;
     lastEditorOpenRef.current = { fileId, at: now };
-    const route = buildEditorRoute(fileId);
+    const suffix = compare ? `?compare=${encodeURIComponent(compare)}` : '';
+    const route = `${buildEditorRoute(fileId)}${suffix}`;
     if (isNativeShellRuntime()) {
       const result = await requestDesktopEditorWindow(route);
       if (result.status === 'opened' || result.status === 'activated') {
@@ -395,12 +398,13 @@ export default function MyFiles() {
         return;
       }
     } else {
-      const tab = window.open(buildEditorUrl(fileId), '_blank');
+      const tab = window.open(`${buildEditorUrl(fileId)}${suffix}`, '_blank');
       if (tab) {
         editorTabOpenedRef.current = true;
         return;
       }
     }
+    setOfficeEditorCompare(compare);
     setOfficeEditorFile(file);
   }, []);
 
@@ -430,6 +434,7 @@ export default function MyFiles() {
 
   const closeOfficeEditor = useCallback(() => {
     setOfficeEditorFile(null);
+    setOfficeEditorCompare('');
     void loadData({ silent: true });
   }, [loadData]);
 
@@ -655,6 +660,32 @@ export default function MyFiles() {
       notifyApiError(error, 'Не удалось обновить избранное.', { dedupeMode: 'none' });
     }
   }, [isFavoritesView, loadData, notifyApiError]);
+
+  const handleExportPdf = useCallback(async (item) => {
+    const fileId = String(item?.id || '');
+    if (!fileId) return;
+    setExportingFileId(fileId);
+    try {
+      const response = await myFilesOfficeAPI.exportOffice(fileId, 'pdf');
+      const blob = response?.data instanceof Blob
+        ? response.data
+        : new Blob([response?.data], { type: 'application/pdf' });
+      const stem = String(getMyFileName(item) || 'document').replace(/\.[^.]+$/, '');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${stem}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      notifySuccess('PDF готов — смотрите панель загрузок браузера.', { source: 'my-files-export-pdf', dedupeMode: 'none', durationMs: 4000 });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось получить PDF.', { dedupeMode: 'none' });
+    } finally {
+      setExportingFileId('');
+    }
+  }, [notifyApiError, notifySuccess]);
 
   const handleFolderArchive = useCallback(async (folder) => {
     try {
@@ -2385,7 +2416,8 @@ export default function MyFiles() {
             )}
             busy={Boolean(
               fileActionsMenu.item
-              && downloadingFileId === String(fileActionsMenu.item.id || ''),
+              && (downloadingFileId === String(fileActionsMenu.item.id || '')
+                || exportingFileId === String(fileActionsMenu.item.id || '')),
             )}
             onClose={closeFileActionsMenu}
             onPreview={fileActionsMenu.item && !fileActionsMenu.item.shared_with_me && isMyFilePreviewSupported(fileActionsMenu.item)
@@ -2403,6 +2435,9 @@ export default function MyFiles() {
               : undefined}
             onDownload={fileActionsMenu.item
               ? () => { void handleDownload(fileActionsMenu.item); }
+              : undefined}
+            onExportPdf={isOfficeEditable(fileActionsMenu.item)
+              ? () => { void handleExportPdf(fileActionsMenu.item); }
               : undefined}
             onRename={fileActionsMenu.item && fileMenuAccess.canWrite && !fileActionsMenu.item.shared_with_me
               ? () => openRenameDialog('file', fileActionsMenu.item.id, fileActionsMenu.item.original_file_name)
@@ -2469,6 +2504,7 @@ export default function MyFiles() {
           <MyFilesOfficeEditorDialog
             open={Boolean(officeEditorFile)}
             file={officeEditorFile}
+            compareVersion={officeEditorCompare}
             onClose={closeOfficeEditor}
             onDownload={handleDownload}
           />
@@ -2496,6 +2532,10 @@ export default function MyFiles() {
             open={Boolean(versionsFile)}
             file={versionsFile}
             canRestore={!versionsFile?.shared_with_me || versionsFile.my_role === 'edit'}
+            onCompare={(row) => {
+              setVersionsFile(null);
+              void openOfficeEditor(versionsFile, { compare: row.id });
+            }}
             onClose={(restored) => {
               setVersionsFile(null);
               if (restored) {

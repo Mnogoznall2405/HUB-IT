@@ -270,6 +270,10 @@ async def test_deleting_task_deletes_owned_chat_and_notifies_members(task_discus
     removed_events = [event for event in events if event["event_type"] == "chat.conversation.removed"]
     assert {event["user_id"] for event in removed_events} == {1, 2, 3}
     assert all(event["payload"]["reason"] == "task_deleted" for event in removed_events)
+    # Post-commit filesystem cleanup runs in a background thread — poll for it.
+    deadline = time.time() + 5
+    while (attachment_dir.exists() or upload_session_dir.exists()) and time.time() < deadline:
+        time.sleep(0.05)
     assert not attachment_dir.exists()
     assert not upload_session_dir.exists()
 

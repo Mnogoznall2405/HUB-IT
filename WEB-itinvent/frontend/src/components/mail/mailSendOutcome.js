@@ -27,7 +27,6 @@ const MAYBE_SENT_CODES = new Set([
   'MAIL_SEND_TIMEOUT',
   'MAIL_SEND_UNKNOWN',
   'MAIL_SEND_IN_FLIGHT',
-  'MAIL_SEND_FAILED',
 ]);
 
 const NETWORK_ERROR_CODES = new Set([
@@ -50,7 +49,8 @@ export const classifyMailSendError = (requestError) => {
   const headerCode = String(getMailErrorCode(requestError) || '').trim().toUpperCase();
   if (MAYBE_SENT_CODES.has(headerCode)) return MAIL_SEND_OUTCOME.MAYBE_SENT;
   if (
-    headerCode === 'MAIL_AUTH_INVALID'
+    headerCode === 'MAIL_SEND_FAILED'
+    || headerCode === 'MAIL_AUTH_INVALID'
     || headerCode === 'MAIL_PASSWORD_REQUIRED'
     || headerCode === 'MAIL_RELOGIN_REQUIRED'
     || headerCode === 'MAIL_IDEMPOTENCY_CONFLICT'
@@ -66,7 +66,10 @@ export const classifyMailSendError = (requestError) => {
   if (statusCode && statusCode >= 400 && statusCode < 500) return MAIL_SEND_OUTCOME.NOT_SENT;
 
   const axiosCode = String(requestError?.code || '').trim().toUpperCase();
-  if (axiosCode === 'ERR_CANCELED') return MAIL_SEND_OUTCOME.NOT_SENT;
+  // Client-side abort does not prove the request never reached the server:
+  // cancellation may only stop the client from waiting while Exchange has
+  // already accepted the message. Classify as unknown, never as "not sent".
+  if (axiosCode === 'ERR_CANCELED') return MAIL_SEND_OUTCOME.MAYBE_SENT;
   if (NETWORK_ERROR_CODES.has(axiosCode)) return MAIL_SEND_OUTCOME.MAYBE_SENT;
   if (isTimeoutLikeMessage(requestError?.message) || isTimeoutLikeMessage(requestError?.response?.data?.detail)) {
     return MAIL_SEND_OUTCOME.MAYBE_SENT;

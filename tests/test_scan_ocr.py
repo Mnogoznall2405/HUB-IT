@@ -57,7 +57,12 @@ def test_cap_zoom_for_max_pixels_scales_down_large_page():
 
 
 def test_max_page_dimension_constant_is_sane():
-    assert MAX_PAGE_DIMENSION_POINTS > 1000.0
+    # Large enough for photo-scan PDFs (camera pixels used as page-box points)
+    assert MAX_PAGE_DIMENSION_POINTS >= 15_000.0
+    # ...but small enough that the 0.01 zoom floor in _cap_zoom_for_max_pixels
+    # still keeps the rendered pixmap within the pixel budget.
+    floor_zoom = 0.01
+    assert (MAX_PAGE_DIMENSION_POINTS * floor_zoom) ** 2 <= MAX_RENDERED_PAGE_PIXELS
 
 
 def test_iter_rendered_pdf_pages_rejects_oversized_page_box(monkeypatch):

@@ -66,6 +66,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <TextBlock Grid.Row="0"
                            Margin="20,18,16,10"
@@ -110,6 +111,44 @@
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
+
+                <!-- Нижняя часть рейки: новая библиотека, корзина, квота -->
+                <StackPanel Grid.Row="2" Margin="10,0,10,10">
+                    <Button Style="{StaticResource HubGhostButtonStyle}"
+                            HorizontalContentAlignment="Left"
+                            Command="{Binding NewLibraryCommand}"
+                            Content="＋ Общая папка"
+                            Visibility="{Binding CanManageLibraries, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Создать общую папку" />
+                    <Button Margin="0,4,0,0"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            HorizontalContentAlignment="Left"
+                            Command="{Binding ShowPersonalTrashCommand}"
+                            Content="🗑 Корзина"
+                            AutomationProperties.Name="Открыть корзину диска" />
+                    <Border Margin="0,10,0,0"
+                            Padding="10,8"
+                            CornerRadius="8"
+                            Background="{DynamicResource HubSelectionBrush}"
+                            Visibility="{Binding IsQuotaVisible, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <TextBlock FontSize="11"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="Занято на диске" />
+                            <ProgressBar Margin="0,4,0,0"
+                                         Height="4"
+                                         Minimum="0"
+                                         Maximum="100"
+                                         Value="{Binding QuotaPercent, Mode=OneWay}"
+                                         Foreground="{DynamicResource HubAccentBrush}"
+                                         Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                         AutomationProperties.Name="Индикатор занятого места" />
+                            <TextBlock Margin="0,4,0,0"
+                                       FontSize="11"
+                                       Text="{Binding QuotaText}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -176,7 +215,7 @@
                         <Button Style="{StaticResource HubGhostButtonStyle}"
                                 Tag="{Binding SelectRetentionCommand}"
                                 Click="RetentionMenuButton_Click"
-                                Visibility="{Binding CanWrite, Converter={StaticResource BoolToVisibility}}"
+                                Visibility="{Binding AreFileActionsVisible, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Срок хранения загружаемых файлов">
                             <Button.ContextMenu>
                                 <ContextMenu ItemContainerStyle="{StaticResource RetentionMenuItemStyle}" />
@@ -197,34 +236,65 @@
                                 MinHeight="36"
                                 Command="{Binding UploadCommand}"
                                 Content="Загрузить"
-                                Visibility="{Binding CanWrite, Converter={StaticResource BoolToVisibility}}"
+                                Visibility="{Binding AreFileActionsVisible, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Загрузить файлы" />
                         <Button Margin="8,0,0,0"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding BeginNewFolderCommand}"
                                 Content="Новая папка"
-                                Visibility="{Binding CanWrite, Converter={StaticResource BoolToVisibility}}"
+                                Visibility="{Binding AreFileActionsVisible, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Создать папку" />
                         <Button Margin="8,0,0,0"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding BeginRenameCommand}"
                                 CommandParameter="{Binding SelectedItem}"
                                 Content="Переименовать"
-                                Visibility="{Binding CanWrite, Converter={StaticResource BoolToVisibility}}"
+                                Visibility="{Binding AreFileActionsVisible, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Переименовать выбранное" />
                         <Button Margin="8,0,0,0"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding BeginShareCommand}"
                                 CommandParameter="{Binding SelectedItem}"
                                 Content="Поделиться"
+                                Visibility="{Binding AreFileActionsVisible, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Поделиться выбранным" />
                         <Button Margin="8,0,0,0"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding DeleteEntryCommand}"
                                 CommandParameter="{Binding SelectedItem}"
                                 Content="Удалить"
-                                Visibility="{Binding CanWrite, Converter={StaticResource BoolToVisibility}}"
+                                Visibility="{Binding AreFileActionsVisible, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Удалить выбранное" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding LibraryMembersCommand}"
+                                Content="Участники"
+                                Visibility="{Binding CanManageMembersHere, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Участники общей папки" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding EditLibraryCommand}"
+                                Content="Настроить"
+                                Visibility="{Binding CanEditCurrentLibrary, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Настроить общую папку" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubSecondaryButtonStyle}"
+                                Command="{Binding ShowTrashCommand}"
+                                Content="Корзина"
+                                Visibility="{Binding CanShowLocationTrash, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Корзина текущего места" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubSecondaryButtonStyle}"
+                                Command="{Binding ShowFilesCommand}"
+                                Content="К файлам"
+                                Visibility="{Binding IsTrashView, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Вернуться к файлам" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding EmptyTrashCommand}"
+                                Content="{Binding EmptyTrashText}"
+                                Visibility="{Binding IsTrashView, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Очистить корзину" />
                         <Button Margin="8,0,0,0"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding RefreshCommand}"
@@ -360,9 +430,31 @@
                             <Grid Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=UserControl}}">
                                 <Grid.ContextMenu>
                                     <ContextMenu>
+                                        <MenuItem Header="Предпросмотр"
+                                                  Command="{Binding PlacementTarget.Tag.PreviewEntryCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  Visibility="{Binding PlacementTarget.DataContext.CanPreview, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}" />
+                                        <MenuItem Header="Создать копию"
+                                                  Command="{Binding PlacementTarget.Tag.CopyEntryCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  Visibility="{Binding PlacementTarget.Tag.IsFileView, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}" />
+                                        <MenuItem Header="Скачать архивом"
+                                                  Command="{Binding PlacementTarget.Tag.DownloadArchiveCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  Visibility="{Binding PlacementTarget.DataContext.IsFolder, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}" />
                                         <MenuItem Header="Поделиться"
                                                   Command="{Binding PlacementTarget.Tag.BeginShareCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  Visibility="{Binding PlacementTarget.Tag.IsFileView, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}" />
+                                        <Separator Visibility="{Binding PlacementTarget.Tag.IsTrashView, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}" />
+                                        <MenuItem Header="Восстановить"
+                                                  Command="{Binding PlacementTarget.Tag.RestoreEntryCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  Visibility="{Binding PlacementTarget.Tag.IsTrashView, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}" />
+                                        <MenuItem Header="{Binding PlacementTarget.DataContext.PurgeText, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  Command="{Binding PlacementTarget.Tag.PurgeEntryCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  Visibility="{Binding PlacementTarget.Tag.IsTrashView, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}" />
                                     </ContextMenu>
                                 </Grid.ContextMenu>
                                 <Grid.ColumnDefinitions>
@@ -405,14 +497,35 @@
                                                    Visibility="{Binding StatusText, Converter={StaticResource NonEmptyStringToVisibility}}" />
                                     </StackPanel>
                                 </StackPanel>
-                                <Button Grid.Column="2"
-                                        Margin="12,0,0,0"
-                                        VerticalAlignment="Center"
-                                        Style="{StaticResource RowActionButtonStyle}"
-                                        Command="{Binding DataContext.OpenEntryCommand, ElementName=Root}"
-                                        CommandParameter="{Binding}"
-                                        Visibility="{Binding CanOpen, Converter={StaticResource BoolToVisibility}}"
-                                        AutomationProperties.Name="Открыть или скачать" />
+                                <StackPanel Grid.Column="2"
+                                            Margin="12,0,0,0"
+                                            Orientation="Horizontal"
+                                            VerticalAlignment="Center">
+                                    <Button Style="{StaticResource HubSecondaryButtonStyle}"
+                                            MinHeight="28"
+                                            Padding="10,2"
+                                            FontSize="12"
+                                            Command="{Binding DataContext.RestoreEntryCommand, ElementName=Root}"
+                                            CommandParameter="{Binding}"
+                                            Content="Восстановить"
+                                            Visibility="{Binding DataContext.IsTrashView, ElementName=Root, Converter={StaticResource BoolToVisibility}}"
+                                            AutomationProperties.Name="Восстановить из корзины" />
+                                    <Button Margin="8,0,0,0"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            MinHeight="28"
+                                            Padding="10,2"
+                                            FontSize="12"
+                                            Command="{Binding DataContext.PurgeEntryCommand, ElementName=Root}"
+                                            CommandParameter="{Binding}"
+                                            Content="{Binding PurgeText}"
+                                            Visibility="{Binding DataContext.IsTrashView, ElementName=Root, Converter={StaticResource BoolToVisibility}}"
+                                            AutomationProperties.Name="Удалить навсегда" />
+                                    <Button Style="{StaticResource RowActionButtonStyle}"
+                                            Command="{Binding DataContext.OpenEntryCommand, ElementName=Root}"
+                                            CommandParameter="{Binding}"
+                                            Visibility="{Binding CanOpen, Converter={StaticResource BoolToVisibility}}"
+                                            AutomationProperties.Name="Открыть или скачать" />
+                                </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>

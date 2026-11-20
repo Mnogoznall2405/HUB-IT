@@ -110,6 +110,7 @@ const sanitizeListData = (value) => {
     loaded_pages: items.length > 0 ? 1 : 0,
     search_limited: Boolean(source.search_limited),
     searched_window: Number(source.searched_window || 0),
+    skipped_folders: Number(source.skipped_folders || 0),
   };
 };
 
@@ -136,11 +137,16 @@ const sanitizeMessageDetail = (value) => {
     folder: String(source.folder || ''),
     subject: String(source.subject || ''),
     sender: String(source.sender || ''),
+    sender_person: source.sender_person && typeof source.sender_person === 'object' ? source.sender_person : null,
     to: Array.isArray(source.to) ? source.to.map((item) => String(item || '')).filter(Boolean) : [],
+    to_people: Array.isArray(source.to_people) ? source.to_people : [],
     cc: Array.isArray(source.cc) ? source.cc.map((item) => String(item || '')).filter(Boolean) : [],
+    cc_people: Array.isArray(source.cc_people) ? source.cc_people : [],
     bcc: Array.isArray(source.bcc) ? source.bcc.map((item) => String(item || '')).filter(Boolean) : [],
+    bcc_people: Array.isArray(source.bcc_people) ? source.bcc_people : [],
     received_at: source.received_at || null,
     is_read: Boolean(source.is_read),
+    is_flagged: Boolean(source.is_flagged),
     body_html: String(source.body_html || '').slice(0, MAIL_RECENT_DETAIL_HTML_MAX_LENGTH),
     body_text: String(source.body_text || '').slice(0, MAIL_RECENT_DETAIL_TEXT_MAX_LENGTH),
     importance: String(source.importance || 'normal'),

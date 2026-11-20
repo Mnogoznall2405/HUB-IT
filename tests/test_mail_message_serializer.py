@@ -229,6 +229,124 @@ def test_mail_message_serializer_preview_falls_back_to_has_attachments_flag():
     assert preview["attachments_count"] == 1
 
 
+def _attachment(name: str, content_type: str, *, content_id: str | None = None, is_inline: bool = False):
+    return SimpleNamespace(
+        name=name,
+        content_type=content_type,
+        content_id=content_id,
+        is_inline=is_inline,
+        size=128,
+    )
+
+
+def test_mail_message_serializer_preview_ignores_inline_only_attachments():
+    item = SimpleNamespace(
+        id="exchange-4",
+        subject="Signature logo",
+        sender=_person("boss@example.com", "Boss"),
+        to_recipients=[],
+        cc_recipients=[],
+        datetime_created=datetime(2026, 5, 3, 12, 30, tzinfo=timezone.utc),
+        body="",
+        text_body="",
+        has_attachments=True,
+        attachments=[
+            _attachment("logo.png", "image/png", content_id="<logo>", is_inline=True),
+            _attachment("banner.jpg", "image/jpeg", content_id="<banner>"),
+        ],
+        importance="normal",
+        categories=[],
+        is_read=False,
+    )
+
+    preview = _serializer().serialize_message_preview(
+        item=item,
+        folder_key="inbox",
+        mailbox_id="mailbox-1",
+    )
+
+    assert preview["has_attachments"] is False
+    assert preview["attachments_count"] == 0
+
+
+def test_mail_message_serializer_preview_counts_real_attachments_only():
+    item = SimpleNamespace(
+        id="exchange-5",
+        subject="Real file plus signature",
+        sender=_person("boss@example.com", "Boss"),
+        to_recipients=[],
+        cc_recipients=[],
+        datetime_created=datetime(2026, 5, 3, 12, 30, tzinfo=timezone.utc),
+        body="",
+        text_body="",
+        has_attachments=True,
+        attachments=[
+            _attachment("logo.png", "image/png", content_id="<logo>", is_inline=True),
+            _attachment("report.pdf", "application/pdf"),
+            _attachment("note.eml", "message/rfc822"),
+        ],
+        importance="normal",
+        categories=[],
+        is_read=False,
+    )
+
+    preview = _serializer().serialize_message_preview(
+        item=item,
+        folder_key="inbox",
+        mailbox_id="mailbox-1",
+    )
+
+    assert preview["has_attachments"] is True
+    assert preview["attachments_count"] == 2
+
+
+def test_mail_message_serializer_detail_inline_embed_budget_stops_embedding():
+    def inline_image(name: str, content_id: str):
+        return SimpleNamespace(
+            attachment_id=SimpleNamespace(id=f"att-{name}"),
+            name=name,
+            content_type="image/png",
+            size=9,
+            content_id=content_id,
+            is_inline=True,
+            content=b"png-bytes",
+        )
+
+    item = SimpleNamespace(
+        id="exchange-6",
+        subject="Two inline images",
+        sender=_person("boss@example.com", "Boss"),
+        to_recipients=[_person("user@example.com", "User")],
+        cc_recipients=[],
+        bcc_recipients=[],
+        datetime_received=datetime(2026, 5, 3, 12, 30, tzinfo=timezone.utc),
+        body='<p><img src="cid:first" /><img src="cid:second" /></p>',
+        text_body="Two inline images",
+        importance="normal",
+        categories=[],
+        reminder_is_set=False,
+        reminder_due_by=None,
+        is_read=True,
+        attachments=[
+            inline_image("first.png", "<first>"),
+            inline_image("second.png", "<second>"),
+        ],
+    )
+
+    first_url = "data:image/png;base64," + "A" * 12
+    detail = _serializer().serialize_message_detail(
+        item=item,
+        folder_key="inbox",
+        mailbox_id="mailbox-1",
+        mailbox_email="user@example.com",
+        include_inline_data_urls=True,
+        inline_embed_budget=len(first_url),
+    )
+
+    assert detail["attachments"][0]["inline_data_url"] is not None
+    assert detail["attachments"][1]["inline_data_url"] is None
+
+
 def _compose_item(**overrides):
     item = dict(
         sender=_person("Boss@Example.COM", "Boss"),

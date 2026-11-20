@@ -10,6 +10,7 @@ import {
   getMailMessages,
   markMailMessageRead,
   renameMailFolder,
+  sendMailItRequest,
   sendMailMessage,
   setMailFolderFavorite,
   summarizeMailMessage,
@@ -189,4 +190,25 @@ it('sends multipart mail with an idempotency key and extended timeout', async ()
   );
   const formData = mockedClient.post.mock.calls.at(-1)?.[1] as FormData;
   expect(formData.get('forward_attachment_refs_json')).toBe('["token-1"]');
+});
+
+it('sends an idempotency key with IT request submissions', async () => {
+  await sendMailItRequest(
+    { template_id: 'tpl-1', fields: { topic: 'vpn' } },
+    { idempotencyKey: 'it-request-key-1' },
+  );
+  expect(mockedClient.post).toHaveBeenCalledWith(
+    '/mail/messages/send-it-request',
+    { template_id: 'tpl-1', fields: { topic: 'vpn' } },
+    expect.objectContaining({
+      headers: { 'Idempotency-Key': 'it-request-key-1' },
+      timeout: 120_000,
+    }),
+  );
+});
+
+it('sends IT requests without an idempotency header when no key is supplied', async () => {
+  await sendMailItRequest({ template_id: 'tpl-1', fields: {} });
+  const config = mockedClient.post.mock.calls.at(-1)?.[2];
+  expect(config?.headers).toBeUndefined();
 });

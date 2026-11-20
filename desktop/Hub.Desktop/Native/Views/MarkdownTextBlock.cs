@@ -3,7 +3,6 @@ using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
-using Brush = System.Windows.Media.Brush;
 using FontFamily = System.Windows.Media.FontFamily;
 
 namespace Hub.Desktop.Native.Views;
@@ -101,10 +100,11 @@ public sealed class MarkdownTextBlock : TextBlock
             {
                 FlushParagraph();
                 StartBlock();
-                inlines.Add(new Run("•  ")
-                {
-                    Foreground = TryFindResource("HubAccentBrush") as Brush ?? Foreground,
-                });
+                // SetResourceReference (не TryFindResource): маркер следует за
+                // подменой палитры при смене темы — статическая кисть залипла бы.
+                var bullet = new Run("•  ");
+                bullet.SetResourceReference(TextElement.ForegroundProperty, "HubAccentBrush");
+                inlines.Add(bullet);
                 AddFormatted(inlines, match.Groups[1].Value.Trim());
                 continue;
             }

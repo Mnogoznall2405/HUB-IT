@@ -16,6 +16,7 @@ from backend.chat.models import ChatPushSubscription
 from backend.realtime.hub import HUB_MAIL_MESSAGE_RECEIVED_EVENT, hub_realtime_publisher
 from backend.services.app_push_service import app_push_service
 from backend.services.authorization_service import PERM_MAIL_ACCESS, authorization_service
+from backend.services.mail_message_listing import received_at_epoch
 from backend.services.mail_service import MailServiceError, mail_service
 from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
 from backend.services.notification_preferences_service import notification_preferences_service
@@ -288,7 +289,11 @@ class MailNotificationService:
         if not current.last_message_id:
             return False
         last_message_changed = bool(current.last_message_id and current.last_message_id != previous.last_message_id)
-        received_newer = bool(current.last_received_at and current.last_received_at > previous.last_received_at)
+        received_newer = bool(
+            current.last_received_at
+            and received_at_epoch(current.last_received_at)
+            > received_at_epoch(previous.last_received_at)
+        )
         unread_increased = int(current.unread_count or 0) > int(previous.unread_count or 0)
         if not previous.last_message_id:
             # A legacy unread-only checkpoint has no message when the mailbox is

@@ -35,6 +35,14 @@ _AMBIGUOUS_EWS_ERRORS = frozenset({
     "ErrorInternalServerError",
     "ErrorInternalServerTransientError",
     "ErrorTimeoutExpired",
+    # A busy store, dropped connection or resource exhaustion can still leave
+    # a queued send behind: treating these as definitive failures would let a
+    # user retry push a duplicate copy to real recipients.
+    "ErrorServerBusy",
+    "ErrorMailboxStoreUnavailable",
+    "ErrorConnectionFailed",
+    "ErrorConnectionFailedTransientError",
+    "ErrorInsufficientResources",
 })
 
 
@@ -258,6 +266,7 @@ class MailSendPipeline:
             cc_mailboxes=cc_mailboxes,
             bcc_mailboxes=bcc_mailboxes,
             html_body_cls=HTMLBody,
+            internet_message_id=internet_message_id,
         )
         if threaded_reply is not None:
             return threaded_reply
@@ -289,6 +298,7 @@ class MailSendPipeline:
         cc_mailboxes: list[Any],
         bcc_mailboxes: list[Any],
         html_body_cls: Any,
+        internet_message_id: str = "",
     ) -> Any | None:
         if reply_item is None or not send_plan.reply_to_message_id:
             return None
@@ -315,6 +325,13 @@ class MailSendPipeline:
         except Exception:
             return None
 
+        # Best-effort correlation: the idempotency ledger stores this id so a
+        # later reconciliation can match the Sent item to the send attempt.
+        if internet_message_id:
+            try:
+                reply.message_id = internet_message_id
+            except Exception:
+                pass
         try:
             sent = reply.send(save_copy=True, copy_to_folder=getattr(account, "sent", None))
             return sent if sent is not None else reply

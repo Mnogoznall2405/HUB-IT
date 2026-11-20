@@ -447,15 +447,364 @@ public sealed class NativeAbsencesViewModelTests
         Assert.Empty(model.Items);
     }
 
+    // ---- Управление ручными записями (hub.absences.manage) ----
+
+    private static FakeHubApiClient ManageApi(HubAbsenceRangeList? list = null) => new()
+    {
+        CurrentUser = new HubUser
+        {
+            Id = 7,
+            Username = "hr",
+            Role = "operator",
+            Permissions = ["hub.absences.manage"],
+        },
+        AbsencesList = list ?? new HubAbsenceRangeList { Items = [], ZupItems = [] },
+    };
+
+    [Fact]
+    public async Task CreatePostsFullBodyAndReloadsList()
+    {
+        var api = ManageApi();
+        var model = new AbsencesViewModel(api) { SelectedDate = new DateTime(2026, 11, 16) };
+        await model.LoadAsync();
+
+        Assert.True(model.CanManageAbsences);
+        await ((NativeAsyncCommand)model.OpenCreateCommand).ExecuteAsync(null);
+        var editor = model.Editor!;
+        Assert.True(model.IsEditorOpen);
+        Assert.True(editor.IsCreateMode);
+        Assert.Equal("Новое отсутствие", editor.TitleText);
+        Assert.True(editor.IsKindOther); // дефолт сервера — other
+
+        editor.DisplayName = "  Иванов Иван  ";
+        editor.IsKindSick = true;
+        editor.StartsOn = new DateTime(2026, 11, 16);
+        editor.EndsOn = new DateTime(2026, 11, 20);
+        editor.Comment = "  справка  ";
+        editor.Department = " Бухгалтерия ";
+        var loads = api.AbsencesCallCount;
+        var submitted = await editor.SubmitAsync();
+
+        Assert.True(submitted);
+        var body = Assert.Single(api.AbsenceCreateCalls);
+        Assert.Equal("Иванов Иван", body.DisplayName);
+        Assert.Equal("sick", body.Kind);
+        Assert.Equal("2026-11-16", body.StartsOn);
+        Assert.Equal("2026-11-20", body.EndsOn);
+        Assert.Equal("справка", body.Comment);
+        Assert.Equal("Бухгалтерия", body.Department);
+        Assert.False(model.IsEditorOpen);
+        Assert.Null(model.Editor);
+        // Ответ применяем перезагрузкой текущей выборки (дата может сместить строку).
+        Assert.Equal(loads + 1, api.AbsencesCallCount);
+    }
+
+    [Fact]
+    public async Task CreateValidationBlocksMissingName()
+    {
+        var api = ManageApi();
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenCreateCommand).ExecuteAsync(null);
+        var editor = model.Editor!;
+        editor.StartsOn = new DateTime(2026, 11, 16);
+        editor.EndsOn = new DateTime(2026, 11, 20);
+
+        var submitted = await editor.SubmitAsync();
+
+        Assert.False(submitted);
+        Assert.True(editor.HasError);
+        Assert.Contains("ФИО", editor.ErrorText!, StringComparison.Ordinal);
+        Assert.Empty(api.AbsenceCreateCalls);
+        Assert.True(model.IsEditorOpen);
+    }
+
+    [Fact]
+    public async Task CreateValidationBlocksMissingDates()
+    {
+        var api = ManageApi();
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenCreateCommand).ExecuteAsync(null);
+        var editor = model.Editor!;
+        editor.DisplayName = "Иванов Иван";
+
+        var submitted = await editor.SubmitAsync();
+
+        Assert.False(submitted);
+        Assert.True(editor.HasError);
+        Assert.Contains("даты", editor.ErrorText!, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(api.AbsenceCreateCalls);
+    }
+
+    [Fact]
+    public async Task CreateValidationBlocksEndsBeforeStarts()
+    {
+        var api = ManageApi();
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenCreateCommand).ExecuteAsync(null);
+        var editor = model.Editor!;
+        editor.DisplayName = "Иванов Иван";
+        editor.StartsOn = new DateTime(2026, 11, 20);
+        editor.EndsOn = new DateTime(2026, 11, 16);
+
+        var submitted = await editor.SubmitAsync();
+
+        Assert.False(submitted);
+        Assert.True(editor.HasError);
+        Assert.Contains("раньше", editor.ErrorText!, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(api.AbsenceCreateCalls);
+    }
+
+    [Fact]
+    public async Task EditAvailableOnlyOnManualRows()
+    {
+        var api = ManageApi(new HubAbsenceRangeList
+        {
+            Items = [Absence("Андреева Анна", "manual")],
+            ZupItems = [Absence("Борисов Борис", "zup", id: "zup:B-1")],
+        });
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+
+        var manual = Assert.Single(model.Items, item => item.IsManual);
+        var zup = Assert.Single(model.Items, item => !item.IsManual);
+        Assert.True(manual.ShowActions);
+        Assert.Equal(42, manual.ManageId);
+        Assert.False(zup.ShowActions);
+        Assert.Null(zup.ManageId);
+    }
+
+    [Fact]
+    public async Task EditPrefillsFormAndPatchesOnlyChangedFields()
+    {
+        var api = ManageApi(new HubAbsenceRangeList
+        {
+            Items =
+            [
+                new HubAbsenceItem
+                {
+                    Id = "42",
+                    DisplayName = "Андреева Анна",
+                    Kind = "vacation",
+                    StartsOn = "2026-11-16",
+                    EndsOn = "2026-11-20",
+                    Comment = "по графику",
+                    Department = "ИТ",
+                    Source = "manual",
+                },
+            ],
+            ZupItems = [],
+        });
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+
+        model.EditAbsenceCommand.Execute(model.Items[0]);
+        var editor = model.Editor!;
+        Assert.False(editor.IsCreateMode);
+        Assert.Equal("Изменить отсутствие", editor.TitleText);
+        Assert.Equal("Андреева Анна", editor.DisplayName);
+        Assert.True(editor.IsKindVacation);
+        Assert.Equal(new DateTime(2026, 11, 16), editor.StartsOn);
+        Assert.Equal(new DateTime(2026, 11, 20), editor.EndsOn);
+        Assert.Equal("по графику", editor.Comment);
+        Assert.Equal("ИТ", editor.Department);
+
+        // Пустой diff — без запроса.
+        var submitted = await editor.SubmitAsync();
+        Assert.False(submitted);
+        Assert.Equal("Изменений нет.", editor.StatusText);
+        Assert.Empty(api.AbsenceUpdateCalls);
+        Assert.True(model.IsEditorOpen);
+
+        // Меняем только вид: PATCH уходит с единственным полем.
+        editor.IsKindTrip = true;
+        submitted = await editor.SubmitAsync();
+
+        Assert.True(submitted);
+        var (id, body) = Assert.Single(api.AbsenceUpdateCalls);
+        Assert.Equal(42, id);
+        Assert.Equal("trip", body.Kind);
+        Assert.Null(body.DisplayName);
+        Assert.Null(body.StartsOn);
+        Assert.Null(body.EndsOn);
+        Assert.Null(body.Comment);
+        Assert.Null(body.Department);
+        Assert.False(model.IsEditorOpen);
+    }
+
+    [Fact]
+    public async Task EditClearsOptionalFieldWithEmptyString()
+    {
+        var api = ManageApi(new HubAbsenceRangeList
+        {
+            Items =
+            [
+                new HubAbsenceItem
+                {
+                    Id = "42",
+                    DisplayName = "Андреева Анна",
+                    Kind = "vacation",
+                    StartsOn = "2026-11-16",
+                    EndsOn = "2026-11-20",
+                    Comment = "по графику",
+                    Source = "manual",
+                },
+            ],
+            ZupItems = [],
+        });
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+
+        model.EditAbsenceCommand.Execute(model.Items[0]);
+        var editor = model.Editor!;
+        editor.Comment = string.Empty;
+
+        var submitted = await editor.SubmitAsync();
+
+        Assert.True(submitted);
+        var (_, body) = Assert.Single(api.AbsenceUpdateCalls);
+        Assert.Equal(string.Empty, body.Comment); // сервер normalize → null = сброс
+        Assert.Null(body.DisplayName);
+    }
+
+    [Fact]
+    public async Task DeleteRequiresSecondPressThenRemovesRow()
+    {
+        var api = ManageApi(new HubAbsenceRangeList
+        {
+            Items = [Absence("Андреева Анна", "manual"), Absence("Борисов Борис", "manual")],
+            ZupItems = [],
+        });
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+        var row = model.Items.First(item => item.DisplayName == "Андреева Анна");
+
+        await ((NativeAsyncCommand)model.DeleteAbsenceCommand).ExecuteAsync(row);
+        Assert.True(row.DeleteArmed);
+        Assert.Equal("Точно удалить?", row.DeleteText);
+        Assert.Empty(api.AbsenceDeleteCalls);
+        Assert.Equal(2, model.Items.Count);
+
+        await ((NativeAsyncCommand)model.DeleteAbsenceCommand).ExecuteAsync(row);
+
+        Assert.Equal(42, Assert.Single(api.AbsenceDeleteCalls));
+        Assert.Single(model.Items);
+        Assert.Equal("Борисов Борис", model.Items[0].DisplayName);
+        Assert.False(model.HasBannerError);
+    }
+
+    [Fact]
+    public async Task DeleteArmingMovesBetweenRows()
+    {
+        var api = ManageApi(new HubAbsenceRangeList
+        {
+            Items = [Absence("Андреева Анна", "manual"), Absence("Борисов Борис", "manual")],
+            ZupItems = [],
+        });
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+        var first = model.Items[0];
+        var second = model.Items[1];
+
+        await ((NativeAsyncCommand)model.DeleteAbsenceCommand).ExecuteAsync(first);
+        Assert.True(first.DeleteArmed);
+        await ((NativeAsyncCommand)model.DeleteAbsenceCommand).ExecuteAsync(second);
+
+        Assert.False(first.DeleteArmed);
+        Assert.True(second.DeleteArmed);
+        Assert.Empty(api.AbsenceDeleteCalls);
+    }
+
+    [Fact]
+    public async Task WriteForbiddenShowsMessageAndKeepsDialog()
+    {
+        var api = ManageApi();
+        api.AbsenceCreateException = new HubApiException(
+            HubApiErrorKind.Http,
+            "Недостаточно прав для управления отсутствиями",
+            System.Net.HttpStatusCode.Forbidden);
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenCreateCommand).ExecuteAsync(null);
+        var editor = model.Editor!;
+        editor.DisplayName = "Иванов Иван";
+        editor.StartsOn = new DateTime(2026, 11, 16);
+        editor.EndsOn = new DateTime(2026, 11, 16);
+
+        var submitted = await editor.SubmitAsync();
+
+        Assert.False(submitted);
+        Assert.True(editor.HasError);
+        Assert.Equal("Недостаточно прав для этого действия.", editor.ErrorText);
+        Assert.True(model.IsEditorOpen);
+    }
+
+    [Fact]
+    public async Task WithoutManagePermissionButtonsAreHidden()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Username = "viewer", Role = "operator" },
+            AbsencesList = new HubAbsenceRangeList
+            {
+                Items = [Absence("Андреева Анна", "manual")],
+                ZupItems = [],
+            },
+        };
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+
+        Assert.False(model.CanManageAbsences);
+        Assert.False(model.OpenCreateCommand.CanExecute(null));
+        Assert.DoesNotContain(model.Items, item => item.ShowActions);
+    }
+
+    [Fact]
+    public async Task CloseCommandDismissesEditorWithoutPosting()
+    {
+        var api = ManageApi();
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenCreateCommand).ExecuteAsync(null);
+
+        Assert.True(model.IsEditorOpen);
+        model.Editor!.CloseCommand.Execute(null);
+
+        Assert.Null(model.Editor);
+        Assert.False(model.IsEditorOpen);
+        Assert.Empty(api.AbsenceCreateCalls);
+    }
+
+    [Fact]
+    public async Task EditorOpenBlocksSecondDialog()
+    {
+        var api = ManageApi(new HubAbsenceRangeList
+        {
+            Items = [Absence("Андреева Анна", "manual")],
+            ZupItems = [],
+        });
+        var model = new AbsencesViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenCreateCommand).ExecuteAsync(null);
+        var first = model.Editor;
+
+        model.EditAbsenceCommand.Execute(model.Items[0]);
+
+        Assert.Same(first, model.Editor); // один диалог за раз — как у AdminViewModel
+    }
+
     private static HubAbsenceItem Absence(
         string displayName,
         string? source,
         string? kind = "vacation",
         string? startsOn = "2026-11-16",
-        string? endsOn = "2026-11-20") =>
+        string? endsOn = "2026-11-20",
+        string? id = null) =>
         new()
         {
-            Id = source == "hub" ? "42" : null,
+            Id = id ?? (source is "hub" or "manual" ? "42" : null),
             DisplayName = displayName,
             Kind = kind,
             StartsOn = startsOn,

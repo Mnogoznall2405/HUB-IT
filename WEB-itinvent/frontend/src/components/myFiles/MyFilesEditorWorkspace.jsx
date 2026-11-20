@@ -3,6 +3,13 @@ import { Alert, Box, Button, IconButton, Stack, Tab, Tabs, Tooltip, Typography }
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import AuthContext from '../../contexts/AuthContext';
+import {
+  DESKTOP_CAPABILITIES_CHANGED_EVENT,
+  DESKTOP_WORKSPACE_CHROME_CAPABILITY,
+  DESKTOP_WORKSPACE_CHROME_COMMAND_EVENT,
+  isDesktopCapabilityAvailable,
+  syncDesktopWorkspaceChrome,
+} from '../../lib/desktopBridge';
 import MyFilesEditorShell from './MyFilesEditorShell';
 
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value);
@@ -15,16 +22,19 @@ export default function MyFilesEditorWorkspace(props) {
   return <DocumentWorkspace key={account} {...props} />;
 }
 
-function DocumentWorkspace({ fileId, requestKey, onActiveDocumentChange, onCloseLast, onTitle, onDownload }) {
+function DocumentWorkspace({ fileId, compareVersion = '', requestKey, onActiveDocumentChange, onCloseLast, onTitle, onDownload }) {
   const [workspace, setWorkspace] = useState(() => ({
     documents: validId(fileId) ? [{ id: fileId, title: '', status: {} }] : [],
     activeId: validId(fileId) ? fileId : '',
   }));
+  const [nativeChrome, setNativeChrome] = useState(() => isDesktopCapabilityAvailable(DESKTOP_WORKSPACE_CHROME_CAPABILITY));
   const current = useRef(workspace);
   const editors = useRef(new Map());
   const closeFrame = useRef(null);
   const callbacks = useRef({});
+  const nativeChromeRef = useRef(nativeChrome);
   callbacks.current = { onActiveDocumentChange, onCloseLast, onTitle, onDownload };
+  nativeChromeRef.current = nativeChrome;
 
   const update = useCallback(change => {
     const next = change(current.current);
@@ -80,8 +90,52 @@ function DocumentWorkspace({ fileId, requestKey, onActiveDocumentChange, onClose
   const active = workspace.documents.find(item => item.id === workspace.activeId);
   useEffect(() => { callbacks.current.onTitle?.(active?.title || 'Документы'); }, [active?.id, active?.title]);
 
+  // The second Desktop window advertises workspace-chrome and draws the tab strip natively.
+  useEffect(() => {
+    const onCapabilities = () => setNativeChrome(isDesktopCapabilityAvailable(DESKTOP_WORKSPACE_CHROME_CAPABILITY));
+    window.addEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, onCapabilities);
+    return () => window.removeEventListener(DESKTOP_CAPABILITIES_CHANGED_EVENT, onCapabilities);
+  }, []);
+
+  const historyEnabled = Boolean(active?.status?.frameReady) && !active?.status?.offline && active?.status?.phase !== 'blocked';
+  useEffect(() => {
+    if (!nativeChrome) return;
+    syncDesktopWorkspaceChrome({
+      documents: workspace.documents.map((item, index) => ({
+        id: item.id,
+        title: item.title || `Документ ${index + 1}`,
+        dirty: item.status?.save === 'dirty',
+      })),
+      activeId: workspace.activeId || '',
+      history: historyEnabled,
+    });
+  }, [nativeChrome, workspace, historyEnabled]);
+  useEffect(() => () => {
+    if (nativeChromeRef.current) {
+      syncDesktopWorkspaceChrome({ documents: [], activeId: '', history: false });
+    }
+  }, []);
+
+  // Native strip actions reuse the same handlers as the in-page tabs.
+  useEffect(() => {
+    if (!nativeChrome) return undefined;
+    const onCommand = (event) => {
+      const { command, id } = event?.detail || {};
+      if (command === 'activate') activate(id);
+      else if (command === 'close') requestClose(id);
+      else if (command === 'history') {
+        const status = current.current.documents.find(item => item.id === current.current.activeId)?.status;
+        if (status?.frameReady && !status.offline && status.phase !== 'blocked') {
+          editors.current.get(current.current.activeId)?.openHistory();
+        }
+      }
+    };
+    window.addEventListener(DESKTOP_WORKSPACE_CHROME_COMMAND_EVENT, onCommand);
+    return () => window.removeEventListener(DESKTOP_WORKSPACE_CHROME_COMMAND_EVENT, onCommand);
+  }, [nativeChrome, activate, requestClose]);
+
   return <Box component="main" aria-label="Открытые документы" sx={{ display: 'flex', flexDirection: 'column', height: '100dvh', minWidth: 0, bgcolor: 'background.paper' }}>
-    <Stack direction="row" alignItems="center" sx={{ flexShrink: 0, minWidth: 0, borderBottom: 1, borderColor: 'divider' }}>
+    {nativeChrome ? null : <Stack direction="row" alignItems="center" sx={{ flexShrink: 0, minWidth: 0, borderBottom: 1, borderColor: 'divider' }}>
       <Tabs value={workspace.activeId || false} onChange={(_, id) => activate(id)} aria-label="Документы"
         variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile selectionFollowsFocus
         sx={{ flex: 1, minWidth: 0, minHeight: { xs: 44, sm: 36 }, '& .MuiTab-root': { minHeight: { xs: 44, sm: 36 }, py: 0.25, px: 1.25, minWidth: 120, maxWidth: 280, textTransform: 'none' } }}>
@@ -107,7 +161,7 @@ function DocumentWorkspace({ fileId, requestKey, onActiveDocumentChange, onClose
           <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>История</Box>
         </Button></span>
       </Tooltip>
-    </Stack>
+    </Stack>}
     {!validId(fileId) ? <Alert severity="error">Некорректная ссылка на документ.</Alert> : null}
     <Box sx={{ flex: 1, minHeight: 0, position: 'relative' }}>
       {workspace.documents.map(item => {
@@ -116,7 +170,7 @@ function DocumentWorkspace({ fileId, requestKey, onActiveDocumentChange, onClose
           aria-hidden={!selected || undefined} {...(!selected ? { inert: '' } : {})}
           sx={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', visibility: selected ? 'visible' : 'hidden', zIndex: selected ? 1 : 0 }}>
           <MyFilesEditorShell ref={instance => { if (instance) editors.current.set(item.id, instance); else editors.current.delete(item.id); }}
-            fileId={item.id} fileName={item.title || 'Документ'} active={selected}
+            fileId={item.id} fileName={item.title || 'Документ'} active={selected} compareVersion={item.id === fileId ? compareVersion : ''}
             onClose={() => remove(item.id)} onTitle={title => rename(item.id, title)} onSessionState={value => status(item.id, value)}
             onDownload={onDownload ? () => callbacks.current.onDownload?.(item.id) : undefined} />
         </Box>;

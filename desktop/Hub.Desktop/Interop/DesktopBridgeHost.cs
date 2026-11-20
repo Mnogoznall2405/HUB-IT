@@ -22,6 +22,7 @@ public sealed class DesktopBridgeHost : IDisposable
     private readonly DesktopVncHandlerProbe _vncHandlerProbe;
     private readonly DesktopSharedFileRegistry _sharedFiles;
     private readonly DesktopMicrophoneBridge _microphone;
+    private readonly bool _workspaceChrome;
     private bool _bridgeReady;
     private bool _disposed;
 
@@ -42,6 +43,7 @@ public sealed class DesktopBridgeHost : IDisposable
     public event EventHandler<DesktopMailComposeWindowCloseResultEventArgs>? MailComposeWindowCloseResult;
     public event EventHandler? MailComposeWindowSent;
     public event EventHandler<DesktopOpenFileDialogRequestedEventArgs>? OpenFileDialogRequested;
+    public event EventHandler<DesktopWorkspaceChromeChangedEventArgs>? WorkspaceChromeChanged;
 
     public DesktopBridgeHost(
         CoreWebView2 core,
@@ -49,13 +51,15 @@ public sealed class DesktopBridgeHost : IDisposable
         IDesktopNotificationService notifications,
         string windowsUsername,
         DesktopVncHandlerProbe vncHandlerProbe,
-        Uri trustedBaseUri)
+        Uri trustedBaseUri,
+        bool workspaceChrome = false)
     {
         _core = core;
         _navigationPolicy = navigationPolicy;
         _notifications = notifications;
         _windowsUsername = windowsUsername;
         _vncHandlerProbe = vncHandlerProbe ?? throw new ArgumentNullException(nameof(vncHandlerProbe));
+        _workspaceChrome = workspaceChrome;
         _sharedFiles = new DesktopSharedFileRegistry(trustedBaseUri);
         _microphone = new DesktopMicrophoneBridge(navigationPolicy);
         _core.WebMessageReceived += Core_WebMessageReceived;
@@ -266,6 +270,27 @@ public sealed class DesktopBridgeHost : IDisposable
         }
     }
 
+    /// <summary>Команда нативной вкладочной полосы → странице workspace (activate/close/history).</summary>
+    public bool TryPostWorkspaceChromeCommand(DesktopWorkspaceChromeCommand command, string? id)
+    {
+        if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
+        {
+            return false;
+        }
+
+        try
+        {
+            _core.PostWebMessageAsJson(
+                DesktopBridgeProtocol.CreateWorkspaceChromeCommandMessage(command, id));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Desktop workspace chrome command failed", exception);
+            return false;
+        }
+    }
+
     public bool TryPostFileShared(IReadOnlyList<string> paths)
     {
         if (_disposed || !_bridgeReady || !IsTrustedDocument(_core.Source))
@@ -367,7 +392,7 @@ public sealed class DesktopBridgeHost : IDisposable
                     notificationsAvailable,
                     _windowsUsername));
             _core.PostWebMessageAsJson(
-                DesktopBridgeProtocol.CreateCapabilitiesMessage(notificationsAvailable));
+                DesktopBridgeProtocol.CreateCapabilitiesMessage(notificationsAvailable, _workspaceChrome));
             DesktopLog.Info("Desktop bridge handshake completed");
             Ready?.Invoke(this, EventArgs.Empty);
             return;
@@ -464,6 +489,21 @@ public sealed class DesktopBridgeHost : IDisposable
             QuickRoutesChanged?.Invoke(
                 this,
                 new DesktopQuickRoutesChangedEventArgs(message.QuickRoutes));
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.UpdateWorkspaceChrome
+            && message.WorkspaceChrome is { } workspaceChrome)
+        {
+            if (!_bridgeReady)
+            {
+                DesktopLog.Warning("Rejected workspace chrome state before bridge handshake");
+                return;
+            }
+
+            WorkspaceChromeChanged?.Invoke(
+                this,
+                new DesktopWorkspaceChromeChangedEventArgs(workspaceChrome));
             return;
         }
 
@@ -765,6 +805,11 @@ public sealed class DesktopWorkspaceWindowRequestedEventArgs(string route) : Eve
     public string Route { get; } = route;
 
     public string Status { get; set; } = "failed";
+}
+
+public sealed class DesktopWorkspaceChromeChangedEventArgs(DesktopWorkspaceChromeState state) : EventArgs
+{
+    public DesktopWorkspaceChromeState State { get; } = state;
 }
 
 public sealed class DesktopMailComposeWindowRequestedEventArgs(string route) : EventArgs

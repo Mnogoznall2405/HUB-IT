@@ -123,7 +123,7 @@ export default function ScanCenterHeader({
                   OCR: страницы 1–3 · текст PDF: страницы 1–10 · {dashboard?.analysis_version || 'текущая версия правил'}
                 </Typography>
               </Box>
-              <Chip size="small" color={health.color} label={health.label} sx={{ flexShrink: 0 }} />
+              <Chip size="small" color={health.color} label={health.label} aria-live="polite" sx={{ flexShrink: 0 }} />
             </Box>
 
             <Autocomplete

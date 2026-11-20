@@ -420,12 +420,12 @@ def test_callbacks_must_be_signed_and_addressed_to_the_file(env):
     assert env.content(file_id) == b"sheet"
 
 
-def test_spreadsheet_filters_stay_private_to_each_editor(env):
-    # modifyFilter=false keeps each co-editor's filters and sort local: a global one would
-    # hide/reorder rows under everybody else's cursor and be saved into the file.
+def test_spreadsheet_config_keeps_full_editing_permissions(env):
+    # No modifyFilter override: forcing it false makes filters local but also blocks row/column
+    # inserts inside filtered ranges, sorting, data validation and table operations.
     file_id = env.upload("book.xlsx", b"sheet")
     config = env.editor_config(file_id)
-    assert config["document"]["permissions"]["modifyFilter"] is False
+    assert config["document"]["permissions"] == {"edit": True, "download": True, "print": True, "comment": True}
 
 
 def test_only_owner_and_collaborators_can_open_a_document(env):
@@ -575,6 +575,149 @@ def test_editor_checkpoint_is_limited_to_writers_and_reports_the_interval(env, m
     viewer = env.client.get(f"/api/v1/my-files/{file_id}/office/config").json()
     assert viewer["checkpoint_interval_sec"] == 0
     assert env.client.post(f"/api/v1/my-files/{file_id}/office/checkpoint").status_code == 404
+
+
+def test_office_presence_reports_other_editors_in_the_live_session(env, monkeypatch):
+    import httpx
+
+    file_id = env.upload("cells.xlsx", b"AAAA")
+    env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"user_ids": [COLLAB]})
+    key = env.editor_config(file_id)["document"]["key"]
+    real_client = httpx.Client
+
+    def command(request):
+        body = __import__("json").loads(request.content)
+        claims = jwt.decode(body.pop("token"), SECRET, algorithms=["HS256"])
+        assert claims == body == {"c": "info", "key": key}
+        assert str(request.url).startswith("http://ds.internal:8080/command?")
+        return httpx.Response(200, json={"error": 0, "key": key, "users": [str(OWNER), str(COLLAB)]})
+
+    monkeypatch.setattr(oo.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(command), **kwargs))
+    response = env.client.get(f"/api/v1/my-files/{file_id}/office/presence")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"others": [f"user-{COLLAB}"], "others_count": 1}
+
+
+def test_office_presence_is_empty_without_a_live_session_and_denied_to_strangers(env, monkeypatch):
+    import httpx
+
+    file_id = env.upload("cells.xlsx", b"AAAA")
+    real_client = httpx.Client
+    monkeypatch.setattr(oo.httpx, "Client", lambda **kwargs: real_client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"error": 4})), **kwargs,
+    ))
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/presence").json() == {"others": [], "others_count": 0}
+
+    env.as_user(STRANGER)
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/presence").status_code == 404
+
+
+def test_editor_config_passes_ui_theme_through_and_ignores_invalid_values(env):
+    file_id = env.upload("cells.xlsx", b"AAAA")
+
+    dark = env.client.get(f"/api/v1/my-files/{file_id}/office/config", params={"ui_theme": "theme-dark"})
+    assert dark.status_code == 200, dark.text
+    assert dark.json()["config"]["editorConfig"]["customization"]["uiTheme"] == "theme-dark"
+
+    light = env.client.get(f"/api/v1/my-files/{file_id}/office/config", params={"ui_theme": "theme-light"})
+    assert light.json()["config"]["editorConfig"]["customization"]["uiTheme"] == "theme-light"
+
+    bogus = env.client.get(f"/api/v1/my-files/{file_id}/office/config", params={"ui_theme": "theme-pink"})
+    assert "uiTheme" not in bogus.json()["config"]["editorConfig"]["customization"]
+
+    assert "uiTheme" not in env.editor_config(file_id)["editorConfig"]["customization"]
+
+
+def test_office_export_pdf_streams_the_converted_document(env, monkeypatch):
+    import httpx
+    import json
+
+    file_id = env.upload("plan.docx", b"original")
+    env.next_document = b"%PDF-1.4 fake"
+    real_client = httpx.Client
+    seen = {}
+
+    def convert(request):
+        assert "/ConvertService.ashx" in str(request.url)
+        body = json.loads(request.content)
+        claims = jwt.decode(body.pop("token"), SECRET, algorithms=["HS256"])
+        assert claims == body
+        seen.update(body)
+        return httpx.Response(
+            200,
+            content=(
+                '<?xml version="1.0" encoding="utf-8"?><FileResult>'
+                '<FileUrl>http://ds.internal:8080/cache/files/conv_1/out.pdf?md5=x</FileUrl>'
+                '<FileType>pdf</FileType><Percent>100</Percent><EndConvert>True</EndConvert></FileResult>'
+            ).encode(),
+            headers={"content-type": "text/xml; charset=UTF-8"},
+        )
+
+    monkeypatch.setattr(oo.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(convert), **kwargs))
+    response = env.client.get(f"/api/v1/my-files/{file_id}/office/export", params={"format": "pdf"})
+    assert response.status_code == 200, response.text
+    assert response.content == b"%PDF-1.4 fake"
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert "plan.pdf" in response.headers["content-disposition"]
+    assert env.fetched_urls == ["http://ds.internal:8080/cache/files/conv_1/out.pdf?md5=x"]
+    assert seen["outputtype"] == "pdf" and seen["filetype"] == "docx" and seen["async"] is False
+    assert "/api/v1/my-files/office/source?" in seen["url"]
+
+    bad = env.client.get(f"/api/v1/my-files/{file_id}/office/export", params={"format": "exe"})
+    assert bad.status_code == 400
+
+    env.as_user(STRANGER)
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/export").status_code == 404
+
+
+def test_office_export_pdf_reports_document_server_failure(env, monkeypatch):
+    import httpx
+
+    file_id = env.upload("plan.docx", b"original")
+    real_client = httpx.Client
+    monkeypatch.setattr(oo.httpx, "Client", lambda **kwargs: real_client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200,
+            content=b'<?xml version="1.0" encoding="utf-8"?><FileResult><Error>-3</Error></FileResult>',
+            headers={"content-type": "text/xml; charset=UTF-8"},
+        )), **kwargs,
+    ))
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/export").status_code == 502
+
+
+def test_office_version_compare_returns_a_signed_revised_file(env, monkeypatch):
+    import urllib.parse
+
+    file_id = env.upload("plan.docx", b"original")
+    config = env.editor_config(file_id)
+    monkeypatch.setattr(collab_module, "VERSION_MERGE_WINDOW_SEC", 0)
+    env.callback(config, status_code=6, document=b"a", users=[str(OWNER)])
+    env.callback(config, status_code=6, document=b"b", users=[str(OWNER)])
+    versions = env.client.get(f"/api/v1/my-files/{file_id}/office/versions").json()["items"]
+    assert len(versions) == 2
+    newest, oldest = versions  # the API lists retired versions newest first
+
+    response = env.client.get(f"/api/v1/my-files/{file_id}/office/versions/{oldest['id']}/compare")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["fileType"] == "docx"
+    source_token = urllib.parse.parse_qs(urllib.parse.urlsplit(data["url"]).query)["t"][0]
+    claims = jwt.decode(source_token, SECRET, algorithms=["HS256"], options={"verify_aud": False})
+    assert claims["typ"] == "hist" and claims["fid"] == file_id and claims["vid"] == oldest["id"] and claims["kind"] == "content"
+    file_claims = jwt.decode(data["token"], SECRET, algorithms=["HS256"], options={"verify_aud": False})
+    assert file_claims["fileType"] == "docx" and file_claims["url"] == data["url"]
+
+    latest = env.client.get(f"/api/v1/my-files/{file_id}/office/versions/latest/compare")
+    latest_token = urllib.parse.parse_qs(urllib.parse.urlsplit(latest.json()["url"]).query)["t"][0]
+    assert jwt.decode(latest_token, SECRET, algorithms=["HS256"], options={"verify_aud": False})["vid"] == newest["id"]
+
+    xlsx_id = env.upload("plan.xlsx", b"sheet")
+    env.callback(env.editor_config(xlsx_id), status_code=6, document=b"x", users=[str(OWNER)])
+    assert env.client.get(f"/api/v1/my-files/{xlsx_id}/office/versions/latest/compare").status_code == 400
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/versions/missing/compare").status_code == 404
+
+    env.as_user(STRANGER)
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/versions/{oldest['id']}/compare").status_code == 404
 
 
 def test_an_interim_save_that_does_not_fit_as_a_version_merges_instead_of_failing(env, monkeypatch):

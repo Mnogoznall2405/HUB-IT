@@ -56,6 +56,11 @@ class OfficeCheckpointResponse(BaseModel):
     result: str
 
 
+class OfficePresenceResponse(BaseModel):
+    others: list[str] = Field(default_factory=list)
+    others_count: int = 0
+
+
 class OfficeRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
@@ -412,6 +417,7 @@ async def get_history_data(file_id: str, version_no: int, current_user: User = D
 @router.get("/{file_id}/office/config", response_model=OfficeEditorConfigResponse)
 async def get_office_editor_config(
     file_id: str,
+    ui_theme: str | None = Query(default=None, max_length=32),
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     settings = _settings_or_503()
@@ -431,10 +437,35 @@ async def get_office_editor_config(
         user_name=str(getattr(current_user, "full_name", "") or current_user.username or ""),
         role=session["role"],
         document_key=session["document_key"],
+        ui_theme=ui_theme,
     )
     return {"config": config, "role": session["role"], "public_path": settings.public_path,
             "can_rename": session["role"] == oo.ROLE_OWNER, "can_manage_access": session["can_manage_access"],
             "checkpoint_interval_sec": settings.checkpoint_interval_sec if session["role"] in oo.EDITING_ROLES else 0}
+
+
+@router.get("/{file_id}/office/export")
+async def export_office_document(
+    file_id: str,
+    request: Request,
+    format: str = Query(default="pdf", max_length=16),
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+):
+    """Convert the HUB-saved content through Document Server and stream the result once."""
+    settings = _settings_or_503()
+    try:
+        payload = await run_in_threadpool(
+            my_files_collab_service.export_document,
+            settings=settings,
+            file_id=file_id,
+            user_id=int(current_user.id),
+            output_format=format,
+        )
+    except oo.OnlyOfficeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Сервер редактора не смог сконвертировать документ") from exc
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+    return _download_response(payload, request)
 
 
 @router.post("/{file_id}/office/checkpoint", response_model=OfficeCheckpointResponse)
@@ -456,6 +487,24 @@ async def request_office_checkpoint(
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
     return {"result": result}
+
+
+@router.get("/{file_id}/office/presence", response_model=OfficePresenceResponse)
+async def get_office_presence(
+    file_id: str,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+) -> dict:
+    """Who else is inside the live editor session right now; feeds the co-editing warning banner."""
+    settings = _settings_or_503()
+    try:
+        return await run_in_threadpool(
+            my_files_collab_service.session_editors,
+            settings=settings,
+            file_id=file_id,
+            user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
 
 
 @router.post("/{file_id}/office/rename", response_model=OfficeRenameResponse)
@@ -580,6 +629,26 @@ async def download_office_version(
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
     return _download_response(payload, request)
+
+
+@router.get("/{file_id}/office/versions/{version_id}/compare")
+async def get_version_compare_file(
+    file_id: str,
+    version_id: str,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+):
+    """Signed revised-file object for ``setRevisedFile``; ``latest`` picks the newest retired version."""
+    settings = _settings_or_503()
+    try:
+        return await run_in_threadpool(
+            MyFilesHistoryService(my_files_collab_service).compare_file,
+            settings=settings,
+            file_id=file_id,
+            version_id=version_id,
+            user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
 
 
 @router.post("/{file_id}/office/versions/{version_id}/restore", status_code=status.HTTP_204_NO_CONTENT)

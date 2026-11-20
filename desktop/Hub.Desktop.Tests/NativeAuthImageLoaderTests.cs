@@ -111,4 +111,21 @@ public sealed class NativeAuthImageLoaderTests
         await loader.LoadAsync("b"); // вытеснена — снова сеть
         Assert.Equal(4, api.ImageDownloadCalls.Count);
     }
+
+    [Fact]
+    public async Task ClearEmptiesCacheSoNextLoadHitsApiAgain()
+    {
+        var api = new FakeHubApiClient { ImageDownloadBytes = TestImageBytes.Png1X1 };
+        var loader = new AuthImageLoader(api);
+
+        await loader.LoadAsync("a");
+        Assert.Equal(1, loader.CachedCount);
+
+        // Сброс сессии: записи исчезают, повторный запрос ключа снова идёт в сеть.
+        loader.Clear();
+        Assert.Equal(0, loader.CachedCount);
+
+        await loader.LoadAsync("a");
+        Assert.Equal(2, api.ImageDownloadCalls.Count);
+    }
 }

@@ -162,6 +162,47 @@ describe('parseNativeMailSearchQuery', () => {
     });
     expect(parseNativeMailSearchQuery('')).toEqual({ q: '', from: '', to: '', subject: '', hasAttachments: false });
   });
+
+  it('does not treat operator-looking word fragments as filters', () => {
+    expect(parseNativeMailSearchQuery('работ: квартальный отчёт')).toEqual({
+      q: 'работ: квартальный отчёт',
+      from: '',
+      to: '',
+      subject: '',
+      hasAttachments: false,
+    });
+    expect(parseNativeMailSearchQuery('фото:чб архив')).toEqual({
+      q: 'фото:чб архив',
+      from: '',
+      to: '',
+      subject: '',
+      hasAttachments: false,
+    });
+    expect(parseNativeMailSearchQuery('класс файлами')).toEqual({
+      q: 'класс файлами',
+      from: '',
+      to: '',
+      subject: '',
+      hasAttachments: false,
+    });
+  });
+
+  it('still treats standalone attachment markers as a filter', () => {
+    expect(parseNativeMailSearchQuery('смета с файлами')).toEqual({
+      q: 'смета',
+      from: '',
+      to: '',
+      subject: '',
+      hasAttachments: true,
+    });
+    expect(parseNativeMailSearchQuery('has:attachment договор')).toEqual({
+      q: 'договор',
+      from: '',
+      to: '',
+      subject: '',
+      hasAttachments: true,
+    });
+  });
 });
 
 describe('nativeMailRecipientSummary', () => {

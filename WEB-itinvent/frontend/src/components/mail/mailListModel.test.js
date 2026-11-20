@@ -160,6 +160,7 @@ describe('normalizeMailListResponse', () => {
       loaded_pages: 0,
       search_limited: false,
       searched_window: 0,
+      skipped_folders: 0,
     });
 
     expect(normalizeMailListResponse({
@@ -171,6 +172,7 @@ describe('normalizeMailListResponse', () => {
       next_offset: '50',
       search_limited: true,
       searched_window: '100',
+      skipped_folders: '2',
     }, fallbackItems)).toEqual({
       items: fallbackItems,
       total: 2,
@@ -182,6 +184,7 @@ describe('normalizeMailListResponse', () => {
       loaded_pages: 1,
       search_limited: true,
       searched_window: 100,
+      skipped_folders: 2,
     });
   });
 

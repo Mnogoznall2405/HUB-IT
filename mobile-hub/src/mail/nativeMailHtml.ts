@@ -99,8 +99,19 @@ function setAttribute(tag: string, attribute: string, value: string): string {
   return without.replace(/\s*\/?\s*>$/, (ending) => ` ${attribute}="${escapeAttribute(value)}"${ending.includes('/') ? ' /' : ''}>`);
 }
 
-function imagePlaceholder(kind: 'blocked' | 'missing'): string {
-  const label = kind === 'blocked' ? 'Внешнее изображение скрыто' : 'Изображение недоступно';
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function imagePlaceholder(kind: 'blocked' | 'missing' | 'attachment', name = ''): string {
+  const label = kind === 'blocked'
+    ? 'Внешнее изображение скрыто'
+    : kind === 'attachment'
+      ? `Изображение во вложениях${name ? `: ${escapeHtmlText(name)}` : ''}`
+      : 'Изображение недоступно';
   return `<span class="mail-image-placeholder" data-image-state="${kind}">${label}</span>`;
 }
 
@@ -279,10 +290,13 @@ export function prepareNativeMailHtml(
 ): PreparedNativeMailHtml {
   const source = String(rawHtml || '').trim().slice(0, MAX_MAIL_HTML_LENGTH);
   const inlineByCid = new Map<string, { dataUrl: string; ref: string }>();
+  const attachmentNameByCid = new Map<string, string>();
   attachments.forEach((attachment) => {
     const contentId = normalizeContentId(attachment.content_id);
+    if (!contentId) return;
+    attachmentNameByCid.set(contentId, String(attachment.name || '').trim());
     const dataUrl = safeInlineImageDataUrl(attachment.inline_data_url || attachment.inline_src);
-    if (contentId && dataUrl) inlineByCid.set(contentId, { dataUrl, ref: attachmentRef(attachment) });
+    if (dataUrl) inlineByCid.set(contentId, { dataUrl, ref: attachmentRef(attachment) });
   });
 
   const usedInlineAttachmentRefs = new Set<string>();
@@ -297,8 +311,12 @@ export function prepareNativeMailHtml(
     const src = readAttribute(tag, 'src');
     if (!src) return imagePlaceholder('missing');
     if (/^cid:/i.test(src)) {
-      const inline = inlineByCid.get(normalizeContentId(src));
-      if (!inline) return imagePlaceholder('missing');
+      const cid = normalizeContentId(src);
+      const inline = inlineByCid.get(cid);
+      if (!inline) {
+        const attachmentName = attachmentNameByCid.get(cid);
+        return imagePlaceholder(attachmentName !== undefined ? 'attachment' : 'missing', attachmentName || '');
+      }
       if (inline.ref) usedInlineAttachmentRefs.add(inline.ref);
       tag = setAttribute(tag, 'src', inline.dataUrl);
       return setAttribute(tag, 'alt', readAttribute(tag, 'alt') || 'Встроенное изображение');

@@ -34,9 +34,13 @@ public sealed class TaskListItemViewModel : ObservableObject
         AttachmentsText = task.AttachmentsCount > 0
             ? $"Вложения: {task.AttachmentsCount}"
             : string.Empty;
-        HasUnreadComments = task.CommentsUnread > 0;
-        UnreadCommentsText = task.CommentsUnread > 0
-            ? $"Новых комментариев: {task.CommentsUnread}"
+        // Backend шлёт has_unread_comments (флаг, без счётчика);
+        // comments_unread оставлен для совместимости старых payload'ов.
+        HasUnreadComments = task.HasUnreadComments || task.CommentsUnread > 0;
+        UnreadCommentsText = HasUnreadComments
+            ? task.CommentsUnread > 0
+                ? $"Новых комментариев: {task.CommentsUnread}"
+                : "Новые комментарии"
             : string.Empty;
         ApplyStatus(task.Status, task.IsOverdue);
     }
@@ -60,9 +64,18 @@ public sealed class TaskListItemViewModel : ObservableObject
     public string UpdatedText { get; }
     public string SubtasksText { get; }
     public string AttachmentsText { get; }
-    public bool HasUnreadComments { get; }
-    public string UnreadCommentsText { get; }
+    public bool HasUnreadComments { get; private set; }
+    public string UnreadCommentsText { get; private set; }
     public bool IsOverdueVisual => _isOverdue;
+
+    /// <summary>mark-seen прошёл при открытии карточки — маркер непрочитанных снимаем локально.</summary>
+    public void MarkCommentsRead()
+    {
+        HasUnreadComments = false;
+        UnreadCommentsText = string.Empty;
+        OnPropertyChanged(nameof(HasUnreadComments));
+        OnPropertyChanged(nameof(UnreadCommentsText));
+    }
 
     public void ApplyStatus(string? status, bool isOverdue)
     {

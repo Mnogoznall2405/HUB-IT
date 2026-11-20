@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -67,6 +67,7 @@ from backend.services.mail_conversation_payloads import MailConversationPayloadB
 from backend.services.mail_message_listing import (
     MailMessageListBuilder,
     message_matches_filters,
+    received_at_epoch,
 )
 from backend.services.mail_mailbox_model import (
     MailboxSelectionError,
@@ -361,6 +362,7 @@ class MailService:
     _MAX_MAIL_TOTAL_SIZE = 25 * 1024 * 1024
     _MAX_MAIL_INLINE_PARTS = 100
     _INLINE_ATTACHMENT_EMBED_MAX_SIZE = 256 * 1024
+    _INLINE_ATTACHMENT_EMBED_TOTAL_MAX = 1024 * 1024
     _MAIL_LOG_RETENTION_DAYS_DEFAULT = 90
     _MAIL_CACHE_TTL_SEC_DEFAULT = 90
     _MAIL_DETAIL_CACHE_TTL_SEC_DEFAULT = 600
@@ -557,7 +559,7 @@ class MailService:
         self._send_pipeline = MailSendPipeline()
         self._attachment_download = MailAttachmentDownload()
         self._conversation_finder = MailConversationFinder(
-            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._search_target_folders(
+            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._listing_search_target_folders(
                 account,
                 folder=folder,
                 folder_scope=folder_scope,
@@ -574,7 +576,7 @@ class MailService:
             search_window_limit=lambda: int(self.search_window_limit),
         )
         self._conversation_payloads = MailConversationPayloadBuilder(
-            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._search_target_folders(
+            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._listing_search_target_folders(
                 account,
                 folder=folder,
                 folder_scope=folder_scope,
@@ -595,7 +597,7 @@ class MailService:
             search_window_limit=lambda: int(self.search_window_limit),
         )
         self._message_listing = MailMessageListBuilder(
-            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._search_target_folders(
+            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._listing_search_target_folders(
                 account,
                 folder=folder,
                 folder_scope=folder_scope,
@@ -619,6 +621,13 @@ class MailService:
             parse_date_filter=_parse_date_filter,
             search_batch_size=self._SEARCH_BATCH_SIZE,
             search_window_limit=lambda: int(self.search_window_limit),
+            multi_folder_queryset=lambda account, folder_objs, restriction, preview_only=True, unread_only=False: self._multi_folder_queryset(
+                account,
+                folder_objs,
+                restriction,
+                preview_only=preview_only,
+                unread_only=unread_only,
+            ),
         )
         self._template_store = MailTemplateStore(
             lock=self._lock,
@@ -1846,7 +1855,14 @@ class MailService:
         row = self._resolve_mailbox_row(user_id=int(user_id), mailbox_id=mailbox_id, allow_inactive=True)
         if selected is not _UNSET and bool(selected):
             self._touch_mailbox_selected(user_id=int(user_id), mailbox_id=_normalize_text(mailbox_id))
-        unread_count = self._get_mailbox_unread_count(user_id=int(user_id), mailbox_id=_normalize_text(mailbox_id)) if next_is_active else 0
+        unread_count = 0
+        if next_is_active:
+            try:
+                unread_count = self._get_mailbox_unread_count(user_id=int(user_id), mailbox_id=_normalize_text(mailbox_id))
+            except Exception:
+                cached_unread = self._cached_unread_count(user_id=int(user_id), mailbox_scope=_normalize_text(mailbox_id))
+                if cached_unread is not None:
+                    unread_count = int(cached_unread)
         return self._serialize_mailbox_entry(
             user=user,
             mailbox_row=row,
@@ -2317,7 +2333,9 @@ class MailService:
             return ""
         return self._encode_folder_id(scope_hint, exchange_id)
 
-    def _walk_folder_targets(self, account) -> list[tuple[Any, str, str]]:
+    def _walk_folder_targets(
+        self, account, *, unavailable: dict[str, Exception] | None = None,
+    ) -> list[tuple[Any, str, str]]:
         standard = self._standard_folders(account)
         visited: set[str] = set()
         result: list[tuple[Any, str, str]] = []
@@ -2334,23 +2352,33 @@ class MailService:
             add_folder(folder_obj, alias, self._folder_scope_for_alias(alias))
 
         for scope_key, root_attr in (("mailbox", "msg_folder_root"), ("archive", "archive_msg_folder_root")):
-            root_folder = self._safe_folder_attr(account, root_attr)
-            root_exchange_id = _normalize_text(getattr(root_folder, "id", None))
-            if root_folder is None:
-                continue
+            root_found = False
             try:
-                folders = list(root_folder.walk())
-            except Exception:
-                folders = []
-            for folder_obj in folders:
-                exchange_id = _normalize_text(getattr(folder_obj, "id", None))
-                if not exchange_id or exchange_id == root_exchange_id:
+                root_folder = getattr(account, root_attr, None)
+                if root_folder is None:
                     continue
-                add_folder(folder_obj, self._encode_folder_id(scope_key, exchange_id), scope_key)
+                root_found = True
+                root_exchange_id = _normalize_text(getattr(root_folder, "id", None))
+                for folder_obj in root_folder.walk():
+                    exchange_id = _normalize_text(getattr(folder_obj, "id", None))
+                    if not exchange_id or exchange_id == root_exchange_id:
+                        continue
+                    add_folder(folder_obj, self._encode_folder_id(scope_key, exchange_id), scope_key)
+            except Exception as exc:
+                # An optional archive can be absent; a failed walk of an existing one is incomplete.
+                if scope_key == "archive" and not root_found and type(exc).__name__ == "ErrorFolderNotFound":
+                    continue
+                if unavailable is not None:
+                    unavailable[scope_key] = exc
+                logger.warning("mail.folder_discovery incomplete scope=%s error_type=%s", scope_key, type(exc).__name__)
         return result
 
     @staticmethod
     def _is_mail_folder_visible_in_tree(folder_obj) -> bool:
+        # Store-internal containers reject even unfiltered FindItem ("Non-system
+        # logon cannot access System folder") and hold no user mail.
+        if type(folder_obj).__name__ in ("System",):
+            return False
         folder_class = _normalize_text(getattr(folder_obj, "folder_class", None))
         if not folder_class:
             return True
@@ -2487,7 +2515,25 @@ class MailService:
         if _normalize_text(folder_scope, "current").lower() != "all":
             folder_obj, folder_key = self._resolve_folder(account, folder)
             return [(folder_obj, folder_key)]
-        return [(folder_obj, folder_key) for folder_obj, folder_key, _ in self._walk_folder_targets(account)]
+        return [
+            (folder_obj, folder_key)
+            for folder_obj, folder_key, _ in self._walk_folder_targets(account)
+            if self._is_mail_folder_visible_in_tree(folder_obj)
+        ]
+
+    def _listing_search_target_folders(
+        self, account, *, folder: str = "inbox", folder_scope: str = "current",
+    ) -> list[tuple[Any, str]]:
+        if _normalize_text(folder_scope, "current").lower() != "all":
+            return self._search_target_folders(account, folder=folder, folder_scope=folder_scope)
+        unavailable: dict[str, Exception] = {}
+        targets = [
+            (obj, key)
+            for obj, key, _ in self._walk_folder_targets(account, unavailable=unavailable)
+            if self._is_mail_folder_visible_in_tree(obj)
+        ]
+        targets.extend((error, f"hierarchy:{scope}") for scope, error in unavailable.items())
+        return targets
 
     def _custom_folder_root(self, account, scope_key: str):
         normalized_scope = _normalize_text(scope_key, "mailbox").lower()
@@ -2615,6 +2661,54 @@ class MailService:
         except Exception:
             return queryset
 
+    _MULTI_FOLDER_PREVIEW_FIELDS = (
+        "subject",
+        "text_body",
+        "datetime_received",
+        "datetime_created",
+        "is_read",
+        "sender",
+        "author",
+        "to_recipients",
+        "cc_recipients",
+        "categories",
+        "importance",
+        "has_attachments",
+        "attachments",
+        "conversation_id",
+        "parent_folder_id",
+    )
+
+    def _multi_folder_queryset(
+        self,
+        account,
+        folder_objs,
+        restriction,
+        *,
+        preview_only: bool = True,
+        unread_only: bool = False,
+    ):
+        try:
+            from exchangelib import FolderCollection
+        except Exception as exc:
+            raise MailServiceError("exchangelib package is not installed") from exc
+        queryset = (
+            FolderCollection(account=account, folders=list(folder_objs))
+            .all()
+            .depth("Shallow")
+            .order_by("-datetime_received")
+        )
+        if restriction is not None:
+            queryset = queryset.filter(restriction)
+        if unread_only:
+            queryset = queryset.filter(is_read=False)
+        if preview_only:
+            try:
+                queryset = queryset.only(*self._MULTI_FOLDER_PREVIEW_FIELDS)
+            except Exception:
+                pass
+        return queryset
+
     def _probe_inbox_sample(self, account) -> list[Any]:
         inbox = self._safe_folder_attr(account, "inbox")
         if inbox is None:
@@ -2640,8 +2734,12 @@ class MailService:
                     only_fields=list(self._MESSAGE_DETAIL_FIELDS),
                 )
             )
-        except Exception:
-            return items_raw
+        except Exception as exc:
+            raise MailServiceError(
+                "Не удалось загрузить содержимое цепочки. Попробуйте открыть её ещё раз.",
+                code="MAIL_CONVERSATION_UNAVAILABLE",
+                status_code=503,
+            ) from exc
         hydrated_by_id: dict[str, Any] = {}
         for item in fetched:
             if isinstance(item, Exception):
@@ -2649,8 +2747,12 @@ class MailService:
             exchange_id = _normalize_text(getattr(item, "id", None))
             if exchange_id:
                 hydrated_by_id[exchange_id] = item
-        if not hydrated_by_id:
-            return items_raw
+        if not all(exchange_id in hydrated_by_id for exchange_id, _ in ids):
+            raise MailServiceError(
+                "Не удалось загрузить содержимое цепочки. Попробуйте открыть её ещё раз.",
+                code="MAIL_CONVERSATION_UNAVAILABLE",
+                status_code=503,
+            )
         return [
             (
                 hydrated_by_id.get(_normalize_text(getattr(item, "id", None))) or item,
@@ -2712,6 +2814,7 @@ class MailService:
         restore_hint_folder: str | None = None,
         draft_context: dict[str, Any] | None = None,
         include_inline_data_urls: bool = False,
+        inline_embed_budget: int | None = None,
     ) -> dict[str, Any]:
         return self._message_serializer.serialize_message_detail(
             item=item,
@@ -2721,6 +2824,7 @@ class MailService:
             restore_hint_folder=restore_hint_folder,
             draft_context=draft_context,
             include_inline_data_urls=include_inline_data_urls,
+            inline_embed_budget=inline_embed_budget,
         )
 
     def _set_restore_hint(
@@ -2827,6 +2931,14 @@ class MailService:
             item_sender=self._item_sender,
             item_recipients=self._item_recipients,
             item_importance=self._item_importance,
+            item_sender_display=lambda candidate: _normalize_text(
+                self._item_sender_person(candidate).get("display")
+            ),
+            item_recipient_displays=lambda candidate: [
+                _normalize_text(person.get("display"))
+                for person in self._item_recipient_people(candidate)
+                if _normalize_text(person.get("display"))
+            ],
             query_text=query_text,
             has_attachments=has_attachments,
             date_from=date_from,
@@ -2880,6 +2992,7 @@ class MailService:
         )
         self._set_request_metric("searched_window", result.searched_window)
         self._set_request_metric("search_limited", int(result.search_limited))
+        self._set_request_metric("folders_skipped", int(result.skipped_folders))
         return result.payload
 
     def _list_folder_summary_from_account(self, *, account) -> dict[str, dict[str, int]]:
@@ -2910,10 +3023,10 @@ class MailService:
         return result.payload
 
     def _get_unread_count_from_account(self, *, account) -> int:
-        try:
-            return int(account.inbox.filter(is_read=False).count())
-        except Exception:
-            return 0
+        # Do not fabricate zero on an Exchange error: callers cache the result
+        # as a fresh count, so a transient failure must propagate instead of
+        # being stored as a false "no unread" for the whole TTL.
+        return int(account.inbox.filter(is_read=False).count())
 
     def list_messages(
         self,
@@ -3322,7 +3435,8 @@ class MailService:
                 mailbox_email=profile["email"],
                 restore_hint_folder=(restore_hint or {}).get("restore_folder"),
                 draft_context=draft_context,
-                include_inline_data_urls=False,
+                include_inline_data_urls=True,
+                inline_embed_budget=self._INLINE_ATTACHMENT_EMBED_TOTAL_MAX,
             )
             return self._cache_set(
                 user_id=int(user_id),
@@ -3488,6 +3602,64 @@ class MailService:
         except MailMessageActionError as exc:
             raise MailServiceError(str(exc)) from exc
 
+    def _update_cached_message_detail_flag(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str = "",
+        message_id: str,
+        flagged: bool,
+    ) -> None:
+        cache_key = self._cache_key(
+            user_id=int(user_id),
+            bucket="message_detail",
+            extra=_normalize_text(message_id),
+            mailbox_scope=mailbox_id,
+        )
+        self._runtime_cache.update_dict_value(cache_key, {"is_flagged": bool(flagged)})
+
+    def set_message_flag(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str | None = None,
+        message_id: str,
+        flagged: bool,
+    ) -> dict[str, Any]:
+        folder_key, exchange_id, encoded_mailbox_id = self._decode_message_ref(message_id)
+        profile = self._resolve_mail_profile(
+            user_id=int(user_id),
+            mailbox_id=self._resolve_mailbox_scope(mailbox_id, encoded_mailbox_id),
+            require_password=False,
+        )
+        resolved_mailbox_id = _normalize_text(profile.get("mailbox_id"))
+        mail_context = self._resolve_account_context(
+            user_id=int(user_id),
+            mailbox_id=resolved_mailbox_id,
+            require_password=True,
+        )
+        account = mail_context["account"]
+        try:
+            self._message_actions.set_flag(
+                account=account,
+                folder_key=folder_key,
+                exchange_id=exchange_id,
+                flagged=bool(flagged),
+            )
+            self._update_cached_message_detail_flag(
+                user_id=int(user_id),
+                mailbox_id=resolved_mailbox_id,
+                message_id=message_id,
+                flagged=bool(flagged),
+            )
+            self.invalidate_user_cache(
+                user_id=int(user_id),
+                prefixes=("messages", "message_detail", "notification_feed", "bootstrap"),
+            )
+            return {"ok": True, "is_flagged": bool(flagged)}
+        except MailMessageActionError as exc:
+            raise MailServiceError(str(exc)) from exc
+
     def summarize_message(
         self,
         *,
@@ -3547,6 +3719,7 @@ class MailService:
             conversation_id=conversation_id,
             folder=folder,
             folder_scope=folder_scope,
+            require_complete=True,
         )
         read_result = self._message_actions.set_items_read_state(
             items=(item for item, _folder_key in items_raw),
@@ -3617,7 +3790,7 @@ class MailService:
             password=profile["password"],
         )
         read_result = self._message_actions.mark_all_read(
-            folder_targets=self._search_target_folders(
+            folder_targets=self._listing_search_target_folders(
                 account,
                 folder=_normalize_text(folder, "inbox"),
                 folder_scope=_normalize_text(folder_scope, "current"),
@@ -3797,14 +3970,14 @@ class MailService:
             if payload is None:
                 continue
             filename, payload_content_type, content = payload
-            if not content:
-                if is_referenced_inline:
-                    logger.warning(
-                        "Mail inline attachment has no content: name=%s content_id=%s",
-                        filename,
-                        content_id,
-                    )
-                continue
+            if not content and is_referenced_inline:
+                # Keep the file so the quoted body's cid reference does not
+                # silently lose its part; the warning stays for observability.
+                logger.warning(
+                    "Mail inline attachment has no content: name=%s content_id=%s",
+                    filename,
+                    content_id,
+                )
             if is_referenced_inline:
                 used_content_ids.add(content_id)
                 forwarded_attachments.append(
@@ -3846,8 +4019,8 @@ class MailService:
             if payload is None:
                 continue
             filename, content_type, content = payload
-            if not content:
-                continue
+            # A 0-byte file is a legitimate attachment; only a None payload
+            # (unavailable content) is dropped above.
             retained.append(
                 MailOutgoingAttachment(
                     filename=filename,
@@ -3932,6 +4105,7 @@ class MailService:
                 "ok": True,
                 "message_id": result.message_id,
                 "folder": result.folder,
+                "source_folder": result.source_folder,
             }
         except MailMessageActionError as exc:
             raise MailServiceError(str(exc)) from exc
@@ -3960,7 +4134,9 @@ class MailService:
             )
         if permanent and folder_key != "trash":
             raise MailServiceError("Permanent delete is allowed only from trash")
-        if not permanent and folder_key != "trash":
+        if not permanent:
+            if folder_key == "trash":
+                raise MailServiceError("Письмо уже в «Удалённых». Подтвердите безвозвратное удаление отдельно.")
             return self.move_message(
                 user_id=int(user_id),
                 mailbox_id=resolved_mailbox_id,
@@ -4040,30 +4216,38 @@ class MailService:
         )
 
     def get_unread_count(self, *, user_id: int, mailbox_id: str | None = None) -> int:
-        """Get unread count for a mailbox or an aggregate across all active mailboxes."""
+        """Get unread count for a mailbox or an aggregate across all active mailboxes.
+
+        Transient failures propagate: callers surface this value as a measured
+        count (badge, feed total, cache), so fabricating zero would hide real
+        mail. Tolerant callers should use _best_effort_unread_count instead.
+        """
         normalized_mailbox_id = _normalize_text(mailbox_id)
         if normalized_mailbox_id:
-            try:
-                self._set_request_metric("cache_hit", 0)
-                return self._get_mailbox_unread_count(user_id=int(user_id), mailbox_id=normalized_mailbox_id)
-            except Exception:
-                return 0
+            self._set_request_metric("cache_hit", 0)
+            return self._get_mailbox_unread_count(user_id=int(user_id), mailbox_id=normalized_mailbox_id)
         cached = self._cached_unread_count(user_id=int(user_id), mailbox_scope="aggregate")
         if cached is not None:
             self._set_request_metric("cache_hit", 1)
             return int(cached)
+        self._set_request_metric("cache_hit", 0)
+        total, failed_mailbox_ids = self._aggregate_unread_count_tracked(user_id=int(user_id))
+        if failed_mailbox_ids:
+            raise MailServiceError("Unread count is unavailable for some mailboxes")
+        self._cache_set(
+            user_id=int(user_id),
+            bucket="unread_count",
+            mailbox_scope="aggregate",
+            value=int(total),
+        )
+        return int(total)
+
+    def _best_effort_unread_count(self, *, user_id: int) -> int:
+        """Partial tolerant total for feeds/bootstrap; never caches a partial result."""
         try:
-            self._set_request_metric("cache_hit", 0)
-            total = self._aggregate_unread_count(user_id=int(user_id))
-            self._cache_set(
-                user_id=int(user_id),
-                bucket="unread_count",
-                mailbox_scope="aggregate",
-                value=int(total),
-            )
-            return int(total)
+            return self.get_unread_count(user_id=int(user_id))
         except Exception:
-            return 0
+            return self._aggregate_unread_count(user_id=int(user_id))
 
     @staticmethod
     def _inbox_unread_from_summary(summary: dict[str, Any] | None) -> int | None:
@@ -4086,7 +4270,24 @@ class MailService:
         current_inbox_unread: int | None = None,
         skip_mailbox_ids: Collection[str] | None = None,
     ) -> int:
+        total, _failed_mailbox_ids = self._aggregate_unread_count_tracked(
+            user_id=user_id,
+            current_mailbox_id=current_mailbox_id,
+            current_inbox_unread=current_inbox_unread,
+            skip_mailbox_ids=skip_mailbox_ids,
+        )
+        return total
+
+    def _aggregate_unread_count_tracked(
+        self,
+        *,
+        user_id: int,
+        current_mailbox_id: str | None = None,
+        current_inbox_unread: int | None = None,
+        skip_mailbox_ids: Collection[str] | None = None,
+    ) -> tuple[int, frozenset[str]]:
         total = 0
+        failed_mailbox_ids: list[str] = []
         current_id = _normalize_text(current_mailbox_id)
         skipped = {_normalize_text(item) for item in (skip_mailbox_ids or ())}
         for row in self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=False):
@@ -4099,8 +4300,8 @@ class MailService:
             try:
                 total += self._get_mailbox_unread_count(user_id=int(user_id), mailbox_id=row_id)
             except Exception:
-                continue
-        return int(total)
+                failed_mailbox_ids.append(row_id)
+        return int(total), frozenset(failed_mailbox_ids)
 
     def list_notification_feed(
         self,
@@ -4158,10 +4359,11 @@ class MailService:
                     or self.classify_mail_error_code(getattr(exc, "__cause__", None))
                     or str(getattr(exc, "code", "") or "").strip()
                 )
-                if resolved_code == "MAIL_AUTH_INVALID":
-                    blocked.add(row_id)
-                    if auth_failed_mailbox_ids is not None:
-                        auth_failed_mailbox_ids.append(row_id)
+                # Any mailbox we could not read makes the feed incomplete:
+                # exclude it from unread aggregation and from the shared cache.
+                blocked.add(row_id)
+                if resolved_code == "MAIL_AUTH_INVALID" and auth_failed_mailbox_ids is not None:
+                    auth_failed_mailbox_ids.append(row_id)
                 continue
             mailbox_entry = self._serialize_mailbox_entry(
                 user=user or {},
@@ -4185,18 +4387,24 @@ class MailService:
                         "mailbox_email": mailbox_entry.get("mailbox_email"),
                     }
                 )
-        items.sort(key=lambda item: str(item.get("received_at") or ""), reverse=True)
+        items.sort(
+            key=lambda item: (
+                received_at_epoch(item.get("received_at")),
+                str(item.get("received_at") or ""),
+            ),
+            reverse=True,
+        )
         items = items[:safe_limit]
         payload = {
             "items": items,
             "total_unread": (
                 self._aggregate_unread_count(user_id=int(user_id), skip_mailbox_ids=blocked)
                 if blocked
-                else self.get_unread_count(user_id=int(user_id))
+                else self._best_effort_unread_count(user_id=int(user_id))
             ),
             "limit": safe_limit,
         }
-        if not use_cache:
+        if not use_cache or blocked:
             return payload
         return self._cache_set(
             user_id=int(user_id),
@@ -4299,55 +4507,120 @@ class MailService:
                 )
                 account = mail_context["account"]
                 profile = mail_context["profile"]
-                if next_summary is None:
-                    next_summary = self._cache_set(
-                        user_id=int(user_id),
-                        bucket="folder_summary",
-                        value=self._list_folder_summary_from_account(account=account),
-                        mailbox_scope=resolved_mailbox_id,
-                    )
-                if next_tree is None:
-                    next_tree = self._cache_set(
-                        user_id=int(user_id),
-                        bucket="folder_tree",
-                        value=self._list_folder_tree_from_account(
+
+                # Folder summary/tree, unread aggregation and the inbox head page are
+                # independent Exchange round-trips — on a cold cache they run
+                # concurrently over the same account (separate querysets, the same
+                # pattern as the multi-folder search workers).
+                def _summary_and_tree() -> tuple[dict[str, dict[str, int]], dict[str, Any]]:
+                    resolved_summary = next_summary
+                    if resolved_summary is None:
+                        resolved_summary = self._list_folder_summary_from_account(account=account)
+                    resolved_tree = next_tree
+                    if resolved_tree is None:
+                        resolved_tree = self._list_folder_tree_from_account(
                             user_id=int(user_id),
                             mailbox_id=resolved_mailbox_id or None,
                             account=account,
-                            summary=next_summary,
-                        ),
-                        mailbox_scope=resolved_mailbox_id,
-                    )
-                if next_unread_count is None:
-                    inbox_unread = self._inbox_unread_from_summary(next_summary)
-                    next_unread_count = self._cache_set(
+                            summary=resolved_summary,
+                        )
+                    return resolved_summary, resolved_tree
+
+                def _unread() -> tuple[int, frozenset[str]]:
+                    # A cached summary gives the inbox unread for free; otherwise
+                    # count it on the shared account and let the aggregator fall
+                    # back to its own per-mailbox path when that call fails.
+                    inbox_unread: int | None = self._inbox_unread_from_summary(next_summary)
+                    if inbox_unread is None:
+                        try:
+                            inbox_unread = self._get_unread_count_from_account(account=account)
+                        except Exception:
+                            inbox_unread = None
+                    return self._aggregate_unread_count_tracked(
                         user_id=int(user_id),
-                        bucket="unread_count",
-                        mailbox_scope="aggregate",
-                        value=(
-                            self._aggregate_unread_count(
-                                user_id=int(user_id),
-                                current_mailbox_id=resolved_mailbox_id,
-                                current_inbox_unread=inbox_unread,
-                            )
-                            if inbox_unread is not None
-                            else self.get_unread_count(user_id=int(user_id))
-                        ),
+                        current_mailbox_id=resolved_mailbox_id,
+                        current_inbox_unread=inbox_unread,
                     )
+
+                def _messages() -> dict[str, Any]:
+                    return self._list_messages_from_account(
+                        account=account,
+                        mailbox_id=resolved_mailbox_id or None,
+                        mailbox_email=_normalize_text(profile.get("email")),
+                        folder=normalized_folder,
+                        folder_scope=normalized_scope,
+                        limit=safe_limit,
+                        offset=0,
+                    )
+
+                jobs: list[tuple[str, Any]] = []
+                if next_summary is None or next_tree is None:
+                    jobs.append(("summary_tree", _summary_and_tree))
+                if next_unread_count is None:
+                    jobs.append(("unread", _unread))
                 if next_messages is None:
+                    jobs.append(("messages", _messages))
+
+                results: dict[str, Any] = {}
+                errors: dict[str, BaseException] = {}
+
+                def _guarded(name: str, fn: Any):
+                    def _run() -> None:
+                        try:
+                            results[name] = fn()
+                        except BaseException as exc:
+                            errors[name] = exc
+                    return _run
+
+                if len(jobs) > 1:
+                    threads = [
+                        Thread(target=_guarded(name, fn), name=f"mail-bootstrap-{name}", daemon=True)
+                        for name, fn in jobs
+                    ]
+                    for thread in threads:
+                        thread.start()
+                    for thread in threads:
+                        thread.join()
+                else:
+                    for name, fn in jobs:
+                        _guarded(name, fn)()
+                # Errors surface in the original call order regardless of finish order.
+                for name, _fn in jobs:
+                    if name in errors:
+                        raise errors[name]
+                if "summary_tree" in results:
+                    resolved_summary, resolved_tree = results["summary_tree"]
+                    if next_summary is None:
+                        next_summary = self._cache_set(
+                            user_id=int(user_id),
+                            bucket="folder_summary",
+                            value=resolved_summary,
+                            mailbox_scope=resolved_mailbox_id,
+                        )
+                    if next_tree is None:
+                        next_tree = self._cache_set(
+                            user_id=int(user_id),
+                            bucket="folder_tree",
+                            value=resolved_tree,
+                            mailbox_scope=resolved_mailbox_id,
+                        )
+                if "unread" in results:
+                    total_unread, failed_mailbox_ids = results["unread"]
+                    if failed_mailbox_ids:
+                        next_unread_count = int(total_unread)
+                    else:
+                        next_unread_count = self._cache_set(
+                            user_id=int(user_id),
+                            bucket="unread_count",
+                            mailbox_scope="aggregate",
+                            value=int(total_unread),
+                        )
+                if "messages" in results:
                     next_messages = self._cache_set(
                         user_id=int(user_id),
                         bucket="messages",
                         extra=f"{normalized_folder}|{normalized_scope}|{safe_limit}|0|0",
-                        value=self._list_messages_from_account(
-                            account=account,
-                            mailbox_id=resolved_mailbox_id or None,
-                            mailbox_email=_normalize_text(profile.get("email")),
-                            folder=normalized_folder,
-                            folder_scope=normalized_scope,
-                            limit=safe_limit,
-                            offset=0,
-                        ),
+                        value=results["messages"],
                         mailbox_scope=resolved_mailbox_id,
                     )
                 return next_summary, next_tree, int(next_unread_count or 0), next_messages
@@ -4414,6 +4687,7 @@ class MailService:
         )
         self._set_request_metric("searched_window", result.searched_window)
         self._set_request_metric("search_limited", int(result.search_limited))
+        self._set_request_metric("folders_skipped", int(result.skipped_folders))
         return result.payload
 
     def get_conversation(
@@ -4477,6 +4751,8 @@ class MailService:
                     folder_key=item_folder_key,
                     mailbox_id=resolved_mailbox_id,
                     mailbox_email=profile["email"],
+                    include_inline_data_urls=True,
+                    inline_embed_budget=self._INLINE_ATTACHMENT_EMBED_TOTAL_MAX,
                 )
                 for item, item_folder_key in self._hydrate_conversation_items(
                     account=account,
@@ -5051,12 +5327,15 @@ class MailService:
                 ) from exc
             raise MailServiceError(f"Failed to send message: {exc}") from exc
 
+        # Exchange already accepted the message. Local bookkeeping below must
+        # never downgrade the outcome to a failure: a false "not sent" invites
+        # the user to send a duplicate (MAIL-13).
+        if draft_id:
+            try:
+                self.delete_draft(user_id=int(user_id), mailbox_id=resolved_mailbox_id, draft_id=draft_id)
+            except Exception:
+                logger.warning("Mail draft cleanup failed after send: draft_id=%s", draft_id)
         try:
-            if draft_id:
-                try:
-                    self.delete_draft(user_id=int(user_id), mailbox_id=resolved_mailbox_id, draft_id=draft_id)
-                except Exception:
-                    logger.warning("Mail draft cleanup failed after send: draft_id=%s", draft_id)
             self._log_message(
                 message_id=message_id,
                 user_id=int(profile["user"]["id"]),
@@ -5068,50 +5347,27 @@ class MailService:
                 status="sent",
                 exchange_item_id=_normalize_text(getattr(msg, "id", "")) or None,
             )
+        except Exception:
+            logger.warning("Mail post-send log write failed", exc_info=True)
+        try:
             self.invalidate_user_cache(
                 user_id=int(user_id),
                 prefixes=("folder_summary", "folder_tree", "messages", "notification_feed", "bootstrap", "message_detail", "conversation_detail"),
             )
-            result = {
-                "ok": True,
-                "message_id": message_id,
-                "subject": final_subject,
-                "recipients": recipients,
-                "cc": cc_recipients,
-                "bcc": bcc_recipients,
-                "mailbox_id": _normalize_text(profile.get("mailbox_id")) or None,
-                "mailbox_email": _normalize_text(profile.get("email")) or None,
-            }
-            self._complete_send_idempotency(send_claim, status="sent", result=result)
-            return result
-        except Exception as exc:
-            # Exchange already accepted the message: a local bookkeeping error here must never
-            # release the idempotency key for a second send (DMAIL-02).
-            self._complete_send_idempotency(
-                send_claim,
-                status="sent",
-                result={
-                    "ok": True,
-                    "message_id": message_id,
-                    "subject": final_subject,
-                    "recipients": recipients,
-                    "cc": cc_recipients,
-                    "bcc": bcc_recipients,
-                    "post_send_error": True,
-                },
-            )
-            self._log_message(
-                message_id=message_id,
-                user_id=int(profile["user"]["id"]),
-                username=_normalize_text(profile["user"].get("username")),
-                direction="outgoing",
-                folder_hint="sent",
-                subject=final_subject,
-                recipients=recipients,
-                status="failed",
-                error_text=str(exc),
-            )
-            raise MailServiceError(f"Failed to send message: {exc}") from exc
+        except Exception:
+            logger.warning("Mail post-send cache invalidation failed", exc_info=True)
+        result = {
+            "ok": True,
+            "message_id": message_id,
+            "subject": final_subject,
+            "recipients": recipients,
+            "cc": cc_recipients,
+            "bcc": bcc_recipients,
+            "mailbox_id": _normalize_text(profile.get("mailbox_id")) or None,
+            "mailbox_email": _normalize_text(profile.get("email")) or None,
+        }
+        self._complete_send_idempotency(send_claim, status="sent", result=result)
+        return result
 
     @classmethod
     def _normalize_field_options(cls, value: Any) -> list[str]:
@@ -5298,6 +5554,9 @@ class MailService:
                 login=profile["login"],
                 password=profile["password"]
             )
+            # resolve_names is a protocol-level service and reads config.version
+            # directly — prime the lazy version guess on the fresh account first.
+            getattr(account, "version", None)
             # resolve_names searches in GAL and personal contacts
             results = account.protocol.resolve_names(
                 names=[query], 
@@ -5636,6 +5895,7 @@ class MailService:
         template_id: str,
         fields: dict[str, Any],
         attachments: Optional[list[tuple[str, bytes]]] = None,
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         template = self.get_template(template_id, active_only=True)
         if template is None:
@@ -5671,6 +5931,8 @@ class MailService:
             body=body_html,
             is_html=True,
             attachments=safe_attachments,
+            idempotency_key=idempotency_key,
+            require_idempotency=bool(idempotency_key),
         )
 
 

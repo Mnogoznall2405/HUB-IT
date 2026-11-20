@@ -10,6 +10,7 @@ import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import SelectAllRoundedIcon from '@mui/icons-material/SelectAllRounded';
 import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
@@ -70,6 +71,7 @@ export default function FileActionsContextMenu({
   onCollaborators,
   onVersions,
   onDownload,
+  onExportPdf,
   onSaveAll,
   onRename,
   onMove,
@@ -230,6 +232,17 @@ export default function FileActionsContextMenu({
         >
           <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>{nativeFileActions ? 'Сохранить как' : 'Скачать'}</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onExportPdf === 'function' ? (
+        <MenuItem
+          data-testid="file-action-export-pdf"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onExportPdf)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><PictureAsPdfRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Скачать как PDF</ListItemText>
         </MenuItem>
       ) : null}
       {typeof onSaveAll === 'function' ? (

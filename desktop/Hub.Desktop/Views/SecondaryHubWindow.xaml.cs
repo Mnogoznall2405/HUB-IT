@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
@@ -27,6 +28,8 @@ namespace Hub.Desktop.Views;
 
 public partial class SecondaryHubWindow : Window, IDesktopHubWindow
 {
+    private const string DefaultWindowTitle = "HUB Desktop — окно 2";
+
     private readonly DesktopOptions _options;
     private readonly IDesktopNotificationService _notifications;
     private readonly DesktopWindowManager _windowManager;
@@ -60,6 +63,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     private bool _screenCaptureDeferredLogged;
     private bool _editorCloseApproved;
     private bool _editorCloseCheckInProgress;
+    private readonly ObservableCollection<WorkspaceTabItem> _workspaceTabs = [];
 
     public SecondaryHubWindow(
         DesktopOptions options,
@@ -87,6 +91,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _externalUriLauncher = new ExternalUriLauncher(_navigationPolicy);
 
         InitializeComponent();
+        WorkspaceTabs.ItemsSource = _workspaceTabs;
         _webViewHost = new DesktopWebViewHost(
             BrowserHost,
             environmentProvider ?? throw new ArgumentNullException(nameof(environmentProvider)));
@@ -350,7 +355,8 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
             _notifications,
             Environment.UserName,
             new DesktopVncHandlerProbe(),
-            _options.BaseUri);
+            _options.BaseUri,
+            workspaceChrome: true);
         _desktopBridge.Ready += DesktopBridge_Ready;
         _desktopBridge.ThemeChanged += DesktopBridge_ThemeChanged;
         _desktopBridge.OpenDownloadedFileRequested += DesktopBridge_OpenDownloadedFileRequested;
@@ -365,6 +371,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested += DesktopBridge_MailComposeWindowRequested;
         _desktopBridge.WorkspaceWindowRequested += DesktopBridge_WorkspaceWindowRequested;
+        _desktopBridge.WorkspaceChromeChanged += DesktopBridge_WorkspaceChromeChanged;
         ApplyWebViewMemoryUsageTarget(core);
     }
 
@@ -379,6 +386,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         if (decision == NavigationDisposition.TrustedOrigin)
         {
             _desktopBridge?.ResetDocumentReady();
+            ClearWorkspaceChrome();
             HideError();
             ShowLoading();
             StartNavigationTimeout();
@@ -605,6 +613,73 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
             DesktopSecondaryWindowOpenResult.ActivatedExisting => "activated",
             _ => "failed",
         };
+    }
+
+    private void DesktopBridge_WorkspaceChromeChanged(
+        object? sender,
+        DesktopWorkspaceChromeChangedEventArgs e) =>
+        ApplyWorkspaceChrome(e.State);
+
+    /// <summary>Рендерит вкладки документов в заголовке по снимку, присланному страницей workspace.</summary>
+    private void ApplyWorkspaceChrome(DesktopWorkspaceChromeState state)
+    {
+        _workspaceTabs.Clear();
+        foreach (var document in state.Documents)
+        {
+            _workspaceTabs.Add(new WorkspaceTabItem(
+                document.Id,
+                document.Title,
+                document.Dirty,
+                string.Equals(document.Id, state.ActiveId, StringComparison.Ordinal)));
+        }
+
+        var hasDocuments = state.Documents.Count > 0;
+        WorkspaceTabsScroller.Visibility = hasDocuments ? Visibility.Visible : Visibility.Collapsed;
+        WorkspaceHistoryButton.Visibility = hasDocuments ? Visibility.Visible : Visibility.Collapsed;
+        WorkspaceHistoryButton.IsEnabled = state.HistoryEnabled;
+
+        var activeTitle = state.Documents
+            .FirstOrDefault(document => string.Equals(document.Id, state.ActiveId, StringComparison.Ordinal))
+            ?.Title;
+        Title = string.IsNullOrWhiteSpace(activeTitle)
+            ? DefaultWindowTitle
+            : $"{activeTitle} — HUB Desktop";
+    }
+
+    /// <summary>Полная навигация сбрасывает страницу — вкладки дожидаться нового снимка нельзя.</summary>
+    private void ClearWorkspaceChrome()
+    {
+        _workspaceTabs.Clear();
+        WorkspaceTabsScroller.Visibility = Visibility.Collapsed;
+        WorkspaceHistoryButton.Visibility = Visibility.Collapsed;
+        Title = DefaultWindowTitle;
+    }
+
+    private void WorkspaceTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string id })
+        {
+            _desktopBridge?.TryPostWorkspaceChromeCommand(DesktopWorkspaceChromeCommand.Activate, id);
+        }
+    }
+
+    private void WorkspaceTabClose_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is FrameworkElement { Tag: string id })
+        {
+            _desktopBridge?.TryPostWorkspaceChromeCommand(DesktopWorkspaceChromeCommand.Close, id);
+        }
+    }
+
+    private void WorkspaceHistoryButton_Click(object sender, RoutedEventArgs e) =>
+        _desktopBridge?.TryPostWorkspaceChromeCommand(DesktopWorkspaceChromeCommand.History, null);
+
+    private void WorkspaceTabsScroller_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        WorkspaceTabsScroller.ScrollToHorizontalOffset(
+            WorkspaceTabsScroller.HorizontalOffset - e.Delta);
+        e.Handled = true;
     }
 
     private void DesktopBridge_MailComposeWindowRequested(
@@ -1216,6 +1291,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.OpenCurrentInBrowserRequested -= DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested -= DesktopBridge_MailComposeWindowRequested;
         _desktopBridge.WorkspaceWindowRequested -= DesktopBridge_WorkspaceWindowRequested;
+        _desktopBridge.WorkspaceChromeChanged -= DesktopBridge_WorkspaceChromeChanged;
         _desktopBridge.Dispose();
         _desktopBridge = null;
     }
@@ -1235,5 +1311,17 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _webView = null;
         _shutdown.Dispose();
         DesktopLog.Info("Secondary HUB window closed");
+    }
+
+    /// <summary>Элемент вкладки документа в заголовке окна (данные из workspace.chrome).</summary>
+    private sealed class WorkspaceTabItem(string id, string title, bool dirty, bool isActive)
+    {
+        public string Id { get; } = id;
+
+        public string Title { get; } = title;
+
+        public bool Dirty { get; } = dirty;
+
+        public bool IsActive { get; } = isActive;
     }
 }

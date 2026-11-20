@@ -1,0 +1,643 @@
+<UserControl x:Class="Hub.Desktop.Native.Views.ConstructionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
+             Foreground="{DynamicResource HubTextBrush}"
+             FontFamily="Segoe UI Variable Text, Segoe UI"
+             SnapsToDevicePixels="True"
+             UseLayoutRounding="True">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Themes/HubTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+            <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+            <Style x:Key="SectionPanelStyle" TargetType="Border">
+                <Setter Property="Margin" Value="0,14,0,0" />
+                <Setter Property="Padding" Value="14,12" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceAltBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+            </Style>
+            <Style x:Key="MetricPanelStyle" TargetType="Border">
+                <Setter Property="Margin" Value="0,0,10,10" />
+                <Setter Property="Padding" Value="10,8" />
+                <Setter Property="MinWidth" Value="140" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+            </Style>
+            <Style x:Key="DirectionPanelStyle" TargetType="Border">
+                <Setter Property="Margin" Value="0,0,10,10" />
+                <Setter Property="Padding" Value="10,8" />
+                <Setter Property="MinWidth" Value="180" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid AutomationProperties.Name="Страница строительства">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Верхняя панель: поиск, вид карточек, обновить -->
+        <Border Grid.Row="0" Padding="20,16,20,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Grid VerticalAlignment="Center">
+                        <TextBox x:Name="SearchInput"
+                                 Width="300"
+                                 HorizontalAlignment="Left"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="Поиск объекта или заявки строительства" />
+                        <TextBlock Margin="13,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="Объект или заявка…">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=SearchInput}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                    <ToggleButton Margin="12,0,0,0"
+                                  Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding IsKindAll, Mode=OneWay}"
+                                  Command="{Binding SelectKindCommand}"
+                                  CommandParameter="all"
+                                  Content="Все"
+                                  AutomationProperties.Name="Показать все карточки строительства" />
+                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding IsKindProject, Mode=OneWay}"
+                                  Command="{Binding SelectKindCommand}"
+                                  CommandParameter="project"
+                                  Content="Объекты"
+                                  AutomationProperties.Name="Показать объекты строительства" />
+                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding IsKindGeneral, Mode=OneWay}"
+                                  Command="{Binding SelectKindCommand}"
+                                  CommandParameter="general"
+                                  Content="Общие"
+                                  AutomationProperties.Name="Показать общие заявки" />
+                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding IsKindUnassigned, Mode=OneWay}"
+                                  Command="{Binding SelectKindCommand}"
+                                  CommandParameter="unassigned"
+                                  Content="Без группы"
+                                  AutomationProperties.Name="Показать заявки без номенклатурной группы" />
+                    <ProgressBar Margin="10,0,0,0"
+                                 Width="80"
+                                 Height="3"
+                                 VerticalAlignment="Center"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор загрузки строительства" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Обновить"
+                        AutomationProperties.Name="Обновить строительство" />
+            </Grid>
+        </Border>
+
+        <!-- Баннер ошибки загрузки -->
+        <Border Grid.Row="1"
+                Margin="20,10,20,0"
+                Padding="14,10"
+                Background="{DynamicResource HubSurfaceBrush}"
+                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}"
+                AutomationProperties.Name="Ошибка загрузки строительства">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{DynamicResource HubErrorTextBrush}"
+                           Text="{Binding BannerErrorText}"
+                           TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <Button Grid.Column="1"
+                        Margin="12,0,8,0"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="Повторить"
+                        AutomationProperties.Name="Повторить загрузку строительства" />
+                <Button Grid.Column="2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DismissBannerCommand}"
+                        Content="✕"
+                        AutomationProperties.Name="Скрыть ошибку строительства" />
+            </Grid>
+        </Border>
+
+        <!-- Итоги портфеля и метка обновления -->
+        <StackPanel Grid.Row="2"
+                    Margin="20,10,20,0"
+                    Orientation="Horizontal"
+                    Visibility="{Binding HasContent, Converter={StaticResource BoolToVisibility}}">
+            <TextBlock VerticalAlignment="Center"
+                       FontSize="12"
+                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                       Text="{Binding TotalText}" />
+            <TextBlock Margin="14,0,0,0"
+                       VerticalAlignment="Center"
+                       FontSize="12"
+                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                       Text="{Binding LastUpdatedText}" />
+        </StackPanel>
+
+        <!-- Список объектов | карточка объекта -->
+        <Grid Grid.Row="3" Margin="20,14,20,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360" MinWidth="300" />
+                <ColumnDefinition Width="6" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Список объектов строительства -->
+            <Grid Grid.Column="0">
+                <ListBox Style="{StaticResource HubListBoxStyle}"
+                         ItemsSource="{Binding Items}"
+                         SelectedItem="{Binding SelectedObject}"
+                         AutomationProperties.Name="Список объектов строительства">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel AutomationProperties.Name="{Binding AutomationName}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border VerticalAlignment="Center"
+                                            Style="{StaticResource HubStatusPillStyle}"
+                                            local:HubTone.Value="{Binding KindTone}">
+                                        <TextBlock FontSize="10"
+                                                   FontWeight="SemiBold"
+                                                   Style="{StaticResource HubToneTextStyle}"
+                                                   Text="{Binding KindLabel}" />
+                                    </Border>
+                                    <TextBlock Margin="8,0,0,0"
+                                               VerticalAlignment="Center"
+                                               FontSize="14"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding Title}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <TextBlock Margin="0,4,0,0"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding MetricsText}" />
+                                <TextBlock Margin="0,2,0,0"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding LatestRequestText}"
+                                           Visibility="{Binding HasLatestRequest, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Margin="0,2,0,0"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding DepartmentsText}"
+                                           TextTrimming="CharacterEllipsis"
+                                           Visibility="{Binding HasDepartments, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <!-- Пустое состояние списка -->
+                <StackPanel HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock HorizontalAlignment="Center"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Text="Нет объектов строительства" />
+                    <TextBlock Margin="0,6,0,0"
+                               HorizontalAlignment="Center"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               Text="Объекты появятся после привязки номенклатурных групп 1С или измените условия поиска." />
+                </StackPanel>
+            </Grid>
+
+            <GridSplitter Grid.Column="1"
+                          Width="6"
+                          HorizontalAlignment="Stretch"
+                          Background="Transparent"
+                          AutomationProperties.Name="Разделитель списка и карточки строительства" />
+
+            <!-- Карточка объекта -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12">
+                <Grid>
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding ShowDetailPlaceholder, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Объект не выбран" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Выберите объект в списке слева." />
+                    </StackPanel>
+
+                    <ProgressBar Height="3"
+                                 Margin="16"
+                                 VerticalAlignment="Top"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsDetailLoading, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор загрузки карточки объекта" />
+
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding HasDetailError, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Ошибка карточки объекта">
+                        <TextBlock HorizontalAlignment="Center"
+                                   Foreground="{DynamicResource HubErrorTextBrush}"
+                                   Text="{Binding DetailErrorText}"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center" />
+                        <Button Margin="0,10,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding RetryDetailCommand}"
+                                Content="Повторить"
+                                AutomationProperties.Name="Повторить загрузку карточки объекта" />
+                    </StackPanel>
+
+                    <Grid Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}">
+                        <ScrollViewer Padding="22,18"
+                                      VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <!-- Шапка: имя, вид, статус, управляемость -->
+                                <StackPanel Orientation="Horizontal">
+                                    <Border VerticalAlignment="Top"
+                                            Style="{StaticResource HubStatusPillStyle}"
+                                            local:HubTone.Value="{Binding Detail.KindTone}">
+                                        <TextBlock FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Style="{StaticResource HubToneTextStyle}"
+                                                   Text="{Binding Detail.KindLabel}" />
+                                    </Border>
+                                    <TextBlock Margin="10,0,0,0"
+                                               VerticalAlignment="Center"
+                                               FontSize="20"
+                                               FontWeight="SemiBold"
+                                               Text="{Binding Detail.Title}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <WrapPanel Margin="0,8,0,0">
+                                    <Border Margin="0,0,8,4"
+                                            Style="{StaticResource HubStatusPillStyle}"
+                                            local:HubTone.Value="{Binding Detail.StatusTone}">
+                                        <TextBlock FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Style="{StaticResource HubToneTextStyle}"
+                                                   Text="{Binding Detail.StatusText}" />
+                                    </Border>
+                                    <Border Margin="0,0,8,4"
+                                            Style="{StaticResource HubStatusPillStyle}"
+                                            local:HubTone.Value="info"
+                                            Visibility="{Binding Detail.Managed, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Style="{StaticResource HubToneTextStyle}"
+                                                   Text="Ведётся отдельно" />
+                                    </Border>
+                                </WrapPanel>
+                                <TextBlock FontSize="12"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding Detail.RequisitesText}"
+                                           Visibility="{Binding Detail.HasRequisites, Converter={StaticResource BoolToVisibility}}" />
+
+                                <!-- Метрики из карточки списка -->
+                                <WrapPanel Margin="0,12,0,0"
+                                           Visibility="{Binding Detail.IsProject, Converter={StaticResource BoolToVisibility}}">
+                                    <Border Style="{StaticResource MetricPanelStyle}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="18"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding SelectedObject.RequestCount}" />
+                                            <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                                       Text="заявок за 12 месяцев" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource MetricPanelStyle}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="18"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding SelectedObject.RequestsLast30Days}" />
+                                            <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                                       Text="заявок за 30 дней" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource MetricPanelStyle}">
+                                        <StackPanel>
+                                            <TextBlock FontSize="18"
+                                                       FontWeight="SemiBold"
+                                                       Text="{Binding SelectedObject.PostedCount}" />
+                                            <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                                       Text="проведено" />
+                                        </StackPanel>
+                                    </Border>
+                                </WrapPanel>
+
+                                <!-- Уведомление для «Общий контур»/«Без группы» -->
+                                <Border Style="{StaticResource SectionPanelStyle}"
+                                        local:HubTone.Value="{Binding Detail.KindTone}"
+                                        Visibility="{Binding Detail.HasNotice, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock FontSize="13"
+                                               Style="{StaticResource HubToneTextStyle}"
+                                               Text="{Binding Detail.NoticeText}"
+                                               TextWrapping="Wrap" />
+                                </Border>
+
+                                <!-- Направления (номенклатурные группы 1С) -->
+                                <Border Style="{StaticResource SectionPanelStyle}"
+                                        Visibility="{Binding Detail.HasDirections, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <TextBlock FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Text="Направления" />
+                                        <ItemsControl Margin="0,8,-10,0"
+                                                      ItemsSource="{Binding Detail.Directions}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Style="{StaticResource DirectionPanelStyle}"
+                                                            AutomationProperties.Name="{Binding AutomationName}">
+                                                        <StackPanel>
+                                                            <TextBlock FontSize="13"
+                                                                       FontWeight="SemiBold"
+                                                                       Text="{Binding Title}"
+                                                                       TextWrapping="Wrap" />
+                                                            <StackPanel Margin="0,6,0,0"
+                                                                        Orientation="Horizontal"
+                                                                        Visibility="{Binding HasCounts, Converter={StaticResource BoolToVisibility}}">
+                                                                <TextBlock FontSize="12"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="{Binding StatsText}" />
+                                                            </StackPanel>
+                                                            <Border Margin="0,6,0,0"
+                                                                    HorizontalAlignment="Left"
+                                                                    Style="{StaticResource HubStatusPillStyle}"
+                                                                    local:HubTone.Value="danger"
+                                                                    Visibility="{Binding HasOverdue, Converter={StaticResource BoolToVisibility}}">
+                                                                <TextBlock FontSize="10"
+                                                                           FontWeight="SemiBold"
+                                                                           Style="{StaticResource HubToneTextStyle}"
+                                                                           Text="Есть просроченные" />
+                                                            </Border>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Команда объекта -->
+                                <Border Style="{StaticResource SectionPanelStyle}"
+                                        Visibility="{Binding Detail.HasTeam, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <TextBlock FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Text="Команда объекта" />
+                                        <ItemsControl Margin="0,6,0,0"
+                                                      ItemsSource="{Binding Detail.Team}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Margin="0,4,0,0">
+                                                        <WrapPanel>
+                                                            <TextBlock FontSize="12"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding RoleText}" />
+                                                            <TextBlock Margin="6,0,0,0"
+                                                                       FontSize="13"
+                                                                       FontWeight="SemiBold"
+                                                                       Text="{Binding FullName}" />
+                                                        </WrapPanel>
+                                                        <TextBlock FontSize="12"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding Subtitle}"
+                                                                   Visibility="{Binding HasSubtitle, Converter={StaticResource BoolToVisibility}}" />
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Заявки объекта -->
+                                <Border Style="{StaticResource SectionPanelStyle}"
+                                        Visibility="{Binding Detail.IsProject, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       Text="Заявки" />
+                                            <ProgressBar Grid.Column="1"
+                                                         Width="60"
+                                                         Height="3"
+                                                         VerticalAlignment="Center"
+                                                         IsIndeterminate="True"
+                                                         Foreground="{DynamicResource HubAccentBrush}"
+                                                         Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                         Visibility="{Binding IsRequestsLoading, Converter={StaticResource BoolToVisibility}}"
+                                                         AutomationProperties.Name="Индикатор загрузки заявок объекта" />
+                                        </Grid>
+                                        <TextBlock Margin="0,4,0,0"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding RequestsSummaryText}"
+                                                   Visibility="{Binding HasRequestsSummary, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <!-- Ошибка заявок + повтор -->
+                                        <StackPanel Margin="0,8,0,0"
+                                                    Visibility="{Binding HasRequestsError, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock FontSize="12"
+                                                       Foreground="{DynamicResource HubErrorTextBrush}"
+                                                       Text="{Binding RequestsErrorText}"
+                                                       TextWrapping="Wrap" />
+                                            <Button Margin="0,6,0,0"
+                                                    HorizontalAlignment="Left"
+                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding RetryRequestsCommand}"
+                                                    Content="Повторить"
+                                                    AutomationProperties.Name="Повторить загрузку заявок объекта" />
+                                        </StackPanel>
+
+                                        <TextBlock Margin="0,8,0,0"
+                                                   FontSize="12"
+                                                   Style="{StaticResource HubMutedTextStyle}"
+                                                   Text="Активных заявок нет."
+                                                   Visibility="{Binding ShowRequestsEmpty, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <ItemsControl Margin="0,8,0,0"
+                                                      ItemsSource="{Binding Requests}"
+                                                      AutomationProperties.Name="Список заявок объекта">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="0,0,0,8"
+                                                            Padding="12,10"
+                                                            Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="8"
+                                                            AutomationProperties.Name="{Binding AutomationName}">
+                                                        <StackPanel>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel>
+                                                                    <TextBlock FontSize="14"
+                                                                               FontWeight="SemiBold"
+                                                                               Text="{Binding Title}"
+                                                                               TextWrapping="Wrap" />
+                                                                    <TextBlock Margin="0,2,0,0"
+                                                                               FontSize="12"
+                                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                               Text="{Binding DatesText}" />
+                                                                </StackPanel>
+                                                                <WrapPanel Grid.Column="1"
+                                                                           Margin="10,0,0,0"
+                                                                           VerticalAlignment="Top">
+                                                                    <Border Margin="0,0,6,4"
+                                                                            Style="{StaticResource HubStatusPillStyle}"
+                                                                            local:HubTone.Value="{Binding StageTone}">
+                                                                        <TextBlock FontSize="11"
+                                                                                   FontWeight="SemiBold"
+                                                                                   Style="{StaticResource HubToneTextStyle}"
+                                                                                   Text="{Binding StageText}" />
+                                                                    </Border>
+                                                                    <Border Margin="0,0,6,4"
+                                                                            Style="{StaticResource HubStatusPillStyle}"
+                                                                            local:HubTone.Value="danger"
+                                                                            Visibility="{Binding Overdue, Converter={StaticResource BoolToVisibility}}">
+                                                                        <TextBlock FontSize="11"
+                                                                                   FontWeight="SemiBold"
+                                                                                   Style="{StaticResource HubToneTextStyle}"
+                                                                                   Text="Просрочено" />
+                                                                    </Border>
+                                                                    <Border Margin="0,0,0,4"
+                                                                            Style="{StaticResource HubStatusPillStyle}"
+                                                                            local:HubTone.Value="warning"
+                                                                            Visibility="{Binding Attention, Converter={StaticResource BoolToVisibility}}">
+                                                                        <TextBlock FontSize="11"
+                                                                                   FontWeight="SemiBold"
+                                                                                   Style="{StaticResource HubToneTextStyle}"
+                                                                                   Text="Проверить данные" />
+                                                                    </Border>
+                                                                </WrapPanel>
+                                                            </Grid>
+                                                            <Border Margin="0,8,0,0"
+                                                                    Padding="10,8"
+                                                                    Background="{DynamicResource HubSurfaceBrush}"
+                                                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="6">
+                                                                <TextBlock FontSize="13"
+                                                                           FontWeight="SemiBold"
+                                                                           Text="{Binding StateText}"
+                                                                           TextWrapping="Wrap" />
+                                                            </Border>
+                                                            <TextBlock Margin="0,8,0,0"
+                                                                       FontSize="12"
+                                                                       Text="{Binding NomenclatureText}"
+                                                                       TextWrapping="Wrap"
+                                                                       Visibility="{Binding HasNomenclature, Converter={StaticResource BoolToVisibility}}" />
+                                                            <TextBlock Margin="0,6,0,0"
+                                                                       FontSize="12"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       TextWrapping="Wrap">
+                                                                <Run Text="{Binding WarehouseText, Mode=OneWay}" />
+                                                                <Run Text=" · " />
+                                                                <Run Text="{Binding PositionsText, Mode=OneWay}" />
+                                                            </TextBlock>
+                                                            <TextBlock Margin="0,2,0,0"
+                                                                       FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding MetaText}"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       Visibility="{Binding HasMeta, Converter={StaticResource BoolToVisibility}}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+
+                                        <Button Margin="0,2,0,0"
+                                                HorizontalAlignment="Left"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding LoadMoreRequestsCommand}"
+                                                Content="Показать ещё"
+                                                Visibility="{Binding HasMoreRequests, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Показать ещё заявки объекта" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Подвал: «показать ещё» объектов -->
+        <Border Grid.Row="4"
+                Margin="20,0,20,12"
+                Visibility="{Binding HasMore, Converter={StaticResource BoolToVisibility}}">
+            <Button HorizontalAlignment="Left"
+                    Style="{StaticResource HubGhostButtonStyle}"
+                    Command="{Binding LoadMoreCommand}"
+                    Content="Показать ещё объекты"
+                    AutomationProperties.Name="Показать ещё объекты строительства" />
+        </Border>
+    </Grid>
+</UserControl>

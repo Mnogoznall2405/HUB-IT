@@ -599,6 +599,636 @@ public sealed class NativeNewsViewModelTests
         Assert.True(model.IsSortNewest);
     }
 
+    // ---- Вовлечение: реакции/лайк/закладка ----
+
+    [Fact]
+    public async Task BookmarkFilterMapsToBookmarkedOnlyQuery()
+    {
+        var api = new FakeHubApiClient();
+        var model = new NewsViewModel(api);
+
+        await ((NativeAsyncCommand)model.SelectFilterCommand).ExecuteAsync("bookmarks");
+
+        Assert.True(model.IsFilterBookmarks);
+        Assert.False(model.IsFilterAll);
+        Assert.True(api.LastAnnouncementsQuery?.BookmarkedOnly);
+        Assert.False(api.LastAnnouncementsQuery?.UnreadOnly ?? true);
+    }
+
+    [Fact]
+    public async Task PickReactionAppliesChoiceAndRecordsCall()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1"),
+        };
+        var model = await LoadDetailAsync(api);
+
+        await ((NativeAsyncCommand)model.PickReactionCommand).ExecuteAsync("wow");
+
+        Assert.Equal(("n1", "wow"), Assert.Single(api.AnnouncementReactionCalls));
+        Assert.Equal("wow", model.Detail!.ViewerReaction);
+        Assert.Equal(1, model.Detail.ReactionsCount);
+        var chip = Assert.Single(model.Detail.ReactionChips);
+        Assert.True(chip.IsMine);
+        Assert.False(model.Detail.IsSocialBusy);
+    }
+
+    [Fact]
+    public async Task ToggleOwnReactionChipClearsReaction()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail(
+                "n1",
+                reactionCounts: new Dictionary<string, int> { ["wow"] = 1 },
+                viewerReaction: "wow"),
+        };
+        var model = await LoadDetailAsync(api);
+        var chip = Assert.Single(model.Detail!.ReactionChips);
+        Assert.True(chip.IsMine);
+
+        await ((NativeAsyncCommand)model.ToggleReactionCommand).ExecuteAsync(chip);
+
+        // Повторный клик по своей реакции — DELETE (null в записи фейка).
+        Assert.Equal(("n1", (string?)null), Assert.Single(api.AnnouncementReactionCalls));
+        Assert.Null(model.Detail.ViewerReaction);
+        Assert.Empty(model.Detail.ReactionChips);
+    }
+
+    [Fact]
+    public async Task ReactionFailureRollsBackOptimisticState()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail(
+                "n1",
+                reactionCounts: new Dictionary<string, int> { ["like"] = 2 }),
+            AnnouncementReactionException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = await LoadDetailAsync(api);
+
+        await ((NativeAsyncCommand)model.PickReactionCommand).ExecuteAsync("wow");
+
+        // Откат: своя реакция пуста, чужие счётчики сохранены, ошибка локальная.
+        Assert.Null(model.Detail!.ViewerReaction);
+        var chip = Assert.Single(model.Detail.ReactionChips);
+        Assert.Equal("like", chip.ReactionType);
+        Assert.Equal(2, chip.Count);
+        Assert.False(chip.IsMine);
+        Assert.True(model.HasDetailError);
+        Assert.False(model.Detail.IsSocialBusy);
+    }
+
+    [Fact]
+    public async Task ToggleLikeCallsApiAndUpdatesCount()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1"),
+        };
+        var model = await LoadDetailAsync(api);
+
+        await ((NativeAsyncCommand)model.ToggleLikeCommand).ExecuteAsync(null);
+
+        Assert.Equal(("n1", true), Assert.Single(api.AnnouncementLikeCalls));
+        Assert.True(model.Detail!.IsLiked);
+        Assert.Equal(1, model.Detail.LikesCount);
+        Assert.Equal("❤️ 1", model.Detail.LikeText);
+    }
+
+    [Fact]
+    public async Task LikeFailureRollsBackOptimisticState()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1"),
+            AnnouncementLikeException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = await LoadDetailAsync(api);
+
+        await ((NativeAsyncCommand)model.ToggleLikeCommand).ExecuteAsync(null);
+
+        Assert.False(model.Detail!.IsLiked);
+        Assert.Equal(0, model.Detail.LikesCount);
+        Assert.True(model.HasDetailError);
+    }
+
+    [Fact]
+    public async Task ToggleBookmarkUpdatesDetailAndListMarker()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1"),
+        };
+        var model = await LoadDetailAsync(api);
+
+        await ((NativeAsyncCommand)model.ToggleBookmarkCommand).ExecuteAsync(null);
+
+        Assert.Equal(("n1", true), Assert.Single(api.AnnouncementBookmarkCalls));
+        Assert.True(model.Detail!.IsBookmarked);
+        Assert.Equal("🔖", model.Items[0].BookmarkedMarker);
+    }
+
+    [Fact]
+    public async Task BookmarkFailureRollsBack()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", viewerBookmarked: true),
+            AnnouncementBookmarkException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = await LoadDetailAsync(api);
+
+        await ((NativeAsyncCommand)model.ToggleBookmarkCommand).ExecuteAsync(null);
+
+        Assert.True(model.Detail!.IsBookmarked);
+        Assert.Equal("🔖", model.Items[0].BookmarkedMarker);
+        Assert.True(model.HasDetailError);
+    }
+
+    // ---- Опрос ----
+
+    [Fact]
+    public async Task VotePollOptionAppliesServerResult()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail(
+                "n1",
+                poll: new HubAnnouncementPoll
+                {
+                    Id = "p1",
+                    Question = "Когда работы?",
+                    IsAnonymous = true,
+                    TotalVotes = 4,
+                    TotalVoters = 4,
+                    Options =
+                    [
+                        new HubAnnouncementPollOption { Id = "o1", Text = "Суббота", VotesCount = 3 },
+                        new HubAnnouncementPollOption { Id = "o2", Text = "Воскресенье", VotesCount = 1 },
+                    ],
+                }),
+        };
+        var model = await LoadDetailAsync(api);
+        Assert.True(model.Detail!.HasPoll);
+        Assert.False(model.Detail.ShowPollResults);
+        var option = model.Detail.PollOptions[1];
+        Assert.True(option.ShowVoteButton);
+
+        await ((NativeAsyncCommand)model.VotePollOptionCommand).ExecuteAsync(option);
+
+        // Фейк пересчитывает poll по голосу: свой вариант отмечен, результаты видны.
+        Assert.True(model.Detail.PollHasVoted);
+        Assert.True(model.Detail.ShowPollResults);
+        Assert.True(model.Detail.PollOptions[1].ShowResult);
+        Assert.True(model.Detail.PollOptions[1].IsViewerVote);
+        Assert.Equal(2, model.Detail.PollOptions[1].VotesCount);
+        Assert.False(model.Detail.IsPollBusy);
+    }
+
+    [Fact]
+    public async Task VotePollFailureKeepsStateAndShowsError()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail(
+                "n1",
+                poll: new HubAnnouncementPoll
+                {
+                    Id = "p1",
+                    Question = "Когда?",
+                    Options = [new HubAnnouncementPollOption { Id = "o1", Text = "Сб" }],
+                }),
+            AnnouncementVoteException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = await LoadDetailAsync(api);
+
+        await ((NativeAsyncCommand)model.VotePollOptionCommand).ExecuteAsync(
+            model.Detail!.PollOptions[0]);
+
+        Assert.False(model.Detail.PollHasVoted);
+        Assert.False(model.Detail.IsPollBusy);
+        Assert.True(model.HasDetailError);
+    }
+
+    [Fact]
+    public async Task MultiplePollSubmitsSelectedOptions()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail(
+                "n1",
+                poll: new HubAnnouncementPoll
+                {
+                    Id = "p1",
+                    Question = "Дни?",
+                    AllowsMultiple = true,
+                    Options =
+                    [
+                        new HubAnnouncementPollOption { Id = "o1", Text = "Сб" },
+                        new HubAnnouncementPollOption { Id = "o2", Text = "Вс" },
+                    ],
+                }),
+        };
+        var model = await LoadDetailAsync(api);
+        Assert.True(model.Detail!.ShowPollSubmit);
+        model.Detail.PollOptions[0].IsSelected = true;
+        model.Detail.PollOptions[1].IsSelected = true;
+
+        await ((NativeAsyncCommand)model.SubmitPollVoteCommand).ExecuteAsync(null);
+
+        // Оба варианта проголосованы — viewer_option_ids в пересчитанном опросе.
+        Assert.True(model.Detail.PollHasVoted);
+        Assert.True(model.Detail.PollOptions[0].IsViewerVote);
+        Assert.True(model.Detail.PollOptions[1].IsViewerVote);
+        Assert.Equal(2, api.AnnouncementDetail!.Poll!.TotalVotes);
+    }
+
+    // ---- Вложения ----
+
+    [Fact]
+    public async Task OpenAttachmentUsesSaverSeamWithAnnouncementId()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail(
+                "n1",
+                attachments:
+                [
+                    new HubAnnouncementAttachment
+                    {
+                        Id = "att-1",
+                        AnnouncementId = "n1",
+                        FileName = "grafik.pdf",
+                        FileSize = 10,
+                    },
+                ]),
+        };
+        string? savedId = null;
+        NewsAttachmentViewModel? savedItem = null;
+        var model = await LoadDetailAsync(api);
+        model.AttachmentSaver = (item, id) =>
+        {
+            savedItem = item;
+            savedId = id;
+            Assert.True(item.IsDownloading);
+            return Task.CompletedTask;
+        };
+        var attachment = Assert.Single(model.Detail!.Attachments);
+
+        await ((NativeAsyncCommand)model.OpenAttachmentCommand).ExecuteAsync(attachment);
+
+        Assert.Equal("n1", savedId);
+        Assert.Same(attachment, savedItem);
+        Assert.False(attachment.IsDownloading);
+        Assert.Empty(api.AnnouncementAttachmentDownloads);
+    }
+
+    [Fact]
+    public async Task OpenAttachmentFailureShowsLocalError()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail(
+                "n1",
+                attachments:
+                [
+                    new HubAnnouncementAttachment { Id = "att-1", FileName = "a.bin" },
+                ]),
+        };
+        var model = await LoadDetailAsync(api);
+        model.AttachmentSaver = (_, _) => throw new IOException("disk full");
+
+        await ((NativeAsyncCommand)model.OpenAttachmentCommand).ExecuteAsync(
+            model.Detail!.Attachments[0]);
+
+        Assert.True(model.HasDetailError);
+        Assert.False(model.Detail.Attachments[0].IsDownloading);
+    }
+
+    // ---- Комментарии ----
+
+    [Fact]
+    public async Task CommentsLoadAfterDetailAndShowSectionErrorIsolated()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsPage = new HubAnnouncementCommentPage
+            {
+                Total = 1,
+                CommentsTotal = 1,
+                Items = [MakeComment("c1", body: "Понял, спасибо")],
+            },
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+
+        var comment = Assert.Single(model.Detail!.Comments);
+        Assert.Equal("Понял, спасибо", comment.Body);
+        Assert.Equal(1, model.Detail!.CommentsTotal);
+        Assert.Equal("Комментарии (1)", model.Detail!.CommentsHeaderText);
+        Assert.Null(model.Detail!.CommentsErrorText);
+        Assert.False(model.HasDetailError);
+    }
+
+    [Fact]
+    public async Task CommentsLoadFailureKeepsCardAndShowsSectionError()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+
+        Assert.NotNull(model.Detail!.CommentsErrorText);
+        Assert.Empty(model.Detail!.Comments);
+        Assert.False(model.HasDetailError);
+        Assert.False(model.Detail.IsCommentsLoading);
+    }
+
+    [Fact]
+    public async Task SendCommentPostsAndInsertsAtTop()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsPage = new HubAnnouncementCommentPage
+            {
+                Total = 1,
+                CommentsTotal = 1,
+                Items = [MakeComment("c1", body: "Старый")],
+            },
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+        model.Detail!.CommentDraft = "  Новый комментарий  ";
+
+        await ((NativeAsyncCommand)model.SendCommentCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.AnnouncementCommentCreateCalls);
+        Assert.Equal("n1", call.AnnouncementId);
+        Assert.Equal("Новый комментарий", call.Body);
+        Assert.Null(call.ParentCommentId);
+        Assert.Equal("Новый комментарий", model.Detail!.Comments[0].Body);
+        Assert.Equal("Старый", model.Detail!.Comments[1].Body);
+        Assert.Equal(string.Empty, model.Detail.CommentDraft);
+        Assert.Equal(2, model.Detail!.CommentsTotal);
+        Assert.False(model.Detail.IsCommentSending);
+    }
+
+    [Fact]
+    public async Task SendCommentReplyBindsParentAndCountsReply()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsPage = new HubAnnouncementCommentPage
+            {
+                Total = 1,
+                CommentsTotal = 1,
+                Items = [MakeComment("c1")],
+            },
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+        var parent = model.Detail!.Comments[0];
+
+        ((NativeRelayCommand)model.ReplyCommentCommand).Execute(parent);
+        Assert.Equal($"Ответ на комментарий: {parent.AuthorText}", model.Detail.ReplyToText);
+        model.Detail!.CommentDraft = "Ответ";
+
+        await ((NativeAsyncCommand)model.SendCommentCommand).ExecuteAsync(null);
+
+        Assert.Equal("c1", api.AnnouncementCommentCreateCalls[0].ParentCommentId);
+        Assert.Equal(1, parent.ReplyCount);
+        Assert.Equal(string.Empty, model.Detail.ReplyToText);
+    }
+
+    [Fact]
+    public async Task SaveCommentEditPatchesBody()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsPage = new HubAnnouncementCommentPage
+            {
+                Total = 1,
+                CommentsTotal = 1,
+                Items = [MakeComment("c1", body: "Черновик", canEdit: true)],
+            },
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+        var comment = model.Detail!.Comments[0];
+
+        ((NativeRelayCommand)model.BeginCommentEditCommand).Execute(comment);
+        Assert.True(comment.IsEditing);
+        comment.EditBody = "Исправлено";
+
+        await ((NativeAsyncCommand)model.SaveCommentEditCommand).ExecuteAsync(comment);
+
+        Assert.Equal(("n1", "c1", "Исправлено"), Assert.Single(api.AnnouncementCommentUpdateCalls));
+        Assert.Equal("Исправлено", comment.Body);
+        Assert.False(comment.IsEditing);
+        Assert.False(comment.IsBusy);
+    }
+
+    [Fact]
+    public async Task DeleteCommentWithoutRepliesRemovesFromList()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsPage = new HubAnnouncementCommentPage
+            {
+                Total = 1,
+                CommentsTotal = 1,
+                Items = [MakeComment("c1", canDelete: true)],
+            },
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+        var comment = model.Detail!.Comments[0];
+
+        await ((NativeAsyncCommand)model.DeleteCommentCommand).ExecuteAsync(comment);
+
+        Assert.Equal(("n1", "c1"), Assert.Single(api.AnnouncementCommentDeleteCalls));
+        Assert.Empty(model.Detail!.Comments);
+        Assert.Equal(0, model.Detail!.CommentsTotal);
+    }
+
+    [Fact]
+    public async Task DeleteCommentWithRepliesLeavesTombstone()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsPage = new HubAnnouncementCommentPage
+            {
+                Total = 1,
+                CommentsTotal = 2,
+                Items = [MakeComment("c1", replyCount: 1, canDelete: true)],
+            },
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+        var comment = model.Detail!.Comments[0];
+
+        await ((NativeAsyncCommand)model.DeleteCommentCommand).ExecuteAsync(comment);
+
+        Assert.Single(model.Detail!.Comments);
+        Assert.True(comment.IsDeleted);
+        Assert.Equal("Комментарий удалён", comment.DisplayBody);
+        Assert.False(comment.ShowReactions);
+        Assert.Equal(1, model.Detail!.CommentsTotal);
+    }
+
+    [Fact]
+    public async Task CommentReactionChipTogglesViaCommentApi()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsPage = new HubAnnouncementCommentPage
+            {
+                Total = 1,
+                CommentsTotal = 1,
+                Items =
+                [
+                    MakeComment(
+                        "c1",
+                        reactionCounts: new Dictionary<string, int> { ["like"] = 2 }),
+                ],
+            },
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+        var comment = model.Detail!.Comments[0];
+        var chip = Assert.Single(comment.ReactionChips);
+        Assert.Equal("like", chip.ReactionType);
+
+        await ((NativeAsyncCommand)model.ToggleCommentReactionCommand).ExecuteAsync(chip);
+
+        Assert.Equal(("n1", "c1", "like"), Assert.Single(api.AnnouncementCommentReactionCalls));
+        Assert.Equal("like", comment.ViewerReaction);
+        var updated = Assert.Single(comment.ReactionChips);
+        Assert.True(updated.IsMine);
+        Assert.False(comment.IsBusy);
+    }
+
+    [Fact]
+    public async Task ToggleRepliesLoadsBranchOnce()
+    {
+        var api = new FakeHubApiClient
+        {
+            AnnouncementsPage = PageOf(MakeItem("n1")),
+            AnnouncementDetail = MakeSocialDetail("n1", commentsEnabled: true),
+            AnnouncementCommentsPageFactory = query => query.RootCommentId == "c1"
+                ? new HubAnnouncementCommentPage
+                {
+                    Total = 1,
+                    Items = [MakeComment("c2", body: "Ответ в ветке", replyTo: "ivanov")],
+                }
+                : new HubAnnouncementCommentPage
+                {
+                    Total = 1,
+                    CommentsTotal = 2,
+                    Items = [MakeComment("c1", replyCount: 1)],
+                },
+        };
+        var model = await LoadDetailAsync(api);
+        await WaitFor(() => !model.Detail!.IsCommentsLoading);
+        var comment = model.Detail!.Comments[0];
+
+        await ((NativeAsyncCommand)model.ToggleRepliesCommand).ExecuteAsync(comment);
+
+        Assert.True(comment.RepliesExpanded);
+        Assert.True(comment.RepliesLoaded);
+        var reply = Assert.Single(comment.Replies);
+        Assert.Equal("Ответ в ветке", reply.Body);
+        Assert.True(reply.IsReply);
+    }
+
+    private static HubAnnouncementComment MakeComment(
+        string id,
+        string body = "Комментарий",
+        bool canEdit = false,
+        bool canDelete = false,
+        int replyCount = 0,
+        string? replyTo = null,
+        Dictionary<string, int>? reactionCounts = null) =>
+        new()
+        {
+            Id = id,
+            AnnouncementId = "n1",
+            Username = "ivanov",
+            FullName = "Иван Иванов",
+            Body = body,
+            CreatedAt = DateTimeOffset.UtcNow,
+            CanEdit = canEdit,
+            CanDelete = canDelete,
+            ReplyCount = replyCount,
+            ReplyToUsername = replyTo,
+            ReactionCounts = reactionCounts,
+        };
+
+    private static HubAnnouncementItem MakeSocialDetail(
+        string id,
+        bool commentsEnabled = false,
+        bool viewerBookmarked = false,
+        Dictionary<string, int>? reactionCounts = null,
+        string? viewerReaction = null,
+        HubAnnouncementPoll? poll = null,
+        IReadOnlyList<HubAnnouncementAttachment>? attachments = null) =>
+        new()
+        {
+            Id = id,
+            Title = "Новость с вовлечением",
+            Body = "Текст",
+            PublishedAt = DateTimeOffset.UtcNow,
+            ReactionsEnabled = true,
+            ReactionCounts = reactionCounts,
+            ViewerReaction = viewerReaction,
+            ViewerBookmarked = viewerBookmarked,
+            CommentsEnabled = commentsEnabled,
+            Poll = poll,
+            Attachments = attachments,
+        };
+
+    /// <summary>Список + выбор первой новости → detail готов (комментарии могут ещё лететь).</summary>
+    private static async Task<NewsViewModel> LoadDetailAsync(FakeHubApiClient api)
+    {
+        var model = new NewsViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+        return model;
+    }
+
     private static async Task WaitFor(Func<bool> condition)
     {
         for (var attempt = 0; attempt < 100; attempt++)

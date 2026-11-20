@@ -67,6 +67,59 @@ describe('desktopBridge', () => {
     await expect(pending).resolves.toEqual({ status: 'opened' });
   });
 
+  it('syncs workspace chrome only with the capability and routes native commands', async () => {
+    const transport = installTransport();
+    const {
+      DESKTOP_WORKSPACE_CHROME_COMMAND_EVENT,
+      initializeDesktopBridge,
+      syncDesktopWorkspaceChrome,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+
+    const snapshot = {
+      documents: [
+        { id: 'doc-1', title: 'Отчёт.xlsx', dirty: true },
+        { id: 'doc-2', title: '', dirty: false },
+      ],
+      activeId: 'doc-1',
+      history: true,
+    };
+    expect(syncDesktopWorkspaceChrome(snapshot)).toBe(false);
+
+    transport.emit({ type: 'desktop.capabilities', version: 1, capabilities: ['workspace-window', 'workspace-chrome'] });
+    expect(syncDesktopWorkspaceChrome(snapshot)).toBe(true);
+    expect(transport.postMessage).toHaveBeenLastCalledWith({
+      type: 'workspace.chrome',
+      version: 1,
+      documents: snapshot.documents,
+      activeId: 'doc-1',
+      history: true,
+    });
+
+    // Невалидные снимки не уходят: activeId вне списка, лишние поля, слишком длинный id.
+    expect(syncDesktopWorkspaceChrome({ ...snapshot, activeId: 'other' })).toBe(false);
+    expect(syncDesktopWorkspaceChrome({ ...snapshot, documents: [{ id: 'a b', title: 't', dirty: false }] })).toBe(false);
+
+    const commands = [];
+    const listener = (event) => commands.push(event.detail);
+    window.addEventListener(DESKTOP_WORKSPACE_CHROME_COMMAND_EVENT, listener);
+    transport.emit({ type: 'workspace.chrome.command', version: 1, command: 'activate', id: 'doc-2' });
+    transport.emit({ type: 'workspace.chrome.command', version: 1, command: 'close', id: 'doc-2' });
+    transport.emit({ type: 'workspace.chrome.command', version: 1, command: 'history' });
+    // Мусорные команды отбрасываются валидатором.
+    transport.emit({ type: 'workspace.chrome.command', version: 1, command: 'wipe', id: 'doc-2' });
+    transport.emit({ type: 'workspace.chrome.command', version: 1, command: 'close' });
+    transport.emit({ type: 'workspace.chrome.command', version: 1, command: 'history', id: 'doc-2' });
+    expect(commands).toEqual([
+      { command: 'activate', id: 'doc-2' },
+      { command: 'close', id: 'doc-2' },
+      { command: 'history', id: '' },
+    ]);
+    window.removeEventListener(DESKTOP_WORKSPACE_CHROME_COMMAND_EVENT, listener);
+  });
+
   it('stays disabled in a regular browser', async () => {
     const { initializeDesktopBridge, isDesktopBridgeReady } = await import('./desktopBridge');
 

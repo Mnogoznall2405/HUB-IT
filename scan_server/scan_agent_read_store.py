@@ -4,6 +4,8 @@ import json
 import sqlite3
 from typing import Any, Callable, Dict, List, Optional
 
+from .scan_web_projection import sanitize_web_payload
+
 ACTIVE_TASK_STATUSES = ("queued", "delivered", "acknowledged")
 # Hostname/agent-id prefix invent removed (fail-closed unknown branch).
 BRANCH_SOURCE_AGENT = "agent"
@@ -149,7 +151,7 @@ class ScanAgentReadStore:
         payload: Dict[str, Any] = {}
         if not slim:
             loaded = _json_loads(item.get("payload_json"), {})
-            payload = loaded if isinstance(loaded, dict) else {}
+            payload = sanitize_web_payload(loaded)
         return {
             "id": str(item.get("id") or ""),
             "agent_id": str(item.get("agent_id") or ""),
@@ -301,22 +303,18 @@ class ScanAgentReadStore:
 
         last_rows = conn.execute(
             f"""
-            SELECT {job_cols}
-            FROM scan_jobs j
-            JOIN (
-                SELECT
-                    agent_id,
-                    MAX(COALESCE(finished_at, started_at, created_at)) AS max_order_ts
-                FROM scan_jobs
-                WHERE agent_id IN ({placeholders})
-                GROUP BY agent_id
-            ) latest_map
-                ON latest_map.agent_id = j.agent_id
-            WHERE j.agent_id IN ({placeholders})
-              AND COALESCE(j.finished_at, j.started_at, j.created_at) = latest_map.max_order_ts
-            ORDER BY j.agent_id, j.created_at DESC
+            SELECT * FROM (
+                SELECT {job_cols},
+                    COALESCE(j.finished_at, j.started_at, j.created_at) AS order_ts,
+                    MAX(COALESCE(j.finished_at, j.started_at, j.created_at))
+                        OVER (PARTITION BY j.agent_id) AS max_order_ts
+                FROM scan_jobs j
+                WHERE j.agent_id IN ({placeholders})
+            ) ranked
+            WHERE ranked.order_ts = ranked.max_order_ts
+            ORDER BY ranked.agent_id, ranked.created_at DESC
             """,
-            [*normalized_ids, *normalized_ids],
+            normalized_ids,
         ).fetchall()
 
         count_rows = conn.execute(

@@ -70,3 +70,38 @@ def test_search_contacts_treats_raised_gal_no_results_as_empty_result(monkeypatc
 
     assert rows == [{"name": "Local User", "email": "local@example.test", "source": "itinvent_users"}]
     assert "Error searching contacts in GAL" not in caplog.text
+
+
+def test_search_contacts_primes_version_before_resolve_names(monkeypatch):
+    # exchangelib ResolveNames reads protocol.config.version via _version_hint;
+    # a fresh account has it None ('NoneType'.api_version crash) until the lazy
+    # version guess runs — the service must prime account.version first.
+    service = _service_with_local_fallback(monkeypatch)
+
+    class FakeProtocol:
+        def __init__(self):
+            self.version = None
+            self.seen_versions = []
+
+        def resolve_names(self, **_kwargs):
+            self.seen_versions.append(self.version)
+            return [SimpleNamespace(email_address="gal@example.test", name="Gal User")]
+
+    class FakeAccount:
+        def __init__(self):
+            self.protocol = FakeProtocol()
+
+        @property
+        def version(self):
+            if self.protocol.version is None:
+                self.protocol.version = object()  # lazy guess populates config.version
+            return self.protocol.version
+
+    account = FakeAccount()
+    monkeypatch.setattr(service, "_create_account", lambda **_kwargs: account)
+
+    rows = service.search_contacts(user_id=38, q="query")
+
+    assert account.protocol.seen_versions == [account.protocol.version]
+    assert account.protocol.seen_versions[0] is not None
+    assert rows == [{"name": "Gal User", "email": "gal@example.test", "source": "exchange_gal"}]

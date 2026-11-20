@@ -91,6 +91,16 @@ public sealed class AuthImageLoader
         }
     }
 
+    /// <summary>Сброс кэша целиком — logout/смена пользователя (чужие фото не остаются).</summary>
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _lru.Clear();
+            _entries.Clear();
+        }
+    }
+
     /// <summary>Свежесть записи: попадание поднимает её над чередой вытеснения.</summary>
     private void Touch(CacheEntry entry)
     {

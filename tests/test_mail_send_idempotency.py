@@ -20,7 +20,7 @@ WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from backend.appdb.db import app_session, initialize_app_schema
+from backend.appdb.db import app_session, get_app_session_factory, initialize_app_schema
 from backend.appdb.models import AppMailSendIdempotency
 from backend.services.mail_send_idempotency import (
     DEFAULT_PROCESSING_LEASE_SEC,
@@ -289,6 +289,81 @@ def test_concurrent_claims_allow_only_one_proceed(store_env):
     assert errors == []
     assert actions.count("proceed") == 1
     assert actions.count("in_flight") == 1
+
+
+def test_stale_failed_snapshot_cannot_become_second_sender(store_env):
+    """Two retries both read status=failed; only the first conditional UPDATE
+    may win — the second must observe the row as in-flight, not proceed."""
+    store, _clock, database_url = store_env
+    payload_hash = _payload_hash()
+    first = store.claim(
+        user_id=9,
+        mailbox_id="mb-1",
+        idempotency_key="send-key-stale",
+        request_payload_hash=payload_hash,
+    )
+    store.complete_failed(first.row_id, error_code="MAIL_SEND_FAILED")
+
+    session = get_app_session_factory(database_url)()
+    try:
+        stale = store._find(
+            session,
+            user_id=9,
+            mailbox_id="mb-1",
+            idempotency_key="send-key-stale",
+        )
+        assert str(stale.status) == "failed"
+        # Release the shared lock so the first retryer can commit its
+        # transition while `stale` keeps the old "failed" snapshot.
+        session.commit()
+        retry = store.claim(
+            user_id=9,
+            mailbox_id="mb-1",
+            idempotency_key="send-key-stale",
+            request_payload_hash=payload_hash,
+        )
+        assert retry.action == "proceed"
+
+        now = store._now()
+        lease_sec = store._lease_seconds()
+        claim = store._interpret_existing(
+            session,
+            stale,
+            payload_hash=payload_hash,
+            now=now,
+            lease_sec=lease_sec,
+            lease_until=now + timedelta(seconds=lease_sec),
+        )
+        assert claim.action == "in_flight"
+        assert claim.row_id == first.row_id
+    finally:
+        session.close()
+
+
+def test_late_failed_completion_cannot_overwrite_sent_row(store_env):
+    """A stale _finish(failed) after a successful send must leave the row sent."""
+    store, _clock, _url = store_env
+    payload_hash = _payload_hash()
+    claim = store.claim(
+        user_id=9,
+        mailbox_id="mb-1",
+        idempotency_key="send-key-late-finish",
+        request_payload_hash=payload_hash,
+    )
+    store.complete_sent(claim.row_id, {"ok": True, "message_id": "sent-9"})
+    # Simulate a delayed failure write from an earlier attempt.
+    store.complete_failed(claim.row_id, error_code="MAIL_SEND_FAILED")
+    row = store.get(user_id=9, mailbox_id="mb-1", idempotency_key="send-key-late-finish")
+    assert row is not None
+    assert str(row.status) == "sent"
+    replay = store.claim(
+        user_id=9,
+        mailbox_id="mb-1",
+        idempotency_key="send-key-late-finish",
+        request_payload_hash=payload_hash,
+    )
+    assert replay.action == "replay"
+    assert replay.result == {"ok": True, "message_id": "sent-9"}
 
 
 def test_revision_creates_unique_scope_on_sqlite():

@@ -26,6 +26,7 @@ from .scan_agent_read_store import ScanAgentReadStore
 from .scan_host_read_store import ScanHostReadStore
 from .scan_task_report_store import ScanTaskIncidentReportStore
 from .scan_view import InvalidScanView, normalize_scan_list_view
+from .scan_web_projection import sanitize_web_payload
 
 logger = logging.getLogger(__name__)
 
@@ -763,6 +764,7 @@ class ScanStore:
         agent_online_timeout_sec: int = 300,
         resolve_agent_sql_context: bool = False,
         job_processing_timeout_sec: int = 1800,
+        llm_review_processing_lease_sec: int = 600,
         sqlite_busy_timeout_ms: Optional[int] = None,
         sqlite_busy_retry_attempts: Optional[int] = None,
         sqlite_busy_retry_base_ms: Optional[int] = None,
@@ -779,6 +781,7 @@ class ScanStore:
         self.agent_online_timeout_sec = max(30, int(agent_online_timeout_sec))
         self.resolve_agent_sql_context = bool(resolve_agent_sql_context)
         self.job_processing_timeout_sec = max(60, int(job_processing_timeout_sec or 1800))
+        self.llm_review_processing_lease_sec = max(60, int(llm_review_processing_lease_sec or 600))
         self.sqlite_busy_timeout_ms = max(
             1000,
             min(
@@ -1140,6 +1143,9 @@ class ScanStore:
                 CREATE INDEX IF NOT EXISTS idx_scan_findings_job
                     ON scan_findings(job_id);
 
+                CREATE INDEX IF NOT EXISTS idx_scan_findings_created
+                    ON scan_findings(created_at);
+
                 CREATE TABLE IF NOT EXISTS scan_incidents (
                     id TEXT PRIMARY KEY,
                     finding_id TEXT NOT NULL,
@@ -1180,6 +1186,35 @@ class ScanStore:
 
                 CREATE INDEX IF NOT EXISTS idx_scan_incidents_job
                     ON scan_incidents(job_id);
+
+                CREATE INDEX IF NOT EXISTS idx_scan_incidents_agent_file_path
+                    ON scan_incidents(agent_id, file_path);
+
+                CREATE TABLE IF NOT EXISTS scan_llm_reviews (
+                    id TEXT PRIMARY KEY,
+                    incident_id TEXT NOT NULL,
+                    finding_id TEXT NOT NULL DEFAULT '',
+                    job_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    input_json TEXT NOT NULL DEFAULT '{}',
+                    verdict TEXT NULL,
+                    confidence REAL NULL,
+                    severity_suggestion TEXT NULL,
+                    reason TEXT NULL,
+                    model TEXT NULL,
+                    created_at INTEGER NOT NULL,
+                    started_at INTEGER NULL,
+                    finished_at INTEGER NULL,
+                    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    error_text TEXT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_scan_llm_reviews_status_created
+                    ON scan_llm_reviews(status, next_attempt_at, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_scan_llm_reviews_incident
+                    ON scan_llm_reviews(incident_id, finished_at);
 
                 CREATE TABLE IF NOT EXISTS scan_task_file_observations (
                     id TEXT PRIMARY KEY,
@@ -2835,8 +2870,8 @@ class ScanStore:
             item["payload"] = _slim_mapping_keys(payload, _SCAN_RUN_PAYLOAD_KEYS)
             item["result"] = _slim_mapping_keys(result, _SCAN_RUN_RESULT_KEYS)
         else:
-            item["payload"] = payload if isinstance(payload, dict) else {}
-            item["result"] = result if isinstance(result, dict) else {}
+            item["payload"] = sanitize_web_payload(payload)
+            item["result"] = sanitize_web_payload(result)
         # Drop accidental join aggregates that are not task columns.
         item.pop("hostname", None)
         item.pop("failed_jobs_count", None)
@@ -3711,7 +3746,7 @@ class ScanStore:
             if event_id:
                 existing = conn.execute(
                     """
-                    SELECT id, status, created_at, scan_task_id, error_text
+                    SELECT id, status, created_at, scan_task_id, error_text, source_kind
                     FROM scan_jobs
                     WHERE event_id=?
                     LIMIT 1
@@ -3719,12 +3754,18 @@ class ScanStore:
                     (event_id,),
                 ).fetchone()
                 if existing is not None:
-                    is_retryable_missing_payload = (
+                    # A terminal failure must not blind the DLP loop forever:
+                    # re-ingesting the same event reopens the job. Jobs that
+                    # need the PDF spool can only be retried when the agent
+                    # actually re-uploaded the bytes.
+                    existing_needs_pdf = str(existing["source_kind"] or "").strip().lower() in {
+                        "pdf", "pdf_slice", "image", "office",
+                    }
+                    is_retryable_terminal_failure = (
                         str(existing["status"] or "").strip().lower() in {"failed", "analysis_incomplete"}
-                        and str(existing["error_text"] or "").strip() in MISSING_TRANSIENT_PDF_PAYLOAD_MESSAGES
-                        and bool(payload_pdf_bytes)
+                        and (not existing_needs_pdf or bool(payload_pdf_bytes))
                     )
-                    if is_retryable_missing_payload:
+                    if is_retryable_terminal_failure:
                         retry_existing = existing
                     else:
                         self._record_existing_job_observation_locked(
@@ -3745,7 +3786,8 @@ class ScanStore:
 
         if retry_existing is not None:
             retry_job_id = str(retry_existing["id"] or "").strip()
-            self.write_job_pdf_spool(job_id=retry_job_id, pdf_bytes=payload_pdf_bytes)
+            if payload_pdf_bytes:
+                self.write_job_pdf_spool(job_id=retry_job_id, pdf_bytes=payload_pdf_bytes)
             def _write_retry_job() -> None:
                 with self._lock, self._connect() as conn:
                     effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
@@ -3805,7 +3847,7 @@ class ScanStore:
                         self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
                     conn.commit()
 
-            self._run_write_transaction("queue_job_reopen_missing_payload", _write_retry_job)
+            self._run_write_transaction("queue_job_reopen_terminal_failure", _write_retry_job)
             return {"job_id": retry_job_id, "status": "queued", "deduped": False, "reopened": True}
 
         spool_written = False
@@ -4104,6 +4146,330 @@ class ScanStore:
         jobs = self.claim_next_jobs(1)
         return jobs[0] if jobs else None
 
+    # --- LLM second-opinion review queue (scan_llm_reviews) ---
+
+    @staticmethod
+    def _llm_review_enqueue_enabled() -> bool:
+        value = str(os.getenv("SCAN_LLM_REVIEW_ENQUEUE", "1") or "1").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _llm_review_text_max_chars() -> int:
+        try:
+            return max(1600, min(64000, int(str(os.getenv("SCAN_LLM_TEXT_MAX_CHARS", "24000") or "24000"))))
+        except ValueError:
+            return 24000
+
+    def _enqueue_llm_review_locked(
+        self,
+        conn: Any,
+        *,
+        incident_id: str,
+        finding_id: str,
+        job: Dict[str, Any],
+        severity: str,
+        category: str,
+        matched_patterns: List[Dict[str, Any]],
+        llm_context: Optional[str],
+        now_ts: int,
+    ) -> None:
+        """Queue one second-opinion review for the incident. Auxiliary path: a
+        missing table (migration not applied yet) or any other failure must never
+        abort incident creation."""
+        if not self._llm_review_enqueue_enabled():
+            return
+        try:
+            file_path = str(job.get("file_path") or "")
+            file_name = str(job.get("file_name") or "") or Path(file_path).name
+            slim_patterns: List[Dict[str, Any]] = []
+            for item in (matched_patterns or [])[:8]:
+                if not isinstance(item, dict):
+                    continue
+                slim_patterns.append(
+                    {
+                        "pattern": str(item.get("pattern") or ""),
+                        "pattern_name": str(item.get("pattern_name") or ""),
+                        "value": str(item.get("value") or "")[:160],
+                        "snippet": str(item.get("snippet") or "")[:300],
+                    }
+                )
+            input_payload = {
+                "file_name": file_name,
+                "file_path": file_path,
+                "hostname": str(job.get("hostname") or ""),
+                "branch": str(job.get("branch") or ""),
+                "user_login": str(job.get("user_login") or ""),
+                "source_kind": str(job.get("source_kind") or ""),
+                "category": str(category or "")[:120],
+                "severity": str(severity or "")[:20],
+                "matched_patterns": slim_patterns,
+                "text_excerpt": str(llm_context or "")[: self._llm_review_text_max_chars()],
+            }
+            if self.is_postgres:
+                # On PostgreSQL a failed statement aborts the whole transaction;
+                # scope the optional review insert so a stale schema (migration
+                # not applied yet) cannot kill incident creation.
+                conn.execute("SAVEPOINT scan_llm_enqueue")
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO scan_llm_reviews(
+                        id, incident_id, finding_id, job_id, status, input_json,
+                        created_at, next_attempt_at, attempt_count
+                    ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 0)
+                    """,
+                    (
+                        uuid.uuid4().hex,
+                        incident_id,
+                        finding_id,
+                        str(job.get("id") or ""),
+                        _json_dumps(input_payload),
+                        now_ts,
+                        now_ts,
+                    ),
+                )
+            except Exception:
+                if self.is_postgres:
+                    conn.execute("ROLLBACK TO SAVEPOINT scan_llm_enqueue")
+                raise
+            if self.is_postgres:
+                conn.execute("RELEASE SAVEPOINT scan_llm_enqueue")
+        except Exception as exc:  # noqa: BLE001 - review is best-effort
+            logger.debug("LLM review enqueue skipped for incident %s: %s", incident_id, exc)
+
+    def claim_llm_reviews(self, limit: int) -> List[Dict[str, Any]]:
+        batch_limit = max(1, min(50, int(limit or 1)))
+        now_ts = _now_ts()
+        stale_before = now_ts - self.llm_review_processing_lease_sec
+
+        def _write():
+            with self._lock, self._connect() as conn:
+                if self.is_postgres:
+                    rows = conn.execute(
+                        """
+                        WITH cte AS (
+                            SELECT id
+                            FROM scan_llm_reviews
+                            WHERE (status='queued' AND next_attempt_at <= ?)
+                               OR (status='processing' AND started_at <= ?)
+                            ORDER BY created_at ASC
+                            LIMIT ?
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        UPDATE scan_llm_reviews AS r
+                        SET status='processing',
+                            started_at=?,
+                            error_text=NULL,
+                            attempt_count=COALESCE(attempt_count, 0) + 1
+                        FROM cte
+                        WHERE r.id = cte.id
+                        RETURNING r.*
+                        """,
+                        (now_ts, stale_before, batch_limit, now_ts),
+                    ).fetchall()
+                    conn.commit()
+                    return rows, True
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM scan_llm_reviews
+                    WHERE (status='queued' AND next_attempt_at <= ?)
+                       OR (status='processing' AND started_at <= ?)
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (now_ts, stale_before, batch_limit),
+                ).fetchall()
+                for row in rows:
+                    conn.execute(
+                        """
+                        UPDATE scan_llm_reviews
+                        SET status='processing',
+                            started_at=?,
+                            error_text=NULL,
+                            attempt_count=COALESCE(attempt_count, 0) + 1
+                        WHERE id=?
+                        """,
+                        (now_ts, row["id"]),
+                    )
+                conn.commit()
+                return rows, False
+
+        result = self._run_write_transaction("claim_llm_reviews", _write)
+        rows, already_updated = result if result else ([], False)
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["status"] = "processing"
+            item["attempt_count"] = int(item.get("attempt_count") or 0) + (
+                0 if already_updated else 1
+            )
+            item["input"] = _json_loads(item.pop("input_json", "{}"), {})
+            out.append(item)
+        return out
+
+    def complete_llm_review(
+        self,
+        review_id: str,
+        *,
+        verdict: str,
+        confidence: Optional[float],
+        severity_suggestion: Optional[str],
+        reason: str,
+        model: str,
+        auto_dismiss_fp: bool = False,
+        auto_dismiss_confidence: float = 0.9,
+    ) -> bool:
+        now_ts = _now_ts()
+        # High-confidence false_positive on a low/medium incident auto-acks it:
+        # the incident leaves the analyst queue but stays in storage with a
+        # distinguishable ack_by, so the dismissal is auditable and reversible.
+        dismiss = (
+            bool(auto_dismiss_fp)
+            and str(verdict or "") == "false_positive"
+            and float(confidence or 0.0) >= float(auto_dismiss_confidence or 0.9)
+        )
+
+        def _write() -> bool:
+            with self._lock, self._connect() as conn:
+                updated = conn.execute(
+                    """
+                    UPDATE scan_llm_reviews
+                    SET status='done',
+                        verdict=?,
+                        confidence=?,
+                        severity_suggestion=?,
+                        reason=?,
+                        model=?,
+                        finished_at=?,
+                        error_text=NULL
+                    WHERE id=? AND status='processing'
+                    """,
+                    (
+                        str(verdict or ""),
+                        confidence,
+                        str(severity_suggestion or "") or None,
+                        str(reason or "")[:500],
+                        str(model or "")[:120],
+                        now_ts,
+                        review_id,
+                    ),
+                )
+                ok = int(updated.rowcount or 0) > 0
+                if ok and dismiss:
+                    conn.execute(
+                        """
+                        UPDATE scan_incidents
+                        SET status='ack', ack_at=?, ack_by='llm-auto-fp'
+                        WHERE id=(SELECT incident_id FROM scan_llm_reviews WHERE id=?)
+                          AND status='new'
+                          AND LOWER(COALESCE(severity, '')) IN ('low', 'medium')
+                        """,
+                        (now_ts, review_id),
+                    )
+                conn.commit()
+                return ok
+
+        return bool(self._run_write_transaction("complete_llm_review", _write))
+
+    def fail_llm_review(
+        self,
+        review_id: str,
+        *,
+        error_text: str,
+        max_attempts: int = 3,
+    ) -> bool:
+        now_ts = _now_ts()
+        attempts_cap = max(1, int(max_attempts or 3))
+
+        def _write() -> bool:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    "SELECT attempt_count FROM scan_llm_reviews WHERE id=?",
+                    (review_id,),
+                ).fetchone()
+                if not row:
+                    conn.rollback()
+                    return False
+                attempts = int(row["attempt_count"] or 0)
+                if attempts >= attempts_cap:
+                    conn.execute(
+                        """
+                        UPDATE scan_llm_reviews
+                        SET status='failed', finished_at=?, error_text=?
+                        WHERE id=?
+                        """,
+                        (now_ts, str(error_text or "")[:500], review_id),
+                    )
+                else:
+                    backoff = min(3600, 30 * (2 ** min(attempts, 6)))
+                    conn.execute(
+                        """
+                        UPDATE scan_llm_reviews
+                        SET status='queued', next_attempt_at=?, error_text=?
+                        WHERE id=?
+                        """,
+                        (now_ts + backoff, str(error_text or "")[:500], review_id),
+                    )
+                conn.commit()
+                return True
+
+        return bool(self._run_write_transaction("fail_llm_review", _write))
+
+    def release_llm_review(self, review_id: str) -> bool:
+        """Return a claimed review to the queue unchanged (e.g. model unavailable)."""
+        now_ts = _now_ts()
+
+        def _write() -> bool:
+            with self._lock, self._connect() as conn:
+                updated = conn.execute(
+                    # The claim already incremented attempt_count; a release
+                    # means no real attempt happened (e.g. model unavailable),
+                    # so give the count back or the review hits max_attempts
+                    # during a long outage without a single real try.
+                    """
+                    UPDATE scan_llm_reviews
+                    SET status='queued', next_attempt_at=?, error_text=NULL,
+                        attempt_count=MAX(attempt_count - 1, 0)
+                    WHERE id=? AND status='processing'
+                    """,
+                    (now_ts + 60, review_id),
+                )
+                conn.commit()
+                return int(updated.rowcount or 0) > 0
+
+        return bool(self._run_write_transaction("release_llm_review", _write))
+
+    def latest_llm_verdicts(self, incident_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        ids = [str(item or "").strip() for item in incident_ids if str(item or "").strip()]
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        try:
+            with self._lock, self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT incident_id, verdict, confidence, severity_suggestion, reason, model, finished_at
+                    FROM scan_llm_reviews
+                    WHERE status='done' AND incident_id IN ({placeholders})
+                    ORDER BY finished_at ASC
+                    """,
+                    ids,
+                ).fetchall()
+        except Exception as exc:  # noqa: BLE001 - annotation is best-effort
+            logger.debug("LLM verdict lookup skipped: %s", exc)
+            return {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            out[str(row["incident_id"])] = {
+                "llm_verdict": str(row["verdict"] or ""),
+                "llm_confidence": row["confidence"],
+                "llm_severity_suggestion": str(row["severity_suggestion"] or "") or None,
+                "llm_reason": str(row["reason"] or ""),
+                "llm_model": str(row["model"] or ""),
+            }
+        return out
+
     def get_task_payload(self, task_id: str) -> Dict[str, Any]:
         tid = str(task_id or "").strip()
         if not tid:
@@ -4401,6 +4767,12 @@ class ScanStore:
         removed_rows = int(write_result.get("removed_rows") or 0)
         keep_paths = write_result.get("keep_paths") or set()
 
+        # Grace window: a live worker can write a new artifact file + row
+        # between the SELECT above and this sweep — the fresh file is not in
+        # keep_paths yet. Only unlink files that have been stable for a while;
+        # the next startup picks up real orphans.
+        mtime_grace_ts = _now_ts() - 300
+
         removed_files = 0
         removed_dirs = 0
         if archive_root.exists():
@@ -4408,6 +4780,11 @@ class ScanStore:
                 try:
                     if path.is_file():
                         if path.resolve() in keep_paths:
+                            continue
+                        try:
+                            if int(path.stat().st_mtime) > mtime_grace_ts:
+                                continue
+                        except OSError:
                             continue
                         path.unlink()
                         removed_files += 1
@@ -4435,6 +4812,7 @@ class ScanStore:
         finalize_status: Optional[str] = None,
         finalize_summary: Optional[str] = None,
         finalize_error_text: Optional[str] = None,
+        llm_context: Optional[str] = None,
     ) -> Dict[str, str]:
         now_ts = _now_ts()
         finding_id = uuid.uuid4().hex
@@ -4445,6 +4823,7 @@ class ScanStore:
         guard_sql, guard_params = _claim_guard(int(claim_attempt) if claim_attempt else None)
 
         def _write() -> bool:
+            nonlocal finding_id, incident_id
             with self._lock, self._connect() as conn:
                 if terminal_status:
                     # The guarded job UPDATE goes first: a stale owner must not create duplicate
@@ -4467,43 +4846,70 @@ class ScanStore:
                     if int(finalized.rowcount or 0) == 0:
                         conn.rollback()
                         return False
-                conn.execute(
+                # Reopened/reprocessed attempts must not pile up duplicate incidents
+                # for the same job: reuse the existing one instead of inserting.
+                existing_incident = conn.execute(
                     """
-                    INSERT INTO scan_findings(
-                        id, job_id, severity, category, matched_patterns_json, short_reason, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    SELECT id, finding_id
+                    FROM scan_incidents
+                    WHERE job_id=?
+                    ORDER BY created_at ASC
+                    LIMIT 1
                     """,
-                    (
-                        finding_id,
-                        job_id,
-                        severity,
-                        category,
-                        _json_dumps(matched_patterns),
-                        short_reason,
-                        now_ts,
-                    ),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO scan_incidents(
-                        id, finding_id, job_id, agent_id, hostname, branch, user_login, user_full_name,
-                        file_path, severity, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
-                    """,
-                    (
-                        incident_id,
-                        finding_id,
-                        job_id,
-                        str(job.get("agent_id") or ""),
-                        str(job.get("hostname") or ""),
-                        str(job.get("branch") or ""),
-                        str(job.get("user_login") or ""),
-                        str(job.get("user_full_name") or ""),
-                        str(job.get("file_path") or ""),
-                        severity,
-                        now_ts,
-                    ),
-                )
+                    (job_id,),
+                ).fetchone()
+                if existing_incident is None:
+                    conn.execute(
+                        """
+                        INSERT INTO scan_findings(
+                            id, job_id, severity, category, matched_patterns_json, short_reason, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            finding_id,
+                            job_id,
+                            severity,
+                            category,
+                            _json_dumps(matched_patterns),
+                            short_reason,
+                            now_ts,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO scan_incidents(
+                            id, finding_id, job_id, agent_id, hostname, branch, user_login, user_full_name,
+                            file_path, severity, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+                        """,
+                        (
+                            incident_id,
+                            finding_id,
+                            job_id,
+                            str(job.get("agent_id") or ""),
+                            str(job.get("hostname") or ""),
+                            str(job.get("branch") or ""),
+                            str(job.get("user_login") or ""),
+                            str(job.get("user_full_name") or ""),
+                            str(job.get("file_path") or ""),
+                            severity,
+                            now_ts,
+                        ),
+                    )
+                    self._enqueue_llm_review_locked(
+                        conn,
+                        incident_id=incident_id,
+                        finding_id=finding_id,
+                        job=job,
+                        severity=severity,
+                        category=category,
+                        matched_patterns=matched_patterns,
+                        llm_context=llm_context,
+                        now_ts=now_ts,
+                    )
+                else:
+                    incident_id = str(existing_incident["id"] or "")
+                    finding_id = str(existing_incident["finding_id"] or "")
                 observation_update = conn.execute(
                     """
                     UPDATE scan_task_file_observations
@@ -4870,6 +5276,12 @@ class ScanStore:
                 patterns = item.get("matched_patterns") if isinstance(item.get("matched_patterns"), list) else []
                 item["matched_patterns"] = patterns[:3]
             items.append(item)
+        verdicts = self.latest_llm_verdicts([str(item.get("id") or "") for item in items])
+        if verdicts:
+            for item in items:
+                verdict = verdicts.get(str(item.get("id") or ""))
+                if verdict:
+                    item.update(verdict)
         next_offset = safe_offset + len(items)
         has_more = next_offset < int(total)
         return {
@@ -5913,9 +6325,9 @@ class ScanStore:
                 SELECT COUNT(*) AS c
                 FROM scan_jobs
                 WHERE status IN ({", ".join("?" for _ in FINAL_JOB_STATUSES)})
-                  AND COALESCE(finished_at, created_at) >= ?
+                  AND (finished_at >= ? OR (finished_at IS NULL AND created_at >= ?))
                 """,
-                [*FINAL_JOB_STATUSES, int(now_ts - 3600)],
+                [*FINAL_JOB_STATUSES, int(now_ts - 3600), int(now_ts - 3600)],
             ).fetchone()
             completed_1h = int((completed_1h_row["c"] if completed_1h_row else 0) or 0)
             # Bound metrics_json deserialization: finished sample only (OCR DPI / ocr_ms).
@@ -5926,12 +6338,12 @@ class ScanStore:
                 """
                 SELECT status, source_kind, created_at, started_at, finished_at, metrics_json
                 FROM scan_jobs
-                WHERE COALESCE(finished_at, created_at) >= ?
+                WHERE (finished_at >= ? OR (finished_at IS NULL AND created_at >= ?))
                   AND status NOT IN ('queued', 'processing')
                 ORDER BY COALESCE(finished_at, created_at) DESC
                 LIMIT ?
                 """,
-                (performance_start, perf_sample_limit),
+                (performance_start, performance_start, perf_sample_limit),
             ).fetchall()
             # Oldest pending: per-status LIMIT 1 (avoid IN(...)+ASC over large table).
             # Two scalar probes — SQLite rejects parenthesized UNION ALL subselects.
@@ -6216,18 +6628,21 @@ class ScanStore:
         row = conn.execute(f"SELECT COUNT(*) AS cnt FROM {table} WHERE {where_sql}", params).fetchone()
         return int(row["cnt"] if row is not None else 0)
 
-    def _delete_retention_batches_locked(
+    def _delete_retention_batch_once(
         self,
-        conn,
         *,
         table: str,
         where_sql: str,
         params: tuple[Any, ...],
         batch_size: int,
     ) -> int:
-        total = 0
-        safe_batch_size = max(1, min(5000, int(batch_size or 1000)))
-        while True:
+        """Delete at most ``batch_size`` rows in its own lock+transaction.
+
+        Retention batches get their own ``self._lock`` window so the job
+        pipeline (claim/finalize/findings) can interleave between batches
+        instead of waiting for a whole cleanup run.
+        """
+        with self._lock, self._connect() as conn:
             if self.is_postgres:
                 cursor = conn.execute(
                     f"""
@@ -6239,7 +6654,7 @@ class ScanStore:
                         LIMIT ?
                     )
                     """,
-                    (*params, safe_batch_size),
+                    (*params, batch_size),
                 )
             else:
                 cursor = conn.execute(
@@ -6252,13 +6667,32 @@ class ScanStore:
                         LIMIT ?
                     )
                     """,
-                    (*params, safe_batch_size),
+                    (*params, batch_size),
                 )
             removed = int(cursor.rowcount or 0)
+            conn.commit()
+            return removed
+
+    def _delete_retention_batches(
+        self,
+        *,
+        table: str,
+        where_sql: str,
+        params: tuple[Any, ...],
+        batch_size: int,
+    ) -> int:
+        total = 0
+        safe_batch_size = max(1, min(5000, int(batch_size or 1000)))
+        while True:
+            removed = self._delete_retention_batch_once(
+                table=table,
+                where_sql=where_sql,
+                params=params,
+                batch_size=safe_batch_size,
+            )
             if removed <= 0:
                 break
             total += removed
-            conn.commit()
             if removed < safe_batch_size:
                 break
         return total
@@ -6346,75 +6780,116 @@ class ScanStore:
             "jobs_failed": 0,
             "jobs_with_incident": 0,
             "ocr_cache": 0,
+            "llm_reviews": 0,
         }
 
-        def _write() -> Dict[str, int]:
-            with self._lock, self._connect() as conn:
-                observation_where = """
-                    scan_task_id IN (
-                        SELECT id FROM scan_tasks
-                        WHERE status IN ('completed', 'failed', 'expired') AND updated_at < ?
+        observation_where = """
+            scan_task_id IN (
+                SELECT id FROM scan_tasks
+                WHERE status IN ('completed', 'failed', 'expired') AND updated_at < ?
+            )
+            OR linked_incident_id IN (
+                SELECT id FROM scan_incidents WHERE created_at < ?
+            )
+            OR linked_job_id IN (
+                SELECT id FROM scan_jobs
+                WHERE (
+                    status='done_clean' AND created_at < ?
+                    AND NOT EXISTS (
+                        SELECT 1 FROM scan_incidents i WHERE i.job_id=scan_jobs.id
                     )
-                    OR linked_incident_id IN (
-                        SELECT id FROM scan_incidents WHERE created_at < ?
+                ) OR (
+                    status IN ('failed', 'analysis_incomplete') AND created_at < ?
+                    AND NOT EXISTS (
+                        SELECT 1 FROM scan_incidents i WHERE i.job_id=scan_jobs.id
                     )
-                    OR linked_job_id IN (
-                        SELECT id FROM scan_jobs
-                        WHERE (
-                            status='done_clean' AND created_at < ?
-                            AND NOT EXISTS (
-                                SELECT 1 FROM scan_incidents i WHERE i.job_id=scan_jobs.id
-                            )
-                        ) OR (
-                            status IN ('failed', 'analysis_incomplete') AND created_at < ?
-                            AND NOT EXISTS (
-                                SELECT 1 FROM scan_incidents i WHERE i.job_id=scan_jobs.id
-                            )
-                        ) OR (
-                            status='done_with_incident' AND created_at < ?
-                        )
-                    )
-                """
-                observation_params = (
-                    task_cutoff,
-                    incident_cutoff,
-                    clean_cutoff,
-                    failed_cutoff,
-                    incident_cutoff,
+                ) OR (
+                    status='done_with_incident' AND created_at < ?
                 )
-                if dry_run:
+            )
+        """
+        observation_params = (
+            task_cutoff,
+            incident_cutoff,
+            clean_cutoff,
+            failed_cutoff,
+            incident_cutoff,
+        )
+        # LLM second-opinion reviews: input_json holds document text
+        # fragments, so they must not outlive incident retention.
+        # Terminal rows die by age; rows of any status die with their
+        # incident. Optional table: a stale schema must not abort the run.
+        llm_where = """
+            (
+                status IN ('done', 'failed')
+                AND COALESCE(finished_at, created_at) < ?
+            )
+            OR NOT EXISTS (
+                SELECT 1 FROM scan_incidents i
+                WHERE i.id = scan_llm_reviews.incident_id
+            )
+        """
+
+        def _write() -> Dict[str, int]:
+            if dry_run:
+                # Counts are point-in-time reads: one short lock window is fine.
+                with self._lock, self._connect() as conn:
                     result["observations"] = self._count_retention_candidates_locked(
                         conn,
                         table="scan_task_file_observations",
                         where_sql=observation_where,
                         params=observation_params,
                     )
-                else:
-                    result["observations"] = self._delete_retention_batches_locked(
-                        conn,
-                        table="scan_task_file_observations",
-                        where_sql=observation_where,
-                        params=observation_params,
-                        batch_size=batch_size,
-                    )
-                for key, table, where_sql, params in specs:
-                    if dry_run:
+                    for key, table, where_sql, params in specs:
                         result[key] = self._count_retention_candidates_locked(
                             conn,
                             table=table,
                             where_sql=where_sql,
                             params=params,
                         )
-                    else:
-                        result[key] = self._delete_retention_batches_locked(
+                    try:
+                        result["llm_reviews"] = self._count_retention_candidates_locked(
                             conn,
-                            table=table,
-                            where_sql=where_sql,
-                            params=params,
-                            batch_size=batch_size,
+                            table="scan_llm_reviews",
+                            where_sql=llm_where,
+                            params=(incident_cutoff,),
                         )
-                if not dry_run:
-                    conn.commit()
+                    except Exception as exc:  # noqa: BLE001 - optional table, best-effort count
+                        logger.warning("LLM review retention count skipped: %s", exc)
                 return dict(result)
+
+            result["observations"] = self._delete_retention_batches(
+                table="scan_task_file_observations",
+                where_sql=observation_where,
+                params=observation_params,
+                batch_size=batch_size,
+            )
+            for key, table, where_sql, params in specs:
+                result[key] = self._delete_retention_batches(
+                    table=table,
+                    where_sql=where_sql,
+                    params=params,
+                    batch_size=batch_size,
+                )
+            try:
+                safe_batch_size = max(1, min(5000, int(batch_size or 1000)))
+                while True:
+                    try:
+                        removed = self._delete_retention_batch_once(
+                            table="scan_llm_reviews",
+                            where_sql=llm_where,
+                            params=(incident_cutoff,),
+                            batch_size=safe_batch_size,
+                        )
+                    except Exception:
+                        raise
+                    if removed <= 0:
+                        break
+                    result["llm_reviews"] += removed
+                    if removed < safe_batch_size:
+                        break
+            except Exception as exc:  # noqa: BLE001 - optional table, best-effort cleanup
+                logger.warning("LLM review retention skipped: %s", exc)
+            return dict(result)
 
         return self._run_write_transaction("cleanup_retention", _write)

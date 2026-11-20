@@ -51,6 +51,62 @@ def _build_client():
     return TestClient(app)
 
 
+@pytest.mark.parametrize("multipart", [False, True])
+def test_it_request_retry_does_not_send_twice(monkeypatch, tmp_path, multipart):
+    from conftest import copy_app_schema_for_url
+    from backend.services import mail_service as service_module
+
+    service = mail_api_module.mail_service
+    database_url = f"sqlite+pysqlite:///{(tmp_path / 'it-request.sqlite').as_posix()}"
+    copy_app_schema_for_url(database_url)
+    monkeypatch.setattr(service, "_database_url", database_url)
+    monkeypatch.setenv("MAIL_SEND_IDEMPOTENCY", "0")
+    monkeypatch.setattr(service_module.user_service, "get_by_id", lambda _id: {"username": "fixture"})
+    monkeypatch.setattr(service, "get_template", lambda *args, **kwargs: {
+        "fields": [], "subject_template": "Synthetic", "body_template_md": "Synthetic",
+    })
+    sends = []
+
+    def send(**kwargs):
+        claim = service._claim_send_idempotency(
+            **kwargs, mailbox_id="fixture", cc=[], bcc=[], reply_to_message_id="", forward_message_id="",
+            draft_id="", retain_existing_attachments=None, forward_attachment_refs=None,
+        )
+        replay = service._apply_send_idempotency_claim(claim)
+        if replay is not None:
+            return replay
+        sends.append(kwargs["subject"])
+        result = {"ok": True, "message_id": f"sent-{len(sends)}"}
+        service._complete_send_idempotency(claim, status="sent", result=result)
+        return result
+
+    monkeypatch.setattr(service, "send_message", send)
+    client = _build_client()
+    headers = {"Idempotency-Key": "fixture-it-send-key"}
+    suffix = "-multipart" if multipart else ""
+    request = {"files": {"template_id": (None, "fixture")}} if multipart else {"json": {"template_id": "fixture"}}
+    first = client.post(f"/mail/messages/send-it-request{suffix}", headers=headers, **request)
+    retry = client.post(f"/mail/messages/send-it-request{suffix}", headers=headers, **request)
+
+    assert first.status_code == retry.status_code == 200
+    assert retry.json() == first.json() == {"ok": True, "message_id": "sent-1"}
+    assert sends == ["Synthetic"]
+
+
+def test_soft_delete_in_trash_requires_explicit_permanent_action(monkeypatch):
+    service = mail_api_module.mail_service
+    message_id = service._encode_message_id("trash", "test-trash-id", mailbox_id="mbox")
+
+    def unexpected_exchange_access(**kwargs):
+        raise AssertionError("The request must be rejected before it can delete anything")
+
+    monkeypatch.setattr(service, "_resolve_mail_profile", unexpected_exchange_access)
+    response = _build_client().post(f"/mail/messages/{message_id}/delete", json={"permanent": False})
+
+    assert response.status_code == 400
+    assert "безвозврат" in response.json()["detail"]
+
+
 def test_bootstrap_route_offloads_mail_call_and_logs_metrics(monkeypatch):
     client = _build_client()
     direct_call = {}

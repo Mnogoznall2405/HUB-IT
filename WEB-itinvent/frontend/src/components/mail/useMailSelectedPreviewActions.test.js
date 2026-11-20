@@ -147,17 +147,17 @@ describe('useMailSelectedPreviewActions', () => {
     expect(mailAPI.deleteMessage).toHaveBeenCalledWith('msg-1', { mailbox_id: 'mailbox-1', permanent: false });
   });
 
-  it('skips the delete API when permanent confirm is cancelled', async () => {
+  it('confirms a trash search result even when the active folder requests a soft delete', async () => {
     const mailAPI = createMailAPI();
     const props = createProps({
       mailAPI,
       confirmPermanentDelete: vi.fn(() => false),
-      selectedMessage: { id: 'msg-1' },
+      selectedMessage: { id: 'msg-1', folder: 'trash' },
     });
     const { result } = renderHook(() => useMailSelectedPreviewActions(props));
 
     await act(async () => {
-      await result.current.handleDeleteSelectedMessage(true);
+      await result.current.handleDeleteSelectedMessage(false);
     });
 
     expect(mailAPI.deleteMessage).not.toHaveBeenCalled();

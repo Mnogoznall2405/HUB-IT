@@ -1297,6 +1297,19 @@ public sealed class DocflowViewModel : ObservableObject
     private bool _realtimeRefreshQueued;
     /// <summary>Счётчик «эпох» содержимого: Reset инвалидирует in-flight realtime-загрузки.</summary>
     private int _loadEpoch;
+    private HubDocflowProfile? _profile;
+    private DocflowCredentialFormViewModel? _credentialForm;
+    private string _profileStatusText = string.Empty;
+    private string _profileStatusTone = HubStatusTone.Muted;
+    private string _profileLoginText = string.Empty;
+    private string _profileButtonText = "Подключить 1С";
+    private bool _isProfileChipVisible;
+    private bool _canShowAbsences;
+    private bool _isAbsencesOpen;
+    private bool _isAbsencesLoading;
+    private bool _absencesLoaded;
+    private string? _absencesInfoText;
+    private string _absencesZupNoteText = string.Empty;
 
     public DocflowViewModel(IHubApiClient api)
     {
@@ -1332,6 +1345,12 @@ public sealed class DocflowViewModel : ObservableObject
         NewAssignmentCommand = new NativeRelayCommand(
             () => OpenAssignmentForm(),
             () => CanCreateAssignment);
+        OpenCredentialFormCommand = new NativeRelayCommand(() => OpenCredentialForm());
+        ToggleAbsencesCommand = new NativeRelayCommand(() => ToggleAbsences());
+        RefreshAbsencesCommand = new NativeAsyncCommand(
+            (_, ct) => LoadAbsencesSafelyAsync(ct),
+            ex => AbsencesInfoText = TasksViewModel.DescribeError(ex),
+            _ => CanShowAbsences && !IsAbsencesLoading);
         DismissBannerCommand = new NativeRelayCommand(() => BannerErrorText = null);
         DismissStatusCommand = new NativeRelayCommand(() => StatusInfoText = null);
         Items.CollectionChanged += (_, _) =>
@@ -1613,6 +1632,141 @@ public sealed class DocflowViewModel : ObservableObject
         }
     }
 
+    // ---- Учётная запись 1С (профиль кредов) ----
+
+    /// <summary>Открытая панель «Учётная запись 1С»; null — скрыта.</summary>
+    public DocflowCredentialFormViewModel? CredentialForm
+    {
+        get => _credentialForm;
+        private set
+        {
+            if (SetProperty(ref _credentialForm, value))
+            {
+                OnPropertyChanged(nameof(IsCredentialFormOpen));
+            }
+        }
+    }
+
+    public bool IsCredentialFormOpen => CredentialForm is not null;
+
+    /// <summary>Подпись статуса подключения (как PROFILE_STATUS в вебе).</summary>
+    public string ProfileStatusText
+    {
+        get => _profileStatusText;
+        private set => SetProperty(ref _profileStatusText, value);
+    }
+
+    /// <summary>Тон пилюли статуса: valid→success, invalid→danger, unavailable→warning.</summary>
+    public string ProfileStatusTone
+    {
+        get => _profileStatusTone;
+        private set => SetProperty(ref _profileStatusTone, value);
+    }
+
+    /// <summary>Пилюля показана, когда профиль загружен и креды сохранены.</summary>
+    public bool IsProfileChipVisible
+    {
+        get => _isProfileChipVisible;
+        private set => SetProperty(ref _isProfileChipVisible, value);
+    }
+
+    /// <summary>Логин 1С под пилюлей («пользователь 1С», если пусто).</summary>
+    public string ProfileLoginText
+    {
+        get => _profileLoginText;
+        private set => SetProperty(ref _profileLoginText, value);
+    }
+
+    /// <summary>Подпись кнопки открытия панели кредов: «1С · логин» либо «Подключить 1С».</summary>
+    public string ProfileButtonText
+    {
+        get => _profileButtonText;
+        private set => SetProperty(ref _profileButtonText, value);
+    }
+
+    // ---- Отсутствия из 1С (справочник /docflow/absences на сегодня) ----
+
+    /// <summary>Записи об отсутствиях сегодня (имя, вид, период, флаг «разбирает задачи»).</summary>
+    public ObservableCollection<DocflowAbsenceItemViewModel> Absences { get; } = [];
+
+    /// <summary>
+    /// Панель доступна: креды настроены и фича не выключена на backend
+    /// (status=disabled прячет блок целиком, как DocflowAbsencesPanel в вебе).
+    /// </summary>
+    public bool CanShowAbsences
+    {
+        get => _canShowAbsences;
+        private set
+        {
+            if (SetProperty(ref _canShowAbsences, value))
+            {
+                OnPropertyChanged(nameof(AbsencesHeaderVisible));
+                ((NativeAsyncCommand)RefreshAbsencesCommand).RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Заголовок «Отсутствия» виден при CanShowAbsences.</summary>
+    public bool AbsencesHeaderVisible => CanShowAbsences;
+
+    /// <summary>Панель развёрнута — первый разворот лениво грузит список.</summary>
+    public bool IsAbsencesOpen
+    {
+        get => _isAbsencesOpen;
+        private set
+        {
+            if (SetProperty(ref _isAbsencesOpen, value))
+            {
+                OnPropertyChanged(nameof(AbsencesChevron));
+            }
+        }
+    }
+
+    /// <summary>Шеврон-индикатор свёрнутости панели.</summary>
+    public string AbsencesChevron => IsAbsencesOpen ? "▾" : "▸";
+
+    public bool IsAbsencesLoading
+    {
+        get => _isAbsencesLoading;
+        private set
+        {
+            if (SetProperty(ref _isAbsencesLoading, value))
+            {
+                ((NativeAsyncCommand)RefreshAbsencesCommand).RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Сообщение вместо списка: пусто на сегодня, недоступно или ошибка.</summary>
+    public string? AbsencesInfoText
+    {
+        get => _absencesInfoText;
+        private set
+        {
+            if (SetProperty(ref _absencesInfoText, value))
+            {
+                OnPropertyChanged(nameof(HasAbsencesInfo));
+            }
+        }
+    }
+
+    public bool HasAbsencesInfo => !string.IsNullOrEmpty(AbsencesInfoText);
+
+    /// <summary>«Сравнение с ЗУП недоступно…» — когда backend не смог сверить кэш.</summary>
+    public string AbsencesZupNoteText
+    {
+        get => _absencesZupNoteText;
+        private set
+        {
+            if (SetProperty(ref _absencesZupNoteText, value))
+            {
+                OnPropertyChanged(nameof(HasAbsencesZupNote));
+            }
+        }
+    }
+
+    public bool HasAbsencesZupNote => !string.IsNullOrEmpty(AbsencesZupNoteText);
+
     public ICommand RefreshCommand { get; }
     public ICommand SelectScopeCommand { get; }
     public ICommand LoadMoreCommand { get; }
@@ -1620,6 +1774,9 @@ public sealed class DocflowViewModel : ObservableObject
     public ICommand OpenFileCommand { get; }
     public ICommand OpenIn1cCommand { get; }
     public ICommand NewAssignmentCommand { get; }
+    public ICommand OpenCredentialFormCommand { get; }
+    public ICommand ToggleAbsencesCommand { get; }
+    public ICommand RefreshAbsencesCommand { get; }
     public ICommand DismissBannerCommand { get; }
     public ICommand DismissStatusCommand { get; }
 
@@ -2276,17 +2433,185 @@ public sealed class DocflowViewModel : ObservableObject
 
     private void ApplyProfile(HubDocflowProfile? profile)
     {
-        if (profile is null || (!profile.Configured && profile.Status != "configured"))
+        _profile = profile;
+        var configured = profile is not null
+            && (profile.Configured || profile.Status is "configured" or "valid");
+        if (!configured)
         {
             ShowSetupHint = true;
             SetupHintText =
-                "Документооборот 1С не подключён. Укажите логин и пароль 1С " +
-                "в веб-версии HUB (раздел «Документы»), затем обновите страницу здесь.";
+                "Введите логин и пароль 1С — загрузятся только назначенные вам задания. " +
+                "Можно и в веб-версии HUB (раздел «Документы»), затем обновите страницу здесь.";
+            ProfileStatusText = "Не подключено";
+            ProfileStatusTone = HubStatusTone.Muted;
+            IsProfileChipVisible = false;
+            ProfileLoginText = string.Empty;
+            ProfileButtonText = "Подключить 1С";
+            ClearAbsencesState();
             return;
         }
 
         ShowSetupHint = false;
         SetupHintText = string.Empty;
+        var (statusText, tone) = profile!.Status switch
+        {
+            "valid" => ("Подключено", HubStatusTone.Success),
+            "invalid" => ("Неверные данные", HubStatusTone.Danger),
+            "unavailable" => ("1С недоступна", HubStatusTone.Warning),
+            _ => ("Настроено", HubStatusTone.Info),
+        };
+        ProfileStatusText = statusText;
+        ProfileStatusTone = tone;
+        IsProfileChipVisible = true;
+        var login = (profile.Login ?? string.Empty).Trim();
+        ProfileLoginText = login.Length > 0 ? login : "пользователь 1С";
+        ProfileButtonText = $"1С · {ProfileLoginText}";
+        // Профиль есть — панель отсутствий доступна, пока backend не ответит disabled.
+        CanShowAbsences = true;
+    }
+
+    // ---- Учётная запись 1С: панель кредов ----
+
+    /// <summary>
+    /// «Подключить 1С»/«1С · логин»: форма поверх карточки, как панель поручения.
+    /// Повторный клик при открытой форме не пересоздаёт её — введённые поля целы.
+    /// </summary>
+    private void OpenCredentialForm()
+    {
+        if (CredentialForm is not null)
+        {
+            return;
+        }
+
+        var form = new DocflowCredentialFormViewModel(_api, _profile);
+        form.Saved += CredentialForm_Saved;
+        form.Disconnected += CredentialForm_Disconnected;
+        form.Closed += CredentialForm_Closed;
+        CredentialForm = form;
+    }
+
+    /// <summary>Креды сохранены: закрыть форму и перечитать профиль+список целиком.</summary>
+    private async void CredentialForm_Saved(object? sender, DocflowProfileSavedEventArgs e)
+    {
+        CredentialForm = null;
+        ApplyProfile(e.Profile);
+        _absencesLoaded = false;
+        StatusInfoText = "Учётная запись 1С сохранена.";
+        try
+        {
+            await LoadTasksPageAsync(offset: 0, replace: true, CancellationToken.None);
+        }
+        catch
+        {
+            // Список подтянется при следующем явном refresh.
+        }
+
+        await RefreshInboxSummarySafelyAsync(CancellationToken.None);
+        await RefreshAssignmentCapabilitySafelyAsync(CancellationToken.None);
+        if (IsAbsencesOpen)
+        {
+            await LoadAbsencesSafelyAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Креды удалены: как removeCredentials в вебе — чистим список/карточку/кэш
+    /// и возвращаем состояние «не подключено» (setup-подсказка поверх области).
+    /// </summary>
+    private void CredentialForm_Disconnected(object? sender, EventArgs e)
+    {
+        CredentialForm = null;
+        Items.Clear();
+        Detail = null;
+        SelectedItem = null;
+        AssignmentForm = null;
+        _assignmentCapability = null;
+        CanCreateAssignment = false;
+        _total = null;
+        _nextOffset = 0;
+        HasMore = false;
+        InboxCount = 0;
+        TotalText = string.Empty;
+        ApplyProfile(new HubDocflowProfile { Configured = false, Status = "not_configured" });
+        StatusInfoText = "Учётная запись 1С отключена.";
+    }
+
+    private void CredentialForm_Closed(object? sender, EventArgs e)
+    {
+        CredentialForm = null;
+    }
+
+    // ---- Отсутствия из 1С ----
+
+    /// <summary>Разворот/сворачивание панели; первый разворот грузит список.</summary>
+    private void ToggleAbsences()
+    {
+        if (!CanShowAbsences)
+        {
+            return;
+        }
+
+        IsAbsencesOpen = !IsAbsencesOpen;
+        if (IsAbsencesOpen && !_absencesLoaded)
+        {
+            _ = LoadAbsencesSafelyAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// GET /docflow/absences на сегодня: disabled прячет блок, прочие статусы
+    /// и ошибки — строкой в панели (как Alert в веб-панели), список не трогаем
+    /// до успешной выдачи.
+    /// </summary>
+    private async Task LoadAbsencesSafelyAsync(CancellationToken cancellationToken)
+    {
+        IsAbsencesLoading = true;
+        try
+        {
+            var list = await _api.GetDocflowAbsencesAsync(null, null, cancellationToken);
+            if (list.Status is "disabled")
+            {
+                ClearAbsencesState();
+                return;
+            }
+
+            Absences.Clear();
+            foreach (var item in list.Items ?? [])
+            {
+                Absences.Add(new DocflowAbsenceItemViewModel(item));
+            }
+
+            AbsencesInfoText = list.Status is "available"
+                ? (Absences.Count == 0 ? "На сегодня записей об отсутствии нет." : null)
+                : "Не удалось подтвердить состояние списка отсутствий.";
+            AbsencesZupNoteText = list.ZupComparison is "unavailable"
+                ? "Сравнение с ЗУП недоступно: актуальность данных не подтверждена."
+                : string.Empty;
+            _absencesLoaded = true;
+            CanShowAbsences = true;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            AbsencesInfoText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            IsAbsencesLoading = false;
+        }
+    }
+
+    private void ClearAbsencesState()
+    {
+        Absences.Clear();
+        AbsencesInfoText = null;
+        AbsencesZupNoteText = string.Empty;
+        IsAbsencesOpen = false;
+        IsAbsencesLoading = false;
+        _absencesLoaded = false;
+        CanShowAbsences = false;
     }
 
     /// <summary>Ошибка загрузки, выставленная шеллом при инициализации страниц.</summary>
@@ -2309,8 +2634,15 @@ public sealed class DocflowViewModel : ObservableObject
         Detail = null;
         SelectedItem = null;
         AssignmentForm = null;
+        CredentialForm = null;
+        _profile = null;
         _assignmentCapability = null;
         CanCreateAssignment = false;
+        ClearAbsencesState();
+        ProfileStatusText = string.Empty;
+        IsProfileChipVisible = false;
+        ProfileLoginText = string.Empty;
+        ProfileButtonText = "Подключить 1С";
         BannerErrorText = null;
         DetailErrorText = null;
         StatusInfoText = null;
@@ -2329,5 +2661,330 @@ public sealed class DocflowViewModel : ObservableObject
         IsLoadingMore = false;
         IsDetailLoading = false;
         _fileDownloadsInFlight.Clear();
+    }
+}
+
+/// <summary>Аргументы события сохранения кредов: профиль, вернувшийся с PUT.</summary>
+public sealed class DocflowProfileSavedEventArgs : EventArgs
+{
+    public DocflowProfileSavedEventArgs(HubDocflowProfile profile)
+    {
+        Profile = profile;
+    }
+
+    public HubDocflowProfile Profile { get; }
+}
+
+/// <summary>
+/// Панель «Учётная запись 1С» (оверлей, как форма поручения): логин и пароль
+/// учётки 1С, проверка связи без сохранения (POST /profile/test), сохранение
+/// (PUT /profile/credentials) и отключение (DELETE — с inline-подтверждением,
+/// как DisconnectDialog в вебе). Пароль приходит из PasswordBox аргументом
+/// методов и в VM не хранится дольше одного вызова; в логи/состояние не пишется.
+/// </summary>
+public sealed class DocflowCredentialFormViewModel : ObservableObject
+{
+    private readonly IHubApiClient _api;
+    private string _login;
+    private string? _busyAction;
+    private string? _errorText;
+    private string? _testResultText;
+    private bool _isDisconnectConfirming;
+
+    public DocflowCredentialFormViewModel(IHubApiClient api, HubDocflowProfile? profile)
+    {
+        _api = api ?? throw new ArgumentNullException(nameof(api));
+        _login = (profile?.Login ?? string.Empty).Trim();
+        ProfileConfigured = profile?.Configured == true || profile?.Status is "configured" or "valid";
+        HeaderText = ProfileConfigured ? "Учётная запись 1С" : "Подключение к 1С";
+        InfoText = ProfileConfigured
+            ? "Логин уже сохранён. Укажите пароль, чтобы обновить данные или проверить связь."
+            : "Введите личные данные 1С — задания загрузятся только назначенные вам. "
+                + "Нет доступа? Запросите пароль у технической поддержки (it@zsgp.ru).";
+
+        CloseCommand = new NativeRelayCommand(
+            () => Closed?.Invoke(this, EventArgs.Empty),
+            () => !IsBusy);
+        AskDisconnectCommand = new NativeRelayCommand(
+            () => IsDisconnectConfirming = true,
+            () => !IsBusy && ProfileConfigured && !IsDisconnectConfirming);
+        CancelDisconnectCommand = new NativeRelayCommand(
+            () => IsDisconnectConfirming = false,
+            () => !IsBusy);
+    }
+
+    /// <summary>PUT вернул профиль — родитель перечитывает список и capability.</summary>
+    public event EventHandler<DocflowProfileSavedEventArgs>? Saved;
+
+    /// <summary>DELETE завершён — родитель чистит список и возвращает setup-состояние.</summary>
+    public event EventHandler? Disconnected;
+
+    /// <summary>Закрытие панели без изменений (Отмена/✕) — решает родитель.</summary>
+    public event EventHandler? Closed;
+
+    /// <summary>Креды уже сохранены — показать ветку отключения и подсказку про пароль.</summary>
+    public bool ProfileConfigured { get; }
+
+    public string HeaderText { get; }
+    public string InfoText { get; }
+
+    /// <summary>Логин 1С (предзаполнен из профиля, ≤128 как у backend).</summary>
+    public string Login
+    {
+        get => _login;
+        set
+        {
+            if (SetProperty(ref _login, value ?? string.Empty))
+            {
+                ErrorText = null;
+                TestResultText = null;
+            }
+        }
+    }
+
+    /// <summary>Идёт test|save|disconnect — имя действия для подписи прогресса.</summary>
+    public string? BusyAction
+    {
+        get => _busyAction;
+        private set
+        {
+            if (SetProperty(ref _busyAction, value))
+            {
+                OnPropertyChanged(nameof(IsBusy));
+                OnPropertyChanged(nameof(IsTestBusy));
+                OnPropertyChanged(nameof(IsSaveBusy));
+                OnPropertyChanged(nameof(IsDisconnectBusy));
+                OnPropertyChanged(nameof(TestButtonText));
+                OnPropertyChanged(nameof(SaveButtonText));
+                ((NativeRelayCommand)CloseCommand).RaiseCanExecuteChanged();
+                ((NativeRelayCommand)AskDisconnectCommand).RaiseCanExecuteChanged();
+                ((NativeRelayCommand)CancelDisconnectCommand).RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsBusy => BusyAction is not null;
+    public bool IsTestBusy => BusyAction == "test";
+    public bool IsSaveBusy => BusyAction == "save";
+    public bool IsDisconnectBusy => BusyAction == "disconnect";
+
+    public string TestButtonText => IsTestBusy ? "Проверяем…" : "Проверить подключение";
+    public string SaveButtonText => IsSaveBusy ? "Сохраняем…" : "Подключить и сохранить";
+
+    /// <summary>Ошибка валидации/запроса — плашка внутри формы.</summary>
+    public string? ErrorText
+    {
+        get => _errorText;
+        private set
+        {
+            if (SetProperty(ref _errorText, value))
+            {
+                OnPropertyChanged(nameof(HasError));
+            }
+        }
+    }
+
+    public bool HasError => !string.IsNullOrEmpty(ErrorText);
+
+    /// <summary>Зелёная строка результата проверки связи.</summary>
+    public string? TestResultText
+    {
+        get => _testResultText;
+        private set
+        {
+            if (SetProperty(ref _testResultText, value))
+            {
+                OnPropertyChanged(nameof(HasTestResult));
+            }
+        }
+    }
+
+    public bool HasTestResult => !string.IsNullOrEmpty(TestResultText);
+
+    /// <summary>Первый клик «Отключить 1С» — подтверждение, второй — само удаление.</summary>
+    public bool IsDisconnectConfirming
+    {
+        get => _isDisconnectConfirming;
+        private set
+        {
+            if (SetProperty(ref _isDisconnectConfirming, value))
+            {
+                ((NativeRelayCommand)AskDisconnectCommand).RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public ICommand CloseCommand { get; }
+    public ICommand AskDisconnectCommand { get; }
+    public ICommand CancelDisconnectCommand { get; }
+
+    /// <summary>«Проверить подключение» — POST /profile/test, креды не сохраняются.</summary>
+    public async Task<bool> TestAsync(string? password, CancellationToken cancellationToken = default)
+    {
+        if (IsBusy || !TryValidate(password, out var login, out var secret))
+        {
+            return false;
+        }
+
+        BusyAction = "test";
+        try
+        {
+            var result = await _api.TestDocflowCredentialsAsync(login, secret, cancellationToken);
+            var configuration = (result.Configuration ?? string.Empty).Trim();
+            TestResultText = !result.Connected
+                ? "1С не подтвердила подключение по этим данным."
+                : configuration.Length > 0
+                    ? $"Подключение к базе «{configuration}» работает."
+                    : "Подключение к 1С работает.";
+            return result.Connected;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (Exception exception)
+        {
+            ErrorText = TasksViewModel.DescribeError(exception);
+            return false;
+        }
+        finally
+        {
+            BusyAction = null;
+        }
+    }
+
+    /// <summary>«Подключить и сохранить» — PUT /profile/credentials → событие Saved.</summary>
+    public async Task<bool> SaveAsync(string? password, CancellationToken cancellationToken = default)
+    {
+        if (IsBusy || !TryValidate(password, out var login, out var secret))
+        {
+            return false;
+        }
+
+        BusyAction = "save";
+        try
+        {
+            var profile = await _api.SaveDocflowCredentialsAsync(login, secret, cancellationToken);
+            Saved?.Invoke(this, new DocflowProfileSavedEventArgs(profile));
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (Exception exception)
+        {
+            ErrorText = TasksViewModel.DescribeError(exception);
+            return false;
+        }
+        finally
+        {
+            BusyAction = null;
+        }
+    }
+
+    /// <summary>Подтверждённое «Отключить 1С» — DELETE /profile/credentials.</summary>
+    public async Task<bool> DisconnectAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsBusy || !ProfileConfigured)
+        {
+            return false;
+        }
+
+        BusyAction = "disconnect";
+        ErrorText = null;
+        try
+        {
+            await _api.DeleteDocflowCredentialsAsync(cancellationToken);
+            Disconnected?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (Exception exception)
+        {
+            IsDisconnectConfirming = false;
+            ErrorText = TasksViewModel.DescribeError(exception);
+            return false;
+        }
+        finally
+        {
+            BusyAction = null;
+        }
+    }
+
+    /// <summary>Валидация как в веб-диалоге: логин и пароль обязательны.</summary>
+    private bool TryValidate(string? password, out string login, out string secret)
+    {
+        login = Login.Trim();
+        secret = password ?? string.Empty;
+        ErrorText = null;
+        TestResultText = null;
+        if (login.Length == 0)
+        {
+            ErrorText = "Введите логин от 1С.";
+            return false;
+        }
+
+        if (secret.Length == 0)
+        {
+            ErrorText = "Введите пароль от 1С.";
+            return false;
+        }
+
+        if (login.Length > 128 || secret.Length > 256)
+        {
+            ErrorText = "Слишком длинные данные. Проверьте логин и пароль.";
+            return false;
+        }
+
+        return true;
+    }
+}
+
+/// <summary>
+/// Строка панели «Отсутствия из 1С»: ФИО, вид и период, комментарий,
+/// «разбирает задачи», расхождение с ЗУП и неподтверждённая связь.
+/// </summary>
+public sealed class DocflowAbsenceItemViewModel
+{
+    public DocflowAbsenceItemViewModel(HubDocflowAbsenceItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        DisplayName = string.IsNullOrWhiteSpace(item.DisplayName)
+            ? "Сотрудник 1С"
+            : item.DisplayName!.Trim();
+        var label = (item.Label ?? string.Empty).Trim();
+        PeriodText = $"{(label.Length > 0 ? label : "Отсутствие")} · "
+            + $"{FormatDay(item.StartsOn)} — {FormatDay(item.EndsOn)} включительно";
+        Comment = (item.Comment ?? string.Empty).Trim();
+        WillHandleText = item.WillHandleTasks
+            ? "Будет разбирать задачи"
+            : "Не будет разбирать задачи";
+        HasDifferences = item.Differences is { Count: > 0 };
+        IsUnresolved = item.MatchingStatus is "unresolved";
+    }
+
+    public string DisplayName { get; }
+    public string PeriodText { get; }
+    public string Comment { get; }
+    public string WillHandleText { get; }
+
+    /// <summary>Чип «Данные отличаются от ЗУП» (differences не пуст).</summary>
+    public bool HasDifferences { get; }
+
+    /// <summary>«Связь с адресной книгой не подтверждена» (matching_status=unresolved).</summary>
+    public bool IsUnresolved { get; }
+
+    /// <summary>formatDate из веб-панели: «YYYY-MM-DD» → «dd.MM.yyyy».</summary>
+    private static string FormatDay(string? value)
+    {
+        var raw = (value ?? string.Empty).Trim();
+        var parts = raw.Split('-');
+        return parts.Length == 3 && parts[0].Length == 4
+            ? $"{parts[2]}.{parts[1]}.{parts[0]}"
+            : "дата не указана";
     }
 }

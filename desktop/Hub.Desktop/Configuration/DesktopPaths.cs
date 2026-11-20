@@ -9,6 +9,12 @@ public static class DesktopPaths
 
     public static string UserDataFolder { get; } = ResolveUserDataFolder();
 
+    /// <summary>
+    /// Отдельный профиль WebView2 для ридера HTML-писем: внешние ресурсы письма
+    /// грузятся анонимно — без cookie и кэша портальной сессии основного окна.
+    /// </summary>
+    public static string MailUserDataFolder { get; } = ResolveMailUserDataFolder();
+
     public static string LogsFolder { get; } = Path.Combine(Root, "Logs");
 
     public static string SettingsFile { get; } = Path.Combine(Root, "settings.json");
@@ -40,5 +46,15 @@ public static class DesktopPaths
         }
 
         return Path.Combine(Root, "WebView2");
+    }
+
+    private static string ResolveMailUserDataFolder()
+    {
+        // Соседняя папка рядом с основным профилем WebView2 — bench-изоляция
+        // (TryGetUserDataFolder/Root) применяется к почтовому профилю так же.
+        var parent = Path.GetDirectoryName(UserDataFolder.TrimEnd(Path.DirectorySeparatorChar));
+        return Path.Combine(
+            string.IsNullOrEmpty(parent) ? Root : parent,
+            "WebView2Mail");
     }
 }

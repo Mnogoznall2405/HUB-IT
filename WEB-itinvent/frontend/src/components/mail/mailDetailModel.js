@@ -37,6 +37,7 @@ export const createSelectedMessagePreviewShell = (item, folder = 'inbox') => {
     bcc_people: [],
     received_at: item?.received_at || null,
     is_read: Boolean(item?.is_read),
+    is_flagged: Boolean(item?.is_flagged),
     body_html: '',
     body_text: bodyPreview,
     importance: String(item?.importance || 'normal'),

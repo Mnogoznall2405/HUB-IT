@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from backend.appdb.db import get_app_engine
+from backend.appdb.db import app_session, get_app_engine
 from backend.appdb.models import AppDocumentPreviewJob
 from backend.services.document_preview_job_service import (
     PREVIEW_SCOPE_DOCFLOW,
@@ -190,3 +192,81 @@ def test_warehouse_preview_job_keeps_registrar_and_file_in_its_resource_key(prev
     assert job is not None
     assert job.scope == PREVIEW_SCOPE_WAREHOUSE_1C
     assert job.source_payload == {"registrar_ref": "registrar-1", "file_ref": "file-1"}
+
+
+def test_cleanup_expired_removes_dead_lease_processing_job_and_its_artifact(
+    preview_service, tmp_path
+):
+    context = {
+        "scope": PREVIEW_SCOPE_MAIL,
+        "owner_user_id": 7,
+        "source_payload": {
+            "message_id": "message-stuck",
+            "attachment_ref": "attachment-stuck",
+            "mailbox_id": "mailbox-1",
+        },
+        "preview_url": "/preview.pdf",
+    }
+    preview_service.get_state(**context)
+    dead_job = preview_service.claim_next_job(worker_id="dead-worker")
+    assert dead_job is not None
+
+    live_context = {
+        **context,
+        "source_payload": {
+            "message_id": "message-live",
+            "attachment_ref": "attachment-live",
+            "mailbox_id": "mailbox-1",
+        },
+    }
+    preview_service.get_state(**live_context)
+    live_job = preview_service.claim_next_job(worker_id="live-worker")
+    assert live_job is not None
+
+    # Orphan file left by a worker that crashed after writing the artifact
+    # but before _mark_ready recorded artifact_rel_path.
+    stale_artifact = tmp_path / "artifacts" / PREVIEW_SCOPE_MAIL / f"{dead_job.id}.pdf"
+    stale_artifact.parent.mkdir(parents=True, exist_ok=True)
+    stale_artifact.write_bytes(b"%PDF-stale")
+
+    now = datetime.now(timezone.utc)
+    with app_session(preview_service._database()) as session:
+        dead_row = session.get(AppDocumentPreviewJob, dead_job.id)
+        dead_row.expires_at = now - timedelta(hours=1)
+        dead_row.lease_expires_at = now - timedelta(minutes=1)
+        live_row = session.get(AppDocumentPreviewJob, live_job.id)
+        live_row.expires_at = now - timedelta(hours=1)
+
+    preview_service.cleanup_expired()
+
+    with app_session(preview_service._database()) as session:
+        assert session.get(AppDocumentPreviewJob, dead_job.id) is None
+        assert session.get(AppDocumentPreviewJob, live_job.id) is not None
+    assert not stale_artifact.exists()
+
+
+def test_preview_worker_cleanup_loop_invokes_document_cleanup(monkeypatch):
+    """MAIL-40: retention enforcement must be wired into the worker loop —
+    cleanup_expired is the only path that deletes expired rows/artifacts."""
+    import importlib
+    import threading
+
+    worker_module = importlib.import_module("start_preview_worker")
+    calls: list[int] = []
+    stop_event = threading.Event()
+
+    def fake_cleanup() -> int:
+        calls.append(1)
+        if len(calls) >= 2:
+            stop_event.set()
+        return 0
+
+    monkeypatch.setattr(
+        worker_module,
+        "document_preview_job_service",
+        SimpleNamespace(cleanup_expired=fake_cleanup),
+    )
+
+    worker_module._run_cleanup_loop(stop_event=stop_event, interval_seconds=1)
+
+    assert len(calls) >= 2

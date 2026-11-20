@@ -12,7 +12,6 @@ import {
   ActivityIndicator,
   Alert,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -121,6 +120,7 @@ export function NativeMailComposeScreen() {
   const [quotePreview, setQuotePreview] = useState('');
   const [quoteExpanded, setQuoteExpanded] = useState(false);
   const [showCopies, setShowCopies] = useState(false);
+  const [mailboxPickerOpen, setMailboxPickerOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [files, setFiles] = useState<MailUploadFile[]>([]);
   const [retainedAttachments, setRetainedAttachments] = useState<MailAttachment[]>([]);
@@ -287,6 +287,7 @@ export function NativeMailComposeScreen() {
       ...splitMailRecipients(bcc),
     ], selectedMailbox?.mailbox_email);
   }, [bcc, cc, mailboxId, mailboxes, to]);
+  const selectedMailbox = mailboxes.find((item) => String(item.id) === mailboxId);
 
   useEffect(() => {
     if (incomingShareAppliedRef.current || mode !== 'new') return;
@@ -1001,13 +1002,34 @@ export function NativeMailComposeScreen() {
           {moreOpen && draftId ? <Pressable disabled={saving || sending || offlineMode} accessibilityRole="button" onPress={deleteDraft} style={styles.deleteDraft}><MaterialCommunityIcons name="trash-can-outline" size={19} color={tokens.error} /><Text style={[styles.deleteDraftText, { color: tokens.error }]}>Удалить черновик</Text></Pressable> : null}
           {mailboxes.length > 1 ? (
             <View style={styles.fieldBlock}>
-              <Text style={[styles.label, { color: tokens.textSecondary }]}>Отправитель</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.mailboxRow}>
-                {mailboxes.map((mailbox) => <ComposeChip disabled={sending || saving} key={mailbox.id} label={mailbox.label || mailbox.mailbox_email || 'Ящик'} selected={mailboxId === String(mailbox.id)} tokens={tokens} onPress={() => selectMailbox(String(mailbox.id))} />)}
-              </ScrollView>
+              <View style={styles.labelRow}>
+                <Text style={[styles.label, { color: tokens.textSecondary }]}>Отправитель</Text>
+              </View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Выбрать ящик отправителя" accessibilityState={{ expanded: mailboxPickerOpen, disabled: sending || saving }} disabled={sending || saving} testID="native-mail-sender-picker" onPress={() => setMailboxPickerOpen((value) => !value)} style={[styles.fieldLine, { borderBottomColor: tokens.borderSoft }]}>
+                <View style={styles.fieldLineText}>
+                  <Text numberOfLines={1} style={[styles.fieldLineTitle, { color: tokens.textPrimary }]}>{selectedMailbox?.label || selectedMailbox?.mailbox_email || 'Ящик'}</Text>
+                  {selectedMailbox?.label && selectedMailbox?.mailbox_email ? <Text numberOfLines={1} style={[styles.fieldLineHint, { color: tokens.textSecondary }]}>{selectedMailbox.mailbox_email}</Text> : null}
+                </View>
+                <MaterialCommunityIcons name={mailboxPickerOpen ? 'chevron-up' : 'chevron-down'} size={22} color={tokens.iconMuted} />
+              </Pressable>
+              {mailboxPickerOpen ? (
+                <View style={[styles.pickerList, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+                  {mailboxes.map((mailbox) => {
+                    const active = mailboxId === String(mailbox.id);
+                    const label = String(mailbox.label || mailbox.mailbox_email || 'Ящик');
+                    return <Pressable key={mailbox.id} testID={`native-mail-sender-option-${mailbox.id}`} accessibilityRole="button" accessibilityState={{ selected: active, disabled: sending || saving }} disabled={sending || saving} onPress={() => { selectMailbox(String(mailbox.id)); setMailboxPickerOpen(false); }} style={[styles.pickerOption, { backgroundColor: active ? tokens.selected : 'transparent' }]}>
+                      <View style={styles.pickerOptionText}>
+                        <Text numberOfLines={1} style={[styles.pickerOptionTitle, { color: tokens.textPrimary }]}>{label}</Text>
+                        {mailbox.mailbox_email && mailbox.label ? <Text numberOfLines={1} style={[styles.pickerOptionEmail, { color: tokens.textSecondary }]}>{mailbox.mailbox_email}{mailbox.is_primary ? ' · основной' : ''}</Text> : null}
+                      </View>
+                      {active ? <MaterialCommunityIcons name="check" size={20} color={tokens.primary} /> : null}
+                    </Pressable>;
+                  })}
+                </View>
+              ) : null}
             </View>
           ) : null}
-          <RecipientInput disabled={sending || saving} label="Кому" value={to} tokens={tokens} testID="native-mail-to" onFocus={() => setActiveRecipient('to')} onChangeText={setTo} rightAction={<Pressable accessibilityRole="button" accessibilityLabel={showCopies ? 'Скрыть копии' : 'Добавить копию'} onPress={() => setShowCopies((value) => !value)} style={styles.inlineAction}><Text style={[styles.inlineActionText, { color: tokens.primary }]}>Копия</Text></Pressable>} />
+          <RecipientInput disabled={sending || saving} label="Кому" value={to} tokens={tokens} testID="native-mail-to" onFocus={() => setActiveRecipient('to')} onChangeText={setTo} rightAction={<Pressable accessibilityRole="button" accessibilityLabel={showCopies ? 'Скрыть копии' : 'Добавить копию'} accessibilityState={{ expanded: showCopies }} onPress={() => setShowCopies((value) => !value)} style={styles.inlineAction}><MaterialCommunityIcons name={showCopies ? 'chevron-up' : 'chevron-down'} size={22} color={tokens.primary} /></Pressable>} />
           {showCopies ? (
             <>
               <RecipientInput disabled={sending || saving} label="Копия" value={cc} tokens={tokens} onFocus={() => setActiveRecipient('cc')} onChangeText={setCc} />
@@ -1023,9 +1045,12 @@ export function NativeMailComposeScreen() {
               })}
             </View>
           ) : null}
-          <ComposeField disabled={sending || saving} label="Тема" value={subject} tokens={tokens} testID="native-mail-subject" onChangeText={setSubject} />
+          <ComposeField disabled={sending || saving || loading || offlineMode} label="Тема" value={subject} tokens={tokens} testID="native-mail-subject" onChangeText={setSubject} rightAction={<Pressable accessibilityRole="button" accessibilityLabel="Добавить вложения" disabled={sending || saving || loading || offlineMode} onPress={() => { void pickFiles(); }} style={styles.inlineAction}><MaterialCommunityIcons name="paperclip" size={21} color={tokens.iconMuted} /></Pressable>} />
           <View style={styles.fieldBlock}>
-            <Text style={[styles.label, { color: tokens.textSecondary }]}>{quoteHtml ? 'Текст ответа' : 'Текст письма'}</Text>
+            <View style={styles.labelRow}>
+              <Text style={[styles.label, { color: tokens.textSecondary }]}>{quoteHtml ? 'Текст ответа' : 'Текст письма'}</Text>
+              {!richEditing ? <Pressable accessibilityRole="button" accessibilityLabel="Форматировать текст" disabled={sending || saving} style={styles.inlineAction} onPress={() => { setBodyHtml(buildNativeMailOutgoingHtml(body)); setRichEditing(true); }}><MaterialCommunityIcons name="format-text" size={21} color={tokens.primary} /></Pressable> : null}
+            </View>
             {richEditing ? <NativeMailRichEditor
               ref={richEditor} key={`${user?.id}:${initialMailboxId}:${sourceMessageId}:${initialDraftId}:${mode}`}
               initialHtml={bodyHtml} disabled={sending || saving} tokens={tokens}
@@ -1041,9 +1066,8 @@ export function NativeMailComposeScreen() {
               placeholder="Введите сообщение"
               placeholderTextColor={tokens.textTertiary}
               accessibilityLabel="Текст письма"
-              style={[styles.bodyInput, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, color: tokens.textPrimary }]}
+              style={[styles.bodyInput, { color: tokens.textPrimary }]}
             />
-              <Pressable accessibilityRole="button" accessibilityLabel="Форматировать текст" disabled={sending || saving} style={styles.headerAction} onPress={() => { setBodyHtml(buildNativeMailOutgoingHtml(body)); setRichEditing(true); }}><Text style={{ color: tokens.primary }}>Форматирование</Text></Pressable>
             </>}
 
           </View>
@@ -1105,12 +1129,11 @@ export function NativeMailComposeScreen() {
   );
 }
 
-function ComposeField({ disabled = false, label, value, tokens, testID, onChangeText }: { disabled?: boolean; label: string; value: string; tokens: FluentTokens; testID?: string; onChangeText: (value: string) => void }) {
-  return <View style={styles.fieldBlock}><Text style={[styles.label, { color: tokens.textSecondary }]}>{label}</Text><TextInput editable={!disabled} testID={testID} value={value} onChangeText={onChangeText} accessibilityLabel={label} style={[styles.input, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, color: tokens.textPrimary }]} /></View>;
-}
-
-function ComposeChip({ disabled = false, label, selected, tokens, onPress }: { disabled?: boolean; label: string; selected: boolean; tokens: FluentTokens; onPress: () => void }) {
-  return <Pressable accessibilityRole="button" disabled={disabled} accessibilityState={{ selected, disabled }} onPress={onPress} style={[styles.composeChip, { backgroundColor: selected ? tokens.selected : tokens.panelSolid, borderColor: selected ? tokens.selectedBorder : tokens.borderSoft }]}><Text style={[styles.composeChipText, { color: selected ? tokens.primary : tokens.textSecondary }]}>{label}</Text></Pressable>;
+function ComposeField({ disabled = false, label, value, tokens, testID, rightAction, onChangeText }: { disabled?: boolean; label: string; value: string; tokens: FluentTokens; testID?: string; rightAction?: React.ReactNode; onChangeText: (value: string) => void }) {
+  return <View style={styles.fieldBlock}>
+    <View style={styles.labelRow}><Text style={[styles.label, { color: tokens.textSecondary }]}>{label}</Text>{rightAction}</View>
+    <TextInput editable={!disabled} testID={testID} value={value} onChangeText={onChangeText} accessibilityLabel={label} style={[styles.input, { borderBottomColor: tokens.borderSoft, color: tokens.textPrimary }]} />
+  </View>;
 }
 
 function AttachmentRow({ disabled = false, name, size, saved, note, tokens, onRemove }: { disabled?: boolean; name: string; size: number; saved?: boolean; note?: string; tokens: FluentTokens; onRemove?: () => void }) {
@@ -1131,17 +1154,25 @@ const styles = StyleSheet.create({
   label: { marginBottom: 5, fontSize: 12, fontWeight: '800' },
   inlineAction: { minHeight: 44, paddingHorizontal: 7, alignItems: 'center', justifyContent: 'center' },
   inlineActionText: { fontSize: 12, fontWeight: '800' },
-  input: { minHeight: 48, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, fontSize: 15 },
-  bodyInput: { minHeight: 220, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 12, fontSize: 15, lineHeight: 22 },
+  // Поля письма — как в Яндекс Почте: плоская строка с нижней волосной
+  // линией вместо карточки с рамкой; тело вообще без обводки.
+  input: { minHeight: 46, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 2, fontSize: 15 },
+  bodyInput: { minHeight: 220, paddingHorizontal: 2, paddingVertical: 8, fontSize: 15, lineHeight: 22 },
+  fieldLine: { minHeight: 50, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 2, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  fieldLineText: { flex: 1, minWidth: 0 },
+  fieldLineTitle: { fontSize: 15, fontWeight: '700' },
+  fieldLineHint: { marginTop: 1, fontSize: 12, lineHeight: 17 },
+  pickerList: { marginTop: 6, borderWidth: 1, borderRadius: 12, overflow: 'hidden' },
+  pickerOption: { minHeight: 52, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pickerOptionText: { flex: 1, minWidth: 0 },
+  pickerOptionTitle: { fontSize: 14, fontWeight: '700' },
+  pickerOptionEmail: { marginTop: 1, fontSize: 12, lineHeight: 17 },
   quoteCard: { marginBottom: 12, overflow: 'hidden', borderWidth: 1, borderRadius: 12 },
   quoteHeader: { minHeight: 60, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 9 },
   quoteHeaderText: { flex: 1, minWidth: 0 },
   quoteTitle: { fontSize: 13, lineHeight: 18, fontWeight: '800' },
   quoteHint: { marginTop: 1, fontSize: 12, lineHeight: 18 },
   quotePreview: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 10, fontSize: 13, lineHeight: 20 },
-  mailboxRow: { gap: 8 },
-  composeChip: { minHeight: 44, borderWidth: 1, borderRadius: 22, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
-  composeChipText: { fontSize: 12, fontWeight: '800' },
   suggestions: { marginTop: -8, marginBottom: 12, borderWidth: 1, borderRadius: 12, overflow: 'hidden' },
   suggestion: { minHeight: 52, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 9 },
   suggestionText: { flex: 1, minWidth: 0 },

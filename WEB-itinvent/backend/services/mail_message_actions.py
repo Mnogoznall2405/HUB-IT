@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from backend.services.mail_reference_codec import is_item_scoped_folder
+from backend.services.mail_reference_codec import MAIL_FLAG_CATEGORY, is_item_scoped_folder
 
 
 def _normalize_text(value: Any, default: str = "") -> str:
@@ -149,18 +150,89 @@ class MailMessageActions:
         except Exception as exc:
             raise MailMessageActionError(f"Failed to set message importance: {exc}") from exc
 
+    def set_flag(
+        self,
+        *,
+        account: Any,
+        folder_key: str,
+        exchange_id: str,
+        flagged: bool,
+    ) -> bool:
+        _folder_obj, _resolved_folder_key, item = self._message_item(
+            account=account,
+            folder_key=folder_key,
+            exchange_id=exchange_id,
+            only_fields=("categories",),
+        )
+        try:
+            categories = [c for c in (getattr(item, "categories", None) or []) if _normalize_text(c)]
+            has_flag = MAIL_FLAG_CATEGORY in categories
+            if bool(flagged) == has_flag:
+                return True
+            if flagged:
+                categories.append(MAIL_FLAG_CATEGORY)
+            else:
+                categories = [c for c in categories if c != MAIL_FLAG_CATEGORY]
+            item.categories = categories
+            item.save(update_fields=["categories"])
+            return True
+        except Exception as exc:
+            raise MailMessageActionError(f"Failed to set message flag: {exc}") from exc
+
+    @staticmethod
+    def _save_single_read_state(item: Any, is_read: bool) -> bool:
+        try:
+            item.is_read = bool(is_read)
+            item.save(update_fields=["is_read"])
+            return True
+        except Exception:
+            return False
+
     def set_items_read_state(self, *, items: Iterable[Any], is_read: bool) -> MailReadStateBulkResult:
         changed = 0
         failed = 0
+        by_account: dict[Any, list[Any]] = {}
+        singles: list[Any] = []
         for item in items:
             try:
                 current_read = bool(getattr(item, "is_read", False))
                 if current_read == bool(is_read):
                     continue
-                item.is_read = bool(is_read)
-                item.save(update_fields=["is_read"])
-                changed += 1
             except Exception:
+                failed += 1
+                continue
+            account = getattr(item, "account", None)
+            if account is None:
+                singles.append(item)
+            else:
+                by_account.setdefault(account, []).append(item)
+        for account, group in by_account.items():
+            to_update = []
+            for item in group:
+                item.is_read = bool(is_read)
+                to_update.append((item, ["is_read"]))
+            results = None
+            try:
+                results = account.bulk_update(to_update, chunk_size=100)
+            except Exception:
+                results = None
+            if isinstance(results, list) and len(results) == len(to_update):
+                for outcome in results:
+                    if isinstance(outcome, Exception):
+                        failed += 1
+                    else:
+                        changed += 1
+            else:
+                # bulk_update unsupported or mismatched — settle per item.
+                for item in group:
+                    if self._save_single_read_state(item, is_read):
+                        changed += 1
+                    else:
+                        failed += 1
+        for item in singles:
+            if self._save_single_read_state(item, is_read):
+                changed += 1
+            else:
                 failed += 1
         return MailReadStateBulkResult(changed=changed, failed=failed)
 
@@ -168,21 +240,34 @@ class MailMessageActions:
         changed = 0
         failed = 0
         for folder_obj, _folder_key in folder_targets:
+            if isinstance(folder_obj, Exception):
+                # Scope enumeration failed before a folder object was built;
+                # report it instead of claiming an empty-success result.
+                failed += 1
+                continue
             try:
                 queryset = folder_obj.filter(is_read=False)
+                try:
+                    queryset = queryset.only("is_read")
+                except Exception:
+                    pass
+                item_iter = iter(queryset)
             except Exception:
-                queryset = []
-            try:
-                queryset = queryset.only("is_read")
-            except Exception:
-                pass
-            try:
-                unread_items = list(queryset)
-            except Exception:
-                unread_items = []
-            result = self.set_items_read_state(items=unread_items, is_read=True)
-            changed += result.changed
-            failed += result.failed
+                failed += 1
+                continue
+            while True:
+                try:
+                    # Stream chunks instead of listing the whole unread set:
+                    # a mailbox can hold tens of thousands of unread items.
+                    unread_items = list(itertools.islice(item_iter, 200))
+                except Exception:
+                    failed += 1
+                    break
+                if not unread_items:
+                    break
+                result = self.set_items_read_state(items=unread_items, is_read=True)
+                changed += result.changed
+                failed += result.failed
         return MailReadStateBulkResult(changed=changed, failed=failed)
 
     def move_message(

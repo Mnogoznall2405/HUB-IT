@@ -15,6 +15,8 @@
             <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
             <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
 
+            <Style x:Key="ChipRadioStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}" />
+
             <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
                 <Setter Property="FontSize" Value="12" />
             </Style>
@@ -142,11 +144,25 @@
                                  Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
                                  AutomationProperties.Name="Индикатор загрузки оборудования" />
                 </StackPanel>
-                <Button Grid.Column="1"
-                        Style="{StaticResource HubGhostButtonStyle}"
-                        Command="{Binding RefreshCommand}"
-                        Content="Обновить"
-                        AutomationProperties.Name="Обновить список оборудования" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Style="{StaticResource HubSecondaryButtonStyle}"
+                            Command="{Binding OpenCreateCommand}"
+                            Content="+ Новая позиция"
+                            Visibility="{Binding CanTransfer, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Создать новую позицию оборудования" />
+                    <!-- «Загрузить акт» — как кнопка веб-тулбара базы (database.write) -->
+                    <Button Margin="8,0,0,0"
+                            Style="{StaticResource HubSecondaryButtonStyle}"
+                            Command="{Binding OpenUploadActCommand}"
+                            Content="⇪ Загрузить акт"
+                            Visibility="{Binding CanTransfer, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Загрузить подписанный акт" />
+                    <Button Margin="8,0,0,0"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding RefreshCommand}"
+                            Content="Обновить"
+                            AutomationProperties.Name="Обновить список оборудования" />
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -197,6 +213,7 @@
             <Grid Grid.Column="0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
@@ -213,59 +230,109 @@
                                Text="{Binding LastUpdatedText}"
                                Visibility="{Binding LastUpdatedText, Converter={StaticResource NonEmptyStringToVisibility}}" />
                 </DockPanel>
-                <Grid Grid.Row="1">
+
+                <!-- Групповой выбор: «☑ Все» + «Передать выбранные (N)» (право database.write) -->
+                <Grid Grid.Row="1"
+                      Margin="0,0,0,6"
+                      Visibility="{Binding CanTransfer, Converter={StaticResource BoolToVisibility}}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Button Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding SelectAllCommand}"
+                            Content="☑ Все"
+                            Padding="10,4"
+                            AutomationProperties.Name="Выбрать все позиции списка" />
+                    <StackPanel Grid.Column="1"
+                                HorizontalAlignment="Right"
+                                Orientation="Horizontal">
+                        <TextBlock Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding SelectionText}"
+                                   Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}" />
+                        <Button Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding OpenTransferSelectedCommand}"
+                                Content="{Binding TransferSelectionText}"
+                                Padding="10,4"
+                                AutomationProperties.Name="Передать выбранные позиции оборудования" />
+                        <Button Margin="6,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding ClearSelectionCommand}"
+                                Content="✕"
+                                Padding="10,4"
+                                Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Снять выбор позиций" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="2">
                     <ListBox Style="{StaticResource HubListBoxStyle}"
                              ItemsSource="{Binding Items}"
                              SelectedItem="{Binding SelectedItem}"
                              AutomationProperties.Name="Список оборудования">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <StackPanel>
-                                    <TextBlock FontSize="14"
-                                               FontWeight="SemiBold"
-                                               Text="{Binding Title}"
-                                               TextWrapping="Wrap"
-                                               AutomationProperties.Name="{Binding Title}" />
-                                    <TextBlock Margin="0,3,0,0"
-                                               FontSize="12"
-                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                               Text="{Binding TypeText}"
-                                               Visibility="{Binding HasType, Converter={StaticResource BoolToVisibility}}" />
-                                    <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
-                                        <TextBlock FontSize="12"
-                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                   Text="{Binding InvNoText, StringFormat=Инв. № {0}}"
-                                                   Visibility="{Binding HasInvNo, Converter={StaticResource BoolToVisibility}}" />
-                                        <TextBlock Margin="10,0,0,0"
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <CheckBox VerticalAlignment="Top"
+                                              Margin="0,2,8,0"
+                                              IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                              IsEnabled="{Binding HasInvNo}"
+                                              Visibility="{Binding DataContext.CanTransfer, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
+                                              AutomationProperties.Name="Выбрать позицию для передачи" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding Title}"
+                                                   TextWrapping="Wrap"
+                                                   AutomationProperties.Name="{Binding Title}" />
+                                        <TextBlock Margin="0,3,0,0"
                                                    FontSize="12"
                                                    Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                   Text="{Binding SerialText, StringFormat=S/N {0}}"
-                                                   Visibility="{Binding HasSerial, Converter={StaticResource BoolToVisibility}}" />
-                                    </StackPanel>
-                                    <TextBlock Margin="0,3,0,0"
-                                               FontSize="12"
-                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                               Text="{Binding EmployeeText}"
-                                               Visibility="{Binding HasEmployee, Converter={StaticResource BoolToVisibility}}" />
-                                    <StackPanel Margin="0,3,0,0" Orientation="Horizontal">
-                                        <TextBlock FontSize="11"
-                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                   Text="{Binding PlaceText}"
-                                                   Visibility="{Binding HasPlace, Converter={StaticResource BoolToVisibility}}" />
-                                        <Border Margin="8,0,0,0"
-                                                Padding="7,2"
-                                                CornerRadius="9"
-                                                VerticalAlignment="Center"
-                                                Background="{DynamicResource HubSurfaceRaisedBrush}"
-                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
-                                                BorderThickness="1"
-                                                Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}">
-                                            <TextBlock FontSize="10"
+                                                   Text="{Binding TypeText}"
+                                                   Visibility="{Binding HasType, Converter={StaticResource BoolToVisibility}}" />
+                                        <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                            <TextBlock FontSize="12"
                                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                       Text="{Binding StatusText}" />
-                                        </Border>
+                                                       Text="{Binding InvNoText, StringFormat=Инв. № {0}}"
+                                                       Visibility="{Binding HasInvNo, Converter={StaticResource BoolToVisibility}}" />
+                                            <TextBlock Margin="10,0,0,0"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding SerialText, StringFormat=S/N {0}}"
+                                                       Visibility="{Binding HasSerial, Converter={StaticResource BoolToVisibility}}" />
+                                        </StackPanel>
+                                        <TextBlock Margin="0,3,0,0"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding EmployeeText}"
+                                                   Visibility="{Binding HasEmployee, Converter={StaticResource BoolToVisibility}}" />
+                                        <StackPanel Margin="0,3,0,0" Orientation="Horizontal">
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding PlaceText}"
+                                                       Visibility="{Binding HasPlace, Converter={StaticResource BoolToVisibility}}" />
+                                            <Border Margin="8,0,0,0"
+                                                    Padding="7,2"
+                                                    CornerRadius="9"
+                                                    VerticalAlignment="Center"
+                                                    Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                    BorderThickness="1"
+                                                    Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock FontSize="10"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding StatusText}" />
+                                            </Border>
+                                        </StackPanel>
                                     </StackPanel>
-                                </StackPanel>
+                                </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
@@ -302,7 +369,7 @@
                                    Text="По текущим фильтрам оборудование не найдено." />
                     </StackPanel>
                 </Grid>
-                <Button Grid.Row="2"
+                <Button Grid.Row="3"
                         Margin="0,8,0,0"
                         HorizontalAlignment="Stretch"
                         Style="{StaticResource HubSecondaryButtonStyle}"
@@ -397,15 +464,22 @@
                                                Text="{Binding HeroMetaText}"
                                                Visibility="{Binding HasHeroMeta, Converter={StaticResource BoolToVisibility}}" />
 
-                                    <!-- Передача: право database.write, как в веб-карточке -->
-                                    <Button Margin="0,12,0,0"
-                                            HorizontalAlignment="Left"
-                                            Padding="14,6"
-                                            Style="{StaticResource HubSecondaryButtonStyle}"
-                                            Command="{Binding DataContext.OpenTransferCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            Content="⇄ Передать другому сотруднику"
-                                            Visibility="{Binding DataContext.CanTransfer, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
-                                            AutomationProperties.Name="Передать оборудование другому сотруднику" />
+                                    <!-- Правка + передача: право database.write, как в веб-карточке -->
+                                    <StackPanel Margin="0,12,0,0" Orientation="Horizontal">
+                                        <Button Padding="14,6"
+                                                Style="{StaticResource HubSecondaryButtonStyle}"
+                                                Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                Content="✎ Изменить карточку"
+                                                Visibility="{Binding DataContext.CanTransfer, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Изменить карточку оборудования" />
+                                        <Button Margin="8,0,0,0"
+                                                Padding="14,6"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding DataContext.OpenTransferCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                Content="⇄ Передать другому сотруднику"
+                                                Visibility="{Binding DataContext.CanTransfer, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Передать оборудование другому сотруднику" />
+                                    </StackPanel>
 
                                     <!-- Учётные данные -->
                                     <Border Style="{StaticResource SectionPanelStyle}" Margin="0,14,0,0">
@@ -465,7 +539,26 @@
                                                     <RowDefinition Height="Auto" />
                                                 </Grid.RowDefinitions>
                                                 <TextBlock Grid.Row="0" Style="{StaticResource MetaLabelStyle}" Text="Сотрудник" />
-                                                <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MetaValueStyle}" Text="{Binding EmployeeText}" />
+                                                <Grid Grid.Row="0" Grid.Column="1">
+                                                    <!-- owner_no (empl_no) есть → ФИО кликабельно: панель сотрудника -->
+                                                    <Button HorizontalAlignment="Left"
+                                                            Padding="0"
+                                                            MinWidth="0"
+                                                            MinHeight="0"
+                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                            Command="{Binding DataContext.OpenEmployeeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            Cursor="Hand"
+                                                            Visibility="{Binding HasOwner, Converter={StaticResource BoolToVisibility}}"
+                                                            AutomationProperties.Name="{Binding EmployeeText, StringFormat='Открыть карточку сотрудника {0}'}">
+                                                        <TextBlock Style="{StaticResource MetaValueStyle}"
+                                                                   Foreground="{DynamicResource HubAccentBrush}"
+                                                                   Text="{Binding EmployeeText}"
+                                                                   TextDecorations="Underline" />
+                                                    </Button>
+                                                    <TextBlock Style="{StaticResource MetaValueStyle}"
+                                                               Text="{Binding EmployeeText}"
+                                                               Visibility="{Binding HasOwner, Converter={StaticResource InverseBoolToVisibility}}" />
+                                                </Grid>
                                                 <TextBlock Grid.Row="1" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Подразделение" />
                                                 <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding EmployeeDeptText}" />
                                                 <TextBlock Grid.Row="2" Margin="0,6,0,0" Style="{StaticResource MetaLabelStyle}" Text="Email" />
@@ -524,25 +617,36 @@
                                     </Border>
                                 </StackPanel>
 
-                                <!-- Фото: счётчик + превью (Bearer-контент через AuthImageLoader) -->
-                                <Border Margin="0,14,0,0"
+                                <!-- Фото: счётчик + превью (Bearer-контент через AuthImageLoader),
+                                     загрузка — при database.write, бейджи модерации на снимках -->
+                                <Border x:Name="PhotoSectionPanel"
+                                        Margin="0,14,0,0"
                                         Padding="14,10"
                                         CornerRadius="10"
                                         Background="{DynamicResource HubSurfaceAltBrush}"
                                         BorderBrush="{DynamicResource HubBorderDimBrush}"
                                         BorderThickness="1"
-                                        Visibility="{Binding PhotoText, Converter={StaticResource NonEmptyStringToVisibility}}">
+                                        Visibility="{Binding ShowPhotoSection, Converter={StaticResource BoolToVisibility}}">
                                     <StackPanel>
-                                        <StackPanel Orientation="Horizontal">
-                                            <TextBlock VerticalAlignment="Center" FontSize="13" Text="📷" />
-                                            <TextBlock Margin="8,0,0,0"
-                                                       VerticalAlignment="Center"
-                                                       Style="{StaticResource MetaLabelStyle}"
-                                                       FontSize="12"
-                                                       Text="{Binding PhotoText}"
-                                                       TextWrapping="Wrap"
-                                                       AutomationProperties.Name="Метка фото оборудования" />
-                                        </StackPanel>
+                                        <Grid>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock VerticalAlignment="Center" FontSize="13" Text="📷" />
+                                                <TextBlock Margin="8,0,0,0"
+                                                           VerticalAlignment="Center"
+                                                           Style="{StaticResource MetaLabelStyle}"
+                                                           FontSize="12"
+                                                           Text="{Binding PhotoHeaderText}"
+                                                           TextWrapping="Wrap"
+                                                           AutomationProperties.Name="Метка фото оборудования" />
+                                            </StackPanel>
+                                            <Button HorizontalAlignment="Right"
+                                                    VerticalAlignment="Center"
+                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding AddPhotoCommand}"
+                                                    Content="+ Добавить фото"
+                                                    Visibility="{Binding CanAddPhoto, Converter={StaticResource BoolToVisibility}}"
+                                                    AutomationProperties.Name="Добавить фото оборудования" />
+                                        </Grid>
                                         <ItemsControl Margin="0,8,0,0"
                                                       ItemsSource="{Binding PhotoPreviews}"
                                                       Visibility="{Binding HasPhotoPreviews, Converter={StaticResource BoolToVisibility}}"
@@ -565,10 +669,36 @@
                                                         <Border CornerRadius="6"
                                                                 BorderBrush="{DynamicResource HubBorderDimBrush}"
                                                                 BorderThickness="1">
-                                                            <Image Width="120"
-                                                                   Height="90"
-                                                                   Stretch="UniformToFill"
-                                                                   Source="{Binding Image}" />
+                                                            <Grid>
+                                                                <Image Width="120"
+                                                                       Height="90"
+                                                                       Stretch="UniformToFill"
+                                                                       Source="{Binding Image}" />
+                                                                <!-- Бейдж модерации: ✓ проверено / ✕ отклонено -->
+                                                                <Border HorizontalAlignment="Left"
+                                                                        VerticalAlignment="Bottom"
+                                                                        Margin="4"
+                                                                        Padding="6,1"
+                                                                        CornerRadius="4"
+                                                                        Background="#B3000000"
+                                                                        ToolTip="{Binding StatusTooltip}"
+                                                                        Visibility="{Binding HasStatusBadge, Converter={StaticResource BoolToVisibility}}">
+                                                                    <TextBlock FontSize="11"
+                                                                               FontWeight="SemiBold"
+                                                                               Text="{Binding StatusBadgeText}">
+                                                                        <TextBlock.Style>
+                                                                            <Style TargetType="TextBlock">
+                                                                                <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding Rejected}" Value="True">
+                                                                                        <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </TextBlock.Style>
+                                                                    </TextBlock>
+                                                                </Border>
+                                                            </Grid>
                                                         </Border>
                                                     </Button>
                                                 </DataTemplate>
@@ -643,6 +773,117 @@
                                         </ItemsControl>
                                     </StackPanel>
                                 </Border>
+
+                                <!-- Работы: потоки журнала обслуживания по типу позиции -->
+                                <Border Margin="0,14,0,0"
+                                        Padding="14,10"
+                                        CornerRadius="10"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1"
+                                        Visibility="{Binding HasWorkStreams, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Секция работ по оборудованию">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock VerticalAlignment="Center" FontSize="13" Text="🛠" />
+                                            <TextBlock Margin="8,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="13"
+                                                       FontWeight="SemiBold"
+                                                       Text="Работы" />
+                                        </StackPanel>
+                                        <ItemsControl Margin="0,8,0,0"
+                                                      ItemsSource="{Binding WorkStreams}"
+                                                      AutomationProperties.Name="Потоки журнальных работ">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="0,0,0,8"
+                                                            Padding="10,8"
+                                                            CornerRadius="6"
+                                                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                            BorderThickness="1">
+                                                        <StackPanel>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                    <TextBlock VerticalAlignment="Center"
+                                                                               FontSize="13"
+                                                                               Text="{Binding IconText}" />
+                                                                    <TextBlock Margin="8,0,0,0"
+                                                                               VerticalAlignment="Center"
+                                                                               FontSize="12.5"
+                                                                               FontWeight="SemiBold"
+                                                                               Text="{Binding TitleText}" />
+                                                                    <TextBlock Margin="10,0,0,0"
+                                                                               VerticalAlignment="Center"
+                                                                               Style="{StaticResource MetaLabelStyle}"
+                                                                               FontSize="11.5"
+                                                                               Text="{Binding SummaryText}" />
+                                                                </StackPanel>
+                                                                <Button Grid.Column="1"
+                                                                        VerticalAlignment="Center"
+                                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                                        Command="{Binding DataContext.OpenMaintenanceCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                        CommandParameter="{Binding}"
+                                                                        Content="{Binding RegisterText}"
+                                                                        Visibility="{Binding DataContext.CanTransfer, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
+                                                                        AutomationProperties.Name="{Binding TitleText, StringFormat='Зарегистрировать: {0}'}" />
+                                                            </Grid>
+                                                            <ProgressBar Margin="0,6,0,0"
+                                                                         Height="2"
+                                                                         IsIndeterminate="True"
+                                                                         Foreground="{DynamicResource HubAccentBrush}"
+                                                                         Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                                         Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                                                                         AutomationProperties.Name="{Binding TitleText, StringFormat='Загрузка потока: {0}'}" />
+                                                            <TextBlock Margin="0,6,0,0"
+                                                                       FontSize="11.5"
+                                                                       Foreground="{DynamicResource HubErrorTextBrush}"
+                                                                       Text="{Binding ErrorText}"
+                                                                       TextWrapping="Wrap"
+                                                                       Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}"
+                                                                       AutomationProperties.Name="{Binding TitleText, StringFormat='Ошибка потока: {0}'}" />
+                                                            <TextBlock Margin="0,6,0,0"
+                                                                       FontSize="12"
+                                                                       Style="{StaticResource MetaLabelStyle}"
+                                                                       Text="{Binding EmptyText}"
+                                                                       Visibility="{Binding ShowEmpty, Converter={StaticResource BoolToVisibility}}"
+                                                                       AutomationProperties.Name="{Binding TitleText, StringFormat='Пустой поток: {0}'}" />
+                                                            <ItemsControl Margin="0,4,0,0"
+                                                                          ItemsSource="{Binding Entries}"
+                                                                          Visibility="{Binding HasEntries, Converter={StaticResource BoolToVisibility}}">
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate>
+                                                                        <StackPanel Margin="0,4,0,0">
+                                                                            <StackPanel Orientation="Horizontal">
+                                                                                <TextBlock FontSize="11.5"
+                                                                                           FontWeight="SemiBold"
+                                                                                           Text="{Binding DateText}" />
+                                                                                <TextBlock Margin="8,0,0,0"
+                                                                                           VerticalAlignment="Center"
+                                                                                           FontSize="11.5"
+                                                                                           Text="{Binding TitleText}" />
+                                                                            </StackPanel>
+                                                                            <TextBlock Margin="0,2,0,0"
+                                                                                       FontSize="11"
+                                                                                       Style="{StaticResource MetaLabelStyle}"
+                                                                                       Text="{Binding DetailText}"
+                                                                                       TextTrimming="CharacterEllipsis"
+                                                                                       Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}" />
+                                                                        </StackPanel>
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
                         </ScrollViewer>
                     </Grid>
@@ -651,7 +892,10 @@
         </Grid>
 
         <!-- Полноразмерный просмотр фото оборудования -->
-        <Grid Background="#B3000000"
+        <Grid Grid.RowSpan="4"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="PhotoViewerOverlay_PreviewKeyDown"
               Visibility="{Binding IsPhotoViewerOpen, Converter={StaticResource BoolToVisibility}}">
             <Border MaxWidth="900"
                     MaxHeight="700"
@@ -664,6 +908,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid>
                         <TextBlock VerticalAlignment="Center"
@@ -681,6 +926,56 @@
                            Stretch="Uniform"
                            Source="{Binding PhotoViewerImage}"
                            AutomationProperties.Name="Фото оборудования" />
+
+                    <!-- Модерация: статус + действия как footer веб-диалога -->
+                    <Grid Grid.Row="2" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="12"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding PhotoViewerItem.StatusLineText}"
+                                       AutomationProperties.Name="Статус модерации фото" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubErrorTextBrush}"
+                                       Text="{Binding PhotoViewerItem.RejectReasonText}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding PhotoViewerItem.HasRejectReason, Converter={StaticResource BoolToVisibility}}"
+                                       AutomationProperties.Name="Причина отклонения фото" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <Button Style="{StaticResource HubSecondaryButtonStyle}"
+                                    Command="{Binding VerifyPhotoCommand}"
+                                    CommandParameter="{Binding PhotoViewerItem}"
+                                    Content="✓ Подтвердить"
+                                    Visibility="{Binding PhotoViewerItem.ShowVerifyButton, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Подтвердить фото оборудования" />
+                            <Button Margin="6,0,0,0"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding OpenRejectPhotoCommand}"
+                                    CommandParameter="{Binding PhotoViewerItem}"
+                                    Content="✕ Отклонить"
+                                    Visibility="{Binding PhotoViewerItem.ShowRejectButton, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Отклонить фото оборудования" />
+                            <Button Margin="6,0,0,0"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding EditRejectPhotoCommand}"
+                                    CommandParameter="{Binding PhotoViewerItem}"
+                                    Content="✎ Причина"
+                                    Visibility="{Binding PhotoViewerItem.ShowEditReasonButton, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Изменить причину отклонения фото" />
+                            <Button Margin="6,0,0,0"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding RotatePhotoCommand}"
+                                    CommandParameter="{Binding PhotoViewerItem}"
+                                    Content="⟳ Повернуть"
+                                    Visibility="{Binding CanRotatePhotos, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Повернуть фото оборудования" />
+                        </StackPanel>
+                    </Grid>
                 </Grid>
             </Border>
         </Grid>
@@ -716,11 +1011,11 @@
                         <StackPanel>
                             <TextBlock FontSize="16"
                                        FontWeight="SemiBold"
-                                       Text="Передача оборудования" />
+                                       Text="{Binding TitleText}" />
                             <TextBlock Margin="0,2,0,0"
                                        FontSize="12"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="{Binding InvNoText, StringFormat=Инв. № {0}}" />
+                                       Text="{Binding TargetSummaryText}" />
                         </StackPanel>
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
@@ -765,8 +1060,71 @@
                         <StackPanel>
                             <!-- Поля формы: скрываем после успешного результата -->
                             <StackPanel Visibility="{Binding HasResult, Converter={StaticResource InverseBoolToVisibility}}">
-                                <!-- Сотрудник: /equipment/search/employee с debounce -->
-                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Новый сотрудник *" />
+                                <!-- Режим: «Сотруднику» — владелец+акты; «По местоположению» — только филиал/локация; «Только акт» — акт без смены данных -->
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton GroupName="TransferMode"
+                                                 Style="{StaticResource ChipRadioStyle}"
+                                                 IsChecked="{Binding IsEmployeeMode, Mode=TwoWay}"
+                                                 IsEnabled="{Binding AreInputsEnabled}"
+                                                 Command="{Binding SelectModeCommand}"
+                                                 CommandParameter="Employee"
+                                                 Content="Сотруднику"
+                                                 AutomationProperties.Name="Режим передачи другому сотруднику" />
+                                    <RadioButton GroupName="TransferMode"
+                                                 Style="{StaticResource ChipRadioStyle}"
+                                                 IsChecked="{Binding IsLocationMode, Mode=TwoWay}"
+                                                 IsEnabled="{Binding AreInputsEnabled}"
+                                                 Command="{Binding SelectModeCommand}"
+                                                 CommandParameter="Location"
+                                                 Content="По местоположению"
+                                                 AutomationProperties.Name="Режим перемещения по местоположению" />
+                                    <RadioButton GroupName="TransferMode"
+                                                 Style="{StaticResource ChipRadioStyle}"
+                                                 IsChecked="{Binding IsActOnlyMode, Mode=TwoWay}"
+                                                 IsEnabled="{Binding AreInputsEnabled}"
+                                                 Command="{Binding SelectModeCommand}"
+                                                 CommandParameter="ActOnly"
+                                                 Content="Только акт"
+                                                 AutomationProperties.Name="Режим акта без перемещения" />
+                                </StackPanel>
+                                <TextBlock Margin="0,6,0,0"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding IsActOnlyMode, Converter={StaticResource BoolToVisibility}}"
+                                           Text="Получателем в акте станет текущий владелец выбранной техники. Данные позиций не меняются." />
+
+                                <!-- Позиции групповой передачи: первые 5 строк, дальше «… и ещё N» -->
+                                <Border Margin="0,10,0,0"
+                                        Padding="10,8"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1"
+                                        Visibility="{Binding HasTargetList, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Позиции передачи">
+                                    <StackPanel>
+                                        <ItemsControl ItemsSource="{Binding TargetItems}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Margin="0,0,0,2"
+                                                               FontSize="12"
+                                                               Text="{Binding DisplayText}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <TextBlock Margin="0,2,0,0"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding MoreTargetsText}"
+                                                   Visibility="{Binding MoreTargetsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <StackPanel Visibility="{Binding ShowsEmployeeField, Converter={StaticResource BoolToVisibility}}">
+                                <!-- Сотрудник: /equipment/search/employee с debounce («Только акт» — кто выдал) -->
+                                <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="{Binding EmployeeLabelText}" />
                                 <Grid>
                                     <TextBox x:Name="TransferEmployeeInput"
                                              Style="{StaticResource HubTextBoxStyle}"
@@ -871,11 +1229,13 @@
                                         </ListBox>
                                     </Border>
                                 </Popup>
+                                </StackPanel>
 
-                                <!-- Филиал → локация (опционально, как в веб-форме) -->
+                                <!-- Филиал → локация: опционально сотруднику, обязательно по местоположению; скрыто в «Только акт» -->
+                                <StackPanel Visibility="{Binding ShowsLocationFields, Converter={StaticResource BoolToVisibility}}">
                                 <TextBlock Margin="0,12,0,0"
                                            Style="{StaticResource MetaLabelStyle}"
-                                           Text="Филиал" />
+                                           Text="{Binding BranchLabelText}" />
                                 <ComboBox ItemsSource="{Binding BranchOptions}"
                                           SelectedItem="{Binding SelectedBranch}"
                                           DisplayMemberPath="Name"
@@ -889,7 +1249,7 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Локация" />
+                                    <TextBlock Style="{StaticResource MetaLabelStyle}" Text="{Binding LocationLabelText}" />
                                     <ProgressBar Grid.Column="1"
                                                  Width="60"
                                                  Height="3"
@@ -902,10 +1262,11 @@
                                 <ComboBox ItemsSource="{Binding LocationOptions}"
                                           SelectedItem="{Binding SelectedLocation}"
                                           DisplayMemberPath="Name"
-                                          IsEnabled="{Binding HasBranchSelection}"
+                                          IsEnabled="{Binding AreLocationsEnabled}"
                                           Background="{DynamicResource HubSurfaceAltBrush}"
                                           Foreground="{DynamicResource HubTextBrush}"
                                           AutomationProperties.Name="Локация для передачи" />
+                                </StackPanel>
 
                                 <TextBlock Margin="0,12,0,0"
                                            Style="{StaticResource MetaLabelStyle}"
@@ -961,6 +1322,47 @@
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
+
+                                <!-- Напоминание «загрузить подписанный акт» (upload_reminder_*) -->
+                                <StackPanel Visibility="{Binding HasReminderBlock, Converter={StaticResource BoolToVisibility}}">
+                                    <Border Margin="0,10,0,0"
+                                            Padding="12,8"
+                                            CornerRadius="8"
+                                            Background="{DynamicResource HubSurfaceAltBrush}"
+                                            BorderBrush="{DynamicResource HubAccentBrush}"
+                                            BorderThickness="1"
+                                            Visibility="{Binding HasReminderInfo, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock FontSize="12"
+                                                   Foreground="{DynamicResource HubAccentBrush}"
+                                                   Text="{Binding ReminderInfoText}"
+                                                   TextWrapping="Wrap" />
+                                    </Border>
+                                    <Border Margin="0,8,0,0"
+                                            Padding="12,8"
+                                            CornerRadius="8"
+                                            Background="{DynamicResource HubSurfaceAltBrush}"
+                                            BorderBrush="{DynamicResource HubWarningBrush}"
+                                            BorderThickness="1"
+                                            Visibility="{Binding HasReminderWarning, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock FontSize="12"
+                                                   Foreground="{DynamicResource HubWarningBrush}"
+                                                   Text="{Binding ReminderWarningText}"
+                                                   TextWrapping="Wrap" />
+                                    </Border>
+                                    <StackPanel Margin="0,8,0,0"
+                                                Orientation="Horizontal">
+                                        <Button Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding OpenReminderTaskCommand}"
+                                                Content="Открыть задачу"
+                                                Visibility="{Binding HasReminderTask, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Открыть reminder-задачу" />
+                                        <Button Margin="8,0,0,0"
+                                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                                Command="{Binding OpenUploadReminderCommand}"
+                                                Content="Загрузить подписанный акт"
+                                                AutomationProperties.Name="Загрузить подписанный акт к напоминанию" />
+                                    </StackPanel>
+                                </StackPanel>
                             </StackPanel>
                         </StackPanel>
                     </ScrollViewer>
@@ -979,6 +1381,1605 @@
                                 Command="{Binding CloseCommand}"
                                 Content="Отмена"
                                 AutomationProperties.Name="Отменить передачу оборудования" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Редактор карточки: «✎ Изменить» (PATCH) и «+ Новая позиция» (POST create) -->
+        <Grid Grid.RowSpan="4"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="EditorOverlay_PreviewKeyDown"
+              Visibility="{Binding IsEditorOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="560"
+                    MaxHeight="720"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding Editor}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding SubtitleText}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог карточки оборудования" />
+                    </Grid>
+
+                    <!-- Ошибка валидации/справочников/сабмита: форма и поля сохраняются -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <!-- Успех создания: диалог открыт для пакетного ввода -->
+                    <Border Grid.Row="2"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubSuccessBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasSuccess, Converter={StaticResource BoolToVisibility}}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock VerticalAlignment="Center"
+                                       Foreground="{DynamicResource HubSuccessBrush}"
+                                       FontSize="12"
+                                       Text="{Binding SuccessText}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <Button Grid.Column="1"
+                                    Margin="10,0,0,0"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding OpenCreatedCardCommand}"
+                                    Content="Открыть карточку"
+                                    AutomationProperties.Name="Открыть созданную карточку оборудования" />
+                        </Grid>
+                    </Border>
+
+                    <StackPanel Grid.Row="3" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор сохранения карточки" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding StatusText}"
+                                   Visibility="{Binding StatusText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="4"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- Серийный номер -->
+                            <TextBlock Style="{StaticResource MetaLabelStyle}" Text="{Binding SerialLabelText}" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding SerialText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Серийный номер оборудования" />
+
+                            <!-- Сотрудник: /equipment/owners/search с debounce; при создании текст — employee_name -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding EmployeeLabelText}" />
+                            <Grid>
+                                <TextBox x:Name="EditorEmployeeInput"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding EmployeeQuery, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Сотрудник карточки оборудования" />
+                                <TextBlock Margin="13,0,0,0"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="ФИО сотрудника…">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=EditorEmployeeInput}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                            <StackPanel Orientation="Horizontal">
+                                <ProgressBar Margin="0,6,0,0"
+                                             Width="90"
+                                             Height="3"
+                                             IsIndeterminate="True"
+                                             Foreground="{DynamicResource HubAccentBrush}"
+                                             Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                             Visibility="{Binding IsEmployeeSearchBusy, Converter={StaticResource BoolToVisibility}}"
+                                             AutomationProperties.Name="Индикатор поиска сотрудника карточки" />
+                            </StackPanel>
+                            <!-- Выбранный владелец: owner_no уходит в empl_no/employee_no -->
+                            <Border Margin="0,6,0,0"
+                                    Padding="8,5"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubAccentBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="{Binding HasSelectedEmployee, Converter={StaticResource BoolToVisibility}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding SelectedEmployee.Title}" />
+                                        <TextBlock FontSize="11"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding SelectedEmployee.MetaText}"
+                                                   Visibility="{Binding SelectedEmployee.MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            VerticalAlignment="Center"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding ClearEmployeeCommand}"
+                                            Content="✕"
+                                            AutomationProperties.Name="Сбросить сотрудника карточки" />
+                                </Grid>
+                            </Border>
+                            <Popup IsOpen="{Binding IsEmployeePopupOpen, Mode=TwoWay}"
+                                   Placement="Bottom"
+                                   PlacementTarget="{Binding ElementName=EditorEmployeeInput}"
+                                   StaysOpen="False"
+                                   AllowsTransparency="True">
+                                <Border MinWidth="340"
+                                        MaxWidth="480"
+                                        Padding="4"
+                                        Background="{DynamicResource HubSurfaceBrush}"
+                                        BorderBrush="{DynamicResource HubBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8">
+                                    <ListBox Style="{StaticResource HubListBoxStyle}"
+                                             ItemsSource="{Binding EmployeeOptions}"
+                                             MaxHeight="240"
+                                             AutomationProperties.Name="Варианты сотрудника карточки">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button HorizontalContentAlignment="Stretch"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.SelectEmployeeCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                        CommandParameter="{Binding}"
+                                                        AutomationProperties.Name="{Binding Title, StringFormat='Выбрать сотрудника {0}'}">
+                                                    <StackPanel>
+                                                        <TextBlock FontSize="13"
+                                                                   FontWeight="SemiBold"
+                                                                   Text="{Binding Title}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding MetaText}"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   Visibility="{Binding MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Border>
+                            </Popup>
+
+                            <!-- Тип -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding TypeLabelText}" />
+                            <ComboBox ItemsSource="{Binding TypeOptions}"
+                                      SelectedItem="{Binding SelectedType}"
+                                      DisplayMemberPath="Name"
+                                      IsEnabled="{Binding AreInputsEnabled}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Тип оборудования в карточке" />
+
+                            <!-- Модель: при создании — свободный ввод, список подсказывает -->
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="{Binding ModelLabelText}" />
+                                <ProgressBar Grid.Column="1"
+                                             Width="60"
+                                             Height="3"
+                                             IsIndeterminate="True"
+                                             Foreground="{DynamicResource HubAccentBrush}"
+                                             Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                             Visibility="{Binding IsModelsLoading, Converter={StaticResource BoolToVisibility}}"
+                                             AutomationProperties.Name="Индикатор загрузки моделей" />
+                            </Grid>
+                            <ComboBox ItemsSource="{Binding ModelOptions}"
+                                      SelectedItem="{Binding SelectedModel}"
+                                      DisplayMemberPath="Name"
+                                      IsEditable="{Binding IsModelEditable}"
+                                      Text="{Binding ModelNameText, UpdateSourceTrigger=PropertyChanged}"
+                                      IsEnabled="{Binding AreModelsEnabled}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Модель оборудования в карточке" />
+
+                            <!-- Статус -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding StatusLabelText}" />
+                            <ComboBox ItemsSource="{Binding StatusOptions}"
+                                      SelectedItem="{Binding SelectedStatus}"
+                                      DisplayMemberPath="Name"
+                                      IsEnabled="{Binding AreInputsEnabled}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Статус карточки оборудования" />
+
+                            <!-- Филиал → локации филиала (only_branch) -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding BranchLabelText}" />
+                            <ComboBox ItemsSource="{Binding BranchOptions}"
+                                      SelectedItem="{Binding SelectedBranch}"
+                                      DisplayMemberPath="Name"
+                                      IsEnabled="{Binding AreInputsEnabled}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Филиал карточки оборудования" />
+
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="{Binding LocationLabelText}" />
+                                <ProgressBar Grid.Column="1"
+                                             Width="60"
+                                             Height="3"
+                                             IsIndeterminate="True"
+                                             Foreground="{DynamicResource HubAccentBrush}"
+                                             Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                             Visibility="{Binding IsLocationsLoading, Converter={StaticResource BoolToVisibility}}"
+                                             AutomationProperties.Name="Индикатор загрузки локаций карточки" />
+                            </Grid>
+                            <ComboBox ItemsSource="{Binding LocationOptions}"
+                                      SelectedItem="{Binding SelectedLocation}"
+                                      DisplayMemberPath="Name"
+                                      IsEnabled="{Binding AreLocationsEnabled}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Локация карточки оборудования" />
+
+                            <!-- Аппаратный серийный / парт. номер -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Аппаратный серийный" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding HwSerialText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Аппаратный серийный номер оборудования" />
+
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Парт. номер" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding PartNoText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Парт. номер оборудования" />
+
+                            <!-- IP / MAC / имя компьютера -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="IP-адрес" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding IpText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="IP-адрес оборудования" />
+
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="MAC-адрес" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding MacText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="MAC-адрес оборудования" />
+
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Имя компьютера" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding NetworkNameText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Имя компьютера в сети" />
+
+                            <!-- Описание -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Описание" />
+                            <TextBox MinHeight="56"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     VerticalContentAlignment="Top"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding DescriptionText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Описание оборудования" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Действия формы -->
+                    <StackPanel Grid.Row="5"
+                                Margin="18,10,18,14"
+                                Orientation="Horizontal">
+                        <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SubmitCommand}"
+                                Content="{Binding SubmitButtonText}"
+                                AutomationProperties.Name="Сохранить карточку оборудования" />
+                        <Button Margin="10,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить правку карточки оборудования" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Панель сотрудника: техника владельца + его история перемещений -->
+        <Grid Grid.RowSpan="4"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="EmployeeOverlay_PreviewKeyDown"
+              Visibility="{Binding IsEmployeePanelOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="620"
+                    MaxHeight="700"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding Employee}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок: ФИО + подразделение -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding Title}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Имя сотрудника" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding DeptText}"
+                                       Visibility="{Binding HasDept, Converter={StaticResource BoolToVisibility}}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть панель сотрудника" />
+                    </Grid>
+
+                    <ScrollViewer Grid.Row="1"
+                                  Margin="18,10,18,14"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- Техника владельца (/equipment/employee/{owner}/items) -->
+                            <TextBlock Style="{StaticResource SectionHeaderStyle}"
+                                       Margin="0,0,0,8"
+                                       Text="Техника" />
+                            <TextBlock FontSize="12"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Загружаем технику…"
+                                       Visibility="{Binding IsItemsLoading, Converter={StaticResource BoolToVisibility}}" />
+                            <Border Padding="10,8"
+                                    CornerRadius="8"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                    BorderThickness="1"
+                                    Visibility="{Binding HasItemsError, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock FontSize="12"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding ItemsErrorText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.LiveSetting="Assertive" />
+                            </Border>
+                            <TextBlock FontSize="12"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="У сотрудника нет техники."
+                                       Visibility="{Binding ShowItemsEmpty, Converter={StaticResource BoolToVisibility}}" />
+                            <ItemsControl ItemsSource="{Binding Items}"
+                                          AutomationProperties.Name="Техника сотрудника">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Margin="0,0,0,6"
+                                                HorizontalContentAlignment="Stretch"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding DataContext.OpenItemCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}"
+                                                IsEnabled="{Binding HasInvNo}"
+                                                AutomationProperties.Name="{Binding Title, StringFormat='Открыть карточку {0}'}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock FontSize="13"
+                                                               FontWeight="SemiBold"
+                                                               Text="{Binding Title}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Margin="0,2,0,0"
+                                                               FontSize="11"
+                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                               Text="{Binding TypeText}"
+                                                               Visibility="{Binding HasType, Converter={StaticResource BoolToVisibility}}" />
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="1"
+                                                           Margin="10,0,0,0"
+                                                           VerticalAlignment="Top"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource HubAccentBrush}"
+                                                           Text="{Binding InvNoText, StringFormat='Инв. № {0}'}" />
+                                            </Grid>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Margin="0,4,0,0"
+                                       FontSize="11"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding DbErrorsText}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding HasDbErrors, Converter={StaticResource BoolToVisibility}}" />
+
+                            <!-- История перемещений сотрудника -->
+                            <TextBlock Style="{StaticResource SectionHeaderStyle}"
+                                       Margin="0,18,0,8"
+                                       Text="История" />
+                            <StackPanel Orientation="Horizontal">
+                                <RadioButton GroupName="EmployeeHistoryDirection"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsDirectionAll, Mode=TwoWay}"
+                                             Command="{Binding SelectDirectionCommand}"
+                                             CommandParameter="all"
+                                             Content="Все"
+                                             AutomationProperties.Name="Все перемещения сотрудника" />
+                                <RadioButton GroupName="EmployeeHistoryDirection"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsDirectionIncoming, Mode=TwoWay}"
+                                             Command="{Binding SelectDirectionCommand}"
+                                             CommandParameter="incoming"
+                                             Content="Приход"
+                                             AutomationProperties.Name="Поступления сотруднику" />
+                                <RadioButton GroupName="EmployeeHistoryDirection"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsDirectionOutgoing, Mode=TwoWay}"
+                                             Command="{Binding SelectDirectionCommand}"
+                                             CommandParameter="outgoing"
+                                             Content="Расход"
+                                             AutomationProperties.Name="Выдача от сотрудника" />
+                            </StackPanel>
+                            <TextBlock Margin="0,10,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Поиск по модели, инв. №, серийному №" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     Text="{Binding HistoryQuery, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Поиск по истории сотрудника" />
+                            <TextBlock Margin="0,8,0,0"
+                                       FontSize="12"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Загружаем историю…"
+                                       Visibility="{Binding IsHistoryLoading, Converter={StaticResource BoolToVisibility}}" />
+                            <Border Margin="0,8,0,0"
+                                    Padding="10,8"
+                                    CornerRadius="8"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                    BorderThickness="1"
+                                    Visibility="{Binding HasHistoryError, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock FontSize="12"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding HistoryErrorText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.LiveSetting="Assertive" />
+                            </Border>
+                            <TextBlock Margin="0,8,0,0"
+                                       FontSize="12"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding HistoryEmptyText}"
+                                       Visibility="{Binding ShowHistoryEmpty, Converter={StaticResource BoolToVisibility}}" />
+                            <ItemsControl Margin="0,8,0,0"
+                                          ItemsSource="{Binding HistoryEntries}"
+                                          AutomationProperties.Name="История перемещений сотрудника">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,0,6"
+                                                Padding="10,8"
+                                                CornerRadius="6"
+                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                BorderThickness="1">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock FontSize="12"
+                                                               FontWeight="SemiBold"
+                                                               Text="{Binding DateText}" />
+                                                    <TextBlock Margin="8,0,0,0"
+                                                               VerticalAlignment="Center"
+                                                               FontSize="11"
+                                                               Text="{Binding DirectionText}">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock" BasedOn="{StaticResource MetaLabelStyle}">
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsIncoming}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                                <TextBlock Margin="0,4,0,0"
+                                                           FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           Text="{Binding EquipmentText}" />
+                                                <TextBlock Margin="0,2,0,0"
+                                                           FontSize="11"
+                                                           Style="{StaticResource MetaLabelStyle}"
+                                                           Text="{Binding NumbersText}" />
+                                                <TextBlock Margin="0,4,0,0"
+                                                           FontSize="12"
+                                                           Text="{Binding EmployeeText}" />
+                                                <TextBlock Margin="0,2,0,0"
+                                                           FontSize="11"
+                                                           Style="{StaticResource MetaLabelStyle}"
+                                                           Text="{Binding PlaceText}" />
+                                                <TextBlock Margin="0,2,0,0"
+                                                           FontSize="11"
+                                                           Style="{StaticResource MetaLabelStyle}"
+                                                           Text="{Binding UserText, StringFormat=Пользователь: {0}}" />
+                                                <TextBlock Margin="0,4,0,0"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap"
+                                                           Text="{Binding CommentText}"
+                                                           Visibility="{Binding HasComment, Converter={StaticResource BoolToVisibility}}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <StackPanel Orientation="Horizontal"
+                                        Visibility="{Binding HasHistoryEntries, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock VerticalAlignment="Center"
+                                           FontSize="11"
+                                           Style="{StaticResource MetaLabelStyle}"
+                                           Text="{Binding HistoryStatusText}" />
+                            </StackPanel>
+                            <Button Margin="0,10,0,0"
+                                    HorizontalAlignment="Left"
+                                    Style="{StaticResource HubSecondaryButtonStyle}"
+                                    Command="{Binding LoadMoreHistoryCommand}"
+                                    Content="{Binding LoadMoreHistoryText}"
+                                    Visibility="{Binding HasMoreHistory, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Показать ещё записей истории сотрудника" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Загрузка фото: выбранный файл → «Загрузить» (multipart/чанки) -->
+        <Grid Grid.RowSpan="4"
+              Panel.ZIndex="2"
+              Background="#B3000000"
+              PreviewKeyDown="PhotoUploadOverlay_PreviewKeyDown"
+              Visibility="{Binding IsPhotoUploadOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="420"
+                    VerticalAlignment="Center"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding PhotoUpload}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Добавить фото" />
+                        <Button HorizontalAlignment="Right"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог загрузки фото" />
+                    </Grid>
+
+                    <!-- Выбранный файл: имя + размер, «Обзор…» для замены -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            CornerRadius="8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                            BorderThickness="1">
+                        <Grid>
+                            <StackPanel>
+                                <TextBlock FontSize="12"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding FileName}"
+                                           TextTrimming="CharacterEllipsis"
+                                           AutomationProperties.Name="Имя файла фото" />
+                                <TextBlock Margin="0,2,0,0"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding FileSizeText}" />
+                            </StackPanel>
+                            <Button HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding PickFileCommand}"
+                                    Content="Обзор…"
+                                    AutomationProperties.Name="Выбрать другой файл фото" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Ошибка выбора/загрузки -->
+                    <Border Grid.Row="2"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <!-- Прогресс: детерминированный для чанков, бегущий для POST -->
+                    <StackPanel Grid.Row="3" Margin="18,8,18,0"
+                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}">
+                        <ProgressBar Height="3"
+                                     Maximum="100"
+                                     Value="{Binding UploadPercent, Mode=OneWay}"
+                                     IsIndeterminate="{Binding IsUploadDeterminate, Converter={StaticResource InverseBoolToVisibility}}"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     AutomationProperties.Name="Прогресс загрузки фото" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding StatusText}" />
+                    </StackPanel>
+
+                    <!-- Кнопки -->
+                    <StackPanel Grid.Row="4"
+                                Margin="18,12,18,14"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Right">
+                        <Button Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отмена загрузки фото" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding UploadCommand}"
+                                Content="Загрузить"
+                                AutomationProperties.Name="Загрузить фото оборудования" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Загрузка подписанного акта: PDF → parse → черновик+верификация → commit → скачать -->
+        <Grid Grid.RowSpan="4"
+              Panel.ZIndex="2"
+              Background="#B3000000"
+              PreviewKeyDown="UploadActOverlay_PreviewKeyDown"
+              Visibility="{Binding IsUploadActOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="560"
+                    MaxHeight="720"
+                    VerticalAlignment="Center"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding UploadAct}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Загрузить подписанный акт" />
+                        <Button HorizontalAlignment="Right"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог загрузки акта" />
+                    </Grid>
+
+                    <!-- Выбранный PDF: имя + размер, «Обзор…» для замены -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            CornerRadius="8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                            BorderThickness="1">
+                        <Grid>
+                            <StackPanel>
+                                <TextBlock FontSize="12"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding FileName}"
+                                           TextTrimming="CharacterEllipsis"
+                                           AutomationProperties.Name="Имя файла акта" />
+                                <TextBlock Margin="0,2,0,0"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding FileSizeText}" />
+                            </StackPanel>
+                            <Button HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding PickFileCommand}"
+                                    Content="Обзор…"
+                                    AutomationProperties.Name="Выбрать другой файл акта" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Ошибка выбора/распознавания/записи -->
+                    <Border Grid.Row="2"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <!-- Инфо: ручной черновик, fallback распознавания, reminder-статус -->
+                    <Border Grid.Row="3"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubWarningBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasNotice, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubWarningBrush}"
+                                   FontSize="12"
+                                   Text="{Binding NoticeText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Polite" />
+                    </Border>
+
+                    <!-- Прогресс parse/commit -->
+                    <StackPanel Grid.Row="4" Margin="18,8,18,0"
+                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     AutomationProperties.Name="Индикатор обработки акта" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding StatusText}"
+                                   Visibility="{Binding StatusText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="5"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- Reminder-панель: binding-режим «Загрузить подписанный акт»/диплинк -->
+                            <Border Margin="0,0,0,10"
+                                    Padding="12,8"
+                                    CornerRadius="8"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubAccentBrush}"
+                                    BorderThickness="1"
+                                    Visibility="{Binding HasReminderBinding, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Панель напоминания о загрузке актов">
+                                <StackPanel>
+                                    <Grid>
+                                        <TextBlock VerticalAlignment="Center"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource HubAccentBrush}"
+                                                   Text="Напоминание о загрузке подписанных актов" />
+                                        <StackPanel HorizontalAlignment="Right"
+                                                    Orientation="Horizontal">
+                                            <Button Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding RefreshReminderCommand}"
+                                                    Content="Обновить"
+                                                    AutomationProperties.Name="Обновить напоминание об актах" />
+                                            <Button Margin="8,0,0,0"
+                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding OpenReminderTaskCommand}"
+                                                    Content="Открыть задачу"
+                                                    Visibility="{Binding HasReminderTask, Converter={StaticResource BoolToVisibility}}"
+                                                    AutomationProperties.Name="Открыть reminder-задачу из диалога" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Margin="0,4,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding ReminderSummaryText}"
+                                               Visibility="{Binding HasReminderSummary, Converter={StaticResource BoolToVisibility}}" />
+                                    <ProgressBar Margin="0,4,0,0"
+                                                 Height="3"
+                                                 IsIndeterminate="True"
+                                                 Foreground="{DynamicResource HubAccentBrush}"
+                                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                 Visibility="{Binding IsReminderLoading, Converter={StaticResource BoolToVisibility}}"
+                                                 AutomationProperties.Name="Индикатор загрузки напоминания" />
+                                    <ItemsControl Margin="0,4,0,0"
+                                                  ItemsSource="{Binding ReminderPendingGroups}"
+                                                  Visibility="{Binding HasReminderPendingGroups, Converter={StaticResource BoolToVisibility}}"
+                                                  AutomationProperties.Name="Ожидаемые группы актов">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock FontSize="11"
+                                                           TextWrapping="Wrap">
+                                                    <Run FontWeight="SemiBold"
+                                                         Text="{Binding TitleText}" /><Run Text=" — " /><Run Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                         Text="{Binding InvNosText}" />
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock Margin="0,2,0,0"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding ReminderMoreGroupsText}"
+                                               Visibility="{Binding HasReminderMoreGroups, Converter={StaticResource BoolToVisibility}}" />
+                                    <TextBlock Margin="0,4,0,0"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource HubWarningBrush}"
+                                               Text="{Binding ReminderErrorText}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding HasReminderError, Converter={StaticResource BoolToVisibility}}"
+                                               AutomationProperties.LiveSetting="Polite" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Черновик: правка полей + позиции + верификация номеров -->
+                            <StackPanel Visibility="{Binding ShowsDraftForm, Converter={StaticResource BoolToVisibility}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="8" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource MetaLabelStyle}" Text="От сотрудника" />
+                                        <TextBox Margin="0,4,0,0"
+                                                 Style="{StaticResource HubTextBoxStyle}"
+                                                 IsEnabled="{Binding AreInputsEnabled}"
+                                                 Text="{Binding FromEmployeeText, UpdateSourceTrigger=PropertyChanged}"
+                                                 AutomationProperties.Name="От сотрудника — кто выдал технику" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Style="{StaticResource MetaLabelStyle}" Text="На сотрудника" />
+                                        <TextBox Margin="0,4,0,0"
+                                                 Style="{StaticResource HubTextBoxStyle}"
+                                                 IsEnabled="{Binding AreInputsEnabled}"
+                                                 Text="{Binding ToEmployeeText, UpdateSourceTrigger=PropertyChanged}"
+                                                 AutomationProperties.Name="На сотрудника — кто принял технику" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Дата документа" />
+                                <TextBox Margin="0,4,0,0"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding DocDateText, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Дата документа акта" />
+
+                                <TextBlock Margin="0,10,0,0" Style="{StaticResource MetaLabelStyle}" Text="Инвентарные номера" />
+                                <TextBox Margin="0,4,0,0"
+                                         MinHeight="44"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         VerticalContentAlignment="Top"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding InvNosText, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Инвентарные номера для записи акта" />
+
+                                <!-- Предупреждения парсера -->
+                                <Border Margin="0,10,0,0"
+                                        Padding="10,8"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubWarningBrush}"
+                                        BorderThickness="1"
+                                        Visibility="{Binding HasWarnings, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock Foreground="{DynamicResource HubWarningBrush}"
+                                               FontSize="12"
+                                               Text="{Binding WarningsText}"
+                                               TextWrapping="Wrap" />
+                                </Border>
+
+                                <!-- Разрешённые позиции: сверка с PDF перед записью -->
+                                <Border Margin="0,10,0,0"
+                                        Padding="10,8"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1"
+                                        Visibility="{Binding HasResolvedItems, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Найденные позиции акта">
+                                    <StackPanel>
+                                        <TextBlock FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Text="Найдено в базе" />
+                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding ResolvedItems}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="0,0,0,6"
+                                                            Padding="8,5"
+                                                            CornerRadius="6"
+                                                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                            BorderThickness="1">
+                                                        <StackPanel>
+                                                            <TextBlock FontSize="12"
+                                                                       FontWeight="SemiBold"
+                                                                       Text="{Binding TitleText}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding SerialText}"
+                                                                       Visibility="{Binding HasSerial, Converter={StaticResource BoolToVisibility}}" />
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding EmployeeText}"
+                                                                       Visibility="{Binding HasEmployee, Converter={StaticResource BoolToVisibility}}" />
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding PlaceText}"
+                                                                       Visibility="{Binding HasPlace, Converter={StaticResource BoolToVisibility}}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Верификация: «Найдено API» vs «Будет записано» + чек -->
+                                <Border Margin="0,10,0,0"
+                                        Padding="12,8"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderThickness="1"
+                                        AutomationProperties.Name="Проверка инвентарных номеров акта">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="BorderBrush" Value="{DynamicResource HubSuccessBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding VerificationIsWarning}" Value="True">
+                                                    <Setter Property="BorderBrush" Value="{DynamicResource HubWarningBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <StackPanel>
+                                        <TextBlock FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Text="Проверка инвентарных номеров" />
+                                        <TextBlock Margin="0,2,0,0"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Text="{Binding VerificationHeadline}" />
+                                        <TextBlock Margin="0,8,0,0"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="Найдено API" />
+                                        <TextBlock FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Text="{Binding RecognizedInvNosText}" />
+                                        <TextBlock Margin="0,6,0,0"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="Будет записано в акт" />
+                                        <TextBlock FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Text="{Binding FinalInvNosText}" />
+                                        <TextBlock Margin="0,6,0,0"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource HubWarningBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Text="{Binding DroppedInvNosText}"
+                                                   Visibility="{Binding HasDroppedInvNos, Converter={StaticResource BoolToVisibility}}" />
+                                        <TextBlock Margin="0,4,0,0"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource HubWarningBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Text="{Binding AddedInvNosText}"
+                                                   Visibility="{Binding HasAddedInvNos, Converter={StaticResource BoolToVisibility}}" />
+                                        <CheckBox Margin="0,8,0,0"
+                                                  IsChecked="{Binding InvVerified, Mode=TwoWay}"
+                                                  IsEnabled="{Binding AreInputsEnabled}"
+                                                  Content="Я проверил инвентарные номера по PDF перед записью акта"
+                                                  AutomationProperties.Name="Подтверждение проверки инвентарных номеров" />
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Автоотправка акта по email после записи (autoEmail веба) -->
+                                <CheckBox Margin="0,10,0,0"
+                                          IsChecked="{Binding AutoEmailEnabled, Mode=TwoWay}"
+                                          IsEnabled="{Binding AreInputsEnabled}"
+                                          Content="Автоматически отправить акт на email участникам акта"
+                                          AutomationProperties.Name="Автоотправка акта по email" />
+                            </StackPanel>
+
+                            <!-- Итог записи: DOC_NO/FILE_NO + привязанные позиции + email -->
+                            <StackPanel Visibility="{Binding HasResult, Converter={StaticResource BoolToVisibility}}">
+                                <Border Padding="12,10"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubSuccessBrush}"
+                                        BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource HubSuccessBrush}"
+                                                   Text="{Binding ResultText}"
+                                                   AutomationProperties.LiveSetting="Polite" />
+                                        <TextBlock Margin="0,6,0,0"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Text="{Binding ResultInvNosText}"
+                                                   Visibility="{Binding HasResultInvNos, Converter={StaticResource BoolToVisibility}}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Email: тема/тело + получатели (POST /equipment/acts/upload/email) -->
+                                <StackPanel Margin="0,12,0,0">
+                                    <TextBlock FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Text="Отправить акт по email" />
+                                    <TextBlock Margin="0,8,0,0"
+                                               Style="{StaticResource MetaLabelStyle}"
+                                               Text="Тема письма" />
+                                    <TextBox Margin="0,4,0,0"
+                                             Style="{StaticResource HubTextBoxStyle}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Text="{Binding EmailSubjectText, UpdateSourceTrigger=PropertyChanged}"
+                                             AutomationProperties.Name="Тема письма с актом" />
+                                    <TextBlock Margin="0,8,0,0"
+                                               Style="{StaticResource MetaLabelStyle}"
+                                               Text="Текст письма" />
+                                    <TextBox Margin="0,4,0,0"
+                                             MinHeight="60"
+                                             Style="{StaticResource HubTextBoxStyle}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             VerticalContentAlignment="Top"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Text="{Binding EmailBodyText, UpdateSourceTrigger=PropertyChanged}"
+                                             AutomationProperties.Name="Текст письма с актом" />
+                                    <TextBlock Margin="0,8,0,0"
+                                               Style="{StaticResource MetaLabelStyle}"
+                                               Text="Получатели" />
+                                    <TextBox x:Name="UploadActEmailRecipientInput"
+                                             Margin="0,4,0,0"
+                                             Style="{StaticResource HubTextBoxStyle}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Text="{Binding EmailRecipientQuery, UpdateSourceTrigger=PropertyChanged}"
+                                             AutomationProperties.Name="Поиск получателя письма с актом" />
+                                    <Popup IsOpen="{Binding IsEmailRecipientPopupOpen, Mode=TwoWay}"
+                                           Placement="Bottom"
+                                           PlacementTarget="{Binding ElementName=UploadActEmailRecipientInput}"
+                                           StaysOpen="False"
+                                           AllowsTransparency="True">
+                                        <Border MinWidth="340"
+                                                MaxWidth="480"
+                                                Padding="4"
+                                                Background="{DynamicResource HubSurfaceBrush}"
+                                                BorderBrush="{DynamicResource HubBorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8">
+                                            <ListBox Style="{StaticResource HubListBoxStyle}"
+                                                     ItemsSource="{Binding EmailRecipientOptions}"
+                                                     MaxHeight="200"
+                                                     AutomationProperties.Name="Варианты получателя письма">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Button HorizontalContentAlignment="Stretch"
+                                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                                Command="{Binding DataContext.SelectEmailRecipientCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                                CommandParameter="{Binding}"
+                                                                AutomationProperties.Name="{Binding Title, StringFormat='Добавить получателя {0}'}">
+                                                            <StackPanel>
+                                                                <TextBlock FontSize="13"
+                                                                           FontWeight="SemiBold"
+                                                                           Text="{Binding Title}"
+                                                                           TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="{Binding MetaText}"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           Visibility="{Binding MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                            </StackPanel>
+                                                        </Button>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </Border>
+                                    </Popup>
+                                    <ItemsControl Margin="0,6,0,0"
+                                                  ItemsSource="{Binding EmailRecipients}"
+                                                  Visibility="{Binding HasEmailRecipients, Converter={StaticResource BoolToVisibility}}"
+                                                  AutomationProperties.Name="Выбранные получатели письма">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel Orientation="Horizontal" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,6,6"
+                                                        Padding="8,4"
+                                                        CornerRadius="10"
+                                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                        BorderThickness="1">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   FontSize="12"
+                                                                   Text="{Binding Title}" />
+                                                        <Button Margin="6,0,0,0"
+                                                                VerticalAlignment="Center"
+                                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                                Command="{Binding DataContext.RemoveEmailRecipientCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                CommandParameter="{Binding}"
+                                                                Content="✕"
+                                                                AutomationProperties.Name="{Binding Title, StringFormat='Убрать получателя {0}'}" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <StackPanel Margin="0,8,0,0"
+                                                Orientation="Horizontal">
+                                        <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                                Command="{Binding SendEmailCommand}"
+                                                Content="Отправить"
+                                                AutomationProperties.Name="Отправить акт выбранным получателям" />
+                                        <ProgressBar Margin="10,0,0,0"
+                                                     Width="120"
+                                                     Height="3"
+                                                     VerticalAlignment="Center"
+                                                     IsIndeterminate="True"
+                                                     Foreground="{DynamicResource HubAccentBrush}"
+                                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                     Visibility="{Binding IsEmailBusy, Converter={StaticResource BoolToVisibility}}"
+                                                     AutomationProperties.Name="Индикатор отправки письма" />
+                                    </StackPanel>
+                                    <TextBlock Margin="0,8,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubSuccessBrush}"
+                                               Text="{Binding EmailStatusText}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding HasEmailStatus, Converter={StaticResource BoolToVisibility}}"
+                                               AutomationProperties.LiveSetting="Polite" />
+                                    <ItemsControl ItemsSource="{Binding EmailRecipientStatuses}"
+                                                  Visibility="{Binding HasEmailRecipientStatuses, Converter={StaticResource BoolToVisibility}}"
+                                                  AutomationProperties.Name="Статусы получателей письма">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Margin="0,2,0,0"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding}"
+                                                           TextWrapping="Wrap" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <Border Margin="0,8,0,0"
+                                            Padding="12,8"
+                                            CornerRadius="8"
+                                            Background="{DynamicResource HubSurfaceAltBrush}"
+                                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                            BorderThickness="1"
+                                            Visibility="{Binding HasEmailError, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                                   FontSize="12"
+                                                   Text="{Binding EmailErrorText}"
+                                                   TextWrapping="Wrap"
+                                                   AutomationProperties.LiveSetting="Assertive" />
+                                    </Border>
+                                </StackPanel>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Действия -->
+                    <StackPanel Grid.Row="6"
+                                Margin="18,10,18,14"
+                                Orientation="Horizontal">
+                        <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding ParseAutoCommand}"
+                                Content="Распознать"
+                                Visibility="{Binding HasDraft, Converter={StaticResource InverseBoolToVisibility}}"
+                                AutomationProperties.Name="Распознать загруженный акт" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding ParseManualCommand}"
+                                Content="Заполнить вручную"
+                                Visibility="{Binding HasDraft, Converter={StaticResource InverseBoolToVisibility}}"
+                                AutomationProperties.Name="Создать ручной черновик акта" />
+                        <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding CommitCommand}"
+                                Content="Записать акт"
+                                Visibility="{Binding ShowsDraftForm, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Записать загруженный акт" />
+                        <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding DownloadActCommand}"
+                                Content="Скачать акт"
+                                Visibility="{Binding HasResult, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.Name="Скачать записанный акт" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Закрыть"
+                                AutomationProperties.Name="Закрыть загрузку акта" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Причина отклонения фото: обязательное поле → POST/PATCH reject -->
+        <Grid Grid.RowSpan="4"
+              Panel.ZIndex="3"
+              Background="#B3000000"
+              PreviewKeyDown="PhotoRejectOverlay_PreviewKeyDown"
+              Visibility="{Binding IsPhotoRejectOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="420"
+                    VerticalAlignment="Center"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding PhotoRejectTitle}"
+                                   AutomationProperties.Name="Заголовок отклонения фото" />
+                        <Button HorizontalAlignment="Right"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CancelRejectPhotoCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог отклонения фото" />
+                    </Grid>
+
+                    <TextBox Grid.Row="1"
+                             Margin="18,10,18,0"
+                             MinHeight="72"
+                             MaxLength="500"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             VerticalContentAlignment="Top"
+                             IsEnabled="{Binding IsPhotoRejectBusy, Converter={StaticResource InverseBoolToVisibility}}"
+                             Text="{Binding PhotoRejectReason, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Причина отклонения фото" />
+
+                    <Border Grid.Row="2"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasPhotoRejectError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding PhotoRejectErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <ProgressBar Grid.Row="3"
+                                 Margin="18,8,18,0"
+                                 Height="3"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsPhotoRejectBusy, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор отклонения фото" />
+
+                    <StackPanel Grid.Row="4"
+                                Margin="18,12,18,14"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Right">
+                        <Button Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CancelRejectPhotoCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отмена отклонения фото" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding ConfirmRejectPhotoCommand}"
+                                Content="{Binding PhotoRejectConfirmText}"
+                                AutomationProperties.Name="Подтвердить отклонение фото" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Регистрация журнальной работы: тип компонента, расходник склада, история -->
+        <Grid Grid.RowSpan="4"
+              Panel.ZIndex="2"
+              Background="#B3000000"
+              PreviewKeyDown="MaintenanceOverlay_PreviewKeyDown"
+              Visibility="{Binding IsMaintenanceOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="540"
+                    MaxHeight="640"
+                    VerticalAlignment="Center"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding Maintenance}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}"
+                                       AutomationProperties.Name="Заголовок регистрации работы" />
+                            <TextBlock Margin="0,4,0,0"
+                                       FontSize="12"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding ItemMetaText}"
+                                       AutomationProperties.Name="Позиция регистрации работы" />
+                        </StackPanel>
+                        <Button HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть регистрацию работы" />
+                    </Grid>
+
+                    <ScrollViewer Grid.Row="2"
+                                  Margin="18,10,18,0"
+                                  Style="{StaticResource HubScrollViewerStyle}"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- Тип компонента (kind=Component): pc/printer-набор опций -->
+                            <StackPanel Visibility="{Binding ShowComponentTypeSelect, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                           Text="Тип компонента" />
+                                <ComboBox Margin="0,4,0,0"
+                                          ItemsSource="{Binding ComponentTypeOptions}"
+                                          SelectedItem="{Binding SelectedComponentType}"
+                                          DisplayMemberPath="Label"
+                                          IsEnabled="{Binding AreInputsEnabled}"
+                                          Background="{DynamicResource HubSurfaceAltBrush}"
+                                          Foreground="{DynamicResource HubTextBrush}"
+                                          AutomationProperties.Name="Тип компонента для работы" />
+                            </StackPanel>
+
+                            <!-- Расходник склада (картридж/комплектующая) -->
+                            <StackPanel Visibility="{Binding ShowConsumables, Converter={StaticResource BoolToVisibility}}">
+                                <Grid Margin="0,12,0,0">
+                                    <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                               Text="{Binding ConsumableLabelText}" />
+                                    <ProgressBar HorizontalAlignment="Right"
+                                                 Width="60"
+                                                 Height="3"
+                                                 IsIndeterminate="True"
+                                                 Foreground="{DynamicResource HubAccentBrush}"
+                                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                 Visibility="{Binding IsConsumablesLoading, Converter={StaticResource BoolToVisibility}}"
+                                                 AutomationProperties.Name="Индикатор загрузки расходников" />
+                                </Grid>
+                                <TextBlock Margin="0,4,0,0"
+                                           FontSize="11.5"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding ConsumablesErrorText}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding HasConsumablesError, Converter={StaticResource BoolToVisibility}}"
+                                           AutomationProperties.Name="Ошибка справочника расходников" />
+                                <ComboBox Margin="0,4,0,0"
+                                          ItemsSource="{Binding ConsumableOptions}"
+                                          SelectedItem="{Binding SelectedConsumable}"
+                                          DisplayMemberPath="Label"
+                                          IsEnabled="{Binding AreInputsEnabled}"
+                                          Background="{DynamicResource HubSurfaceAltBrush}"
+                                          Foreground="{DynamicResource HubTextBrush}"
+                                          AutomationProperties.Name="Расходник для работы" />
+                                <TextBlock Margin="0,4,0,0"
+                                           FontSize="11.5"
+                                           Style="{StaticResource MetaLabelStyle}"
+                                           Text="{Binding ConsumableEmptyText}"
+                                           Visibility="{Binding ShowConsumablesEmpty, Converter={StaticResource BoolToVisibility}}"
+                                           AutomationProperties.Name="Пустой справочник расходников" />
+                                <TextBlock Margin="0,4,0,0"
+                                           FontSize="11.5"
+                                           Style="{StaticResource MetaLabelStyle}"
+                                           Text="{Binding CompatibilityText}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding HasCompatibilityText, Converter={StaticResource BoolToVisibility}}"
+                                           AutomationProperties.Name="Совместимость картриджей" />
+                            </StackPanel>
+
+                            <!-- Панель истории операции -->
+                            <Border Margin="0,12,0,0"
+                                    Padding="10,8"
+                                    CornerRadius="8"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                    BorderThickness="1"
+                                    AutomationProperties.Name="История операции">
+                                <StackPanel>
+                                    <TextBlock FontSize="11"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding HistoryTitleText}" />
+                                    <ProgressBar Margin="0,6,0,0"
+                                                 Height="2"
+                                                 IsIndeterminate="True"
+                                                 Foreground="{DynamicResource HubAccentBrush}"
+                                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                 Visibility="{Binding IsHistoryLoading, Converter={StaticResource BoolToVisibility}}"
+                                                 AutomationProperties.Name="Индикатор истории работы" />
+                                    <TextBlock Margin="0,6,0,0"
+                                               FontSize="12"
+                                               Text="{Binding HistoryText}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding HistoryText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    <TextBlock Margin="0,6,0,0"
+                                               FontSize="12"
+                                               Style="{StaticResource MetaLabelStyle}"
+                                               Text="{Binding HistoryEmptyText}"
+                                               Visibility="{Binding ShowHistoryEmpty, Converter={StaticResource BoolToVisibility}}"
+                                               AutomationProperties.Name="Пустая история работы" />
+                                    <TextBlock Margin="0,6,0,0"
+                                               FontSize="11.5"
+                                               Foreground="{DynamicResource HubErrorTextBrush}"
+                                               Text="{Binding HistoryErrorText}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding HasHistoryError, Converter={StaticResource BoolToVisibility}}"
+                                               AutomationProperties.Name="Ошибка истории работы" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <StackPanel Grid.Row="3" Margin="18,10,18,14">
+                        <Border Padding="12,8"
+                                Margin="0,0,0,10"
+                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                       FontSize="12"
+                                       Text="{Binding ErrorText}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Ошибка регистрации работы"
+                                       AutomationProperties.LiveSetting="Assertive" />
+                        </Border>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding CloseCommand}"
+                                    Content="Отмена"
+                                    AutomationProperties.Name="Отмена регистрации работы" />
+                            <Button Margin="8,0,0,0"
+                                    Style="{StaticResource HubPrimaryButtonStyle}"
+                                    Command="{Binding SubmitCommand}"
+                                    Content="{Binding SubmitText}"
+                                    AutomationProperties.Name="Подтвердить регистрацию работы" />
+                        </StackPanel>
                     </StackPanel>
                 </Grid>
             </Border>

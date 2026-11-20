@@ -21,6 +21,7 @@ TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 def _require_ocr():
     if not Path(TESSERACT_CMD).exists():
         pytest.skip("tesseract not installed")
+    pytest.importorskip("pytesseract")
     return pytest.importorskip("fitz")
 
 

@@ -41,7 +41,7 @@ def test_outbox_enqueue_can_delay_retry_after(monkeypatch, tmp_path):
     agent = _make_agent(monkeypatch, tmp_path)
     now_ts = int(time.time())
 
-    path = agent._outbox_enqueue({"event_id": "event-1", "file_path": "a.pdf"}, retry_after_sec=45)
+    path, _ = agent._outbox_enqueue({"event_id": "event-1", "file_path": "a.pdf"}, retry_after_sec=45)
 
     assert path is not None
     item = agent._outbox_read(path)
@@ -51,7 +51,7 @@ def test_outbox_enqueue_can_delay_retry_after(monkeypatch, tmp_path):
 
 def test_outbox_drain_respects_retry_after(monkeypatch, tmp_path):
     agent = _make_agent(monkeypatch, tmp_path)
-    path = agent._outbox_enqueue({"event_id": "event-1", "file_path": "a.pdf"})
+    path, _ = agent._outbox_enqueue({"event_id": "event-1", "file_path": "a.pdf"})
     assert path is not None
     monkeypatch.setattr(agent, "_send_ingest", lambda payload: {"success": False, "deduped": False, "retry_after": 90})
     monkeypatch.setattr(agent, "_outbox_backoff_seconds", lambda attempts: 5)
@@ -134,7 +134,7 @@ def test_dead_letter_prune_drops_expired_and_oldest_over_limit_in_bounded_batche
 
 def test_heartbeat_metadata_reports_agent_resource_usage(monkeypatch, tmp_path):
     agent = _make_agent(monkeypatch, tmp_path)
-    agent._pending_paths = set()
+    agent._pending_paths = {}
     agent._last_ingest_ok_at = None
     agent.config["low_priority"] = True
     monkeypatch.setattr(scan_agent_module, "_system_drive_free_gb", lambda: 100.0)
@@ -170,7 +170,8 @@ def test_outbox_mode_switches_on_server_queue_threshold(tmp_path, monkeypatch):
 def test_drain_early_stops_when_queue_enters_slow_mode(tmp_path, monkeypatch):
     agent = _make_agent(monkeypatch, tmp_path)
     for idx in range(20):
-        assert agent._outbox_enqueue({"event_id": f"event-{idx}", "file_path": f"{idx}.txt"}) is not None
+        enqueued_path, _ = agent._outbox_enqueue({"event_id": f"event-{idx}", "file_path": f"{idx}.txt"})
+        assert enqueued_path is not None
 
     calls = {"n": 0}
 
@@ -208,7 +209,7 @@ def test_note_server_queue_from_429_detail(tmp_path, monkeypatch):
 def test_failed_dead_letter_write_keeps_the_pending_document(monkeypatch, tmp_path):
     """DSCAN-01: a full disk while writing dead-letter must not delete the unsent document."""
     agent = _make_agent(monkeypatch, tmp_path)
-    path = agent._outbox_enqueue({"event_id": "event-1", "file_path": "a.pdf"})
+    path, _ = agent._outbox_enqueue({"event_id": "event-1", "file_path": "a.pdf"})
     assert path is not None
     original = path.read_bytes()
     item = agent._outbox_read(path)
@@ -235,7 +236,7 @@ def test_prune_reuses_metadata_and_expires_by_original_creation_time(monkeypatch
         json.dumps({"created_at": now - 31 * 86400, "payload": {"event_id": "requeued"}}),
         encoding="utf-8",
     )
-    kept = agent._outbox_enqueue({"event_id": "recent", "document_b64": "a" * (1024 * 1024)})
+    kept, _ = agent._outbox_enqueue({"event_id": "recent", "document_b64": "a" * (1024 * 1024)})
     assert kept is not None
     agent._outbox_prune_limits()
     dead = scan_agent_module.OUTBOX_DEAD_PATH / expired.name

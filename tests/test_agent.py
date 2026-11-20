@@ -447,19 +447,29 @@ def test_agent_installer_build_runtime_env_values_preserves_existing_and_forces_
     assert values["ITINV_OUTLOOK_SEARCH_ROOTS"] == "D:\\"
 
 
-def test_agent_installer_switches_telegram_and_max_probes_off_even_when_env_had_them_on():
+def test_agent_installer_cannot_reenable_removed_dlp_from_env_or_msi():
     # An existing .env normally beats MSI defaults, so changing the default alone would leave every
     # installed machine with the probes still on after the upgrade.
-    existing = {"ITINV_TELEGRAM_PROBE_ENABLED": "1", "ITINV_MAX_PROBE_ENABLED": "1", "ITINV_BROWSER_PROBE_ENABLED": "1"}
+    existing = {
+        "ITINV_TELEGRAM_PROBE_ENABLED": "1",
+        "ITINV_MAX_PROBE_ENABLED": "1",
+        "ITINV_BROWSER_PROBE_ENABLED": "1",
+        "ITINV_BROWSER_HISTORY_ENABLED": "1",
+        "ITINV_FS_EGRESS_ENABLED": "1",
+        "ITINV_SCAN_ENABLED": "1",
+    }
 
     values = agent_installer.build_runtime_env_values(existing, {})
     assert values["ITINV_TELEGRAM_PROBE_ENABLED"] == "0"
     assert values["ITINV_MAX_PROBE_ENABLED"] == "0"
-    assert values["ITINV_BROWSER_PROBE_ENABLED"] == "1"  # not part of this change
+    assert values["ITINV_BROWSER_PROBE_ENABLED"] == "0"
+    assert values["ITINV_BROWSER_HISTORY_ENABLED"] == "0"
+    assert values["ITINV_FS_EGRESS_ENABLED"] == "0"
+    assert values["ITINV_SCAN_ENABLED"] == "1"
 
-    explicit = agent_installer.build_runtime_env_values(existing, {"ITINV_TELEGRAM_PROBE_ENABLED": "1"})
-    assert explicit["ITINV_TELEGRAM_PROBE_ENABLED"] == "1"
-    assert explicit["ITINV_MAX_PROBE_ENABLED"] == "0"
+    explicit = agent_installer.build_runtime_env_values(existing, existing)
+    assert all(explicit[key] == "0" for key in existing if key != "ITINV_SCAN_ENABLED")
+    assert explicit["ITINV_SCAN_ENABLED"] == "1"
 
 
 def test_agent_installer_upgrade_removes_old_probe_tasks_and_does_not_register_them(monkeypatch, temp_dir):
@@ -469,10 +479,24 @@ def test_agent_installer_upgrade_removes_old_probe_tasks_and_does_not_register_t
     legacy_root = Path(temp_dir) / "ProgramData" / "IT-Invent"
     env_path = runtime_root / ".env"
     env_path.parent.mkdir(parents=True, exist_ok=True)
-    env_path.write_text("ITINV_TELEGRAM_PROBE_ENABLED=1\nITINV_MAX_PROBE_ENABLED=1\n", encoding="utf-8")
-    # Both probe executables are present, as after a real upgrade: the old code would register them again.
+    env_path.write_text(
+        "ITINV_TELEGRAM_PROBE_ENABLED=1\nITINV_MAX_PROBE_ENABLED=1\n"
+        "ITINV_BROWSER_PROBE_ENABLED=1\nITINV_BROWSER_HISTORY_ENABLED=1\n"
+        "ITINV_FS_EGRESS_ENABLED=1\nITINV_SCAN_ENABLED=1\n"
+        "ITINV_BROWSER_PROBE_TASK_NAME=Custom Browser Probe\n"
+        "ITINV_AGENT_API_KEY=bound-inventory\nSCAN_AGENT_API_KEY=bound-scan\n",
+        encoding="utf-8",
+    )
+    # A major upgrade can leave legacy binaries and queues; do not launch or purge them.
     (install_dir / agent_installer.TELEGRAM_PROBE_EXECUTABLE_NAME).write_bytes(b"x")
     (install_dir / agent_installer.MAX_PROBE_EXECUTABLE_NAME).write_bytes(b"x")
+    (install_dir / agent_installer.BROWSER_PROBE_EXECUTABLE_NAME).write_bytes(b"x")
+    screenshot = runtime_root.parent / "BrowserProbe" / "screenshots" / "pending.jpg"
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(b"pending-media")
+    scan_state = runtime_root.parent / "ScanAgent" / "state.json"
+    scan_state.parent.mkdir(parents=True)
+    scan_state.write_text('{"keep": true}', encoding="utf-8")
     monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", runtime_root.parent)
     monkeypatch.setattr(agent_installer, "DEFAULT_RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(agent_installer, "DEFAULT_SCAN_RUNTIME_ROOT", runtime_root.parent / "ScanAgent")
@@ -499,11 +523,26 @@ def test_agent_installer_upgrade_removes_old_probe_tasks_and_does_not_register_t
     env_text = env_path.read_text(encoding="utf-8")
     assert "ITINV_TELEGRAM_PROBE_ENABLED=0" in env_text
     assert "ITINV_MAX_PROBE_ENABLED=0" in env_text
+    assert "ITINV_BROWSER_PROBE_ENABLED=0" in env_text
+    assert "ITINV_BROWSER_HISTORY_ENABLED=0" in env_text
+    assert "ITINV_FS_EGRESS_ENABLED=0" in env_text
+    assert "ITINV_SCAN_ENABLED=1" in env_text
+    assert "ITINV_AGENT_API_KEY=bound-inventory" in env_text
+    assert "SCAN_AGENT_API_KEY=bound-scan" in env_text
+    assert screenshot.read_bytes() == b"pending-media"
+    assert json.loads(scan_state.read_text(encoding="utf-8")) == {"keep": True}
     removed = [call_args[1] for name, call_args in calls if name == "uninstall_probe_task.ps1"]
-    assert removed == [agent_installer.TELEGRAM_PROBE_TASK_NAME, agent_installer.MAX_PROBE_TASK_NAME]
+    assert set(removed) == {
+        agent_installer.TELEGRAM_PROBE_TASK_NAME,
+        agent_installer.MAX_PROBE_TASK_NAME,
+        agent_installer.BROWSER_PROBE_TASK_NAME,
+        "Custom Browser Probe",
+    }
     registered = {name for name, _ in calls}
     assert "install_telegram_probe_task.ps1" not in registered
     assert "install_max_probe_task.ps1" not in registered
+    assert "install_browser_probe_task.ps1" not in registered
+    assert calls[-1][0] == "install_agent_task.ps1"
 
 
 def test_agent_installer_fresh_install_uses_public_urls_with_embedded_keys():

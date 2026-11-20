@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import useDebounce from '../../hooks/useDebounce';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -39,7 +40,6 @@ import {
   getIncidentFileName,
   getIncidentPatternLabel,
   getIncidentSourceKind as getInboxIncidentSourceKind,
-  sortIncidentsForInbox,
 } from '../../lib/scanIncidentInbox';
 import HostDrawer from './HostDrawer';
 import AgentsSection from './AgentsSection';
@@ -523,6 +523,8 @@ function ScanCenterPage() {
   const [dashboard, setDashboard] = useState({ totals: {}, daily: [], by_severity: [], by_branch: [], new_hosts: [] });
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [reviewItems, setReviewItems] = useState({ items: [], total: 0 });
+  const [dashboardError, setDashboardError] = useState(false);
+  const [reviewError, setReviewError] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(true);
   const [reviewPage, setReviewPage] = useState(0);
   const [reviewRowsPerPage, setReviewRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
@@ -600,6 +602,12 @@ function ScanCenterPage() {
   const [busyAckAllHost, setBusyAckAllHost] = useState(false);
   const [busyAckInbox, setBusyAckInbox] = useState(false);
   const [bulkAckDialog, setBulkAckDialog] = useState({ open: false, scope: 'inbox', count: 0 });
+  const [taskConfirmDialog, setTaskConfirmDialog] = useState({ open: false, title: '', text: '', confirmLabel: 'Подтвердить', color: 'primary' });
+  const taskConfirmActionRef = useRef(null);
+  const askTaskConfirm = ({ title, text, confirmLabel, color, onConfirm }) => {
+    taskConfirmActionRef.current = onConfirm;
+    setTaskConfirmDialog({ open: true, title, text, confirmLabel: confirmLabel || 'Подтвердить', color: color || 'primary' });
+  };
   const [selectedInboxIncidentId, setSelectedInboxIncidentId] = useState('');
   const [hostOverviewOpen, setHostOverviewOpen] = useState(false);
   const [hostOverviewData, setHostOverviewData] = useState(null);
@@ -636,6 +644,7 @@ function ScanCenterPage() {
   const debouncedAgentQ = effectiveSearchQuery(debouncedAgentQRaw);
   const debouncedHostQ = effectiveSearchQuery(debouncedHostQRaw);
   const debouncedIncidentQ = effectiveSearchQuery(debouncedIncidentQRaw);
+  const debouncedIncidentFileExt = useDebouncedValue(incidentFileExt);
   const branchesCacheRef = useRef({ at: 0, items: null });
 
   const totals = dashboard.totals || {};
@@ -657,11 +666,13 @@ function ScanCenterPage() {
   const incidentInboxFilters = useMemo(() => ({
     branch: debouncedBranch || undefined,
     q: debouncedIncidentQ || undefined,
-    status: incidentStatus === 'all' ? undefined : incidentStatus,
+    ...(incidentStatus === 'llm_auto'
+      ? { status: 'ack', ack_by: 'llm-auto-fp' }
+      : { status: incidentStatus === 'all' ? undefined : incidentStatus }),
     severity: incidentSeverity === 'all' ? undefined : incidentSeverity,
     source_kind: incidentSourceKind === 'all' ? undefined : incidentSourceKind,
     pattern_id: incidentPatternId === 'all' ? undefined : incidentPatternId,
-    file_ext: incidentFileExt || undefined,
+    file_ext: debouncedIncidentFileExt || undefined,
     date_from: incidentDateFrom || undefined,
     date_to: incidentDateTo || undefined,
     has_fragment: incidentHasFragment ? true : undefined,
@@ -672,7 +683,7 @@ function ScanCenterPage() {
     incidentSeverity,
     incidentSourceKind,
     incidentPatternId,
-    incidentFileExt,
+    debouncedIncidentFileExt,
     incidentDateFrom,
     incidentDateTo,
     incidentHasFragment,
@@ -706,7 +717,7 @@ function ScanCenterPage() {
     || (incidentSeverity && incidentSeverity !== 'all')
     || (incidentSourceKind && incidentSourceKind !== 'all')
     || (incidentPatternId && incidentPatternId !== 'all')
-    || incidentFileExt
+    || debouncedIncidentFileExt
     || incidentDateFrom
     || incidentDateTo
     || incidentHasFragment,
@@ -748,10 +759,9 @@ function ScanCenterPage() {
     incidentInbox.refreshFirstPage,
     incidentInbox.reload,
   ]);
-  const incidentRows = useMemo(
-    () => sortIncidentsForInbox(incidentInbox.items),
-    [incidentInbox.items],
-  );
+  // Server order (created_at desc): re-sorting only the loaded window made
+  // "top severity" a page-local illusion and inserted rows mid-list on loadMore.
+  const incidentRows = incidentInbox.items;
   const selectedInboxIncident = useMemo(() => (
     incidentInbox.items.find((item) => String(item?.id || '') === String(selectedInboxIncidentId || ''))
     || incidentInbox.items[0]
@@ -800,8 +810,11 @@ function ScanCenterPage() {
       const data = await scanAPI.getDashboard();
       if (requestId !== dashboardRequestIdRef.current) return;
       setDashboard(data && typeof data === 'object' ? data : { totals: {}, daily: [], by_severity: [], by_branch: [], new_hosts: [] });
+      setDashboardError(false);
     } catch (error) {
+      if (requestId !== dashboardRequestIdRef.current) return;
       console.error('Scan dashboard load failed', error);
+      setDashboardError(true);
     } finally {
       // The newest request always owns the spinner, even when it was a silent one that superseded a visible load.
       if (requestId === dashboardRequestIdRef.current) setDashboardLoading(false);
@@ -823,12 +836,16 @@ function ScanCenterPage() {
       }, { signal: controller.signal });
       if (requestId !== reviewRequestIdRef.current) return;
       setReviewItems(data && typeof data === 'object' ? data : { items: [], total: 0 });
+      setReviewError(false);
     } catch (error) {
       if (error?.name === 'CanceledError' || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
       console.error('Scan review items load failed', error);
-      if (requestId === reviewRequestIdRef.current) setReviewItems({ items: [], total: 0 });
+      if (requestId === reviewRequestIdRef.current) {
+        setReviewError(true);
+        setReviewItems({ items: [], total: 0 });
+      }
     } finally {
-      if (requestId === reviewRequestIdRef.current && !silent) setReviewLoading(false);
+      if (requestId === reviewRequestIdRef.current) setReviewLoading(false);
     }
   };
 
@@ -895,7 +912,7 @@ function ScanCenterPage() {
         }
       }
     } finally {
-      if (requestId === agentsRequestIdRef.current && !silent) {
+      if (requestId === agentsRequestIdRef.current) {
         setAgentsLoading(false);
       }
     }
@@ -932,7 +949,7 @@ function ScanCenterPage() {
         }
       }
     } finally {
-      if (requestId === hostsRequestIdRef.current && !silent) {
+      if (requestId === hostsRequestIdRef.current) {
         setHostsLoading(false);
       }
     }
@@ -967,7 +984,7 @@ function ScanCenterPage() {
           severity: incidentSeverity === 'all' ? undefined : incidentSeverity,
           source_kind: incidentSourceKind === 'all' ? undefined : incidentSourceKind,
           pattern_id: incidentPatternId === 'all' ? undefined : incidentPatternId,
-          file_ext: incidentFileExt || undefined,
+          file_ext: debouncedIncidentFileExt || undefined,
           date_from: incidentDateFrom || undefined,
           date_to: incidentDateTo || undefined,
           has_fragment: incidentHasFragment ? true : undefined,
@@ -999,7 +1016,7 @@ function ScanCenterPage() {
         }
       }
     } finally {
-      if (requestId === hostIncidentRequestIdRef.current && !silent) {
+      if (requestId === hostIncidentRequestIdRef.current) {
         setHostLoading(false);
       }
       if (requestId === hostIncidentRequestIdRef.current) {
@@ -1021,7 +1038,7 @@ function ScanCenterPage() {
         severity: incidentSeverity === 'all' ? undefined : incidentSeverity,
         source_kind: incidentSourceKind === 'all' ? undefined : incidentSourceKind,
         pattern_id: incidentPatternId === 'all' ? undefined : incidentPatternId,
-        file_ext: incidentFileExt || undefined,
+        file_ext: debouncedIncidentFileExt || undefined,
         date_from: incidentDateFrom || undefined,
         date_to: incidentDateTo || undefined,
         has_fragment: incidentHasFragment ? true : undefined,
@@ -1098,7 +1115,7 @@ function ScanCenterPage() {
         setHostScanRunsTotal(0);
       }
     } finally {
-      if (requestId === hostScanRunsRequestIdRef.current && !silent) {
+      if (requestId === hostScanRunsRequestIdRef.current) {
         setHostScanRunsLoading(false);
       }
       if (requestId === hostScanRunsRequestIdRef.current) {
@@ -1344,7 +1361,7 @@ function ScanCenterPage() {
     incidentSeverity,
     incidentSourceKind,
     incidentPatternId,
-    incidentFileExt,
+    debouncedIncidentFileExt,
     incidentDateFrom,
     incidentDateTo,
     incidentHasFragment,
@@ -1362,7 +1379,7 @@ function ScanCenterPage() {
     incidentSeverity,
     incidentSourceKind,
     incidentPatternId,
-    incidentFileExt,
+    debouncedIncidentFileExt,
     incidentDateFrom,
     incidentDateTo,
     incidentHasFragment,
@@ -1484,6 +1501,7 @@ function ScanCenterPage() {
       ]);
     } catch (error) {
       console.error('Ack incident failed', error);
+      setTaskNotice({ severity: 'error', text: 'Не удалось отметить инцидент просмотренным.' });
     } finally {
       setBusyIncident('');
     }
@@ -1493,11 +1511,13 @@ function ScanCenterPage() {
     branch: debouncedBranch || undefined,
     hostname: overrides.hostname,
     q: debouncedIncidentQ || undefined,
-    status: incidentStatus === 'all' ? undefined : incidentStatus,
+    ...(incidentStatus === 'llm_auto'
+      ? { status: 'ack', ack_by: 'llm-auto-fp' }
+      : { status: incidentStatus === 'all' ? undefined : incidentStatus }),
     severity: incidentSeverity === 'all' ? undefined : incidentSeverity,
     source_kind: incidentSourceKind === 'all' ? undefined : incidentSourceKind,
     pattern_id: incidentPatternId === 'all' ? undefined : incidentPatternId,
-    file_ext: incidentFileExt || undefined,
+    file_ext: debouncedIncidentFileExt || undefined,
     date_from: incidentDateFrom || undefined,
     date_to: incidentDateTo || undefined,
     has_fragment: incidentHasFragment ? true : undefined,
@@ -1510,10 +1530,17 @@ function ScanCenterPage() {
     setBusyAckAllHost(true);
     try {
       const response = await scanAPI.ackIncidentsBatch({
-        filters: buildIncidentFilters({ hostname: selectedHost, status: 'new' }),
+        // Host-scoped ack mirrors loadHostNewCount filters: no page-global branch,
+        // otherwise the ack silently matches 0 rows while the count showed >0.
+        filters: buildIncidentFilters({ hostname: selectedHost, status: 'new', branch: undefined }),
       });
       const acked = Number(response?.acked_count || 0);
       if (acked > 0) patchHostNewCount(selectedHost, -acked);
+      setTaskNotice(
+        acked > 0
+          ? { severity: 'success', text: `Отмечено просмотренными на хосте ${selectedHost}: ${acked}.` }
+          : { severity: 'info', text: 'По текущим фильтрам на хосте нет новых инцидентов.' },
+      );
       await loadHostIncidents({ silent: true });
       await loadHostNewCount();
       await Promise.all([
@@ -1522,6 +1549,7 @@ function ScanCenterPage() {
       ]);
     } catch (error) {
       console.error('Ack all host incidents failed', error);
+      setTaskNotice({ severity: 'error', text: 'Массовая отметка по хосту не выполнена.' });
     } finally {
       setBusyAckAllHost(false);
     }
@@ -1534,7 +1562,13 @@ function ScanCenterPage() {
     try {
       const filters = buildIncidentFilters();
       const hasFilter = Object.values(filters).some((value) => value !== undefined && value !== null && value !== '');
-      await scanAPI.ackIncidentsBatch({ filters, confirm_all: !hasFilter });
+      const response = await scanAPI.ackIncidentsBatch({ filters, confirm_all: !hasFilter });
+      const acked = Number(response?.acked_count || 0);
+      setTaskNotice(
+        acked > 0
+          ? { severity: 'success', text: `Отмечено просмотренными: ${acked}.` }
+          : { severity: 'info', text: 'По текущим фильтрам нет новых инцидентов.' },
+      );
       await Promise.all([
         incidentInbox.reload({ silent: true }),
         incidentNewCount.reload({ silent: true }),
@@ -1544,6 +1578,7 @@ function ScanCenterPage() {
       ]);
     } catch (error) {
       console.error('Ack inbox incidents failed', error);
+      setTaskNotice({ severity: 'error', text: 'Массовая отметка по фильтру не выполнена.' });
     } finally {
       setBusyAckInbox(false);
     }
@@ -1576,7 +1611,13 @@ function ScanCenterPage() {
         files_per_host: 0,
       });
       if (requestId !== hostOverviewRequestIdRef.current) return;
-      setHostOverviewData(response);
+      setHostOverviewData((prev) => {
+        if (hostOffset > 0 && prev && Array.isArray(prev.items)) {
+          const items = Array.isArray(response?.items) ? response.items : [];
+          return { ...(response || {}), items: [...prev.items, ...items] };
+        }
+        return response;
+      });
     } catch (error) {
       if (requestId !== hostOverviewRequestIdRef.current) return;
       console.error('Host overview load failed', error);
@@ -1718,15 +1759,8 @@ function ScanCenterPage() {
     if (!host) return;
     setSelectedHost(host);
     setHostDrawerTab('runs');
-    setIncidentQ('');
-    setIncidentStatus('all');
-    setIncidentSeverity('all');
-    setIncidentSourceKind('all');
-    setIncidentPatternId('all');
-    setIncidentFileExt('');
-    setIncidentDateFrom('');
-    setIncidentDateTo('');
-    setIncidentHasFragment(false);
+    // Keep inbox filters: opening the host card must not silently wipe the
+    // incident filter set the user configured (drawer findings reuse them).
     setHostScanRuns([]);
     setHostScanRunsTotal(0);
     setHostNewCount(0);
@@ -1791,12 +1825,13 @@ function ScanCenterPage() {
   const enqueueForceScanTask = (agentId) => {
     const normalizedAgentId = String(agentId || '').trim();
     if (!normalizedAgentId) return;
-    if (!window.confirm(`Запустить скан с 0 для ${normalizedAgentId}?`)) {
-      return;
-    }
-    enqueueTask(normalizedAgentId, 'scan_now', {
-      payload: { force_rescan: true },
-      dedupeKey: `scan_now_force:${normalizedAgentId}`,
+    askTaskConfirm({
+      title: 'Сканирование с нуля',
+      text: `Запустить скан с 0 для ${normalizedAgentId}?`,
+      onConfirm: () => enqueueTask(normalizedAgentId, 'scan_now', {
+        payload: { force_rescan: true },
+        dedupeKey: `scan_now_force:${normalizedAgentId}`,
+      }),
     });
   };
 
@@ -1804,19 +1839,22 @@ function ScanCenterPage() {
     const normalizedAgentId = String(agentId || '').trim();
     if (!normalizedAgentId) return;
     const expected = String(dashboard?.expected_agent_version || '').trim() || 'актуальной';
-    if (!window.confirm(
-      `Обновить агент ${normalizedAgentId} до версии ${expected}?\n\nНа ПК будет скачан MSI и запущен тихий установщик. Это займёт несколько минут.`,
-    )) {
-      return;
-    }
-    enqueueTask(normalizedAgentId, 'self_update', {
-      dedupeKey: `self_update:${normalizedAgentId}`,
+    askTaskConfirm({
+      title: 'Обновление агента',
+      text: `Обновить агент ${normalizedAgentId} до версии ${expected}?\n\nНа ПК будет скачан MSI и запущен тихий установщик. Это займёт несколько минут.`,
+      onConfirm: () => enqueueTask(normalizedAgentId, 'self_update', {
+        dedupeKey: `self_update:${normalizedAgentId}`,
+      }),
     });
   };
 
   const openScanLaunchDialog = (agentId, forceRescan = false) => {
     const normalizedAgentId = String(agentId || '').trim();
-    if (!normalizedAgentId) return;
+    if (!normalizedAgentId) {
+      // Header CTA path: the dialog opens with an agent picker — make sure the
+      // options are loaded even if the Agents tab was never visited.
+      loadAgents({ silent: true });
+    }
     const defaultSelected = selectedPatternIdsFromRows(scanPatterns);
     setSelectedScanPatternIds((prev) => {
       const allowed = new Set(scanPatterns.map((item) => item.id));
@@ -1935,13 +1973,24 @@ function ScanCenterPage() {
       <Box style={style} sx={{ px: 1, py: 0.4 }}>
         <Paper
           variant="outlined"
+          role="button"
+          tabIndex={0}
+          aria-pressed={selected}
+          aria-label={`Инцидент ${getIncidentFileName(incident)}, хост ${hostLabel}`}
           onClick={() => setSelectedInboxIncidentId(String(incident?.id || ''))}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              setSelectedInboxIncidentId(String(incident?.id || ''));
+            }
+          }}
           sx={{
             p: 0.9,
             borderRadius: 1.2,
             cursor: 'pointer',
             borderColor: selected ? 'primary.main' : ui.borderSoft,
             bgcolor: selected ? ui.selectedBg : ui.panelSolid,
+            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
           }}
         >
           <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
@@ -1989,7 +2038,7 @@ function ScanCenterPage() {
           onDismissNotice={() => setTaskNotice(null)}
           onAutoRefreshChange={(enabled) => setAutoRefreshPaused(!enabled)}
           onRefresh={() => refreshAll({ silent: false })}
-          onOpenAgents={() => setActiveSection('agents')}
+          onOpenAgents={() => openScanLaunchDialog('')}
           onBranchChange={(branch) => {
             setBranchFilter(branch);
             setAgentPage(0);
@@ -2016,12 +2065,17 @@ function ScanCenterPage() {
           <Box component="section" sx={{ flex: '1 1 auto', width: { xs: '100%', lg: 'auto' }, minWidth: 0, maxWidth: '100%' }}>
 
         {activeSection === 'overview' && (
-          <ScanCenterOverview
-            dashboard={dashboard}
-            dashboardLoading={dashboardLoading}
-            reviewItems={reviewItems}
-            onNavigate={setActiveSection}
-          />
+          <>
+            {dashboardError && (
+              <Alert severity="error" sx={{ mb: 2 }}>Не удалось загрузить сводку сканирования.</Alert>
+            )}
+            <ScanCenterOverview
+              dashboard={dashboard}
+              dashboardLoading={dashboardLoading}
+              reviewItems={reviewItems}
+              onNavigate={setActiveSection}
+            />
+          </>
         )}
 
         {activeSection === 'incidents' && (
@@ -2090,7 +2144,9 @@ function ScanCenterPage() {
           </Paper>
         )}
 
-        {activeSection === 'review' && <ReviewItemsSection
+        {activeSection === 'review' && <>{reviewError && (
+          <Alert severity="error" sx={{ mb: 2 }}>Не удалось загрузить очередь проверки.</Alert>
+        )}<ReviewItemsSection
           visible
           items={Array.isArray(reviewItems.items) ? reviewItems.items : []}
           total={reviewItems.total}
@@ -2103,7 +2159,7 @@ function ScanCenterPage() {
           onPageChange={setReviewPage}
           onRowsPerPageChange={(value) => { setReviewRowsPerPage(value); setReviewPage(0); }}
           onRetryAgent={(agentId) => openScanLaunchDialog(agentId, true)}
-        />}
+        /></>}
 
         {activeSection === 'agents' && <AgentsSection
           visible
@@ -2294,6 +2350,34 @@ function ScanCenterPage() {
         </Dialog>
 
         <Dialog
+          open={taskConfirmDialog.open}
+          onClose={() => setTaskConfirmDialog((previous) => ({ ...previous, open: false }))}
+          fullWidth
+          maxWidth="xs"
+        >
+          <DialogTitle>{taskConfirmDialog.title}</DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2" sx={{ whiteSpace: 'pre-line' }}>{taskConfirmDialog.text}</Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button type="button" onClick={() => setTaskConfirmDialog((previous) => ({ ...previous, open: false }))}>Отмена</Button>
+            <Button
+              type="button"
+              variant="contained"
+              color={taskConfirmDialog.color}
+              onClick={() => {
+                const action = taskConfirmActionRef.current;
+                taskConfirmActionRef.current = null;
+                setTaskConfirmDialog((previous) => ({ ...previous, open: false }));
+                action?.();
+              }}
+            >
+              {taskConfirmDialog.confirmLabel}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
           open={scanLaunchDialog.open}
           onClose={closeScanLaunchDialog}
           fullWidth
@@ -2306,9 +2390,28 @@ function ScanCenterPage() {
             <Stack spacing={2}>
               <Box>
                 <Typography variant="body2" color="text.secondary">Агент</Typography>
-                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                  {scanLaunchDialog.agentId || '-'}
-                </Typography>
+                {scanLaunchDialog.agentId ? (
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                    {scanLaunchDialog.agentId}
+                  </Typography>
+                ) : (
+                  <Autocomplete
+                    size="small"
+                    options={agentRows}
+                    loading={agentsLoading}
+                    getOptionLabel={(row) => {
+                      const id = String(row?.agent_id || '').trim();
+                      const host = String(row?.hostname || '').trim();
+                      return host && host !== id ? `${id} · ${host}` : id;
+                    }}
+                    isOptionEqualToValue={(row, value) => String(row?.agent_id || '') === String(value?.agent_id || '')}
+                    value={null}
+                    onChange={(_, row) => setScanLaunchDialog((prev) => ({ ...prev, agentId: String(row?.agent_id || '').trim() }))}
+                    noOptionsText={agentsLoading ? 'Загрузка…' : 'Агенты не найдены'}
+                    renderInput={(params) => <TextField {...params} label="Выберите агента" />}
+                    sx={{ mt: 0.5, maxWidth: 420 }}
+                  />
+                )}
               </Box>
 
               <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1.5 }}>
@@ -2459,7 +2562,7 @@ function ScanCenterPage() {
               type="button"
               variant="contained"
               onClick={submitScanLaunch}
-              disabled={!canScanTasks || scanPatternsLoading || scanPatterns.length === 0 || selectedScanPatternIds.length === 0 || selectedScanExtensions.length === 0}
+              disabled={!canScanTasks || !scanLaunchDialog.agentId || scanPatternsLoading || scanPatterns.length === 0 || selectedScanPatternIds.length === 0 || selectedScanExtensions.length === 0}
             >
               Запустить
             </Button>
@@ -2502,8 +2605,16 @@ function ScanCenterPage() {
                     <Paper key={host.id} variant="outlined" sx={{ p: 1.2, borderRadius: 1.5 }}>
                       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
                         <Box
-                          sx={{ cursor: 'pointer', minWidth: 0 }}
+                          role="button"
+                          tabIndex={0}
+                          sx={{ cursor: 'pointer', minWidth: 0, '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 } }}
                           onClick={() => handleHostOverviewDrillDown(host.hostname)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              handleHostOverviewDrillDown(host.hostname);
+                            }
+                          }}
                         >
                           <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
                             {host.hostname}
@@ -2537,8 +2648,16 @@ function ScanCenterPage() {
                           {files.map((file) => (
                             <Box
                               key={file.id}
-                              sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, cursor: 'pointer' }}
+                              role="button"
+                              tabIndex={0}
+                              sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, cursor: 'pointer', '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 } }}
                               onClick={() => handleHostOverviewDrillDown(file.file_path || file.file_name)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  handleHostOverviewDrillDown(file.file_path || file.file_name);
+                                }
+                              }}
                             >
                               <Box sx={{ minWidth: 0 }}>
                                 <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>

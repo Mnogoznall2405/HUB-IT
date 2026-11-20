@@ -24,6 +24,17 @@ def test_parse_recipients_splits_normalizes_and_deduplicates():
     ]
 
 
+def test_parse_recipients_extracts_address_from_display_name_tokens():
+    assert compose.parse_recipients([
+        "Иванов И. <Ivanov@Corp.RU>; Петров П. <petrov@corp.ru>",
+        "plain@example.com",
+    ]) == [
+        "ivanov@corp.ru",
+        "petrov@corp.ru",
+        "plain@example.com",
+    ]
+
+
 def test_build_recipient_set_requires_primary_recipient_when_sending():
     with pytest.raises(compose.ComposeValidationError, match="At least one recipient"):
         compose.build_recipient_set(to=[], cc=["copy@example.com"], require_to=True)

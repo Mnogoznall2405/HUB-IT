@@ -295,7 +295,13 @@ class SystemMetricsRetentionService:
         return shutil.disk_usage("C:\\").free / (1024**3)
 
     def _waiting_locks(self, cur) -> int:
-        cur.execute("SELECT count(*) FROM pg_locks WHERE NOT granted")
+        # Scope to this database: a lock waiter elsewhere on a shared PG
+        # cluster (migration, autovacuum on another DB) must not abort the
+        # whole retention run.
+        cur.execute(
+            "SELECT count(*) FROM pg_locks WHERE NOT granted AND database = "
+            "(SELECT oid FROM pg_database WHERE datname = current_database())"
+        )
         return int(cur.fetchone()[0] or 0)
 
     def _delete_one_batch(self, *, conn, cfg: SystemMetricsRetentionConfig, cutoff: int) -> tuple[int, float]:

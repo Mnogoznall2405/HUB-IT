@@ -120,6 +120,9 @@ export function useScanIncidentInbox(filters, options = {}) {
 
   const refreshFirstPage = useCallback(async ({ silent = true } = {}) => {
     if (!enabled) return;
+    // Take request ownership: an in-flight loadMore/loadFirstPage must not
+    // write results after a refresh (stale page appends, stuck flags).
+    cancelInFlight();
     const requestId = requestIdRef.current;
     if (!silent) setLoadingInitial(true);
     setError(null);
@@ -141,9 +144,12 @@ export function useScanIncidentInbox(filters, options = {}) {
     } catch (nextError) {
       if (requestId === requestIdRef.current) setError(nextError);
     } finally {
-      if (requestId === requestIdRef.current && !silent) setLoadingInitial(false);
+      if (requestId === requestIdRef.current) {
+        setLoadingInitial(false);
+        setLoadingMore(false);
+      }
     }
-  }, [batchSize, enabled]);
+  }, [batchSize, cancelInFlight, enabled]);
 
   useEffect(() => {
     loadFirstPage({ silent: false });

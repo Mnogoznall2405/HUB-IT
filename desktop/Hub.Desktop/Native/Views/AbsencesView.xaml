@@ -15,6 +15,13 @@
             <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
 
             <Style x:Key="ModeChipRadioStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}" />
+            <Style x:Key="KindChipRadioStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}">
+                <Setter Property="Margin" Value="0,0,6,6" />
+            </Style>
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
 
             <!-- Плашка источника записи: ручная HUB подсвечена, ЗУП — нейтральная. -->
             <Style x:Key="SourcePillStyle" TargetType="Border" BasedOn="{StaticResource HubStatusPillStyle}">
@@ -102,6 +109,13 @@
                                  CommandParameter="week"
                                  Content="Неделя"
                                  AutomationProperties.Name="Режим: отсутствия за неделю" />
+                    <Button Margin="8,0,0,0"
+                            Style="{StaticResource HubPrimaryButtonStyle}"
+                            MinHeight="36"
+                            Command="{Binding OpenCreateCommand}"
+                            Content="+ Добавить отсутствие"
+                            Visibility="{Binding CanManageAbsences, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Добавить отсутствие" />
                     <Button Margin="8,0,0,0"
                             Background="Transparent"
                             Style="{StaticResource HubGhostButtonStyle}"
@@ -244,6 +258,7 @@
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Border Width="36"
                                     Height="36"
@@ -279,6 +294,28 @@
                                 <TextBlock Style="{StaticResource SourcePillTextStyle}"
                                            Text="{Binding SourceText}" />
                             </Border>
+                            <!-- Действия ручной записи: право manage + числовой id (у ЗУП нет). -->
+                            <StackPanel Grid.Column="3"
+                                        Margin="8,0,0,0"
+                                        Orientation="Horizontal"
+                                        VerticalAlignment="Center"
+                                        Visibility="{Binding ShowActions, Converter={StaticResource BoolToVisibility}}">
+                                <Button Padding="8,2"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding DataContext.EditAbsenceCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                        CommandParameter="{Binding}"
+                                        IsEnabled="{Binding AreActionsEnabled}"
+                                        Content="Изменить"
+                                        AutomationProperties.Name="{Binding DisplayName, StringFormat='Изменить отсутствие: {0}'}" />
+                                <Button Margin="4,0,0,0"
+                                        Padding="8,2"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding DataContext.DeleteAbsenceCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                        CommandParameter="{Binding}"
+                                        IsEnabled="{Binding AreActionsEnabled}"
+                                        Content="{Binding DeleteText}"
+                                        AutomationProperties.Name="{Binding DisplayName, StringFormat='Удалить отсутствие: {0}'}" />
+                            </StackPanel>
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
@@ -297,6 +334,206 @@
                            Style="{StaticResource HubMutedTextStyle}"
                            Text="{Binding EmptyHintText}" />
             </StackPanel>
+        </Grid>
+
+        <!-- Диалог создания/правки ручной записи: модальный оверлей поверх страницы -->
+        <Grid Grid.RowSpan="6"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="AbsenceEditorOverlay_PreviewKeyDown"
+              Visibility="{Binding IsEditorOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="480"
+                    MaxHeight="560"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding Editor}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding SubtitleText}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог отсутствия" />
+                    </Grid>
+
+                    <!-- Ошибка валидации/сервера: диалог и поля сохраняются -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор сохранения отсутствия" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   Text="{Binding StatusText}"
+                                   Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Сотрудник *" />
+                            <Grid Margin="0,4,0,0">
+                                <TextBox x:Name="AbsenceEditorNameInput"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding DisplayName, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="ФИО сотрудника" />
+                                <TextBlock Margin="13,0,0,0"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="Иванов Иван">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=AbsenceEditorNameInput}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Вид" />
+                            <WrapPanel Margin="0,6,0,0">
+                                <RadioButton GroupName="AbsenceEditorKind"
+                                             Style="{StaticResource KindChipRadioStyle}"
+                                             IsChecked="{Binding IsKindVacation, Mode=TwoWay}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Content="Отпуск"
+                                             AutomationProperties.Name="Вид: отпуск" />
+                                <RadioButton GroupName="AbsenceEditorKind"
+                                             Style="{StaticResource KindChipRadioStyle}"
+                                             IsChecked="{Binding IsKindSick, Mode=TwoWay}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Content="Больничный"
+                                             AutomationProperties.Name="Вид: больничный" />
+                                <RadioButton GroupName="AbsenceEditorKind"
+                                             Style="{StaticResource KindChipRadioStyle}"
+                                             IsChecked="{Binding IsKindTrip, Mode=TwoWay}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Content="Командировка"
+                                             AutomationProperties.Name="Вид: командировка" />
+                                <RadioButton GroupName="AbsenceEditorKind"
+                                             Style="{StaticResource KindChipRadioStyle}"
+                                             IsChecked="{Binding IsKindOther, Mode=TwoWay}"
+                                             IsEnabled="{Binding AreInputsEnabled}"
+                                             Content="Другое"
+                                             AutomationProperties.Name="Вид: другое" />
+                            </WrapPanel>
+
+                            <Grid Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource MetaLabelStyle}" Text="С *" />
+                                    <DatePicker SelectedDate="{Binding StartsOn, Mode=TwoWay}"
+                                                IsEnabled="{Binding AreInputsEnabled}"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                Foreground="{DynamicResource HubTextBrush}"
+                                                AutomationProperties.Name="Дата начала отсутствия" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Style="{StaticResource MetaLabelStyle}" Text="По *" />
+                                    <DatePicker SelectedDate="{Binding EndsOn, Mode=TwoWay}"
+                                                IsEnabled="{Binding AreInputsEnabled}"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                Foreground="{DynamicResource HubTextBrush}"
+                                                AutomationProperties.Name="Дата окончания отсутствия" />
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Комментарий" />
+                            <TextBox MinHeight="56"
+                                     MaxLength="500"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     VerticalContentAlignment="Top"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Comment, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Комментарий к отсутствию" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Отдел" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Department, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Отдел сотрудника" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Подвал: Отмена / Добавить|Сохранить -->
+                    <Grid Grid.Row="4" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить отсутствие" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SubmitCommand}"
+                                Content="{Binding SubmitButtonText}"
+                                AutomationProperties.Name="Сохранить отсутствие" />
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </UserControl>

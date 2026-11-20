@@ -395,6 +395,97 @@ public sealed class DesktopBridgeProtocolTests
     }
 
     [Fact]
+    public void ParsesWorkspaceChromeSnapshot()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"workspace.chrome","version":1,"documents":[{"id":"doc-1","title":"Отчёт.xlsx","dirty":true},{"id":"doc_2","title":"","dirty":false}],"activeId":"doc-1","history":true}""",
+            out var message));
+
+        Assert.Equal(DesktopInboundMessageType.UpdateWorkspaceChrome, message.Type);
+        var chrome = message.WorkspaceChrome;
+        Assert.NotNull(chrome);
+        Assert.Equal(2, chrome.Documents.Count);
+        Assert.Equal("doc-1", chrome.Documents[0].Id);
+        Assert.Equal("Отчёт.xlsx", chrome.Documents[0].Title);
+        Assert.True(chrome.Documents[0].Dirty);
+        Assert.Equal(string.Empty, chrome.Documents[1].Title);
+        Assert.Equal("doc-1", chrome.ActiveId);
+        Assert.True(chrome.HistoryEnabled);
+
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"workspace.chrome","version":1,"documents":[],"activeId":"","history":false}""",
+            out var empty));
+        Assert.Empty(empty.WorkspaceChrome!.Documents);
+        Assert.Equal(string.Empty, empty.WorkspaceChrome.ActiveId);
+    }
+
+    [Theory]
+    // Дополнительное свойство в корне.
+    [InlineData("""{"type":"workspace.chrome","version":1,"documents":[],"activeId":"","history":false,"extra":1}""")]
+    // Дополнительное свойство во вкладке.
+    [InlineData("""{"type":"workspace.chrome","version":1,"documents":[{"id":"a","title":"","dirty":false,"x":1}],"activeId":"a","history":false}""")]
+    // Недопустимые символы в id.
+    [InlineData("""{"type":"workspace.chrome","version":1,"documents":[{"id":"a.b","title":"t","dirty":false}],"activeId":"a.b","history":false}""")]
+    // activeId не ссылается на вкладку.
+    [InlineData("""{"type":"workspace.chrome","version":1,"documents":[{"id":"a","title":"t","dirty":false}],"activeId":"b","history":false}""")]
+    // Дубликаты id.
+    [InlineData("""{"type":"workspace.chrome","version":1,"documents":[{"id":"a","title":"t","dirty":false},{"id":"a","title":"u","dirty":true}],"activeId":"a","history":true}""")]
+    // dirty не булево.
+    [InlineData("""{"type":"workspace.chrome","version":1,"documents":[{"id":"a","title":"t","dirty":"yes"}],"activeId":"a","history":false}""")]
+    // title длиннее 128.
+    [InlineData("""{"type":"workspace.chrome","version":1,"documents":[{"id":"a","title":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","dirty":false}],"activeId":"a","history":false}""")]
+    public void RejectsMalformedWorkspaceChromeSnapshots(string json)
+    {
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Fact]
+    public void RejectsTooManyWorkspaceChromeDocuments()
+    {
+        var documents = string.Join(
+            ',',
+            Enumerable.Range(0, DesktopBridgeProtocol.MaximumWorkspaceDocuments + 1)
+                .Select(index => $"{{\"id\":\"d{index}\",\"title\":\"t\",\"dirty\":false}}"));
+        var json = "{\"type\":\"workspace.chrome\",\"version\":1,\"documents\":[" + documents + "],\"activeId\":\"d0\",\"history\":false}";
+
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Fact]
+    public void CreatesWorkspaceChromeCommandsAndAdvertisesCapability()
+    {
+        using var activate = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateWorkspaceChromeCommandMessage(
+                DesktopWorkspaceChromeCommand.Activate, "doc-1"));
+        Assert.Equal("workspace.chrome.command", activate.RootElement.GetProperty("type").GetString());
+        Assert.Equal("activate", activate.RootElement.GetProperty("command").GetString());
+        Assert.Equal("doc-1", activate.RootElement.GetProperty("id").GetString());
+        Assert.Equal(4, activate.RootElement.EnumerateObject().Count());
+
+        using var history = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateWorkspaceChromeCommandMessage(
+                DesktopWorkspaceChromeCommand.History, null));
+        Assert.Equal("history", history.RootElement.GetProperty("command").GetString());
+        Assert.False(history.RootElement.TryGetProperty("id", out _));
+        Assert.Equal(3, history.RootElement.EnumerateObject().Count());
+
+        Assert.Throws<ArgumentException>(() =>
+            DesktopBridgeProtocol.CreateWorkspaceChromeCommandMessage(
+                DesktopWorkspaceChromeCommand.Close, null));
+
+        using var withChrome = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateCapabilitiesMessage(notificationsAvailable: true, workspaceChrome: true));
+        Assert.Contains(
+            "workspace-chrome",
+            withChrome.RootElement.GetProperty("capabilities").EnumerateArray().Select(item => item.GetString()));
+        using var withoutChrome = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateCapabilitiesMessage(notificationsAvailable: true));
+        Assert.DoesNotContain(
+            "workspace-chrome",
+            withoutChrome.RootElement.GetProperty("capabilities").EnumerateArray().Select(item => item.GetString()));
+    }
+
+    [Fact]
     public void ParsesComposeCloseResultAndCreatesHostMessages()
     {
         Assert.True(DesktopBridgeProtocol.TryParseInbound(

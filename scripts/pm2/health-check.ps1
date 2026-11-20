@@ -683,6 +683,8 @@ $auxiliaryRows = foreach ($auxName in @(
         'itinvent-chat-push-outbox-retention-worker',
         'itinvent-dlp-media-retention-worker',
         'itinvent-scan-system-metrics-retention-worker',
+        'itinvent-ollama',
+        'itinvent-scan-llm-worker',
         'itinvent-voice',
         'itinvent-voice-worker',
         'itinvent-voice-archiver'

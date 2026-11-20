@@ -130,6 +130,32 @@ def test_template_store_rejects_duplicate_codes_and_legacy_required_fields():
         store.create_template(payload={**payload, "code": "legacy", "required_fields": []}, actor={})
 
 
+def test_template_store_update_rejects_code_taken_by_another_template():
+    store = _build_store()
+    actor = {"id": 7, "username": "admin"}
+    store.create_template(
+        payload={"id": "tpl-a", "code": "vpn", "title": "VPN", "subject_template": "VPN", "fields": []},
+        actor=actor,
+    )
+    store.create_template(
+        payload={"id": "tpl-b", "code": "access", "title": "Access", "subject_template": "Access", "fields": []},
+        actor=actor,
+    )
+
+    with pytest.raises(template_store_module.TemplateStoreError, match="already exists"):
+        store.update_template(template_id="tpl-b", payload={"code": "VPN"}, actor=actor)
+
+    unchanged = store.get_template("tpl-b", active_only=False)
+    assert unchanged is not None
+    assert unchanged["code"] == "access"
+
+    renamed = store.update_template(template_id="tpl-b", payload={"code": "access2"}, actor=actor)
+    assert renamed["code"] == "access2"
+
+    same_code = store.update_template(template_id="tpl-b", payload={"code": "access2"}, actor=actor)
+    assert same_code["code"] == "access2"
+
+
 def test_template_store_migrates_legacy_fields_and_deactivates_bad_rows():
     store = _build_store()
     with store.connect() as conn:

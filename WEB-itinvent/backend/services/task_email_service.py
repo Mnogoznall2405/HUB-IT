@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import smtplib
 from contextlib import contextmanager
 from email import encoders
@@ -63,6 +64,15 @@ def _is_private_smtp_host(host: str) -> bool:
         or normalized.startswith("172.")
         or normalized in {"localhost", "127.0.0.1"}
     )
+
+
+def _safe_header_text(value: Any) -> str:
+    # A value with CR/LF could inject extra MIME headers (Bcc, Reply-To) into the outgoing message.
+    return re.sub(r"[\r\n]+", " ", str(value or "")).strip()
+
+
+def _safe_attachment_filename(value: Any) -> str:
+    return re.sub(r'["\\\r\n]+', "", str(value or "")).strip() or "attachment.bin"
 
 
 class TaskEmailService:
@@ -227,14 +237,15 @@ class TaskEmailService:
         attachments: Sequence[OutgoingAttachment] | None = None,
         raise_on_error: bool = False,
     ) -> bool:
-        recipient = str(recipient_email or "").strip()
-        if not self.is_valid_recipient(recipient):
+        raw_recipient = str(recipient_email or "").strip()
+        recipient = _safe_header_text(raw_recipient)
+        if recipient != raw_recipient or not self.is_valid_recipient(recipient):
             return False
-        normalized_subject = str(subject or "").strip() or "HUB-IT"
+        normalized_subject = _safe_header_text(subject) or "HUB-IT"
         normalized_body = str(body_text or "").strip()
         normalized_html = str(body_html or "").strip() or plain_text_to_html(normalized_body)
         normalized_attachments = [
-            (str(name or "").strip() or "attachment.bin", bytes(content or b""))
+            (_safe_attachment_filename(name), bytes(content or b""))
             for name, content in (attachments or [])
             if content
         ]

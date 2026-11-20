@@ -16,6 +16,9 @@ ATTACHMENT_TOKEN_PREFIX = "att2_"
 ATTACHMENT_TOKEN_PREFIX_LEGACY = "att1_"
 MESSAGE_TOKEN_V3_PREFIX = "v3::"
 ITEM_SCOPED_FOLDER = "@item"
+# Marker category used as the Gmail-style "star". exchangelib has no Flag field,
+# so the star is persisted as a hidden Exchange category on the item.
+MAIL_FLAG_CATEGORY = "hubit-starred"
 
 # Only well-known folder aliases are case-insensitive. Custom folder tokens are
 # urlsafe base64 from encode_folder_id and MUST keep their original case.

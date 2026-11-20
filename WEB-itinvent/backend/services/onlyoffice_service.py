@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -155,6 +157,92 @@ def request_forcesave(settings: OnlyOfficeSettings, *, key: str, userdata: str) 
         return "failed"
 
 
+def request_session_info(settings: OnlyOfficeSettings, *, key: str) -> list[str]:
+    """Ids of users inside the live editing session; empty on any failure — presence is best-effort."""
+    command = {"c": "info", "key": key}
+    try:
+        with httpx.Client(timeout=min(settings.fetch_timeout_sec, 5.0), follow_redirects=False) as client:
+            response = client.post(
+                f"{settings.internal_url}/command",
+                params={"shardkey": key},
+                json={**command, "token": _sign(command, settings.jwt_secret)},
+            )
+        if response.status_code != 200:
+            return []
+        result = response.json()
+        if not isinstance(result, dict) or result.get("error") != 0:
+            return []
+        users = result.get("users")
+        return [str(uid) for uid in users] if isinstance(users, list) else []
+    except (httpx.HTTPError, ValueError):
+        return []
+
+
+EXPORT_OUTPUT_TYPES = {"pdf": ("pdf", "application/pdf")}
+
+
+def request_conversion(settings: OnlyOfficeSettings, *, filetype: str, key: str, outputtype: str,
+                       title: str, url: str) -> str:
+    """Run /ConvertService.ashx synchronously; returns the temporary result URL on Document Server."""
+    payload = {
+        "async": False,
+        "filetype": str(filetype or "").lstrip("."),
+        "key": str(key or ""),
+        "outputtype": str(outputtype or "").lstrip("."),
+        "title": str(title or "")[:200],
+        "url": str(url or ""),
+    }
+    try:
+        with httpx.Client(timeout=settings.fetch_timeout_sec, follow_redirects=False) as client:
+            response = client.post(
+                f"{settings.internal_url}/ConvertService.ashx",
+                json={**payload, "token": _sign(payload, settings.jwt_secret)},
+            )
+        if response.status_code != 200:
+            raise OnlyOfficeError(f"Document Server returned {response.status_code}")
+        result = _parse_conversion_result(response.text)
+    except httpx.HTTPError as exc:
+        raise OnlyOfficeError("Document Server conversion request failed") from exc
+    file_url = str(result.get("fileUrl") or "").strip()
+    if result.get("endConvert") is True and file_url:
+        return file_url
+    raise OnlyOfficeError(f"Document Server could not convert the document (code {result.get('error')})")
+
+
+def _parse_conversion_result(text: str) -> dict:
+    """ConvertService answers XML (the Document Server default) or JSON; normalize both to one shape."""
+    raw = str(text or "").strip()
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+    if not raw.startswith("<"):
+        return {}
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return {}
+
+    def value(tag: str) -> str:
+        element = root.find(tag)
+        return str(element.text).strip() if element is not None and element.text else ""
+
+    result = {
+        "fileUrl": value("FileUrl"),
+        "fileType": value("FileType").lower(),
+        "endConvert": value("EndConvert").lower() == "true",
+    }
+    error = value("Error")
+    if error:
+        try:
+            result["error"] = int(error)
+        except ValueError:
+            result["error"] = error
+    return result
+
+
 def _sign(claims: dict, secret: str) -> str:
     return jwt.encode(claims, secret, algorithm="HS256")
 
@@ -202,20 +290,15 @@ def build_editor_config(
     user_name: str,
     role: str = ROLE_EDIT,
     document_key: str | None = None,
+    ui_theme: str | None = None,
 ) -> dict:
     can_edit = role in EDITING_ROLES
     can_comment = role in WRITING_ROLES
-    document_type = document_type_for(file_name)
-    permissions = {"edit": can_edit, "download": True, "print": True, "comment": can_comment}
-    if document_type == "cell":
-        # Local filters/sort per co-editor: the default ``true`` broadcasts one user's
-        # filter to the whole session and saves it into the file.
-        permissions["modifyFilter"] = False
     source_token = make_source_token(settings, file_id=file_id, blob_id=blob_id)
     callback_token = make_callback_token(settings, file_id=file_id)
     base = f"{settings.app_base_url}/api/v1/my-files/office"
     config = {
-        "documentType": document_type,
+        "documentType": document_type_for(file_name),
         "document": {
             "fileType": editable_extension(file_name).lstrip("."),
             # A running session owns one key (see AppMyFile.office_session_key): late joiners
@@ -223,7 +306,7 @@ def build_editor_config(
             "key": str(document_key or "") or build_document_key(file_id, revision),
             "title": file_name,
             "url": f"{base}/source?t={quote(source_token)}",
-            "permissions": permissions,
+            "permissions": {"edit": can_edit, "download": True, "print": True, "comment": can_comment},
         },
         "editorConfig": {
             # A commenter opens the editor in "edit" mode with edit=false/comment=true: Document Server limits it to comments.
@@ -237,6 +320,8 @@ def build_editor_config(
                               "close": {"visible": True, "text": "Закрыть документ"}},
         },
     }
+    if ui_theme in {"theme-dark", "theme-light"}:
+        config["editorConfig"]["customization"]["uiTheme"] = ui_theme
     config["token"] = _sign(config, settings.jwt_secret)
     return config
 

@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1565,6 +1566,30 @@ class MyFilesService:
     def _spool_parts_path(spool_path: Path) -> Path:
         return spool_path.with_name(f"{spool_path.name}.parts.json")
 
+    _PURGE_IO_EXECUTOR = ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="myfiles-purge-io"
+    )
+
+    def _defer_io_cleanup(self, *, blob_paths: list[Path], spool_paths: list[Path]) -> None:
+        """Run committed physical deletes off the request path."""
+        if not blob_paths and not spool_paths:
+            return
+
+        def _run() -> None:
+            try:
+                self._delete_physical_files(list(blob_paths))
+            except Exception:
+                logger.warning("my-files deferred blob cleanup failed", exc_info=True)
+            for path in list(spool_paths):
+                try:
+                    self._delete_spool_payload(path)
+                except Exception:
+                    logger.warning(
+                        "my-files deferred spool cleanup failed path=%s", path, exc_info=True
+                    )
+
+        self._PURGE_IO_EXECUTOR.submit(_run)
+
     @staticmethod
     def _delete_spool_payload(path: Path) -> None:
         for target in (path, MyFilesService._spool_parts_path(path)):
@@ -2119,8 +2144,7 @@ class MyFilesService:
             self._write_audit(session, action="folder_deleted", row=None, actor=actor, meta=meta)
             deleted_count = len(files)
 
-        for path in spool_paths:
-            self._delete_spool_payload(path)
+        self._defer_io_cleanup(blob_paths=[], spool_paths=spool_paths)
         return deleted_count
 
     def restore_folder(
@@ -2228,9 +2252,7 @@ class MyFilesService:
             self._write_audit(session, action="folder_purged", row=None, actor=actor, meta=meta)
             purged_count = len(files)
 
-        self._delete_physical_files(blob_paths)
-        for path in spool_paths:
-            self._delete_spool_payload(path)
+        self._defer_io_cleanup(blob_paths=blob_paths, spool_paths=spool_paths)
         return purged_count
 
     def list_trash(self, *, user_id: int, library_id: str | None = None) -> dict[str, Any]:
@@ -2286,28 +2308,39 @@ class MyFilesService:
     ) -> int:
         database_url = self._database_url_or_raise()
         actor_id = _actor_id(actor)
+        spool_paths: list[Path] = []
+        blob_paths: list[Path] = []
         with app_session(database_url) as session:
             owner_user_id = self._read_owner_locked(session, user_id=actor_id, library_id=library_id, need="manage")
-        purged_files = 0
-        while True:
-            with app_session(database_url) as session:
-                file_row = session.scalars(
-                    select(AppMyFile)
-                    .where(
-                        AppMyFile.owner_user_id == owner_user_id,
-                        AppMyFile.deleted_at.is_not(None),
-                        AppMyFile.status != STATUS_DELETED,
+            now = _utc_now()
+            # One transaction for the whole trash: the previous per-file purge
+            # loop cost a separate commit (fsync) and physical delete per file.
+            files = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.owner_user_id == owner_user_id,
+                    AppMyFile.deleted_at.is_not(None),
+                    AppMyFile.status != STATUS_DELETED,
+                )
+                .limit(500)
+            ).all()
+            for file_row in files:
+                if _normalize_text(file_row.spool_path):
+                    spool_paths.append(Path(_normalize_text(file_row.spool_path)))
+                if file_row.status == STATUS_READY:
+                    self._release_blob_locked(session, file_row.blob_id, blob_paths)
+                self._release_file_collab_locked(session, file_row.id, blob_paths)
+                file_row.status = STATUS_DELETED
+                file_row.folder_id = None
+                file_row.updated_at = now
+                file_row.spool_path = ""
+                self._clear_share(file_row)
+            if files:
+                session.execute(
+                    delete(AppMyFileDownloadGrant).where(
+                        AppMyFileDownloadGrant.file_id.in_([f.id for f in files])
                     )
-                    .limit(1)
-                ).first()
-                if file_row is None:
-                    break
-                file_id = file_row.id
-            self.purge_file(file_id=file_id, user_id=actor_id, actor=actor, meta=meta)
-            purged_files += 1
-            if purged_files >= 500:
-                break
-        with app_session(database_url) as session:
+                )
             folder_rows = session.scalars(
                 select(AppMyFileFolder.id).where(
                     AppMyFileFolder.owner_user_id == owner_user_id,
@@ -2317,7 +2350,10 @@ class MyFilesService:
             if folder_rows:
                 self._release_folder_shares_locked(session, folder_rows)
                 session.execute(delete(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_rows)))
+            if files or folder_rows:
                 self._write_audit(session, action="trash_emptied", row=None, actor=actor, meta=meta)
+            purged_files = len(files)
+        self._defer_io_cleanup(blob_paths=blob_paths, spool_paths=spool_paths)
         return purged_files
 
     def update_file(
@@ -4033,7 +4069,7 @@ class MyFilesService:
             row.spool_path = ""
             self._write_audit(session, action="trashed", row=row, actor=actor, meta=meta)
         if spool_path is not None:
-            self._delete_spool_payload(spool_path)
+            self._defer_io_cleanup(blob_paths=[], spool_paths=[spool_path])
 
     def restore_file(
         self,
@@ -4092,9 +4128,10 @@ class MyFilesService:
             row.updated_at = now
             row.spool_path = ""
             self._write_audit(session, action="purged", row=row, actor=actor, meta=meta)
-        self._delete_physical_files(blob_paths)
-        if spool_path is not None:
-            self._delete_spool_payload(spool_path)
+        self._defer_io_cleanup(
+            blob_paths=blob_paths,
+            spool_paths=[spool_path] if spool_path is not None else [],
+        )
 
     def create_share(
         self,

@@ -389,6 +389,19 @@ public sealed class NativeScreenshots
                     {
                         window.UpdateLayout();
                         SavePng(window, Path.Combine(outputDir, filePrefix + "04c-chat-settings.png"));
+
+                        // UI-004: настройки на минимальном размере — оверлей
+                        // читаем, кнопки доступны с клавиатуры.
+                        var baseW = window.Width;
+                        var baseH = window.Height;
+                        window.Width = 1024;
+                        window.Height = 600;
+                        window.UpdateLayout();
+                        SavePng(window, Path.Combine(outputDir, filePrefix + "04c2-chat-settings-1024.png"));
+                        window.Width = baseW;
+                        window.Height = baseH;
+                        window.UpdateLayout();
+
                         // Панель заявок поверх настроек — второй кадр модерации.
                         Pump(((NativeAsyncCommand)vm.Chat.ToggleJoinRequestsPanelCommand).ExecuteAsync(null));
                         if (vm.Chat.IsJoinRequestsPanelOpen)
@@ -692,6 +705,19 @@ public sealed class NativeScreenshots
                         {
                             window.UpdateLayout();
                             SavePng(window, Path.Combine(outputDir, filePrefix + "04s-chat-delete.png"));
+
+                            // UI-004: на 1024×600 модал читаем, фокус на
+                            // «Отмена» — безопасная цель по умолчанию.
+                            var baseWidth = window.Width;
+                            var baseHeight = window.Height;
+                            window.Width = 1024;
+                            window.Height = 600;
+                            window.UpdateLayout();
+                            SavePng(window, Path.Combine(outputDir, filePrefix + "04s2-chat-delete-1024.png"));
+                            window.Width = baseWidth;
+                            window.Height = baseHeight;
+                            window.UpdateLayout();
+
                             vm.Chat.CancelDeleteCommand.Execute(null);
                             window.UpdateLayout();
                         }

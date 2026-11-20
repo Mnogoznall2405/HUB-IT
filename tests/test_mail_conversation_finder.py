@@ -161,3 +161,127 @@ def test_complete_lookup_preserves_folder_scope_across_multiple_batches():
     _, all_items, _ = finder.find(account=object(), conversation_id="target", folder_scope="all", require_complete=True)
     assert [item.id for item, _ in current] == ["a", "b", "c"]
     assert [item.id for item, _ in all_items] == ["a", "b", "c", "d"]
+
+
+def test_complete_lookup_fails_when_hierarchy_branch_is_unavailable():
+    """A failed scope traversal must error instead of returning a partial
+    conversation that would be cached as complete (MAIL-05)."""
+    inbox = FakeFolder(key="inbox", items=[_item("a", "target", 1)])
+    hierarchy_error = RuntimeError("archive enumeration failed")
+
+    def _targets(_account, folder="inbox", folder_scope="current"):
+        if folder_scope == "all":
+            return [(inbox, "inbox"), (hierarchy_error, "hierarchy:archive")]
+        return [(inbox, folder)]
+
+    finder = MailConversationFinder(
+        search_target_folders=_targets,
+        folder_queryset=lambda folder_obj, _folder_key: folder_obj.items,
+        item_conversation_key=lambda item: item.conversation_key,
+        decode_message_id=lambda message_id: tuple(message_id.split(":", 1)),
+        resolve_folder=lambda _account, folder_key: (inbox, folder_key),
+        search_batch_size=2,
+        search_window_limit=lambda: 20,
+    )
+
+    with pytest.raises(MailConversationFinderError, match="scope is unavailable"):
+        finder.find(
+            account=object(),
+            conversation_id="target",
+            folder="inbox",
+            folder_scope="all",
+            require_complete=True,
+        )
+
+    # A best-effort locate scan skips the failed branch instead of crashing.
+    key, items, _ = finder.find(account=object(), conversation_id="target", folder_scope="all")
+    assert key == "target"
+    assert [item.id for item, _ in items] == ["a"]
+
+
+class RestrictedQuery:
+    """Queryset fake with a conversation_id restriction and a raw-sweep log."""
+
+    def __init__(self, folder: FakeFolder, log: dict):
+        self.folder = folder
+        self.log = log
+        self.fail_filter = False
+
+    def filter(self, **kwargs):
+        if self.fail_filter:
+            raise RuntimeError("restriction rejected")
+        conv = kwargs.get("conversation_id")
+        key = getattr(conv, "id", conv)
+        self.log.setdefault("restricted", []).append((self.folder.key, key))
+        return [item for item in self.folder.items if item.conversation_key == key]
+
+    def __getitem__(self, item):
+        self.log.setdefault("raw", []).append((self.folder.key, item))
+        return self.folder.items[item]
+
+    def only(self, *fields):
+        return self
+
+
+def test_conversation_finder_prefers_server_side_conversation_filter():
+    inbox = FakeFolder(key="inbox", items=[_item("a", "target", 1), _item("b", "other", 2)])
+    archive = FakeFolder(key="archive", items=[_item("c", "target", 3)])
+    finder = _build_finder(folders={"inbox": inbox, "archive": archive})
+    log = {}
+    finder.folder_queryset = lambda folder_obj, _key: RestrictedQuery(folder_obj, log)
+
+    key, items, _ = finder.find(account=object(), conversation_id="target", folder_scope="all")
+
+    assert key == "target"
+    assert {item.id for item, _ in items} == {"a", "c"}
+    assert log.get("restricted"), "server-side conversation filter was not used"
+    assert not log.get("raw"), "restricted hits must not fall back to the raw sweep"
+
+
+def test_conversation_finder_scans_raw_when_restriction_is_rejected():
+    inbox = FakeFolder(key="inbox", items=[_item("a", "target", 1), _item("b", "other", 2)])
+    finder = _build_finder(folders={"inbox": inbox})
+    log = {}
+    query = RestrictedQuery(inbox, log)
+    query.fail_filter = True
+    finder.folder_queryset = lambda folder_obj, _key: query
+
+    key, items, _ = finder.find(account=object(), conversation_id="target")
+
+    assert key == "target"
+    assert [item.id for item, _ in items] == ["a"]
+    assert log.get("raw"), "rejected restriction must fall back to the raw sweep"
+
+
+def test_conversation_finder_scans_raw_when_restriction_returns_empty_everywhere():
+    inbox = FakeFolder(key="inbox", items=[_item("a", "target", 1)])
+    finder = _build_finder(folders={"inbox": inbox})
+    log = {}
+    finder.folder_queryset = lambda folder_obj, _key: RestrictedQuery(folder_obj, log)
+
+    # The fake restriction matches by conversation_key, so a key absent from
+    # the folder answers empty and triggers the subject-keyed fallback sweep.
+    with pytest.raises(MailConversationFinderError, match="Conversation not found"):
+        finder.find(account=object(), conversation_id="missing")
+
+    assert log.get("raw"), "all-empty restriction must be verified by a raw sweep"
+
+
+def test_complete_message_reference_lookup_reads_each_folder_only_once():
+    inbox = FakeFolder(key="inbox", items=[_item("earliest", "thread", 1)])
+    archive = FakeFolder(key="archive", items=[_item("anchor", "thread", 2)])
+    finder = _build_finder(folders={"inbox": inbox, "archive": archive})
+    visited = []
+
+    def queryset(folder, key):
+        visited.append(key)
+        return folder.items
+
+    finder.folder_queryset = queryset
+    key, items, _ = finder.find(
+        account=object(), conversation_id="archive:anchor", folder_scope="all", require_complete=True,
+    )
+
+    assert key == "thread"
+    assert [item.id for item, _ in items] == ["earliest", "anchor"]
+    assert visited == ["inbox", "archive"]

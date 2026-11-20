@@ -241,6 +241,19 @@ powershell -File scripts\pm2\restart-scan.ps1   # stop + чистка сирот
 pm2 logs itinvent-scan --lines 100
 ```
 
+`itinvent-scan-llm-worker` (опциональный второй мнений-ревьюер инцидентов, shadow-аннотации):
+
+- входит в `ecosystem.scan.config.js`, стартует/рестартует вместе со Scan через `restart-scan.ps1`; включён в списки `start-all`/`restart-all`/`stop-all`, staged-список `pm2-boot-resurrect.ps1` и warn-only проверку `health-check.ps1`.
+- Пока `SCAN_LLM_REVIEW_ENABLED=0` процесс **idle** (не крутит рестарт-луп, работу не берёт). Включение: `SCAN_LLM_REVIEW_ENABLED=1` + `SCAN_LLM_MODEL_PATH=<путь к GGUF>` в корневом `.env`, затем `restart-scan.ps1` и `pm2 save`.
+- Требует `llama-cpp-python` в venv Scan (`scan_server/requirements.txt`). Без рантайма/модели запросы ревью возвращаются в очередь, инциденты не блокируются.
+- Таблица `scan.scan_llm_reviews` — Alembic `20261119_0004`; миграция по общему релизному ранбуку (прод-процессы миграции не применяют).
+
+`itinvent-ollama` (локальный Ollama-сервер, typed-decision API `/v1/systemone` для ревьюера):
+
+- входит в `ecosystem.scan.config.js` рядом с ревьюером; `restart-scan.ps1` поднимает его до llm-воркера; включён в `start-all`/`restart-all`, staged-список `pm2-boot-resurrect.ps1` и warn-only `health-check.ps1`.
+- Бинарник — портабельный `tools\ollama\dist\ollama.exe` (аргумент `serve`), слушает только `127.0.0.1:11434`; модели качаются один раз (`ollama pull nimble:9b d3:4b`) в хранилище Ollama.
+- Используется при `SCAN_LLM_BACKEND=systemone` в `.env` (`SCAN_LLM_SYSTEMONE_URL/MODEL/FALLBACK_MODEL`). Это листовая зависимость: без него ревьюер просто не берёт работу — инциденты не блокируются, при `SCAN_LLM_BACKEND=llama_cpp` процесс можно не запускать.
+
 ```powershell
 # первый старт; рестарт — pm2 stop itinvent-bot + clear-pm2-orphans.ps1 + pm2 start (отдельного restart-скрипта нет)
 pm2 start scripts\pm2\ecosystem.bot.config.js --only itinvent-bot

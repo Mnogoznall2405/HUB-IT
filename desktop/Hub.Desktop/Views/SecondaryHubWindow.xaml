@@ -39,6 +39,8 @@
         <SolidColorBrush x:Key="TitleButtonFocusBrush" Color="#479EF5" />
         <SolidColorBrush x:Key="CloseButtonHoverBrush" Color="#C42B1C" />
         <SolidColorBrush x:Key="CloseButtonPressedBrush" Color="#A4262C" />
+        <SolidColorBrush x:Key="TabDirtyBrush" Color="#ED6C02" />
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
         <Style x:Key="TitleBarKeyboardFocusStyle">
             <Setter Property="Control.Template">
@@ -82,6 +84,86 @@
                                         Value="{DynamicResource TitleButtonHoverBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource TitleButtonPressedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Document tab in the caption: activate on click, active = pressed background. -->
+        <Style x:Key="WorkspaceTabStyle" TargetType="Button">
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Margin" Value="4,0,0,0" />
+            <Setter Property="Padding" Value="9,0,4,0" />
+            <Setter Property="MinWidth" Value="72" />
+            <Setter Property="MaxWidth" Value="220" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Arrow" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource TitleBarKeyboardFocusStyle}" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="TabSurface"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                CornerRadius="4"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource TitleButtonHoverBrush}" />
+                            </Trigger>
+                            <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                <Setter TargetName="TabSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource TitleButtonPressedBrush}" />
+                                <Setter Property="Foreground"
+                                        Value="{DynamicResource TitleBarForegroundBrush}" />
+                            </DataTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="WorkspaceTabCloseStyle" TargetType="Button">
+            <Setter Property="Width" Value="18" />
+            <Setter Property="Height" Value="18" />
+            <Setter Property="Margin" Value="5,0,0,0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Arrow" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonSurface"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="3"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="ButtonSurface"
                                         Property="Background"
                                         Value="{DynamicResource TitleButtonPressedBrush}" />
@@ -136,7 +218,9 @@
                 BorderThickness="0,0,0,1">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
@@ -158,7 +242,86 @@
                                Text="HUB Desktop — окно 2" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <!-- Document tabs synced from the workspace page (workspace.chrome). -->
+                <ScrollViewer x:Name="WorkspaceTabsScroller"
+                              Grid.Column="1"
+                              Margin="10,0,0,0"
+                              VerticalAlignment="Center"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Disabled"
+                              PreviewMouseWheel="WorkspaceTabsScroller_PreviewMouseWheel"
+                              Visibility="Collapsed">
+                    <ItemsControl x:Name="WorkspaceTabs">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button Tag="{Binding Id}"
+                                        Click="WorkspaceTab_Click"
+                                        Style="{StaticResource WorkspaceTabStyle}"
+                                        ToolTip="{Binding Title}"
+                                        AutomationProperties.Name="{Binding Title}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Ellipse Width="6"
+                                                 Height="6"
+                                                 Margin="0,0,6,0"
+                                                 VerticalAlignment="Center"
+                                                 Fill="{DynamicResource TabDirtyBrush}"
+                                                 Visibility="{Binding Dirty, Converter={StaticResource BoolToVis}}" />
+                                        <TextBlock VerticalAlignment="Center"
+                                                   MaxWidth="168"
+                                                   Text="{Binding Title}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   IsHitTestVisible="False" />
+                                        <Button Tag="{Binding Id}"
+                                                Click="WorkspaceTabClose_Click"
+                                                Style="{StaticResource WorkspaceTabCloseStyle}"
+                                                ToolTip="Закрыть документ"
+                                                AutomationProperties.Name="Закрыть документ">
+                                            <TextBlock FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="11"
+                                                       Text="&#xE711;"
+                                                       IsHitTestVisible="False"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                                        </Button>
+                                    </StackPanel>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <Button x:Name="WorkspaceHistoryButton"
+                        Grid.Column="2"
+                        Style="{StaticResource TitleBarButtonStyle}"
+                        Width="Auto"
+                        Padding="10,0"
+                        Margin="8,0,0,0"
+                        Click="WorkspaceHistoryButton_Click"
+                        ToolTip="История версий и авторов"
+                        AutomationProperties.Name="История изменений документа"
+                        Visibility="Collapsed">
+                    <StackPanel Orientation="Horizontal" IsHitTestVisible="False">
+                        <TextBlock FontFamily="Segoe MDL2 Assets"
+                                   FontSize="13"
+                                   Text="&#xE81C;"
+                                   Margin="0,0,6,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                        <TextBlock FontFamily="Segoe UI"
+                                   FontSize="12"
+                                   Text="История"
+                                   VerticalAlignment="Center"
+                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                    </StackPanel>
+                </Button>
+
+                <StackPanel Grid.Column="3" Orientation="Horizontal">
                     <Button x:Name="ReloadButton"
                             Style="{StaticResource TitleBarButtonStyle}"
                             Click="ReloadButton_Click"

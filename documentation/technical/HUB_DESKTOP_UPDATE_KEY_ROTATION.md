@@ -13,6 +13,24 @@
 Private key production TLS-сертификата используется по принятому владельцем продукта исключению
 одновременно для HTTPS и прикладной RSA-PSS-подписи update manifest.
 
+## Перевыпущенный TLS-ключ (с 0.1.51)
+
+| Поле | Значение |
+|---|---|
+| `key_id` | `hubit-zsgp-ru-tls-2027-05` |
+| Subject | `CN=*.zsgp.ru` |
+| Thumbprint | `B3D1AF5755A8A337BB7E5F293F6411B152691348` |
+| Истекает | 23 мая 2027 года |
+
+Добавлен в `DesktopUpdateTrust.TrustedKeyIds` рядом с `hubit-zsgp-ru-tls-2026-04` и
+`hub-update-signing-2026-10` (старые ключи не удаляются — overlap по плану ротации). Manifest
+версии 0.1.51+ подписывается этим ключом:
+`publish-update.ps1 -SigningCertificateThumbprint B3D1AF5755A8A337BB7E5F293F6411B152691348 -SigningKeyId hubit-zsgp-ru-tls-2027-05`.
+
+Внимание: установленные клиенты ≤0.1.50 не знают этот `key_id` — они отвергнут manifest
+(так же, как уже отклоняли manifest 0.1.50, подписанный им же до добавления в allowlist).
+До установки 0.1.51 вручную автообновление таких клиентов не работает.
+
 ## Выделенный ключ подписи (с 0.1.48)
 
 | Поле | Значение |

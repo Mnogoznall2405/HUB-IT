@@ -121,6 +121,35 @@ class ScanServerConfig:
     ocr_tiny_image_min_pixels: int
     ocr_tiny_image_dry_run: bool
     pdf_max_bytes: int
+    llm_review_enabled: bool
+    llm_review_model_path: str
+    llm_review_gpu_layers: int
+    llm_review_ctx_size: int
+    llm_review_max_tokens: int
+    llm_review_interval_sec: int
+    llm_review_max_attempts: int
+    llm_review_no_think: bool
+    # ``llama_cpp`` (GGUF chat) or ``systemone`` (Ollama typed-decision API).
+    llm_review_backend: str
+    llm_review_systemone_url: str
+    llm_review_systemone_model: str
+    llm_review_systemone_fallback_model: str
+    llm_review_systemone_timeout_sec: int
+    # Below this primary confidence the fallback model gets a second vote.
+    llm_review_second_opinion_confidence: float
+    # A 'processing' row older than this is reclaimed — covers worker death
+    # between claim and verdict (no lease existed before, orphans stuck forever).
+    llm_review_processing_lease_sec: int
+    # Max chars of extracted/OCR text stored into the review input and sent to
+    # the primary model (was a fixed 1600 head-of-document excerpt).
+    llm_review_text_max_chars: int
+    # Auto-dismiss: a high-confidence false_positive verdict marks the incident
+    # ack'ed (ack_by='llm-auto-fp') instead of waiting for a human. Only
+    # low/medium severity incidents qualify — 'high' always stays for a human.
+    llm_review_auto_dismiss_fp: bool
+    llm_review_auto_dismiss_confidence: float
+    # Narrower window for the second-opinion model: d3 runs with a 4k ctx.
+    llm_review_fallback_text_chars: int
     worker_memory_limit_mb: int
     agent_package_path: str
     agent_package_url: str
@@ -333,6 +362,73 @@ class ScanServerConfig:
             pdf_max_bytes=max(
                 1024 * 1024,
                 _to_int(os.getenv("SCAN_PDF_MAX_BYTES", str(50 * 1024 * 1024)), 50 * 1024 * 1024),
+            ),
+            llm_review_enabled=_to_bool(os.getenv("SCAN_LLM_REVIEW_ENABLED", "0"), False),
+            llm_review_model_path=str(
+                os.getenv(
+                    "SCAN_LLM_MODEL_PATH",
+                    str(data_dir / "models" / "qwen2.5-3b-instruct-q4_k_m.gguf"),
+                )
+                or ""
+            ).strip(),
+            llm_review_gpu_layers=max(
+                0,
+                min(200, _to_int(os.getenv("SCAN_LLM_GPU_LAYERS", "0"), 0)),
+            ),
+            llm_review_ctx_size=max(
+                1024,
+                min(32768, _to_int(os.getenv("SCAN_LLM_CTX_SIZE", "4096"), 4096)),
+            ),
+            llm_review_max_tokens=max(
+                64,
+                min(2048, _to_int(os.getenv("SCAN_LLM_MAX_TOKENS", "320"), 320)),
+            ),
+            llm_review_interval_sec=max(
+                1,
+                min(300, _to_int(os.getenv("SCAN_LLM_INTERVAL_SEC", "5"), 5)),
+            ),
+            llm_review_max_attempts=max(
+                1,
+                min(10, _to_int(os.getenv("SCAN_LLM_MAX_ATTEMPTS", "3"), 3)),
+            ),
+            llm_review_no_think=_to_bool(os.getenv("SCAN_LLM_NO_THINK", "1"), True),
+            llm_review_backend=str(
+                os.getenv("SCAN_LLM_BACKEND", "llama_cpp") or "llama_cpp"
+            ).strip().lower(),
+            llm_review_systemone_url=str(
+                os.getenv("SCAN_LLM_SYSTEMONE_URL", "http://127.0.0.1:11434/v1/systemone")
+                or "http://127.0.0.1:11434/v1/systemone"
+            ).strip().rstrip("/"),
+            llm_review_systemone_model=str(
+                os.getenv("SCAN_LLM_SYSTEMONE_MODEL", "nimble:9b") or ""
+            ).strip(),
+            llm_review_systemone_fallback_model=str(
+                os.getenv("SCAN_LLM_SYSTEMONE_FALLBACK_MODEL", "d3:4b") or ""
+            ).strip(),
+            llm_review_systemone_timeout_sec=max(
+                5,
+                min(300, _to_int(os.getenv("SCAN_LLM_SYSTEMONE_TIMEOUT_SEC", "60"), 60)),
+            ),
+            llm_review_second_opinion_confidence=max(
+                0.0,
+                min(1.0, _to_float(os.getenv("SCAN_LLM_SECOND_OPINION_CONFIDENCE", "0.55"), 0.55)),
+            ),
+            llm_review_processing_lease_sec=max(
+                60,
+                _to_int(os.getenv("SCAN_LLM_PROCESSING_LEASE_SEC", "600"), 600),
+            ),
+            llm_review_text_max_chars=max(
+                1600,
+                min(64000, _to_int(os.getenv("SCAN_LLM_TEXT_MAX_CHARS", "24000"), 24000)),
+            ),
+            llm_review_auto_dismiss_fp=_to_bool(os.getenv("SCAN_LLM_AUTO_DISMISS_FP", "1"), True),
+            llm_review_auto_dismiss_confidence=max(
+                0.0,
+                min(1.0, _to_float(os.getenv("SCAN_LLM_AUTO_DISMISS_CONFIDENCE", "0.9"), 0.9)),
+            ),
+            llm_review_fallback_text_chars=max(
+                1600,
+                min(32000, _to_int(os.getenv("SCAN_LLM_FALLBACK_TEXT_CHARS", "5000"), 5000)),
             ),
             worker_memory_limit_mb=max(
                 0,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -2096,6 +2097,10 @@ def test_purge_all_artifacts_removes_archive_files_and_rows(temp_dir):
     orphan_path = archive_day / "orphan.pdf"
     tracked_path.write_bytes(b"%PDF-1.4 tracked")
     orphan_path.write_bytes(b"%PDF-1.4 orphan")
+    # Older than the purge mtime grace window (files just written are kept).
+    stale_ts = time.time() - 400
+    os.utime(tracked_path, (stale_ts, stale_ts))
+    os.utime(orphan_path, (stale_ts, stale_ts))
 
     store.add_artifact(
         job_id="job-1",
@@ -2123,6 +2128,10 @@ def test_purge_all_artifacts_keeps_active_job_artifacts(temp_dir):
     orphan_path = archive_day / "orphan.pdf"
     active_path.write_bytes(b"%PDF-1.4 active")
     orphan_path.write_bytes(b"%PDF-1.4 orphan")
+    # Older than the purge mtime grace window (files just written are kept).
+    stale_ts = time.time() - 400
+    os.utime(active_path, (stale_ts, stale_ts))
+    os.utime(orphan_path, (stale_ts, stale_ts))
 
     job = store.queue_job(
         {
@@ -2892,3 +2901,364 @@ def test_reconcile_spares_a_fresh_pdf_that_has_no_job_row_yet(temp_dir):
     os.utime(path, (old, old))
     assert store.reconcile_job_pdf_spool()["removed_orphan_files"] == 1
     assert not path.exists()
+def test_web_task_projections_never_expose_secrets_or_document_content(temp_dir):
+    store = _make_store(temp_dir)
+    store.upsert_agent_heartbeat({"agent_id": "agent-sec", "hostname": "HOST-SEC", "last_seen_at": int(time.time())})
+    store.create_task(
+        agent_id="agent-sec",
+        command="rotate_key",
+        payload={
+            "scan_api_key": "scan-secret-" + "x" * 40,
+            "itinv_api_key": "itinv-secret-" + "y" * 40,
+            "reason": "rotation",
+        },
+    )
+    store.queue_job(
+        {
+            "event_id": "evt-secret",
+            "agent_id": "agent-sec",
+            "hostname": "HOST-SEC",
+            "file_path": r"C:\Docs\payroll.pdf",
+            "text_excerpt": "SECRET-EXCERPT-000",
+            "document_b64": "U0VDUkVULURPQw==",
+            "local_pattern_hits": [{"pattern_name": "salary", "value": "SECRET-EXCERPT-000"}],
+        }
+    )
+
+    listed = json.dumps(store.list_tasks(view="detail")["items"], ensure_ascii=False)
+    assert "scan-secret" not in listed and "itinv-secret" not in listed
+
+    agent_row = next(a for a in store.list_agents() if a["agent_id"] == "agent-sec")
+    agent_blob = json.dumps(agent_row, ensure_ascii=False)
+    for forbidden in ("scan-secret", "itinv-secret", "SECRET-EXCERPT-000", "U0VDUkVULURPQw=="):
+        assert forbidden not in agent_blob
+def test_llm_enqueue_failure_is_rolled_back_to_savepoint_on_postgres(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(type(store), "is_postgres", property(lambda _s: True))
+    calls = []
+
+    class FakeConn:
+        def execute(self, sql, params=None):
+            calls.append(str(sql).strip().split()[0].upper())
+            if "INSERT INTO SCAN_LLM_REVIEWS" in str(sql).upper():
+                raise RuntimeError('relation "scan_llm_reviews" does not exist')
+            return self
+
+    store._enqueue_llm_review_locked(
+        FakeConn(),
+        incident_id="i1",
+        finding_id="f1",
+        job={"id": "j1"},
+        severity="high",
+        category="cat",
+        matched_patterns=[],
+        llm_context="text",
+        now_ts=1,
+    )
+
+    assert calls == ["SAVEPOINT", "INSERT", "ROLLBACK"]
+def test_queue_job_reopens_terminal_failed_job_on_reingest(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "file_path": r"C:\Docs\report.txt",
+        "file_name": "report.txt",
+        "file_hash": "h1",
+        "file_size": 12,
+        "source_kind": "text",
+        "event_id": "evt-terminal-fail",
+        "text_excerpt": "secret body",
+    }
+    queued = store.queue_job(payload)
+    job = store.claim_next_job()
+    assert store.finalize_job(job_id=job["id"], status="failed", error_text="OCR timeout") is True
+
+    reopened = store.queue_job(dict(payload))
+    assert reopened["job_id"] == queued["job_id"]
+    assert reopened.get("reopened") is True
+    assert _get_job(store, queued["job_id"])["status"] == "queued"
+
+
+def test_queue_job_pdf_failure_reopens_only_with_pdf_payload(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "file_path": r"C:\Docs\report.pdf",
+        "file_name": "report.pdf",
+        "file_hash": "h2",
+        "file_size": 2048,
+        "source_kind": "pdf_slice",
+        "event_id": "evt-pdf-fail",
+        "pdf_slice_b64": _pdf_b64(),
+    }
+    queued = store.queue_job(payload)
+    job = store.claim_next_job()
+    assert store.finalize_job(job_id=job["id"], status="failed", error_text="OCR timeout") is True
+
+    without_pdf = dict(payload)
+    without_pdf.pop("pdf_slice_b64")
+    assert store.queue_job(without_pdf)["deduped"] is True
+
+    reopened = store.queue_job(dict(payload))
+    assert reopened.get("reopened") is True
+    assert _get_job(store, queued["job_id"])["status"] == "queued"
+
+
+def test_reprocessed_job_reuses_existing_incident(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\Docs\dup.pdf",
+            "file_name": "dup.pdf",
+            "file_hash": "h3",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "evt-dup-incident",
+        }
+    )
+    job = _get_job(store, queued["job_id"])
+    first = store.create_finding_and_incident(
+        job=job,
+        severity="high",
+        category="secrets",
+        matched_patterns=[{"pattern": "p1", "value": "v1"}],
+        short_reason="first",
+        finalize_status="analysis_incomplete",
+        finalize_error_text="OCR timeout",
+    )
+    second = store.create_finding_and_incident(
+        job=job,
+        severity="high",
+        category="secrets",
+        matched_patterns=[{"pattern": "p1", "value": "v1"}],
+        short_reason="second",
+        finalize_status="done_with_incident",
+    )
+    assert second["incident_id"] == first["incident_id"]
+    assert second["finding_id"] == first["finding_id"]
+    with store._lock, store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM scan_incidents WHERE job_id=?", (job["id"],)).fetchone()[0] == 1
+
+
+def test_cleanup_retention_removes_llm_reviews_with_incidents(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+    old_ts = now_ts - (10 * 24 * 60 * 60)
+
+    old_incident = _seed_incident(
+        store,
+        agent_id="agent-old",
+        hostname="HOST-OLD",
+        branch="branch",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\old.pdf",
+        file_name="old.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+        created_at=old_ts,
+    )
+    new_incident = _seed_incident(
+        store,
+        agent_id="agent-new",
+        hostname="HOST-NEW",
+        branch="branch",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\new.pdf",
+        file_name="new.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+    )
+
+    # Age the old review row too: it must not survive past incident retention.
+    # An old terminal review for a still-live incident must also be deleted —
+    # input_json holds document text fragments.
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            "UPDATE scan_llm_reviews SET created_at=?, next_attempt_at=? WHERE incident_id=?",
+            (old_ts, old_ts, old_incident["incident_id"]),
+        )
+        conn.execute(
+            """
+            UPDATE scan_llm_reviews
+            SET status='done', finished_at=?, created_at=?
+            WHERE incident_id=?
+            """,
+            (old_ts, old_ts, new_incident["incident_id"]),
+        )
+        conn.commit()
+
+    result = store.cleanup_retention(
+        retention_days=5,
+        incident_retention_days=5,
+        clean_job_retention_days=30,
+        failed_job_retention_days=30,
+    )
+
+    assert result["incidents"] >= 1
+    assert result["llm_reviews"] == 2
+    with store._lock, store._connect() as conn:
+        remaining = conn.execute("SELECT COUNT(*) AS cnt FROM scan_llm_reviews").fetchone()["cnt"]
+    assert remaining == 0
+
+
+def test_cleanup_retention_keeps_live_llm_review(temp_dir):
+    store = _make_store(temp_dir)
+    new_incident = _seed_incident(
+        store,
+        agent_id="agent-live",
+        hostname="HOST-LIVE",
+        branch="branch",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\live.pdf",
+        file_name="live.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+    )
+
+    result = store.cleanup_retention(
+        retention_days=5,
+        incident_retention_days=5,
+        clean_job_retention_days=30,
+        failed_job_retention_days=30,
+    )
+
+    assert result["llm_reviews"] == 0
+    with store._lock, store._connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM scan_llm_reviews WHERE incident_id=?",
+            (new_incident["incident_id"],),
+        ).fetchone()
+    assert row is not None
+
+
+def test_cleanup_retention_survives_missing_llm_reviews_table(temp_dir):
+    store = _make_store(temp_dir)
+    with store._lock, store._connect() as conn:
+        conn.execute("DROP TABLE scan_llm_reviews")
+        conn.commit()
+
+    result = store.cleanup_retention(
+        retention_days=5,
+        incident_retention_days=5,
+        clean_job_retention_days=30,
+        failed_job_retention_days=30,
+    )
+
+    assert result["llm_reviews"] == 0
+
+
+def _complete_review_for_incident(store, incident_id, **kwargs):
+    """Claim the queued review of the incident and complete it with kwargs."""
+    with store._lock, store._connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM scan_llm_reviews WHERE incident_id=?",
+            (incident_id,),
+        ).fetchone()
+    assert row is not None
+    review_id = row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]
+    claimed = store.claim_llm_reviews(1)
+    assert any(str(item.get("id")) == str(review_id) for item in claimed)
+    return store.complete_llm_review(review_id, **kwargs)
+
+
+def _incident_status(store, incident_id):
+    with store._lock, store._connect() as conn:
+        row = conn.execute(
+            "SELECT status, ack_by FROM scan_incidents WHERE id=?",
+            (incident_id,),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def test_llm_auto_dismiss_acks_low_severity_false_positive(temp_dir):
+    store = _make_store(temp_dir)
+    incident = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-1",
+        branch="branch",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\methodica.docx",
+        file_name="methodica.docx",
+        source_kind="docx",
+        severity="low",
+    )
+    assert _complete_review_for_incident(
+        store,
+        incident["incident_id"],
+        verdict="false_positive",
+        confidence=0.95,
+        severity_suggestion="low",
+        reason="template document",
+        model="nimble:9b",
+        auto_dismiss_fp=True,
+        auto_dismiss_confidence=0.9,
+    )
+    row = _incident_status(store, incident["incident_id"])
+    assert row["status"] == "ack"
+    assert row["ack_by"] == "llm-auto-fp"
+
+
+def test_llm_auto_dismiss_keeps_high_severity_for_human(temp_dir):
+    store = _make_store(temp_dir)
+    incident = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-1",
+        branch="branch",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\secrets.pdf",
+        file_name="secrets.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+    )
+    assert _complete_review_for_incident(
+        store,
+        incident["incident_id"],
+        verdict="false_positive",
+        confidence=0.99,
+        severity_suggestion="low",
+        reason="looks benign",
+        model="nimble:9b",
+        auto_dismiss_fp=True,
+        auto_dismiss_confidence=0.9,
+    )
+    assert _incident_status(store, incident["incident_id"])["status"] == "new"
+
+
+def test_llm_auto_dismiss_respects_confidence_and_flag(temp_dir):
+    store = _make_store(temp_dir)
+    kwargs = dict(
+        severity="medium",
+        agent_id="agent-1",
+        hostname="HOST-1",
+        branch="branch",
+        user_login="user",
+        user_full_name="User",
+        source_kind="docx",
+    )
+    low_conf = _seed_incident(store, file_path=r"C:\Docs\a.docx", file_name="a.docx", **kwargs)
+    flag_off = _seed_incident(store, file_path=r"C:\Docs\b.docx", file_name="b.docx", **kwargs)
+
+    assert _complete_review_for_incident(
+        store, low_conf["incident_id"],
+        verdict="false_positive", confidence=0.5, severity_suggestion="low",
+        reason="maybe", model="m", auto_dismiss_fp=True, auto_dismiss_confidence=0.9,
+    )
+    assert _incident_status(store, low_conf["incident_id"])["status"] == "new"
+
+    assert _complete_review_for_incident(
+        store, flag_off["incident_id"],
+        verdict="false_positive", confidence=0.99, severity_suggestion="low",
+        reason="sure", model="m", auto_dismiss_fp=False, auto_dismiss_confidence=0.9,
+    )
+    assert _incident_status(store, flag_off["incident_id"])["status"] == "new"

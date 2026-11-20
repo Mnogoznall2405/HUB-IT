@@ -753,6 +753,119 @@
                                     </StackPanel>
                                 </Border>
 
+                                <!-- Складские расходники (справочник consumables/lookup — с item_id пишутся) -->
+                                <Border Style="{StaticResource SectionPanelStyle}"
+                                        AutomationProperties.Name="Складские расходники">
+                                    <StackPanel>
+                                        <Grid>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock FontSize="13" FontWeight="SemiBold" Text="Складские расходники" />
+                                                <Border Margin="8,0,0,0" Style="{StaticResource PingPillStyle}">
+                                                    <TextBlock FontSize="11"
+                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                               Text="{Binding WarehouseConsumables.Count}" />
+                                                </Border>
+                                            </StackPanel>
+                                            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                                                <Button Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.RefreshConsumablesCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        Content="Обновить"
+                                                        AutomationProperties.Name="Обновить складские расходники" />
+                                                <Button Margin="8,0,0,0"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.OpenCreateConsumableCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        Content="＋ Добавить"
+                                                        Visibility="{Binding DataContext.CanWriteConsumables, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
+                                                        AutomationProperties.Name="Добавить расходник на склад" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <ProgressBar Margin="0,8,0,0"
+                                                     Height="3"
+                                                     IsIndeterminate="True"
+                                                     Foreground="{DynamicResource HubAccentBrush}"
+                                                     Background="{DynamicResource HubSurfaceBrush}"
+                                                     Visibility="{Binding IsConsumablesLoading, Converter={StaticResource BoolToVisibility}}"
+                                                     AutomationProperties.Name="Индикатор загрузки складских расходников" />
+                                        <TextBlock Margin="0,8,0,0"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource HubWarningBrush}"
+                                                   Text="{Binding ConsumablesErrorText}"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{Binding HasConsumablesError, Converter={StaticResource BoolToVisibility}}" />
+                                        <TextBlock Margin="0,8,0,0"
+                                                   Style="{StaticResource MetaLabelStyle}"
+                                                   Text="На складе нет расходников с положительным остатком."
+                                                   Visibility="{Binding IsConsumablesEmpty, Converter={StaticResource BoolToVisibility}}" />
+                                        <ItemsControl Margin="0,6,0,0"
+                                                      ItemsSource="{Binding WarehouseConsumables}"
+                                                      AutomationProperties.Name="Список складских расходников">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="0,4,0,0"
+                                                            Padding="10,8"
+                                                            CornerRadius="8"
+                                                            Background="{DynamicResource HubSurfaceBrush}"
+                                                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                            BorderThickness="1">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel AutomationProperties.Name="{Binding AutomationName}">
+                                                                <TextBlock FontSize="12.5"
+                                                                           FontWeight="SemiBold"
+                                                                           Text="{Binding Name}"
+                                                                           TextWrapping="Wrap" />
+                                                                <TextBlock Margin="0,2,0,0"
+                                                                           FontSize="11"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="{Binding TypeText}"
+                                                                           Visibility="{Binding TypeText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                                <TextBlock Margin="0,2,0,0"
+                                                                           FontSize="11"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="{Binding PlaceText}" />
+                                                                <TextBlock Margin="0,2,0,0"
+                                                                           FontSize="11"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="{Binding InvNoText}"
+                                                                           Visibility="{Binding InvNoText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                            </StackPanel>
+                                                            <StackPanel Grid.Column="1"
+                                                                        Orientation="Horizontal"
+                                                                        VerticalAlignment="Center">
+                                                                <Border VerticalAlignment="Center"
+                                                                        Style="{StaticResource PingPillStyle}">
+                                                                    <TextBlock FontSize="11"
+                                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                               Text="{Binding QtyText}" />
+                                                                </Border>
+                                                                <StackPanel Margin="8,0,0,0"
+                                                                            Orientation="Horizontal"
+                                                                            VerticalAlignment="Center"
+                                                                            Visibility="{Binding DataContext.CanWriteConsumables, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}">
+                                                                    <Button Style="{StaticResource HubGhostButtonStyle}"
+                                                                            Command="{Binding DataContext.OpenConsumeDialogCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Content="Выдать"
+                                                                            AutomationProperties.Name="{Binding Name, StringFormat='Выдать {0}'}" />
+                                                                    <Button Margin="6,0,0,0"
+                                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                                            Command="{Binding DataContext.OpenQtyDialogCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Content="Остаток…"
+                                                                            AutomationProperties.Name="{Binding Name, StringFormat='Изменить остаток {0}'}" />
+                                                                </StackPanel>
+                                                            </StackPanel>
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+
                                 <!-- Информация SNMP (device_info) -->
                                 <Border Style="{StaticResource SectionPanelStyle}"
                                         Visibility="{Binding HasDeviceInfo, Converter={StaticResource BoolToVisibility}}"
@@ -911,6 +1024,271 @@
                             </StackPanel>
                         </ScrollViewer>
                     </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Выдача/остаток расходника: модальный оверлей поверх всей страницы -->
+        <Grid Grid.RowSpan="5"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="ConsumableActionOverlay_PreviewKeyDown"
+              Visibility="{Binding IsConsumableActionOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="420"
+                    MaxHeight="420"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding ConsumableAction}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <TextBlock FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding TitleText}"
+                                   AutomationProperties.Name="Заголовок действия с расходником" />
+                        <Button HorizontalAlignment="Right"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог расходника" />
+                    </Grid>
+
+                    <!-- Ошибка отправки/валидации: форма не закрывается -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <ProgressBar Grid.Row="2"
+                                 Margin="18,8,18,0"
+                                 Height="3"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор записи расходника" />
+
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding ItemNameText}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Расходник действия" />
+                            <TextBlock Margin="0,4,0,0"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding ItemMetaText}" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubAccentBrush}"
+                                       Text="{Binding AvailableText}"
+                                       Visibility="{Binding HasAvailableText, Converter={StaticResource BoolToVisibility}}" />
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="{Binding QtyLabelText}" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding QtyText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="{Binding QtyLabelText, StringFormat='Поле {0}'}" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Действия формы -->
+                    <StackPanel Grid.Row="4"
+                                Margin="18,10,18,14"
+                                Orientation="Horizontal">
+                        <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SubmitCommand}"
+                                Content="{Binding SubmitButtonText}"
+                                AutomationProperties.Name="Подтвердить действие с расходником" />
+                        <Button Margin="10,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить действие с расходником" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Добавление расходника на склад: модальный оверлей поверх всей страницы -->
+        <Grid Grid.RowSpan="5"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="ConsumableCreateOverlay_PreviewKeyDown"
+              Visibility="{Binding IsConsumableCreateOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="520"
+                    MaxHeight="640"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding ConsumableCreate}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <TextBlock FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding TitleText}"
+                                   AutomationProperties.Name="Заголовок добавления расходника" />
+                        <Button HorizontalAlignment="Right"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог добавления расходника" />
+                    </Grid>
+
+                    <!-- Ошибка отправки/валидации: форма не закрывается -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <ProgressBar Grid.Row="2"
+                                 Margin="18,8,18,0"
+                                 Height="3"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор добавления расходника" />
+
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding HintText}"
+                                       TextWrapping="Wrap" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Филиал *" />
+                            <ComboBox ItemsSource="{Binding BranchOptions}"
+                                      SelectedItem="{Binding SelectedBranch}"
+                                      DisplayMemberPath="Name"
+                                      IsEnabled="{Binding AreInputsEnabled}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Филиал нового расходника" />
+
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Местоположение *" />
+                                <ProgressBar Grid.Column="1"
+                                             Width="60"
+                                             Height="3"
+                                             IsIndeterminate="True"
+                                             Foreground="{DynamicResource HubAccentBrush}"
+                                             Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                             Visibility="{Binding IsLocationsLoading, Converter={StaticResource BoolToVisibility}}"
+                                             AutomationProperties.Name="Индикатор загрузки местоположений" />
+                            </Grid>
+                            <ComboBox ItemsSource="{Binding LocationOptions}"
+                                      SelectedItem="{Binding SelectedLocation}"
+                                      DisplayMemberPath="Name"
+                                      IsEnabled="{Binding AreLocationsEnabled}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Местоположение нового расходника" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Тип расходника *" />
+                            <ComboBox ItemsSource="{Binding TypeOptions}"
+                                      SelectedItem="{Binding SelectedType}"
+                                      DisplayMemberPath="Name"
+                                      IsEnabled="{Binding AreInputsEnabled}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Тип нового расходника" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Модель *" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding ModelName, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Модель нового расходника" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Количество *" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding QtyText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Количество нового расходника" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Артикул (part_no)" />
+                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding PartNoText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Артикул нового расходника" />
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Описание" />
+                            <TextBox MinHeight="52"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     VerticalContentAlignment="Top"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding DescriptionText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Описание нового расходника" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Действия формы -->
+                    <StackPanel Grid.Row="4"
+                                Margin="18,10,18,14"
+                                Orientation="Horizontal">
+                        <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SubmitCommand}"
+                                Content="{Binding SubmitButtonText}"
+                                AutomationProperties.Name="Добавить расходник" />
+                        <Button Margin="10,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить добавление расходника" />
+                    </StackPanel>
                 </Grid>
             </Border>
         </Grid>

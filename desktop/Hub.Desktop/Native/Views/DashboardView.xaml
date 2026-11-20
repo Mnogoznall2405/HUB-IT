@@ -14,9 +14,68 @@
             <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
             <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
             <local:NonEmptyStringToBoolConverter x:Key="NonEmptyOrNullEnabled" />
+
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
+            <Style x:Key="ModeChipStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}">
+                <Setter Property="Margin" Value="0,0,8,0" />
+            </Style>
+
+            <!-- Пилюля статуса предложения: StatusTone info|warning|primary|error|success|muted
+                 → кисти темы (те же тона, что у карточек раздела «Предложения» в админке). -->
+            <Style x:Key="FeedbackStatusPillStyle" TargetType="Border">
+                <Setter Property="Padding" Value="7,2" />
+                <Setter Property="CornerRadius" Value="9" />
+                <Setter Property="HorizontalAlignment" Value="Left" />
+                <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="info">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubStatusNewBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="warning">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubStatusInProgressBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="primary">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="error">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubErrorTextBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="success">
+                        <Setter Property="BorderBrush" Value="{DynamicResource HubStatusDoneBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+            <Style x:Key="FeedbackStatusPillTextStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="info">
+                        <Setter Property="Foreground" Value="{DynamicResource HubStatusNewBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="warning">
+                        <Setter Property="Foreground" Value="{DynamicResource HubStatusInProgressBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="primary">
+                        <Setter Property="Foreground" Value="{DynamicResource HubAccentBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="error">
+                        <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding StatusTone}" Value="success">
+                        <Setter Property="Foreground" Value="{DynamicResource HubStatusDoneBrush}" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
 
+    <Grid>
     <ScrollViewer Style="{StaticResource HubScrollViewerStyle}"
                   VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="28,20,28,24">
@@ -35,19 +94,28 @@
                                Style="{StaticResource HubMutedTextStyle}"
                                Text="{Binding TodayText}" />
                 </StackPanel>
-                <Button Grid.Column="1"
-                        VerticalAlignment="Center"
-                        Style="{StaticResource HubGhostButtonStyle}"
-                        Command="{Binding RefreshCommand}"
-                        Content="Обновить"
-                        AutomationProperties.Name="Обновить главную страницу" />
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Button Style="{StaticResource HubSecondaryButtonStyle}"
+                            Command="{Binding OpenFeedbackCommand}"
+                            Content="💡 Предложить улучшение HUB"
+                            AutomationProperties.Name="Предложить улучшение HUB" />
+                    <Button Margin="8,0,0,0"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding RefreshCommand}"
+                            Content="Обновить"
+                            AutomationProperties.Name="Обновить главную страницу" />
+                </StackPanel>
             </Grid>
 
             <!-- Загрузка -->
             <Border Margin="0,20,0,0"
                     Padding="16,12"
                     Background="{DynamicResource HubSurfaceBrush}"
-                    CornerRadius="10"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
                     Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}">
                 <StackPanel Orientation="Horizontal">
                     <ProgressBar Width="18"
@@ -66,7 +134,7 @@
                     Background="{DynamicResource HubSurfaceBrush}"
                     BorderBrush="{DynamicResource HubErrorTextBrush}"
                     BorderThickness="1"
-                    CornerRadius="10"
+                    CornerRadius="12"
                     Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -153,7 +221,7 @@
                                                             Background="{DynamicResource HubSurfaceRaisedBrush}"
                                                             BorderBrush="{DynamicResource HubBorderDimBrush}"
                                                             BorderThickness="1"
-                                                            CornerRadius="10"
+                                                            CornerRadius="12"
                                                             Padding="12,8"
                                                             SnapsToDevicePixels="True">
                                                         <Grid>
@@ -198,7 +266,7 @@
                         Background="{DynamicResource HubSurfaceBrush}"
                         BorderBrush="{DynamicResource HubBorderDimBrush}"
                         BorderThickness="1"
-                        CornerRadius="10"
+                        CornerRadius="12"
                         Visibility="{Binding HasAttention, Converter={StaticResource InverseBoolToVisibility}}">
                     <StackPanel Orientation="Horizontal">
                         <Border Width="8"
@@ -238,33 +306,35 @@
                                     AutomationProperties.Name="{Binding AccessibleName}">
                                 <Button.Template>
                                     <ControlTemplate TargetType="Button">
+                                        <!-- KPI-карточка: верхний свет-градиент + тоновая
+                                             точка перед меткой + крупное число в тоне. -->
                                         <Border x:Name="Surface"
-                                                Background="{DynamicResource HubSurfaceBrush}"
+                                                Background="{DynamicResource HubCardGradientBrush}"
                                                 BorderBrush="{DynamicResource HubBorderDimBrush}"
                                                 BorderThickness="1"
                                                 CornerRadius="12"
-                                                Padding="16,14"
+                                                Padding="16,12"
                                                 SnapsToDevicePixels="True">
-                                            <Grid>
-                                                <Border Width="3"
-                                                        HorizontalAlignment="Left"
-                                                        VerticalAlignment="Stretch"
-                                                        Margin="0,2,0,2"
-                                                        CornerRadius="2"
-                                                        Style="{StaticResource HubToneStripeStyle}"
-                                                        local:HubTone.Value="{Binding Tone}" />
-                                                <StackPanel Margin="13,0,0,0">
-                                                    <TextBlock FontSize="26"
-                                                               FontWeight="SemiBold"
-                                                               Style="{StaticResource HubToneTextStyle}"
-                                                               local:HubTone.Value="{Binding Tone}"
-                                                               Text="{Binding ValueText}" />
-                                                    <TextBlock Margin="0,4,0,0"
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="8"
+                                                             Height="8"
+                                                             VerticalAlignment="Center"
+                                                             Style="{StaticResource HubToneDotStyle}"
+                                                             local:HubTone.Value="{Binding Tone}" />
+                                                    <TextBlock Margin="8,0,0,0"
+                                                               VerticalAlignment="Center"
                                                                FontSize="12"
                                                                Foreground="{DynamicResource HubTextSecondaryBrush}"
                                                                Text="{Binding Label}" />
                                                 </StackPanel>
-                                            </Grid>
+                                                <TextBlock Margin="0,6,0,2"
+                                                           FontSize="30"
+                                                           FontWeight="SemiBold"
+                                                           Style="{StaticResource HubToneTextStyle}"
+                                                           local:HubTone.Value="{Binding Tone}"
+                                                           Text="{Binding ValueText}" />
+                                            </StackPanel>
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsMouseOver" Value="True">
@@ -322,7 +392,7 @@
                                                         Background="{DynamicResource HubSurfaceBrush}"
                                                         BorderBrush="{DynamicResource HubBorderDimBrush}"
                                                         BorderThickness="1"
-                                                        CornerRadius="10"
+                                                        CornerRadius="12"
                                                         Padding="14,10"
                                                         SnapsToDevicePixels="True">
                                                     <Grid>
@@ -367,7 +437,7 @@
 
                         <Border Padding="14,12"
                                 Background="{DynamicResource HubSurfaceBrush}"
-                                CornerRadius="10"
+                                CornerRadius="12"
                                 Visibility="{Binding HasUpcomingTasks, Converter={StaticResource InverseBoolToVisibility}}">
                             <TextBlock Style="{StaticResource HubMutedTextStyle}"
                                        Text="Открытых задач нет — отличный день." />
@@ -408,7 +478,7 @@
                                                         Background="{DynamicResource HubSurfaceBrush}"
                                                         BorderBrush="{DynamicResource HubBorderDimBrush}"
                                                         BorderThickness="1"
-                                                        CornerRadius="10"
+                                                        CornerRadius="12"
                                                         SnapsToDevicePixels="True">
                                                     <StackPanel>
                                                         <Grid>
@@ -458,7 +528,7 @@
 
                         <Border Padding="14,12"
                                 Background="{DynamicResource HubSurfaceBrush}"
-                                CornerRadius="10"
+                                CornerRadius="12"
                                 Visibility="{Binding HasAnnouncements, Converter={StaticResource InverseBoolToVisibility}}">
                             <TextBlock Style="{StaticResource HubMutedTextStyle}"
                                        Text="Новых объявлений нет." />
@@ -496,7 +566,7 @@
                                                         Background="{DynamicResource HubSurfaceBrush}"
                                                         BorderBrush="{DynamicResource HubBorderDimBrush}"
                                                         BorderThickness="1"
-                                                        CornerRadius="8"
+                                                        CornerRadius="12"
                                                         SnapsToDevicePixels="True">
                                                     <Grid>
                                                         <Grid.ColumnDefinitions>
@@ -535,7 +605,7 @@
 
                         <Border Padding="14,12"
                                 Background="{DynamicResource HubSurfaceBrush}"
-                                CornerRadius="10"
+                                CornerRadius="12"
                                 Visibility="{Binding HasAbsences, Converter={StaticResource InverseBoolToVisibility}}">
                             <TextBlock Style="{StaticResource HubMutedTextStyle}"
                                        Text="Сегодня все на месте." />
@@ -545,4 +615,417 @@
             </StackPanel>
         </StackPanel>
     </ScrollViewer>
+
+    <!-- «Предложить улучшение HUB»: затемнение + карточка с вкладками
+         (FeedbackDialog веб-дашборда). Esc — то же, что «Закрыть». -->
+    <Grid Panel.ZIndex="1"
+          Background="#B3000000"
+          PreviewKeyDown="FeedbackOverlay_PreviewKeyDown"
+          IsVisibleChanged="FeedbackOverlay_IsVisibleChanged"
+          Visibility="{Binding IsFeedbackOpen, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+        <Border MaxWidth="520"
+                MaxHeight="680"
+                Margin="24"
+                CornerRadius="12"
+                Background="{DynamicResource HubFlyoutSurfaceBrush}"
+                BorderBrush="{DynamicResource HubBorderBrush}"
+                BorderThickness="1"
+                Effect="{StaticResource HubFlyoutShadow}"
+                DataContext="{Binding Feedback, Mode=OneWay}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Заголовок -->
+                <Grid Grid.Row="0" Margin="18,14,18,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Text="Что улучшить в HUB?" />
+                    <Button Grid.Column="1"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding CloseCommand}"
+                            Content="✕"
+                            AutomationProperties.Name="Закрыть диалог предложения" />
+                </Grid>
+
+                <!-- Вкладки: «Новая идея» / «Мои предложения» -->
+                <StackPanel Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Orientation="Horizontal">
+                    <RadioButton GroupName="FeedbackMode"
+                                 Style="{StaticResource ModeChipStyle}"
+                                 IsChecked="{Binding IsNewMode, Mode=TwoWay}"
+                                 Content="Новая идея"
+                                 AutomationProperties.Name="Вкладка: новая идея" />
+                    <RadioButton GroupName="FeedbackMode"
+                                 Style="{StaticResource ModeChipStyle}"
+                                 IsChecked="{Binding IsMineMode, Mode=TwoWay}"
+                                 Content="Мои предложения"
+                                 AutomationProperties.Name="Вкладка: мои предложения" />
+                </StackPanel>
+
+                <!-- Полоса прогресса: отправка формы или загрузка списка -->
+                <ProgressBar Grid.Row="2"
+                             Height="3"
+                             Margin="18,8,18,0"
+                             IsIndeterminate="True"
+                             Foreground="{DynamicResource HubAccentBrush}"
+                             Background="{DynamicResource HubSurfaceRaisedBrush}"
+                             Visibility="{Binding ShowProgress, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
+                             AutomationProperties.Name="Индикатор отправки предложения" />
+
+                <Grid Grid.Row="3" Margin="18,10,18,0">
+                    <!-- Вкладка «Новая идея»: форма предложения -->
+                    <ScrollViewer Style="{StaticResource HubScrollViewerStyle}"
+                                  VerticalScrollBarVisibility="Auto"
+                                  Visibility="{Binding IsNewMode, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <!-- Успех отправки -->
+                            <Border Margin="0,0,0,8"
+                                    Padding="12,8"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubSuccessBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="{Binding HasSuccess, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock VerticalAlignment="Center"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubSuccessBrush}"
+                                               Text="{Binding SuccessText, Mode=OneWay}"
+                                               TextWrapping="Wrap"
+                                               AutomationProperties.LiveSetting="Polite" />
+                                    <Button Grid.Column="1"
+                                            Margin="10,0,0,0"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding OpenMineCommand}"
+                                            Content="Мои предложения"
+                                            AutomationProperties.Name="Перейти к моим предложениям" />
+                                </Grid>
+                            </Border>
+
+                            <!-- Ошибка отправки: черновик сохраняется; 429 — янтарная плашка -->
+                            <Border Margin="0,0,0,8"
+                                    Padding="12,8"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="{Binding HasError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="BorderBrush" Value="{DynamicResource HubErrorTextBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsSubmitErrorWarning, Mode=OneWay}" Value="True">
+                                                <Setter Property="BorderBrush" Value="{DynamicResource HubWarningBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBlock FontSize="12"
+                                           Text="{Binding ErrorText, Mode=OneWay}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.LiveSetting="Assertive">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{DynamicResource HubErrorTextBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsSubmitErrorWarning, Mode=OneWay}" Value="True">
+                                                    <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Border>
+
+                            <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Категория" />
+                            <ComboBox Margin="0,4,0,0"
+                                      ItemsSource="{Binding CategoryOptions, Mode=OneWay}"
+                                      SelectedItem="{Binding SelectedCategory}"
+                                      DisplayMemberPath="Label"
+                                      IsEnabled="{Binding AreInputsEnabled, Mode=OneWay}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Категория предложения" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource HubErrorTextBrush}"
+                                       Text="{Binding CategoryError, Mode=OneWay}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding HasCategoryError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+
+                            <TextBlock Margin="0,10,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Заголовок *" />
+                            <TextBox x:Name="FeedbackTitleInput"
+                                     Margin="0,4,0,0"
+                                     MaxLength="120"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled, Mode=OneWay}"
+                                     Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Заголовок предложения" />
+                            <Grid Margin="0,2,0,0">
+                                <TextBlock HorizontalAlignment="Right"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding TitleCountText, Mode=OneWay}"
+                                           Visibility="{Binding HasTitleError, Mode=OneWay, Converter={StaticResource InverseBoolToVisibility}}" />
+                                <TextBlock FontSize="11"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding TitleError, Mode=OneWay}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding HasTitleError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                            </Grid>
+
+                            <TextBlock Margin="0,8,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Описание *" />
+                            <TextBox Margin="0,4,0,0"
+                                     MinHeight="96"
+                                     MaxHeight="220"
+                                     MaxLength="2000"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     VerticalContentAlignment="Top"
+                                     IsEnabled="{Binding AreInputsEnabled, Mode=OneWay}"
+                                     Text="{Binding Message, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Описание предложения" />
+                            <Grid Margin="0,2,0,0">
+                                <TextBlock HorizontalAlignment="Right"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding MessageCountText, Mode=OneWay}"
+                                           Visibility="{Binding HasMessageError, Mode=OneWay, Converter={StaticResource InverseBoolToVisibility}}" />
+                                <TextBlock FontSize="11"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding MessageError, Mode=OneWay}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding HasMessageError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                            </Grid>
+
+                            <TextBlock Margin="0,8,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Раздел портала (необязательно)" />
+                            <Grid Margin="0,4,0,0">
+                                <TextBox x:Name="FeedbackSectionInput"
+                                         MaxLength="64"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled, Mode=OneWay}"
+                                         Text="{Binding Section, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Раздел портала" />
+                                <TextBlock Margin="13,0,0,0"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="Например: Задачи, Почта, Чат">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=FeedbackSectionInput}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                            <Grid Margin="0,2,0,0">
+                                <TextBlock FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="До 64 символов"
+                                           Visibility="{Binding HasSectionError, Mode=OneWay, Converter={StaticResource InverseBoolToVisibility}}" />
+                                <TextBlock FontSize="11"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding SectionError, Mode=OneWay}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding HasSectionError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                            </Grid>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Вкладка «Мои предложения» -->
+                    <Grid Visibility="{Binding IsMineMode, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0"
+                              Visibility="{Binding IsMineReady, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock VerticalAlignment="Center"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding MineTotalText, Mode=OneWay}" />
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding RefreshMineCommand}"
+                                    Content="Обновить"
+                                    AutomationProperties.Name="Обновить список предложений" />
+                        </Grid>
+
+                        <Grid Grid.Row="1" Margin="0,6,0,0">
+                            <!-- Загрузка списка -->
+                            <ProgressBar Width="28"
+                                         Height="28"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"
+                                         IsIndeterminate="True"
+                                         Visibility="{Binding IsMineLoading, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
+                                         AutomationProperties.Name="Загрузка моих предложений" />
+
+                            <!-- Ошибка загрузки списка -->
+                            <Border Padding="12,8"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="{Binding HasMineError, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock VerticalAlignment="Center"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubErrorTextBrush}"
+                                               Text="{Binding MineErrorText, Mode=OneWay}"
+                                               TextWrapping="Wrap"
+                                               AutomationProperties.LiveSetting="Assertive" />
+                                    <Button Grid.Column="1"
+                                            Margin="12,0,0,0"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding RefreshMineCommand}"
+                                            Content="Повторить"
+                                            AutomationProperties.Name="Повторить загрузку предложений" />
+                                </Grid>
+                            </Border>
+
+                            <!-- Пусто -->
+                            <TextBlock HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontSize="13"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="Вы пока не отправляли предложений."
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding IsMineEmpty, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+
+                            <!-- Список -->
+                            <StackPanel Visibility="{Binding HasMineItems, Mode=OneWay, Converter={StaticResource BoolToVisibility}}">
+                                <ScrollViewer Style="{StaticResource HubScrollViewerStyle}"
+                                              VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding MyItems, Mode=OneWay}"
+                                                  AutomationProperties.Name="Мои предложения">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,8"
+                                                        Padding="12,10"
+                                                        Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="10"
+                                                        AutomationProperties.Name="{Binding AutomationName}">
+                                                    <StackPanel>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock FontSize="13"
+                                                                       FontWeight="SemiBold"
+                                                                       Text="{Binding Title, Mode=OneWay}"
+                                                                       TextWrapping="Wrap" />
+                                                            <Border Grid.Column="1"
+                                                                    Margin="10,0,0,0"
+                                                                    VerticalAlignment="Top"
+                                                                    Style="{StaticResource FeedbackStatusPillStyle}">
+                                                                <TextBlock Style="{StaticResource FeedbackStatusPillTextStyle}"
+                                                                           Text="{Binding StatusText, Mode=OneWay}" />
+                                                            </Border>
+                                                        </Grid>
+                                                        <TextBlock Margin="0,3,0,0"
+                                                                   FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding MetaText, Mode=OneWay}"
+                                                                   TextWrapping="Wrap" />
+                                                        <TextBlock Margin="0,5,0,0"
+                                                                   FontSize="12.5"
+                                                                   Text="{Binding MessageText, Mode=OneWay}"
+                                                                   TextWrapping="Wrap" />
+                                                        <Border Margin="0,6,0,0"
+                                                                Padding="10,2,0,2"
+                                                                BorderThickness="3,0,0,0"
+                                                                BorderBrush="{DynamicResource HubAccentBrush}"
+                                                                Visibility="{Binding HasAdminNote, Converter={StaticResource BoolToVisibility}}">
+                                                            <StackPanel>
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                           Text="Комментарий администрации" />
+                                                                <TextBlock FontSize="12"
+                                                                           Text="{Binding AdminNoteText, Mode=OneWay}"
+                                                                           TextWrapping="Wrap" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                                <TextBlock Margin="0,8,0,0"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding MineOverflowText, Mode=OneWay}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding HasMineOverflow, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                </Grid>
+
+                <!-- Подвал: «Отправить» только на вкладке формы (как в вебе) -->
+                <Grid Grid.Row="4" Margin="18,12,18,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="1"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding CloseCommand}"
+                            Content="Закрыть"
+                            AutomationProperties.Name="Закрыть диалог предложения" />
+                    <Button Grid.Column="2"
+                            Style="{StaticResource HubPrimaryButtonStyle}"
+                            Command="{Binding SubmitCommand}"
+                            Content="{Binding SubmitButtonText, Mode=OneWay}"
+                            Visibility="{Binding IsNewMode, Mode=OneWay, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.Name="Отправить предложение" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+    </Grid>
 </UserControl>

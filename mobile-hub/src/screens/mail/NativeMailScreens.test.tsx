@@ -77,6 +77,7 @@ jest.mock('../../api/mailApi', () => ({
   markMailMessageUnread: jest.fn(),
   markAllMailMessagesRead: jest.fn(),
   setMailMessageImportance: jest.fn(),
+  setMailMessageFlag: jest.fn(),
   moveMailMessage: jest.fn(),
   deleteMailMessage: jest.fn(),
   restoreMailMessage: jest.fn(),
@@ -615,6 +616,55 @@ it('removes a read message from the unread filter, updates counters, and restore
   expect(view.getByTestId('native-mail-folder-unread-count').props.children).toBe(1);
 });
 
+it('toggles the Gmail star on an inbox row with an optimistic update', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  const star = await view.findByTestId('native-mail-star-message-1');
+
+  fireEvent.press(star);
+
+  await waitFor(() => expect(mailApi.setMailMessageFlag).toHaveBeenCalledWith('message-1', true, 'box-1'));
+  await waitFor(() => expect(view.getByTestId('native-mail-star-message-1').props.accessibilityState.selected).toBe(true));
+});
+
+it('toggles the star on an opened message from the subject header', async () => {
+  (mailApi.getMailMessage as jest.Mock).mockResolvedValue({ ...message, is_read: true });
+  mockedParams.mockReturnValue({ messageId: 'message-1', mailboxId: 'box-1', folder: 'inbox' });
+  const view = await render(<NativeMailMessageScreen />);
+  const star = await view.findByTestId('native-mail-star');
+
+  fireEvent.press(star);
+
+  await waitFor(() => expect(mailApi.setMailMessageFlag).toHaveBeenCalledWith('message-1', true, 'box-1'));
+});
+
+it('stars a conversation row by flagging its latest message', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1', view: 'conversations' });
+  (mailApi.getMailConversations as jest.Mock).mockResolvedValue({ items: [{ conversation_id: 'thread-1', subject: 'План работ', unread_count: 0, messages_count: 2 }], has_more: false });
+  (mailApi.getMailConversation as jest.Mock).mockResolvedValue({ conversation_id: 'thread-1', items: [{ ...message, id: 'm-1' }, { ...message, id: 'm-2' }] });
+  const view = await render(<NativeMailInboxScreen />);
+  const star = await view.findByTestId('native-mail-star-thread-1');
+
+  fireEvent.press(star);
+
+  await waitFor(() => expect(mailApi.getMailConversation).toHaveBeenCalledWith('thread-1', expect.objectContaining({ mailboxId: 'box-1' })));
+  await waitFor(() => expect(mailApi.setMailMessageFlag).toHaveBeenCalledWith('m-2', true, 'box-1'));
+  expect(mailApi.setMailMessageFlag).toHaveBeenCalledTimes(1);
+});
+
+it('unstars a conversation row by clearing every flagged message', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1', view: 'conversations' });
+  (mailApi.getMailConversations as jest.Mock).mockResolvedValue({ items: [{ conversation_id: 'thread-1', subject: 'План работ', unread_count: 0, messages_count: 2, is_flagged: true }], has_more: false });
+  (mailApi.getMailConversation as jest.Mock).mockResolvedValue({ conversation_id: 'thread-1', items: [{ ...message, id: 'm-1', is_flagged: true }, { ...message, id: 'm-2' }] });
+  const view = await render(<NativeMailInboxScreen />);
+  const star = await view.findByTestId('native-mail-star-thread-1');
+
+  fireEvent.press(star);
+
+  await waitFor(() => expect(mailApi.setMailMessageFlag).toHaveBeenCalledWith('m-1', false, 'box-1'));
+  expect(mailApi.setMailMessageFlag).toHaveBeenCalledTimes(1);
+});
+
 it('applies saved native list preferences without blocking the inbox', async () => {
   (mailConfigApi.getNativeMailPreferences as jest.Mock).mockResolvedValue({
     reading_pane: 'right',
@@ -961,9 +1011,8 @@ it('marks an opened message read and routes reply-all to the native composer', a
   await waitFor(() => expect(view.getByText('Проверьте обновлённый план')).toBeTruthy());
   await waitFor(() => expect(mailApi.markMailMessageRead).toHaveBeenCalledWith('message-1', 'box-1'));
   await waitFor(() => expect(view.getByText('0 непрочитанных')).toBeTruthy());
-  fireEvent.press(view.getByTestId('native-mail-message-file-actions'));
-  await waitFor(() => expect(view.getByLabelText('Ответить всем')).toBeTruthy());
-  fireEvent.press(view.getByLabelText('Ответить всем'));
+  // «Ответить всем» доступна прямо в нижней Gmail-панели.
+  fireEvent.press(view.getByTestId('native-mail-reply-all'));
   expect(router.push).toHaveBeenCalledWith({
     pathname: '/(shell)/mail/compose',
     params: { mode: 'reply_all', mailboxId: 'box-1', sourceMessageId: 'message-1' },
@@ -1001,7 +1050,7 @@ it('shows a saved message immediately while refreshing it online', async () => {
 });
 
 it('opens a previously saved conversation without calling Exchange while offline', async () => {
-  await writeNativeEntitySnapshot('mail-conversation-details', 1, 'box-1:inbox:thread-1', {
+  await writeNativeEntitySnapshot('mail-conversation-details', 1, 'box-1:inbox:current:thread-1', {
     conversation_id: 'thread-1',
     subject: 'План работ',
     participants: ['ivan@example.com'],
@@ -1020,7 +1069,7 @@ it('opens a previously saved conversation without calling Exchange while offline
 });
 
 it('shows a saved conversation immediately while refreshing it online', async () => {
-  await writeNativeEntitySnapshot('mail-conversation-details', 1, 'box-1:inbox:thread-cached', {
+  await writeNativeEntitySnapshot('mail-conversation-details', 1, 'box-1:inbox:current:thread-cached', {
     conversation_id: 'thread-cached',
     subject: 'Сохранённая переписка',
     participants: ['ivan@example.com'],
@@ -1563,6 +1612,8 @@ it('uses a flat reader hierarchy and reveals long recipient details on demand', 
   expect(view.getByTestId('native-mail-reader-content')).toBeTruthy();
   expect(view.getByTestId('native-mail-reader-bottom-actions')).toBeTruthy();
   expect(view.getByTestId('native-mail-recipient-summary')).toHaveTextContent('Кому: Я');
+  // CC видна уже в свёрнутой шапке — не только после развёртывания деталей.
+  expect(view.getByTestId('native-mail-cc-summary')).toHaveTextContent('Копия: Копия Получатель');
   expect(view.queryByLabelText('Переместить в архив')).toBeNull();
 
   await act(async () => { fireEvent.press(view.getByTestId('native-mail-recipient-details')); });
@@ -1671,8 +1722,10 @@ it('moves to the next loaded inbox message from the reference-style top navigati
     sequence: '["message-0","message-1","message-2"]',
   });
   const view = await render(<NativeMailMessageScreen />);
-  await view.findByTestId('native-mail-next-message');
+  await view.findByTestId('native-mail-message-file-actions');
 
+  fireEvent.press(view.getByTestId('native-mail-message-file-actions'));
+  await view.findByTestId('native-mail-file-actions-sheet');
   fireEvent.press(view.getByTestId('native-mail-next-message'));
 
   expect(router.replace).toHaveBeenCalledWith({
@@ -2640,10 +2693,13 @@ it('sends an IT request with template defaults after one lazy template fetch', a
   await fireEvent.press(view.getByTestId('native-mail-it-submit'));
 
   await waitFor(() => expect(mailApi.sendMailItRequest).toHaveBeenCalledTimes(1));
-  expect(mailApi.sendMailItRequest).toHaveBeenCalledWith({
-    template_id: 'tpl-access',
-    fields: { system: 'CRM', comment: 'первая строка, вторая строка' },
-  });
+  expect(mailApi.sendMailItRequest).toHaveBeenCalledWith(
+    {
+      template_id: 'tpl-access',
+      fields: { system: 'CRM', comment: 'первая строка, вторая строка' },
+    },
+    expect.objectContaining({ idempotencyKey: expect.stringMatching(/^it-request-.+/) }),
+  );
   await waitFor(() => expect(view.queryByTestId('native-mail-it-request-sheet')).toBeNull());
   expect(await view.findByText('IT-заявка отправлена.')).toBeTruthy();
 });

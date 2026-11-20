@@ -530,6 +530,351 @@ public sealed class NativeTicketsViewModelTests
         Assert.Empty(api.TicketAttachmentDownloads);
     }
 
+    [Fact]
+    public async Task DetailAttachUploadsAndAddsChip()
+    {
+        var file = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"ticket-detail-{Guid.NewGuid():N}.pdf");
+        await File.WriteAllTextAsync(file, "%PDF-1.4 fake");
+        try
+        {
+            var api = new FakeHubApiClient
+            {
+                CurrentUser = new HubUser { Id = 1, Username = "admin", Role = "admin" },
+                TicketsPage = new HubTicketListPage
+                {
+                    Total = 1,
+                    Page = 1,
+                    TotalPages = 1,
+                    Items = [Request(11, "Иван Петров")],
+                },
+                TicketDetail = Request(11, "Иван Петров"),
+            };
+            var model = new TicketsViewModel(api)
+            {
+                DetailFilePicker = () => [file],
+            };
+            await model.LoadAsync();
+            model.SelectedItem = model.Items[0];
+            await WaitFor(() => model.Detail is not null);
+            Assert.True(model.CanWriteTickets);
+            Assert.True(model.Detail!.CanWrite);
+            Assert.True(model.Detail.CanAttach);
+            Assert.Empty(model.Detail.Attachments);
+
+            await ((NativeAsyncCommand)model.AttachDetailFilesCommand).ExecuteAsync(null);
+
+            // POST …/attachments по id заявки — имя файла и file_type как в форме создания.
+            var upload = Assert.Single(api.TicketUploads);
+            Assert.Equal(11, upload.RequestId);
+            Assert.Equal(System.IO.Path.GetFileName(file), upload.FileName);
+            Assert.Equal("other", upload.FileType);
+            // Чип свежего файла дописан в секцию без перечитывания списка.
+            var chip = Assert.Single(model.Detail.Attachments);
+            Assert.Equal(System.IO.Path.GetFileName(file), chip.Name);
+            Assert.False(model.HasDetailError);
+            Assert.False(model.Detail.IsAttachmentBusy);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public async Task DetailAttachFailureShowsCardErrorAndKeepsCard()
+    {
+        var file = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"ticket-detail-{Guid.NewGuid():N}.pdf");
+        await File.WriteAllTextAsync(file, "%PDF-1.4 fake");
+        try
+        {
+            var api = new FakeHubApiClient
+            {
+                CurrentUser = new HubUser { Id = 1, Username = "admin", Role = "admin" },
+                TicketsPage = new HubTicketListPage
+                {
+                    Total = 1,
+                    Page = 1,
+                    TotalPages = 1,
+                    Items = [Request(11, "Иван Петров")],
+                },
+                TicketDetail = Request(11, "Иван Петров"),
+                TicketUploadException = new HubApiException(
+                    HubApiErrorKind.Http, "Лимит файлов исчерпан"),
+            };
+            var model = new TicketsViewModel(api)
+            {
+                DetailFilePicker = () => [file],
+            };
+            await model.LoadAsync();
+            model.SelectedItem = model.Items[0];
+            await WaitFor(() => model.Detail is not null);
+
+            await ((NativeAsyncCommand)model.AttachDetailFilesCommand).ExecuteAsync(null);
+
+            // Ошибка — текстом в карточке; карточка и реквизиты живы, чипов не прибавилось.
+            Assert.Single(api.TicketUploads);
+            Assert.True(model.HasDetailError);
+            Assert.Contains("не удалось", model.DetailErrorText!, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Лимит файлов", model.DetailErrorText!, StringComparison.Ordinal);
+            Assert.NotNull(model.Detail);
+            Assert.Empty(model.Detail!.Attachments);
+            Assert.False(model.Detail.IsAttachmentBusy);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public async Task DetailAttachSkipsDisallowedExtension()
+    {
+        var file = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"ticket-detail-{Guid.NewGuid():N}.exe");
+        await File.WriteAllTextAsync(file, "MZ fake");
+        try
+        {
+            var api = new FakeHubApiClient
+            {
+                CurrentUser = new HubUser { Id = 1, Username = "admin", Role = "admin" },
+                TicketsPage = new HubTicketListPage
+                {
+                    Total = 1,
+                    Page = 1,
+                    TotalPages = 1,
+                    Items = [Request(11, "Иван Петров")],
+                },
+                TicketDetail = Request(11, "Иван Петров"),
+            };
+            var model = new TicketsViewModel(api)
+            {
+                DetailFilePicker = () => [file],
+            };
+            await model.LoadAsync();
+            model.SelectedItem = model.Items[0];
+            await WaitFor(() => model.Detail is not null);
+
+            await ((NativeAsyncCommand)model.AttachDetailFilesCommand).ExecuteAsync(null);
+
+            // Формат вне белого списка backend'а на сервер не уходит.
+            Assert.Empty(api.TicketUploads);
+            Assert.True(model.HasDetailError);
+            Assert.Contains("формат", model.DetailErrorText!, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public async Task DetailDeleteAttachmentArmsThenRemovesChipAndRefreshesHistory()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "writer",
+                Role = "operator",
+                Permissions = ["tickets.write"],
+            },
+            TicketsPage = new HubTicketListPage
+            {
+                Total = 1,
+                Page = 1,
+                TotalPages = 1,
+                Items = [Request(11, "Иван Петров")],
+            },
+            TicketDetail = Request(11, "Иван Петров"),
+            TicketAttachments = new HubTicketAttachmentList
+            {
+                Items =
+                [
+                    new HubTicketAttachment { Id = "att-1", RequestId = 11, FileName = "ticket.pdf" },
+                    new HubTicketAttachment { Id = "att-2", RequestId = 11, FileName = "check.pdf" },
+                ],
+            },
+            TicketHistory = new HubTicketHistoryPage
+            {
+                Total = 1,
+                Page = 1,
+                TotalPages = 1,
+                Items = [HistoryEntry(9, 11, "status", "not_started", "at_cashier")],
+            },
+        };
+        var model = new TicketsViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is { Attachments.Count: 2 });
+        var historyCalls = api.TicketHistoryCalls.Count;
+
+        var first = model.Detail!.Attachments[0];
+        // Первый клик — только подтверждение, запроса нет.
+        await ((NativeAsyncCommand)model.DeleteAttachmentCommand).ExecuteAsync(first);
+        Assert.Empty(api.TicketAttachmentDeletes);
+        Assert.True(first.DeleteArmed);
+        Assert.Equal("Удалить?", first.DeleteText);
+        Assert.Equal(2, model.Detail.Attachments.Count);
+
+        // Armed одновременно у одного чипа: новое нажатие снимает предыдущее.
+        var second = model.Detail.Attachments[1];
+        await ((NativeAsyncCommand)model.DeleteAttachmentCommand).ExecuteAsync(second);
+        Assert.False(first.DeleteArmed);
+        Assert.True(second.DeleteArmed);
+        Assert.Empty(api.TicketAttachmentDeletes);
+
+        // Повторный клик по armed-чипу — DELETE и локальное снятие.
+        await ((NativeAsyncCommand)model.DeleteAttachmentCommand).ExecuteAsync(second);
+        Assert.Equal((11, "att-2"), Assert.Single(api.TicketAttachmentDeletes));
+        var remaining = Assert.Single(model.Detail.Attachments);
+        Assert.Equal("att-1", remaining.AttachmentId);
+        Assert.False(model.HasDetailError);
+        // Backend пишет attachment_deleted — лента истории перечитана.
+        Assert.True(api.TicketHistoryCalls.Count > historyCalls);
+        Assert.Equal((11, 1), api.TicketHistoryCalls.Last());
+    }
+
+    [Fact]
+    public async Task DetailDeleteAttachmentFailureKeepsChipAndShowsError()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 1, Username = "admin", Role = "admin" },
+            TicketsPage = new HubTicketListPage
+            {
+                Total = 1,
+                Page = 1,
+                TotalPages = 1,
+                Items = [Request(11, "Иван Петров")],
+            },
+            TicketDetail = Request(11, "Иван Петров"),
+            TicketAttachments = new HubTicketAttachmentList
+            {
+                Items =
+                [
+                    new HubTicketAttachment { Id = "att-1", RequestId = 11, FileName = "ticket.pdf" },
+                ],
+            },
+            TicketAttachmentDeleteException = new HubApiException(
+                HubApiErrorKind.Http, "Файл недоступен"),
+        };
+        var model = new TicketsViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is { Attachments.Count: 1 });
+        var chip = model.Detail!.Attachments[0];
+
+        await ((NativeAsyncCommand)model.DeleteAttachmentCommand).ExecuteAsync(chip);
+        await ((NativeAsyncCommand)model.DeleteAttachmentCommand).ExecuteAsync(chip);
+
+        // Сбой DELETE: чип на месте, armed снят, ошибка — в карточке.
+        Assert.Single(api.TicketAttachmentDeletes);
+        Assert.Single(model.Detail.Attachments);
+        Assert.False(chip.DeleteArmed);
+        Assert.False(chip.IsDeleteBusy);
+        Assert.True(model.HasDetailError);
+        Assert.Contains("Файл недоступен", model.DetailErrorText!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AttachAndDeleteFollowTicketsWritePermission()
+    {
+        HubTicketListPage ListPage() => new()
+        {
+            Total = 1,
+            Page = 1,
+            TotalPages = 1,
+            Items = [Request(11, "Иван Петров")],
+        };
+        HubTicketAttachmentList Attachments() => new()
+        {
+            Items =
+            [
+                new HubTicketAttachment { Id = "att-1", RequestId = 11, FileName = "ticket.pdf" },
+            ],
+        };
+
+        // Без tickets.write и admin — «Прикрепить»/«✕» недоступны (как hasPermission в вебе).
+        var readOnly = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "reader",
+                Role = "operator",
+                Permissions = ["tickets.read"],
+            },
+            TicketsPage = ListPage(),
+            TicketDetail = Request(11, "Иван Петров"),
+            TicketAttachments = Attachments(),
+        };
+        var readModel = new TicketsViewModel(readOnly)
+        {
+            DetailFilePicker = () => ["x.pdf"],
+        };
+        await readModel.LoadAsync();
+        readModel.SelectedItem = readModel.Items[0];
+        await WaitFor(() => readModel.Detail is { Attachments.Count: 1 });
+
+        Assert.False(readModel.CanWriteTickets);
+        Assert.False(readModel.Detail!.CanWrite);
+        Assert.False(readModel.Detail.CanAttach);
+        Assert.False(readModel.AttachDetailFilesCommand.CanExecute(null));
+        var readChip = readModel.Detail.Attachments[0];
+        Assert.False(readModel.DeleteAttachmentCommand.CanExecute(readChip));
+
+        // Блокированная команда не исполняется: picker и API не вызываются.
+        await ((NativeAsyncCommand)readModel.AttachDetailFilesCommand).ExecuteAsync(null);
+        Assert.Empty(readOnly.TicketUploads);
+        await ((NativeAsyncCommand)readModel.DeleteAttachmentCommand).ExecuteAsync(readChip);
+        Assert.Empty(readOnly.TicketAttachmentDeletes);
+        Assert.False(readChip.DeleteArmed);
+
+        // Явное право — кнопки доступны.
+        var writer = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser
+            {
+                Id = 7,
+                Username = "writer",
+                Role = "operator",
+                Permissions = ["tickets.write"],
+            },
+            TicketsPage = ListPage(),
+            TicketDetail = Request(11, "Иван Петров"),
+            TicketAttachments = Attachments(),
+        };
+        var writerModel = new TicketsViewModel(writer);
+        await writerModel.LoadAsync();
+        writerModel.SelectedItem = writerModel.Items[0];
+        await WaitFor(() => writerModel.Detail is { Attachments.Count: 1 });
+
+        Assert.True(writerModel.CanWriteTickets);
+        Assert.True(writerModel.Detail!.CanWrite);
+        Assert.True(writerModel.Detail.CanAttach);
+        Assert.True(writerModel.AttachDetailFilesCommand.CanExecute(null));
+        Assert.True(writerModel.DeleteAttachmentCommand.CanExecute(writerModel.Detail.Attachments[0]));
+
+        // Admin — без явного права, как в матрице веба.
+        var admin = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 1, Username = "admin", Role = "admin" },
+            TicketsPage = ListPage(),
+            TicketDetail = Request(11, "Иван Петров"),
+            TicketAttachments = Attachments(),
+        };
+        var adminModel = new TicketsViewModel(admin);
+        await adminModel.LoadAsync();
+        adminModel.SelectedItem = adminModel.Items[0];
+        await WaitFor(() => adminModel.Detail is not null);
+
+        Assert.True(adminModel.CanWriteTickets);
+        Assert.True(adminModel.Detail!.CanWrite);
+    }
+
     // ---- История изменений ----
 
     [Fact]

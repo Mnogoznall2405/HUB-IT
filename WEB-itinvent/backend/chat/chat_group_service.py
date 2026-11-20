@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from backend.chat.db import chat_session
 from backend.chat.models import (
@@ -97,71 +98,78 @@ class ChatGroupService:
             raise ValueError("Cannot create a direct conversation with yourself")
 
         direct_key = _direct_key(int(current_user_id), int(peer_user_id))
-        with chat_session() as session:
-            existing = session.execute(
-                select(ChatConversation).where(
-                    ChatConversation.kind == "direct",
-                    ChatConversation.direct_key == direct_key,
-                )
-            ).scalar_one_or_none()
-            if existing:
-                return self._service._build_conversation_payload(session, existing, int(current_user_id))
+        payload: dict = {}
+        for attempt in range(2):
+            try:
+                with chat_session() as session:
+                    existing = session.execute(
+                        select(ChatConversation).where(
+                            ChatConversation.kind == "direct",
+                            ChatConversation.direct_key == direct_key,
+                        )
+                    ).scalar_one_or_none()
+                    if existing:
+                        return self._service._build_conversation_payload(session, existing, int(current_user_id))
 
-            now = _utc_now()
-            conversation = ChatConversation(
-                id=str(uuid4()),
-                kind="direct",
-                direct_key=direct_key,
-                title=None,
-                created_by_user_id=int(current_user_id),
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(conversation)
-            session.flush()
-            session.add_all(
-                [
-                    ChatMember(
-                        conversation_id=conversation.id,
-                        user_id=int(current_user_id),
-                        member_role="owner",
-                        joined_at=now,
-                    ),
-                    ChatMember(
-                        conversation_id=conversation.id,
-                        user_id=int(peer["id"]),
-                        member_role="member",
-                        joined_at=now,
-                    ),
-                ]
-            )
-            session.add_all(
-                [
-                    ChatConversationUserState(
-                        conversation_id=conversation.id,
-                        user_id=int(current_user_id),
-                        opened_at=now,
+                    now = _utc_now()
+                    conversation = ChatConversation(
+                        id=str(uuid4()),
+                        kind="direct",
+                        direct_key=direct_key,
+                        title=None,
+                        created_by_user_id=int(current_user_id),
+                        created_at=now,
                         updated_at=now,
-                    ),
-                    ChatConversationUserState(
-                        conversation_id=conversation.id,
-                        user_id=int(peer["id"]),
-                        updated_at=now,
-                    ),
-                ]
-            )
-            session.flush()
-            participant_ids = {int(current_user_id), int(peer["id"])}
-            presence_map = self._service._get_presence_map(user_ids=participant_ids)
-            payload = self._service._build_conversation_payload(
-                session,
-                conversation,
-                int(current_user_id),
-                users_override={
-                    int(current_user_id): self._service._serialize_user(creator, presence_map=presence_map),
-                    int(peer["id"]): self._service._serialize_user(peer, presence_map=presence_map),
-                },
-            )
+                    )
+                    session.add(conversation)
+                    session.flush()
+                    session.add_all(
+                        [
+                            ChatMember(
+                                conversation_id=conversation.id,
+                                user_id=int(current_user_id),
+                                member_role="owner",
+                                joined_at=now,
+                            ),
+                            ChatMember(
+                                conversation_id=conversation.id,
+                                user_id=int(peer["id"]),
+                                member_role="member",
+                                joined_at=now,
+                            ),
+                        ]
+                    )
+                    session.add_all(
+                        [
+                            ChatConversationUserState(
+                                conversation_id=conversation.id,
+                                user_id=int(current_user_id),
+                                opened_at=now,
+                                updated_at=now,
+                            ),
+                            ChatConversationUserState(
+                                conversation_id=conversation.id,
+                                user_id=int(peer["id"]),
+                                updated_at=now,
+                            ),
+                        ]
+                    )
+                    session.flush()
+                    participant_ids = {int(current_user_id), int(peer["id"])}
+                    presence_map = self._service._get_presence_map(user_ids=participant_ids)
+                    payload = self._service._build_conversation_payload(
+                        session,
+                        conversation,
+                        int(current_user_id),
+                        users_override={
+                            int(current_user_id): self._service._serialize_user(creator, presence_map=presence_map),
+                            int(peer["id"]): self._service._serialize_user(peer, presence_map=presence_map),
+                        },
+                    )
+                break
+            except IntegrityError:
+                if attempt == 1:
+                    raise
         self._service._invalidate_user_cache(user_id=int(current_user_id), bucket="conversations", hard=True)
         self._service._invalidate_user_cache(user_id=int(peer["id"]), bucket="conversations", hard=True)
         return payload
@@ -170,55 +178,62 @@ class ChatGroupService:
         
         owner = self._service._require_active_user(int(current_user_id))
         notes_key = _notes_key(int(current_user_id))
-        with chat_session() as session:
-            existing = session.execute(
-                select(ChatConversation).where(
-                    ChatConversation.kind == "notes",
-                    ChatConversation.direct_key == notes_key,
-                )
-            ).scalar_one_or_none()
-            if existing:
-                return self._service._build_conversation_payload(session, existing, int(current_user_id))
+        payload: dict = {}
+        for attempt in range(2):
+            try:
+                with chat_session() as session:
+                    existing = session.execute(
+                        select(ChatConversation).where(
+                            ChatConversation.kind == "notes",
+                            ChatConversation.direct_key == notes_key,
+                        )
+                    ).scalar_one_or_none()
+                    if existing:
+                        return self._service._build_conversation_payload(session, existing, int(current_user_id))
 
-            now = _utc_now()
-            conversation = ChatConversation(
-                id=str(uuid4()),
-                kind="notes",
-                direct_key=notes_key,
-                title=NOTES_CONVERSATION_TITLE,
-                created_by_user_id=int(current_user_id),
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(conversation)
-            session.flush()
-            session.add(
-                ChatMember(
-                    conversation_id=conversation.id,
-                    user_id=int(current_user_id),
-                    member_role="owner",
-                    joined_at=now,
-                )
-            )
-            session.add(
-                ChatConversationUserState(
-                    conversation_id=conversation.id,
-                    user_id=int(current_user_id),
-                    is_pinned=True,
-                    opened_at=now,
-                    updated_at=now,
-                )
-            )
-            session.flush()
-            presence_map = self._service._get_presence_map(user_ids={int(current_user_id)})
-            payload = self._service._build_conversation_payload(
-                session,
-                conversation,
-                int(current_user_id),
-                users_override={
-                    int(current_user_id): self._service._serialize_user(owner, presence_map=presence_map),
-                },
-            )
+                    now = _utc_now()
+                    conversation = ChatConversation(
+                        id=str(uuid4()),
+                        kind="notes",
+                        direct_key=notes_key,
+                        title=NOTES_CONVERSATION_TITLE,
+                        created_by_user_id=int(current_user_id),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(conversation)
+                    session.flush()
+                    session.add(
+                        ChatMember(
+                            conversation_id=conversation.id,
+                            user_id=int(current_user_id),
+                            member_role="owner",
+                            joined_at=now,
+                        )
+                    )
+                    session.add(
+                        ChatConversationUserState(
+                            conversation_id=conversation.id,
+                            user_id=int(current_user_id),
+                            is_pinned=True,
+                            opened_at=now,
+                            updated_at=now,
+                        )
+                    )
+                    session.flush()
+                    presence_map = self._service._get_presence_map(user_ids={int(current_user_id)})
+                    payload = self._service._build_conversation_payload(
+                        session,
+                        conversation,
+                        int(current_user_id),
+                        users_override={
+                            int(current_user_id): self._service._serialize_user(owner, presence_map=presence_map),
+                        },
+                    )
+                break
+            except IntegrityError:
+                if attempt == 1:
+                    raise
         self._service._invalidate_user_cache(user_id=int(current_user_id), bucket="conversations", hard=True)
         return payload
 

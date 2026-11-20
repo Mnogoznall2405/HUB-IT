@@ -320,6 +320,8 @@ public sealed class TicketHistoryEntryViewModel
 public sealed class TicketAttachmentViewModel : ObservableObject
 {
     private bool _isDownloading;
+    private bool _deleteArmed;
+    private bool _isDeleteBusy;
 
     public TicketAttachmentViewModel(HubTicketAttachment attachment)
     {
@@ -350,6 +352,39 @@ public sealed class TicketAttachmentViewModel : ObservableObject
 
     /// <summary>Чип доступен, пока файл не скачивается (дедуп — и в OpenAttachmentAsync).</summary>
     public bool IsDownloadEnabled => !IsDownloading;
+
+    /// <summary>Первое нажатие «✕» взводит подтверждение; второе — удаляет (как у отсутствий).</summary>
+    public bool DeleteArmed
+    {
+        get => _deleteArmed;
+        internal set
+        {
+            if (SetProperty(ref _deleteArmed, value))
+            {
+                OnPropertyChanged(nameof(DeleteText));
+            }
+        }
+    }
+
+    /// <summary>DELETE …/attachments/{id} в полёте.</summary>
+    public bool IsDeleteBusy
+    {
+        get => _isDeleteBusy;
+        internal set
+        {
+            if (SetProperty(ref _isDeleteBusy, value))
+            {
+                OnPropertyChanged(nameof(DeleteText));
+                OnPropertyChanged(nameof(IsDeleteEnabled));
+            }
+        }
+    }
+
+    /// <summary>Кнопка удаления активна, пока удаление не в полёте.</summary>
+    public bool IsDeleteEnabled => !IsDeleteBusy;
+
+    /// <summary>Подпись кнопки удаления: armed просит повторное нажатие.</summary>
+    public string DeleteText => IsDeleteBusy ? "…" : DeleteArmed ? "Удалить?" : "✕";
 
     public string DisplayText => IsDownloading
         ? "Скачиваем…"
@@ -498,14 +533,14 @@ public sealed class TicketCreateViewModel : ObservableObject
     private const int EmployeeSearchLimit = 20;
 
     /// <summary>Лимиты вложений backend'а: расширения, 20 МБ и 10 файлов на заявку.</summary>
-    private static readonly HashSet<string> AllowedFileExtensions =
+    internal static readonly HashSet<string> AllowedFileExtensions =
         new(StringComparer.OrdinalIgnoreCase)
         {
             ".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx",
         };
 
-    private const long MaxFileSizeBytes = 20L * 1024 * 1024;
-    private const int MaxFiles = 10;
+    internal const long MaxFileSizeBytes = 20L * 1024 * 1024;
+    internal const int MaxFiles = 10;
 
     private readonly IHubApiClient _api;
     private readonly Func<IReadOnlyList<string>>? _filePicker;
@@ -989,6 +1024,8 @@ public sealed class TicketDetailViewModel : ObservableObject
     private int _historyTotalPages;
     private string? _commentText;
     private string? _statusComment;
+    private bool _canWrite;
+    private bool _isAttachmentBusy;
 
     public TicketDetailViewModel(HubTicketRequest request)
     {
@@ -998,7 +1035,11 @@ public sealed class TicketDetailViewModel : ObservableObject
         StatusActions = [];
         HistoryEntries = [];
         Comments.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasComments));
-        Attachments.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasAttachments));
+        Attachments.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HasAttachments));
+            OnPropertyChanged(nameof(ShowFilesSection));
+        };
         HistoryEntries.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(HasHistoryEntries));
@@ -1046,6 +1087,44 @@ public sealed class TicketDetailViewModel : ObservableObject
     public bool HasComments => Comments.Count > 0;
     public bool HasAttachments => Attachments.Count > 0;
     public bool HasHistoryEntries => HistoryEntries.Count > 0;
+
+    /// <summary>Секция «Файлы» видна с вложениями или с правом на загрузку.</summary>
+    public bool ShowFilesSection => HasAttachments || CanWrite;
+
+    /// <summary>
+    /// Право tickets.write из родителя (/auth/me): «📎 Прикрепить» в секции и «✕» у чипов.
+    /// </summary>
+    public bool CanWrite
+    {
+        get => _canWrite;
+        internal set
+        {
+            if (SetProperty(ref _canWrite, value))
+            {
+                OnPropertyChanged(nameof(CanAttach));
+                OnPropertyChanged(nameof(ShowFilesSection));
+            }
+        }
+    }
+
+    /// <summary>POST …/attachments в полёте — кнопка «Прикрепить» на паузе.</summary>
+    public bool IsAttachmentBusy
+    {
+        get => _isAttachmentBusy;
+        internal set
+        {
+            if (SetProperty(ref _isAttachmentBusy, value))
+            {
+                OnPropertyChanged(nameof(CanAttach));
+                OnPropertyChanged(nameof(AttachButtonText));
+            }
+        }
+    }
+
+    /// <summary>«📎 Прикрепить» активна с правом tickets.write и вне загрузки.</summary>
+    public bool CanAttach => CanWrite && !IsAttachmentBusy;
+
+    public string AttachButtonText => IsAttachmentBusy ? "Загружаем…" : "📎 Прикрепить";
 
     /// <summary>Пустая история без сбоя — строка «Изменений пока нет.».</summary>
     public bool ShowHistoryEmpty => !HasHistoryEntries && !HistoryFailed;
@@ -1192,6 +1271,12 @@ public sealed class TicketDetailViewModel : ObservableObject
         {
             Attachments.Add(new TicketAttachmentViewModel(attachment));
         }
+    }
+
+    /// <summary>Чип свежезагруженного файла — в конец списка (как AppendComment).</summary>
+    public void AppendAttachment(HubTicketAttachment attachment)
+    {
+        Attachments.Add(new TicketAttachmentViewModel(attachment));
     }
 
     /// <summary>Первая страница истории: лента заменяется целиком.</summary>
@@ -1354,6 +1439,12 @@ public sealed class TicketsViewModel : ObservableObject
     /// <summary>Записей истории на страницу — дефолт endpoint'а …/history.</summary>
     private const int HistoryPageSize = 20;
 
+    /// <summary>Право записи билетов — как hasPermission('tickets.write') в вебе.</summary>
+    private const string TicketsWritePermission = "tickets.write";
+
+    /// <summary>Право на персональные данные билетов — tickets.personal_data.read в вебе.</summary>
+    private const string TicketsPersonalReadPermission = "tickets.personal_data.read";
+
     /// <summary>Debounce серверного поиска — как у docflow/чата.</summary>
     private static readonly TimeSpan SearchDebounce = TimeSpan.FromMilliseconds(400);
 
@@ -1361,6 +1452,9 @@ public sealed class TicketsViewModel : ObservableObject
     private const string ViewModeList = "list";
     private const string ViewModeKanban = "kanban";
     private const string ViewModeDashboard = "dashboard";
+
+    /// <summary>Режим «Управление» — админские вкладки при tickets.write/admin.</summary>
+    private const string ViewModeAdmin = "admin";
 
     /// <summary>
     /// Порядок колонок канбана — как в get_kanban backend'а (tickets_service):
@@ -1375,6 +1469,9 @@ public sealed class TicketsViewModel : ObservableObject
 
     /// <summary>Вложения, которые скачиваются прямо сейчас — второй клик не дублирует запрос.</summary>
     private readonly HashSet<string> _attachmentDownloadsInFlight = new(StringComparer.Ordinal);
+
+    /// <summary>Чип со взведённым подтверждением удаления — одновременно один.</summary>
+    private TicketAttachmentViewModel? _armedAttachmentDelete;
 
     /// <summary>Заглушка событий фильтров на время Reset (без лишних перезагрузок).</summary>
     private bool _suppressFilterEvents;
@@ -1410,6 +1507,11 @@ public sealed class TicketsViewModel : ObservableObject
     private string _viewMode = ViewModeList;
     private bool _isKanbanLoading;
     private bool _isDashboardLoading;
+    private bool _permissionsLoaded;
+    private bool _canWriteTickets;
+    private bool _isTicketAdmin;
+    private bool _canReadPersonal;
+    private TicketAdminViewModel? _admin;
 
     public TicketsViewModel(IHubApiClient api)
     {
@@ -1436,6 +1538,14 @@ public sealed class TicketsViewModel : ObservableObject
             (parameter, _) => OpenAttachmentAsync(parameter as TicketAttachmentViewModel),
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
             parameter => parameter is TicketAttachmentViewModel { IsDownloading: false });
+        AttachDetailFilesCommand = new NativeAsyncCommand(
+            (_, ct) => AttachDetailFilesAsync(ct),
+            ex => DetailErrorText = TasksViewModel.DescribeError(ex),
+            _ => Detail is { CanAttach: true });
+        DeleteAttachmentCommand = new NativeAsyncCommand(
+            (parameter, ct) => DeleteAttachmentAsync(parameter as TicketAttachmentViewModel, ct),
+            ex => DetailErrorText = TasksViewModel.DescribeError(ex),
+            parameter => parameter is TicketAttachmentViewModel && CanWriteTickets);
         LoadMoreHistoryCommand = new NativeAsyncCommand(
             (_, ct) => LoadMoreHistoryAsync(ct),
             ex =>
@@ -1540,18 +1650,28 @@ public sealed class TicketsViewModel : ObservableObject
 
     // ---- Режим просмотра: Список | Канбан | Дашборд ----
 
-    /// <summary>Текущий режим: list|kanban|dashboard (чипы в тулбаре).</summary>
+    /// <summary>Текущий режим: list|kanban|dashboard|admin (чипы в тулбаре).</summary>
     public string ViewMode
     {
         get => _viewMode;
         private set
         {
-            var normalized = value is ViewModeKanban or ViewModeDashboard ? value : ViewModeList;
+            var normalized = value is ViewModeKanban or ViewModeDashboard or ViewModeAdmin
+                ? value
+                : ViewModeList;
+            // «Управление» — только при tickets.write/admin: чип скрыт, но команда
+            // тоже отгейтована, чтобы не войти в панель до загрузки прав.
+            if (normalized == ViewModeAdmin && !CanWriteTickets)
+            {
+                normalized = ViewModeList;
+            }
+
             if (SetProperty(ref _viewMode, normalized))
             {
                 OnPropertyChanged(nameof(IsListMode));
                 OnPropertyChanged(nameof(IsKanbanMode));
                 OnPropertyChanged(nameof(IsDashboardMode));
+                OnPropertyChanged(nameof(IsAdminMode));
                 OnPropertyChanged(nameof(ShowSidePanel));
                 OnPropertyChanged(nameof(IsKanbanDetailOpen));
                 // Ленивая догрузка при входе в режим — данные оперативные, как у списка.
@@ -1562,6 +1682,11 @@ public sealed class TicketsViewModel : ObservableObject
                 else if (normalized == ViewModeDashboard)
                 {
                     _ = LoadDashboardSafelyAsync(CancellationToken.None);
+                }
+                else if (normalized == ViewModeAdmin)
+                {
+                    EnsureAdminCreated();
+                    _ = Admin!.LoadActiveTabSafelyAsync(CancellationToken.None);
                 }
             }
         }
@@ -1607,6 +1732,37 @@ public sealed class TicketsViewModel : ObservableObject
             }
         }
     }
+
+    /// <summary>Режим «Управление»: админские вкладки (объекты, сотрудники, импорт и т.д.).</summary>
+    public bool IsAdminMode
+    {
+        get => _viewMode == ViewModeAdmin;
+        set
+        {
+            if (value)
+            {
+                SelectViewModeCommand.Execute(ViewModeAdmin);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Панель «Управление» билетов; создаётся при первом входе в режим admin —
+    /// права уже загружены (чип виден только при tickets.write/admin).
+    /// </summary>
+    public TicketAdminViewModel? Admin
+    {
+        get => _admin;
+        private set
+        {
+            if (SetProperty(ref _admin, value))
+            {
+                OnPropertyChanged(nameof(HasAdmin));
+            }
+        }
+    }
+
+    public bool HasAdmin => Admin is not null;
 
     // ---- Канбан ----
 
@@ -1669,6 +1825,8 @@ public sealed class TicketsViewModel : ObservableObject
                 _detail.PropertyChanged -= Detail_PropertyChanged;
             }
 
+            // Взведённое «✕» относится к чипам старой карточки — снимаем.
+            _armedAttachmentDelete = null;
             if (SetProperty(ref _detail, value))
             {
                 if (value is not null)
@@ -1833,6 +1991,35 @@ public sealed class TicketsViewModel : ObservableObject
     /// </summary>
     public Func<IReadOnlyList<string>>? CreateFilePicker { get; set; }
 
+    /// <summary>
+    /// Шов выбора файлов для «📎 Прикрепить» карточки (тот же OpenFileDialog,
+    /// что у CreateFilePicker): view ставит диалог, тесты — заглушку с путями.
+    /// </summary>
+    public Func<IReadOnlyList<string>>? DetailFilePicker { get; set; }
+
+    /// <summary>
+    /// Право tickets.write — «📎 Прикрепить» в карточке и «✕» у чипов вложений.
+    /// Узнаём из /auth/me один раз при первой карточке (матрица как у веба:
+    /// admin — всегда; ошибка /me → false, карточка не ломается).
+    /// </summary>
+    public bool CanWriteTickets
+    {
+        get => _canWriteTickets;
+        private set
+        {
+            if (SetProperty(ref _canWriteTickets, value))
+            {
+                if (Detail is { } detail)
+                {
+                    detail.CanWrite = value;
+                }
+
+                ((NativeAsyncCommand)AttachDetailFilesCommand).RaiseCanExecuteChanged();
+                ((NativeAsyncCommand)DeleteAttachmentCommand).RaiseCanExecuteChanged();
+            }
+        }
+    }
+
     /// <summary>Инфо-плашка (результат смены статуса) — зелёная, закрываемая.</summary>
     public string? StatusInfoText
     {
@@ -1874,6 +2061,8 @@ public sealed class TicketsViewModel : ObservableObject
     public ICommand SendCommentCommand { get; }
     public ICommand ChangeStatusCommand { get; }
     public ICommand OpenAttachmentCommand { get; }
+    public ICommand AttachDetailFilesCommand { get; }
+    public ICommand DeleteAttachmentCommand { get; }
     public ICommand LoadMoreHistoryCommand { get; }
     public ICommand DismissBannerCommand { get; }
     public ICommand DismissStatusCommand { get; }
@@ -1901,7 +2090,8 @@ public sealed class TicketsViewModel : ObservableObject
 
     /// <summary>
     /// Первичная загрузка/обновление: в режиме списка — справочник объектов и
-    /// первая страница; в канбане/дашборде «Обновить» перечитывает их данные.
+    /// первая страница; в канбане/дашборде «Обновить» перечитывает их данные,
+    /// в режиме «Управление» — активную вкладку админки.
     /// </summary>
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -1917,9 +2107,18 @@ public sealed class TicketsViewModel : ObservableObject
             return;
         }
 
+        if (IsAdminMode)
+        {
+            EnsureAdminCreated();
+            await Admin!.LoadActiveTabSafelyAsync(cancellationToken);
+            return;
+        }
+
         IsLoading = true;
         try
         {
+            // Права грузим сразу — от них зависит видимость чипа «Управление».
+            await EnsurePermissionsAsync(cancellationToken);
             await LoadObjectsSafelyAsync(cancellationToken);
             await LoadListPageAsync(page: 1, replace: true, cancellationToken);
             LastUpdatedText = $"Обновлено {DateTime.Now:HH:mm}";
@@ -2018,6 +2217,12 @@ public sealed class TicketsViewModel : ObservableObject
         if (IsDashboardMode)
         {
             // У сводки параметров нет — фильтры в этом режиме скрыты.
+            return;
+        }
+
+        if (IsAdminMode)
+        {
+            // У админки собственные фильтры внутри вкладок — верхние её не трогают.
             return;
         }
 
@@ -2273,6 +2478,8 @@ public sealed class TicketsViewModel : ObservableObject
         DetailErrorText = null;
         try
         {
+            // Право tickets.write — до карточки, чтобы 📎/✕ были сразу.
+            await EnsurePermissionsAsync(cancellation.Token);
             var request = await _api.GetTicketRequestAsync(requestId, cancellation.Token);
             if (_selectedRequestId != requestId)
             {
@@ -2281,11 +2488,12 @@ public sealed class TicketsViewModel : ObservableObject
 
             if (Detail is null || Detail.Id != requestId)
             {
-                Detail = new TicketDetailViewModel(request);
+                Detail = new TicketDetailViewModel(request) { CanWrite = CanWriteTickets };
             }
             else
             {
                 Detail.Update(request);
+                Detail.CanWrite = CanWriteTickets;
             }
 
             // Лента и вложения — отдельными запросами; backend при смене статуса
@@ -2600,6 +2808,186 @@ public sealed class TicketsViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Право tickets.write узнаём один раз из /auth/me — как EnsurePermissionsAsync
+    /// базы (admin видит всё, иначе явное право). Ошибка /me → без кнопок, карточка жива.
+    /// </summary>
+    private async Task EnsurePermissionsAsync(CancellationToken cancellationToken)
+    {
+        if (_permissionsLoaded)
+        {
+            return;
+        }
+
+        _permissionsLoaded = true;
+        try
+        {
+            var user = await _api.GetCurrentUserAsync(cancellationToken);
+            var isAdmin = string.Equals(user.Role?.Trim(), "admin", StringComparison.OrdinalIgnoreCase);
+            _isTicketAdmin = isAdmin;
+            CanWriteTickets = isAdmin || user.Permissions?.Contains(TicketsWritePermission) == true;
+            // admin в вебе видит все персональные поля (hasPermission → true для admin).
+            _canReadPersonal = isAdmin
+                || user.Permissions?.Contains(TicketsPersonalReadPermission) == true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            CanWriteTickets = false;
+        }
+    }
+
+    /// <summary>
+    /// «📎 Прикрепить» в карточке: те же лимиты backend'а, что у формы создания
+    /// (расширения, 20 МБ, ≤10 файлов на заявку); каждый файл — POST …/attachments,
+    /// чип дописывается в секцию. Сбои — текстом в карточке, карточка жива.
+    /// </summary>
+    private async Task AttachDetailFilesAsync(CancellationToken cancellationToken)
+    {
+        var detail = Detail;
+        if (detail is null || !detail.CanAttach)
+        {
+            return;
+        }
+
+        var paths = DetailFilePicker?.Invoke() ?? [];
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        DetailErrorText = null;
+        detail.IsAttachmentBusy = true;
+        var failed = new List<string>();
+        try
+        {
+            foreach (var rawPath in paths)
+            {
+                var path = rawPath?.Trim();
+                if (string.IsNullOrEmpty(path))
+                {
+                    continue;
+                }
+
+                var name = Path.GetFileName(path);
+                var extension = Path.GetExtension(name);
+                if (!TicketCreateViewModel.AllowedFileExtensions.Contains(extension))
+                {
+                    failed.Add($"{name} (формат не поддерживается)");
+                    continue;
+                }
+
+                var size = File.Exists(path) ? new FileInfo(path).Length : -1;
+                if (size < 0)
+                {
+                    failed.Add($"{name} (файл недоступен)");
+                    continue;
+                }
+
+                if (size > TicketCreateViewModel.MaxFileSizeBytes)
+                {
+                    failed.Add($"{name} (больше 20 МБ)");
+                    continue;
+                }
+
+                if (detail.Attachments.Count >= TicketCreateViewModel.MaxFiles)
+                {
+                    failed.Add($"{name} (не больше {TicketCreateViewModel.MaxFiles} файлов на заявку)");
+                    break;
+                }
+
+                try
+                {
+                    await using var stream = new FileStream(
+                        path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, true);
+                    var uploaded = await _api.UploadTicketAttachmentAsync(
+                        detail.Id, name, stream, "other", cancellationToken);
+                    detail.AppendAttachment(uploaded);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    failed.Add($"{name} ({TasksViewModel.DescribeError(exception)})");
+                }
+            }
+        }
+        finally
+        {
+            detail.IsAttachmentBusy = false;
+        }
+
+        if (failed.Count > 0)
+        {
+            DetailErrorText = "Не удалось загрузить: " + string.Join(", ", failed);
+        }
+    }
+
+    /// <summary>
+    /// «✕» у чипа: первое нажатие взводит подтверждение (как «Удалить» у отсутствий),
+    /// второе — DELETE …/attachments/{id} и локальное снятие чипа. Backend пишет
+    /// attachment_deleted в историю — ленту перечитываем.
+    /// </summary>
+    private async Task DeleteAttachmentAsync(
+        TicketAttachmentViewModel? item,
+        CancellationToken cancellationToken)
+    {
+        var detail = Detail;
+        if (item is null
+            || detail is null
+            || item.IsDeleteBusy
+            || string.IsNullOrEmpty(item.AttachmentId))
+        {
+            return;
+        }
+
+        if (!item.DeleteArmed)
+        {
+            ArmAttachmentDelete(item);
+            return;
+        }
+
+        item.DeleteArmed = false;
+        _armedAttachmentDelete = null;
+        item.IsDeleteBusy = true;
+        DetailErrorText = null;
+        try
+        {
+            await _api.DeleteTicketAttachmentAsync(detail.Id, item.AttachmentId, cancellationToken);
+            detail.Attachments.Remove(item);
+            // Запись attachment_deleted появится в истории — перечитываем ленту.
+            await LoadHistorySafelyAsync(detail.Id, page: 1, append: false, CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            DetailErrorText = TasksViewModel.DescribeError(exception);
+        }
+        finally
+        {
+            item.IsDeleteBusy = false;
+        }
+    }
+
+    /// <summary>Armed-нажатие только у одного чипа: новое снимает предыдущее.</summary>
+    private void ArmAttachmentDelete(TicketAttachmentViewModel item)
+    {
+        if (_armedAttachmentDelete is { } previous && !ReferenceEquals(previous, item))
+        {
+            previous.DeleteArmed = false;
+        }
+
+        _armedAttachmentDelete = item;
+        item.DeleteArmed = true;
+    }
+
     // ---- Создание заявки ----
 
     /// <summary>«＋ Новая заявка»: справочник объектов догружаем лениво, форма — поверх карточки.</summary>
@@ -2642,6 +3030,18 @@ public sealed class TicketsViewModel : ObservableObject
         Create = null;
     }
 
+    // ---- Панель «Управление» (режим admin) ----
+
+    /// <summary>
+    /// Ленивое создание админки: query-фабрика отдаёт текущие фильтры списка
+    /// для «Экспорт заявок», права копируются из /auth/me матрицы веба.
+    /// </summary>
+    private void EnsureAdminCreated()
+    {
+        Admin ??= new TicketAdminViewModel(_api, () => BuildQuery(1));
+        Admin.ConfigurePermissions(CanWriteTickets, _isTicketAdmin, _canReadPersonal);
+    }
+
     // ---- Служебное ----
 
     private void Detail_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -2649,6 +3049,7 @@ public sealed class TicketsViewModel : ObservableObject
         if (e.PropertyName is null
             or nameof(TicketDetailViewModel.CanSendComment)
             or nameof(TicketDetailViewModel.CanChangeStatus)
+            or nameof(TicketDetailViewModel.CanAttach)
             or nameof(TicketDetailViewModel.CanLoadMoreHistory))
         {
             RaiseCommandStates();
@@ -2659,6 +3060,8 @@ public sealed class TicketsViewModel : ObservableObject
     {
         (SendCommentCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (ChangeStatusCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (AttachDetailFilesCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (DeleteAttachmentCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (LoadMoreHistoryCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
     }
 
@@ -2688,6 +3091,12 @@ public sealed class TicketsViewModel : ObservableObject
         SetSelectedRequestId(null);
         Create = null;
         _objectsRaw = [];
+        _permissionsLoaded = false;
+        CanWriteTickets = false;
+        _isTicketAdmin = false;
+        _canReadPersonal = false;
+        Admin = null;
+        _armedAttachmentDelete = null;
         BannerErrorText = null;
         DetailErrorText = null;
         StatusInfoText = null;

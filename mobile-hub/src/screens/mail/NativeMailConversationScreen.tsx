@@ -10,6 +10,7 @@ import {
   getMailConversation,
   sendMailMessage,
   setMailConversationRead,
+  setMailMessageFlag,
   type MailAttachment,
   type MailConversationDetail,
   type MailMessageDetail,
@@ -42,6 +43,7 @@ import { downloadMailAttachment, downloadMailAttachmentPreviewPdf } from '../../
 import { nativeMailComposeDestination } from '../../mail/nativeMailFeature';
 import { buildNativeMailOutgoingHtml, composeVariantForMode, mailDateLabel, mailPreviewSender, mailSubject } from '../../mail/nativeMailModel';
 import { publishNativeMailUnreadDelta } from '../../mail/nativeMailUnreadEvents';
+import { stageNativeMailUnreadDelta } from '../../mail/nativeMailUnreadPending';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
@@ -57,16 +59,17 @@ function quickReplyIdempotencyKey(): string {
 }
 
 export function NativeMailConversationScreen() {
-  const params = useLocalSearchParams<{ conversationId?: string | string[]; messageId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[] }>();
+  const params = useLocalSearchParams<{ conversationId?: string | string[]; messageId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[]; folderScope?: string | string[] }>();
   const { user } = useAuth();
-  return <NativeMailConversationContent key={JSON.stringify([user?.id, first(params.mailboxId), first(params.conversationId), first(params.folder)])} />;
+  return <NativeMailConversationContent key={JSON.stringify([user?.id, first(params.mailboxId), first(params.conversationId), first(params.folder), first(params.folderScope)])} />;
 }
 
 function NativeMailConversationContent() {
-  const params = useLocalSearchParams<{ conversationId?: string | string[]; messageId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[] }>();
+  const params = useLocalSearchParams<{ conversationId?: string | string[]; messageId?: string | string[]; mailboxId?: string | string[]; folder?: string | string[]; folderScope?: string | string[] }>();
   const conversationId = first(params.conversationId);
   const mailboxId = first(params.mailboxId);
   const folder = first(params.folder) || 'inbox';
+  const folderScope = first(params.folderScope) === 'all' ? 'all' : 'current';
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -96,7 +99,7 @@ function NativeMailConversationContent() {
     setAllCollapsed(false);
     scrollPendingRef.current = true;
   }, [params.messageId]);
-  const snapshotKey = `${mailboxId}:${folder}:${conversationId}`;
+  const snapshotKey = `${mailboxId}:${folder}:${folderScope}:${conversationId}`;
 
   const requestRef = useRef(0);
   useLayoutEffect(() => () => { requestRef.current += 1; }, []);
@@ -134,7 +137,7 @@ function NativeMailConversationContent() {
     }
     try {
       const preferencesRequest = getNativeMailPreferences().catch(() => null);
-      const detail = await getMailConversation(conversationId, { mailboxId, folder, folderScope: 'current' });
+      const detail = await getMailConversation(conversationId, { mailboxId, folder, folderScope });
       if (!isCurrent()) return;
       setConversation(detail);
       setCachedAt(0);
@@ -143,11 +146,20 @@ function NativeMailConversationContent() {
       if (!isCurrent()) return;
       if (Number(detail.unread_count || 0) > 0 && viewPreferences?.mark_read_on_select === true && !offlineMode) {
         setConversation((current) => current ? { ...current, unread_count: 0, items: current.items.map((item) => ({ ...item, is_read: true })) } : current);
-        void setMailConversationRead(conversationId, true, { mailboxId, folder, folderScope: 'current' }).then((result) => {
+        void setMailConversationRead(conversationId, true, { mailboxId, folder, folderScope }).then((result) => {
           if (result.ok === false || Number(result.failed || 0) > 0) {
             throw new Error('Exchange не применил статус ко всем письмам переписки');
           }
-          if (folder === 'inbox') publishNativeMailUnreadDelta(-Math.max(0, Number(detail.unread_count || 0)), { mailboxId, folder });
+          const perFolder = new Map<string, number>();
+          for (const item of detail.items) {
+            if (item.is_read) continue;
+            const itemFolder = String(item.folder || folder);
+            perFolder.set(itemFolder, (perFolder.get(itemFolder) || 0) + 1);
+          }
+          perFolder.forEach((count, itemFolder) => {
+            if (itemFolder === 'inbox') publishNativeMailUnreadDelta(-count, { mailboxId, folder: itemFolder });
+            else stageNativeMailUnreadDelta(mailboxId, itemFolder, -count);
+          });
         }).catch(() => {
           if (!isCurrent()) return;
           setConversation((current) => current?.conversation_id === detail.conversation_id ? detail : current);
@@ -162,7 +174,7 @@ function NativeMailConversationContent() {
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [allowed, conversationId, folder, mailboxId, offlineMode, snapshotKey, user?.id]);
+  }, [allowed, conversationId, folder, folderScope, mailboxId, offlineMode, snapshotKey, user?.id]);
 
   useEffect(() => {
     void load();
@@ -330,7 +342,7 @@ function NativeMailConversationContent() {
     setReadStateBusy(true);
     setError('');
     try {
-      const result = await setMailConversationRead(conversationId, markRead, { mailboxId, folder, folderScope: 'current' });
+      const result = await setMailConversationRead(conversationId, markRead, { mailboxId, folder, folderScope });
       if (result.ok === false || Number(result.failed || 0) > 0) {
         throw new Error('Exchange не применил статус ко всем письмам переписки');
       }
@@ -339,17 +351,42 @@ function NativeMailConversationContent() {
         unread_count: markRead ? 0 : Math.max(1, Number(current.messages_count || current.items.length || 1)),
         items: current.items.map((item) => ({ ...item, is_read: markRead })),
       } : current);
-      if (folder === 'inbox') {
-        const previousUnread = Math.max(0, Number(conversation.unread_count || 0));
-        const nextUnread = markRead ? 0 : Math.max(1, Number(conversation.messages_count || conversation.items.length || 1));
-        publishNativeMailUnreadDelta(nextUnread - previousUnread, { mailboxId, folder });
+      const perFolder = new Map<string, number>();
+      for (const item of conversation.items) {
+        const itemFolder = String(item.folder || folder);
+        const delta = markRead ? (item.is_read ? 0 : -1) : (item.is_read ? 1 : 0);
+        if (delta) perFolder.set(itemFolder, (perFolder.get(itemFolder) || 0) + delta);
       }
+      perFolder.forEach((delta, itemFolder) => {
+        if (itemFolder === 'inbox') publishNativeMailUnreadDelta(delta, { mailboxId, folder: itemFolder });
+        else stageNativeMailUnreadDelta(mailboxId, itemFolder, delta);
+      });
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось изменить статус переписки.'));
     } finally {
       setReadStateBusy(false);
     }
-  }, [conversation, conversationId, folder, mailboxId, offlineMode, readStateBusy]);
+  }, [conversation, conversationId, folder, folderScope, mailboxId, offlineMode, readStateBusy]);
+
+  const toggleFlag = useCallback(async (message: MailMessageDetail) => {
+    if (!conversation || offlineMode) return;
+    const next = !message.is_flagged;
+    setConversation((current) => current ? {
+      ...current,
+      is_flagged: next || current.items.some((item) => item.id !== message.id && item.is_flagged),
+      items: current.items.map((item) => item.id === message.id ? { ...item, is_flagged: next } : item),
+    } : current);
+    try {
+      await setMailMessageFlag(message.id, next, String(message.mailbox_id || mailboxId));
+    } catch (cause) {
+      setConversation((current) => current ? {
+        ...current,
+        is_flagged: current.items.some((item) => item.id === message.id ? !next : item.is_flagged),
+        items: current.items.map((item) => item.id === message.id ? { ...item, is_flagged: !next } : item),
+      } : current);
+      setError(formatApiError(cause, 'Не удалось изменить пометку.'));
+    }
+  }, [conversation, mailboxId, offlineMode]);
 
   const sendQuickReply = useCallback(async (retryKey?: string): Promise<void> => {
     const body = quickReply.trim();
@@ -479,6 +516,18 @@ function NativeMailConversationContent() {
                       <Text numberOfLines={1} style={{ color: tokens.textSecondary }}>{mailDateLabel(message.received_at)}{message.is_read === false ? ' · Непрочитанное' : ''}</Text>
                       {message.id !== visibleMessageId && message.body_preview ? <Text numberOfLines={1} style={{ color: tokens.textSecondary }}>{message.body_preview}</Text> : null}
                     </View>
+                    <Pressable
+                      testID={`native-mail-star-${message.id}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={message.is_flagged ? 'Снять пометку со звёздочки' : 'Пометить звёздочкой'}
+                      accessibilityState={{ selected: Boolean(message.is_flagged), disabled: offlineMode }}
+                      disabled={offlineMode}
+                      hitSlop={8}
+                      onPress={(event) => { event.stopPropagation(); void toggleFlag(message); }}
+                      style={[styles.itemStar, { opacity: offlineMode ? 0.4 : 1 }]}
+                    >
+                      <MaterialCommunityIcons name={message.is_flagged ? 'star' : 'star-outline'} size={21} color={message.is_flagged ? '#f4b400' : tokens.iconMuted} />
+                    </Pressable>
                     <MaterialCommunityIcons name={message.id === visibleMessageId ? 'chevron-up' : 'chevron-down'} size={22} color={tokens.iconMuted} />
                   </Pressable>
                   {message.id === visibleMessageId ? <>
@@ -601,4 +650,5 @@ const styles = StyleSheet.create({
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
   replyAction: { flex: 1, minHeight: 60, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center', gap: 3 },
   replyText: { fontSize: 11, fontWeight: '800' },
+  itemStar: { alignSelf: 'center', paddingHorizontal: 6 },
 });

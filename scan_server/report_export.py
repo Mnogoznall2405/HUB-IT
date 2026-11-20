@@ -78,7 +78,13 @@ def _safe_text(value: Any) -> str:
         return ""
     if isinstance(value, (list, dict)):
         value = str(value)
-    return EXCEL_ILLEGAL_CONTROL_CHARACTERS_RE.sub("", str(value))
+    text = EXCEL_ILLEGAL_CONTROL_CHARACTERS_RE.sub("", str(value))
+    # Formula injection: a cell value starting with = + - @ is evaluated by
+    # Excel on open; openpyxl also treats a leading '=' as a formula. Prefix
+    # an apostrophe so the cell stays literal text.
+    if text[:1] in ("=", "+", "-", "@"):
+        text = "'" + text
+    return text
 
 
 def _append_excel_row(ws, row: Iterable[Any]) -> None:

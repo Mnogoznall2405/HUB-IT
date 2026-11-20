@@ -45,6 +45,8 @@ public sealed class StatisticsPcBranchRow
     public StatisticsPcBranchRow(HubPcCleaningBranchStat row)
     {
         ArgumentNullException.ThrowIfNull(row);
+        // Сырое имя филиала — параметр remaining-запроса (OrDash маскирует пустое).
+        RawBranch = row.Branch?.Trim() ?? string.Empty;
         Branch = MfuFormat.OrDash(row.Branch);
         TotalPcText = row.TotalPc.ToString(CultureInfo.InvariantCulture);
         CleanedPcText = row.CleanedPc.ToString(CultureInfo.InvariantCulture);
@@ -59,6 +61,7 @@ public sealed class StatisticsPcBranchRow
     }
 
     public string Branch { get; }
+    public string RawBranch { get; }
     public string TotalPcText { get; }
     public string CleanedPcText { get; }
     public string RemainingPcText { get; }
@@ -145,6 +148,9 @@ public sealed class StatisticsViewModel : ObservableObject
     /// <summary>Раздел «МФУ» виден только с правом mfu.read (canViewMfu веба).</summary>
     private const string MfuReadPermission = "mfu.read";
 
+    /// <summary>«Поставить чистку» в диалоге непочищенных — право database.write.</summary>
+    private const string DatabaseWritePermission = "database.write";
+
     internal static readonly MfuFilterItem Period30 = new("30", "30 дней");
     internal static readonly MfuFilterItem Period90 = new("90", "90 дней");
     internal static readonly MfuFilterItem Period180 = new("180", "180 дней");
@@ -167,6 +173,10 @@ public sealed class StatisticsViewModel : ObservableObject
     private bool _permissionsLoaded;
     private bool _canViewMfu;
     private bool _showMfuTab;
+
+    /// <summary>database.write — гейт «Чистка» в диалоге непочищенных ПК.</summary>
+    private bool _canWrite;
+    private PcRemainingViewModel? _pcRemaining;
 
     private string _selectedTab = "pc";
     private MfuFilterItem _selectedPeriod = Period90;
@@ -211,6 +221,13 @@ public sealed class StatisticsViewModel : ObservableObject
             },
             ex => BannerErrorText = TasksViewModel.DescribeError(ex));
         DismissBannerCommand = new NativeRelayCommand(() => BannerErrorText = null);
+        OpenPcRemainingCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is StatisticsPcBranchRow row && row.RawBranch.Length > 0)
+            {
+                OpenPcRemaining(row);
+            }
+        });
         PcBranches.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(HasPcBranches));
@@ -441,6 +458,69 @@ public sealed class StatisticsViewModel : ObservableObject
     public ICommand SelectTabCommand { get; }
     public ICommand SelectPeriodCommand { get; }
     public ICommand DismissBannerCommand { get; }
+    public ICommand OpenPcRemainingCommand { get; }
+
+    /// <summary>database.write из /auth/me — как canWrite у PcRemainingDialog веба.</summary>
+    public bool CanWrite
+    {
+        get => _canWrite;
+        private set => SetProperty(ref _canWrite, value);
+    }
+
+    /// <summary>Открытый диалог «Не почищены: {филиал}»; null — закрыт.</summary>
+    public PcRemainingViewModel? PcRemaining
+    {
+        get => _pcRemaining;
+        private set
+        {
+            if (SetProperty(ref _pcRemaining, value))
+            {
+                OnPropertyChanged(nameof(IsPcRemainingOpen));
+            }
+        }
+    }
+
+    public bool IsPcRemainingOpen => PcRemaining is not null;
+
+    /// <summary>
+    /// Клик по строке филиала — диалог непочищенных ПК (branchRow+periodDays веба).
+    /// </summary>
+    private void OpenPcRemaining(StatisticsPcBranchRow row)
+    {
+        if (PcRemaining is not null)
+        {
+            return;
+        }
+
+        var dialog = new PcRemainingViewModel(_api, row.RawBranch, PeriodDays, _canWrite);
+        dialog.Closed += PcRemaining_Closed;
+        dialog.CleaningSaved += PcRemaining_CleaningSaved;
+        PcRemaining = dialog;
+        dialog.Start();
+    }
+
+    private void PcRemaining_Closed(object? sender, EventArgs e)
+    {
+        ClosePcRemaining();
+    }
+
+    /// <summary>«Чистка поставлена» в диалоге — покрытие филиала меняется, раздел перечитываем.</summary>
+    private void PcRemaining_CleaningSaved(object? sender, EventArgs e)
+    {
+        _ = LoadAsync(CancellationToken.None);
+    }
+
+    private void ClosePcRemaining()
+    {
+        if (PcRemaining is { } dialog)
+        {
+            dialog.Closed -= PcRemaining_Closed;
+            dialog.CleaningSaved -= PcRemaining_CleaningSaved;
+            dialog.Close();
+        }
+
+        PcRemaining = null;
+    }
 
     /// <summary>Первичная загрузка/обновление активного раздела.</summary>
     public async Task LoadAsync(CancellationToken cancellationToken = default)
@@ -522,6 +602,8 @@ public sealed class StatisticsViewModel : ObservableObject
         {
             var user = await _api.GetCurrentUserAsync(cancellationToken);
             _canViewMfu = user.Permissions?.Contains(MfuReadPermission) == true;
+            var isAdmin = string.Equals(user.Role?.Trim(), "admin", StringComparison.OrdinalIgnoreCase);
+            CanWrite = isAdmin || user.Permissions?.Contains(DatabaseWritePermission) == true;
         }
         catch (OperationCanceledException)
         {
@@ -530,6 +612,7 @@ public sealed class StatisticsViewModel : ObservableObject
         catch (Exception)
         {
             _canViewMfu = false;
+            CanWrite = false;
         }
 
         ShowMfuTab = _canViewMfu;
@@ -783,6 +866,8 @@ public sealed class StatisticsViewModel : ObservableObject
         _permissionsLoaded = false;
         _canViewMfu = false;
         ShowMfuTab = false;
+        CanWrite = false;
+        ClosePcRemaining();
         _allPcBranches = [];
         _allLocations = [];
         MetricCards.Clear();
@@ -800,4 +885,384 @@ public sealed class StatisticsViewModel : ObservableObject
         SelectedTab = "pc";
         IsLoading = false;
     }
+}
+
+/// <summary>Строка списка непочищенных ПК (remaining_pcs — PcRemainingDialog веба).</summary>
+public sealed class PcRemainingRowViewModel
+{
+    public PcRemainingRowViewModel(HubPcCleaningRemainingPc row)
+    {
+        ArgumentNullException.ThrowIfNull(row);
+        Row = row;
+        InvNoText = NullIfEmpty(row.InvNo) ?? "-";
+        SerialText = NullIfEmpty(row.SerialNo) ?? NullIfEmpty(row.HwSerialNo) ?? "-";
+        ModelText = NullIfEmpty(row.ModelName) ?? "-";
+        LocationText = NullIfEmpty(row.Location) ?? "-";
+        EmployeeText = NullIfEmpty(row.Employee) ?? "-";
+        LastCleanedText = FormatLastCleanedAt(row.LastCleanedAt);
+        // Чип веба: дата — warning, «Не чистили» — error.
+        LastCleanedTone = NullIfEmpty(row.LastCleanedAt) is not null ? "warning" : "error";
+        CanClean = SerialText != "-";
+        AutomationName = $"ПК {InvNoText} {SerialText}".Trim();
+    }
+
+    /// <summary>Сырая запись — источник полей POST чистки.</summary>
+    internal HubPcCleaningRemainingPc Row { get; }
+
+    public string InvNoText { get; }
+    public string SerialText { get; }
+    public string ModelText { get; }
+    public string LocationText { get; }
+    public string EmployeeText { get; }
+    public string LastCleanedText { get; }
+    public string LastCleanedTone { get; }
+
+    /// <summary>«Чистка» доступна только с серийником (canClean веба).</summary>
+    public bool CanClean { get; }
+    public string AutomationName { get; }
+
+    /// <summary>Substring-поиск веба по inv/serial/hw/location/model/employee.</summary>
+    internal bool MatchesFilter(string needle)
+    {
+        var haystack = string.Join(' ', new[]
+        {
+            Row.InvNo, Row.SerialNo, Row.HwSerialNo, Row.Location, Row.ModelName, Row.Employee,
+        });
+        return haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>formatLastCleanedAt веба: пусто → «Не чистили», иначе локальная дата.</summary>
+    private static string FormatLastCleanedAt(string? value)
+    {
+        var text = NullIfEmpty(value);
+        if (text is null)
+        {
+            return "Не чистили";
+        }
+
+        return DateTimeOffset.TryParse(
+            text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
+            ? parsed.ToLocalTime().ToString("dd.MM.yyyy, HH:mm:ss", CultureInfo.CurrentCulture)
+            : text;
+    }
+
+    internal static string? NullIfEmpty(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}
+
+/// <summary>
+/// Диалог «Не почищены: {филиал}» — порт PcRemainingDialog веб-статистики:
+/// список ПК филиала без чистки за период с клиентским фильтром, колонка
+/// «Чистка» при database.write и подтверждением записи в журнал.
+/// </summary>
+public sealed class PcRemainingViewModel : ObservableObject
+{
+    private readonly IHubApiClient _api;
+    private readonly string _branch;
+    private readonly int _periodDays;
+    private CancellationTokenSource? _loadCancellation;
+    private List<PcRemainingRowViewModel> _allItems = [];
+    private string _queryText = string.Empty;
+    private bool _isLoading;
+    private string? _errorText;
+    private int _remainingPc;
+    private int _totalPc;
+    private string _summaryText = string.Empty;
+    private PcRemainingRowViewModel? _confirmRow;
+    private bool _isSubmitting;
+    private string? _confirmErrorText;
+    private bool _closed;
+
+    public PcRemainingViewModel(IHubApiClient api, string branch, int periodDays, bool canWrite)
+    {
+        _api = api ?? throw new ArgumentNullException(nameof(api));
+        _branch = branch;
+        _periodDays = periodDays;
+        CanWrite = canWrite;
+        TitleText = "Не почищены: " + branch;
+
+        CloseCommand = new NativeRelayCommand(RequestClose);
+        RequestCleanCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is PcRemainingRowViewModel row && row.CanClean && !IsSubmitting)
+            {
+                ConfirmRow = row;
+            }
+        });
+        ConfirmCleanCommand = new NativeAsyncCommand(
+            (_, ct) => ConfirmCleanAsync(ct),
+            ex =>
+            {
+                if (ex is not OperationCanceledException)
+                {
+                    ConfirmErrorText = TasksViewModel.DescribeError(ex);
+                }
+            });
+        CancelConfirmCommand = new NativeRelayCommand(
+            () => ConfirmRow = null, () => !IsSubmitting);
+        Items.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HasItems));
+            OnPropertyChanged(nameof(ShowEmpty));
+        };
+    }
+
+    /// <summary>Закрытие диалога (✕/Закрыть/Esc) — решает родитель.</summary>
+    public event EventHandler? Closed;
+
+    /// <summary>Чистка поставлена — родитель перечитывает покрытие раздела.</summary>
+    public event EventHandler? CleaningSaved;
+
+    public string TitleText { get; }
+    public bool CanWrite { get; }
+
+    public ObservableCollection<PcRemainingRowViewModel> Items { get; } = [];
+    public bool HasItems => Items.Count > 0;
+
+    /// <summary>Поиск по инв. №, серийнику, локации или сотруднику (filterRemainingPcs).</summary>
+    public string QueryText
+    {
+        get => _queryText;
+        set
+        {
+            if (SetProperty(ref _queryText, value ?? string.Empty))
+            {
+                ApplyFilter();
+            }
+        }
+    }
+
+    public bool IsLoading
+    {
+        get => _isLoading;
+        private set
+        {
+            if (SetProperty(ref _isLoading, value))
+            {
+                OnPropertyChanged(nameof(ShowEmpty));
+            }
+        }
+    }
+
+    public string? ErrorText
+    {
+        get => _errorText;
+        private set
+        {
+            if (SetProperty(ref _errorText, value))
+            {
+                OnPropertyChanged(nameof(HasError));
+                OnPropertyChanged(nameof(ShowEmpty));
+            }
+        }
+    }
+
+    public bool HasError => !string.IsNullOrEmpty(ErrorText);
+    public bool ShowEmpty => !IsLoading && !HasError && Items.Count == 0;
+
+    /// <summary>«{remaining} из {total} ПК без чистки за выбранный период».</summary>
+    public string SummaryText
+    {
+        get => _summaryText;
+        private set => SetProperty(ref _summaryText, value);
+    }
+
+    /// <summary>Текст пустого состояния — emptyMessage веб-диалога.</summary>
+    public string EmptyText =>
+        _allItems.Count == 0 && _remainingPc > 0
+            ? "Список ПК не пришёл с сервера, хотя по покрытию ещё есть непочищенные."
+            : _allItems.Count == 0
+                ? "За выбранный период все ПК этого филиала почищены"
+                : "Нет ПК по выбранному фильтру";
+
+    /// <summary>Строка подтверждения «Поставить чистку?»; null — закрыта.</summary>
+    public PcRemainingRowViewModel? ConfirmRow
+    {
+        get => _confirmRow;
+        private set
+        {
+            if (SetProperty(ref _confirmRow, value))
+            {
+                ConfirmErrorText = null;
+                OnPropertyChanged(nameof(IsConfirmOpen));
+                OnPropertyChanged(nameof(ConfirmText));
+            }
+        }
+    }
+
+    public bool IsConfirmOpen => ConfirmRow is not null;
+
+    /// <summary>«Зарегистрировать чистку ПК {inv|serial} ({model})?».</summary>
+    public string ConfirmText => ConfirmRow is { } row
+        ? $"Зарегистрировать чистку ПК {row.Row.InvNo ?? row.SerialText}"
+            + (row.ModelText != "-" ? $" ({row.ModelText})" : string.Empty) + "?"
+        : string.Empty;
+
+    public bool IsSubmitting
+    {
+        get => _isSubmitting;
+        private set
+        {
+            if (SetProperty(ref _isSubmitting, value))
+            {
+                OnPropertyChanged(nameof(ConfirmButtonText));
+                ((NativeRelayCommand)CancelConfirmCommand).RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public string ConfirmButtonText => IsSubmitting ? "Сохранение..." : "Поставить";
+
+    /// <summary>Ошибка постановки чистки — внутри подтверждения (как Alert веба).</summary>
+    public string? ConfirmErrorText
+    {
+        get => _confirmErrorText;
+        private set
+        {
+            if (SetProperty(ref _confirmErrorText, value))
+            {
+                OnPropertyChanged(nameof(HasConfirmError));
+            }
+        }
+    }
+
+    public bool HasConfirmError => !string.IsNullOrEmpty(ConfirmErrorText);
+
+    public ICommand CloseCommand { get; }
+    public ICommand RequestCleanCommand { get; }
+    public ICommand ConfirmCleanCommand { get; }
+    public ICommand CancelConfirmCommand { get; }
+
+    /// <summary>Старт загрузки списка (reloadRemaining веба при open).</summary>
+    internal void Start()
+    {
+        _loadCancellation?.Cancel();
+        _loadCancellation = new CancellationTokenSource();
+        _ = LoadSafelyAsync(_loadCancellation.Token);
+    }
+
+    /// <summary>Закрытие со стороны родителя: отмена in-flight запроса.</summary>
+    internal void Close()
+    {
+        _closed = true;
+        _loadCancellation?.Cancel();
+    }
+
+    private async Task LoadSafelyAsync(CancellationToken cancellationToken)
+    {
+        IsLoading = true;
+        ErrorText = null;
+        try
+        {
+            var data = await _api.GetPcCleaningRemainingAsync(_periodDays, _branch, cancellationToken);
+            if (_closed || cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _remainingPc = data.RemainingPc;
+            _totalPc = data.TotalPc;
+            _allItems = (data.RemainingPcs ?? [])
+                .Select(row => new PcRemainingRowViewModel(row))
+                .ToList();
+            ApplyFilter();
+            SummaryText = $"{_remainingPc} из {_totalPc} ПК без чистки за выбранный период";
+            OnPropertyChanged(nameof(EmptyText));
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (_allItems.Count == 0)
+            {
+                ErrorText = TasksViewModel.DescribeError(exception);
+            }
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+
+    /// <summary>filterRemainingPcs веба: substring по inv/serial/hw/location/model/employee.</summary>
+    private void ApplyFilter()
+    {
+        var needle = _queryText.Trim();
+        Items.Clear();
+        foreach (var row in _allItems)
+        {
+            if (needle.Length == 0 || row.MatchesFilter(needle))
+            {
+                Items.Add(row);
+            }
+        }
+
+        OnPropertyChanged(nameof(EmptyText));
+    }
+
+    /// <summary>
+    /// «Поставить чистку»: POST /json/works/cleaning с полями строки
+    /// (buildPcCleaningPayload веба), затем строка уходит из списка и счётчик
+    /// уменьшается — родитель перечитывает статистику по CleaningSaved.
+    /// </summary>
+    private async Task ConfirmCleanAsync(CancellationToken cancellationToken)
+    {
+        if (ConfirmRow is not { } row || IsSubmitting)
+        {
+            return;
+        }
+
+        var serial = PcRemainingRowViewModel.NullIfEmpty(row.Row.SerialNo)
+            ?? PcRemainingRowViewModel.NullIfEmpty(row.Row.HwSerialNo);
+        if (serial is null)
+        {
+            ConfirmErrorText = "У ПК нет серийного номера — чистку поставить нельзя";
+            return;
+        }
+
+        IsSubmitting = true;
+        ConfirmErrorText = null;
+        try
+        {
+            await _api.RegisterCleaningWorkAsync(
+                new HubCleaningWorkRequest
+                {
+                    SerialNumber = serial,
+                    Employee = PcRemainingRowViewModel.NullIfEmpty(row.Row.Employee) ?? "Не указан",
+                    Branch = _branch,
+                    Location = PcRemainingRowViewModel.NullIfEmpty(row.Row.Location) ?? "Не указано",
+                    InvNo = PcRemainingRowViewModel.NullIfEmpty(row.Row.InvNo),
+                    EquipmentId = row.Row.EquipmentId is > 0 ? row.Row.EquipmentId : null,
+                    CurrentDescription = PcRemainingRowViewModel.NullIfEmpty(row.Row.CurrentDescription),
+                    HwSerialNo = PcRemainingRowViewModel.NullIfEmpty(row.Row.HwSerialNo),
+                    ModelName = PcRemainingRowViewModel.NullIfEmpty(row.Row.ModelName),
+                    Manufacturer = PcRemainingRowViewModel.NullIfEmpty(row.Row.Manufacturer),
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            ConfirmErrorText = TasksViewModel.DescribeError(exception);
+            return;
+        }
+        finally
+        {
+            IsSubmitting = false;
+        }
+
+        _allItems.Remove(row);
+        Items.Remove(row);
+        _remainingPc = Math.Max(0, _remainingPc - 1);
+        SummaryText = $"{_remainingPc} из {_totalPc} ПК без чистки за выбранный период";
+        OnPropertyChanged(nameof(EmptyText));
+        ConfirmRow = null;
+        CleaningSaved?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void RequestClose() => Closed?.Invoke(this, EventArgs.Empty);
 }

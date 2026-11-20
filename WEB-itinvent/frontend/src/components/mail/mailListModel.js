@@ -16,6 +16,7 @@ export const createEmptyListData = () => ({
   loaded_pages: 0,
   search_limited: false,
   searched_window: 0,
+  skipped_folders: 0,
 });
 
 export const buildMailBootstrapCacheKey = ({ scope, limit = DEFAULT_MAIL_BOOTSTRAP_LIMIT }) => [
@@ -183,6 +184,7 @@ export const normalizeMailListResponse = (payload = {}, fallbackItems = []) => (
   ),
   search_limited: Boolean(payload?.search_limited),
   searched_window: Number(payload?.searched_window || 0),
+  skipped_folders: Number(payload?.skipped_folders || 0),
 });
 
 export const isExpandedMailListData = (value) => {

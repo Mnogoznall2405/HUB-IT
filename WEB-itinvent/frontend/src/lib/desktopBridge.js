@@ -39,6 +39,12 @@ const MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE = 'mail.composeWindow.sent';
 const MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE = 'mail.composeWindow.completed';
 const WORKSPACE_WINDOW_OPEN_MESSAGE_TYPE = 'workspace.window.open';
 const WORKSPACE_WINDOW_RESULT_MESSAGE_TYPE = 'workspace.window.result';
+const WORKSPACE_CHROME_MESSAGE_TYPE = 'workspace.chrome';
+const WORKSPACE_CHROME_COMMAND_MESSAGE_TYPE = 'workspace.chrome.command';
+const MAXIMUM_WORKSPACE_DOCUMENTS = 16;
+const MAXIMUM_WORKSPACE_DOCUMENT_TITLE_LENGTH = 128;
+const WORKSPACE_DOCUMENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
+const WORKSPACE_CHROME_COMMANDS = new Set(['activate', 'close', 'history']);
 const FILE_SHARED_MESSAGE_TYPE = 'file.shared';
 const MICROPHONE_DIAGNOSE_MESSAGE_TYPE = 'media.microphoneDiagnose';
 const MICROPHONE_DIAGNOSIS_MESSAGE_TYPE = 'media.microphoneDiagnosis';
@@ -107,6 +113,8 @@ export const DESKTOP_MICROPHONE_DIAGNOSTICS_CAPABILITY = 'microphone-diagnostics
 const MAXIMUM_NOTIFICATION_GROUP_LENGTH = 64;
 const NOTIFICATION_GROUP_PATTERN = /^(?:chat|task):[A-Za-z0-9._:-]{1,59}$/u;
 export const DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT = 'itinvent:desktop-mail-compose-completed';
+export const DESKTOP_WORKSPACE_CHROME_CAPABILITY = 'workspace-chrome';
+export const DESKTOP_WORKSPACE_CHROME_COMMAND_EVENT = 'itinvent:desktop-workspace-chrome-command';
 export const DESKTOP_SYSTEM_RESUME_EVENT = 'desktop.system.resume';
 export const DESKTOP_NETWORK_CHANGED_EVENT = 'desktop.network.changed';
 export const DESKTOP_SHARED_FILES_EVENT = 'itinvent:desktop-shared-files';
@@ -515,6 +523,49 @@ const isValidWorkspaceEditorRoute = (route) => (
   isValidRoute(route) && /^\/my-files\/edit\/[A-Za-z0-9_-]{1,64}$/u.test(route)
 );
 
+const isValidWorkspaceChromeDocument = (entry) => (
+  entry
+  && typeof entry === 'object'
+  && !Array.isArray(entry)
+  && Object.keys(entry).length === 3
+  && WORKSPACE_DOCUMENT_ID_PATTERN.test(entry.id)
+  && typeof entry.title === 'string'
+  && entry.title.length <= MAXIMUM_WORKSPACE_DOCUMENT_TITLE_LENGTH
+  && !CONTROL_CHARACTER_PATTERN.test(entry.title)
+  && typeof entry.dirty === 'boolean'
+);
+
+const isValidWorkspaceChromeState = (state) => (
+  state
+  && typeof state === 'object'
+  && !Array.isArray(state)
+  && Array.isArray(state.documents)
+  && state.documents.length <= MAXIMUM_WORKSPACE_DOCUMENTS
+  && state.documents.every(isValidWorkspaceChromeDocument)
+  && typeof state.activeId === 'string'
+  && state.activeId.length <= 64
+  && (!state.activeId || WORKSPACE_DOCUMENT_ID_PATTERN.test(state.activeId))
+  && (!state.activeId || state.documents.some(document => document.id === state.activeId))
+  && typeof state.history === 'boolean'
+);
+
+// Команда нативной полосы: history идёт без id, activate/close — с id вкладки.
+const isValidWorkspaceChromeCommandMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  const expected = message.command === 'history' ? 3 : 4;
+  if (
+    keys.length !== expected
+    || !keys.includes('type')
+    || !keys.includes('version')
+    || !keys.includes('command')
+    || message.type !== WORKSPACE_CHROME_COMMAND_MESSAGE_TYPE
+    || message.version !== DESKTOP_BRIDGE_PROTOCOL_VERSION
+    || !WORKSPACE_CHROME_COMMANDS.has(message.command)
+  ) return false;
+  return message.command === 'history' || WORKSPACE_DOCUMENT_ID_PATTERN.test(message.id);
+};
+
 const isValidWorkspaceWindowResult = (message) => {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   const keys = Object.keys(message);
@@ -776,6 +827,13 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
         return;
       }
 
+      if (bridgeReady && isValidWorkspaceChromeCommandMessage(message)) {
+        window.dispatchEvent(new CustomEvent(DESKTOP_WORKSPACE_CHROME_COMMAND_EVENT, {
+          detail: { command: message.command, id: message.id || '' },
+        }));
+        return;
+      }
+
       if (bridgeReady && isValidMailComposeWindowResult(message)) {
         const pending = pendingMailComposeWindowRequest;
         if (pending && pending.requestId === message.requestId) {
@@ -884,6 +942,30 @@ export function syncDesktopQuickRoutes(routes) {
 
   pendingDesktopQuickRoutes = null;
   return true;
+}
+
+/** Снимок вкладочной полосы workspace → нативная шапка второго окна. */
+export function syncDesktopWorkspaceChrome(state) {
+  if (!isDesktopCapabilityAvailable(DESKTOP_WORKSPACE_CHROME_CAPABILITY)) return false;
+  if (!isValidWorkspaceChromeState(state)) return false;
+
+  const message = {
+    type: WORKSPACE_CHROME_MESSAGE_TYPE,
+    version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+    documents: state.documents,
+    activeId: state.activeId,
+    history: state.history,
+  };
+  if (JSON.stringify(message).length > MAXIMUM_INBOUND_MESSAGE_LENGTH) return false;
+
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage(message);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getDesktopWindowForeground() {

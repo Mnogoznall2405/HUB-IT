@@ -50,7 +50,7 @@ export function createMailTrashUndoNotifier({
       .map((id) => String(id || '').trim())
       .filter(Boolean);
     const n = Math.max(ids.length, Number(count) || 0, 1);
-    const targetFolder = String(restoreFolder || 'inbox');
+    const payload = restoreFolder ? { target_folder: String(restoreFolder) } : {};
     const options = {
       durationMs: MAIL_TRASH_UNDO_DURATION_MS,
     };
@@ -63,7 +63,7 @@ export function createMailTrashUndoNotifier({
           for (const id of ids) {
             await mailAPI?.restoreMessage?.(
               id,
-              withActiveMailboxPayload?.({ target_folder: targetFolder }) || { target_folder: targetFolder },
+              withActiveMailboxPayload?.(payload) || payload,
             );
           }
           await afterUndo?.();

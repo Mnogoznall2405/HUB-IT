@@ -59,6 +59,25 @@ public sealed class ScanPatternTests : IDisposable
     }
 
     [Fact]
+    public void NonSecrecyDspContextsAreNotReported()
+    {
+        var engine = ScanPatternEngine.Load(WritePatterns(), _log);
+        var samples = new[]
+        {
+            "направлено письмо исх. № ГФ/КАС-480 ДСП от 30.06.2026",
+            "запрос Исх. ФКП/СФ/628 дсп от 25.05.26",
+            "светодиодные светильники ДСП-40 40Вт, установленные",
+            "Ведомость материалов: ДСП, железобетон, перекрытие, 3 этаж",
+        };
+
+        foreach (var sample in samples)
+        {
+            var matches = engine.Scan(sample, null);
+            Assert.DoesNotContain(matches, item => TextOf(item, "pattern") == "dsp_with_exclusion");
+        }
+    }
+
+    [Fact]
     public void PasswordPatternFindsCredentialAndSnippet()
     {
         var engine = ScanPatternEngine.Load(WritePatterns(), _log);

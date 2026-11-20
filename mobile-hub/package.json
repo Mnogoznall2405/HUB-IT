@@ -1,8 +1,8 @@
 {
   "name": "mobile-hub",
-  "version": "1.1.82",
+  "version": "1.1.84",
   "hubit": {
-    "androidVersionCode": 84
+    "androidVersionCode": 86
   },
   "main": "expo-router/entry",
   "scripts": {

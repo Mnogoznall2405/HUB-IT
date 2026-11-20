@@ -23,7 +23,7 @@
     <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
     <AssemblyName>HUB.Desktop</AssemblyName>
     <RootNamespace>Hub.Desktop</RootNamespace>
-    <Version>0.1.50</Version>
+    <Version>0.1.51</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'PerfBench'">
@@ -45,6 +45,10 @@
   <ItemGroup>
     <Resource Include="Assets\hub-icon.ico" />
     <Content Include="Assets\hub-icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- Цветные Twemoji-иконки для самостоятельных эмодзи UI (см. Assets\Emoji\NOTICE). -->
+    <Content Include="Assets\Emoji\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <None Update="appsettings.json">

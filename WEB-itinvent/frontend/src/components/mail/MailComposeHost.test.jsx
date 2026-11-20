@@ -385,6 +385,34 @@ describe('MailComposeHost', () => {
     expect(storedDraft.saved_at).toBeTruthy();
   });
 
+  it('keeps unsaved attachments in the editor if saving on close fails', async () => {
+    const onCloseSession = vi.fn();
+    mockSaveDraftMultipart.mockRejectedValueOnce(new Error('offline'));
+    renderHost({
+      onCloseSession,
+      session: {
+        id: 23,
+        initialState: {
+          composeSubject: 'Draft with file',
+          composeFiles: [new File(['report'], 'report.txt')],
+        },
+      },
+    });
+
+    fireEvent.click(await screen.findByTestId('mail-compose-host-close'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(screen.getByTestId('mail-compose-host-dialog'))
+      .toHaveAttribute('data-compose-error', expect.stringMatching(/вложения не сохранены/i)));
+    expect(onCloseSession).not.toHaveBeenCalled();
+    expect(screen.getByTestId('mail-compose-host-dialog')).toHaveAttribute('data-compose-files', 'report.txt');
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-close'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Сохранить' }));
+    await waitFor(() => expect(onCloseSession).toHaveBeenCalledTimes(1));
+    expect(mockSaveDraftMultipart.mock.calls[1][0].files[0].name).toBe('report.txt');
+  });
+
   it('discards an existing draft when the user declines saving on close', async () => {
     const onCloseSession = vi.fn();
 

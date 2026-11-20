@@ -25,6 +25,70 @@
                 <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
                 <Setter Property="TextWrapping" Value="Wrap" />
             </Style>
+
+            <!-- Строка разреза аналитики: имя+мета | счёт, под ними полоска доли от максимума секции. -->
+            <DataTemplate x:Key="AnalyticsRowTemplate">
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal"
+                                VerticalAlignment="Center">
+                        <TextBlock MaxWidth="280"
+                                   FontSize="13"
+                                   Text="{Binding Title}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Margin="8,0,0,0"
+                                   VerticalAlignment="Bottom"
+                                   FontSize="11"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="{Binding MetaText}"
+                                   TextTrimming="CharacterEllipsis"
+                                   Visibility="{Binding MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="1"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               Style="{StaticResource HubToneTextStyle}"
+                               local:HubTone.Value="{Binding Tone}"
+                               Text="{Binding ValueText}" />
+                    <ProgressBar Grid.Row="1"
+                                 Grid.ColumnSpan="2"
+                                 Margin="0,5,0,0"
+                                 Height="6"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="{Binding Percent, Mode=OneWay}"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}" />
+                </Grid>
+            </DataTemplate>
+
+            <!-- Чип выбранного фильтра аналитики: клик убирает значение. -->
+            <DataTemplate x:Key="AnalyticsChipTemplate">
+                <Button Margin="0,6,8,0"
+                        MinHeight="26"
+                        Padding="8,2"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding DataContext.RemoveFilterCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                        CommandParameter="{Binding}"
+                        ToolTip="Убрать фильтр"
+                        AutomationProperties.Name="{Binding Title, StringFormat='Убрать фильтр {0}'}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontSize="12"
+                                   Text="{Binding Title}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Margin="6,0,0,0"
+                                   FontSize="12"
+                                   Text="✕" />
+                    </StackPanel>
+                </Button>
+            </DataTemplate>
             <!-- Мета-значение с цветом по тону (приоритет в деталях). -->
             <Style x:Key="MetaToneValueStyle" TargetType="TextBlock" BasedOn="{StaticResource HubToneTextStyle}">
                 <Setter Property="FontSize" Value="13" />
@@ -42,14 +106,16 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Верхняя панель: поиск, обновить -->
+        <!-- Верхняя панель: поиск, режимы, обновить -->
         <Border Grid.Row="0" Padding="20,16,20,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <Grid>
+                <Grid Visibility="{Binding IsListMode, Converter={StaticResource BoolToVisibility}}">
                     <TextBox x:Name="SearchInput"
                              MaxWidth="460"
                              HorizontalAlignment="Left"
@@ -75,7 +141,34 @@
                         </TextBlock.Style>
                     </TextBlock>
                 </Grid>
-                <Button Grid.Column="1"
+                <!-- Режим просмотра: Список | Аналитика -->
+                <StackPanel Grid.Column="1"
+                            Margin="0,0,10,0"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal">
+                    <RadioButton GroupName="TasksViewMode"
+                                 Style="{StaticResource ChipRadioStyle}"
+                                 IsChecked="{Binding IsListMode, Mode=TwoWay}"
+                                 Command="{Binding SelectViewModeCommand}"
+                                 CommandParameter="list"
+                                 Content="Список"
+                                 AutomationProperties.Name="Режим: список задач" />
+                    <RadioButton GroupName="TasksViewMode"
+                                 Style="{StaticResource ChipRadioStyle}"
+                                 IsChecked="{Binding IsAnalyticsMode, Mode=TwoWay}"
+                                 Command="{Binding SelectViewModeCommand}"
+                                 CommandParameter="analytics"
+                                 Content="Аналитика"
+                                 AutomationProperties.Name="Режим: аналитика задач" />
+                </StackPanel>
+                <Button Grid.Column="2"
+                        Margin="0,0,8,0"
+                        Style="{StaticResource HubPrimaryButtonStyle}"
+                        Command="{Binding NewTaskCommand}"
+                        Content="＋ Новая задача"
+                        Visibility="{Binding CanCreateTasks, Converter={StaticResource BoolToVisibility}}"
+                        AutomationProperties.Name="Создать новую задачу" />
+                <Button Grid.Column="3"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding RefreshCommand}"
                         Content="Обновить"
@@ -83,10 +176,11 @@
             </Grid>
         </Border>
 
-        <!-- Фильтры-чипы -->
+        <!-- Фильтры-чипы списка -->
         <StackPanel Grid.Row="1"
                     Margin="20,12,20,0"
-                    Orientation="Horizontal">
+                    Orientation="Horizontal"
+                    Visibility="{Binding IsListMode, Converter={StaticResource BoolToVisibility}}">
             <RadioButton GroupName="StatusFilter"
                          Style="{StaticResource ChipRadioStyle}"
                          IsChecked="{Binding IsFilterAll, Mode=TwoWay}"
@@ -165,8 +259,10 @@
             </Grid>
         </Border>
 
-        <!-- Список + детали -->
-        <Grid Grid.Row="3" Margin="20,14,20,10">
+        <!-- Список + детали (режим «Список») -->
+        <Grid Grid.Row="3"
+              Margin="20,14,20,10"
+              Visibility="{Binding IsListMode, Converter={StaticResource BoolToVisibility}}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="380" MinWidth="300" />
                 <ColumnDefinition Width="6" />
@@ -385,6 +481,424 @@
                                 <TextBlock Style="{StaticResource HubMutedTextStyle}"
                                            Text="{Binding Description}"
                                            Visibility="{Binding HasDescription, Converter={StaticResource BoolToVisibility}}" />
+
+                                <!-- Подзадачи: строки первого уровня + «＋ Подзадача» по can_create_subtask -->
+                                <Grid Margin="0,18,0,6"
+                                      Visibility="{Binding ShowSubtasksSection, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{StaticResource HubSectionTitleStyle}"
+                                               FontSize="14"
+                                               Text="{Binding SubtasksTitle}" />
+                                    <Button Grid.Column="1"
+                                            Padding="8,2"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding DataContext.AddSubtaskCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            Content="＋ Подзадача"
+                                            Visibility="{Binding CanCreateSubtask, Converter={StaticResource BoolToVisibility}}"
+                                            AutomationProperties.Name="Создать подзадачу" />
+                                </Grid>
+                                <ItemsControl ItemsSource="{Binding Subtasks}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,0,6"
+                                                    Padding="10,8"
+                                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="8">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel>
+                                                        <TextBlock FontSize="13"
+                                                                   FontWeight="SemiBold"
+                                                                   Text="{Binding Title}"
+                                                                   TextWrapping="Wrap" />
+                                                        <TextBlock Margin="0,2,0,0"
+                                                                   FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding MetaText}"
+                                                                   Visibility="{Binding MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                    </StackPanel>
+                                                    <Border Grid.Column="1"
+                                                            Margin="10,0,0,0"
+                                                            VerticalAlignment="Top"
+                                                            Style="{StaticResource HubStatusPillStyle}"
+                                                            local:HubTone.Value="{Binding StatusTone}">
+                                                        <TextBlock FontSize="11"
+                                                                   FontWeight="SemiBold"
+                                                                   Style="{StaticResource HubToneTextStyle}"
+                                                                   Text="{Binding StatusText}" />
+                                                    </Border>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                           Text="Подзадач пока нет."
+                                           Visibility="{Binding ShowSubtasksEmpty, Converter={StaticResource BoolToVisibility}}" />
+
+                                <!-- Компактная форма подзадачи: название + исполнитель обязательны -->
+                                <Border Margin="0,4,0,6"
+                                        Padding="12,10"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubAccentBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        DataContext="{Binding SubtaskForm}"
+                                        Visibility="{Binding IsSubtaskFormOpen, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                                   FontSize="12"
+                                                   Text="{Binding ErrorText}"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}"
+                                                   AutomationProperties.LiveSetting="Assertive" />
+                                        <Grid>
+                                            <TextBox x:Name="SubtaskTitleInput"
+                                                     Style="{StaticResource HubTextBoxStyle}"
+                                                     Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                                     AutomationProperties.Name="Название подзадачи" />
+                                            <TextBlock Margin="13,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       IsHitTestVisible="False"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="Название подзадачи *">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Text, ElementName=SubtaskTitleInput}" Value="">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Grid>
+                                        <Grid Margin="0,8,0,0">
+                                            <TextBox x:Name="SubtaskAssigneeInput"
+                                                     Style="{StaticResource HubTextBoxStyle}"
+                                                     Text="{Binding AssigneeSearch.Query, UpdateSourceTrigger=PropertyChanged}"
+                                                     AutomationProperties.Name="Поиск исполнителя подзадачи" />
+                                            <TextBlock Margin="13,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       IsHitTestVisible="False"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="Исполнитель: ФИО или логин…">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Text, ElementName=SubtaskAssigneeInput}" Value="">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Grid>
+                                        <Border Margin="0,6,0,0"
+                                                Padding="8,5"
+                                                Background="{DynamicResource HubSurfaceBrush}"
+                                                BorderBrush="{DynamicResource HubAccentBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8"
+                                                Visibility="{Binding AssigneeSearch.HasSelected, Converter={StaticResource BoolToVisibility}}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock VerticalAlignment="Center"
+                                                           FontSize="13"
+                                                           FontWeight="SemiBold"
+                                                           Text="{Binding AssigneeSearch.Selected.Title}" />
+                                                <Button Grid.Column="1"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding AssigneeSearch.ClearCommand}"
+                                                        Content="✕"
+                                                        AutomationProperties.Name="Сбросить исполнителя подзадачи" />
+                                            </Grid>
+                                        </Border>
+                                        <Popup IsOpen="{Binding AssigneeSearch.IsPopupOpen, Mode=TwoWay}"
+                                               Placement="Bottom"
+                                               PlacementTarget="{Binding ElementName=SubtaskAssigneeInput}"
+                                               StaysOpen="False"
+                                               AllowsTransparency="True">
+                                            <Border MinWidth="320"
+                                                    MaxWidth="460"
+                                                    Padding="4"
+                                                    Background="{DynamicResource HubSurfaceBrush}"
+                                                    BorderBrush="{DynamicResource HubBorderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="8">
+                                                <ListBox Style="{StaticResource HubListBoxStyle}"
+                                                         ItemsSource="{Binding AssigneeSearch.Options}"
+                                                         MaxHeight="220"
+                                                         AutomationProperties.Name="Варианты исполнителя подзадачи">
+                                                    <ListBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Button HorizontalContentAlignment="Stretch"
+                                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                                    Command="{Binding DataContext.AssigneeSearch.SelectCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    AutomationProperties.Name="{Binding Title, StringFormat='Выбрать исполнителя {0}'}">
+                                                                <StackPanel>
+                                                                    <TextBlock FontSize="13"
+                                                                               FontWeight="SemiBold"
+                                                                               Text="{Binding Title}"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock FontSize="11"
+                                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                               Text="{Binding MetaText}"
+                                                                               TextTrimming="CharacterEllipsis"
+                                                                               Visibility="{Binding MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                                </StackPanel>
+                                                            </Button>
+                                                        </DataTemplate>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
+                                            </Border>
+                                        </Popup>
+                                        <Grid Margin="0,8,0,0">
+                                            <TextBox x:Name="SubtaskDescriptionInput"
+                                                     MinHeight="40"
+                                                     MaxHeight="90"
+                                                     Style="{StaticResource HubTextBoxStyle}"
+                                                     AcceptsReturn="True"
+                                                     TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Auto"
+                                                     VerticalContentAlignment="Top"
+                                                     Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
+                                                     AutomationProperties.Name="Описание подзадачи" />
+                                            <TextBlock Margin="13,10,0,0"
+                                                       VerticalAlignment="Top"
+                                                       IsHitTestVisible="False"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="Описание (необязательно)">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Text, ElementName=SubtaskDescriptionInput}" Value="">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Grid>
+                                        <Grid Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="10" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <DatePicker SelectedDate="{Binding DueDate, Mode=TwoWay}"
+                                                        Background="{DynamicResource HubSurfaceBrush}"
+                                                        Foreground="{DynamicResource HubTextBrush}"
+                                                        AutomationProperties.Name="Срок подзадачи" />
+                                            <ComboBox Grid.Column="2"
+                                                      ItemsSource="{Binding Priorities}"
+                                                      SelectedItem="{Binding SelectedPriority}"
+                                                      DisplayMemberPath="Label"
+                                                      Background="{DynamicResource HubSurfaceBrush}"
+                                                      Foreground="{DynamicResource HubTextBrush}"
+                                                      AutomationProperties.Name="Приоритет подзадачи" />
+                                        </Grid>
+                                        <Grid Margin="0,10,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="8" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                                    Command="{Binding CreateCommand}"
+                                                    Content="{Binding CreateButtonText}"
+                                                    AutomationProperties.Name="Создать подзадачу из формы" />
+                                            <Button Grid.Column="2"
+                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding CloseCommand}"
+                                                    Content="Отмена"
+                                                    AutomationProperties.Name="Отменить создание подзадачи" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Вложения: чипы скачивания + «👁» превью Office, «📎 Прикрепить» и «✕» по capabilities -->
+                                <Grid Margin="0,18,0,6"
+                                      Visibility="{Binding ShowFilesSection, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{StaticResource HubSectionTitleStyle}"
+                                               FontSize="14"
+                                               Text="{Binding AttachmentsTitle}" />
+                                    <Button Grid.Column="1"
+                                            Padding="8,2"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding DataContext.AttachFilesCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            Content="{Binding AttachButtonText}"
+                                            IsEnabled="{Binding CanAttach}"
+                                            Visibility="{Binding CanUploadFiles, Converter={StaticResource BoolToVisibility}}"
+                                            AutomationProperties.Name="Прикрепить файл к задаче" />
+                                </Grid>
+                                <ItemsControl ItemsSource="{Binding Attachments}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Margin="0,0,2,6"
+                                                        Padding="8,3"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.OpenAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}"
+                                                        IsEnabled="{Binding IsDownloadEnabled}"
+                                                        AutomationProperties.Name="{Binding Name, StringFormat='Скачать файл {0}'}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock FontSize="12" Text="📄 " />
+                                                        <TextBlock FontSize="12" Text="{Binding DisplayText}" />
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button Margin="0,0,2,6"
+                                                        Padding="6,3"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.PreviewAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}"
+                                                        IsEnabled="{Binding IsDownloadEnabled}"
+                                                        Content="👁"
+                                                        Visibility="{Binding CanPreview, Converter={StaticResource BoolToVisibility}}"
+                                                        AutomationProperties.Name="{Binding Name, StringFormat='Предпросмотр файла {0}'}" />
+                                                <Button Margin="0,0,6,6"
+                                                        Padding="6,3"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.DeleteAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}"
+                                                        IsEnabled="{Binding IsDeleteEnabled}"
+                                                        Content="{Binding DeleteText}"
+                                                        Visibility="{Binding CanDelete, Converter={StaticResource BoolToVisibility}}"
+                                                        AutomationProperties.Name="{Binding Name, StringFormat='Удалить файл {0}'}" />
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                           Text="Вложений пока нет."
+                                           Visibility="{Binding ShowFilesEmpty, Converter={StaticResource BoolToVisibility}}" />
+
+                                <!-- Комментарии: архивная лента + композер либо переход в чат-обсуждение -->
+                                <TextBlock Margin="0,18,0,6"
+                                           Style="{StaticResource HubSectionTitleStyle}"
+                                           FontSize="14"
+                                           Text="{Binding CommentsTitle}" />
+                                <TextBlock Margin="0,0,0,8"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding DiscussionHintText}"
+                                           Visibility="{Binding CanOpenDiscussion, Converter={StaticResource BoolToVisibility}}" />
+                                <ItemsControl ItemsSource="{Binding Comments}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,0,8"
+                                                    Padding="10,8"
+                                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="8">
+                                                <StackPanel>
+                                                    <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                                               FontSize="11"
+                                                               Text="{Binding MetaText}" />
+                                                    <TextBlock Margin="0,4,0,0"
+                                                               FontSize="13"
+                                                               Text="{Binding Body}"
+                                                               TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                           Text="{Binding CommentsEmptyText}"
+                                           Visibility="{Binding ShowCommentsEmpty, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock FontSize="12"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="Комментарии загрузить не удалось."
+                                           Visibility="{Binding CommentsFailed, Converter={StaticResource BoolToVisibility}}"
+                                           AutomationProperties.LiveSetting="Assertive" />
+                                <Button Margin="0,8,0,0"
+                                        HorizontalAlignment="Left"
+                                        Style="{StaticResource HubSecondaryButtonStyle}"
+                                        Command="{Binding DataContext.OpenDiscussionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                        IsEnabled="{Binding CanOpenDiscussionNow}"
+                                        Content="{Binding DiscussionButtonText}"
+                                        Visibility="{Binding CanOpenDiscussion, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Открыть обсуждение задачи в чате" />
+
+                                <!-- Композер комментария — только когда чат-обсуждение выключено -->
+                                <Grid Margin="0,12,0,0"
+                                      Visibility="{Binding ShowCommentComposer, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid>
+                                        <TextBox x:Name="CommentInput"
+                                                 MinHeight="40"
+                                                 MaxHeight="96"
+                                                 Style="{StaticResource HubTextBoxStyle}"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="Wrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 VerticalContentAlignment="Top"
+                                                 Text="{Binding CommentText, UpdateSourceTrigger=PropertyChanged}"
+                                                 KeyDown="CommentInput_KeyDown"
+                                                 AutomationProperties.Name="Новый комментарий к задаче" />
+                                        <TextBlock Margin="13,10,0,0"
+                                                   VerticalAlignment="Top"
+                                                   IsHitTestVisible="False"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="Комментарий…">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Text, ElementName=CommentInput}" Value="">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Grid>
+                                    <Button Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            VerticalAlignment="Top"
+                                            Style="{StaticResource HubPrimaryButtonStyle}"
+                                            Command="{Binding DataContext.SendCommentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            IsEnabled="{Binding CanSendComment}"
+                                            Content="Отправить"
+                                            AutomationProperties.Name="Отправить комментарий к задаче" />
+                                </Grid>
                             </StackPanel>
                         </ScrollViewer>
 
@@ -481,12 +995,380 @@
             </Border>
         </Grid>
 
-        <!-- Статус-бар -->
+        <!-- Режим «Аналитика»: отчётная панель вместо master-detail -->
+        <Grid Grid.Row="3"
+              Margin="20,14,20,10"
+              Visibility="{Binding IsAnalyticsMode, Converter={StaticResource BoolToVisibility}}">
+            <Border Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    DataContext="{Binding Analytics}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Фильтры отчёта: пресеты, поле даты, multi-фильтры, экспорт -->
+                    <StackPanel Grid.Row="0" Margin="20,16,20,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <WrapPanel VerticalAlignment="Center">
+                                <RadioButton GroupName="TaskAnalyticsPreset"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsPreset7d, Mode=TwoWay}"
+                                             Command="{Binding SelectPresetCommand}"
+                                             CommandParameter="7d"
+                                             Content="7 дней"
+                                             AutomationProperties.Name="Период аналитики: 7 дней" />
+                                <RadioButton GroupName="TaskAnalyticsPreset"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsPreset30d, Mode=TwoWay}"
+                                             Command="{Binding SelectPresetCommand}"
+                                             CommandParameter="30d"
+                                             Content="30 дней"
+                                             AutomationProperties.Name="Период аналитики: 30 дней" />
+                                <RadioButton GroupName="TaskAnalyticsPreset"
+                                             Style="{StaticResource ChipRadioStyle}"
+                                             IsChecked="{Binding IsPreset90d, Mode=TwoWay}"
+                                             Command="{Binding SelectPresetCommand}"
+                                             CommandParameter="90d"
+                                             Content="90 дней"
+                                             AutomationProperties.Name="Период аналитики: 90 дней" />
+                                <TextBlock Margin="14,0,6,0"
+                                           VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="Дата:" />
+                                <ComboBox Width="190"
+                                          VerticalAlignment="Center"
+                                          ItemsSource="{Binding DateBasisOptions}"
+                                          SelectedItem="{Binding SelectedDateBasis}"
+                                          DisplayMemberPath="Label"
+                                          Background="{DynamicResource HubSurfaceAltBrush}"
+                                          Foreground="{DynamicResource HubTextBrush}"
+                                          AutomationProperties.Name="Поле даты аналитики" />
+                                <TextBlock Margin="14,0,0,0"
+                                           VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Text="{Binding RangeText}" />
+                            </WrapPanel>
+                            <Button Grid.Column="1"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource HubSecondaryButtonStyle}"
+                                    Command="{Binding ExportCommand}"
+                                    Content="{Binding ExportButtonText}"
+                                    AutomationProperties.Name="Экспорт аналитики задач в Excel" />
+                        </Grid>
+
+                        <!-- Multi-фильтры: ComboBox добавляет значение чипом под полем -->
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Проекты" />
+                                <ComboBox Margin="0,4,0,0"
+                                          ItemsSource="{Binding ProjectOptions}"
+                                          SelectedItem="{Binding SelectedProjectCandidate}"
+                                          DisplayMemberPath="Title"
+                                          Background="{DynamicResource HubSurfaceAltBrush}"
+                                          Foreground="{DynamicResource HubTextBrush}"
+                                          AutomationProperties.Name="Фильтр аналитики по проекту" />
+                                <ItemsControl ItemsSource="{Binding SelectedProjects}"
+                                              ItemTemplate="{StaticResource AnalyticsChipTemplate}"
+                                              Visibility="{Binding HasSelectedProjects, Converter={StaticResource BoolToVisibility}}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Объекты" />
+                                <ComboBox Margin="0,4,0,0"
+                                          ItemsSource="{Binding ObjectOptions}"
+                                          SelectedItem="{Binding SelectedObjectCandidate}"
+                                          DisplayMemberPath="Title"
+                                          Background="{DynamicResource HubSurfaceAltBrush}"
+                                          Foreground="{DynamicResource HubTextBrush}"
+                                          AutomationProperties.Name="Фильтр аналитики по объекту" />
+                                <ItemsControl ItemsSource="{Binding SelectedObjects}"
+                                              ItemTemplate="{StaticResource AnalyticsChipTemplate}"
+                                              Visibility="{Binding HasSelectedObjects, Converter={StaticResource BoolToVisibility}}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl>
+                            </StackPanel>
+                            <StackPanel Grid.Column="4">
+                                <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Участники" />
+                                <ComboBox Margin="0,4,0,0"
+                                          ItemsSource="{Binding ParticipantOptions}"
+                                          SelectedItem="{Binding SelectedParticipantCandidate}"
+                                          DisplayMemberPath="Title"
+                                          Background="{DynamicResource HubSurfaceAltBrush}"
+                                          Foreground="{DynamicResource HubTextBrush}"
+                                          AutomationProperties.Name="Фильтр аналитики по участнику" />
+                                <ItemsControl ItemsSource="{Binding SelectedParticipants}"
+                                              ItemTemplate="{StaticResource AnalyticsChipTemplate}"
+                                              Visibility="{Binding HasSelectedParticipants, Converter={StaticResource BoolToVisibility}}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Плашки ошибки/статуса + полоска загрузки -->
+                    <StackPanel Grid.Row="1" Margin="20,10,20,0">
+                        <Border Padding="12,8"
+                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding ErrorText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.LiveSetting="Assertive" />
+                                <Button Grid.Column="1"
+                                        Margin="12,0,8,0"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding RefreshCommand}"
+                                        Content="Повторить"
+                                        AutomationProperties.Name="Повторить загрузку аналитики" />
+                                <Button Grid.Column="2"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding DismissErrorCommand}"
+                                        Content="✕"
+                                        AutomationProperties.Name="Скрыть ошибку аналитики" />
+                            </Grid>
+                        </Border>
+                        <Border Margin="0,8,0,0"
+                                Padding="12,8"
+                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                BorderBrush="{DynamicResource HubAccentBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Visibility="{Binding HasStatus, Converter={StaticResource BoolToVisibility}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubAccentBrush}"
+                                           Text="{Binding StatusText}"
+                                           TextWrapping="Wrap" />
+                                <Button Grid.Column="1"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding DismissStatusCommand}"
+                                        Content="✕"
+                                        AutomationProperties.Name="Скрыть статус аналитики" />
+                            </Grid>
+                        </Border>
+                        <ProgressBar Margin="0,8,0,0"
+                                     Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор загрузки аналитики" />
+                    </StackPanel>
+
+                    <!-- Пустое состояние -->
+                    <StackPanel Grid.Row="3"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Задач нет" />
+                        <TextBlock Margin="0,6,0,0"
+                                   HorizontalAlignment="Center"
+                                   Style="{StaticResource HubMutedTextStyle}"
+                                   Text="Под выбранные фильтры аналитики ничего не подходит." />
+                    </StackPanel>
+
+                    <!-- Содержимое отчёта -->
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="20,12,20,16"
+                                  VerticalScrollBarVisibility="Auto"
+                                  Visibility="{Binding HasPayload, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <!-- KPI-карточки (как KPI-грид веб-отчёта) -->
+                            <ItemsControl ItemsSource="{Binding Kpis}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Columns="3" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,10,10"
+                                                Padding="14,12"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="10">
+                                            <StackPanel>
+                                                <TextBlock FontSize="12"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding Title}" />
+                                                <TextBlock Margin="0,6,0,0"
+                                                           FontSize="20"
+                                                           FontWeight="SemiBold"
+                                                           Style="{StaticResource HubToneTextStyle}"
+                                                           local:HubTone.Value="{Binding Tone}"
+                                                           Text="{Binding Value}" />
+                                                <TextBlock Margin="0,4,0,0"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding HelperText}"
+                                                           TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <!-- Разрезы 2×2 -->
+                            <UniformGrid Columns="2">
+                                <Border Margin="0,2,10,10"
+                                        Padding="14,12"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="10"
+                                        Visibility="{Binding HasStatusRows, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                                   Text="По статусам" />
+                                        <ItemsControl ItemsSource="{Binding StatusRows}"
+                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Margin="0,2,0,10"
+                                        Padding="14,12"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="10"
+                                        Visibility="{Binding HasParticipantRows, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                                   Text="По участникам" />
+                                        <ItemsControl ItemsSource="{Binding ParticipantRows}"
+                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Margin="0,0,10,10"
+                                        Padding="14,12"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="10"
+                                        Visibility="{Binding HasProjectRows, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                                   Text="По проектам" />
+                                        <ItemsControl ItemsSource="{Binding ProjectRows}"
+                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Margin="0,0,0,10"
+                                        Padding="14,12"
+                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="10"
+                                        Visibility="{Binding HasObjectRows, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                                   Text="По объектам" />
+                                        <ItemsControl ItemsSource="{Binding ObjectRows}"
+                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}" />
+                                    </StackPanel>
+                                </Border>
+                            </UniformGrid>
+
+                            <!-- Динамика -->
+                            <Border Margin="0,0,0,4"
+                                    Padding="14,12"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
+                                    Visibility="{Binding HasTrendItems, Converter={StaticResource BoolToVisibility}}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource HubSectionTitleStyle}">
+                                        <Run Text="Динамика" /><Run Text="{Binding TrendGranularityText, Mode=OneWay}"
+                                                                    Foreground="{DynamicResource HubTextSecondaryBrush}" />
+                                    </TextBlock>
+                                    <ItemsControl ItemsSource="{Binding TrendItems}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,8,0,0">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="160" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock FontSize="13"
+                                                               FontWeight="SemiBold"
+                                                               Text="{Binding Label}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="2"
+                                                               FontSize="12"
+                                                               Style="{StaticResource HubMutedTextStyle}"
+                                                               Text="{Binding ValuesText}" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Статус-бар списка -->
         <Border Grid.Row="4"
                 Padding="20,8"
                 Background="{DynamicResource HubSurfaceAltBrush}"
                 BorderBrush="{DynamicResource HubBorderDimBrush}"
-                BorderThickness="0,1,0,0">
+                BorderThickness="0,1,0,0"
+                Visibility="{Binding IsListMode, Converter={StaticResource BoolToVisibility}}">
             <StackPanel Orientation="Horizontal">
                 <TextBlock FontSize="12"
                            Foreground="{DynamicResource HubTextSecondaryBrush}">
@@ -499,5 +1381,299 @@
                            Text="{Binding LastUpdatedText}" />
             </StackPanel>
         </Border>
+
+        <!-- Создание задачи: затемнение + центрированная форма (как композер у заявок) -->
+        <Grid Grid.RowSpan="5"
+              Panel.ZIndex="2"
+              Background="#B3000000"
+              PreviewKeyDown="CreateOverlay_PreviewKeyDown"
+              Visibility="{Binding IsCreateOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="560"
+                    MaxHeight="760"
+                    Margin="24"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    DataContext="{Binding Create}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="Новая задача" />
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть форму создания задачи" />
+                    </Grid>
+
+                    <!-- Ошибка создания/валидации: поля не стираются -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <ProgressBar Grid.Row="2"
+                                 Height="3"
+                                 Margin="18,8,18,0"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор создания задачи" />
+
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Название *" />
+                            <Grid>
+                                <TextBox x:Name="CreateTitleInput"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Название задачи" />
+                                <TextBlock Margin="13,0,0,0"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="Что нужно сделать">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=CreateTitleInput}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Описание" />
+                            <TextBox MinHeight="64"
+                                     MaxHeight="140"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     VerticalContentAlignment="Top"
+                                     Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Описание задачи" />
+
+                            <!-- Исполнитель: серверный поиск GET /hub/users/assignees -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Исполнитель *" />
+                            <Grid>
+                                <TextBox x:Name="CreateAssigneeInput"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         Text="{Binding AssigneeSearch.Query, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Поиск исполнителя задачи" />
+                                <TextBlock Margin="13,0,0,0"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="ФИО или логин сотрудника…">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=CreateAssigneeInput}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                            <ProgressBar Margin="0,6,0,0"
+                                         Width="90"
+                                         Height="3"
+                                         HorizontalAlignment="Left"
+                                         IsIndeterminate="True"
+                                         Foreground="{DynamicResource HubAccentBrush}"
+                                         Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                         Visibility="{Binding AssigneeSearch.IsSearchBusy, Converter={StaticResource BoolToVisibility}}"
+                                         AutomationProperties.Name="Индикатор поиска исполнителя" />
+                            <Border Margin="0,6,0,0"
+                                    Padding="8,5"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubAccentBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="{Binding AssigneeSearch.HasSelected, Converter={StaticResource BoolToVisibility}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   Text="{Binding AssigneeSearch.Selected.Title}" />
+                                        <TextBlock FontSize="11"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding AssigneeSearch.Selected.MetaText}"
+                                                   Visibility="{Binding AssigneeSearch.Selected.MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            VerticalAlignment="Center"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding AssigneeSearch.ClearCommand}"
+                                            Content="✕"
+                                            AutomationProperties.Name="Сбросить выбранного исполнителя" />
+                                </Grid>
+                            </Border>
+                            <Popup IsOpen="{Binding AssigneeSearch.IsPopupOpen, Mode=TwoWay}"
+                                   Placement="Bottom"
+                                   PlacementTarget="{Binding ElementName=CreateAssigneeInput}"
+                                   StaysOpen="False"
+                                   AllowsTransparency="True">
+                                <Border MinWidth="340"
+                                        MaxWidth="480"
+                                        Padding="4"
+                                        Background="{DynamicResource HubSurfaceBrush}"
+                                        BorderBrush="{DynamicResource HubBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8">
+                                    <ListBox Style="{StaticResource HubListBoxStyle}"
+                                             ItemsSource="{Binding AssigneeSearch.Options}"
+                                             MaxHeight="240"
+                                             AutomationProperties.Name="Варианты исполнителя задачи">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button HorizontalContentAlignment="Stretch"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.AssigneeSearch.SelectCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                        CommandParameter="{Binding}"
+                                                        AutomationProperties.Name="{Binding Title, StringFormat='Выбрать исполнителя {0}'}">
+                                                    <StackPanel>
+                                                        <TextBlock FontSize="13"
+                                                                   FontWeight="SemiBold"
+                                                                   Text="{Binding Title}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock FontSize="11"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding MetaText}"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   Visibility="{Binding MetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Border>
+                            </Popup>
+
+                            <!-- Контролёр: необязательный, список GET /hub/users/controllers -->
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Контролёр" />
+                            <ComboBox ItemsSource="{Binding Controllers}"
+                                      SelectedItem="{Binding SelectedController}"
+                                      DisplayMemberPath="DisplayText"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Контролёр задачи" />
+
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="10" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Приоритет" />
+                                    <ComboBox ItemsSource="{Binding Priorities}"
+                                              SelectedItem="{Binding SelectedPriority}"
+                                              DisplayMemberPath="Label"
+                                              Background="{DynamicResource HubSurfaceAltBrush}"
+                                              Foreground="{DynamicResource HubTextBrush}"
+                                              AutomationProperties.Name="Приоритет задачи" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Срок" />
+                                    <DatePicker SelectedDate="{Binding DueDate, Mode=TwoWay}"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                Foreground="{DynamicResource HubTextBrush}"
+                                                AutomationProperties.Name="Срок задачи" />
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Проект *" />
+                            <ComboBox ItemsSource="{Binding Projects}"
+                                      SelectedItem="{Binding SelectedProject}"
+                                      DisplayMemberPath="DisplayName"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Проект задачи" />
+
+                            <TextBlock Margin="0,12,0,0"
+                                       Style="{StaticResource MetaLabelStyle}"
+                                       Text="Объект" />
+                            <ComboBox ItemsSource="{Binding Objects}"
+                                      SelectedItem="{Binding SelectedObject}"
+                                      DisplayMemberPath="DisplayName"
+                                      IsEnabled="{Binding HasSelectedProject}"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Объект проекта задачи" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Кнопки -->
+                    <Grid Grid.Row="4" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding CreateCommand}"
+                                Content="{Binding CreateButtonText}"
+                                AutomationProperties.Name="Создать задачу" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить создание задачи" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
 </UserControl>

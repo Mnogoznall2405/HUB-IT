@@ -13,6 +13,10 @@
             </ResourceDictionary.MergedDictionaries>
             <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
             <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+            <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -65,11 +69,33 @@
                                  Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
                                  AutomationProperties.Name="Индикатор загрузки терминалов ВКС" />
                 </StackPanel>
-                <Button Grid.Column="1"
-                        Style="{StaticResource HubGhostButtonStyle}"
-                        Command="{Binding RefreshCommand}"
-                        Content="Обновить"
-                        AutomationProperties.Name="Обновить список терминалов ВКС" />
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <!-- Управление терминалами — только с правом vcs.manage -->
+                    <StackPanel Orientation="Horizontal"
+                                Visibility="{Binding CanManageVcs, Converter={StaticResource BoolToVisibility}}">
+                        <Button Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding OpenConfigCommand}"
+                                Content="Пароль VNC"
+                                AutomationProperties.Name="Настройки глобального пароля VNC" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding OpenInfoCommand}"
+                                Content="Информация"
+                                AutomationProperties.Name="Редактировать справочник ВКС" />
+                        <Button Margin="8,0,0,0"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding OpenCreateCommand}"
+                                Content="＋ Добавить"
+                                AutomationProperties.Name="Добавить терминал ВКС" />
+                    </StackPanel>
+                    <Button Margin="8,0,0,0"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding RefreshCommand}"
+                            Content="Обновить"
+                            AutomationProperties.Name="Обновить список терминалов ВКС" />
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -137,6 +163,7 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock FontSize="14"
@@ -155,7 +182,46 @@
                                                Text="{Binding LocationText}"
                                                Visibility="{Binding HasLocation, Converter={StaticResource BoolToVisibility}}" />
                                 </StackPanel>
-                                <Button Grid.Column="1"
+                                <!-- Действия vcs.manage: порядок ↑/↓, правка, armed-удаление -->
+                                <StackPanel Grid.Column="1"
+                                            Margin="12,0,0,0"
+                                            Orientation="Horizontal"
+                                            VerticalAlignment="Center"
+                                            Visibility="{Binding DataContext.CanManageVcs, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}">
+                                    <Button Padding="8,2"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding DataContext.MoveComputerUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding CanMoveUp}"
+                                            Content="↑"
+                                            AutomationProperties.Name="{Binding Title, StringFormat='Переместить терминал {0} выше'}" />
+                                    <Button Margin="4,0,0,0"
+                                            Padding="8,2"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding DataContext.MoveComputerDownCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding CanMoveDown}"
+                                            Content="↓"
+                                            AutomationProperties.Name="{Binding Title, StringFormat='Переместить терминал {0} ниже'}" />
+                                    <Button Margin="4,0,0,0"
+                                            Padding="8,2"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Command="{Binding DataContext.EditComputerCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding AreActionsEnabled}"
+                                            Content="Изменить"
+                                            AutomationProperties.Name="{Binding Title, StringFormat='Изменить терминал {0}'}" />
+                                    <Button Margin="4,0,0,0"
+                                            Padding="8,2"
+                                            Style="{StaticResource HubGhostButtonStyle}"
+                                            Foreground="{DynamicResource HubErrorTextBrush}"
+                                            Command="{Binding DataContext.DeleteComputerCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding AreActionsEnabled}"
+                                            Content="{Binding DeleteText}"
+                                            AutomationProperties.Name="{Binding Title, StringFormat='Удалить терминал {0}'}" />
+                                </StackPanel>
+                                <Button Grid.Column="2"
                                         Margin="12,0,0,0"
                                         VerticalAlignment="Center"
                                         MinWidth="128"
@@ -186,6 +252,370 @@
                                Text="По текущему поиску терминалы ВКС не найдены." />
                 </StackPanel>
             </Grid>
+        </Grid>
+
+        <!-- Диалог добавления/правки терминала (vcs.manage): модальный оверлей поверх страницы -->
+        <Grid Grid.RowSpan="3"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="EditorOverlay_PreviewKeyDown"
+              Visibility="{Binding IsEditorOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="480"
+                    MaxHeight="520"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1"
+                    DataContext="{Binding Editor}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок -->
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding TitleText}" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding SubtitleText}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть диалог терминала ВКС" />
+                    </Grid>
+
+                    <!-- Ошибка валидации/сервера: диалог и поля сохраняются -->
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор сохранения терминала ВКС" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Наименование (переговорка/кабинет) *" />
+                            <Grid Margin="0,4,0,0">
+                                <TextBox x:Name="VcsEditorNameInput"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         MaxLength="100"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Наименование терминала ВКС" />
+                                <TextBlock Margin="13,0,0,0"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="Например: Переговорная 1">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=VcsEditorNameInput}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="IP-адрес / Имя хоста *" />
+                            <Grid Margin="0,4,0,0">
+                                <TextBox x:Name="VcsEditorAddressInput"
+                                         Style="{StaticResource HubTextBoxStyle}"
+                                         IsEnabled="{Binding AreInputsEnabled}"
+                                         Text="{Binding Address, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="Адрес VNC терминала" />
+                                <TextBlock Margin="13,0,0,0"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="Например: 192.168.1.50">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=VcsEditorAddressInput}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+
+                            <TextBlock Margin="0,12,0,0" Style="{StaticResource MetaLabelStyle}" Text="Расположение (филиал/этаж)" />
+                            <TextBox Margin="0,4,0,0"
+                                     Style="{StaticResource HubTextBoxStyle}"
+                                     IsEnabled="{Binding AreInputsEnabled}"
+                                     Text="{Binding Location, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Расположение терминала ВКС" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Подвал: Отмена / Добавить|Сохранить -->
+                    <Grid Grid.Row="4" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить редактирование терминала" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SubmitCommand}"
+                                Content="{Binding SubmitButtonText}"
+                                AutomationProperties.Name="Сохранить терминал ВКС" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Диалог «Пароль VNC» (vcs.manage): глобальный password_hex — скрим + Esc -->
+        <Grid Grid.RowSpan="3"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="ConfigOverlay_PreviewKeyDown"
+              Visibility="{Binding IsConfigDialogOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="480"
+                    MaxHeight="440"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="Пароль VNC" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       TextWrapping="Wrap"
+                                       Text="HEX-пароль подставляется в файлы подключения всех терминалов; пользователи его не видят." />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                VerticalAlignment="Top"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseConfigCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть настройки пароля VNC" />
+                    </Grid>
+
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasConfigError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ConfigErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding ConfigIsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор запроса настроек VNC" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="3" Margin="18,10,18,0">
+                        <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Глобальный Password HEX" />
+                        <TextBox Margin="0,4,0,0"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 IsEnabled="{Binding ConfigAreInputsEnabled}"
+                                 Text="{Binding ConfigPasswordInput, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="Глобальный пароль VNC в HEX" />
+                        <TextBlock Margin="0,6,0,0"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                   TextWrapping="Wrap"
+                                   Text="{Binding ConfigStatusText}" />
+                    </StackPanel>
+
+                    <Grid Grid.Row="4" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseConfigCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить настройки пароля VNC" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SaveConfigCommand}"
+                                Content="{Binding ConfigSubmitText}"
+                                AutomationProperties.Name="Сохранить пароль VNC" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Диалог «Информация» (vcs.manage): правка инфо-блока ВКС — скрим + Esc -->
+        <Grid Grid.RowSpan="3"
+              Panel.ZIndex="1"
+              Background="#B3000000"
+              PreviewKeyDown="InfoOverlay_PreviewKeyDown"
+              Visibility="{Binding IsInfoDialogOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="640"
+                    MaxHeight="560"
+                    CornerRadius="12"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                    BorderThickness="1">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock FontSize="16"
+                                       FontWeight="SemiBold"
+                                       Text="Справочник ВКС" />
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       TextWrapping="Wrap"
+                                       Text="Содержимое информационного блока (текст/JSON-таблица контактов — как на веб-странице ВКС)." />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                VerticalAlignment="Top"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseInfoCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть справочник ВКС" />
+                    </Grid>
+
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasInfoError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding InfoErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Margin="18,8,18,0">
+                        <ProgressBar Height="3"
+                                     IsIndeterminate="True"
+                                     Foreground="{DynamicResource HubAccentBrush}"
+                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                     Visibility="{Binding InfoIsBusy, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Индикатор запроса справочника ВКС" />
+                    </StackPanel>
+
+                    <TextBox Grid.Row="3"
+                             Margin="18,10,18,0"
+                             MinHeight="200"
+                             Style="{StaticResource HubTextBoxStyle}"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto"
+                             VerticalContentAlignment="Top"
+                             IsEnabled="{Binding InfoAreInputsEnabled}"
+                             Text="{Binding InfoContentInput, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Содержимое справочника ВКС" />
+
+                    <Grid Grid.Row="4" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseInfoCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить правку справочника ВКС" />
+                        <Button Grid.Column="2"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SaveInfoCommand}"
+                                Content="{Binding InfoSubmitText}"
+                                AutomationProperties.Name="Сохранить справочник ВКС" />
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </UserControl>

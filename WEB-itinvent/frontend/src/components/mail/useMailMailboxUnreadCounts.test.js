@@ -104,6 +104,39 @@ describe('useMailMailboxUnreadCounts', () => {
     );
   });
 
+  it('does not stamp a fabricated 0 as fresh for unknown or error snapshot states', async () => {
+    const mailAPI = {
+      getUnreadCount: vi.fn(({ mailboxId }) => (
+        mailboxId === 'mbox-2'
+          ? Promise.resolve({ unread_count: 0, state: 'unknown' })
+          : mailboxId === 'mbox-3'
+            ? Promise.resolve({ unread_count: 0, state: 'error', last_error: 'exchange down' })
+            : Promise.resolve({ unread_count: 4, state: 'stale' })
+      )),
+    };
+    const { result } = renderUnreadHook({
+      activeMailboxId: 'mbox-1',
+      mailAPI,
+      mailboxes: [
+        createMailbox({ id: 'mbox-1', unread_count_state: 'fresh' }),
+        createMailbox({ id: 'mbox-2', unread_count: 9, unread_count_state: 'stale' }),
+        createMailbox({ id: 'mbox-3', unread_count: 8, unread_count_state: 'stale' }),
+        createMailbox({ id: 'mbox-4', unread_count: 1, unread_count_state: 'deferred' }),
+      ],
+    });
+
+    await act(async () => {
+      await result.current.refreshMailboxUnreadCounts();
+    });
+
+    expect(result.current.mailboxes).toEqual([
+      expect.objectContaining({ id: 'mbox-1', unread_count_state: 'fresh' }),
+      expect.objectContaining({ id: 'mbox-2', unread_count: 9, unread_count_state: 'deferred' }),
+      expect.objectContaining({ id: 'mbox-3', unread_count: 8, unread_count_state: 'stale' }),
+      expect.objectContaining({ id: 'mbox-4', unread_count: 4, unread_count_state: 'stale' }),
+    ]);
+  });
+
   it('dedupes in-flight mailbox refreshes', async () => {
     let resolveUnread;
     const mailAPI = {

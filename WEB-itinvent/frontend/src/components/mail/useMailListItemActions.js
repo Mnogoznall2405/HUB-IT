@@ -93,9 +93,10 @@ export default function useMailListItemActions({
 
   const handleSwipeDelete = useCallback(async (item, options = {}) => {
     if (!item?.id || viewMode !== 'messages') return;
-    const permanent = typeof options?.permanent === 'boolean'
-      ? options.permanent
-      : folder === 'trash';
+    const itemFolder = item.folder || folder;
+    const permanent = item.folder
+      ? itemFolder === 'trash'
+      : (options.permanent ?? (folder === 'trash'));
     if (permanent && !confirmPermanentDelete({ count: 1 })) return;
     try {
       const result = await mailAPI.deleteMessage(item.id, withActiveMailboxPayload({ permanent }));
@@ -105,7 +106,7 @@ export default function useMailListItemActions({
         const restoreMessageId = extractTrashRestoreMessageId(result);
         onRecoverableDelete?.({
           messageIds: restoreMessageId ? [restoreMessageId] : [],
-          restoreFolder: folder,
+          restoreFolder: itemFolder,
           count: 1,
         });
       }
@@ -154,12 +155,14 @@ export default function useMailListItemActions({
     const targetFolder = String(targetFolderId || '').trim();
     if (!messageId || !targetFolder || viewMode !== 'messages') return;
     try {
-      await mailAPI.moveMessage(messageId, withActiveMailboxPayload({ target_folder: targetFolder }));
+      const result = await mailAPI.moveMessage(messageId, withActiveMailboxPayload({ target_folder: targetFolder }));
       clearIfSelected(messageId);
       await afterListMutation();
       onRecoverableMove?.({
-        messageIds: [messageId],
-        restoreFolder: folder,
+        moves: [{
+          id: String(result?.message_id || messageId),
+          restoreFolder: String(result?.source_folder || item?.folder || folder),
+        }],
         folderLabel: getFolderLabel?.(targetFolder) || targetFolder,
         count: 1,
       });

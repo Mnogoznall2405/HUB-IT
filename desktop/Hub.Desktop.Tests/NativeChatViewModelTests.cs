@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Hub.Desktop.Native.Api;
 using Hub.Desktop.Native.ViewModels;
 using Hub.Desktop.Tests.Fakes;
@@ -111,6 +112,7 @@ public sealed class NativeChatViewModelTests
         };
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await model.LoadAsync();
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
 
         model.SearchText = "бухг";
 
@@ -381,6 +383,8 @@ public sealed class NativeChatViewModelTests
         };
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await model.LoadAsync();
+        // Новая группа видна только на вкладке «Беседы».
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         model.ToggleNewConversationCommand.Execute(null);
         await WaitFor(() => model.FoundUsers.Count == 2);
 
@@ -470,6 +474,8 @@ public sealed class NativeChatViewModelTests
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await api.RestoreSessionAsync(CancellationToken.None);
         await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         model.SelectedConversation = model.Conversations[0];
         await WaitFor(() => !model.IsLoadingMessages);
 
@@ -497,6 +503,8 @@ public sealed class NativeChatViewModelTests
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await api.RestoreSessionAsync(CancellationToken.None);
         await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         model.SelectedConversation = model.Conversations[0];
         await WaitFor(() => !model.IsLoadingMessages);
 
@@ -530,6 +538,8 @@ public sealed class NativeChatViewModelTests
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await api.RestoreSessionAsync(CancellationToken.None);
         await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         model.SelectedConversation = model.Conversations[0];
         await WaitFor(() => !model.IsLoadingMessages);
         await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
@@ -568,6 +578,8 @@ public sealed class NativeChatViewModelTests
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await api.RestoreSessionAsync(CancellationToken.None);
         await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         model.SelectedConversation = model.Conversations[0];
         await WaitFor(() => !model.IsLoadingMessages);
         await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
@@ -601,6 +613,7 @@ public sealed class NativeChatViewModelTests
         };
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await model.LoadAsync();
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         var group = model.Conversations.First(c => c.Id == "g1");
         Assert.True(group.CanLeaveGroup);
         model.SelectedConversation = group;
@@ -628,6 +641,7 @@ public sealed class NativeChatViewModelTests
         };
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await model.LoadAsync();
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         var group = model.Conversations[0];
         model.SelectedConversation = group;
         await WaitFor(() => !model.IsLoadingMessages);
@@ -993,12 +1007,12 @@ public sealed class NativeChatViewModelTests
 
         api.ChatConversations = new HubChatConversationList
         {
-            Items = [Conv("c1"), Conv("c2", kind: "group", title: "Новый чат")],
+            Items = [Conv("c1"), Conv("c2", title: "Новый чат")],
         };
         realtime.RaiseEvent("chat.conversation.updated", "{}");
 
         await WaitFor(() => model.Conversations.Count == 2, TimeSpan.FromSeconds(5));
-        Assert.Contains(model.Conversations, c => c.Title == "Новый чат");
+        Assert.Contains(model.Conversations, c => c.Id == "c2");
     }
 
     [Fact]
@@ -1094,6 +1108,16 @@ public sealed class NativeChatViewModelTests
             catch (Exception exception)
             {
                 captured = exception;
+            }
+            finally
+            {
+                // Живой диспетчер на уходящем потоке держит message-only HWND
+                // (HwndWrapper): посты на мёртвый диспетчер материализуют его
+                // заново, а WndProc на выгруженном потоке валит процесс
+                // (SubclassWndProc NRE) — диспетчер гасим корректно, но только
+                // если он был создан (FromThread не создаёт новый).
+                System.Windows.Threading.Dispatcher
+                    .FromThread(Thread.CurrentThread)?.InvokeShutdown();
             }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -1323,6 +1347,7 @@ public sealed class NativeChatViewModelTests
         };
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await model.LoadAsync();
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         api.ChatConversationsException = new HubApiException(HubApiErrorKind.Transport, "down");
 
         model.SearchText = "ит-";
@@ -1349,6 +1374,7 @@ public sealed class NativeChatViewModelTests
         };
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await model.LoadAsync();
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
 
         model.SearchText = "бухг";
         await WaitFor(() => model.Conversations.Count == 1);
@@ -1440,12 +1466,46 @@ public sealed class NativeChatViewModelTests
 
         var message = model.Messages[0];
         Assert.True(message.CanEditOrDelete);
+        // «Удалить» открывает модал подтверждения — API ещё не вызван.
         await ((NativeAsyncCommand)model.DeleteMessageCommand).ExecuteAsync(message);
+        Assert.True(model.IsDeleteConfirmOpen);
+        Assert.Equal("Удалить сообщение", model.DeleteConfirmTitle);
+        Assert.Empty(api.DeletedMessages);
 
+        await ((NativeAsyncCommand)model.ConfirmDeleteCommand).ExecuteAsync(null);
+
+        Assert.False(model.IsDeleteConfirmOpen);
         Assert.Equal(("c1", "m1"), Assert.Single(api.DeletedMessages));
         Assert.True(message.IsDeleted);
         Assert.False(message.CanReply);
         Assert.False(message.CanEditOrDelete);
+    }
+
+    [Fact]
+    public async Task DeleteCancelLeavesMessageAndClosesConfirm()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items = [Msg("m1", "c1", "оставить", DateTimeOffset.UtcNow, own: true)],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.Messages.Count == 1);
+
+        var message = model.Messages[0];
+        await ((NativeAsyncCommand)model.DeleteMessageCommand).ExecuteAsync(message);
+        Assert.True(model.IsDeleteConfirmOpen);
+
+        model.CancelDeleteCommand.Execute(null);
+
+        Assert.False(model.IsDeleteConfirmOpen);
+        Assert.Empty(api.DeletedMessages);
+        Assert.False(message.IsDeleted);
     }
 
     [Fact]
@@ -1467,6 +1527,7 @@ public sealed class NativeChatViewModelTests
 
         var message = model.Messages[0];
         await ((NativeAsyncCommand)model.DeleteMessageCommand).ExecuteAsync(message);
+        await ((NativeAsyncCommand)model.ConfirmDeleteCommand).ExecuteAsync(null);
 
         Assert.False(message.IsDeleted);
         Assert.True(model.HasBannerError);
@@ -1846,6 +1907,383 @@ public sealed class NativeChatViewModelTests
         await WaitFor(() => api.PinnedCalls.Count == 2);
         Assert.Equal(("c1", "m1", false), api.PinnedCalls[1]);
         await WaitFor(() => model.HasPinnedMessages);
+    }
+
+    [Fact]
+    public async Task AttachDroppedFilesCommandUploadsDroppedPaths()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"hub-test-{Guid.NewGuid():N}.png");
+        await File.WriteAllBytesAsync(filePath, [137, 80, 78]);
+        try
+        {
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessages = new HubChatMessageList { Items = [] },
+                UploadCompletedMessage = Msg("m-drop", "c1", "файл", DateTimeOffset.UtcNow),
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            await model.LoadAsync();
+            model.SelectedConversation = model.Conversations[0];
+            await WaitFor(() => !model.IsLoadingMessages);
+
+            // Тот же путь, что у драга на ленту и вставки файла в composer —
+            // одна upload-сессия, без второго пайплайна.
+            await ((NativeAsyncCommand)model.AttachDroppedFilesCommand).ExecuteAsync(
+                new[] { filePath });
+
+            Assert.Single(api.UploadSessionRequests);
+            Assert.Equal(["upload-1"], api.CompletedSessions);
+            Assert.Equal("m-drop", Assert.Single(model.Messages).Id);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [Fact]
+    public async Task FileDropOverlayFollowsViewFlagAndResetsOnSwitch()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1"), Conv("c2")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.False(model.IsFileDropOverlayOpen);
+        model.SetFileDropOverlay(true);
+        Assert.True(model.IsFileDropOverlayOpen);
+        Assert.Contains(model.SelectedConversation.Title, model.FileDropTargetText);
+
+        // Смена диалога гасит оверлей — view мог потерять DragLeave.
+        model.SelectedConversation = model.Conversations[1];
+        Assert.False(model.IsFileDropOverlayOpen);
+        Assert.Contains(model.SelectedConversation.Title, model.FileDropTargetText);
+    }
+
+    [Fact]
+    public async Task ReplyQuoteClickSelectsLoadedOriginalAndFlashes()
+    {
+        var original = Msg("m-orig", "c1", "оригинал", DateTimeOffset.UtcNow.AddMinutes(-3));
+        var reply = new HubChatMessage
+        {
+            Id = "m-reply",
+            ConversationId = "c1",
+            Kind = "text",
+            Body = "ответ",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Sender = new HubChatUser { Id = 7, Username = "peer", FullName = "Пётр" },
+            ReplyPreview = new HubChatReplyPreview
+            {
+                Id = "m-orig",
+                SenderName = "Пётр",
+                Body = "оригинал",
+                Kind = "text",
+            },
+        };
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [original, reply] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        var replyItem = model.Messages.Single(m => m.Id == "m-reply");
+        Assert.True(replyItem.HasReplyTarget);
+        replyItem.OpenReplyTargetCommand.Execute(null);
+
+        var target = model.Messages.Single(m => m.Id == "m-orig");
+        Assert.Same(target, model.SelectedMessage);
+        Assert.True(target.IsHighlighted);
+        // Цель уже в ленте — ни старших страниц, ни bootstrap не нужно.
+        Assert.Empty(api.ThreadBootstrapCalls);
+        Assert.Null(api.LastBeforeMessageId);
+
+        // Вспышка сама гаснет примерно через секунду.
+        await WaitFor(() => !target.IsHighlighted);
+    }
+
+    [Fact]
+    public async Task ReplyQuoteClickLoadsOlderPageToFindOriginal()
+    {
+        var original = Msg("m-orig", "c1", "давнее", DateTimeOffset.UtcNow.AddHours(-1));
+        var reply = new HubChatMessage
+        {
+            Id = "m-reply",
+            ConversationId = "c1",
+            Kind = "text",
+            Body = "ответ",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Sender = new HubChatUser { Id = 7, Username = "peer", FullName = "Пётр" },
+            ReplyPreview = new HubChatReplyPreview { Id = "m-orig", SenderName = "Пётр" },
+        };
+        var olderPageCalls = 0;
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items = [reply],
+                HasOlder = true,
+                OlderCursorMessageId = "m-reply",
+            },
+        };
+        api.ChatMessagesFactory = before =>
+        {
+            if (before is null)
+            {
+                return api.ChatMessages;
+            }
+
+            olderPageCalls++;
+            return new HubChatMessageList { Items = [original], HasOlder = false };
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        var replyItem = model.Messages.Single(m => m.Id == "m-reply");
+        replyItem.OpenReplyTargetCommand.Execute(null);
+
+        // Цель за пределами первой страницы → догрузка «ранее», выбор и вспышка.
+        await WaitFor(() => model.SelectedMessage?.Id == "m-orig");
+        Assert.Equal(1, olderPageCalls);
+        Assert.Equal("m-reply", api.LastBeforeMessageId);
+        Assert.True(model.Messages.Single(m => m.Id == "m-orig").IsHighlighted);
+        Assert.Empty(api.ThreadBootstrapCalls);
+    }
+
+    [Fact]
+    public async Task ReplyQuoteClickBoundsOlderLoadsThenBootstraps()
+    {
+        var original = Msg("m-orig", "c1", "далёкое", DateTimeOffset.UtcNow.AddDays(-3));
+        var reply = new HubChatMessage
+        {
+            Id = "m-reply",
+            ConversationId = "c1",
+            Kind = "text",
+            Body = "ответ",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Sender = new HubChatUser { Id = 7, Username = "peer", FullName = "Пётр" },
+            ReplyPreview = new HubChatReplyPreview { Id = "m-orig", SenderName = "Пётр" },
+        };
+        var olderPageCalls = 0;
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items = [reply],
+                HasOlder = true,
+                OlderCursorMessageId = "m-reply",
+            },
+            ThreadBootstrapResult = new HubChatThreadBootstrap
+            {
+                Items = [original],
+                InitialAnchorMessageId = "m-orig",
+            },
+        };
+        // Старшие страницы цель не содержат и не заканчиваются: лимит — пять.
+        api.ChatMessagesFactory = before =>
+        {
+            if (before is null)
+            {
+                return api.ChatMessages;
+            }
+
+            olderPageCalls++;
+            return new HubChatMessageList
+            {
+                Items = [Msg($"m-x{olderPageCalls}", "c1", "старое", DateTimeOffset.UtcNow.AddMinutes(-10 - olderPageCalls))],
+                HasOlder = true,
+                OlderCursorMessageId = "m-reply",
+            };
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        model.Messages.Single(m => m.Id == "m-reply").OpenReplyTargetCommand.Execute(null);
+
+        // Лимит подгрузок исчерпан → якорный thread-bootstrap, как у pinned/search.
+        await WaitFor(() => api.ThreadBootstrapCalls.Count == 1);
+        Assert.Equal(5, olderPageCalls);
+        Assert.Equal(("c1", (string?)"m-orig", 40), api.ThreadBootstrapCalls[0]);
+        await WaitFor(() => model.SelectedMessage?.Id == "m-orig");
+        Assert.True(model.Messages.Single(m => m.Id == "m-orig").IsHighlighted);
+    }
+
+    [Fact]
+    public async Task ArrowUpEditsLastOwnMessage()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items =
+                [
+                    Msg("m-own-old", "c1", "старое своё", DateTimeOffset.UtcNow.AddMinutes(-3), own: true),
+                    Msg("m-peer", "c1", "чужое", DateTimeOffset.UtcNow.AddMinutes(-2)),
+                    Msg("m-own", "c1", "последнее своё", DateTimeOffset.UtcNow.AddMinutes(-1), own: true),
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        // tdesktop ↑ в пустом composer: правка ближайшего собственного —
+        // чужое сообщение ниже по ленте пропускается.
+        model.ComposerText = "черновик";
+        model.BeginEditLastOwnMessage();
+
+        Assert.Equal("m-own", model.EditingMessage?.Id);
+        Assert.Equal("последнее своё", model.ComposerText);
+
+        // Отмена правки возвращает снапшот черновика (tdesktop draft restore).
+        model.CancelComposerContextCommand.Execute(null);
+        Assert.Null(model.EditingMessage);
+        Assert.Equal("черновик", model.ComposerText);
+    }
+
+    [Fact]
+    public async Task ArrowUpEditDoesNothingWithoutOwnMessages()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items = [Msg("m-peer", "c1", "чужое", DateTimeOffset.UtcNow)],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        model.BeginEditLastOwnMessage();
+
+        Assert.Null(model.EditingMessage);
+        Assert.False(model.HasComposerContext);
+    }
+
+    [Fact]
+    public async Task ComposerWrapTogglesMarkersAroundSelection()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        var capturedStart = -1;
+        var capturedLength = -1;
+        model.RequestComposerSelection = (start, length) =>
+        {
+            capturedStart = start;
+            capturedLength = length;
+        };
+
+        // Ctrl+B на «hello»: обёртка, выделение остаётся на внутреннем тексте.
+        model.ComposerText = "hello world";
+        model.ToggleComposerWrap("**", 0, 5);
+        Assert.Equal("**hello** world", model.ComposerText);
+        Assert.Equal((2, 5), (capturedStart, capturedLength));
+
+        // Повтор на том же выделении — маркеры снаружи снимаются.
+        model.ToggleComposerWrap("**", 2, 5);
+        Assert.Equal("hello world", model.ComposerText);
+        Assert.Equal((0, 5), (capturedStart, capturedLength));
+
+        // Выделение включает сами маркеры — тоже снятие (Ctrl+K code).
+        model.ComposerText = "a `code` b";
+        model.ToggleComposerWrap("`", 2, 6);
+        Assert.Equal("a code b", model.ComposerText);
+        Assert.Equal((2, 4), (capturedStart, capturedLength));
+    }
+
+    [Fact]
+    public async Task ComposerWrapEmptyCaretInsertsPair()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        var capturedStart = -1;
+        var capturedLength = -1;
+        model.RequestComposerSelection = (start, length) =>
+        {
+            capturedStart = start;
+            capturedLength = length;
+        };
+
+        model.ToggleComposerWrap("**", 0, 0);
+
+        Assert.Equal("****", model.ComposerText);
+        Assert.Equal((2, 0), (capturedStart, capturedLength));
+    }
+
+    [Fact]
+    public async Task AdjacentConversationNavigationMovesSelection()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                // Список сортируется по LastMessageAt desc → порядок c3,c2,c1.
+                Items =
+                [
+                    Conv("c1", lastAt: now),
+                    Conv("c2", lastAt: now.AddMinutes(1)),
+                    Conv("c3", lastAt: now.AddMinutes(2)),
+                ],
+            },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        Assert.Equal(["c3", "c2", "c1"], model.Conversations.Select(c => c.Id));
+
+        model.SelectedConversation = model.Conversations[1];
+        // Alt+↓ — к следующему в списке, Alt+↑ — к предыдущему (tdesktop).
+        model.SelectAdjacentConversation(1);
+        Assert.Equal("c1", model.SelectedConversation?.Id);
+        model.SelectAdjacentConversation(-1);
+        Assert.Equal("c2", model.SelectedConversation?.Id);
+        // За край не выходим: на последнем +1 держит позицию.
+        model.SelectAdjacentConversation(1);
+        model.SelectAdjacentConversation(1);
+        Assert.Equal("c1", model.SelectedConversation?.Id);
+
+        // Без выбора -1 — к последнему, +1 — к первому.
+        model.SelectedConversation = null;
+        model.SelectAdjacentConversation(-1);
+        Assert.Equal("c1", model.SelectedConversation?.Id);
+        model.SelectedConversation = null;
+        model.SelectAdjacentConversation(1);
+        Assert.Equal("c3", model.SelectedConversation?.Id);
     }
 
     [Fact]
@@ -3607,9 +4045,13 @@ public sealed class NativeChatViewModelTests
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await model.LoadAsync();
 
-        Assert.True(model.Conversations.First(c => c.Id == "c1").CanExportHistory);
+        // Группы живут на вкладке «Беседы», direct — в «Личные».
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         Assert.False(model.Conversations.First(c => c.Id == "g1").CanExportHistory);
         Assert.True(model.Conversations.First(c => c.Id == "g2").CanExportHistory);
+
+        model.ActiveFolderKey = ChatViewModel.PersonalFolderKey;
+        Assert.True(model.Conversations.First(c => c.Id == "c1").CanExportHistory);
     }
 
     // ---- Передача владения группой ----
@@ -3644,6 +4086,8 @@ public sealed class NativeChatViewModelTests
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await api.RestoreSessionAsync(CancellationToken.None);
         await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         model.SelectedConversation = model.Conversations[0];
         await WaitFor(() => !model.IsLoadingMessages);
         await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
@@ -3678,6 +4122,8 @@ public sealed class NativeChatViewModelTests
         var model = new ChatViewModel(api, new FakeChatRealtime());
         await api.RestoreSessionAsync(CancellationToken.None);
         await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
         model.SelectedConversation = model.Conversations[0];
         await WaitFor(() => !model.IsLoadingMessages);
 
@@ -3687,7 +4133,2109 @@ public sealed class NativeChatViewModelTests
         Assert.Empty(api.TransferOwnershipCalls);
     }
 
+    // ---- Роли и ограничения участников ----
+
+    [Fact]
+    public async Task PromoteMemberCallsApiAndRefreshesRow()
+    {
+        var api = MembersApiFixture("owner");
+        api.MemberRoleResult = api.ConversationDetailResult! with
+        {
+            Members =
+            [
+                new HubChatMember
+                {
+                    User = new HubChatUser { Id = 7, FullName = "Я" },
+                    MemberRole = "owner",
+                },
+                new HubChatMember
+                {
+                    User = new HubChatUser { Id = 42, FullName = "Иван Иванов" },
+                    MemberRole = "moderator",
+                },
+                new HubChatMember
+                {
+                    User = new HubChatUser { Id = 43, FullName = "Анна Петрова" },
+                    MemberRole = "moderator",
+                },
+            ],
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
+
+        var ivan = Assert.Single(model.GroupMembers, m => m.UserId == 42);
+        var anna = Assert.Single(model.GroupMembers, m => m.UserId == 43);
+        var me = Assert.Single(model.GroupMembers, m => m.UserId == 7);
+        Assert.True(ivan.CanPromote);
+        Assert.False(ivan.CanDemote);
+        Assert.True(anna.CanDemote);   // owner может снять moderator'а
+        Assert.False(anna.CanPromote);
+        Assert.False(me.CanPromote); // себя менять нельзя
+
+        ivan.PromoteCommand.Execute(null);
+        await WaitFor(() => api.MemberRoleCalls.Count == 1);
+
+        // PATCH members/42/role {member_role: "moderator"} → свежий detail в панель.
+        Assert.Equal(("g1", 42, "moderator"), api.MemberRoleCalls[0]);
+        Assert.Equal("Модератор", Assert.Single(model.GroupMembers, m => m.UserId == 42).RoleText);
+    }
+
+    [Fact]
+    public async Task RoleCommandsHiddenForModeratorViewer()
+    {
+        var api = MembersApiFixture("moderator");
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
+
+        Assert.True(model.CanManageGroupMembers);
+        Assert.False(model.CanManageGroupOwners); // роли — привилегия владельца
+        Assert.DoesNotContain(model.GroupMembers, m => m.CanPromote || m.CanDemote);
+        Assert.Empty(api.MemberRoleCalls);
+    }
+
+    [Fact]
+    public async Task RestrictMemberCallsApiWithDuration()
+    {
+        var api = MembersApiFixture("owner");
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
+
+        var ivan = Assert.Single(model.GroupMembers, m => m.UserId == 42);
+        Assert.True(ivan.CanRestrict);
+
+        ivan.RestrictCommand.Execute("3600");
+        await WaitFor(() => api.RestrictMemberCalls.Count == 1);
+
+        Assert.Equal(("g1", 42, (int?)3600), api.RestrictMemberCalls[0]);
+    }
+
+    [Fact]
+    public async Task LiftRestrictionCallsDeleteEndpoint()
+    {
+        var api = MembersApiFixture("owner");
+        api.ConversationDetailResult = api.ConversationDetailResult! with
+        {
+            Members =
+            [
+                new HubChatMember
+                {
+                    User = new HubChatUser { Id = 7, FullName = "Я" },
+                    MemberRole = "owner",
+                },
+                new HubChatMember
+                {
+                    User = new HubChatUser { Id = 42, FullName = "Иван Иванов" },
+                    MemberRole = "member",
+                    IsRestricted = true,
+                },
+            ],
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
+
+        var ivan = Assert.Single(model.GroupMembers, m => m.UserId == 42);
+        Assert.True(ivan.IsRestricted);
+        Assert.Equal("ограничен", ivan.RestrictedText);
+
+        ivan.LiftRestrictionCommand.Execute(null);
+        await WaitFor(() => api.LiftRestrictionCalls.Count == 1);
+
+        Assert.Equal(("g1", 42), api.LiftRestrictionCalls[0]);
+    }
+
+    [Fact]
+    public async Task MemberViewerHasNoModerationActions()
+    {
+        var api = MembersApiFixture("member");
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
+
+        // Fail-closed: у обычного участника нет ни одного действия модерации.
+        Assert.DoesNotContain(model.GroupMembers, m => m.HasModerationActions);
+        Assert.Empty(api.MemberRoleCalls);
+        Assert.Empty(api.RestrictMemberCalls);
+        Assert.Empty(api.LiftRestrictionCalls);
+    }
+
+    [Fact]
+    public async Task MemberRoleFailureShowsBanner()
+    {
+        var api = MembersApiFixture("owner");
+        api.MemberRoleException = new HubApiException(HubApiErrorKind.Transport, "down");
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleMembersPanelCommand).ExecuteAsync(null);
+
+        model.GroupMembers.Single(m => m.UserId == 42).PromoteCommand.Execute(null);
+        await WaitFor(() => model.HasBannerError);
+    }
+
+    // ---- Заявки на вступление ----
+
+    /// <summary>Открывает настройки группы (owner) — там живут заявки/жалобы/ссылка.</summary>
+    private static async Task<ChatViewModel> OpenGroupSettingsAsync(FakeHubApiClient api)
+    {
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleGroupSettingsCommand).ExecuteAsync(null);
+        Assert.True(model.IsGroupSettingsOpen);
+        Assert.True(model.CanManageGroupMembers);
+        return model;
+    }
+
+    [Fact]
+    public async Task JoinRequestsPanelListsAndApproveRemovesRow()
+    {
+        var api = MembersApiFixture("owner");
+        api.JoinRequestsResult = new HubChatJoinRequestList
+        {
+            Items =
+            [
+                new HubChatJoinRequestItem
+                {
+                    Id = 11,
+                    UserId = 55,
+                    UserName = "Пётр Заявителев",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                },
+                new HubChatJoinRequestItem
+                {
+                    Id = 12,
+                    UserId = 56,
+                    UserName = "Анна Просителева",
+                },
+            ],
+            OpenCount = 2,
+            ApprovalRequired = true,
+        };
+        var model = await OpenGroupSettingsAsync(api);
+        await ((NativeAsyncCommand)model.ToggleJoinRequestsPanelCommand).ExecuteAsync(null);
+
+        Assert.True(model.IsJoinRequestsPanelOpen);
+        Assert.Equal(2, model.JoinRequests.Count);
+        Assert.True(model.IsJoinApprovalRequired); // режим пришёл из списка, без записи
+        Assert.Empty(api.JoinApprovalCalls);
+        Assert.Equal("2", model.JoinRequestsBadgeText);
+
+        model.JoinRequests[0].ApproveCommand.Execute(null);
+        await WaitFor(() => api.JoinRequestDecisionCalls.Count == 1);
+
+        Assert.Equal(("g1", 11L, "approve"), api.JoinRequestDecisionCalls[0]);
+        Assert.Single(model.JoinRequests); // решённая строка убрана
+        Assert.Equal(56, model.JoinRequests[0].UserId);
+    }
+
+    [Fact]
+    public async Task JoinApprovalToggleWritesModeAndRollbackOnError()
+    {
+        var api = MembersApiFixture("owner");
+        var model = await OpenGroupSettingsAsync(api);
+        await ((NativeAsyncCommand)model.ToggleJoinRequestsPanelCommand).ExecuteAsync(null);
+
+        model.IsJoinApprovalRequired = true;
+        await WaitFor(() => api.JoinApprovalCalls.Count == 1);
+        Assert.Equal(("g1", true), api.JoinApprovalCalls[0]);
+        Assert.True(model.IsJoinApprovalRequired);
+
+        // Сбой записи — свитч откатывается к факту.
+        api.JoinApprovalException = new HubApiException(HubApiErrorKind.Transport, "down");
+        model.IsJoinApprovalRequired = false;
+        await WaitFor(() => api.JoinApprovalCalls.Count == 2);
+        await WaitFor(() => model.IsJoinApprovalRequired);
+        Assert.True(model.HasBannerError);
+    }
+
+    [Fact]
+    public async Task JoinRequestsClosedForMemberViewer()
+    {
+        var api = MembersApiFixture("member");
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleGroupSettingsCommand).ExecuteAsync(null);
+        Assert.False(model.CanManageGroupMembers);
+
+        Assert.False(model.ToggleJoinRequestsPanelCommand.CanExecute(null));
+        Assert.False(model.ToggleReportsPanelCommand.CanExecute(null));
+        await ((NativeAsyncCommand)model.ToggleJoinRequestsPanelCommand).ExecuteAsync(null);
+        Assert.False(model.IsJoinRequestsPanelOpen);
+        Assert.Empty(api.JoinRequestsCalls);
+        Assert.Empty(api.ReportsCalls);
+    }
+
+    // ---- Жалобы на сообщения ----
+
+    [Fact]
+    public async Task ReportDialogSubmitsReasonAndCloses()
+    {
+        var api = MembersApiFixture("owner");
+        api.ChatMessages = new HubChatMessageList
+        {
+            Items = [Msg("m9", "g1", "спамное", DateTimeOffset.UtcNow)],
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.Messages.Count == 1);
+
+        var message = model.Messages[0];
+        Assert.True(message.CanReport); // чужое сообщение в группе
+
+        model.BeginReportCommand.Execute(message);
+        Assert.True(model.IsReportDialogOpen);
+        model.IsReportReasonOther = true;
+        model.ReportComment = "подозрительно";
+
+        await ((NativeAsyncCommand)model.SubmitReportCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.ReportCalls);
+        Assert.Equal(("g1", "m9", "other", "подозрительно"), call);
+        Assert.False(model.IsReportDialogOpen);
+        Assert.Equal("Жалоба отправлена владельцу группы.", model.UploadStatusText);
+    }
+
+    [Fact]
+    public async Task ReportHiddenForOwnMessagesAndDirectChats()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items =
+                [
+                    Msg("m1", "c1", "свое", DateTimeOffset.UtcNow, own: true),
+                    Msg("m2", "c1", "чужое", DateTimeOffset.UtcNow),
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.Messages.Count == 2);
+
+        // Прямой диалог: жалоб нет вовсе (пункт есть только в группах, как в web).
+        Assert.False(model.Messages[0].CanReport);
+        Assert.False(model.Messages[1].CanReport);
+        Assert.Empty(api.ReportCalls);
+    }
+
+    [Fact]
+    public async Task ReportsPanelListsAndResolveRemovesRow()
+    {
+        var api = MembersApiFixture("owner");
+        api.ReportsResult = new HubChatMessageReportList
+        {
+            Items =
+            [
+                new HubChatMessageReport
+                {
+                    Id = 21,
+                    MessageId = "m1",
+                    Reason = "spam",
+                    ReporterName = "Иван",
+                    SenderName = "Пётр",
+                    MessagePreview = "купи слона",
+                },
+                new HubChatMessageReport
+                {
+                    Id = 22,
+                    MessageId = "m2",
+                    Reason = "other",
+                    Comment = "странное",
+                },
+            ],
+            OpenCount = 2,
+        };
+        var model = await OpenGroupSettingsAsync(api);
+        await ((NativeAsyncCommand)model.ToggleReportsPanelCommand).ExecuteAsync(null);
+
+        Assert.True(model.IsReportsPanelOpen);
+        Assert.Equal(2, model.MessageReports.Count);
+        Assert.Equal("Спам", model.MessageReports[0].ReasonText);
+        Assert.Equal("от Иван", model.MessageReports[0].ReporterText);
+        Assert.Equal("2", model.ReportsBadgeText);
+
+        model.MessageReports[0].ResolveCommand.Execute(null);
+        await WaitFor(() => api.ReportResolveCalls.Count == 1);
+
+        Assert.Equal(("g1", 21L, "resolved"), api.ReportResolveCalls[0]);
+        Assert.Single(model.MessageReports);
+        Assert.Equal(22, model.MessageReports[0].Id);
+    }
+
+    // ---- Ссылка-приглашение и профиль группы ----
+
+    [Fact]
+    public async Task InviteLinkCreateShowsUrlAndRevokeIsArmed()
+    {
+        var api = MembersApiFixture("owner");
+        var model = await OpenGroupSettingsAsync(api);
+
+        await ((NativeAsyncCommand)model.CreateInviteLinkCommand).ExecuteAsync(null);
+
+        Assert.Equal("g1", Assert.Single(api.InviteLinkCalls));
+        Assert.True(model.HasGroupInviteLink);
+        Assert.EndsWith("chat?join=invite-token", model.GroupInviteLink);
+
+        // «Отозвать» — armed: первый клик меняет подпись, второй вызывает DELETE.
+        await ((NativeAsyncCommand)model.RevokeInviteLinkCommand).ExecuteAsync(null);
+        Assert.Empty(api.InviteRevokeCalls);
+        Assert.Equal("Точно отозвать?", model.InviteRevokeText);
+
+        await ((NativeAsyncCommand)model.RevokeInviteLinkCommand).ExecuteAsync(null);
+        Assert.Equal("g1", Assert.Single(api.InviteRevokeCalls));
+        Assert.False(model.HasGroupInviteLink);
+        Assert.Equal("Отозвать ссылку", model.InviteRevokeText);
+    }
+
+    [Fact]
+    public async Task GroupProfileSavePatchesTitleForOwner()
+    {
+        var api = MembersApiFixture("owner");
+        api.ConversationDetailResult = api.ConversationDetailResult! with
+        {
+            Description = "старое описание",
+        };
+        api.GroupProfileResult = api.ConversationDetailResult with
+        {
+            Title = "Новое имя",
+            Description = "старое описание",
+        };
+        var model = await OpenGroupSettingsAsync(api);
+
+        Assert.True(model.CanManageGroupOwners);
+        Assert.Equal("старое описание", model.GroupDescriptionDraft);
+        model.GroupTitleDraft = "Новое имя";
+        Assert.True(model.CanSaveGroupProfile);
+
+        await ((NativeAsyncCommand)model.SaveGroupProfileCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.GroupProfileCalls);
+        Assert.Equal(("g1", "Новое имя", null, null, null, null), call);
+        Assert.Equal("Новое имя", model.Conversations[0].Title);
+    }
+
+    [Fact]
+    public async Task GroupProfileForModeratorPatchesDescriptionOnly()
+    {
+        var api = MembersApiFixture("moderator");
+        api.ConversationDetailResult = api.ConversationDetailResult! with
+        {
+            Description = "старое",
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        // Диалог-фикстура — группа: по умолчанию вкладка «Личные» её скрывает.
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.ToggleGroupSettingsCommand).ExecuteAsync(null);
+        Assert.False(model.CanManageGroupOwners);
+
+        // Модератору название недоступно — уходит только описание.
+        model.GroupTitleDraft = "Подсунутое имя";
+        model.GroupDescriptionDraft = "новое описание";
+        Assert.True(model.CanSaveGroupProfile);
+
+        await ((NativeAsyncCommand)model.SaveGroupProfileCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.GroupProfileCalls);
+        Assert.Equal(("g1", null, "новое описание", null, null, null), call);
+    }
+
+    [Fact]
+    public async Task DeleteGroupIsArmedAndRemovesConversation()
+    {
+        var api = MembersApiFixture("owner");
+        api.ConversationDetailResult = api.ConversationDetailResult!;
+        var model = await OpenGroupSettingsAsync(api);
+        Assert.True(model.CanManageGroupOwners);
+
+        await ((NativeAsyncCommand)model.DeleteGroupCommand).ExecuteAsync(null);
+        Assert.Empty(api.DeletedConversations);
+        Assert.Equal("Точно удалить группу?", model.DeleteGroupText);
+
+        await ((NativeAsyncCommand)model.DeleteGroupCommand).ExecuteAsync(null);
+        Assert.Equal("g1", Assert.Single(api.DeletedConversations));
+        Assert.DoesNotContain(model.Conversations, c => c.Id == "g1");
+        Assert.Null(model.SelectedConversation);
+        Assert.False(model.IsGroupSettingsOpen);
+    }
+
+    [Fact]
+    public async Task GroupAvatarUploadReadsFileAndMarksHasAvatar()
+    {
+        var api = MembersApiFixture("owner");
+        api.GroupAvatarResult = api.ConversationDetailResult! with
+        {
+            AvatarUrl = "https://hubit.zsgp.ru/avatars/g1.png",
+        };
+        var model = await OpenGroupSettingsAsync(api);
+        Assert.False(model.HasGroupAvatar);
+
+        var path = Path.Combine(Path.GetTempPath(), "hub-avatar-" + Guid.NewGuid().ToString("N") + ".png");
+        await File.WriteAllBytesAsync(path, TestImageBytes.Png1X1);
+        try
+        {
+            model.GroupAvatarPicker = () => path;
+            await ((NativeAsyncCommand)model.UploadGroupAvatarCommand).ExecuteAsync(null);
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+
+        var call = Assert.Single(api.GroupAvatarCalls);
+        Assert.Equal("g1", call.ConversationId);
+        Assert.Equal("image/png", call.MimeType);
+        Assert.True(model.HasGroupAvatar);
+
+        api.GroupAvatarResult = api.ConversationDetailResult! with { AvatarUrl = null };
+        await ((NativeAsyncCommand)model.RemoveGroupAvatarCommand).ExecuteAsync(null);
+        Assert.Equal("g1", Assert.Single(api.GroupAvatarDeleteCalls));
+        Assert.False(model.HasGroupAvatar);
+    }
+
+    // ---- «Поделиться задачей» и поддержка ----
+
+    [Fact]
+    public async Task TaskShareSendsMessageAndShowsTaskCard()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+            ShareableTasksResult = new HubChatShareableTaskList
+            {
+                Items =
+                [
+                    new HubChatTaskPreview
+                    {
+                        Id = "42",
+                        Title = "Починить принтер",
+                        Status = "in_progress",
+                    },
+                ],
+            },
+            TaskShareFactory = () => new HubChatMessage
+            {
+                Id = "msg-task1",
+                ConversationId = "c1",
+                Kind = "task_share",
+                CreatedAt = DateTimeOffset.UtcNow,
+                IsOwn = true,
+                TaskPreview = new HubChatTaskPreview
+                {
+                    Id = "42",
+                    Title = "Починить принтер",
+                    Status = "in_progress",
+                },
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.OpenTaskShareCommand).ExecuteAsync(null);
+        Assert.True(model.IsTaskShareOpen);
+        var task = Assert.Single(model.ShareableTasks);
+        Assert.Equal("Починить принтер", task.Title);
+
+        task.ShareCommand.Execute(null);
+        await WaitFor(() => api.TaskShareCalls.Count == 1);
+        await WaitFor(() => model.Messages.Count == 1);
+
+        Assert.Equal(("c1", "42"), api.TaskShareCalls[0]);
+        var message = model.Messages[0];
+        Assert.True(message.HasTaskCard);
+        Assert.Equal("Починить принтер", message.TaskCardTitle);
+        Assert.False(model.IsTaskShareOpen); // панель закрыта после отправки
+    }
+
+    [Fact]
+    public async Task TaskShareSearchDebouncesQuery()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        await ((NativeAsyncCommand)model.OpenTaskShareCommand).ExecuteAsync(null);
+        await WaitFor(() => api.ShareableTasksCalls.Count == 1);
+
+        model.TaskShareSearchText = "принтер";
+        await WaitFor(() => api.ShareableTasksCalls.Count == 2);
+
+        Assert.Equal("принтер", api.ShareableTasksCalls[1].Query);
+    }
+
+    [Fact]
+    public async Task OpenSupportCreatesAndSelectsConversation()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+            SupportConversationResult = new HubChatConversation
+            {
+                Id = "sup-1",
+                Kind = "direct",
+                Title = "Поддержка",
+                IsSupport = true,
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        await ((NativeAsyncCommand)model.OpenSupportCommand).ExecuteAsync(null);
+
+        Assert.Equal(1, api.SupportCalls);
+        var item = Assert.Single(model.Conversations, c => c.Id == "sup-1");
+        Assert.Same(item, model.SelectedConversation);
+        Assert.Equal("Поддержка", item.Title);
+    }
+
+    // ---- Deep link «/chat?join=TOKEN» ----
+
+    [Fact]
+    public async Task InviteJoinUpsertsAndSelectsConversation()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+            InviteJoinResult = new HubChatInviteJoinResult
+            {
+                Joined = true,
+                Conversation = new HubChatConversation
+                {
+                    Id = "g-joined",
+                    Kind = "group",
+                    Title = "Новая группа",
+                    MemberCount = 10,
+                    ViewerMemberRole = "member",
+                },
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        // Присоединённая группа видна на вкладке «Беседы».
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+
+        await model.JoinConversationByInviteTokenAsync("tok-1");
+
+        Assert.Equal("tok-1", Assert.Single(api.InviteJoinCalls));
+        var item = Assert.Single(model.Conversations, c => c.Id == "g-joined");
+        Assert.Same(item, model.SelectedConversation);
+    }
+
+    [Fact]
+    public async Task InviteJoinRequestedShowsInfoBanner()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            InviteJoinResult = new HubChatInviteJoinResult { Requested = true },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        await model.JoinConversationByInviteTokenAsync("tok-2");
+
+        Assert.True(model.HasBannerError);
+        Assert.Contains("Заявка", model.BannerErrorText);
+        Assert.Null(model.SelectedConversation);
+    }
+
+    // ---- Гидратация статусов загруженных сообщений ----
+
+    [Fact]
+    public async Task HydrateAppliesDeliveryStatusToLoadedMessages()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items = [Msg("m1", "c1", "моё", DateTimeOffset.UtcNow, own: true)],
+            },
+            HydrateResult = new HubChatThreadHydrateResult
+            {
+                Items =
+                [
+                    new HubChatThreadHydrateItem
+                    {
+                        MessageId = "m1",
+                        ReadByCount = 3,
+                        DeliveryStatus = "read",
+                    },
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.Messages.Count == 1);
+
+        // Гидратация стартует сразу после загрузки и догоняет статус ✓✓.
+        await WaitFor(() => api.HydrateCalls.Count == 1);
+        await WaitFor(() => model.Messages[0].StatusText == "✓✓");
+
+        var (conversationId, ids) = api.HydrateCalls[0];
+        Assert.Equal("c1", conversationId);
+        Assert.Equal(["m1"], ids);
+    }
+
+    // ---- Отложенные сообщения («Отправить позже») ----
+
+    [Fact]
+    public async Task ScheduledFeatureFollowsConfigFlag()
+    {
+        // Флаг выключен — «Отправить позже» недоступно.
+        var offModel = new ChatViewModel(new FakeHubApiClient(), new FakeChatRealtime());
+        await offModel.LoadAsync();
+        Assert.False(offModel.IsScheduledMessagesEnabled);
+
+        var api = new FakeHubApiClient
+        {
+            ChatConfig = new HubChatConfig { ScheduledMessagesEnabled = true },
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.IsScheduledMessagesEnabled);
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.True(model.CanScheduleMessage);
+        Assert.True(model.OpenScheduleEditorCommand.CanExecute(null));
+        // Список отложенных подгружается вместе с диалогом.
+        Assert.Equal(1, api.ScheduledListCallCount);
+        Assert.Equal("c1", api.LastScheduledListConversationId);
+    }
+
+    [Fact]
+    public async Task ScheduledEditorPrefillsComposerAndPostsIsoTime()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConfig = new HubChatConfig { ScheduledMessagesEnabled = true },
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.IsScheduledMessagesEnabled);
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        model.ComposerText = "  напомнить коллеге  ";
+
+        model.OpenScheduleEditorCommand.Execute(null);
+
+        Assert.True(model.IsScheduleEditorOpen);
+        Assert.Equal("Отправить позже", model.ScheduleEditorTitle);
+        Assert.Equal("  напомнить коллеге  ", model.ScheduleDraftBody);
+        Assert.NotNull(model.ScheduleDraftDate);
+        Assert.False(string.IsNullOrEmpty(model.ScheduleDraftTime));
+        Assert.Null(model.ScheduleDraftErrorText);
+        Assert.StartsWith("Будет отправлено", model.ScheduleDraftHint);
+
+        model.ScheduleDraftDate = DateTime.Today.AddDays(2);
+        model.ScheduleDraftTime = "15:30";
+        Assert.True(model.ConfirmScheduleCommand.CanExecute(null));
+
+        await ((NativeAsyncCommand)model.ConfirmScheduleCommand).ExecuteAsync(null);
+        await WaitFor(() => api.ScheduledCreateCalls.Count == 1);
+
+        var (conversationId, body, scheduledFor, replyTo) = api.ScheduledCreateCalls[0];
+        Assert.Equal("c1", conversationId);
+        Assert.Equal("напомнить коллеге", body);
+        Assert.Null(replyTo);
+        // Локальные 15:30 по третьему дню — клиент отдаёт момент как есть.
+        Assert.Equal(DateTime.Today.AddDays(2) + TimeSpan.FromHours(15.5),
+            scheduledFor.LocalDateTime);
+        // Успешное планирование чистит composer, редактор закрыт, список пополнен.
+        Assert.Equal(string.Empty, model.ComposerText);
+        Assert.False(model.IsScheduleEditorOpen);
+        Assert.Single(model.ScheduledMessages);
+        Assert.True(model.HasScheduledBar);
+        Assert.Contains("Запланировано: 1", model.ScheduledBarText);
+    }
+
+    [Fact]
+    public async Task ScheduledEditorRejectsPastFarFutureAndBadTime()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConfig = new HubChatConfig { ScheduledMessagesEnabled = true },
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.IsScheduledMessagesEnabled);
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+        model.OpenScheduleEditorCommand.Execute(null);
+
+        // Прошлое — «Время должно быть в будущем».
+        model.ScheduleDraftDate = DateTime.Today.AddDays(-1);
+        model.ScheduleDraftTime = "12:00";
+        Assert.Equal("Время должно быть в будущем", model.ScheduleDraftErrorText);
+        Assert.False(model.ConfirmScheduleCommand.CanExecute(null));
+
+        // Больше года — «Не дальше, чем на год».
+        model.ScheduleDraftDate = DateTime.Today.AddDays(400);
+        Assert.Equal("Не дальше, чем на год", model.ScheduleDraftErrorText);
+        Assert.False(model.ConfirmScheduleCommand.CanExecute(null));
+
+        // Неразборчивое время — «Укажите дату и время».
+        model.ScheduleDraftDate = DateTime.Today.AddDays(2);
+        model.ScheduleDraftTime = "полдень";
+        Assert.Equal("Укажите дату и время", model.ScheduleDraftErrorText);
+        Assert.False(model.ConfirmScheduleCommand.CanExecute(null));
+
+        // Пустой текст — подтвердить нельзя.
+        model.ScheduleDraftTime = "15:00";
+        model.ScheduleDraftBody = "   ";
+        Assert.False(model.ConfirmScheduleCommand.CanExecute(null));
+
+        Assert.Empty(api.ScheduledCreateCalls);
+    }
+
+    [Fact]
+    public async Task ScheduledEditPatchesAndCancelIsArmed()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConfig = new HubChatConfig { ScheduledMessagesEnabled = true },
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+        };
+        api.ScheduledItems["c1"] =
+        [
+            new HubChatScheduledMessage
+            {
+                Id = "s1",
+                ConversationId = "c1",
+                Body = "Старый текст",
+                Status = "scheduled",
+                ScheduledFor = DateTimeOffset.Now.AddHours(3),
+            },
+        ];
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.IsScheduledMessagesEnabled);
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.ScheduledMessages.Count == 1);
+        var item = model.ScheduledMessages[0];
+
+        // Правка: подставляем текст и время существующего, PATCH по id.
+        item.EditCommand.Execute(null);
+        Assert.True(model.IsScheduleEditorOpen);
+        Assert.Equal("Изменить запланированное", model.ScheduleEditorTitle);
+        Assert.Equal("Сохранить", model.ScheduleEditorConfirmText);
+        Assert.Equal("Старый текст", model.ScheduleDraftBody);
+
+        model.ScheduleDraftBody = "Новый текст";
+        model.ScheduleDraftDate = DateTime.Today.AddDays(1);
+        model.ScheduleDraftTime = "09:00";
+        await ((NativeAsyncCommand)model.ConfirmScheduleCommand).ExecuteAsync(null);
+        await WaitFor(() => api.ScheduledUpdateCalls.Count == 1);
+
+        var (editId, editBody, editWhen) = api.ScheduledUpdateCalls[0];
+        Assert.Equal("s1", editId);
+        Assert.Equal("Новый текст", editBody);
+        Assert.Equal(DateTime.Today.AddDays(1).AddHours(9), editWhen?.LocalDateTime);
+        Assert.False(model.IsScheduleEditorOpen);
+        Assert.Empty(api.ScheduledCreateCalls);
+
+        // Отмена — armed: первый клик просит повтор, DELETE идёт со второго.
+        item = model.ScheduledMessages[0];
+        item.CancelCommand.Execute(null);
+        Assert.True(item.CancelArmed);
+        Assert.Equal("Точно?", item.CancelText);
+        Assert.Empty(api.ScheduledCancelCalls);
+
+        item.CancelCommand.Execute(null);
+        await WaitFor(() => api.ScheduledCancelCalls.Count == 1);
+        Assert.Equal("s1", Assert.Single(api.ScheduledCancelCalls));
+        await WaitFor(() => model.ScheduledMessages.Count == 0);
+        Assert.False(model.HasScheduledBar);
+    }
+
+    [Fact]
+    public async Task ScheduledErrorsAreIsolatedFromChatBanner()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConfig = new HubChatConfig { ScheduledMessagesEnabled = true },
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ScheduledListException = new HubApiException(HubApiErrorKind.Http, "boom"),
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.IsScheduledMessagesEnabled);
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => api.ScheduledListCallCount > 0);
+        await WaitFor(() => model.HasScheduledError);
+
+        Assert.False(model.HasBannerError);
+        Assert.True(model.HasScheduledBar);
+        Assert.True(model.ScheduledBarIsError);
+
+        // Ошибка записи — в изолированный текст, лента не краснеет.
+        api.ScheduledListException = null;
+        api.ScheduledCreateException = new HubApiException(HubApiErrorKind.Http, "refused");
+        model.OpenScheduleEditorCommand.Execute(null);
+        model.ScheduleDraftBody = "текст";
+        model.ScheduleDraftDate = DateTime.Today.AddDays(1);
+        model.ScheduleDraftTime = "10:00";
+        await ((NativeAsyncCommand)model.ConfirmScheduleCommand).ExecuteAsync(null);
+        await WaitFor(() => api.ScheduledCreateCalls.Count == 1);
+        await WaitFor(() => model.HasScheduledError);
+
+        Assert.True(model.IsScheduleEditorOpen);
+        Assert.False(model.HasBannerError);
+        Assert.Equal("текст", model.ScheduleDraftBody);
+    }
+
+    [Fact]
+    public async Task ScheduledStateResetsOnConversationSwitch()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConfig = new HubChatConfig { ScheduledMessagesEnabled = true },
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1"), Conv("c2")] },
+        };
+        api.ScheduledItems["c1"] =
+        [
+            new HubChatScheduledMessage
+            {
+                Id = "s1",
+                ConversationId = "c1",
+                Body = "Отложенное c1",
+                Status = "scheduled",
+                ScheduledFor = DateTimeOffset.Now.AddHours(2),
+            },
+        ];
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.IsScheduledMessagesEnabled);
+        model.SelectedConversation = model.Conversations.First(c => c.Id == "c1");
+        await WaitFor(() => model.ScheduledMessages.Count == 1);
+
+        model.OpenScheduleEditorCommand.Execute(null);
+        Assert.True(model.IsScheduleEditorOpen);
+
+        model.SelectedConversation = model.Conversations.First(c => c.Id == "c2");
+        await WaitFor(() => api.ScheduledListCallCount >= 2);
+
+        Assert.False(model.IsScheduleEditorOpen);
+        Assert.Empty(model.ScheduledMessages);
+        Assert.False(model.HasScheduledBar);
+        Assert.Equal("c2", api.LastScheduledListConversationId);
+
+        // Обратно — список c1 подгружается заново.
+        model.SelectedConversation = model.Conversations.First(c => c.Id == "c1");
+        await WaitFor(() => model.ScheduledMessages.Count == 1);
+        Assert.Equal("s1", model.ScheduledMessages[0].Id);
+    }
+
+    [Fact]
+    public void ScheduledTimeFormatsAndPresetsMatchWeb()
+    {
+        var now = new DateTime(2026, 11, 19, 10, 0, 0, DateTimeKind.Local);
+
+        Assert.Equal("сегодня в 18:30",
+            ChatScheduleTime.Format(new DateTimeOffset(now.Date.AddHours(18).AddMinutes(30)), now));
+        Assert.Equal("завтра в 09:00",
+            ChatScheduleTime.Format(new DateTimeOffset(now.Date.AddDays(1).AddHours(9)), now));
+
+        var presets = ChatScheduleTime.Presets(new DateTimeOffset(now));
+        Assert.Equal(["hour", "tomorrow", "monday"], presets.Select(p => p.Key).ToArray());
+        Assert.Equal(now.AddHours(1), presets[0].When.LocalDateTime);
+        Assert.Equal(now.Date.AddDays(1).AddHours(9), presets[1].When.LocalDateTime);
+        Assert.Equal(DayOfWeek.Monday, presets[2].When.DayOfWeek);
+
+        Assert.Equal("Укажите дату и время", ChatScheduleTime.Validate(null, new DateTimeOffset(now)));
+        Assert.Equal("Время должно быть в будущем",
+            ChatScheduleTime.Validate(new DateTimeOffset(now.AddSeconds(30)), new DateTimeOffset(now)));
+        Assert.Equal("Не дальше, чем на год",
+            ChatScheduleTime.Validate(new DateTimeOffset(now.AddDays(366)), new DateTimeOffset(now)));
+        Assert.Equal(string.Empty,
+            ChatScheduleTime.Validate(new DateTimeOffset(now.AddHours(2)), new DateTimeOffset(now)));
+    }
+
     // ---- Хелперы ----
+
+    // ---- Папки диалогов (вкладки + CRUD + членство) ----
+
+    [Fact]
+    public async Task FolderTabsStartWithSystemTabsAndLoadAppendsCustom()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatFolders = new HubChatFolderList
+            {
+                Items = [new HubChatFolder { Id = "f1", Name = "Работа", SortOrder = 0 }],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        // «Все» — виртуальная вкладка tg-main — всегда первая; за ней системные.
+        Assert.Equal(["all", "personal", "groups", "tasks"], model.FolderTabs.Select(t => t.Key).ToArray());
+        Assert.True(model.FolderTabs[0].IsSystem);
+        Assert.Equal("💬", model.FolderTabs[0].IconText);
+
+        await model.LoadAsync();
+        await WaitFor(() => api.ChatFoldersCallCount > 0);
+        await WaitFor(() => model.FolderTabs.Count == 5);
+
+        Assert.Equal("f1", model.FolderTabs[4].Key);
+        Assert.Equal("Работа", model.FolderTabs[4].Title);
+        Assert.True(model.FolderTabs[4].FolderId is not null);
+    }
+
+    [Fact]
+    public async Task SystemFolderTabsFilterConversationsByKind()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items =
+                [
+                    Conv("d1", lastAt: now, kind: "direct"),
+                    Conv("g1", lastAt: now.AddSeconds(-1), kind: "group"),
+                    Conv("t1", lastAt: now.AddSeconds(-2), kind: "task"),
+                    Conv("a1", lastAt: now.AddSeconds(-3), kind: "ai"),
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        // Вкладка по умолчанию — «Все»: все не-архивные диалоги без фильтра kind.
+        Assert.Equal(["d1", "g1", "t1", "a1"], model.Conversations.Select(c => c.Id).ToArray());
+
+        model.ActiveFolderKey = "personal";
+        Assert.Equal(["d1", "a1"], model.Conversations.Select(c => c.Id).ToArray());
+
+        model.ActiveFolderKey = "groups";
+        Assert.Equal(["g1"], model.Conversations.Select(c => c.Id).ToArray());
+
+        model.ActiveFolderKey = "tasks";
+        Assert.Equal(["t1"], model.Conversations.Select(c => c.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task AllFolderTabShowsEveryKindAndSkipsArchived()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items =
+                [
+                    Conv("d1", lastAt: now, kind: "direct", unread: 2),
+                    Conv("g1", lastAt: now.AddSeconds(-1), kind: "group", unread: 3),
+                    Conv("t1", lastAt: now.AddSeconds(-2), kind: "task", unread: 5),
+                    Conv("x1", lastAt: now.AddSeconds(-3), kind: "direct", unread: 7)
+                        with { IsArchived = true },
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        // «Все»: direct+group+task видны вместе, архивный исключён из вида и бейджа.
+        Assert.Equal("all", model.ActiveFolderKey);
+        Assert.Equal(["d1", "g1", "t1"], model.Conversations.Select(c => c.Id).ToArray());
+        var allTab = model.FolderTabs[0];
+        Assert.Equal("all", allTab.Key);
+        Assert.Equal("Все", allTab.Title);
+        Assert.Equal(10, allTab.UnreadCount);
+
+        // Архив — отдельный вид: там только x1, «Все» после возврата его не ловит.
+        model.ToggleArchivedViewCommand.Execute(null);
+        Assert.True(model.ShowArchived);
+        Assert.Equal(["x1"], model.Conversations.Select(c => c.Id).ToArray());
+        model.ToggleArchivedViewCommand.Execute(null);
+        Assert.Equal(["d1", "g1", "t1"], model.Conversations.Select(c => c.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task CustomFolderTabFiltersByMembership()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items = [Conv("c1"), Conv("c2")],
+            },
+            ChatFolders = new HubChatFolderList
+            {
+                Items =
+                [
+                    new HubChatFolder
+                    {
+                        Id = "f1",
+                        Name = "Работа",
+                        ConversationIds = ["c1"],
+                    },
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.FolderTabs.Count == 5);
+
+        model.ActiveFolderKey = "f1";
+
+        Assert.Equal(["c1"], model.Conversations.Select(c => c.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task FolderUnreadBadgePrefersServerCounts()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items = [Conv("c1", unread: 5), Conv("c2", unread: 3)],
+            },
+            ChatFolders = new HubChatFolderList
+            {
+                Items = [new HubChatFolder { Id = "f1", Name = "Работа", ConversationIds = ["c1", "c2"] }],
+                FolderUnreadCounts = new Dictionary<string, int> { ["f1"] = 9 },
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.FolderTabs.Count == 5);
+
+        Assert.Equal(9, model.FolderTabs[4].UnreadCount);
+        Assert.Equal("9", model.FolderTabs[4].UnreadBadgeText);
+    }
+
+    [Fact]
+    public async Task FolderManagerCreatesRenamesAndDeletesFolder()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        model.ToggleFolderManagerCommand.Execute(null);
+        Assert.True(model.IsFolderManagerOpen);
+
+        model.NewFolderName = "Проекты";
+        await ((NativeAsyncCommand)model.CreateFolderCommand).ExecuteAsync(null);
+        Assert.Equal(["Проекты"], api.ChatFolderCreateNames);
+        var tab = Assert.Single(model.CustomFolderTabs);
+        Assert.Equal("Проекты", tab.Title);
+        Assert.Equal(string.Empty, model.NewFolderName);
+
+        model.BeginFolderRenameCommand.Execute(tab);
+        Assert.Same(tab, model.RenamingFolder);
+        model.RenamingFolderName = "Проекты 2026";
+        await ((NativeAsyncCommand)model.SaveFolderRenameCommand).ExecuteAsync(null);
+        Assert.Equal((tab.FolderId, "Проекты 2026", (int?)null), api.ChatFolderUpdateCalls.Single());
+        Assert.Equal("Проекты 2026", tab.Title);
+        Assert.Null(model.RenamingFolder);
+
+        await ((NativeAsyncCommand)model.DeleteFolderCommand).ExecuteAsync(tab);
+        Assert.Equal([tab.FolderId], api.ChatFolderDeleteCalls);
+        Assert.Empty(model.CustomFolderTabs);
+        // Остаются только системные вкладки («Все» + Личные/Беседы/Задачи).
+        Assert.Equal(4, model.FolderTabs.Count);
+    }
+
+    [Fact]
+    public async Task DeletingActiveFolderFallsBackToPersonalTab()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatFolders = new HubChatFolderList
+            {
+                Items = [new HubChatFolder { Id = "f1", Name = "Работа" }],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.FolderTabs.Count == 5);
+        model.ActiveFolderKey = "f1";
+        model.ToggleFolderManagerCommand.Execute(null);
+
+        await ((NativeAsyncCommand)model.DeleteFolderCommand)
+            .ExecuteAsync(model.CustomFolderTabs[0]);
+
+        Assert.Equal("personal", model.ActiveFolderKey);
+        Assert.Equal(["c1"], model.Conversations.Select(c => c.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task ConversationFolderMenuTogglesMembership()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatFolders = new HubChatFolderList
+            {
+                Items = [new HubChatFolder { Id = "f1", Name = "Работа" }],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        // Фоновый GET папок обгоняет список диалогов: подменю «В папку»
+        // собирается повторной загрузкой, когда диалоги уже в _allConversations.
+        await model.LoadAsync();
+        await WaitFor(() => model.FolderTabs.Count == 5);
+
+        var conversation = model.Conversations[0];
+        var menuItem = Assert.Single(conversation.FolderMenuItems);
+        Assert.False(menuItem.IsIncluded);
+
+        await ((NativeAsyncCommand)menuItem.ToggleCommand).ExecuteAsync(null);
+        Assert.Equal(("f1", "c1"), api.ChatFolderAddCalls.Single());
+        // Ответ мутации — свежая карта членства: подменю пересобрано, галочка встала.
+        await WaitFor(() => conversation.FolderMenuItems.Single().IsIncluded);
+
+        await ((NativeAsyncCommand)conversation.FolderMenuItems.Single().ToggleCommand)
+            .ExecuteAsync(null);
+        Assert.Equal(("f1", "c1"), api.ChatFolderRemoveCalls.Single());
+    }
+
+    [Fact]
+    public async Task FolderMembershipPanelReplacesConversationIds()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items = [Conv("c1"), Conv("c2")],
+            },
+            ChatFolders = new HubChatFolderList
+            {
+                Items = [new HubChatFolder { Id = "f1", Name = "Работа" }],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        await WaitFor(() => model.FolderTabs.Count == 5);
+
+        var tab = model.CustomFolderTabs[0];
+        model.OpenFolderMembershipCommand.Execute(tab);
+        Assert.True(model.IsFolderMembershipOpen);
+        Assert.Equal(2, model.FolderMembershipItems.Count);
+        Assert.DoesNotContain(model.FolderMembershipItems, item => item.IsIncluded);
+
+        model.FolderMembershipItems[0].IsIncluded = true;
+        await ((NativeAsyncCommand)model.SaveFolderMembershipCommand).ExecuteAsync(null);
+
+        var (folderId, ids) = Assert.Single(api.ChatFolderReplaceCalls);
+        Assert.Equal("f1", folderId);
+        Assert.Equal([model.FolderMembershipItems[0].ConversationId], ids);
+        Assert.False(model.IsFolderMembershipOpen);
+    }
+
+    // ---- Стикеры ----
+
+    [Fact]
+    public async Task StickerPanelLoadsPacksAndSendsSticker()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatStickerPacks = new HubChatStickerPackList
+            {
+                Items =
+                [
+                    new HubChatStickerPack
+                    {
+                        Id = "pack1",
+                        Title = "Базовый",
+                        Stickers = [new HubChatSticker { Id = "s1", Emoji = "😺" }],
+                    },
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.ToggleStickerPanelCommand).ExecuteAsync(null);
+
+        Assert.True(model.IsStickerPanelOpen);
+        var pack = Assert.Single(model.StickerPacks);
+        Assert.Same(pack, model.SelectedStickerPack);
+        var sticker = Assert.Single(pack.Stickers);
+
+        await ((NativeAsyncCommand)sticker.SendCommand).ExecuteAsync(null);
+
+        var (conversationId, stickerId, clientMessageId, replyTo) =
+            Assert.Single(api.ChatStickerSendCalls);
+        Assert.Equal("c1", conversationId);
+        Assert.Equal("s1", stickerId);
+        Assert.False(string.IsNullOrEmpty(clientMessageId));
+        Assert.Null(replyTo);
+        // Возвращённое сервером сообщение-стикер вставлено в ленту.
+        Assert.Contains(model.Messages, m => m.Id == "sticker-msg-1");
+    }
+
+    [Fact]
+    public async Task StickerSendWhileConversationChangesDoesNotTouchOtherThread()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items = [Conv("c1"), Conv("c2")],
+            },
+            ChatStickerPacks = new HubChatStickerPackList
+            {
+                Items =
+                [
+                    new HubChatStickerPack
+                    {
+                        Id = "pack1",
+                        Stickers = [new HubChatSticker { Id = "s1" }],
+                    },
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations.First(c => c.Id == "c1");
+        await WaitFor(() => !model.IsLoadingMessages);
+        var c2 = model.Conversations.First(c => c.Id == "c2");
+
+        await ((NativeAsyncCommand)model.ToggleStickerPanelCommand).ExecuteAsync(null);
+        var sticker = model.SelectedStickerPack!.Stickers[0];
+
+        // Переключаемся ДО ответа сервера: сообщение не должно вставиться в чужую ленту.
+        var sendTask = ((NativeAsyncCommand)sticker.SendCommand).ExecuteAsync(null);
+        model.SelectedConversation = c2;
+        await sendTask;
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.DoesNotContain(model.Messages, m => m.Id == "sticker-msg-1");
+    }
+
+    // ---- ИИ-ассистент и action_card ----
+
+    [Fact]
+    public async Task AiPanelLoadsBotsAndOpensConversation()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatAiBots = new HubChatAiBotList
+            {
+                Items = [new HubChatAiBot { Id = "bot1", Title = "Аналитик" }],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        await ((NativeAsyncCommand)model.ToggleAiPanelCommand).ExecuteAsync(null);
+
+        Assert.True(model.IsAiPanelOpen);
+        var bot = Assert.Single(model.AiBots);
+        Assert.Equal("Аналитик", bot.Title);
+        Assert.Equal("Начать чат", bot.OpenText);
+
+        await ((NativeAsyncCommand)bot.OpenCommand).ExecuteAsync(null);
+
+        Assert.Equal(["bot1"], api.ChatAiOpenCalls);
+        Assert.False(model.IsAiPanelOpen);
+        var selected = model.SelectedConversation;
+        Assert.NotNull(selected);
+        Assert.Equal("ai", selected!.Kind);
+        Assert.True(model.IsAiConversation);
+        // AI-диалог виден и во «Все» — вкладка не сбрасывается на «Личные».
+        Assert.Equal("all", model.ActiveFolderKey);
+    }
+
+    [Fact]
+    public async Task AiStatusBarStopsAndRetriesRun()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items = [Conv("ai1", kind: "ai", title: "Ассистент")],
+            },
+            ChatAiStatus = new HubChatAiStatus { ConversationId = "ai1", Status = "running" },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+
+        await WaitFor(() => api.ChatAiStatusCalls.Count > 0);
+        await WaitFor(() => model.CanStopAiRun);
+        Assert.True(model.HasAiStatus);
+        Assert.Contains("отвечает", model.AiStatusText);
+
+        // stop → cancelled: кнопка меняется на «Повторить».
+        api.ChatAiStatus = new HubChatAiStatus { ConversationId = "ai1", Status = "cancelled" };
+        await ((NativeAsyncCommand)model.StopAiRunCommand).ExecuteAsync(null);
+        Assert.Equal(["ai1"], api.ChatAiStopCalls);
+        Assert.True(model.CanRetryAiRun);
+        Assert.False(model.CanStopAiRun);
+
+        // retry → queued: возобновляется поллинг статуса.
+        api.ChatAiStatus = new HubChatAiStatus { ConversationId = "ai1", Status = "queued" };
+        await ((NativeAsyncCommand)model.RetryAiRunCommand).ExecuteAsync(null);
+        Assert.Equal(["ai1"], api.ChatAiRetryCalls);
+        await WaitFor(() => model.CanStopAiRun);
+    }
+
+    [Fact]
+    public async Task AiResetContextPostsToApi()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items = [Conv("ai1", kind: "ai", title: "Ассистент")],
+            },
+            ChatAiStatus = new HubChatAiStatus { ConversationId = "ai1", Status = "completed" },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => api.ChatAiStatusCalls.Count > 0);
+
+        await ((NativeAsyncCommand)model.ResetAiContextCommand).ExecuteAsync(null);
+
+        Assert.Equal(["ai1"], api.ChatAiResetCalls);
+    }
+
+    [Fact]
+    public async Task ActionCardHydratesIntoMessageAndConfirmCallsApi()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("ai1", kind: "ai")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items =
+                [
+                    Msg("m1", "ai1", "Подтвердите импорт", DateTimeOffset.UtcNow) with
+                    {
+                        ActionCard = new HubChatActionCard
+                        {
+                            Id = "act1",
+                            ActionType = "import_equipment",
+                            Status = "pending",
+                            Preview = JsonSerializer.Deserialize<JsonElement>(
+                                "{\"title\":\"Импорт оборудования\",\"choices\":[{\"id\":\"ch1\",\"label\":\"Все\"}],\"formats\":[{\"id\":\"csv\",\"label\":\"CSV\"}]}"),
+                            DatabaseId = "db-1",
+                        },
+                    },
+                ],
+            },
+            ChatAiConfirmResult = new HubChatActionCard
+            {
+                Id = "act1",
+                Status = "confirmed",
+                ResultUrl = "https://hub.local/import/result",
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.Messages.Count == 1);
+
+        var card = model.Messages[0].ActionCard;
+        Assert.NotNull(card);
+        Assert.True(card!.IsActionable);
+        Assert.Equal("Импорт оборудования", card.Title);
+        Assert.Equal("ch1", card.SelectedChoice?.Id);
+        Assert.Equal("csv", card.SelectedFormat?.Id);
+
+        card.ConfirmCommand.Execute(null);
+        await WaitFor(() => api.ChatAiConfirmCalls.Count == 1);
+
+        var (actionId, choice, format, scope) = api.ChatAiConfirmCalls[0];
+        Assert.Equal("act1", actionId);
+        Assert.Equal("ch1", choice);
+        Assert.Equal("csv", format);
+        Assert.Equal("db-1", scope);
+        // Ответ API — терминальный статус карточки + ссылка на результат.
+        await WaitFor(() => card.StatusText == "Подтверждено");
+        Assert.False(card.IsActionable);
+        Assert.True(card.HasResultUrl);
+    }
+
+    [Fact]
+    public async Task ActionCardCancelCallsApiAndMarksCancelled()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("ai1", kind: "ai")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items =
+                [
+                    Msg("m1", "ai1", "Подтвердите", DateTimeOffset.UtcNow) with
+                    {
+                        ActionCard = new HubChatActionCard { Id = "act9", Status = "pending" },
+                    },
+                ],
+            },
+            ChatAiCancelResult = new HubChatActionCard { Id = "act9", Status = "cancelled" },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.Messages.Count == 1);
+        var card = model.Messages[0].ActionCard!;
+
+        card.CancelCommand.Execute(null);
+
+        await WaitFor(() => api.ChatAiCancelCalls.Count == 1);
+        Assert.Equal("act9", api.ChatAiCancelCalls[0]);
+        await WaitFor(() => card.StatusText == "Отменено");
+        Assert.False(card.IsActionable);
+    }
+
+    [Fact]
+    public async Task ActionCardArrivesViaHydratePatch()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("ai1", kind: "ai")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items = [Msg("m1", "ai1", "ожидает карточку", DateTimeOffset.UtcNow)],
+            },
+            HydrateResult = new HubChatThreadHydrateResult
+            {
+                Items =
+                [
+                    new HubChatThreadHydrateItem
+                    {
+                        MessageId = "m1",
+                        ActionCard = new HubChatActionCard
+                        {
+                            Id = "act2",
+                            Status = "pending",
+                        },
+                    },
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.Messages.Count == 1);
+
+        await WaitFor(() => api.HydrateCalls.Count == 1);
+        await WaitFor(() => model.Messages[0].HasActionCard);
+
+        Assert.Equal("act2", model.Messages[0].ActionCard!.Id);
+    }
+
+    // ---- @mention-автокомплит (parity web ChatComposer getComposerMentionTrigger) ----
+
+    [Fact]
+    public void ParseMentionTriggerMatchesWebRules()
+    {
+        // '@' в начале строки или после пробела; запрос — непробельный до каретки.
+        Assert.Equal((0, 1, ""), ChatViewModel.ParseMentionTrigger("@", 1)!.Value);
+        Assert.Equal((7, 10, "ив"), ChatViewModel.ParseMentionTrigger("привет @ив", 10)!.Value);
+        Assert.Equal((0, 3, "ив"), ChatViewModel.ParseMentionTrigger("@ив", 3)!.Value);
+
+        // @ после непробела, пробел внутри запроса, отсутствие @, каретка до @.
+        Assert.Null(ChatViewModel.ParseMentionTrigger("mail@x.ru", 9));
+        Assert.Null(ChatViewModel.ParseMentionTrigger("@ив ан", 6));
+        Assert.Null(ChatViewModel.ParseMentionTrigger("без меншна", 5));
+        Assert.Null(ChatViewModel.ParseMentionTrigger("@ив", 0));
+        Assert.Null(ChatViewModel.ParseMentionTrigger(null, 0));
+    }
+
+    [Fact]
+    public void MentionHandlePrefersUsernameAndDerivesFromName()
+    {
+        Assert.Equal("ivan", ChatViewModel.MentionHandle("ivan", "Иван Иванов"));
+        Assert.Equal("ivan", ChatViewModel.MentionHandle("@ivan", null));
+        Assert.Equal("Иван_Иванов", ChatViewModel.MentionHandle(null, "Иван Иванов"));
+        Assert.Equal("Anna_Maria", ChatViewModel.MentionHandle(null, "  Anna   Maria "));
+        Assert.Equal(string.Empty, ChatViewModel.MentionHandle(null, null));
+        Assert.Equal(string.Empty, ChatViewModel.MentionHandle(null, "  "));
+    }
+
+    [Fact]
+    public void MentionMatchesUsesHandleAndDisplayNameLikeWeb()
+    {
+        Assert.True(ChatViewModel.MentionMatches("", "ivan", "Иван Иванов"));
+        Assert.True(ChatViewModel.MentionMatches("iva", "ivan", "Иван Иванов"));
+        Assert.True(ChatViewModel.MentionMatches("ИВАН", "ivan", "Иван Иванов"));
+        Assert.True(ChatViewModel.MentionMatches("@pet", "petrov", "Пётр"));
+        Assert.False(ChatViewModel.MentionMatches("пётр", "ivan", "Иван Иванов"));
+    }
+
+    [Fact]
+    public async Task MentionPopupOpensInGroupFiltersAndInserts()
+    {
+        var api = MembersApiFixture("member");
+        api.ConversationDetailResult = api.ConversationDetailResult! with
+        {
+            Members =
+            [
+                new HubChatMember
+                {
+                    User = new HubChatUser { Id = 7, FullName = "Я" },
+                    MemberRole = "member",
+                },
+                new HubChatMember
+                {
+                    User = new HubChatUser { Id = 42, Username = "ivan", FullName = "Иван Иванов" },
+                    MemberRole = "member",
+                },
+                new HubChatMember
+                {
+                    User = new HubChatUser { Id = 43, Username = "anna", FullName = "Анна Петрова" },
+                    MemberRole = "moderator",
+                },
+            ],
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        model.ComposerText = "@";
+        model.UpdateMentionTrigger(model.ComposerText, model.ComposerText.Length);
+
+        await WaitFor(() => model.MentionSuggestions.Count == 2);
+        Assert.True(model.IsMentionPopupOpen);
+        // Себя нет в кандидатах — как currentUserId в web mentionCandidates.
+        Assert.DoesNotContain(model.MentionSuggestions, m => m.UserId == 7);
+        Assert.Equal("ivan", model.MentionSuggestions[0].Username);
+        Assert.Equal("anna", model.MentionSuggestions[1].Username);
+        Assert.Same(model.MentionSuggestions[0], model.SelectedMentionSuggestion);
+
+        // ↓ — циклический выбор кандидата (web activeMentionIndex).
+        model.MoveMentionSelection(1);
+        Assert.Equal("anna", model.SelectedMentionSuggestion?.Username);
+        model.MoveMentionSelection(1);
+        Assert.Equal("ivan", model.SelectedMentionSuggestion?.Username);
+
+        // Фильтр по запросу: haystack «handle имя» без учёта регистра.
+        model.ComposerText = "@анн";
+        model.UpdateMentionTrigger(model.ComposerText, model.ComposerText.Length);
+        Assert.Equal("anna", Assert.Single(model.MentionSuggestions).Username);
+
+        // Вставка «@handle » вместо триггера; каретка за вставкой.
+        var caret = -1;
+        model.RequestComposerCaret = index => caret = index;
+        model.InsertMention(model.MentionSuggestions[0]);
+        Assert.Equal("@anna ", model.ComposerText);
+        Assert.Equal(6, caret);
+        Assert.False(model.IsMentionPopupOpen);
+        Assert.Empty(model.MentionSuggestions);
+    }
+
+    [Fact]
+    public async Task MentionPopupIgnoresDirectChatAndClosesOnSwitch()
+    {
+        var api = MembersApiFixture("member");
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await api.RestoreSessionAsync(CancellationToken.None);
+        await model.LoadAsync();
+        model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+        var group = model.Conversations[0];
+
+        model.SelectedConversation = null;
+        model.SelectedConversation = group;
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        model.ComposerText = "@";
+        model.UpdateMentionTrigger(model.ComposerText, model.ComposerText.Length);
+        await WaitFor(() => model.MentionSuggestions.Count == 2);
+        Assert.True(model.IsMentionPopupOpen);
+        var detailCalls = api.ConversationDetailCalls.Count;
+
+        // Снятие выбора — диалог закрыт, попап гаснет.
+        model.SelectedConversation = null;
+        Assert.False(model.IsMentionPopupOpen);
+
+        // Direct-диалог: меншн выключен, запрос участников не уходит (web тоже
+        // не открывает список — кандидатов нет).
+        var direct = new ConversationItemViewModel(new HubChatConversation
+        {
+            Id = "d1",
+            Kind = "direct",
+            Title = "Direct",
+        });
+        Assert.False(direct.IsGroupLike);
+        model.ComposerText = "@ivan";
+        model.SelectedConversation = direct;
+        model.UpdateMentionTrigger(model.ComposerText, model.ComposerText.Length);
+        Assert.False(model.IsMentionPopupOpen);
+        Assert.Equal(detailCalls, api.ConversationDetailCalls.Count);
+    }
+
+    // ---- Порядок диалогов: закреплённые первыми ----
+
+    [Fact]
+    public async Task PinnedConversationsStayFirstAmongThemselvesByDate()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList
+            {
+                Items =
+                [
+                    Conv("c1", lastAt: now),
+                    Conv("p2", lastAt: now.AddDays(-10), pinned: true),
+                    Conv("c2", lastAt: now.AddHours(-2)),
+                    Conv("p1", lastAt: now.AddDays(-3), pinned: true),
+                ],
+            },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        // Закреплённые — строго раньше обычных и между собой по дате.
+        Assert.Equal(["p1", "p2", "c1", "c2"],
+            model.Conversations.Select(c => c.Id).ToArray());
+    }
+
+    // ---- UI-003: ошибка загрузки истории и повтор ----
+
+    [Fact]
+    public async Task HistoryTransportErrorShowsErrorStateNotEmptyClaim()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessagesException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages && model.HasHistoryError);
+
+        Assert.True(model.HasHistoryError);
+        Assert.False(model.IsMessagesEmpty);
+        Assert.NotNull(model.HistoryErrorText);
+        Assert.True(model.HasBannerError);
+        Assert.Empty(model.Messages);
+    }
+
+    [Fact]
+    public async Task BannerRetryReloadsHistoryOfCurrentConversation()
+    {
+        var calls = 0;
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessagesFactory = before =>
+            {
+                calls++;
+                return new HubChatMessageList
+                {
+                    Items = [Msg("m1", "c1", "текст", DateTimeOffset.UtcNow)],
+                };
+            },
+            ChatMessagesException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.HasHistoryError);
+
+        api.ChatMessagesException = null;
+        model.RetryCommand.Execute(null);
+        await WaitFor(() => !model.HasHistoryError && model.Messages.Count == 1);
+
+        // Фабрика вызывается только успешными запросами: 1 — повтор истории.
+        Assert.Equal(1, calls);
+        Assert.Equal("c1", api.LastMessagesConversationId);
+        Assert.False(model.IsMessagesEmpty);
+        Assert.False(model.HasBannerError);
+    }
+
+    [Fact]
+    public async Task RetryHistoryCommandReloadsAndClearsError()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList
+            {
+                Items = [Msg("m1", "c1", "текст", DateTimeOffset.UtcNow)],
+            },
+            ChatMessagesException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.HasHistoryError);
+
+        api.ChatMessagesException = null;
+        model.RetryHistoryCommand.Execute(null);
+        await WaitFor(() => !model.HasHistoryError && model.Messages.Count == 1);
+
+        Assert.Single(model.Messages);
+        Assert.False(model.HasBannerError);
+    }
+
+    [Fact]
+    public async Task SecondHistoryFailureKeepsErrorAndRetryAvailable()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessagesException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.HasHistoryError);
+
+        model.RetryHistoryCommand.Execute(null);
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.True(model.HasHistoryError);
+        Assert.False(model.IsMessagesEmpty);
+        Assert.True(model.RetryHistoryCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task SwitchingConversationClearsStaleHistoryError()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1"), Conv("c2")] },
+        };
+        api.ChatMessagesFactory = before =>
+            api.LastMessagesConversationId == "c1"
+                ? throw new HubApiException(HubApiErrorKind.Transport, "down")
+                : new HubChatMessageList
+                {
+                    Items = [Msg("m2", "c2", "есть", DateTimeOffset.UtcNow)],
+                };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations.First(c => c.Id == "c1");
+        await WaitFor(() => model.HasHistoryError);
+
+        model.SelectedConversation = model.Conversations.First(c => c.Id == "c2");
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.False(model.HasHistoryError);
+        Assert.Single(model.Messages);
+        Assert.Equal("c2", model.SelectedConversation.Id);
+    }
+
+    [Fact]
+    public async Task LateRetryResponseDoesNotOverwriteNewConversation()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1"), Conv("c2")] },
+            ChatMessagesException = new HubApiException(HubApiErrorKind.Transport, "down"),
+        };
+        var c1Gate = new TaskCompletionSource<HubChatMessageList>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations.First(c => c.Id == "c1");
+        await WaitFor(() => model.HasHistoryError);
+
+        // Повтор истории завис в полёте; пользователь в это время ушёл в c2.
+        api.ChatMessagesException = null;
+        api.ChatMessagesAsyncFactory = (id, _) =>
+            id == "c1"
+                ? c1Gate.Task
+                : Task.FromResult(new HubChatMessageList
+                {
+                    Items = [Msg("m2", "c2", "есть", DateTimeOffset.UtcNow)],
+                });
+        model.RetryHistoryCommand.Execute(null);
+        await WaitFor(() => api.LastMessagesConversationId == "c1" && model.IsLoadingMessages);
+
+        model.SelectedConversation = model.Conversations.First(c => c.Id == "c2");
+        await WaitFor(() => !model.IsLoadingMessages && model.Messages.Count == 1);
+
+        c1Gate.SetResult(new HubChatMessageList
+        {
+            Items = [Msg("m1", "c1", "запоздалое", DateTimeOffset.UtcNow.AddMinutes(-1))],
+        });
+        await Task.Delay(100);
+
+        Assert.Equal("c2", model.SelectedConversation.Id);
+        Assert.Single(model.Messages);
+        Assert.Equal("m2", model.Messages[0].Id);
+        Assert.False(model.HasHistoryError);
+    }
+
+    // ---- UI-004: фокус и Esc в оверлеях чата ----
+
+    private static System.Windows.Window ShowOffscreenView(System.Windows.FrameworkElement view)
+    {
+        var window = new System.Windows.Window
+        {
+            Content = view,
+            ShowInTaskbar = false,
+            WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
+            Left = -30000,
+            Top = -30000,
+        };
+        window.Show();
+        window.UpdateLayout();
+        return window;
+    }
+
+    private static void RaiseKey(System.Windows.UIElement target, System.Windows.Input.Key key)
+    {
+        var source = System.Windows.PresentationSource.FromVisual(target);
+        target.RaiseEvent(new System.Windows.Input.KeyEventArgs(
+            System.Windows.Input.Keyboard.PrimaryDevice,
+            source,
+            0,
+            key)
+        {
+            RoutedEvent = System.Windows.UIElement.PreviewKeyDownEvent,
+        });
+    }
+
+    [Fact]
+    public void DeleteConfirmFocusesCancelAndTrapsTabInsideDialog()
+    {
+        RunOnSta(() =>
+        {
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessages = new HubChatMessageList
+                {
+                    Items = [Msg("m1", "c1", "текст", DateTimeOffset.UtcNow, own: true)],
+                },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            Pump(model.LoadAsync());
+            model.SelectedConversation = model.Conversations[0];
+            PumpUntil(() => model.Messages.Count == 1, TimeSpan.FromSeconds(5));
+
+            var view = new Native.Views.ChatView { DataContext = model };
+            var window = ShowOffscreenView(view);
+            try
+            {
+                Pump(((NativeAsyncCommand)model.DeleteMessageCommand).ExecuteAsync(model.Messages[0]));
+                Assert.True(model.IsDeleteConfirmOpen);
+
+                var cancel = (System.Windows.Controls.Button)view.FindName("DeleteCancelButton");
+                PumpUntil(
+                    () => ReferenceEquals(System.Windows.Input.Keyboard.FocusedElement, cancel),
+                    TimeSpan.FromSeconds(5));
+                Assert.True(ReferenceEquals(System.Windows.Input.Keyboard.FocusedElement, cancel));
+
+                // Ловушка фокуса: у диалога TabNavigation=Cycle — Tab/Shift+Tab
+                // не выводят фокус в фон под модалом.
+                var trapFound = false;
+                for (var parent = System.Windows.Media.VisualTreeHelper.GetParent(cancel);
+                     parent is not null;
+                     parent = System.Windows.Media.VisualTreeHelper.GetParent(parent))
+                {
+                    if (parent is System.Windows.Controls.Border border
+                        && System.Windows.Input.KeyboardNavigation.GetTabNavigation(border)
+                            == System.Windows.Input.KeyboardNavigationMode.Cycle)
+                    {
+                        trapFound = true;
+                        break;
+                    }
+                }
+
+                Assert.True(trapFound);
+
+                // Enter в начальном состоянии (фокус на «Отмена») не удаляет.
+                RaiseKey(cancel, System.Windows.Input.Key.Enter);
+                Assert.Empty(api.DeletedMessages);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public void DeleteConfirmEscapeCancelsAndRestoresComposerFocus()
+    {
+        RunOnSta(() =>
+        {
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessages = new HubChatMessageList
+                {
+                    Items = [Msg("m1", "c1", "текст", DateTimeOffset.UtcNow, own: true)],
+                },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            Pump(model.LoadAsync());
+            model.SelectedConversation = model.Conversations[0];
+            PumpUntil(() => model.Messages.Count == 1, TimeSpan.FromSeconds(5));
+
+            var view = new Native.Views.ChatView { DataContext = model };
+            var window = ShowOffscreenView(view);
+            try
+            {
+                var composer = (System.Windows.Controls.TextBox)view.FindName("ComposerInput");
+                Assert.True(composer.Focus());
+
+                Pump(((NativeAsyncCommand)model.DeleteMessageCommand).ExecuteAsync(model.Messages[0]));
+                var cancel = (System.Windows.Controls.Button)view.FindName("DeleteCancelButton");
+                PumpUntil(
+                    () => ReferenceEquals(System.Windows.Input.Keyboard.FocusedElement, cancel),
+                    TimeSpan.FromSeconds(5));
+
+                RaiseKey(cancel, System.Windows.Input.Key.Escape);
+
+                Assert.False(model.IsDeleteConfirmOpen);
+                Assert.Empty(api.DeletedMessages);
+                Assert.True(ReferenceEquals(System.Windows.Input.Keyboard.FocusedElement, composer));
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public void EscapeClosesOnlyTopmostOverlay_GroupSettingsUnderDeleteConfirm()
+    {
+        RunOnSta(() =>
+        {
+            var api = MembersApiFixture("owner");
+            api.ChatMessages = new HubChatMessageList
+            {
+                Items = [Msg("m1", "g1", "моё", DateTimeOffset.UtcNow, own: true)],
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            Pump(api.RestoreSessionAsync(CancellationToken.None));
+            Pump(model.LoadAsync());
+            model.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
+            model.SelectedConversation = model.Conversations[0];
+            PumpUntil(() => !model.IsLoadingMessages && model.Messages.Count == 1, TimeSpan.FromSeconds(5));
+
+            var view = new Native.Views.ChatView { DataContext = model };
+            var window = ShowOffscreenView(view);
+            try
+            {
+                var composer = (System.Windows.Controls.TextBox)view.FindName("ComposerInput");
+
+                Pump(((NativeAsyncCommand)model.ToggleGroupSettingsCommand).ExecuteAsync(null));
+                Assert.True(model.IsGroupSettingsOpen);
+
+                // Модал поверх настроек: Esc обязан гасить верхний элемент.
+                Pump(((NativeAsyncCommand)model.DeleteMessageCommand).ExecuteAsync(model.Messages[0]));
+                Assert.True(model.IsDeleteConfirmOpen);
+                Assert.True(model.IsGroupSettingsOpen);
+
+                var cancel = (System.Windows.Controls.Button)view.FindName("DeleteCancelButton");
+                RaiseKey(cancel, System.Windows.Input.Key.Escape);
+                Assert.False(model.IsDeleteConfirmOpen);
+                Assert.True(model.IsGroupSettingsOpen);
+
+                RaiseKey(composer, System.Windows.Input.Key.Escape);
+                Assert.False(model.IsGroupSettingsOpen);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public async Task RealEmptyHistoryShowsEmptyStateWithoutError()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.True(model.IsMessagesEmpty);
+        Assert.False(model.HasHistoryError);
+        Assert.Null(model.HistoryErrorText);
+    }
 
     private static HubChatMessage PollMsg(string id, string conversationId, bool own = false) =>
         new()

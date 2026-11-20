@@ -38,10 +38,10 @@ def test_startup_reports_version_state_without_creating_anything(engine, monkeyp
 
     _stamp(engine, "20260917_0002")
     result = scan_db.prepare_scan_schema(engine)
-    assert result["status"] == "behind" and result["expected"] == "20261102_0003"
+    assert result["status"] == "behind" and result["expected"] == "20261120_0005"
 
     with engine.begin() as conn:
-        conn.execute(text("UPDATE scan.alembic_version SET version_num = '20261102_0003'"))
+        conn.execute(text("UPDATE scan.alembic_version SET version_num = '20261120_0005'"))
     assert scan_db.prepare_scan_schema(engine)["status"] == "current"
 
     with engine.begin() as conn:

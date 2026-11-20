@@ -156,8 +156,8 @@ module.exports = {
       max_restarts: 10,
       restart_delay: 5000,
       env: {
-        CHAT_PUSH_OUTBOX_CLEANUP_ENABLED: 'false',
-        CHAT_PUSH_OUTBOX_CLEANUP_DRY_RUN: 'true',
+        CHAT_PUSH_OUTBOX_CLEANUP_ENABLED: 'true',
+        CHAT_PUSH_OUTBOX_CLEANUP_DRY_RUN: 'false',
         CHAT_PUSH_OUTBOX_CLEANUP_BATCH_SIZE: '200',
         CHAT_PUSH_OUTBOX_CLEANUP_BATCH_PAUSE_MS: '500',
         CHAT_DB_APPLICATION_NAME: 'itinvent-chat-push-outbox-retention',

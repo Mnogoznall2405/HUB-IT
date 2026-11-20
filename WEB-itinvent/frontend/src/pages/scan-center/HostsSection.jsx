@@ -79,8 +79,8 @@ export default function HostsSection({
               <InputLabel>Статус</InputLabel>
               <Select value={status} label="Статус" onChange={(event) => onStatusChange(event.target.value)}>
                 <MenuItem value="all">Все</MenuItem>
-                <MenuItem value="new">NEW</MenuItem>
-                <MenuItem value="ack">ACK</MenuItem>
+                <MenuItem value="new">Новые</MenuItem>
+                <MenuItem value="ack">Просмотренные</MenuItem>
                 <MenuItem value="resolved_deleted">Удалён</MenuItem>
                 <MenuItem value="resolved_clean">Очищен</MenuItem>
                 <MenuItem value="resolved_moved">Перемещён</MenuItem>

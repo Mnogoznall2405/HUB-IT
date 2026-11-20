@@ -68,11 +68,15 @@ public sealed class DashboardViewModel : ObservableObject
     private string _greetingText = string.Empty;
     private string _todayText = string.Empty;
     private string _lastUpdatedText = string.Empty;
+    private FeedbackDialogViewModel? _feedback;
 
     public DashboardViewModel(IHubApiClient api)
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
 
+        OpenFeedbackCommand = new NativeRelayCommand(
+            OpenFeedback,
+            () => !IsFeedbackOpen);
         RefreshCommand = new NativeAsyncCommand(
             (_, ct) => LoadAsync(ct),
             ex => ErrorText = TasksViewModel.DescribeError(ex));
@@ -189,10 +193,34 @@ public sealed class DashboardViewModel : ObservableObject
     /// <summary>Тон панели: красный при просрочке, иначе янтарный.</summary>
     public string AttentionTone { get; private set; } = HubStatusTone.Warning;
 
+    /// <summary>
+    /// Диалог «Предложить улучшение HUB» (FeedbackDialog веба): не null — оверлей
+    /// поверх страницы открыт. Живёт до «Закрыть»/Esc — вкладки и черновик
+    /// сохраняются, пока диалог виден.
+    /// </summary>
+    public FeedbackDialogViewModel? Feedback
+    {
+        get => _feedback;
+        private set
+        {
+            if (SetProperty(ref _feedback, value))
+            {
+                OnPropertyChanged(nameof(IsFeedbackOpen));
+                ((NativeRelayCommand)OpenFeedbackCommand).RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>Оверлей предложения виден.</summary>
+    public bool IsFeedbackOpen => Feedback is not null;
+
     public ICommand RefreshCommand { get; }
     public ICommand OpenTaskCommand { get; }
     public ICommand OpenNewsCommand { get; }
     public ICommand OpenAttentionItemCommand { get; }
+
+    /// <summary>Кнопка «Предложить улучшение HUB» в шапке страницы.</summary>
+    public ICommand OpenFeedbackCommand { get; }
 
     public void SetUserName(string displayName)
     {
@@ -300,10 +328,25 @@ public sealed class DashboardViewModel : ObservableObject
         }
     }
 
+    /// <summary>Открыть диалог предложения; второй экземпляр не создаётся.</summary>
+    private void OpenFeedback()
+    {
+        if (Feedback is not null)
+        {
+            return;
+        }
+
+        var dialog = new FeedbackDialogViewModel(_api);
+        dialog.Closed = () => Feedback = null;
+        Feedback = dialog;
+    }
+
     public void Reset()
     {
         _loadEpoch++;
         _realtimeRefreshQueued = false;
+        // Диалог предложения привязан к сессии — при смене пользователя закрываем.
+        Feedback = null;
         StatCards.Clear();
         AttentionItems.Clear();
         _attentionTotal = 0;

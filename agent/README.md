@@ -32,13 +32,33 @@ python setup.py bdist_msi
 - форсирует on-demand scan:
   - `SCAN_AGENT_SCAN_ON_START=0`
   - `SCAN_AGENT_WATCHDOG_ENABLED=0`
-- регистрирует `HUB-IT Telegram Probe` (At log on, user session) при наличии `ITInventTelegramProbe.exe`
-- включает `ITINV_FS_EGRESS_ENABLED` по умолчанию; Telegram и MAX probe выключены (см. таблицу свойств)
+- снимает старые задачи Browser/Telegram/MAX Probe без удаления их накопленных данных
+- принудительно выключает прежние DLP-флаги, даже если старый `.env` или MSI property содержит `1`
 - сразу запускает задачу после установки
 
 MSI custom actions больше не используют `ITInventAgent.exe` как helper. Для install/uninstall внутри MSI используется отдельный internal helper `ITInventAgentMsiHelper.exe`.
 
 Ручной вызов `agent/scripts/install_agent_task.ps1` больше не обязателен. Скрипт остаётся fallback/admin tool.
+
+## 1.4.26: Inventory + Scan, без DLP-наблюдения
+
+- Сохранены инвентаризация, heartbeat, поиск чувствительных документов Scan,
+  самообновление, установка ПО и ротация индивидуальных ключей.
+- Удалены из runtime и состава MSI: контроль USB/сетевых копирований, история и
+  активность браузеров, скриншоты, Telegram/MAX Probe и watchdog этих проб.
+- Старые DLP-параметры CLI принимаются только для совместимости: включить сбор
+  через них больше нельзя. Обновление снимает стандартные и указанные в старом
+  `.env` задачи-пробы; ошибка снятия задачи не считается успешной установкой.
+- В MSI остаются `ITInventAgent.exe`, `ITInventScanAgent.exe`,
+  `ITInventPdfWorker.exe`, `ITInventAgentMsiHelper.exe`. Пробы и скрипты их
+  установки не включаются. Для сборки используется `build/agent-<version>/`,
+  чтобы остатки старых проб из `build/exe.win-*` не попали в новый MSI.
+- Исходники DLP сохранены в репозитории для существующих серверных потребителей
+  и восстановления, но исключены из сборки агента. Серверные API, БД и
+  накопленные скриншоты/очереди эта правка не удаляет.
+
+Проверка конфигурации и тесты не заменяют проверку готового MSI. Сборка,
+пилотное обновление и раскатка выполняются отдельно после согласования.
 
 ## 1.4.25 delivery fixes
 
@@ -84,10 +104,12 @@ C:\ProgramData\HUB-IT\Agent\ScanAgent
 | `ITINV_AGENT_HEARTBEAT_SEC` | Нет | `600` | `600` | Heartbeat interval |
 | `ITINV_AGENT_HEARTBEAT_JITTER_SEC` | Нет | `120` | `120` | Heartbeat jitter |
 | `ITINV_SCAN_ENABLED` | Нет | `1` | `1` | Enables embedded scan sidecar |
-| `ITINV_FS_EGRESS_ENABLED` | Нет | `1` | `1` | USB/network file-left monitor |
-| `ITINV_TELEGRAM_PROBE_ENABLED` | Нет | `0` | `1` | User-session Telegram UIA probe. С 1.4.17 выключен для всего парка: установщик принудительно пишет `0` в `.env` (даже если там было `1`) и удаляет задачу `HUB-IT Telegram Probe`; включить можно только свойством MSI `ITINV_TELEGRAM_PROBE_ENABLED=1` |
-| `ITINV_MAX_PROBE_ENABLED` | Нет | `0` | `1` | User-session MAX probe. То же правило, что у Telegram: принудительно `0`, задача `HUB-IT MAX Probe` удаляется |
-| `ITINV_TELEGRAM_PROBE_SYNC_SEC` | Нет | `900` | `900` | Telegram report/upload interval |
+| `ITINV_FS_EGRESS_ENABLED` | Нет | `0` | `0` | Legacy; с 1.4.26 всегда `0`, компонент исключён |
+| `ITINV_TELEGRAM_PROBE_ENABLED` | Нет | `0` | `0` | Legacy; с 1.4.26 всегда `0`, задача удаляется |
+| `ITINV_MAX_PROBE_ENABLED` | Нет | `0` | `0` | Legacy; с 1.4.26 всегда `0`, задача удаляется |
+| `ITINV_BROWSER_PROBE_ENABLED` | Нет | `0` | `0` | Legacy; с 1.4.26 всегда `0`, задача удаляется |
+| `ITINV_BROWSER_HISTORY_ENABLED` | Нет | `0` | `0` | Legacy env; с 1.4.26 всегда `0`, sidecar исключён |
+| `ITINV_TELEGRAM_PROBE_SYNC_SEC` | Нет | — | — | Legacy; не используется |
 | `SCAN_AGENT_SERVER_BASE` | Да | `https://hubit.zsgp.ru/api/v1/scan` | `https://hubit.zsgp.ru/api/v1/scan` | URL scan endpoint |
 | `SCAN_AGENT_API_KEY` | Да | root `.env` at MSI build | `YOUR_SECURE_AGENT_KEY` | API key scan-agent |
 | `SCAN_AGENT_POLL_INTERVAL_SEC` | Нет | `600` | `600` | Scan task poll interval |

@@ -67,12 +67,14 @@ FORCED_SCAN_ENV_VALUES = {
     "SCAN_AGENT_SCAN_ON_START": "0",
     "SCAN_AGENT_WATCHDOG_ENABLED": "0",
 }
-# Telegram and MAX probes are switched off for the whole fleet. An existing .env must not keep them on
-# (it normally wins over MSI defaults), so these win over it; only an explicit MSI property
-# (ITINV_*_PROBE_ENABLED=1 on the msiexec command line) can turn them on again.
-FORCED_OFF_PROBE_ENV_VALUES = {
+# Legacy flags remain readable, but neither an old .env nor MSI properties
+# can re-enable DLP in the Inventory + Scan agent.
+REMOVED_DLP_ENV_VALUES = {
+    "ITINV_FS_EGRESS_ENABLED": "0",
     "ITINV_TELEGRAM_PROBE_ENABLED": "0",
     "ITINV_MAX_PROBE_ENABLED": "0",
+    "ITINV_BROWSER_PROBE_ENABLED": "0",
+    "ITINV_BROWSER_HISTORY_ENABLED": "0",
 }
 MSI_DEFAULT_ENV_VALUES = {
     "ITINV_AGENT_SERVER_URL": "https://hubit.zsgp.ru/api/v1/inventory",
@@ -80,10 +82,10 @@ MSI_DEFAULT_ENV_VALUES = {
     "ITINV_AGENT_HEARTBEAT_SEC": "600",
     "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
     "ITINV_SCAN_ENABLED": "1",
-    "ITINV_FS_EGRESS_ENABLED": "1",
+    "ITINV_FS_EGRESS_ENABLED": "0",
     "ITINV_TELEGRAM_PROBE_ENABLED": "0",
     "ITINV_TELEGRAM_PROBE_SYNC_SEC": "900",
-    "ITINV_BROWSER_PROBE_ENABLED": "1",
+    "ITINV_BROWSER_PROBE_ENABLED": "0",
     "ITINV_BROWSER_PROBE_SYNC_SEC": "120",
     "ITINV_MAX_PROBE_ENABLED": "0",
     "ITINV_MAX_PROBE_SYNC_SEC": "900",
@@ -464,6 +466,7 @@ def build_runtime_env_values(existing: Mapping[str, str], overrides: Mapping[str
         *MSI_ARG_TO_ENV_KEY.values(),
         *MSI_DEFAULT_ENV_VALUES.keys(),
         *FORCED_SCAN_ENV_VALUES.keys(),
+        *REMOVED_DLP_ENV_VALUES.keys(),
         *existing.keys(),
     ):
         if key not in ordered_keys:
@@ -477,9 +480,6 @@ def build_runtime_env_values(existing: Mapping[str, str], overrides: Mapping[str
         if raw_override:
             merged[key] = raw_override
             continue
-        if key in FORCED_OFF_PROBE_ENV_VALUES:
-            merged[key] = FORCED_OFF_PROBE_ENV_VALUES[key]
-            continue
         if key in existing and str(existing.get(key, "") or "").strip():
             merged[key] = str(existing.get(key, "")).strip()
             continue
@@ -487,6 +487,7 @@ def build_runtime_env_values(existing: Mapping[str, str], overrides: Mapping[str
         if default_value:
             merged[key] = default_value
     merged.update(FORCED_SCAN_ENV_VALUES)
+    merged.update(REMOVED_DLP_ENV_VALUES)
     return merged
 
 
@@ -623,10 +624,19 @@ def stop_scheduled_task(task_name: str = DEFAULT_TASK_NAME, logger=None) -> int:
     return int(result.returncode)
 
 
-def stop_agent_processes(process_name: str = "ITInventAgent", skip_pid: Optional[int] = None) -> List[int]:
+def stop_agent_processes(
+    process_name: str = "ITInventAgent",
+    skip_pid: Optional[int] = None,
+    only_names: Optional[Sequence[str]] = None,
+) -> List[int]:
     stopped: List[int] = []
-    base_names = {str(process_name or "").strip().lower()}
-    base_names.update(name.lower() for name in AGENT_RUNTIME_PROCESS_NAMES)
+    if only_names is not None:
+        # Narrow kill set for commands that must not terminate the agent
+        # itself (e.g. disabling messenger probes mid-task).
+        base_names = {str(name or "").strip().lower().removesuffix(".exe") for name in only_names}
+    else:
+        base_names = {str(process_name or "").strip().lower().removesuffix(".exe")}
+        base_names.update(name.lower() for name in AGENT_RUNTIME_PROCESS_NAMES)
     base_names.discard("")
     names = set(base_names)
     names.update(f"{name}.exe" for name in base_names)
@@ -654,12 +664,9 @@ def get_msi_helper_log_path() -> Path:
 
 
 def _remove_probe_task(task_name: str, logger) -> None:
-    """Unregister a probe task whose probe is disabled, so an upgrade leaves nothing to start at logon."""
-    try:
-        _run_powershell_script(resolve_script_path(UNINSTALL_PROBE_SCRIPT_NAME), ["-TaskName", task_name])
-        logger.info("Probe disabled: scheduled task '%s' removed (if it existed)", task_name)
-    except Exception as exc:
-        logger.warning("Probe disabled but removing task '%s' failed: %s", task_name, exc)
+    """An upgrade must not succeed while a removed probe can still run at logon."""
+    _run_powershell_script(resolve_script_path(UNINSTALL_PROBE_SCRIPT_NAME), ["-TaskName", task_name])
+    logger.info("Removed DLP scheduled task '%s' (if it existed)", task_name)
 
 
 def run_msi_install(namespace, logger) -> int:
@@ -702,6 +709,20 @@ def run_msi_install(namespace, logger) -> int:
             ", ".join(missing),
         )
 
+    probe_tasks = {
+        TELEGRAM_PROBE_TASK_NAME,
+        MAX_PROBE_TASK_NAME,
+        BROWSER_PROBE_TASK_NAME,
+    }
+    for key in ("ITINV_TELEGRAM_PROBE_TASK_NAME", "ITINV_MAX_PROBE_TASK_NAME", "ITINV_BROWSER_PROBE_TASK_NAME"):
+        configured_name = str(existing.get(key, "") or "").strip()
+        if configured_name:
+            probe_tasks.add(configured_name)
+    for probe_task in sorted(probe_tasks):
+        if probe_task.casefold() in {name.casefold() for name in (task_name, *LEGACY_TASK_NAMES)}:
+            raise ValueError("A legacy DLP task name conflicts with an inventory task")
+        _remove_probe_task(probe_task, logger)
+
     script_path = resolve_script_path(INSTALL_SCRIPT_NAME)
     _run_powershell_script(
         script_path,
@@ -717,88 +738,6 @@ def run_msi_install(namespace, logger) -> int:
             "-StartAfterRegister",
         ],
     )
-
-    telegram_enabled = str(merged.get("ITINV_TELEGRAM_PROBE_ENABLED", "1") or "1").strip().lower()
-    if telegram_enabled not in {"0", "false", "no", "off"}:
-        telegram_exe = install_dir / TELEGRAM_PROBE_EXECUTABLE_NAME
-        if telegram_exe.exists():
-            try:
-                stop_scheduled_task(TELEGRAM_PROBE_TASK_NAME, logger)
-                tg_script = resolve_script_path(INSTALL_TELEGRAM_PROBE_SCRIPT_NAME)
-                DEFAULT_TELEGRAM_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
-                _run_powershell_script(
-                    tg_script,
-                    [
-                        "-TaskName",
-                        TELEGRAM_PROBE_TASK_NAME,
-                        "-ExecutablePath",
-                        str(telegram_exe),
-                        "-EnvFilePath",
-                        str(env_file_path),
-                        "-StartAfterRegister",
-                    ],
-                )
-                logger.info("Telegram probe task registered (%s)", TELEGRAM_PROBE_TASK_NAME)
-            except Exception as exc:
-                logger.warning("Telegram probe task registration failed: %s", exc)
-        else:
-            logger.warning("Telegram probe executable missing: %s", telegram_exe)
-    else:
-        _remove_probe_task(TELEGRAM_PROBE_TASK_NAME, logger)
-
-    browser_enabled = str(merged.get("ITINV_BROWSER_PROBE_ENABLED", "1") or "1").strip().lower()
-    if browser_enabled not in {"0", "false", "no", "off"}:
-        browser_exe = install_dir / BROWSER_PROBE_EXECUTABLE_NAME
-        if browser_exe.exists():
-            try:
-                stop_scheduled_task(BROWSER_PROBE_TASK_NAME, logger)
-                br_script = resolve_script_path(INSTALL_BROWSER_PROBE_SCRIPT_NAME)
-                DEFAULT_BROWSER_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
-                _run_powershell_script(
-                    br_script,
-                    [
-                        "-TaskName",
-                        BROWSER_PROBE_TASK_NAME,
-                        "-ExecutablePath",
-                        str(browser_exe),
-                        "-EnvFilePath",
-                        str(env_file_path),
-                        "-StartAfterRegister",
-                    ],
-                )
-                logger.info("Browser probe task registered (%s)", BROWSER_PROBE_TASK_NAME)
-            except Exception as exc:
-                logger.warning("Browser probe task registration failed: %s", exc)
-        else:
-            logger.warning("Browser probe executable missing: %s", browser_exe)
-
-    max_enabled = str(merged.get("ITINV_MAX_PROBE_ENABLED", "1") or "1").strip().lower()
-    if max_enabled not in {"0", "false", "no", "off"}:
-        max_exe = install_dir / MAX_PROBE_EXECUTABLE_NAME
-        if max_exe.exists():
-            try:
-                stop_scheduled_task(MAX_PROBE_TASK_NAME, logger)
-                max_script = resolve_script_path(INSTALL_MAX_PROBE_SCRIPT_NAME)
-                DEFAULT_MAX_PROBE_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
-                _run_powershell_script(
-                    max_script,
-                    [
-                        "-TaskName",
-                        MAX_PROBE_TASK_NAME,
-                        "-ExecutablePath",
-                        str(max_exe),
-                        "-EnvFilePath",
-                        str(env_file_path),
-                        "-StartAfterRegister",
-                    ],
-                )
-                logger.info("MAX probe task registered (%s)", MAX_PROBE_TASK_NAME)
-            except Exception as exc:
-                logger.warning("MAX probe task registration failed: %s", exc)
-        else:
-            logger.warning("MAX probe executable missing: %s", max_exe)
-    else:
-        _remove_probe_task(MAX_PROBE_TASK_NAME, logger)
 
     logger.info("MSI install helper completed successfully. Runtime env written to %s", env_file_path)
     return 0

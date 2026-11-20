@@ -270,7 +270,8 @@ export default function useMailListDataController({
             && String(prev?.append_offset ?? '') === String(resolvedListData.append_offset ?? '')
             && Number(prev?.loaded_pages || 0) === Number(resolvedListData.loaded_pages || 0)
             && Boolean(prev?.search_limited) === Boolean(resolvedListData.search_limited)
-            && Number(prev?.searched_window || 0) === Number(resolvedListData.searched_window || 0);
+            && Number(prev?.searched_window || 0) === Number(resolvedListData.searched_window || 0)
+            && Number(prev?.skipped_folders || 0) === Number(resolvedListData.skipped_folders || 0);
           if (sameItems && sameMeta) return prev;
           return resolvedListData;
         });
@@ -583,7 +584,8 @@ export default function useMailListDataController({
         && String(prev?.append_offset ?? '') === String(resolvedListData.append_offset ?? '')
         && Number(prev?.loaded_pages || 0) === Number(resolvedListData.loaded_pages || 0)
         && Boolean(prev?.search_limited) === Boolean(resolvedListData.search_limited)
-        && Number(prev?.searched_window || 0) === Number(resolvedListData.searched_window || 0);
+        && Number(prev?.searched_window || 0) === Number(resolvedListData.searched_window || 0)
+        && Number(prev?.skipped_folders || 0) === Number(resolvedListData.skipped_folders || 0);
       if (sameItems && sameMeta) return prev;
       return resolvedListData;
     });

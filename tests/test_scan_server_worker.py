@@ -101,6 +101,29 @@ def test_collect_pdf_matches_combines_text_layer_with_mandatory_ocr(monkeypatch,
     assert result["outcome"] == "combined_match"
 
 
+def test_collect_pdf_matches_passes_full_text_to_llm(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    pdf_bytes = _make_pdf_bytes("x")
+    long_text = "а" * 5000 + " ДСП"
+
+    monkeypatch.setattr(scan_worker, "_extract_pdf_text", lambda pdf_bytes, max_pages=3: long_text)
+    monkeypatch.setattr(
+        scan_worker,
+        "scan_text",
+        lambda text, **kw: [{"pattern": "dsp_with_exclusion", "value": "ДСП"}] if "ДСП" in text else [],
+    )
+    monkeypatch.setattr(
+        worker,
+        "_ocr_text_from_pdf_bytes",
+        lambda pdf_bytes, artifact_path=None: ("текст", "ocr_text_ready"),
+    )
+
+    result = worker._collect_pdf_matches(pdf_bytes)
+
+    assert len(result["text_excerpt"]) == 1600  # UI excerpt stays short
+    assert result["llm_text"] == f"{long_text}\n\nтекст"  # reviewer gets both text layer and OCR
+
+
 def test_collect_pdf_matches_uses_shared_loan_pattern_for_pdf_text_layer(monkeypatch, temp_dir):
     worker = _make_worker(temp_dir)
     pdf_bytes = _make_pdf_bytes("text layer")
@@ -1199,3 +1222,26 @@ def test_shutdown_gives_up_on_a_task_that_never_finishes():
         assert time.monotonic() - started < 3
     finally:
         release.set()
+
+def test_collect_pdf_matches_includes_ocr_text_in_llm_text(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    pdf_bytes = _make_pdf_bytes("x")
+
+    monkeypatch.setattr(scan_worker, "_extract_pdf_text", lambda pdf_bytes, max_pages=3: "Text-layer heading")
+    monkeypatch.setattr(
+        scan_worker,
+        "scan_text",
+        lambda text, **kw: [{"pattern": "p1", "value": "OCR-only body"}] if "OCR-only body" in text else [],
+    )
+    monkeypatch.setattr(
+        worker,
+        "_ocr_text_from_pdf_bytes",
+        lambda pdf_bytes, artifact_path=None: ("OCR-only body", "ocr_text_ready"),
+    )
+
+    result = worker._collect_pdf_matches(pdf_bytes)
+
+    assert result["outcome"] == "ocr_match"
+    assert result["text_excerpt"] == "Text-layer heading"
+    assert "Text-layer heading" in result["llm_text"]
+    assert "OCR-only body" in result["llm_text"]

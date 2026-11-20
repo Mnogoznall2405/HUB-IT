@@ -753,6 +753,399 @@ public sealed class NativeDocflowViewModelTests
             Department = "ИТ",
         };
 
+    // ---- Учётная запись 1С (профиль кредов) ----
+
+    [Fact]
+    public async Task ConfiguredProfileShowsChipAndPrefillsCredentialForm()
+    {
+        var api = new FakeHubApiClient();
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+
+        Assert.True(model.IsProfileChipVisible);
+        Assert.Equal("Подключено", model.ProfileStatusText);
+        Assert.Equal("ivanov", model.ProfileLoginText);
+        Assert.Equal("1С · ivanov", model.ProfileButtonText);
+
+        model.OpenCredentialFormCommand.Execute(null);
+
+        var form = model.CredentialForm!;
+        Assert.NotNull(form);
+        Assert.True(model.IsCredentialFormOpen);
+        Assert.True(form.ProfileConfigured);
+        Assert.Equal("ivanov", form.Login);
+        Assert.Equal("Учётная запись 1С", form.HeaderText);
+
+        // Повторный клик при открытой панели не пересоздаёт форму.
+        model.OpenCredentialFormCommand.Execute(null);
+        Assert.Same(form, model.CredentialForm);
+    }
+
+    [Fact]
+    public async Task NotConfiguredProfileOpensEmptyCredentialForm()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowProfile = new HubDocflowProfile { Configured = false, Status = "not_configured" },
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+
+        Assert.False(model.IsProfileChipVisible);
+        Assert.Equal("Подключить 1С", model.ProfileButtonText);
+
+        model.OpenCredentialFormCommand.Execute(null);
+
+        var form = model.CredentialForm!;
+        Assert.False(form.ProfileConfigured);
+        Assert.Equal("Подключение к 1С", form.HeaderText);
+        Assert.Equal(string.Empty, form.Login);
+    }
+
+    [Fact]
+    public async Task CredentialValidationBlocksEmptyLoginAndPassword()
+    {
+        var api = new FakeHubApiClient();
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+        model.OpenCredentialFormCommand.Execute(null);
+        var form = model.CredentialForm!;
+
+        // Без логина — до вызова API дело не доходит.
+        form.Login = "   ";
+        Assert.False(await form.TestAsync("pwd"));
+        Assert.Contains("логин", form.ErrorText!, StringComparison.OrdinalIgnoreCase);
+
+        // Без пароля — то же самое.
+        form.Login = "ivanov";
+        Assert.False(await form.TestAsync(""));
+        Assert.Contains("пароль", form.ErrorText!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(await form.SaveAsync(null));
+        Assert.Contains("пароль", form.ErrorText!, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Empty(api.DocflowCredentialTestCalls);
+        Assert.Empty(api.DocflowCredentialSaveCalls);
+        Assert.Same(form, model.CredentialForm);
+    }
+
+    [Fact]
+    public async Task CredentialTestChecksConnectionWithoutSaving()
+    {
+        var api = new FakeHubApiClient();
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+        model.OpenCredentialFormCommand.Execute(null);
+        var form = model.CredentialForm!;
+
+        var ok = await form.TestAsync("1c-secret");
+
+        Assert.True(ok);
+        var call = Assert.Single(api.DocflowCredentialTestCalls);
+        Assert.Equal("ivanov", call.Login);
+        Assert.Equal("1c-secret", call.Password);
+        Assert.True(form.HasTestResult);
+        Assert.Contains("Документооборот КОРП", form.TestResultText!, StringComparison.Ordinal);
+        // Проверка связи не сохраняет креды и не закрывает панель.
+        Assert.Empty(api.DocflowCredentialSaveCalls);
+        Assert.Same(form, model.CredentialForm);
+        Assert.False(model.HasStatusInfo);
+    }
+
+    [Fact]
+    public async Task CredentialTestFailureShowsInlineErrorKeepsForm()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowCredentialTestException = new HubApiException(
+                HubApiErrorKind.Http, "1С отклонила логин"),
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+        model.OpenCredentialFormCommand.Execute(null);
+        var form = model.CredentialForm!;
+
+        var ok = await form.TestAsync("wrong");
+
+        Assert.False(ok);
+        Assert.True(form.HasError);
+        Assert.Contains("1С отклонила логин", form.ErrorText!, StringComparison.Ordinal);
+        Assert.False(form.HasTestResult);
+        Assert.Same(form, model.CredentialForm);
+    }
+
+    [Fact]
+    public async Task CredentialSaveAppliesProfileAndRefreshesList()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowCredentialSaveResultFactory = () => new HubDocflowProfile
+            {
+                Configured = true,
+                Status = "valid",
+                Login = "petrov",
+            },
+            DocflowTasksPage = new HubDocflowTaskListPage
+            {
+                Total = 1,
+                Items = [TaskItem("t-1", "Согласовать договор")],
+            },
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+        model.OpenCredentialFormCommand.Execute(null);
+        var form = model.CredentialForm!;
+        var listCalls = api.DocflowTasksCallCount;
+
+        var ok = await form.SaveAsync("1c-secret");
+        await WaitFor(() => model.CredentialForm is null);
+
+        Assert.True(ok);
+        var call = Assert.Single(api.DocflowCredentialSaveCalls);
+        Assert.Equal("ivanov", call.Login);
+        Assert.Equal("1c-secret", call.Password);
+        // Профиль с PUT применён к чипу, список перечитан, панель закрыта.
+        Assert.Equal("petrov", model.ProfileLoginText);
+        Assert.Equal("Подключено", model.ProfileStatusText);
+        Assert.True(api.DocflowTasksCallCount > listCalls);
+        Assert.True(model.HasStatusInfo);
+        Assert.Contains("сохранена", model.StatusInfoText!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CredentialSaveFailureKeepsFormAndShowsError()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowCredentialSaveException = new HubApiException(
+                HubApiErrorKind.Http, "1С не приняла пароль"),
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+        model.OpenCredentialFormCommand.Execute(null);
+        var form = model.CredentialForm!;
+
+        var ok = await form.SaveAsync("wrong");
+
+        Assert.False(ok);
+        Assert.True(form.HasError);
+        Assert.Contains("1С не приняла пароль", form.ErrorText!, StringComparison.Ordinal);
+        Assert.Same(form, model.CredentialForm);
+        Assert.Equal("ivanov", model.ProfileLoginText);
+    }
+
+    [Fact]
+    public async Task CredentialDisconnectClearsContentBackToSetup()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowTasksPage = new HubDocflowTaskListPage
+            {
+                Total = 1,
+                Items = [TaskItem("t-1", "Согласовать договор")],
+            },
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+        model.OpenCredentialFormCommand.Execute(null);
+        var form = model.CredentialForm!;
+
+        // Inline-подтверждение: первый шаг только вооружает кнопку.
+        form.AskDisconnectCommand.Execute(null);
+        Assert.True(form.IsDisconnectConfirming);
+        Assert.Equal(0, api.DocflowCredentialDeleteCallCount);
+
+        var ok = await form.DisconnectAsync();
+
+        Assert.True(ok);
+        Assert.Equal(1, api.DocflowCredentialDeleteCallCount);
+        Assert.Null(model.CredentialForm);
+        // Как removeCredentials в вебе: список очищен и показана подсказка подключения.
+        Assert.True(model.ShowSetupHint);
+        Assert.Empty(model.Items);
+        Assert.False(model.CanCreateAssignment);
+        Assert.False(model.IsProfileChipVisible);
+        Assert.False(model.CanShowAbsences);
+        Assert.Equal("Подключить 1С", model.ProfileButtonText);
+        Assert.True(model.HasStatusInfo);
+        Assert.Contains("отключена", model.StatusInfoText!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CredentialCloseLeavesStateUntouched()
+    {
+        var api = new FakeHubApiClient();
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+        model.OpenCredentialFormCommand.Execute(null);
+        var form = model.CredentialForm!;
+
+        form.CloseCommand.Execute(null);
+
+        Assert.Null(model.CredentialForm);
+        Assert.False(model.IsCredentialFormOpen);
+        Assert.Equal("ivanov", model.ProfileLoginText);
+        Assert.Empty(api.DocflowCredentialTestCalls);
+        Assert.Empty(api.DocflowCredentialSaveCalls);
+        Assert.Equal(0, api.DocflowCredentialDeleteCallCount);
+    }
+
+    // ---- Отсутствия из 1С ----
+
+    [Fact]
+    public async Task AbsencesPanelLoadsLazilyOnFirstExpand()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowAbsences = new HubDocflowAbsenceList
+            {
+                Status = "available",
+                Count = 1,
+                ZupComparison = "unavailable",
+                Items =
+                [
+                    new HubDocflowAbsenceItem
+                    {
+                        Id = "ab-1",
+                        MatchingStatus = "unresolved",
+                        DisplayName = "Пётр Сидоров",
+                        StartsOn = "2026-03-10",
+                        EndsOn = "2026-03-20",
+                        Label = "Отпуск",
+                        Comment = "Ежегодный",
+                        WillHandleTasks = false,
+                        Differences = ["ends_on"],
+                    },
+                ],
+            },
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+
+        Assert.True(model.CanShowAbsences);
+        Assert.False(model.IsAbsencesOpen);
+        Assert.Equal(0, api.DocflowAbsencesCallCount);
+
+        model.ToggleAbsencesCommand.Execute(null);
+        await WaitFor(() => api.DocflowAbsencesCallCount == 1);
+
+        Assert.True(model.IsAbsencesOpen);
+        Assert.Equal("▾", model.AbsencesChevron);
+        var item = Assert.Single(model.Absences);
+        Assert.Equal("Пётр Сидоров", item.DisplayName);
+        Assert.Contains("Отпуск", item.PeriodText, StringComparison.Ordinal);
+        Assert.Contains("10.03.2026", item.PeriodText, StringComparison.Ordinal);
+        Assert.Contains("20.03.2026", item.PeriodText, StringComparison.Ordinal);
+        Assert.Equal("Не будет разбирать задачи", item.WillHandleText);
+        Assert.True(item.IsUnresolved);
+        Assert.True(item.HasDifferences);
+        // Сравнение с ЗУП недоступно — показываем предупреждение, как в вебе.
+        Assert.True(model.HasAbsencesZupNote);
+        Assert.False(model.HasAbsencesInfo);
+        // Запрос без параметров — список «на сегодня» по всем сотрудникам.
+        var query = Assert.Single(api.DocflowAbsencesQueries);
+        Assert.Equal(string.Empty, query.EmployeeCode);
+        Assert.Equal(string.Empty, query.On);
+    }
+
+    [Fact]
+    public async Task AbsencesEmptyShowsInfoText()
+    {
+        var api = new FakeHubApiClient(); // default: available + пустой список
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+
+        model.ToggleAbsencesCommand.Execute(null);
+        await WaitFor(() => model.HasAbsencesInfo);
+
+        Assert.Empty(model.Absences);
+        Assert.Contains("нет", model.AbsencesInfoText!, StringComparison.OrdinalIgnoreCase);
+        Assert.False(model.HasAbsencesZupNote);
+    }
+
+    [Fact]
+    public async Task AbsencesDisabledHidesPanelEntirely()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowAbsences = new HubDocflowAbsenceList { Status = "disabled" },
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+        Assert.True(model.CanShowAbsences);
+
+        model.ToggleAbsencesCommand.Execute(null);
+        await WaitFor(() => !model.CanShowAbsences);
+
+        Assert.False(model.IsAbsencesOpen);
+        Assert.Empty(model.Absences);
+        Assert.False(model.RefreshAbsencesCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task AbsencesErrorShowsInfoTextAndRetry()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowAbsencesException = new HubApiException(
+                HubApiErrorKind.Transport, "down"),
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+
+        model.ToggleAbsencesCommand.Execute(null);
+        await WaitFor(() => model.HasAbsencesInfo);
+
+        Assert.Contains("соединения", model.AbsencesInfoText!, StringComparison.OrdinalIgnoreCase);
+        Assert.True(model.CanShowAbsences);
+
+        // «Обновить» повторяет запрос.
+        api.DocflowAbsencesException = null;
+        api.DocflowAbsences = new HubDocflowAbsenceList
+        {
+            Status = "available",
+            Items = [new HubDocflowAbsenceItem { DisplayName = "Иван Петров" }],
+            Count = 1,
+        };
+        await ((NativeAsyncCommand)model.RefreshAbsencesCommand).ExecuteAsync(null);
+
+        Assert.Single(model.Absences);
+        Assert.False(model.HasAbsencesInfo);
+    }
+
+    [Fact]
+    public async Task NotConfiguredProfileHidesAbsencesPanel()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowProfile = new HubDocflowProfile { Configured = false, Status = "not_configured" },
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+
+        Assert.False(model.CanShowAbsences);
+        model.ToggleAbsencesCommand.Execute(null);
+
+        Assert.False(model.IsAbsencesOpen);
+        Assert.Equal(0, api.DocflowAbsencesCallCount);
+    }
+
+    [Fact]
+    public async Task CapabilityFailureKeepsAssignmentButtonClosed()
+    {
+        var api = new FakeHubApiClient
+        {
+            DocflowAssignmentCapabilityException = new HubApiException(
+                HubApiErrorKind.Transport, "down"),
+        };
+        var model = new DocflowViewModel(api);
+        await model.LoadAsync();
+
+        // Fail-closed: без capability поручение создавать нельзя.
+        Assert.False(model.CanCreateAssignment);
+        model.NewAssignmentCommand.Execute(null);
+        Assert.Null(model.AssignmentForm);
+    }
+
     // ---- Служебное ----
 
     [Fact]

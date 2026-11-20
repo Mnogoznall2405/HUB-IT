@@ -1,4 +1,5 @@
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { useTheme } from '@mui/material/styles';
 import AuthContext from '../../contexts/AuthContext';
 import { myFilesOfficeAPI } from '../../api/myFilesOffice';
 
@@ -46,9 +47,14 @@ export const loadDocsApi = (publicPath) => {
   return docsApiLoads.get(src);
 };
 
+const PRESENCE_DOCUMENT_TYPES = new Set(['cell', 'word', 'slide']);
+const supportsPresence = (config) =>
+  PRESENCE_DOCUMENT_TYPES.has(config?.documentType) && config?.document?.permissions?.edit === true;
+
 const initialStatus = () => ({
   phase: 'loading', save: 'clean', offline: navigator.onLine === false,
-  frameReady: false, hasEditor: false, busy: false, message: '', warning: '',
+  frameReady: false, hasEditor: false, busy: false, message: '', warning: '', others: [], othersCount: 0,
+  docType: '', savedAt: 0,
 });
 const retryable = (error) => !error?.response || error.response.status === 429 || error.response.status >= 500;
 const retryDelay = (attempt, error) => {
@@ -58,8 +64,9 @@ const retryDelay = (attempt, error) => {
 };
 
 /** Retain the live editor; refresh its signed config only when the SDK requests a new version. */
-export default function useMyFilesEditorSession({ fileId, onConfig, onError, onStatusChange, onRequestClose, onTitleChange, onRequestHistory, onRequestRename, onRequestSharingSettings }) {
+export default function useMyFilesEditorSession({ fileId, initialCompare = '', onConfig, onError, onStatusChange, onRequestClose, onTitleChange, onRequestHistory, onRequestRename, onRequestSharingSettings }) {
   const auth = useContext(AuthContext);
+  const officeUiTheme = useTheme().palette.mode === 'dark' ? 'theme-dark' : 'theme-light';
   const accountKey = String(auth?.user?.id ?? auth?.user?.username ?? '');
   const hostRef = useRef(null);
   const actions = useRef({});
@@ -67,6 +74,8 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
   callbacks.current = { onConfig, onError, onStatusChange, onRequestClose, onTitleChange, onRequestHistory, onRequestRename, onRequestSharingSettings };
   const permissions = useRef({});
   permissions.current = { rename: auth?.hasPermission?.('my_files.write') === true, share: auth?.hasPermission?.('my_files.share') === true };
+  const initialCompareRef = useRef(initialCompare);
+  initialCompareRef.current = initialCompare;
   const [status, setStatus] = useState(initialStatus);
   const [restart, setRestart] = useState(0);
   const [discardAction, setDiscardAction] = useState(null);
@@ -91,6 +100,25 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
     let editor = null;
     let currentConfig = null;
     let currentCapabilities = {};
+    let compareRequested = false;
+    // setRevisedFile opens the built-in comparison view on the live editor: the signed
+    // revised-file object comes from HUB so Document Server fetches the version itself.
+    const startCompare = (versionId) => {
+      if (disposed || terminal || !editor) return;
+      Promise.resolve()
+        .then(() => myFilesOfficeAPI.compareVersion(fileId, versionId))
+        .then((file) => {
+          if (disposed || terminal || !editor) return;
+          try { editor.setRevisedFile?.(file); } catch { /* The SDK ignored the revised file. */ }
+        })
+        .catch((error) => {
+          if (disposed || terminal) return;
+          const code = error?.response?.status;
+          update({ warning: code === 404
+            ? 'Версия для сравнения не найдена: у файла ещё нет сохранённых версий.'
+            : 'Не удалось запустить сравнение версий.' });
+        });
+    };
     let currentPublicPath = '';
     let inFlight = false;
     let terminal = false;
@@ -107,6 +135,8 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
     let checkpointTimer = null;
     let checkpointInFlight = false;
     let unsaved = false;
+    let presenceTimer = null;
+    let presenceInFlight = false;
     const update = (patch) => { if (!disposed) setStatus((previous) => ({ ...previous, ...patch })); };
     setStatus(initialStatus());
     setDiscardAction(null);
@@ -149,7 +179,13 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
         clearTimeout(readyTimer);
         frameReady = true;
         update({ frameReady: true, phase: refreshRequested ? 'refreshing' : 'ready', warning: '' });
+        pollPresence();
+        if (!compareRequested && initialCompareRef.current) {
+          compareRequested = true;
+          startCompare(initialCompareRef.current);
+        }
       },
+      onRequestCompareFile: () => { if (!disposed && !terminal) startCompare('latest'); },
       onUserActionRequired: () => {
         if (disposed || terminal) return;
         frameReady = true;
@@ -160,7 +196,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
         dirty = event.data;
         hadChanges ||= dirty;
         unsaved ||= dirty;
-        update({ save: dirty ? 'dirty' : hadChanges ? 'submitted' : 'clean' });
+        update({ save: dirty ? 'dirty' : hadChanges ? 'submitted' : 'clean', ...(!dirty && hadChanges ? { savedAt: Date.now() } : {}) });
         if (!dirty && refreshRequested && !terminal) schedule('refresh', 0);
       },
       onRequestRefreshFile: () => {
@@ -200,7 +236,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
       if (hintedPath) loadDocsApi(hintedPath).catch(() => {});
       try {
         const configStartedAt = performance.now();
-        const payload = await myFilesOfficeAPI.getEditorConfig(fileId, { signal: controller.signal });
+        const payload = await myFilesOfficeAPI.getEditorConfig(fileId, { signal: controller.signal, uiTheme: officeUiTheme });
         if (kind === 'initial') checkpointMs = Math.max(0, Number(payload.checkpoint_interval_sec) * 1000 || 0);
         const { config, public_path: publicPath } = payload;
         rememberOfficePublicPath(publicPath);
@@ -274,6 +310,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
         measure('sdk', sdkStartedAt);
         currentConfig = config;
         currentPublicPath = publicPath;
+        update({ docType: String(config?.documentType || '') });
         const target = document.createElement('div');
         target.id = `office-editor-${fileId}`;
         hostRef.current.replaceChildren(target);
@@ -297,6 +334,10 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
         }
         update({ hasEditor: true, ...(terminal ? {} : { message: '' }) });
         if (checkpointMs > 0 && checkpointTimer === null) checkpointTimer = setInterval(checkpoint, checkpointMs);
+        // Co-editors poll feeds the floating chip: shared sessions reach every open document type.
+        if (supportsPresence(config) && presenceTimer === null) {
+          presenceTimer = setInterval(pollPresence, 30000);
+        }
         if (!terminal && !documentReady) readyTimer = setTimeout(() => update({
           frameReady: true, warning: 'Документ открывается дольше обычного. Окно сохранено; можно дождаться загрузки или переоткрыть его.',
         }), 60000);
@@ -347,6 +388,21 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
         .catch(() => { /* A failed heartbeat simply retries on the next interval. */ })
         .finally(() => { checkpointInFlight = false; });
     };
+    // Presence is advisory: failures are silent and retried on the next interval tick.
+    const pollPresence = () => {
+      if (disposed || terminal || presenceInFlight || !documentReady || navigator.onLine === false) return;
+      if (!supportsPresence(currentConfig)) return;
+      presenceInFlight = true;
+      Promise.resolve()
+        .then(() => myFilesOfficeAPI.getOfficePresence(fileId))
+        .then((payload) => {
+          if (disposed) return;
+          const names = Array.isArray(payload?.others) ? payload.others.filter((name) => typeof name === 'string' && name) : [];
+          update({ others: names, othersCount: Math.max(names.length, Number(payload?.others_count) || 0) });
+        })
+        .catch(() => {})
+        .finally(() => { presenceInFlight = false; });
+    };
     const visible = () => { if (document.visibilityState === 'visible' && navigator.onLine !== false && refreshRequested) online(); };
     const hidden = () => { if (document.visibilityState === 'hidden') checkpoint(); };
     const checkClose = (event) => { if (dirty) event.preventDefault(); };
@@ -366,6 +422,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
         if (disposed || terminal || !currentCapabilities.canManageAccess || !permissions.current.share) return;
         try { editor?.setSharingSettings?.(settings); } catch { /* HUB already confirmed the access change. */ }
       },
+      compare: startCompare,
       retry: () => {
         if (terminal || inFlight) return;
         clearTimeout(retryTimer);
@@ -389,6 +446,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
       clearTimeout(retryTimer);
       clearTimeout(readyTimer);
       clearInterval(checkpointTimer);
+      clearInterval(presenceTimer);
       window.removeEventListener('online', online);
       window.removeEventListener('offline', offline);
       window.removeEventListener('beforeunload', beforeUnload);
@@ -404,6 +462,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
   const retry = useCallback(() => actions.current.retry?.(), []);
   const reopen = useCallback(() => actions.current.reopen?.(), []);
   const setSharingSettings = useCallback(settings => actions.current.sharingSettings?.(settings), []);
+  const startCompare = useCallback(versionId => actions.current.compare?.(versionId), []);
   const cancelDiscard = useCallback(() => setDiscardAction(null), []);
   const confirmDiscard = () => {
     const action = discardAction;
@@ -411,5 +470,5 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
     if (action === 'close') callbacks.current.onRequestClose?.();
     else if (action === 'reopen') setRestart((value) => value + 1);
   };
-  return { hostRef, status, requestClose, retry, reopen, discardAction, cancelDiscard, confirmDiscard, setSharingSettings };
+  return { hostRef, status, requestClose, retry, reopen, discardAction, cancelDiscard, confirmDiscard, setSharingSettings, startCompare };
 }

@@ -15,17 +15,56 @@ public partial class TicketsView : UserControl
     {
         InitializeComponent();
         NativeThemeManager.EnsureFallbackPalette(this);
-        // Шов выбора файлов формы «Новая заявка» живёт в code-behind (OpenFileDialog — UI).
+        // Шов выбора файлов формы «Новая заявка» и карточки живёт в code-behind
+        // (OpenFileDialog — UI): один диалог на обе точки входа.
         DataContextChanged += (_, _) =>
         {
             if (DataContext is TicketsViewModel viewModel)
             {
                 viewModel.CreateFilePicker = PickCreateFiles;
+                viewModel.DetailFilePicker = PickCreateFiles;
+                // Админка создаётся лениво при входе в режим «Управление» —
+                // её швы диалогов ставим по мере появления.
+                viewModel.PropertyChanged += (_, args) =>
+                {
+                    if (args.PropertyName == nameof(TicketsViewModel.Admin)
+                        && viewModel.Admin is { } admin)
+                    {
+                        admin.ImportFilePicker = PickImportFile;
+                        admin.SaveFilePicker = PickSaveFile;
+                    }
+                };
             }
         };
     }
 
-    /// <summary>OpenFileDialog для «📎 Прикрепить» формы создания — паттерн композера почты.</summary>
+    /// <summary>OpenFileDialog «Выбрать файл .xlsx» вкладки «Импорт» (лимит 50 МБ — у VM).</summary>
+    private string? PickImportFile()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Multiselect = false,
+            Title = "Файл импорта билетов",
+            Filter = "Книга Excel (*.xlsx)|*.xlsx",
+        };
+        var owner = Window.GetWindow(this);
+        return dialog.ShowDialog(owner) == true ? dialog.FileName : null;
+    }
+
+    /// <summary>SaveFileDialog экспортов админки: имя подставляет VM, путь выбирает пользователь.</summary>
+    private string? PickSaveFile(string suggestedName)
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Сохранить отчёт",
+            Filter = "Книга Excel (*.xlsx)|*.xlsx",
+            FileName = suggestedName,
+        };
+        var owner = Window.GetWindow(this);
+        return dialog.ShowDialog(owner) == true ? dialog.FileName : null;
+    }
+
+    /// <summary>OpenFileDialog для «📎 Прикрепить» формы создания и карточки — паттерн композера почты.</summary>
     private IReadOnlyList<string> PickCreateFiles()
     {
         var dialog = new Microsoft.Win32.OpenFileDialog

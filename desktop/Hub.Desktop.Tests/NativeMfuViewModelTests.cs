@@ -490,6 +490,439 @@ public sealed class NativeMfuViewModelTests
         Assert.True(model.ShowZeroDevicesNotice);
     }
 
+    // ---- Складские расходники (справочник + запись) ----
+
+    private static HubConsumableLookupItem LookupRow(
+        long id,
+        string model,
+        int qty,
+        string? invNo = null,
+        string? branch = "ЦО",
+        string? location = "Кабинет 101") => new()
+    {
+        Id = id,
+        InvNo = invNo ?? $"C-{id}",
+        TypeName = "Картридж",
+        ModelName = model,
+        Qty = qty,
+        BranchName = branch,
+        LocationName = location,
+    };
+
+    [Fact]
+    public async Task SelectingDeviceLoadsWarehouseConsumablesSortedLocalFirst()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Role = "admin" },
+            MfuDevices = Payload(("ЦО", "Кабинет 101", Device("main|1", "HP"))),
+            ConsumablesLookup =
+            [
+                LookupRow(41, "Zebra Toner", 5, branch: "Юг", location: "Склад-2"),
+                LookupRow(42, "HP CF283A", 3),
+            ],
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+
+        // Право записи из /auth/me: admin — без явного database.write.
+        Assert.True(model.CanWriteConsumables);
+        Assert.False(model.IsConsumableActionOpen);
+        Assert.False(model.IsConsumableCreateOpen);
+
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+
+        Assert.Equal([(true, 500)], api.ConsumablesLookupCalls);
+        var detail = model.Detail!;
+        Assert.Equal(2, detail.WarehouseConsumables.Count);
+        // Локальная позиция (филиал+локация устройства) — первой, как в веб-подборе.
+        Assert.Equal(42, detail.WarehouseConsumables[0].Id);
+        Assert.Equal("HP CF283A", detail.WarehouseConsumables[0].Name);
+        Assert.Equal("Картридж", detail.WarehouseConsumables[0].TypeText);
+        Assert.Equal("ЦО / Кабинет 101", detail.WarehouseConsumables[0].PlaceText);
+        Assert.Equal("Остаток: 3", detail.WarehouseConsumables[0].QtyText);
+        Assert.Equal(41, detail.WarehouseConsumables[1].Id);
+        Assert.False(detail.HasConsumablesError);
+        Assert.False(detail.IsConsumablesLoading);
+    }
+
+    [Fact]
+    public async Task ConsumablesLookupErrorShowsSectionErrorNotBanner()
+    {
+        var api = new FakeHubApiClient
+        {
+            MfuDevices = Payload(("ЦО", "101", Device("main|1", "HP"))),
+            ConsumablesLookupException = new HubApiException(
+                HubApiErrorKind.Http, "forbidden", HttpStatusCode.Forbidden),
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail?.HasConsumablesError == true);
+
+        Assert.Equal("Недостаточно прав для этого действия.", model.Detail!.ConsumablesErrorText);
+        Assert.False(model.Detail.IsConsumablesLoading);
+        Assert.False(model.HasBannerError);
+    }
+
+    [Fact]
+    public async Task ConsumeDialogValidatesAndPostsConsumeThenPatchesRow()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Role = "viewer", Permissions = ["database.write"] },
+            MfuDevices = Payload(("ЦО", "Кабинет 101", Device("main|1", "HP"))),
+            ConsumablesLookup = [LookupRow(42, "HP CF283A", 5)],
+            ConsumableConsumeResponse = new HubConsumableConsumeResponse
+            {
+                Success = true,
+                ItemId = 42,
+                QtyOld = 5,
+                QtyNew = 4,
+            },
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+        var row = model.Detail!.WarehouseConsumables[0];
+
+        // Открытие «Выдать» по строке: права с database.write — диалог поднят.
+        await ((NativeAsyncCommand)model.OpenConsumeDialogCommand).ExecuteAsync(row);
+        var dialog = model.ConsumableAction;
+        Assert.NotNull(dialog);
+        Assert.True(model.IsConsumableActionOpen);
+        Assert.Equal("Выдать расходник", dialog!.TitleText);
+        Assert.Equal("HP CF283A", dialog.ItemNameText);
+        Assert.Equal("Инв. № C-42 | ID 42", dialog.ItemMetaText);
+        Assert.Equal("Доступно: 5", dialog.AvailableText);
+        Assert.Equal("1", dialog.QtyText);
+
+        // Валидация до запроса: 0, дробь и сверх остатка — без API.
+        dialog.QtyText = "0";
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Количество должно быть больше 0.", dialog.ErrorText);
+        dialog.QtyText = "1.5";
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Количество должно быть больше 0.", dialog.ErrorText);
+        dialog.QtyText = "6";
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Нельзя выдать больше остатка (5).", dialog.ErrorText);
+        Assert.Empty(api.ConsumableConsumeRequests);
+
+        // Успех: POST consume записан, остаток в строке и кэше обновлён, диалог закрыт.
+        dialog.QtyText = "1";
+        await dialog.SubmitAsync(CancellationToken.None);
+        var request = Assert.Single(api.ConsumableConsumeRequests);
+        Assert.Equal(42, request.ItemId);
+        Assert.Equal("C-42", request.InvNo);
+        Assert.Equal(1, request.Qty);
+        Assert.Equal("mfu", request.Reason);
+        Assert.False(string.IsNullOrEmpty(request.OperationId));
+        Assert.False(model.IsConsumableActionOpen);
+        Assert.Equal(4, row.Qty);
+        Assert.Equal("Остаток: 4", row.QtyText);
+
+        // Перевыбор устройства — строка берётся из кэша с уже обновлённым остатком.
+        model.SelectedDevice = null;
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+        Assert.Equal(4, model.Detail!.WarehouseConsumables[0].Qty);
+        Assert.Single(api.ConsumablesLookupCalls);
+    }
+
+    [Fact]
+    public async Task QtyDialogValidatesAndPostsExactQuantity()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Role = "admin" },
+            MfuDevices = Payload(("ЦО", "Кабинет 101", Device("main|1", "HP"))),
+            ConsumablesLookup = [LookupRow(42, "HP CF283A", 5)],
+            ConsumableQtyUpdateResponse = new HubConsumableQtyUpdateResponse
+            {
+                Success = true,
+                ItemId = 42,
+                QtyNew = 0,
+            },
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+        var row = model.Detail!.WarehouseConsumables[0];
+
+        await ((NativeAsyncCommand)model.OpenQtyDialogCommand).ExecuteAsync(row);
+        var dialog = model.ConsumableAction;
+        Assert.NotNull(dialog);
+        Assert.Equal("Изменить количество", dialog!.TitleText);
+        Assert.Equal("5", dialog.QtyText);
+        Assert.False(dialog.HasAvailableText);
+
+        // Отрицательное и дробное — без API; ноль — разрешён (min 0 как в вебе).
+        dialog.QtyText = "-1";
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Количество должно быть целым числом 0 или больше.", dialog.ErrorText);
+        dialog.QtyText = "2.5";
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Количество должно быть целым числом 0 или больше.", dialog.ErrorText);
+        Assert.Empty(api.ConsumableQtyUpdateRequests);
+
+        dialog.QtyText = "0";
+        await dialog.SubmitAsync(CancellationToken.None);
+        var request = Assert.Single(api.ConsumableQtyUpdateRequests);
+        Assert.Equal(42, request.ItemId);
+        Assert.Equal("C-42", request.InvNo);
+        Assert.Equal(0, request.Qty);
+        Assert.False(model.IsConsumableActionOpen);
+        Assert.Equal(0, row.Qty);
+    }
+
+    [Fact]
+    public async Task CreateDialogValidatesFieldsPostsCreateAndReloadsLookup()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Role = "admin" },
+            MfuDevices = Payload(("ЦО", "Кабинет 101", Device("main|1", "HP"))),
+            ConsumablesLookup = [LookupRow(42, "HP CF283A", 5)],
+            EquipmentBranches = [new HubEquipmentBranch { Id = ParseJson("5"), Name = "Сургут" }],
+            EquipmentTypes =
+            [
+                new HubEquipmentType { CiType = 1, TypeNo = 3, TypeName = "Ноутбук" },
+                new HubEquipmentType { CiType = 4, TypeNo = 12, TypeName = "Картридж" },
+            ],
+            EquipmentLocations =
+            [
+                new HubEquipmentLocation { LocNo = ParseJson("31"), LocName = "офис 210" },
+            ],
+            ConsumableCreateResponse = new HubConsumableCreateResponse
+            {
+                Success = true,
+                ItemId = 44,
+                InvNo = "C-1002",
+            },
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+
+        await ((NativeAsyncCommand)model.OpenCreateConsumableCommand).ExecuteAsync(null);
+        var dialog = model.ConsumableCreate;
+        Assert.NotNull(dialog);
+        Assert.True(model.IsConsumableCreateOpen);
+        Assert.Equal("Добавить расходник", dialog!.TitleText);
+        // Справочник типов: только ci_type=4.
+        var typeOption = Assert.Single(dialog.TypeOptions);
+        Assert.Equal(12, typeOption.TypeNo);
+        Assert.Equal("Картридж", typeOption.Name);
+        var branch = Assert.Single(dialog.BranchOptions);
+        Assert.Equal("Сургут", branch.Name);
+
+        // Порядок проверок — buildAddConsumablePayload веба: тип → модель → филиал → локация → qty.
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Выберите тип расходника.", dialog.ErrorText);
+        dialog.SelectedType = typeOption;
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Укажите модель расходника.", dialog.ErrorText);
+        dialog.ModelName = "HP CF283A";
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Выберите филиал.", dialog.ErrorText);
+        dialog.SelectedBranch = branch;
+        await WaitFor(() => dialog.LocationOptions.Count > 0);
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Выберите местоположение.", dialog.ErrorText);
+        dialog.SelectedLocation = dialog.LocationOptions[0];
+        dialog.QtyText = "0";
+        await dialog.SubmitAsync(CancellationToken.None);
+        Assert.Equal("Количество должно быть больше 0.", dialog.ErrorText);
+        Assert.Empty(api.ConsumableCreateRequests);
+        var locationsCall = Assert.Single(api.EquipmentLocationsCalls);
+        Assert.Equal("5", locationsCall);
+
+        dialog.QtyText = "2";
+        dialog.PartNoText = "CF283A";
+        await dialog.SubmitAsync(CancellationToken.None);
+        var request = Assert.Single(api.ConsumableCreateRequests);
+        Assert.Equal(12, request.TypeNo);
+        Assert.Equal("HP CF283A", request.ModelName);
+        Assert.Equal(2, request.Qty);
+        Assert.Equal("CF283A", request.PartNo);
+        Assert.Null(request.ModelNo);
+        Assert.False(model.IsConsumableCreateOpen);
+        // Справочник перечитан: inv_no присваивает сервер — кэш сброшен.
+        await WaitFor(() => api.ConsumablesLookupCalls.Count == 2);
+    }
+
+    [Fact]
+    public async Task CreateDialogApiErrorKeepsFormOpenWithErrorText()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Role = "admin" },
+            EquipmentBranches = [new HubEquipmentBranch { Id = ParseJson("5"), Name = "Сургут" }],
+            EquipmentTypes = [new HubEquipmentType { CiType = 4, TypeNo = 12, TypeName = "Картридж" }],
+            EquipmentLocations = [new HubEquipmentLocation { LocNo = ParseJson("31"), LocName = "офис 210" }],
+            ConsumableCreateException = new HubApiException(
+                HubApiErrorKind.Http, "Invalid loc_no", HttpStatusCode.BadRequest),
+        };
+        var dialog = new MfuConsumableCreateViewModel(api, api.EquipmentBranches, api.EquipmentTypes)
+        {
+            SelectedType = new MfuConsumableTypeOption(api.EquipmentTypes[0]),
+            ModelName = "Toner",
+            QtyText = "1",
+        };
+        dialog.SelectedBranch = dialog.BranchOptions[0];
+        await WaitFor(() => dialog.LocationOptions.Count > 0);
+        dialog.SelectedLocation = dialog.LocationOptions[0];
+
+        var completed = false;
+        dialog.Completed += (_, _) => completed = true;
+        // Ошибка API: команда отражает её в ErrorText, форма остаётся открытой.
+        await ((NativeAsyncCommand)dialog.SubmitCommand).ExecuteAsync(null);
+
+        Assert.False(completed);
+        Assert.True(dialog.HasError);
+        Assert.Equal("Invalid loc_no", dialog.ErrorText);
+        Assert.False(dialog.IsBusy);
+        Assert.Single(api.ConsumableCreateRequests);
+    }
+
+    [Fact]
+    public async Task ConsumeApiErrorKeepsDialogOpenWithErrorText()
+    {
+        var api = new FakeHubApiClient
+        {
+            ConsumableConsumeException = new HubApiException(
+                HubApiErrorKind.Http, "Insufficient consumable quantity", HttpStatusCode.Conflict),
+        };
+        var row = new MfuConsumableItemViewModel(LookupRow(42, "HP CF283A", 5));
+        var dialog = new MfuConsumableActionViewModel(api, row, MfuConsumableActionKind.Consume)
+        {
+            QtyText = "3",
+        };
+
+        await ((NativeAsyncCommand)dialog.SubmitCommand).ExecuteAsync(null);
+
+        Assert.True(dialog.HasError);
+        Assert.Equal("Insufficient consumable quantity", dialog.ErrorText);
+        Assert.False(dialog.IsBusy);
+    }
+
+    [Fact]
+    public async Task WriteCommandsDeniedWithoutDatabaseWrite()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Role = "viewer", Permissions = ["mfu.read"] },
+            MfuDevices = Payload(("ЦО", "101", Device("main|1", "HP"))),
+            ConsumablesLookup = [LookupRow(42, "HP CF283A", 5)],
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+        Assert.False(model.CanWriteConsumables);
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+        var row = model.Detail!.WarehouseConsumables[0];
+
+        await ((NativeAsyncCommand)model.OpenConsumeDialogCommand).ExecuteAsync(row);
+        Assert.False(model.IsConsumableActionOpen);
+        Assert.Equal("Недостаточно прав для изменения данных.", model.BannerErrorText);
+
+        model.DismissBannerCommand.Execute(null);
+        await ((NativeAsyncCommand)model.OpenCreateConsumableCommand).ExecuteAsync(null);
+        Assert.False(model.IsConsumableCreateOpen);
+        Assert.Equal("Недостаточно прав для изменения данных.", model.BannerErrorText);
+        Assert.Empty(api.ConsumableConsumeRequests);
+        Assert.Empty(api.ConsumableCreateRequests);
+    }
+
+    [Fact]
+    public async Task PermissionsLookupFailureFailsClosed()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUserException = new HubApiException(
+                HubApiErrorKind.Http, "unauthorized", HttpStatusCode.Unauthorized),
+            MfuDevices = Payload(("ЦО", "101", Device("main|1", "HP"))),
+            ConsumablesLookup = [LookupRow(42, "HP CF283A", 5)],
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+
+        // Ошибка /auth/me закрывает запись, но не ломает страницу.
+        Assert.False(model.CanWriteConsumables);
+        Assert.Single(Devices(model));
+
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+        await ((NativeAsyncCommand)model.OpenQtyDialogCommand)
+            .ExecuteAsync(model.Detail!.WarehouseConsumables[0]);
+        Assert.False(model.IsConsumableActionOpen);
+        Assert.Equal("Недостаточно прав для изменения данных.", model.BannerErrorText);
+    }
+
+    [Fact]
+    public async Task SelectionChangeClosesConsumableDialogs()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Role = "admin" },
+            MfuDevices = Payload(
+                ("ЦО", "Кабинет 101", Device("main|1", "HP")),
+                ("Юг", "Склад-2", Device("main|2", "Kyocera"))),
+            ConsumablesLookup = [LookupRow(42, "HP CF283A", 5)],
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+        var devices = Devices(model).ToList();
+        model.SelectedDevice = devices[0];
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+        var row = model.Detail!.WarehouseConsumables[0];
+        await ((NativeAsyncCommand)model.OpenConsumeDialogCommand).ExecuteAsync(row);
+        Assert.True(model.IsConsumableActionOpen);
+
+        // Смена выбора — диалог закрыт, как у передачи в «Базе».
+        model.SelectedDevice = devices[1];
+        Assert.False(model.IsConsumableActionOpen);
+        Assert.Empty(api.ConsumableConsumeRequests);
+    }
+
+    [Fact]
+    public async Task ResetClearsConsumableStateAndPermissions()
+    {
+        var api = new FakeHubApiClient
+        {
+            CurrentUser = new HubUser { Id = 7, Role = "admin" },
+            MfuDevices = Payload(("ЦО", "101", Device("main|1", "HP"))),
+            ConsumablesLookup = [LookupRow(42, "HP CF283A", 5)],
+        };
+        var model = new MfuViewModel(api);
+        await model.LoadAsync();
+        model.SelectedDevice = Devices(model).First();
+        await WaitFor(() => model.Detail is { WarehouseConsumables.Count: > 0 });
+        await ((NativeAsyncCommand)model.OpenConsumeDialogCommand)
+            .ExecuteAsync(model.Detail!.WarehouseConsumables[0]);
+        Assert.True(model.CanWriteConsumables);
+        Assert.True(model.IsConsumableActionOpen);
+
+        model.Reset();
+
+        Assert.False(model.CanWriteConsumables);
+        Assert.False(model.IsConsumableActionOpen);
+        Assert.False(model.IsConsumableCreateOpen);
+        // Права перечитываются после сброса (новая сессия — новый /auth/me).
+        api.CurrentUser = new HubUser { Id = 7, Role = "viewer" };
+        await model.LoadAsync();
+        Assert.False(model.CanWriteConsumables);
+    }
+
+    private static System.Text.Json.JsonElement ParseJson(string json) =>
+        System.Text.Json.JsonDocument.Parse(json).RootElement;
+
     private static async Task WaitFor(Func<bool> condition)
     {
         for (var attempt = 0; attempt < 100; attempt++)

@@ -18,11 +18,13 @@ from .config import SCAN_JOB_MAX_WORKERS_LIMIT, ScanServerConfig
 from .database import MISSING_TRANSIENT_PDF_PAYLOAD, ScanStore
 from .document_conversion import DocumentConversionError, convert_document_to_pdf
 from .memory_guard import memory_pressure_active
-from .ocr import FOCUSED_REGION_DPI, OcrNonRetryableError, is_tesseract_available, ocr_pdf_bytes_detailed
+from .ocr import FOCUSED_REGION_DPI, OcrNonRetryableError, is_tesseract_available, ocr_pdf_bytes_detailed, shutdown_osd_pool
 from .patterns import (
     allowed_pattern_ids,
     classify_severity,
     is_furniture_dsp_context,
+    is_model_dsp_context,
+    is_refnum_dsp_context,
     normalize_pattern_filter,
     normalize_scan_text,
     scan_text,
@@ -182,7 +184,9 @@ class ScanWorker(threading.Thread):
         self.stop_event = stop_event
         self._last_cleanup_ts = 0
         self._job_pool: Optional[ThreadPoolExecutor] = None
-        self._job_futures: Dict[Future[None], str] = {}
+        # future -> (job_id, monotonic_start): the start time lets the worker
+        # reclaim a slot when a native call hangs past the processing lease.
+        self._job_futures: Dict[Future[None], Tuple[str, float]] = {}
         self._ocr_pool: Optional[ProcessPoolExecutor | ThreadPoolExecutor] = None
         self._ocr_pool_lock = threading.Lock()
         self._ocr_available = False
@@ -228,6 +232,7 @@ class ScanWorker(threading.Thread):
             self.stop_event.wait(self.config.worker_interval_sec)
         self._shutdown_job_pool()
         self._shutdown_ocr_pool()
+        shutdown_osd_pool()
         logger.info("Scan worker stopped")
 
     def _job_max_attempts(self) -> int:
@@ -299,7 +304,7 @@ class ScanWorker(threading.Thread):
         for job in jobs:
             job_id = str(job.get("id") or "")
             future = pool.submit(self._process_job, job)
-            self._job_futures[future] = job_id
+            self._job_futures[future] = (job_id, time.monotonic())
         self._collect_finished_jobs()
         return True
 
@@ -327,12 +332,29 @@ class ScanWorker(threading.Thread):
         self._job_pool = None
         self._job_futures.clear()
 
+    def _job_future_deadline_sec(self) -> float:
+        # Once the processing lease expires the store requeues the row and the
+        # claim guard makes any late write by the hung thread a no-op, so the
+        # slot can be reclaimed at the same deadline.
+        timeout_sec = int(getattr(self.config, "job_processing_timeout_sec", 1800) or 1800)
+        return float(max(60, timeout_sec))
+
     def _collect_finished_jobs(self) -> int:
         completed = 0
+        deadline = self._job_future_deadline_sec()
         for future in list(self._job_futures):
+            job_id, started = self._job_futures[future]
             if not future.done():
+                if time.monotonic() - started > deadline:
+                    self._job_futures.pop(future, None)
+                    completed += 1
+                    logger.error(
+                        "Scan job exceeded hard deadline job_id=%s — releasing the worker slot; "
+                        "the job row is reclaimed by stale-processing requeue",
+                        job_id,
+                    )
                 continue
-            job_id = self._job_futures.pop(future, "")
+            self._job_futures.pop(future, None)
             completed += 1
             try:
                 future.result()
@@ -375,8 +397,12 @@ class ScanWorker(threading.Thread):
                 continue
             value = str(item.get("value") or "")
             snippet = str(item.get("snippet") or "")
-            # Drop agent-side furniture "ДСП" hits that slip past a stale exclusion list.
-            if pattern_id == "dsp_with_exclusion" and is_furniture_dsp_context(f"{snippet} {value}"):
+            # Drop agent-side furniture/refnum "ДСП" hits that slip past a stale exclusion list.
+            if pattern_id == "dsp_with_exclusion" and (
+                is_furniture_dsp_context(f"{snippet} {value}")
+                or is_refnum_dsp_context(f"{snippet} {value}")
+                or is_model_dsp_context(f"{snippet} {value}")
+            ):
                 continue
             out.append(
                 {
@@ -444,18 +470,45 @@ class ScanWorker(threading.Thread):
         """Replace an OCR pool whose task overran its deadline.
 
         A timed-out future cannot stop the native work already running in its thread/process, so that
-        task keeps its pool slot; a new pool restores capacity. The old pool is only told to stop
-        accepting work (queued tasks of other jobs still finish) and is not waited for.
+        task keeps its pool slot; a new pool restores capacity. Queued tasks are cancelled (their jobs
+        see a normal OCR error and retry on the fresh pool), and straggler processes get a bounded
+        grace window before being terminated — otherwise a hung child lives forever.
         """
         with self._ocr_pool_lock:
             if self._ocr_pool is not stale_pool:
                 return  # another job already recycled it
             self._ocr_pool = None
         try:
-            stale_pool.shutdown(wait=False, cancel_futures=False)
+            stale_pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
+        self._reap_pool_processes_after_grace(stale_pool)
         logger.warning("OCR pool recycled after a task exceeded its deadline")
+
+    @staticmethod
+    def _reap_pool_processes_after_grace(pool: Any, *, grace_sec: float = 30.0) -> None:
+        """Terminate still-alive workers of a recycled ProcessPoolExecutor.
+
+        ``shutdown(wait=False)`` leaves a hung OCR child running forever; give
+        it a grace window to drain, then terminate survivors. No-op for thread
+        pools (``_processes`` exists only on ProcessPoolExecutor).
+        """
+        if not isinstance(pool, ProcessPoolExecutor):
+            return
+
+        def _reap() -> None:
+            time.sleep(max(0.0, float(grace_sec)))
+            processes = getattr(pool, "_processes", None) or {}
+            for proc in list(processes.values()):
+                if proc is None:
+                    continue
+                try:
+                    if proc.is_alive():
+                        proc.terminate()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_reap, name="scan-ocr-reaper", daemon=True).start()
 
     def _log_pdf_outcome(
         self,
@@ -724,6 +777,9 @@ class ScanWorker(threading.Thread):
             logger.warning("OCR cache store skipped: %s", exc)
         return ocr_result
 
+    def _llm_text_cap(self) -> int:
+        return max(1600, int(getattr(self.config, "llm_review_text_max_chars", 24000) or 24000))
+
     def _collect_pdf_matches(
         self,
         pdf_bytes: bytes,
@@ -780,6 +836,7 @@ class ScanWorker(threading.Thread):
                     "matches": text_matches,
                     "outcome": "text_layer_match_ocr_blank" if text_matches else "ocr_skipped_blank_pdf",
                     "reason": "OCR подтвердил пустые страницы",
+                    "llm_text": str(text_layer or "")[: self._llm_text_cap()],
                     "metrics": metrics,
                 }
             detail = (
@@ -792,6 +849,7 @@ class ScanWorker(threading.Thread):
                 "matches": text_matches,
                 "outcome": "analysis_incomplete",
                 "reason": detail,
+                "llm_text": str(text_layer or "")[: self._llm_text_cap()],
                 "metrics": metrics,
             }
 
@@ -802,12 +860,25 @@ class ScanWorker(threading.Thread):
             1,
         )
         matches = [*text_matches, *ocr_matches]
+        excerpt_source = text_layer or ocr_text
+        text_excerpt = str(excerpt_source or "")[:1600]
+        # Full extracted text for the LLM reviewer; the short excerpt above is
+        # what the finding/UI keeps, the reviewer needs more than the head.
+        # Matches may come from OCR while the excerpt keeps the text layer —
+        # the reviewer must see both sources, not whichever is non-empty first.
+        if text_layer and ocr_text and ocr_text != text_layer:
+            llm_source = f"{text_layer}\n\n{ocr_text}"
+        else:
+            llm_source = excerpt_source
+        llm_text = str(llm_source or "")[: self._llm_text_cap()]
         if ocr_outcome == "ocr_incomplete":
             self._log_pdf_outcome("analysis_incomplete", artifact_path=artifact_path, matches_count=len(matches))
             return {
                 "matches": matches,
                 "outcome": "analysis_incomplete",
                 "reason": "Одна или несколько страниц OCR проанализированы не полностью",
+                "text_excerpt": text_excerpt,
+                "llm_text": llm_text,
                 "metrics": metrics,
             }
         if matches:
@@ -817,6 +888,8 @@ class ScanWorker(threading.Thread):
                 "matches": matches,
                 "outcome": outcome,
                 "reason": "Анализ текстового слоя и OCR завершён, найдены совпадения",
+                "text_excerpt": text_excerpt,
+                "llm_text": llm_text,
                 "metrics": metrics,
             }
 
@@ -904,6 +977,7 @@ class ScanWorker(threading.Thread):
             matches = self._coerce_matches(payload.get("local_pattern_hits"), allowed_pattern_ids_filter)
 
             text_excerpt = str(payload.get("text_excerpt") or "")
+            llm_context = text_excerpt[: self._llm_text_cap()]
             if text_excerpt:
                 matches.extend(self._scan_text_with_filter(text_excerpt, allowed_pattern_ids_filter))
 
@@ -933,7 +1007,7 @@ class ScanWorker(threading.Thread):
                         matched_patterns=matches,
                         short_reason=", ".join(unique_patterns[:5]),
                         finalize_status="analysis_incomplete",
-                        finalize_error_text=MISSING_TRANSIENT_PDF_PAYLOAD,
+                        finalize_error_text=MISSING_TRANSIENT_PDF_PAYLOAD, llm_context=llm_context,
                     )
                 else:
                     finalize_terminal(
@@ -957,7 +1031,7 @@ class ScanWorker(threading.Thread):
                         short_reason=", ".join(unique_patterns[:5]),
                         finalize_status="analysis_incomplete",
                         finalize_summary=self._pdf_outcome_summary("analysis_incomplete", len(matches)),
-                        finalize_error_text=reason,
+                        finalize_error_text=reason, llm_context=llm_context,
                     )
                 else:
                     finalize_terminal(
@@ -1054,6 +1128,9 @@ class ScanWorker(threading.Thread):
                 matches.extend(pdf_result.get("matches") or [])
                 pdf_outcome = str(pdf_result.get("outcome") or "")
                 pdf_reason = str(pdf_result.get("reason") or "")
+                llm_source = pdf_result.get("llm_text") or pdf_result.get("text_excerpt")
+                if llm_source:
+                    llm_context = str(llm_source)[: self._llm_text_cap()]
                 if isinstance(pdf_result.get("metrics"), dict):
                     job_metrics.update(pdf_result["metrics"])
                 append_outcome = getattr(self.store, "append_job_extraction_outcome", None)
@@ -1076,7 +1153,7 @@ class ScanWorker(threading.Thread):
                         short_reason=short_reason,
                         finalize_status="analysis_incomplete",
                         finalize_summary=self._pdf_outcome_summary(pdf_outcome, len(matches)),
-                        finalize_error_text=pdf_reason or "Анализ OCR не завершён",
+                        finalize_error_text=pdf_reason or "Анализ OCR не завершён", llm_context=llm_context,
                     )
                 else:
                     record_finding(
@@ -1085,7 +1162,7 @@ class ScanWorker(threading.Thread):
                         matched_patterns=matches,
                         short_reason=short_reason,
                         finalize_status="done_with_incident",
-                        finalize_summary=self._pdf_outcome_summary(pdf_outcome, len(matches)),
+                        finalize_summary=self._pdf_outcome_summary(pdf_outcome, len(matches)), llm_context=llm_context,
                     )
             else:
                 if pdf_outcome == "ocr_error":

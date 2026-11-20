@@ -33,6 +33,20 @@ describe('MailCredentialsDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить и открыть почту' }));
     expect(onSave).toHaveBeenCalledTimes(1);
   });
+
+  it('lets the user dismiss the dialog without entering credentials', () => {
+    const onClose = vi.fn();
+    renderWithTheme(
+      <MailCredentialsDialog
+        open
+        ui={{ radiusMd: '10px' }}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('MailCredentialsGate', () => {

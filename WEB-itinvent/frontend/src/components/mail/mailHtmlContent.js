@@ -109,9 +109,9 @@ const getMailAttachmentIdentity = (attachment) => String(
   || ''
 ).trim();
 
-const isRemoteMailImageSrc = (value) => /^https?:\/\//i.test(String(value || '').trim());
+const isRemoteMailImageSrc = (value) => /^(?:https?:)?\/\//i.test(String(value || '').trim());
 const isIntrinsicMailImageSrc = (value) => /^(data:|blob:)/i.test(String(value || '').trim());
-const REMOTE_CSS_URL_RE = /url\(\s*(['"]?)(https?:\/\/[^'"\s)]+)\1\s*\)/gi;
+const REMOTE_CSS_URL_RE = /url\(\s*(['"]?)((?:https?:)?\/\/[^'"\s)]+)\1\s*\)/gi;
 
 const srcsetHasRemoteCandidate = (value) => String(value || '')
   .split(',')
@@ -172,6 +172,20 @@ const blockRemoteMailResources = (documentNode, { allowExternalImages = false } 
     if (!isRemoteMailImageSrc(node.getAttribute('poster'))) return;
     blockedRemote = true;
     node.removeAttribute('poster');
+  });
+
+  // video/audio/source/track src and the legacy <td/table background>
+  // attribute reach the network outside the img/srcset/poster checks above.
+  documentNode.querySelectorAll('video[src], audio[src], source[src], track[src]').forEach((node) => {
+    if (!isRemoteMailImageSrc(node.getAttribute('src'))) return;
+    blockedRemote = true;
+    node.removeAttribute('src');
+  });
+
+  documentNode.querySelectorAll('[background]').forEach((node) => {
+    if (!isRemoteMailImageSrc(node.getAttribute('background'))) return;
+    blockedRemote = true;
+    node.removeAttribute('background');
   });
 
   applySafeBlankLinkRel(documentNode);

@@ -55,6 +55,7 @@ export type NativeMailInboxSnapshot = {
   items: MailListItem[];
   total: number;
   hasMore: boolean;
+  nextOffset?: number;
   summary: MailFolderSummary;
   folderTree: MailFolderNode[];
   mailboxes: MailMailbox[];
@@ -104,6 +105,10 @@ export function useMailList(options: {
   const unreadSourceRef = useRef<symbol>(Symbol('mail-list'));
   const lastFocusLoadRef = useRef<{ key: string; pending: boolean; finishedAt: number } | null>(null);
   const loadedScopeRef = useRef('');
+  // Server-authoritative page cursor: next_offset reflects the backend's own
+  // scan position; items.length breaks when page sizes differ between
+  // requests (search windows) or dedupe dropped a row.
+  const nextOffsetRef = useRef(0);
   const metadataFreshRef = useRef({ scope: '', savedAt: 0 });
   const folderTreeFreshRef = useRef({ scope: '', savedAt: 0 });
   const onScopeResetRef = useRef(onScopeReset);
@@ -124,7 +129,10 @@ export function useMailList(options: {
       else setLoadingMore(true);
     }
     setError('');
-    const offset = reset ? 0 : items.length;
+    // A reset also clears the server cursor: a stale next_offset from the
+    // previous scope would skip the head of the new list on the next page.
+    if (reset) nextOffsetRef.current = 0;
+    const offset = nextOffsetRef.current;
     const parsedQuery = parseNativeMailSearchQuery(debouncedQuery);
     const filters = {
       mailboxId,
@@ -163,6 +171,7 @@ export function useMailList(options: {
           snapshotHit = true;
           cached = true;
           loadedScopeRef.current = dataScope;
+          nextOffsetRef.current = Number(snapshot.data.nextOffset ?? snapshot.data.items.length);
           setItems(snapshot.data.items.map((item) => item.kind === 'message'
             ? { ...item, value: applyPendingMailReadOverrides([item.value], mailboxId)[0] }
             : item));
@@ -219,6 +228,7 @@ export function useMailList(options: {
       const cachedItems = reset
         ? nextItems
         : [...items, ...nextItems.filter((item) => !items.some((old) => old.key === item.key))];
+      nextOffsetRef.current = Number(pageResult.next_offset ?? offset + nextItems.length);
       loadedScopeRef.current = dataScope;
       setItems(cachedItems);
       setTotal(pageResult.total);
@@ -256,6 +266,7 @@ export function useMailList(options: {
         setMailboxes(nextMailboxes);
       }
       if (pageResult.search_limited) warnings.push('Поиск выполнен по ограниченному окну писем. Уточните запрос.');
+      if (Number(pageResult.skipped_folders || 0) > 0) warnings.push('Часть папок недоступна — результаты могут быть неполными.');
       setError(warnings.join(' '));
       if (owner) {
         void writeNativeCollectionSnapshot<NativeMailInboxSnapshot>('mail-inbox', owner, signature, {
@@ -263,6 +274,7 @@ export function useMailList(options: {
           items: cachedItems,
           total: pageResult.total,
           hasMore: pageResult.has_more,
+          nextOffset: nextOffsetRef.current,
           summary: nextSummary,
           folderTree: nextFolderTree,
           mailboxes: nextMailboxes,

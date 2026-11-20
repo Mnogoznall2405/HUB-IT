@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -9,9 +12,7 @@ WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from types import SimpleNamespace
-
-from backend.services.mail_service import MailService
+from backend.services.mail_service import MailService, MailServiceError
 
 
 class _Query:
@@ -86,16 +87,21 @@ def test_mail_conversation_hydrate_fetches_detail_fields_in_scan_order():
     assert hydrated[1][1] == "sent"
 
 
-def test_mail_conversation_hydrate_keeps_scan_items_when_fetch_fails():
+def test_mail_conversation_hydrate_rejects_incomplete_fetch():
     scan_items = [(SimpleNamespace(id="only"), "inbox")]
     account = SimpleNamespace(
         fetch=lambda ids, only_fields=None: (_ for _ in ()).throw(RuntimeError("ews down"))
     )
     service = _Service()
 
-    hydrated = service._hydrate_conversation_items(account=account, items_raw=scan_items)
+    with pytest.raises(MailServiceError) as exc:
+        service._hydrate_conversation_items(account=account, items_raw=scan_items)
+    assert exc.value.status_code == 503
 
-    assert hydrated == scan_items
+    account.fetch = lambda **kwargs: [SimpleNamespace(id="other")]
+    with pytest.raises(MailServiceError) as exc:
+        service._hydrate_conversation_items(account=account, items_raw=scan_items)
+    assert exc.value.status_code == 503
 
 
 def test_mail_inbox_probe_uses_scan_queryset_without_body():
@@ -119,23 +125,34 @@ def test_complete_conversation_replaces_legacy_cache_and_reuses_verified_cache(m
     monkeypatch.setattr(service, "_cached_conversation_detail", lambda **kwargs: cache)
     monkeypatch.setattr(service, "_singleflight_key", lambda **kwargs: "test")
     monkeypatch.setattr(service, "_run_singleflight", lambda key, producer: producer())
-    monkeypatch.setattr(service, "_resolve_account_context", lambda **kwargs: {"profile": {"email": "synthetic@example.test"}, "account": object()})
+    def unavailable(**kwargs):
+        raise TimeoutError("Exchange did not return the body")
+
+    account = SimpleNamespace(fetch=unavailable)
+    monkeypatch.setattr(service, "_resolve_account_context", lambda **kwargs: {"profile": {"email": "synthetic@example.test"}, "account": account})
     def find(**kwargs):
         calls.append(kwargs)
         return "thread", [(SimpleNamespace(id="new"), "inbox")], "inbox"
     monkeypatch.setattr(service, "_find_conversation_items", find)
-    monkeypatch.setattr(service, "_hydrate_conversation_items", lambda **kwargs: kwargs["items_raw"])
-    monkeypatch.setattr(service, "_serialize_message_detail", lambda **kwargs: {"id": kwargs["item"].id})
+    monkeypatch.setattr(service, "_serialize_message_detail", lambda **kwargs: {
+        "id": kwargs["item"].id, "body_text": kwargs["item"].text_body,
+    })
     service._conversation_payloads = SimpleNamespace(conversation_detail_payload=lambda **kwargs: kwargs)
     def save(**kwargs):
         cache.clear()
         cache.update(kwargs["value"])
         return cache
     monkeypatch.setattr(service, "_cache_set", save)
+    with pytest.raises(MailServiceError) as exc:
+        service.get_conversation(user_id=7, mailbox_id="box", conversation_id="thread")
+    assert exc.value.status_code == 503
+    assert cache["items"] == [{"id": "old"}]
+
+    account.fetch = lambda **kwargs: [SimpleNamespace(id="new", text_body="Recovered text")]
     result = service.get_conversation(user_id=7, mailbox_id="box", conversation_id="thread")
     assert result["conversation_complete"] is True
-    assert result["items"] == [{"id": "new"}]
+    assert result["items"] == [{"id": "new", "body_text": "Recovered text"}]
     assert calls[0]["require_complete"] is True
     assert calls[0]["folder"] == "inbox"
     assert service.get_conversation(user_id=7, mailbox_id="box", conversation_id="thread") == result
-    assert len(calls) == 1
+    assert len(calls) == 2

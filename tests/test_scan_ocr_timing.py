@@ -265,6 +265,7 @@ def test_pixmap_path_extracts_real_text_with_real_ocr():
     cmd = _tesseract_cmd()
     if cmd is None:
         pytest.skip("tesseract not installed")
+    pytest.importorskip("pytesseract")
     fitz = pytest.importorskip("fitz")
 
     doc = fitz.open()

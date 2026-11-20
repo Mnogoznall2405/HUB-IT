@@ -25,6 +25,19 @@ def _osd_pool() -> ThreadPoolExecutor:
                 _osd_pool_instance = ThreadPoolExecutor(max_workers=16, thread_name_prefix="scan-osd")
     return _osd_pool_instance
 
+
+def shutdown_osd_pool(*, wait: bool = False) -> None:
+    """Stop the shared OSD pool; its threads are non-daemon and otherwise
+    outlive the worker and block interpreter exit."""
+    global _osd_pool_instance
+    with _osd_pool_lock:
+        pool, _osd_pool_instance = _osd_pool_instance, None
+    if pool is not None:
+        try:
+            pool.shutdown(wait=wait, cancel_futures=True)
+        except Exception:
+            pass
+
 def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
         value = int(str(os.getenv(name, str(default)) or default).strip())
@@ -45,8 +58,11 @@ MAX_FOCUSED_REGION_PIXELS = _bounded_env_int(
 # Lower bound 250: A/B on the DSP etalon proved focused regions recall-neutral
 # at 250 DPI and ~15% faster (see tests/test_scan_ocr_ab.py, SCAN_PERFORMANCE_PLAN).
 FOCUSED_REGION_DPI = _bounded_env_int("SCAN_OCR_FOCUSED_DPI", 400, 250, 600)
-# Skip OCR for absurd page boxes (malformed PDFs can report thousands of cm).
-MAX_PAGE_DIMENSION_POINTS = 5_000.0
+# Reject absurd page boxes (malformed PDFs can report thousands of cm), but
+# accept photo-scan PDFs whose page box equals the embedded image pixels
+# (cameras report ~5-13k pt). All render paths are pixel-capped, and at the
+# 0.01 zoom floor this bound still keeps pixmaps trivially small.
+MAX_PAGE_DIMENSION_POINTS = 25_000.0
 
 
 class OcrNonRetryableError(RuntimeError):

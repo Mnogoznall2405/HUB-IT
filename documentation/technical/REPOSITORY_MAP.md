@@ -210,6 +210,14 @@ Desktop — тонкая оболочка web-портала: auth, REST, WebSoc
 | Scan sidecar | `scan_agent/agent.py` | `C:\ProgramData\HUB-IT\ScanAgent\` |
 | MSI / GPO | `agent/`, `agent_installer.py` | см. `agent/README.md`, `agent/docs/` |
 
+Состав агента с исходной версии 1.4.26 — Inventory + Scan: поиск документов,
+самообновление и установка ПО сохранены. DLP-наблюдение (USB/сеть, браузерная
+история/активность, скриншоты, Telegram/MAX Probe) исключено из обоих runtime
+(`agent.py`, `agent/src/itinvent_agent/agent.py`) и MSI (`agent/setup.py`).
+Установщик снимает прежние задачи-пробы, не удаляя накопленные данные.
+Серверные DLP API/хранилища остаются отдельным контуром; наличие их исходников
+не означает включение в агент. Состояние сборки/выкладки проверять отдельно.
+
 ### scan_server
 
 | Что | Где |

@@ -48,4 +48,29 @@ describe('mailMoveUndo', () => {
     expect(afterUndo).toHaveBeenCalledTimes(1);
     expect(notifySuccess).toHaveBeenLastCalledWith('Перемещение писем отменено.');
   });
+
+  it('undoes each moved message to its own source folder via the new id', async () => {
+    const notifySuccess = vi.fn();
+    const moveMessage = vi.fn(async () => ({}));
+    const notifyRecoverableMove = createMailMoveUndoNotifier({
+      notifySuccess,
+      mailAPI: { moveMessage },
+      withActiveMailboxPayload: (payload) => payload,
+      afterUndo: vi.fn(async () => ({})),
+    });
+
+    notifyRecoverableMove({
+      moves: [
+        { id: 'sent-1', restoreFolder: 'inbox' },
+        { id: 'sent-2', restoreFolder: 'archive' },
+      ],
+      folderLabel: 'Sent',
+      count: 2,
+    });
+
+    await notifySuccess.mock.calls[0][1].onAction();
+
+    expect(moveMessage).toHaveBeenNthCalledWith(1, 'sent-1', { target_folder: 'inbox' });
+    expect(moveMessage).toHaveBeenNthCalledWith(2, 'sent-2', { target_folder: 'archive' });
+  });
 });

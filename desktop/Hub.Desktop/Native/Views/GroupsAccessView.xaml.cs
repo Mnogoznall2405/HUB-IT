@@ -95,8 +95,10 @@ public partial class GroupsAccessView : UserControl
             System.Windows.HorizontalAlignment.Center));
         style.Setters.Add(new Setter(TextBlock.FontSizeProperty, 12.0));
         style.Setters.Add(new Setter(TextBlock.FontWeightProperty, FontWeights.SemiBold));
+        // DynamicResourceExtension (не FindResource): кисти палитры подменяются
+        // при смене темы на лету — статическая кисть залипла бы на старой теме.
         style.Setters.Add(new Setter(
-            TextBlock.ForegroundProperty, FindResource("HubTextSecondaryBrush")));
+            TextBlock.ForegroundProperty, new DynamicResourceExtension("HubTextSecondaryBrush")));
         style.Setters.Add(new Setter(
             FrameworkElement.ToolTipProperty,
             new Binding(
@@ -106,25 +108,25 @@ public partial class GroupsAccessView : UserControl
         {
             Binding = new Binding(tonePath),
             Value = "info",
-            Setters = { new Setter(TextBlock.ForegroundProperty, FindResource("HubAccentBrush")) },
+            Setters = { new Setter(TextBlock.ForegroundProperty, new DynamicResourceExtension("HubAccentBrush")) },
         });
         style.Triggers.Add(new DataTrigger
         {
             Binding = new Binding(tonePath),
             Value = "warning",
-            Setters = { new Setter(TextBlock.ForegroundProperty, FindResource("HubWarningBrush")) },
+            Setters = { new Setter(TextBlock.ForegroundProperty, new DynamicResourceExtension("HubWarningBrush")) },
         });
         style.Triggers.Add(new DataTrigger
         {
             Binding = new Binding(tonePath),
             Value = "error",
-            Setters = { new Setter(TextBlock.ForegroundProperty, FindResource("HubErrorTextBrush")) },
+            Setters = { new Setter(TextBlock.ForegroundProperty, new DynamicResourceExtension("HubErrorTextBrush")) },
         });
         style.Triggers.Add(new DataTrigger
         {
             Binding = new Binding(tonePath),
             Value = "muted",
-            Setters = { new Setter(TextBlock.ForegroundProperty, FindResource("HubBorderBrush")) },
+            Setters = { new Setter(TextBlock.ForegroundProperty, new DynamicResourceExtension("HubBorderBrush")) },
         });
         return style;
     }

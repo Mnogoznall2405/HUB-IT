@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +10,11 @@ try:
     import fitz  # type: ignore
 except Exception:  # pragma: no cover
     fitz = None
+
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover
+    Image = None
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -23,9 +29,44 @@ class DocumentConversionError(RuntimeError):
     pass
 
 
+# Decompression-bomb guard: a tiny compressed PNG can expand to gigabytes of
+# raster. A4@300dpi is ~8.5MP and real photos stay far below this bound.
+DEFAULT_IMAGE_MAX_PIXELS = 200_000_000
+
+
+def _image_max_pixels() -> int:
+    raw = str(os.getenv("SCAN_IMAGE_MAX_PIXELS", "") or "").strip()
+    if not raw:
+        return DEFAULT_IMAGE_MAX_PIXELS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_IMAGE_MAX_PIXELS
+
+
+def _assert_image_within_pixel_limit(document_bytes: bytes, extension: str) -> None:
+    """Header-only size check (no rasterization); fail-open when PIL is absent."""
+    if Image is None:
+        return
+    max_pixels = _image_max_pixels()
+    if max_pixels <= 0:
+        return
+    try:
+        with Image.open(BytesIO(document_bytes)) as img:
+            width, height = int(img.width or 0), int(img.height or 0)
+    except Exception:
+        # Unreadable by PIL — let the normal conversion path report the error.
+        return
+    if width > 0 and height > 0 and width * height > max_pixels:
+        raise DocumentConversionError(
+            f"Image exceeds pixel limit: {width}x{height} > {max_pixels} pixels"
+        )
+
+
 def _image_to_pdf(document_bytes: bytes, extension: str) -> bytes:
     if fitz is None:
         raise DocumentConversionError("PyMuPDF is unavailable for image conversion")
+    _assert_image_within_pixel_limit(document_bytes, extension)
     filetype = "jpeg" if extension in {".jpg", ".jpeg"} else extension.lstrip(".")
     try:
         with fitz.open(stream=document_bytes, filetype=filetype) as image_doc:

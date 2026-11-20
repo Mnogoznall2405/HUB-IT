@@ -428,6 +428,7 @@ def test_lifespan_purges_legacy_artifacts_before_worker_start(monkeypatch):
 
     monkeypatch.setattr(scan_app, "store", _FakeStore())
     monkeypatch.setattr(scan_app, "worker", _FakeWorker())
+    monkeypatch.setattr(scan_app, "_acquire_worker_singleton_lock", lambda: BytesIO())
     scan_app.stop_event.clear()
 
     async def _run():
@@ -438,6 +439,60 @@ def test_lifespan_purges_legacy_artifacts_before_worker_start(monkeypatch):
 
     assert events[:3] == ["purge", "start", "inside"]
     assert "reconcile-spool" not in events
+
+
+def test_lifespan_skips_embedded_worker_when_lock_held(monkeypatch):
+    events: list[str] = []
+
+    class _FakeStore:
+        def purge_all_artifacts(self):
+            events.append("purge")
+            return {}
+
+        def reconcile_job_pdf_spool(self):
+            events.append("reconcile-spool")
+            return {}
+
+    class _FakeWorker:
+        def is_alive(self):
+            return False
+
+        def start(self):
+            events.append("start")
+
+        def join(self, timeout=0):
+            events.append(f"join:{timeout}")
+
+    monkeypatch.setattr(scan_app, "store", _FakeStore())
+    monkeypatch.setattr(scan_app, "worker", _FakeWorker())
+    monkeypatch.setattr(scan_app, "_acquire_worker_singleton_lock", lambda: None)
+    scan_app.stop_event.clear()
+
+    async def _run():
+        async with scan_app.lifespan(scan_app.app):
+            events.append("inside")
+
+    asyncio.run(_run())
+
+    assert "start" not in events
+    assert "inside" in events
+
+
+def test_worker_singleton_lock_rejects_second_holder(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        scan_app,
+        "config",
+        replace(scan_app.config, db_path=tmp_path / "scan-server.db"),
+    )
+    first = scan_app._acquire_worker_singleton_lock()
+    try:
+        assert first is not None
+        assert first is not scan_app._WORKER_LOCK_UNLOCKED
+        assert (tmp_path / "scan_worker.lock").exists()
+        assert scan_app._acquire_worker_singleton_lock() is None
+    finally:
+        if hasattr(first, "close"):
+            first.close()
 
 
 def test_agents_activity_returns_batched_runtime_state(temp_dir, monkeypatch):

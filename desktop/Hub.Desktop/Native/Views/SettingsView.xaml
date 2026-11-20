@@ -55,7 +55,7 @@
                 Background="{DynamicResource HubSurfaceBrush}"
                 BorderBrush="{DynamicResource HubErrorTextBrush}"
                 BorderThickness="1"
-                CornerRadius="8"
+                CornerRadius="12"
                 Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}">
             <Grid>
                 <Grid.ColumnDefinitions>

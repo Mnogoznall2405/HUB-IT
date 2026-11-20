@@ -256,3 +256,27 @@ class MyFilesHistoryService:
                 raise MyFilesNotFoundError("Version not found")
             return DownloadPayload(path=path, mode=blob.storage_mode, file_name="changes.zip" if kind == "changes" else row.original_file_name,
                 media_type="application/zip" if kind == "changes" else row.mime_type, download_size_bytes=blob.original_size_bytes, file_id=row.id)
+
+    def compare_file(self, *, settings, file_id, version_id, user_id):
+        """Object for ``docEditor.setRevisedFile``: a signed, short-lived URL of a retired version."""
+        with app_session(self.files._database_url_or_raise()) as session:
+            row = self._access(session, file_id, user_id)
+            if oo.document_type_for(row.original_file_name) != "word":
+                raise MyFilesValidationError("Сравнение доступно только для текстовых документов")
+            if str(version_id) == "latest":
+                version = session.scalars(
+                    select(AppMyFileVersion)
+                    .where(AppMyFileVersion.file_id == row.id)
+                    .order_by(AppMyFileVersion.version_no.desc())
+                    .limit(1)
+                ).first()
+            else:
+                version = session.get(AppMyFileVersion, str(version_id))
+            if version is None or version.file_id != row.id:
+                raise MyFilesNotFoundError("Version not found")
+            file_type = Path(row.original_file_name).suffix.lstrip(".").lower()
+            data = {"fileType": file_type, "url": self._asset_url(
+                settings, row=row, user_id=user_id, version_id=version.id,
+                blob_id=version.blob_id, kind="content")}
+            data["token"] = oo.sign_browser_payload(settings, data)
+            return data

@@ -300,6 +300,49 @@ describe('mailHtmlContent', () => {
     expect(revealed.html.toLowerCase()).toContain('https://tracker.example/p.jpg');
   });
 
+  it('blocks remote media src, legacy background attrs and protocol-relative css urls', () => {
+    const payload = [
+      '<table><tr><td background="https://tracker.example/bg.png">cell</td></tr></table>',
+      '<video src="https://tracker.example/v.mp4"></video>',
+      '<audio><source src="https://tracker.example/a.mp3"></audio>',
+      '<div style="background:url(\'//tracker.example/pixel.png\')">css</div>',
+    ].join('');
+
+    const blocked = buildRenderedMailHtml(payload, []);
+    const lower = blocked.html.toLowerCase();
+    expect(blocked.hasBlockedExternalImages).toBe(true);
+    expect(lower).not.toContain('tracker.example');
+    expect(lower).toContain('cell');
+    expect(lower).toContain('css');
+
+    const revealed = buildRenderedMailHtml(payload, [], { allowExternalImages: true });
+    const revealedLower = revealed.html.toLowerCase();
+    expect(revealed.hasBlockedExternalImages).toBe(false);
+    expect(revealedLower).toContain('tracker.example');
+  });
+
+  it('blocks protocol-relative urls in img src, srcset, poster, media and background', () => {
+    const payload = [
+      '<img src="//tracker.example/img.png" alt="x">',
+      '<img srcset="//tracker.example/s1.png 1x, //tracker.example/s2.png 2x">',
+      '<video poster="//tracker.example/poster.png" src="//tracker.example/v.mp4"></video>',
+      '<audio><source src="//tracker.example/a.mp3"></audio>',
+      '<track src="//tracker.example/t.vtt">',
+      '<table><tr><td background="//tracker.example/bg.png">cell2</td></tr></table>',
+    ].join('');
+
+    const blocked = buildRenderedMailHtml(payload, []);
+    const lower = blocked.html.toLowerCase();
+    expect(blocked.hasBlockedExternalImages).toBe(true);
+    expect(lower).not.toContain('tracker.example');
+    expect(lower).toContain('cell2');
+
+    const revealed = buildRenderedMailHtml(payload, [], { allowExternalImages: true });
+    const revealedLower = revealed.html.toLowerCase();
+    expect(revealed.hasBlockedExternalImages).toBe(false);
+    expect(revealedLower).toContain('tracker.example');
+  });
+
   it('keeps cid CSS background urls while blocking remote ones', () => {
     const result = buildRenderedMailHtml(
       '<div style="background-image:url(\'cid:logo123\');list-style-image:url(\'https://tracker.example/x\')">keep</div>',

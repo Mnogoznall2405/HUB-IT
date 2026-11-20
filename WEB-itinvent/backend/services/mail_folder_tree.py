@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -111,11 +112,21 @@ class MailFolderTreeBuilder:
         }
 
     def list_folder_summary(self, *, standard_folders: dict[str, Any]) -> dict[str, dict[str, int]]:
-        result: dict[str, dict[str, int]] = {}
-        for key, folder_obj in standard_folders.items():
-            total, unread = self.folder_counts(folder_obj)
-            result[key] = {"total": total, "unread": unread}
-        return result
+        items = list(standard_folders.items())
+        if len(items) <= 1:
+            return {
+                key: (lambda counts: {"total": counts[0], "unread": counts[1]})(self.folder_counts(folder_obj))
+                for key, folder_obj in items
+            }
+        # Each folder's counts are an independent FindItem round-trip; run them
+        # concurrently — folder objects are separate querysets over the shared
+        # account, the same pattern the multi-folder search workers use.
+        with ThreadPoolExecutor(max_workers=min(4, len(items)), thread_name_prefix="mail-summary") as pool:
+            counts = list(pool.map(lambda entry: self.folder_counts(entry[1]), items))
+        return {
+            key: {"total": total, "unread": unread}
+            for (key, _folder_obj), (total, unread) in zip(items, counts)
+        }
 
     def build_tree(
         self,

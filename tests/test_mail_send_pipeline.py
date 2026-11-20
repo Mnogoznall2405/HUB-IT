@@ -587,3 +587,37 @@ def test_send_pipeline_missing_exchangelib_uses_dedicated_code():
             validate_attachments=lambda _attachments: None,
         )
     assert exc_info.value.code == "MAIL_EXCHANGELIB_MISSING"
+
+
+def test_send_error_code_classifies_ambiguous_ews_errors():
+    from backend.services.mail_send_pipeline import (
+        MAIL_SEND_OUTCOME_UNKNOWN,
+        send_error_code,
+    )
+
+    try:
+        from exchangelib.errors import (
+            ErrorConnectionFailed,
+            ErrorInsufficientResources,
+            ErrorInternalServerError,
+            ErrorMailboxStoreUnavailable,
+            ErrorMessageSizeExceeded,
+            ErrorServerBusy,
+            ErrorTimeoutExpired,
+        )
+    except Exception:
+        pytest.skip("exchangelib error classes unavailable")
+
+    for error_cls in (
+        ErrorServerBusy,
+        ErrorMailboxStoreUnavailable,
+        ErrorConnectionFailed,
+        ErrorInsufficientResources,
+        ErrorInternalServerError,
+        ErrorTimeoutExpired,
+    ):
+        assert send_error_code(error_cls("x")) == MAIL_SEND_OUTCOME_UNKNOWN
+
+    assert send_error_code(ErrorMessageSizeExceeded("x")) == "MAIL_SEND_FAILED"
+    assert send_error_code(ValueError("x")) == "MAIL_SEND_FAILED"
+    assert send_error_code(RuntimeError("x")) == MAIL_SEND_OUTCOME_UNKNOWN

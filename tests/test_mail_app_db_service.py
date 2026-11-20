@@ -493,7 +493,11 @@ def test_mail_service_caches_conversation_detail_payload(temp_dir, monkeypatch):
         "login": "user@example.com",
         "password": "secret",
     })
-    monkeypatch.setattr(service, "_create_account", lambda **kwargs: object())
+    monkeypatch.setattr(
+        service,
+        "_create_account",
+        lambda **kwargs: SimpleNamespace(fetch=lambda **_kwargs: [item]),
+    )
 
     def _find_conversation_items(**kwargs):
         calls["find"] += 1
@@ -622,7 +626,7 @@ def test_mail_service_limits_filtered_message_scan_window(temp_dir, monkeypatch)
 
     items = [SimpleNamespace(id=f"exchange-{index}") for index in range(5)]
 
-    monkeypatch.setattr(service, "_search_target_folders", lambda *args, **kwargs: [(object(), "inbox")])
+    monkeypatch.setattr(service, "_listing_search_target_folders", lambda *args, **kwargs: [(object(), "inbox")])
     monkeypatch.setattr(service, "_folder_queryset", lambda *args, **kwargs: _Query(items))
     monkeypatch.setattr(service, "_message_matches_filters", lambda *args, **kwargs: True)
     monkeypatch.setattr(

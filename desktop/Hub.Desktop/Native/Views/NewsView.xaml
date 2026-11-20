@@ -97,6 +97,13 @@
                          CommandParameter="unread"
                          Content="Непрочитанные"
                          AutomationProperties.Name="Фильтр: непрочитанные новости" />
+            <RadioButton GroupName="NewsFilter"
+                         Style="{StaticResource ChipRadioStyle}"
+                         IsChecked="{Binding IsFilterBookmarks, Mode=TwoWay}"
+                         Command="{Binding SelectFilterCommand}"
+                         CommandParameter="bookmarks"
+                         Content="🔖 Закладки"
+                         AutomationProperties.Name="Фильтр: закладки" />
         </StackPanel>
 
         <!-- Порядок списка: серверная сортировка (sort_by/sort_dir) -->
@@ -487,6 +494,564 @@
                                     <TextBlock Style="{StaticResource HubMutedTextStyle}"
                                                Text="Текст объявления отсутствует."
                                                Visibility="{Binding HasBody, Converter={StaticResource InverseBoolToVisibility}}" />
+
+                                    <!-- Реакции: чипы со счётами (своя подсвечена) + «+»-меню -->
+                                    <WrapPanel Margin="0,16,0,0"
+                                               Visibility="{Binding ReactionsEnabled, Converter={StaticResource BoolToVisibility}}">
+                                        <ItemsControl ItemsSource="{Binding ReactionChips}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                                                  Margin="0,0,8,8"
+                                                                  IsChecked="{Binding IsMine, Mode=OneWay}"
+                                                                  Command="{Binding DataContext.ToggleReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                  CommandParameter="{Binding}"
+                                                                  Content="{Binding DisplayText}"
+                                                                  ToolTip="{Binding TooltipText}"
+                                                                  AutomationProperties.Name="{Binding TooltipText}" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <Button Style="{StaticResource HubGhostButtonStyle}"
+                                                Margin="0,0,8,8"
+                                                MinHeight="28"
+                                                Padding="10,4"
+                                                Click="ReactionMenu_Click"
+                                                Content="＋"
+                                                ToolTip="Добавить реакцию"
+                                                AutomationProperties.Name="Добавить реакцию">
+                                            <Button.ContextMenu>
+                                                <ContextMenu>
+                                                    <MenuItem Header="👍 Нравится" Command="{Binding DataContext.PickReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="like" />
+                                                    <MenuItem Header="❤️ Любовь" Command="{Binding DataContext.PickReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="love" />
+                                                    <MenuItem Header="😂 Смех" Command="{Binding DataContext.PickReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="laugh" />
+                                                    <MenuItem Header="😮 Удивление" Command="{Binding DataContext.PickReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="wow" />
+                                                    <MenuItem Header="😢 Грусть" Command="{Binding DataContext.PickReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="sad" />
+                                                    <MenuItem Header="😡 Возмущение" Command="{Binding DataContext.PickReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="angry" />
+                                                </ContextMenu>
+                                            </Button.ContextMenu>
+                                        </Button>
+                                    </WrapPanel>
+
+                                    <!-- Действия: лайк / комментарии / закладка -->
+                                    <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
+                                        <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                                      IsChecked="{Binding IsLiked, Mode=OneWay}"
+                                                      Command="{Binding DataContext.ToggleLikeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                      Content="{Binding LikeText}"
+                                                      ToolTip="{Binding LikeTooltip}"
+                                                      Visibility="{Binding ReactionsEnabled, Converter={StaticResource BoolToVisibility}}"
+                                                      AutomationProperties.Name="Нравится" />
+                                        <TextBlock Margin="4,0,12,0"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding CommentsTotal, StringFormat='💬 {0}'}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding CommentsTotal}" Value="0">
+                                                            <Setter Property="Text" Value="💬" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <ToggleButton Style="{StaticResource HubChipToggleStyle}"
+                                                      IsChecked="{Binding IsBookmarked, Mode=OneWay}"
+                                                      Command="{Binding DataContext.ToggleBookmarkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                      Content="{Binding BookmarkText}"
+                                                      ToolTip="{Binding BookmarkTooltip}"
+                                                      AutomationProperties.Name="Закладка" />
+                                    </StackPanel>
+
+                                    <!-- Опрос -->
+                                    <Border Margin="0,16,0,0"
+                                            Padding="14,12"
+                                            Background="{DynamicResource HubSurfaceAltBrush}"
+                                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="10"
+                                            Visibility="{Binding HasPoll, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                                       FontSize="14"
+                                                       Text="{Binding PollQuestion}"
+                                                       TextWrapping="Wrap" />
+                                            <TextBlock Margin="0,2,0,0"
+                                                       Style="{StaticResource HubMutedTextStyle}"
+                                                       FontSize="12"
+                                                       Text="{Binding PollMetaText}"
+                                                       Visibility="{Binding PollMetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            <ItemsControl Margin="0,10,0,0"
+                                                          ItemsSource="{Binding PollOptions}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Margin="0,0,0,6"
+                                                                Padding="10,8"
+                                                                Background="{DynamicResource HubSurfaceBrush}"
+                                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                                BorderThickness="1"
+                                                                CornerRadius="8">
+                                                            <StackPanel>
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                        <ColumnDefinition Width="*" />
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <CheckBox VerticalAlignment="Center"
+                                                                              IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                                              Visibility="{Binding ShowCheckBox, Converter={StaticResource BoolToVisibility}}"
+                                                                              AutomationProperties.Name="{Binding Text}" />
+                                                                    <Button Style="{StaticResource HubGhostButtonStyle}"
+                                                                            Padding="8,2"
+                                                                            Command="{Binding DataContext.VotePollOptionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Content="{Binding Text}"
+                                                                            Visibility="{Binding ShowVoteButton, Converter={StaticResource BoolToVisibility}}" />
+                                                                    <TextBlock Grid.Column="1"
+                                                                               Margin="8,0,8,0"
+                                                                               VerticalAlignment="Center"
+                                                                               Text="{Binding Text}"
+                                                                               TextWrapping="Wrap"
+                                                                               Visibility="{Binding ShowVoteButton, Converter={StaticResource InverseBoolToVisibility}}" />
+                                                                    <TextBlock Grid.Column="2"
+                                                                               VerticalAlignment="Center"
+                                                                               FontSize="12"
+                                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                               Text="{Binding VotesCount, StringFormat='{}{0} гол.'}"
+                                                                               Visibility="{Binding ShowResult, Converter={StaticResource BoolToVisibility}}" />
+                                                                </Grid>
+                                                                <Grid Margin="0,6,0,0"
+                                                                      Visibility="{Binding ShowResult, Converter={StaticResource BoolToVisibility}}">
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="*" />
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <ProgressBar Height="6"
+                                                                                 Minimum="0"
+                                                                                 Maximum="100"
+                                                                                 Value="{Binding Percent, Mode=OneWay}"
+                                                                                 Foreground="{DynamicResource HubAccentBrush}"
+                                                                                 Background="{DynamicResource HubSurfaceRaisedBrush}" />
+                                                                    <StackPanel Grid.Column="1"
+                                                                                Margin="8,0,0,0"
+                                                                                VerticalAlignment="Center"
+                                                                                Orientation="Horizontal">
+                                                                        <TextBlock FontSize="12"
+                                                                                   Foreground="{DynamicResource HubAccentBrush}"
+                                                                                   Text="✓"
+                                                                                   Visibility="{Binding IsViewerVote, Converter={StaticResource BoolToVisibility}}" />
+                                                                        <TextBlock Margin="4,0,0,0"
+                                                                                   FontSize="12"
+                                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                                   Text="{Binding PercentText}" />
+                                                                    </StackPanel>
+                                                                </Grid>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <Grid Margin="0,2,0,0">
+                                                <StackPanel VerticalAlignment="Center"
+                                                            Orientation="Horizontal">
+                                                    <TextBlock FontSize="12"
+                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                               Text="{Binding PollVotersText}" />
+                                                    <TextBlock Margin="10,0,0,0"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                               Text="{Binding PollClosesText}" />
+                                                </StackPanel>
+                                                <StackPanel HorizontalAlignment="Right"
+                                                            Orientation="Horizontal">
+                                                    <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                                            Command="{Binding DataContext.SubmitPollVoteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            Content="{Binding PollSubmitText}"
+                                                            Visibility="{Binding ShowPollSubmit, Converter={StaticResource BoolToVisibility}}"
+                                                            AutomationProperties.Name="Голосовать в опросе" />
+                                                    <Button Margin="8,0,0,0"
+                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                            Command="{Binding DataContext.CancelPollVoteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            Content="Отменить голос"
+                                                            Visibility="{Binding ShowPollCancelVote, Converter={StaticResource BoolToVisibility}}"
+                                                            AutomationProperties.Name="Отменить голос" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Вложения -->
+                                    <StackPanel x:Name="AttachmentsSectionPanel"
+                                                Margin="0,16,0,0"
+                                                Visibility="{Binding HasAttachments, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                                   FontSize="14"
+                                                   Text="Вложения" />
+                                        <ItemsControl Margin="0,8,0,0"
+                                                      ItemsSource="{Binding Attachments}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Button Margin="0,0,8,8"
+                                                            MinHeight="28"
+                                                            Padding="10,4"
+                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                            Command="{Binding DataContext.OpenAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}"
+                                                            Content="{Binding DisplayText}"
+                                                            ToolTip="{Binding Name}"
+                                                            AutomationProperties.Name="{Binding Name}" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+
+                                    <!-- Комментарии -->
+                                    <StackPanel x:Name="CommentsSectionPanel"
+                                                Margin="0,16,0,0">
+                                        <TextBlock Style="{StaticResource HubSectionTitleStyle}"
+                                                   FontSize="14"
+                                                   Text="{Binding CommentsHeaderText}" />
+                                        <Border Margin="0,8,0,0"
+                                                Padding="12,8"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8"
+                                                Visibility="{Binding CommentsErrorText, Converter={StaticResource NonEmptyStringToVisibility}}">
+                                            <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                                       Text="{Binding CommentsErrorText}"
+                                                       TextWrapping="Wrap" />
+                                        </Border>
+                                        <ProgressBar Margin="0,8,0,0"
+                                                     Height="3"
+                                                     IsIndeterminate="True"
+                                                     Foreground="{DynamicResource HubAccentBrush}"
+                                                     Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                                     Visibility="{Binding ShowCommentsLoading, Converter={StaticResource BoolToVisibility}}" />
+                                        <ItemsControl ItemsSource="{Binding Comments}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="0,8,0,0"
+                                                            Padding="10,8"
+                                                            Background="{DynamicResource HubSurfaceBrush}"
+                                                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="8">
+                                                        <StackPanel>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Orientation="Horizontal">
+                                                                    <TextBlock FontWeight="SemiBold"
+                                                                               Text="{Binding AuthorText}" />
+                                                                    <TextBlock Margin="8,0,0,0"
+                                                                               VerticalAlignment="Center"
+                                                                               FontSize="12"
+                                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                               Text="{Binding DateText}" />
+                                                                </StackPanel>
+                                                                <StackPanel Grid.Column="1"
+                                                                            Orientation="Horizontal"
+                                                                            Visibility="{Binding ShowActions, Converter={StaticResource BoolToVisibility}}">
+                                                                    <Button Margin="0,0,6,0"
+                                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                                            Padding="8,2"
+                                                                            Command="{Binding DataContext.BeginCommentEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Content="Изменить"
+                                                                            Visibility="{Binding CanEdit, Converter={StaticResource BoolToVisibility}}"
+                                                                            AutomationProperties.Name="Изменить комментарий" />
+                                                                    <Button Style="{StaticResource HubGhostButtonStyle}"
+                                                                            Padding="8,2"
+                                                                            Command="{Binding DataContext.DeleteCommentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Content="Удалить"
+                                                                            Visibility="{Binding CanDelete, Converter={StaticResource BoolToVisibility}}"
+                                                                            AutomationProperties.Name="Удалить комментарий" />
+                                                                </StackPanel>
+                                                            </Grid>
+                                                            <TextBlock FontSize="12"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding ReplyToText}"
+                                                                       Visibility="{Binding ReplyToText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                            <TextBlock Margin="0,4,0,0"
+                                                                       Text="{Binding DisplayBody}"
+                                                                       TextWrapping="Wrap"
+                                                                       Visibility="{Binding IsEditing, Converter={StaticResource InverseBoolToVisibility}}" />
+                                                            <StackPanel Margin="0,4,0,0"
+                                                                        Visibility="{Binding IsEditing, Converter={StaticResource BoolToVisibility}}">
+                                                                <TextBox MinHeight="56"
+                                                                         AcceptsReturn="True"
+                                                                         Style="{StaticResource HubTextBoxStyle}"
+                                                                         Text="{Binding EditBody, UpdateSourceTrigger=PropertyChanged}"
+                                                                         TextWrapping="Wrap" />
+                                                                <StackPanel Margin="0,6,0,0"
+                                                                            Orientation="Horizontal">
+                                                                    <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                                                            Command="{Binding DataContext.SaveCommentEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Content="Сохранить"
+                                                                            AutomationProperties.Name="Сохранить правку комментария" />
+                                                                    <Button Margin="8,0,0,0"
+                                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                                            Command="{Binding DataContext.CancelCommentEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Content="Отмена"
+                                                                            AutomationProperties.Name="Отменить правку" />
+                                                                </StackPanel>
+                                                            </StackPanel>
+                                                            <ItemsControl Margin="0,6,0,0"
+                                                                          ItemsSource="{Binding Attachments}"
+                                                                          Visibility="{Binding HasAttachments, Converter={StaticResource BoolToVisibility}}">
+                                                                <ItemsControl.ItemsPanel>
+                                                                    <ItemsPanelTemplate>
+                                                                        <WrapPanel />
+                                                                    </ItemsPanelTemplate>
+                                                                </ItemsControl.ItemsPanel>
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate>
+                                                                        <Button Margin="0,0,6,6"
+                                                                                MinHeight="24"
+                                                                                Padding="8,2"
+                                                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                                                Command="{Binding DataContext.OpenAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                                CommandParameter="{Binding}"
+                                                                                Content="{Binding DisplayText}"
+                                                                                ToolTip="{Binding Name}" />
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+                                                            <WrapPanel Margin="0,4,0,0"
+                                                                       Visibility="{Binding ShowReactions, Converter={StaticResource BoolToVisibility}}">
+                                                                <ItemsControl ItemsSource="{Binding ReactionChips}">
+                                                                    <ItemsControl.ItemsPanel>
+                                                                        <ItemsPanelTemplate>
+                                                                            <WrapPanel />
+                                                                        </ItemsPanelTemplate>
+                                                                    </ItemsControl.ItemsPanel>
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <ToggleButton Margin="0,0,6,4"
+                                                                                          MinHeight="22"
+                                                                                          Padding="7,1"
+                                                                                          Style="{StaticResource HubChipToggleStyle}"
+                                                                                          IsChecked="{Binding IsMine, Mode=OneWay}"
+                                                                                          Command="{Binding DataContext.ToggleCommentReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                                          CommandParameter="{Binding}"
+                                                                                          Content="{Binding DisplayText}"
+                                                                                          ToolTip="{Binding TooltipText}" />
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                                <Button Margin="0,0,6,4"
+                                                                        MinHeight="22"
+                                                                        Padding="7,1"
+                                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                                        Click="ReactionMenu_Click"
+                                                                        Content="＋"
+                                                                        ToolTip="Добавить реакцию">
+                                                                    <Button.ContextMenu>
+                                                                        <ContextMenu>
+                                                                            <MenuItem Header="👍 Нравится" Command="{Binding PickReactionCommand}" CommandParameter="like" />
+                                                                            <MenuItem Header="❤️ Любовь" Command="{Binding PickReactionCommand}" CommandParameter="love" />
+                                                                            <MenuItem Header="😂 Смех" Command="{Binding PickReactionCommand}" CommandParameter="laugh" />
+                                                                            <MenuItem Header="😮 Удивление" Command="{Binding PickReactionCommand}" CommandParameter="wow" />
+                                                                            <MenuItem Header="😢 Грусть" Command="{Binding PickReactionCommand}" CommandParameter="sad" />
+                                                                            <MenuItem Header="😡 Возмущение" Command="{Binding PickReactionCommand}" CommandParameter="angry" />
+                                                                        </ContextMenu>
+                                                                    </Button.ContextMenu>
+                                                                </Button>
+                                                                <Button Margin="0,0,6,4"
+                                                                        MinHeight="22"
+                                                                        Padding="7,1"
+                                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                                        Command="{Binding DataContext.ReplyCommentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                        CommandParameter="{Binding}"
+                                                                        Content="Ответить"
+                                                                        Visibility="{Binding CanReply, Converter={StaticResource BoolToVisibility}}"
+                                                                        AutomationProperties.Name="Ответить на комментарий" />
+                                                            </WrapPanel>
+                                                            <StackPanel>
+                                                                <Button Margin="0,2,0,0"
+                                                                        HorizontalAlignment="Left"
+                                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                                        Padding="8,2"
+                                                                        Command="{Binding DataContext.ToggleRepliesCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                        CommandParameter="{Binding}"
+                                                                        Content="{Binding RepliesButtonText}"
+                                                                        Visibility="{Binding HasReplies, Converter={StaticResource BoolToVisibility}}"
+                                                                        AutomationProperties.Name="Развернуть ответы" />
+                                                                <ProgressBar Margin="0,4,0,0"
+                                                                             Height="3"
+                                                                             IsIndeterminate="True"
+                                                                             Foreground="{DynamicResource HubAccentBrush}"
+                                                                             Visibility="{Binding IsRepliesLoading, Converter={StaticResource BoolToVisibility}}" />
+                                                                <ItemsControl Margin="16,4,0,0"
+                                                                              ItemsSource="{Binding Replies}"
+                                                                              Visibility="{Binding RepliesExpanded, Converter={StaticResource BoolToVisibility}}">
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <Border Margin="0,0,0,6"
+                                                                                    Padding="8,6"
+                                                                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                                                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                                                    BorderThickness="1"
+                                                                                    CornerRadius="8">
+                                                                                <StackPanel>
+                                                                                    <StackPanel Orientation="Horizontal">
+                                                                                        <TextBlock FontWeight="SemiBold"
+                                                                                                   Text="{Binding AuthorText}" />
+                                                                                        <TextBlock Margin="8,0,0,0"
+                                                                                                   VerticalAlignment="Center"
+                                                                                                   FontSize="12"
+                                                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                                                   Text="{Binding DateText}" />
+                                                                                    </StackPanel>
+                                                                                    <TextBlock FontSize="12"
+                                                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                                               Text="{Binding ReplyToText}"
+                                                                                               Visibility="{Binding ReplyToText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                                                    <TextBlock Margin="0,2,0,0"
+                                                                                               Text="{Binding DisplayBody}"
+                                                                                               TextWrapping="Wrap" />
+                                                                                    <WrapPanel Margin="0,4,0,0">
+                                                                                        <ItemsControl ItemsSource="{Binding ReactionChips}">
+                                                                                            <ItemsControl.ItemsPanel>
+                                                                                                <ItemsPanelTemplate>
+                                                                                                    <WrapPanel />
+                                                                                                </ItemsPanelTemplate>
+                                                                                            </ItemsControl.ItemsPanel>
+                                                                                            <ItemsControl.ItemTemplate>
+                                                                                                <DataTemplate>
+                                                                                                    <ToggleButton Margin="0,0,6,4"
+                                                                                                                  MinHeight="20"
+                                                                                                                  Padding="6,1"
+                                                                                                                  Style="{StaticResource HubChipToggleStyle}"
+                                                                                                                  IsChecked="{Binding IsMine, Mode=OneWay}"
+                                                                                                                  Command="{Binding DataContext.ToggleCommentReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                                                                  CommandParameter="{Binding}"
+                                                                                                                  Content="{Binding DisplayText}" />
+                                                                                                </DataTemplate>
+                                                                                            </ItemsControl.ItemTemplate>
+                                                                                        </ItemsControl>
+                                                                                        <Button Margin="0,0,6,4"
+                                                                                                MinHeight="20"
+                                                                                                Padding="6,1"
+                                                                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                                                                Click="ReactionMenu_Click"
+                                                                                                Content="＋">
+                                                                                            <Button.ContextMenu>
+                                                                                                <ContextMenu>
+                                                                                                    <MenuItem Header="👍" Command="{Binding PickReactionCommand}" CommandParameter="like" />
+                                                                                                    <MenuItem Header="❤️" Command="{Binding PickReactionCommand}" CommandParameter="love" />
+                                                                                                    <MenuItem Header="😂" Command="{Binding PickReactionCommand}" CommandParameter="laugh" />
+                                                                                                    <MenuItem Header="😮" Command="{Binding PickReactionCommand}" CommandParameter="wow" />
+                                                                                                    <MenuItem Header="😢" Command="{Binding PickReactionCommand}" CommandParameter="sad" />
+                                                                                                    <MenuItem Header="😡" Command="{Binding PickReactionCommand}" CommandParameter="angry" />
+                                                                                                </ContextMenu>
+                                                                                            </Button.ContextMenu>
+                                                                                        </Button>
+                                                                                        <Button Margin="0,0,6,4"
+                                                                                                MinHeight="20"
+                                                                                                Padding="6,1"
+                                                                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                                                                Command="{Binding DataContext.ReplyCommentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                                                CommandParameter="{Binding}"
+                                                                                                Content="Ответить"
+                                                                                                Visibility="{Binding CanReply, Converter={StaticResource BoolToVisibility}}" />
+                                                                                        <Button Margin="0,0,6,4"
+                                                                                                MinHeight="20"
+                                                                                                Padding="6,1"
+                                                                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                                                                Command="{Binding DataContext.DeleteCommentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                                                CommandParameter="{Binding}"
+                                                                                                Content="Удалить"
+                                                                                                Visibility="{Binding CanDelete, Converter={StaticResource BoolToVisibility}}" />
+                                                                                    </WrapPanel>
+                                                                                </StackPanel>
+                                                                            </Border>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <Button Margin="0,8,0,0"
+                                                HorizontalAlignment="Left"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding DataContext.LoadMoreCommentsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                Content="Показать ещё комментарии"
+                                                Visibility="{Binding HasMoreComments, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Показать ещё комментарии" />
+                                        <Border Margin="0,8,0,0"
+                                                Padding="8,4"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8"
+                                                Visibility="{Binding ReplyToText, Converter={StaticResource NonEmptyStringToVisibility}}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock VerticalAlignment="Center"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding ReplyToText}"
+                                                           TextWrapping="Wrap" />
+                                                <Button Grid.Column="1"
+                                                        Margin="8,0,0,0"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.CancelReplyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        Content="✕"
+                                                        AutomationProperties.Name="Отменить ответ" />
+                                            </Grid>
+                                        </Border>
+                                        <Grid Margin="0,8,0,0"
+                                              Visibility="{Binding ShowComposer, Converter={StaticResource BoolToVisibility}}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox MinHeight="40"
+                                                     AcceptsReturn="True"
+                                                     Style="{StaticResource HubTextBoxStyle}"
+                                                     Text="{Binding CommentDraft, UpdateSourceTrigger=PropertyChanged}"
+                                                     TextWrapping="Wrap"
+                                                     AutomationProperties.Name="Текст комментария" />
+                                            <Button Grid.Column="1"
+                                                    Margin="8,0,0,0"
+                                                    VerticalAlignment="Top"
+                                                    Style="{StaticResource HubPrimaryButtonStyle}"
+                                                    Command="{Binding DataContext.SendCommentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    Content="Отправить"
+                                                    AutomationProperties.Name="Отправить комментарий" />
+                                        </Grid>
+                                        <TextBlock Margin="0,8,0,0"
+                                                   Style="{StaticResource HubMutedTextStyle}"
+                                                   FontSize="12"
+                                                   Text="{Binding CommentsDisabledText}"
+                                                   Visibility="{Binding CommentsDisabledText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                    </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>
 

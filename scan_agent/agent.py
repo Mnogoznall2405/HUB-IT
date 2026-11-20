@@ -65,6 +65,11 @@ DEFAULT_SERVER_QUEUE_SLOW_THRESHOLD = 2000
 DEFAULT_OUTBOX_REQUEUE_BATCH = 20
 DEFAULT_OUTBOX_REQUEUE_INTERVAL_SEC = 15 * 60
 DEAD_LETTER_NO_REQUEUE_REASONS = frozenset({"OUTBOX_CORRUPT", "OUTBOX_INVALID_PAYLOAD"})
+# HTTP statuses where retrying the same bytes can never succeed — the server
+# validated and rejected the payload itself. 404/405/501 stay retryable: they
+# also appear during rolling upgrades when an endpoint briefly disappears.
+PERMANENT_INGEST_HTTP_STATUSES = frozenset({400, 410, 413, 415, 422})
+DEAD_LETTER_MAX_REQUEUES = 3
 # The dead-letter directory used to grow without limit (hosts with 14-16k files were seen in the
 # fleet). Items are pruned oldest-first once any of these limits is exceeded, in bounded batches
 # so the first cleanup of an already huge directory does not become an I/O spike.
@@ -567,6 +572,7 @@ def _read_env() -> Dict[str, Any]:
         "run_scan_on_start": str(os.getenv("SCAN_AGENT_SCAN_ON_START", "0")).strip() not in {"0", "false", "False"},
         "watchdog_enabled": str(os.getenv("SCAN_AGENT_WATCHDOG_ENABLED", "0")).strip() not in {"0", "false", "False"},
         "watchdog_batch_size": max(10, _to_int(os.getenv("SCAN_AGENT_WATCHDOG_BATCH_SIZE", "200"), 200)),
+        "watchdog_settle_sec": max(0, _to_int(os.getenv("SCAN_AGENT_WATCHDOG_SETTLE_SEC", "3"), 3)),
         "roots_refresh_sec": max(60, _to_int(os.getenv("SCAN_AGENT_ROOTS_REFRESH_SEC", "300"), 300)),
         "branch": str(os.getenv("SCAN_AGENT_BRANCH", "")).strip(),
         "patterns_file": str(os.getenv("SCAN_AGENT_PATTERNS_FILE", "")).strip(),
@@ -768,10 +774,31 @@ _SPACED_CYRILLIC_WORD_RE = re.compile(r"(?<!\w)(?:[а-яё][ \t]){3,}[а-яё](?
 _DSP_FURNITURE_RE = re.compile(
     r"(?i)(?:"
     r"столешниц|мебел|шкаф|тумб|вешалк|сидень|обивк|каркас|фасад|"
-    r"материал|покрыти|пластик|пенополиуретан|ламинат|оргтехник|"
+    r"материал|покр|пласт|панел|пенополиуретан|ламинат|оргтехник|"
     r"плит[аыеу]?|дсп\s*лист|лист[аы]?\s*дсп|"
     r"\bмдф\b|\bhdf\b|дсп\s*22\s*мм|дсп\s*[+с]\s*пластик|\b\d+\s*мм\b"
     r")"
+)
+# Construction-drawing vocabulary: "ДСП" in material schedules = particle board.
+_DSP_CONSTRUCTION_RE = re.compile(
+    r"(?i)(?:"
+    r"ведомост[ьи]\s+материал|спецификаци|маркировк|"
+    r"железобетон|монолит|арматур|бетон|кирпич|кладк|стяжк|"
+    r"гипсокартон|\bгвл\b|\bгкл\b|утеплит|"
+    r"перекрыти|фундамент|кровл|стропил|разрез|"
+    r"этаж|в\s+осях|ос[ияеях]\s*\d|помещени|коридор|"
+    r"смет[аы]|подрядч|заказчик|генподряд|строител|"
+    r"проектн\w*\s+документац|рабоч\w*\s+документац|"
+    r"снип|штукатурк|облицовк|отделк|"
+    r"светильник|светодиодн|освещени|ватт|\bвт\b|ip\s*\d{2}|ламп|"
+    r"люмен|optima|flagman|надтап|астз|пылевлагозащ"
+    r")"
+)
+# "дсп" followed by a digit/dash = luminaire model code (ДСП-40, ДСП52-32-101).
+_DSP_MODEL_RIGHT_RE = re.compile(r"\s*[-–—]?\s*\d{2}|\s*[-–—]\s*\d")
+# "дсп" glued/spaced after a registration number = cited letter's secrecy, not this doc's.
+_DSP_REFNUM_LEFT_RE = re.compile(
+    r"(?:[\w]+(?:[/\\\-–—][\w]+)+|\d{3,}[\d/\\\-–—]*)\s*$"
 )
 _OCR_LATIN_TO_CYRILLIC = str.maketrans(
     "AaBCcEeHKMOoPpTXYxyD",
@@ -857,7 +884,11 @@ def _load_pattern_defs(path: Path) -> List[Dict[str, Any]]:
         if not pattern_id or not pattern_raw:
             continue
         name = str(row.get("name") or pattern_id)
-        weight = float(row.get("weight") or 1.0)
+        try:
+            weight = float(row.get("weight") or 1.0)
+        except (TypeError, ValueError):
+            logging.warning("Pattern weight is not numeric id=%s value=%r; using 1.0", pattern_id, row.get("weight"))
+            weight = 1.0
         try:
             regex = re.compile(pattern_raw, _re_flags(row.get("flags")))
         except Exception as exc:
@@ -898,7 +929,12 @@ def scan_text(text: str, pattern_defs: List[Dict[str, Any]]) -> List[Dict[str, s
         for candidate in sources:
             for match in regex.finditer(candidate):
                 context = candidate[max(0, match.start() - 80):min(len(candidate), match.end() + 80)]
-                if pattern == "dsp_with_exclusion" and _DSP_FURNITURE_RE.search(context):
+                if pattern == "dsp_with_exclusion" and (
+                    _DSP_FURNITURE_RE.search(context)
+                    or _DSP_CONSTRUCTION_RE.search(context)
+                    or _DSP_REFNUM_LEFT_RE.search(candidate[max(0, match.start() - 80):match.start()])
+                    or _DSP_MODEL_RIGHT_RE.match(candidate[match.end():match.end() + 40])
+                ):
                     continue
                 key = (pattern, _normalize_scan_text(match.group(0)).casefold(), _snippet(candidate, match.start(), match.end()))
                 if key in seen:
@@ -1159,7 +1195,9 @@ class ScanAgent:
         self.agent_id = _hostname().lower()
 
         self._lock = threading.RLock()
-        self._pending_paths: Set[str] = set()
+        # path -> last fs-event ts: a file still being written keeps getting
+        # events; it is scanned only after updates settle (see watchdog_settle_sec).
+        self._pending_paths: Dict[str, float] = {}
         self._outbox_metadata: dict[Path, _OutboxMetadata] = {}
         self._roots: List[Path] = list(_iter_target_roots(self.config.get("extra_roots", "")))
         self._observer: Optional[Any] = None
@@ -1382,13 +1420,16 @@ class ScanAgent:
             if not isinstance(raw, dict):
                 continue
             reason = str(raw.get("dropped_reason") or "").strip().upper()
-            if reason in DEAD_LETTER_NO_REQUEUE_REASONS:
+            if reason in DEAD_LETTER_NO_REQUEUE_REASONS or reason.startswith("INGEST_PERMANENT"):
                 continue
             payload = raw.get("payload")
             if not isinstance(payload, dict):
                 continue
             event_id = str(raw.get("event_id") or payload.get("event_id") or "").strip()
             if not event_id:
+                continue
+            requeue_count = _to_int(raw.get("requeue_count"), 0)
+            if requeue_count >= DEAD_LETTER_MAX_REQUEUES:
                 continue
             if self._outbox_has_event(event_id):
                 try:
@@ -1401,12 +1442,15 @@ class ScanAgent:
             item = {
                 "id": item_id,
                 "event_id": event_id,
-                "created_at": _to_int(raw.get("created_at"), now_ts),
+                # Fresh lifetime: keeping the original created_at would make the
+                # next prune re-dead the item instantly — the MAX_AGE ping-pong.
+                "created_at": now_ts,
                 "payload": payload,
                 "attempts": 0,
                 "next_attempt_at": now_ts,
                 "last_error": "",
                 "requeued_from_dead": True,
+                "requeue_count": requeue_count + 1,
                 "previous_dropped_reason": reason or str(raw.get("dropped_reason") or ""),
             }
             if isinstance(raw.get("task_result"), dict):
@@ -1514,12 +1558,18 @@ class ScanAgent:
             for _, _, metadata in self._outbox_entries()
         )
 
-    def _outbox_enqueue(self, payload: Dict[str, Any], *, retry_after_sec: int = 0) -> Optional[Path]:
+    def _outbox_enqueue(self, payload: Dict[str, Any], *, retry_after_sec: int = 0) -> Tuple[Optional[Path], str]:
+        """Enqueue a payload; returns (path, "") on success or (None, reason).
+
+        Reasons: ``deduped`` (event already safely queued — not a failure),
+        ``missing_event_id``, ``write_failed``. Callers must not report dedup
+        as a persistence failure: the event is already in the outbox.
+        """
         event_id = str(payload.get("event_id") or "").strip()
         if not event_id:
-            return None
+            return None, "missing_event_id"
         if self._outbox_has_event(event_id):
-            return None
+            return None, "deduped"
         now_ts = int(time.time())
         item_id = uuid.uuid4().hex
         path = OUTBOX_PENDING_PATH / f"{now_ts:010d}_{item_id}.json"
@@ -1534,10 +1584,10 @@ class ScanAgent:
         }
         try:
             self._outbox_write(path, item)
-            return path
+            return path, ""
         except Exception as exc:
             logging.warning("Outbox enqueue failed: %s", exc)
-            return None
+            return None, "write_failed"
 
     def _outbox_backoff_seconds(self, attempts: int) -> int:
         attempts_count = max(1, attempts)
@@ -1897,10 +1947,10 @@ class ScanAgent:
         except Exception as exc:
             logging.warning("Document payload decode failed: %s", exc)
             self._last_error = "INGEST_DOCUMENT_DECODE"
-            return {"success": False, "deduped": False, "fallback": False}
+            return {"success": False, "deduped": False, "fallback": False, "permanent": True}
         if not document_bytes:
             self._last_error = "INGEST_DOCUMENT_EMPTY"
-            return {"success": False, "deduped": False, "fallback": False}
+            return {"success": False, "deduped": False, "fallback": False, "permanent": True}
         metadata = dict(payload or {})
         metadata.pop("document_b64", None)
         file_name = str(payload.get("file_name") or "document.bin")
@@ -1925,7 +1975,12 @@ class ScanAgent:
                 return result
             if response.status_code >= 300:
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
-                return {"success": False, "deduped": False, "fallback": False}
+                return {
+                    "success": False,
+                    "deduped": False,
+                    "fallback": False,
+                    "permanent": response.status_code in PERMANENT_INGEST_HTTP_STATUSES,
+                }
             data = self._read_ingest_ack(response)
             return {"success": True, "deduped": bool((data or {}).get("deduped")), "fallback": False}
         except Exception as exc:
@@ -1942,10 +1997,10 @@ class ScanAgent:
         except Exception as exc:
             logging.warning("PDF slice payload decode failed: %s", exc)
             self._last_error = "INGEST_PDF_SLICE_DECODE"
-            return {"success": False, "deduped": False, "fallback": False}
+            return {"success": False, "deduped": False, "fallback": False, "permanent": True}
         if not pdf_bytes:
             self._last_error = "INGEST_PDF_SLICE_EMPTY"
-            return {"success": False, "deduped": False, "fallback": False}
+            return {"success": False, "deduped": False, "fallback": False, "permanent": True}
 
         metadata = dict(payload or {})
         metadata.pop("pdf_slice_b64", None)
@@ -1973,7 +2028,12 @@ class ScanAgent:
             if response.status_code >= 300:
                 logging.warning("PDF slice ingest failed status=%s body=%s", response.status_code, response.text[:300])
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
-                return {"success": False, "deduped": False, "fallback": False}
+                return {
+                    "success": False,
+                    "deduped": False,
+                    "fallback": False,
+                    "permanent": response.status_code in PERMANENT_INGEST_HTTP_STATUSES,
+                }
             data = self._read_ingest_ack(response)
             return {"success": True, "deduped": bool(data.get("deduped")), "fallback": False}
         except Exception as exc:
@@ -2008,7 +2068,11 @@ class ScanAgent:
             if response.status_code >= 300:
                 logging.warning("Ingest failed status=%s body=%s", response.status_code, response.text[:300])
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
-                return {"success": False, "deduped": False}
+                return {
+                    "success": False,
+                    "deduped": False,
+                    "permanent": response.status_code in PERMANENT_INGEST_HTTP_STATUSES,
+                }
             data = self._read_ingest_ack(response)
             return {"success": True, "deduped": bool(data.get("deduped"))}
         except Exception as exc:
@@ -2022,8 +2086,9 @@ class ScanAgent:
                 "success": bool(result.get("success")),
                 "deduped": bool(result.get("deduped")),
                 "retry_after": max(0, _to_int(result.get("retry_after"), 0)),
+                "permanent": bool(result.get("permanent")),
             }
-        return {"success": bool(result), "deduped": False, "retry_after": 0}
+        return {"success": bool(result), "deduped": False, "retry_after": 0, "permanent": False}
 
     def _drain_outbox(self, max_items: Optional[int] = None) -> int:
         now_ts = int(time.time())
@@ -2076,6 +2141,13 @@ class ScanAgent:
                     logging.warning("Outbox delete after ACK failed (%s): %s", path, exc)
                 sent_count += 1
                 continue
+            if ingest_result.get("permanent"):
+                # The server rejected the payload itself (or it is undecodable):
+                # retrying the same bytes can never succeed — dead-letter it
+                # under a no-requeue reason instead of looping until MAX_AGE.
+                permanent_reason = "INGEST_PERMANENT_" + str(self._last_error or "FAILED").removeprefix("INGEST_")
+                self._outbox_move_to_dead(path, item, permanent_reason[:64])
+                continue
             attempts = _to_int(item.get("attempts"), 0) + 1
             item["attempts"] = attempts
             retry_after = max(0, _to_int(ingest_result.get("retry_after"), 0))
@@ -2101,7 +2173,7 @@ class ScanAgent:
         with self._lock:
             if not self._is_under_roots(path):
                 return
-            self._pending_paths.add(normalized)
+            self._pending_paths[normalized] = time.time()
 
     def _scan_path(
         self,
@@ -2130,9 +2202,14 @@ class ScanAgent:
             return result
 
         def defer(payload: Dict[str, Any], retry_after: int) -> None:
-            outbox_path = self._outbox_enqueue(payload, retry_after_sec=retry_after)
+            outbox_path, outbox_reason = self._outbox_enqueue(payload, retry_after_sec=retry_after)
             if outbox_path is not None:
                 result["deferred"] += 1
+                return
+            if outbox_reason == "deduped":
+                # The event is already persisted in the outbox — counting it as
+                # a failure would falsely mark the whole task failed.
+                result["deduped"] += 1
                 return
             result["persistence_failed"] = int(result.get("persistence_failed") or 0) + 1
             if include_reasons:
@@ -2472,9 +2549,16 @@ class ScanAgent:
 
     def process_watchdog_queue(self, max_items: int) -> Dict[str, int]:
         batch: List[str] = []
+        settle_sec = max(0.0, float(self.config.get("watchdog_settle_sec", 3.0) or 0.0))
+        settle_cutoff = time.time() - settle_sec
         with self._lock:
-            while self._pending_paths and len(batch) < max_items:
-                batch.append(self._pending_paths.pop())
+            for raw, last_event_ts in list(self._pending_paths.items()):
+                if len(batch) >= max_items:
+                    break
+                if last_event_ts > settle_cutoff:
+                    continue
+                del self._pending_paths[raw]
+                batch.append(raw)
 
         summary = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0, "deduped": 0}
         for raw in batch:
@@ -2739,20 +2823,6 @@ class ScanAgent:
         """
         import agent_installer
 
-        stopped_tasks: List[str] = []
-        for task_name in (agent_installer.TELEGRAM_PROBE_TASK_NAME, agent_installer.MAX_PROBE_TASK_NAME):
-            try:
-                agent_installer.stop_scheduled_task(task_name)
-                stopped_tasks.append(task_name)
-            except Exception as exc:
-                logging.warning("Failed to stop scheduled task %s: %s", task_name, exc)
-
-        stopped_pids: List[int] = []
-        try:
-            stopped_pids = agent_installer.stop_agent_processes()
-        except Exception as exc:
-            logging.warning("Failed to stop probe processes: %s", exc)
-
         persisted = False
         try:
             install_dir = agent_installer.resolve_install_dir("")
@@ -2764,6 +2834,29 @@ class ScanAgent:
             persisted = True
         except Exception as exc:
             logging.warning("Failed to persist probe-disabled flag to env file: %s", exc)
+
+        stopped_tasks: List[str] = []
+        for task_name in (agent_installer.TELEGRAM_PROBE_TASK_NAME, agent_installer.MAX_PROBE_TASK_NAME):
+            try:
+                agent_installer.stop_scheduled_task(task_name)
+                stopped_tasks.append(task_name)
+            except Exception as exc:
+                logging.warning("Failed to stop scheduled task %s: %s", task_name, exc)
+
+        stopped_pids: List[int] = []
+        try:
+            # Only the messenger probe processes: the full runtime set includes
+            # this agent (and the sibling inventory agent), so a blunt kill
+            # would abort the task before the result reaches the server.
+            stopped_pids = agent_installer.stop_agent_processes(
+                only_names=(
+                    agent_installer.TELEGRAM_PROBE_EXECUTABLE_NAME,
+                    agent_installer.MAX_PROBE_EXECUTABLE_NAME,
+                ),
+                skip_pid=os.getpid(),
+            )
+        except Exception as exc:
+            logging.warning("Failed to stop probe processes: %s", exc)
 
         logging.info(
             "Message probes disabled: tasks=%s pids=%s persisted=%s", stopped_tasks, stopped_pids, persisted

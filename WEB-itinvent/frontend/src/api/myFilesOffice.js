@@ -20,8 +20,8 @@ export const myFilesOfficeAPI = {
     });
     return response.data;
   },
-  getEditorConfig: async (fileId, { signal } = {}) => {
-    const response = await apiClient.get(fileUrl(fileId, '/config'), { signal });
+  getEditorConfig: async (fileId, { signal, uiTheme } = {}) => {
+    const response = await apiClient.get(fileUrl(fileId, '/config'), { signal, params: uiTheme ? { ui_theme: uiTheme } : {} });
     return response.data;
   },
   renameDocument: async (fileId, name, { signal } = {}) => {
@@ -29,6 +29,10 @@ export const myFilesOfficeAPI = {
     return response.data;
   },
   requestCheckpoint: async (fileId) => (await apiClient.post(fileUrl(fileId, '/checkpoint'))).data,
+  getOfficePresence: async (fileId, { signal } = {}) => {
+    const response = await apiClient.get(fileUrl(fileId, '/presence'), { signal });
+    return response.data;
+  },
   listSharedWithMe: async ({ signal } = {}) => {
     const response = await apiClient.get('/my-files/office/shared-with-me', { signal });
     return response.data;
@@ -65,6 +69,9 @@ export const myFilesOfficeAPI = {
     const response = await apiClient.get(`/my-files/office/groups/${encodeURIComponent(groupId)}/members`, { signal });
     return response.data;
   },
+  exportOffice: async (fileId, format = 'pdf') => (
+    apiClient.get(fileUrl(fileId, '/export'), { params: { format }, responseType: 'blob' })
+  ),
   listVersions: async (fileId, { signal } = {}) => {
     const response = await apiClient.get(fileUrl(fileId, '/versions'), { signal });
     return response.data;
@@ -72,6 +79,10 @@ export const myFilesOfficeAPI = {
   downloadVersion: async (fileId, versionId) => (
     apiClient.get(fileUrl(fileId, `/versions/${encodeURIComponent(versionId)}/download`), { responseType: 'blob' })
   ),
+  compareVersion: async (fileId, versionId) => {
+    const response = await apiClient.get(fileUrl(fileId, `/versions/${encodeURIComponent(versionId)}/compare`));
+    return response.data;
+  },
   restoreVersion: async (fileId, versionId) => {
     await apiClient.post(fileUrl(fileId, `/versions/${encodeURIComponent(versionId)}/restore`));
   },

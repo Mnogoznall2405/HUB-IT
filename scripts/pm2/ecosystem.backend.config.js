@@ -357,11 +357,11 @@ module.exports = {
       restart_delay: 5000,
       env: {
         ...dbPool('itinvent-chat-push-outbox-retention-worker'),
-        CHAT_PUSH_OUTBOX_CLEANUP_ENABLED: 'false',
+        CHAT_PUSH_OUTBOX_CLEANUP_ENABLED: 'true',
         CHAT_AUDIT_ENABLED: '0',
         CHAT_PROFILE_STACK_ENABLED: '0',
         DEBUG_CLIENT_LOG_ENABLED: '0',
-        CHAT_PUSH_OUTBOX_CLEANUP_DRY_RUN: 'true',
+        CHAT_PUSH_OUTBOX_CLEANUP_DRY_RUN: 'false',
         CHAT_PUSH_OUTBOX_CLEANUP_BATCH_SIZE: '200',
         CHAT_PUSH_OUTBOX_CLEANUP_BATCH_PAUSE_MS: '500',
         CHAT_PUSH_OUTBOX_CLEANUP_MAX_BATCHES: '100',

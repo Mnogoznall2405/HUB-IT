@@ -100,8 +100,8 @@ public sealed class NativeThemeManagerTests
 
         NativeThemeManager.SwapPaletteDictionary(host, "light");
         var palette = Assert.Single(host.MergedDictionaries);
-        AssertBrush(palette, "HubTextBrush", 0x1B, 0x1B, 0x1B);
-        AssertBrush(palette, "HubBackgroundBrush", 0xF3, 0xF3, 0xF3);
+        AssertBrush(palette, "HubTextBrush", 0x1D, 0x21, 0x26);
+        AssertBrush(palette, "HubBackgroundBrush", 0xF5, 0xF6, 0xF8);
         AssertBrush(palette, "HubOnAccentBrush", 0xFF, 0xFF, 0xFF);
 
         // Идемпотентно: тот же режим не пересоздаёт словарь.
@@ -110,8 +110,8 @@ public sealed class NativeThemeManagerTests
 
         NativeThemeManager.SwapPaletteDictionary(host, "dark");
         palette = Assert.Single(host.MergedDictionaries);
-        AssertBrush(palette, "HubTextBrush", 0xE7, 0xE7, 0xE7);
-        AssertBrush(palette, "HubBackgroundBrush", 0x20, 0x20, 0x20);
+        AssertBrush(palette, "HubTextBrush", 0xF0, 0xF2, 0xF5);
+        AssertBrush(palette, "HubBackgroundBrush", 0x19, 0x1B, 0x1F);
         AssertBrush(palette, "HubOnAccentBrush", 0x10, 0x22, 0x2E);
     }
 

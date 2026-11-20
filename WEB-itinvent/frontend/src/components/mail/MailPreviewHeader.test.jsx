@@ -173,10 +173,17 @@ describe('MailPreviewHeader', () => {
     );
 
     expect(screen.getByTestId('mail-preview-recipients-more')).toHaveTextContent('+1');
+    // CC is visible collapsed too: a dedicated "Копия:" line under "Кому:".
+    expect(screen.getByTestId('mail-preview-cc-label').textContent).toContain('Копия: Copy Person');
     expect(screen.queryByText(/Copy Person <cc@example\.com>/i)).toBeNull();
 
     fireEvent.click(screen.getByTestId('mail-preview-recipients-more'));
     expect(screen.getByText(/Copy Person <cc@example\.com>/i)).toBeTruthy();
+    // A long recipient list must scroll inside its own capped block, not push
+    // the whole reading pane down with no scrollbar.
+    const expanded = screen.getByTestId('mail-preview-recipients-expanded');
+    expect(getComputedStyle(expanded).overflowY).toBe('auto');
+    expect(getComputedStyle(expanded).maxHeight).not.toBe('');
   });
 
   it('shows Без получателя for a draft without recipients', () => {

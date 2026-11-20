@@ -51,6 +51,8 @@ export function NativeMailMessageCard({
   ], [message.compose_context?.mailbox_email, ownEmails]);
   const toValues = recipientGroups.find((group) => group.label === 'Кому')?.values || [];
   const toSummary = useMemo(() => nativeMailRecipientSummary(toValues, knownOwnEmails), [toValues, knownOwnEmails]);
+  const ccValues = recipientGroups.find((group) => group.label === 'Копия')?.values || [];
+  const ccSummary = useMemo(() => nativeMailRecipientSummary(ccValues, knownOwnEmails), [ccValues, knownOwnEmails]);
   const attachments = useMemo(() => getVisibleNativeMailAttachments(message), [message]);
   const hasRichBody = Boolean(String(message.body_html || '').trim());
   const showFlatReader = reader && !compact;
@@ -78,7 +80,7 @@ export function NativeMailMessageCard({
           <Pressable
             testID={showFlatReader ? 'native-mail-recipient-details' : undefined}
             accessibilityRole="button"
-            accessibilityLabel={`Письмо от ${sender}${toSummary.text ? `, кому ${toSummary.text}` : ''}. ${detailsExpanded ? 'Скрыть' : 'Показать'} сведения об адресатах`}
+            accessibilityLabel={`Письмо от ${sender}${toSummary.text ? `, кому ${toSummary.text}` : ''}${ccSummary.text ? `, копия ${ccSummary.text}` : ''}. ${detailsExpanded ? 'Скрыть' : 'Показать'} сведения об адресатах`}
             accessibilityState={{ expanded: detailsExpanded }}
             onPress={() => setDetailsExpanded((current) => !current)}
             style={[styles.recipientSummary, showFlatReader ? styles.readerRecipientSummary : null]}
@@ -98,11 +100,30 @@ export function NativeMailMessageCard({
                     </Text>
                   </>
                 ) : null}
+                {ccSummary.text ? (
+                  <>
+                    <Text accessibilityElementsHidden style={[styles.readerMetaDot, { color: tokens.textTertiary }]}>•</Text>
+                    <Text
+                      numberOfLines={1}
+                      testID="native-mail-cc-summary"
+                      style={[styles.readerParticipantCount, { color: tokens.textSecondary }]}
+                    >
+                      Копия: {ccSummary.text}
+                    </Text>
+                  </>
+                ) : null}
               </>
             ) : (
-              <Text numberOfLines={1} style={[styles.recipients, { color: tokens.textSecondary }]}> 
-                {recipients ? `Кому: ${recipients}` : 'Получатели не указаны'}
-              </Text>
+              <View style={styles.recipientSummaryBody}>
+                <Text numberOfLines={1} style={[styles.recipients, { color: tokens.textSecondary }]}> 
+                  {recipients ? `Кому: ${recipients}` : 'Получатели не указаны'}
+                </Text>
+                {ccValues.length ? (
+                  <Text numberOfLines={1} testID="native-mail-cc-summary" style={[styles.recipients, { color: tokens.textSecondary }]}>
+                    Копия: {ccValues.slice(0, compact ? 2 : 3).join(', ')}
+                  </Text>
+                ) : null}
+              </View>
             )}
             <MaterialCommunityIcons name={detailsExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={tokens.iconMuted} />
           </Pressable>
@@ -278,6 +299,7 @@ const styles = StyleSheet.create({
   date: { fontSize: 12, lineHeight: 18, fontWeight: '600' },
   senderEmail: { marginTop: 1, fontSize: 12, lineHeight: 17 },
   recipientSummary: { minHeight: 44, marginTop: 1, marginLeft: -6, paddingLeft: 6, flexDirection: 'row', alignItems: 'center' },
+  recipientSummaryBody: { flex: 1, minWidth: 0 },
   readerRecipientSummary: { alignSelf: 'stretch', flexWrap: 'wrap', gap: 5, marginTop: 1, paddingRight: 6 },
   recipients: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 17 },
   readerDate: { maxWidth: 190, fontSize: 15, lineHeight: 21 },

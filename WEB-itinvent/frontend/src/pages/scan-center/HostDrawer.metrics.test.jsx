@@ -36,7 +36,7 @@ describe('SelectedRunSystemMetrics', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(screen.getByText(/CPU max 40\.0%/i)).toBeInTheDocument();
-    expect(screen.getAllByRole('img', { name: 'sparkline' })).toHaveLength(2);
+    expect(screen.getAllByRole('img', { name: 'Мини-график метрик' })).toHaveLength(2);
   });
 
   it('shows empty state when no samples', async () => {
