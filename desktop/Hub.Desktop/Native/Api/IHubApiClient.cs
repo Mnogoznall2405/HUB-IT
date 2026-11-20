@@ -49,6 +49,130 @@ public interface IHubApiClient
         string? comment,
         CancellationToken cancellationToken);
 
+    /// <summary>GET /hub/tasks/{id}/comments — архивная лента (старые первыми).</summary>
+    Task<HubTaskCommentList> GetTaskCommentsAsync(long taskId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/tasks/{id}/comments {body}. При включённом чат-обсуждении
+    /// backend отвечает 400 «use_task_discussion_chat» — писать надо в чат.
+    /// </summary>
+    Task<HubTaskComment> AddTaskCommentAsync(
+        long taskId,
+        string body,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/tasks/{id}/comments/mark-seen — прочитано + backend гасит
+    /// уведомления task.comment_added.
+    /// </summary>
+    Task MarkTaskCommentsSeenAsync(long taskId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/tasks/{id}/discussion — создать/открыть привязанный разговор
+    /// (kind="task"), вернуть conversation_id для навигации в чат.
+    /// 404, когда флаг чат-обсуждений выключен; 403 не-участнику.
+    /// </summary>
+    Task<HubTaskDiscussion> OpenTaskDiscussionAsync(
+        long taskId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /hub/tasks/{id}/attachments — multipart file; лимит backend'а 20 МБ.</summary>
+    Task<HubTaskAttachment> UploadTaskAttachmentAsync(
+        long taskId,
+        string fileName,
+        Stream content,
+        string? mimeType,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /hub/tasks/{id}/attachments/{attachment_id} — автор/постановщик/admin, scope=task, статус != done.</summary>
+    Task DeleteTaskAttachmentAsync(
+        long taskId,
+        string attachmentId,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET …/attachments/{attachment_id}/file — стрим в destination, имя из Content-Disposition.</summary>
+    Task<string> DownloadTaskAttachmentAsync(
+        long taskId,
+        string attachmentId,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET …/attachments/{attachment_id}/preview/pdf — Office-превью:
+    /// 202 + Retry-After пока генерируется, затем PDF-поток (паттерн docflow preview).
+    /// </summary>
+    Task<string> DownloadTaskAttachmentPreviewPdfAsync(
+        long taskId,
+        string attachmentId,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/tasks — создание задачи верхнего уровня
+    /// (право tasks.create или tasks.write; admin — всегда).
+    /// Ответ {items:[созданные…], created:N}; поля DTO — по request-модели роута.
+    /// Роут Idempotency-Key не принимает. 400 — валидация, 403 — нет права.
+    /// </summary>
+    Task<HubTaskCreateResult> CreateTaskAsync(
+        HubTaskCreateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/tasks/{id}/subtasks — подзадача: tasks.read + участник родителя
+    /// (capability can_create_subtask), право tasks.create не нужно.
+    /// Ответ — detail созданной задачи (с capabilities).
+    /// 403 не-участнику; 400 — родитель выполнен или сам подзадача.
+    /// </summary>
+    Task<HubTaskDetail> CreateSubtaskAsync(
+        long taskId,
+        HubTaskSubtaskCreateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/users/assignees?q=&limit= — поиск исполнителей по ФИО/логину
+    /// (активные, без служебных; tasks.read). Пустой q — первые limit записей.
+    /// </summary>
+    Task<HubTaskUserList> SearchTaskAssigneesAsync(
+        string? query,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/users/controllers — контролёры: право tasks.review или
+    /// руководитель подразделения (tasks.read). Параметра поиска у роута нет.
+    /// </summary>
+    Task<HubTaskUserList> GetTaskControllersAsync(CancellationToken cancellationToken);
+
+    /// <summary>GET /hub/task-projects — активные проекты для выбора в форме задачи.</summary>
+    Task<HubTaskProjectList> GetTaskProjectsAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/task-objects?project_id= — активные объекты; project_id null —
+    /// все объекты (роут принимает повторяющийся параметр, desktop фильтрует по одному).
+    /// </summary>
+    Task<HubTaskObjectList> GetTaskObjectsAsync(
+        string? projectId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/tasks/analytics?start_date=&end_date=&date_basis=&project_id=&object_id=&participant_user_id=
+    /// — отчётная панель задач (право tasks.read): summary-метрики, разрезы
+    /// by_participant/by_project/by_object, status_breakdown и trend; списки id
+    /// уходят повторяющимися параметрами, как в веб-запросе.
+    /// </summary>
+    Task<HubTaskAnalyticsPayload> GetTaskAnalyticsAsync(
+        HubTaskAnalyticsQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/tasks/analytics/export — xlsx-отчёт (те же параметры), стримится
+    /// в destination; возвращает имя файла из Content-Disposition (или пустую строку).
+    /// </summary>
+    Task<string> ExportTaskAnalyticsAsync(
+        HubTaskAnalyticsQuery query,
+        Stream destination,
+        CancellationToken cancellationToken);
+
     // ---- Новости ----
 
     /// <summary>GET /hub/announcements: список опубликованных с фильтрами.</summary>
@@ -66,6 +190,111 @@ public interface IHubApiClient
     /// <summary>Подтверждение прочтения обязательной новости (requires_ack).</summary>
     Task AckAnnouncementAsync(string announcementId, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// PUT /hub/announcements/{id}/reaction — поставить/сменить свою эмодзи-реакцию
+    /// (reaction_type: like|love|laugh|wow|sad|angry). Ответ — счётчики и viewer_reaction.
+    /// </summary>
+    Task<HubAnnouncementReactionState> SetAnnouncementReactionAsync(
+        string announcementId,
+        string reactionType,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /hub/announcements/{id}/reaction — снять свою реакцию.</summary>
+    Task<HubAnnouncementReactionState> ClearAnnouncementReactionAsync(
+        string announcementId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/announcements/{id}/reactions — кто реагировал
+    /// (user_id/username/full_name/reaction_type/updated_at).
+    /// </summary>
+    Task<HubAnnouncementReactionUserList> GetAnnouncementReactionUsersAsync(
+        string announcementId,
+        string? reactionType,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT/DELETE /hub/announcements/{id}/like — «нравится» (= реакция «like»,
+    /// ответ той же формы, что и у reaction).
+    /// </summary>
+    Task<HubAnnouncementReactionState> SetAnnouncementLikeAsync(
+        string announcementId,
+        bool liked,
+        CancellationToken cancellationToken);
+
+    /// <summary>PUT/DELETE /hub/announcements/{id}/bookmark → {viewer_bookmarked}.</summary>
+    Task<HubAnnouncementBookmarkState> SetAnnouncementBookmarkAsync(
+        string announcementId,
+        bool bookmarked,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /hub/announcements/{id}/poll/vote — голосование; тело {option_ids}.
+    /// Пустой список снимает голос; повторный вызов заменяет выбор (как в вебе).
+    /// Ответ {announcement_id, poll} с актуальными счётчиками.
+    /// </summary>
+    Task<HubAnnouncementPollVoteResult> VoteAnnouncementPollAsync(
+        string announcementId,
+        IReadOnlyList<string> optionIds,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /hub/announcements/{id}/comments — корневые комментарии или ответы ветки.</summary>
+    Task<HubAnnouncementCommentPage> GetAnnouncementCommentsAsync(
+        string announcementId,
+        HubAnnouncementCommentQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /hub/announcements/{id}/comments — новый комментарий/ответ.</summary>
+    Task<HubAnnouncementComment> CreateAnnouncementCommentAsync(
+        string announcementId,
+        string body,
+        string? parentCommentId,
+        CancellationToken cancellationToken);
+
+    /// <summary>PATCH /hub/announcements/{id}/comments/{comment_id} — правка своего.</summary>
+    Task<HubAnnouncementComment> UpdateAnnouncementCommentAsync(
+        string announcementId,
+        string commentId,
+        string body,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /hub/announcements/{id}/comments/{comment_id} — удаление своего.</summary>
+    Task DeleteAnnouncementCommentAsync(
+        string announcementId,
+        string commentId,
+        CancellationToken cancellationToken);
+
+    /// <summary>PUT/DELETE /hub/announcements/{id}/comments/{comment_id}/reaction.</summary>
+    Task<HubAnnouncementCommentReactionState> SetAnnouncementCommentReactionAsync(
+        string announcementId,
+        string commentId,
+        string? reactionType,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/announcements/{id}/attachments/{attachment_id}/file —
+    /// бинарное скачивание вложения объявления. Возвращает имя файла из
+    /// Content-Disposition (пусто, если заголовка нет). Ошибка HTTP — HubApiException.
+    /// </summary>
+    Task<string> DownloadAnnouncementAttachmentAsync(
+        string announcementId,
+        string attachmentId,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/announcements/{id}/comments/{comment_id}/attachments/{attachment_id}/file —
+    /// бинарное скачивание вложения комментария. Возвращает имя файла (или пусто).
+    /// </summary>
+    Task<string> DownloadAnnouncementCommentAttachmentAsync(
+        string announcementId,
+        string commentId,
+        string attachmentId,
+        Stream destination,
+        CancellationToken cancellationToken);
+
     // ---- Отсутствия ----
 
     /// <summary>GET /hub/absences: ручные записи + ЗУП. День (on) или диапазон.</summary>
@@ -74,6 +303,57 @@ public interface IHubApiClient
         string? startsOn,
         string? endsOn,
         int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/absences — создание ручной записи (право hub.absences.manage или admin).
+    /// Ответ — сериализованная запись; 400 — валидация сервера, 403 — нет права.
+    /// </summary>
+    Task<HubAbsenceItem> CreateHubAbsenceAsync(
+        HubAbsenceUpsertRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /hub/absences/{id} — правка ручной записи; тело — diff изменённых полей.
+    /// Ответ — обновлённая запись; 404 — запись не найдена.
+    /// </summary>
+    Task<HubAbsenceItem> UpdateHubAbsenceAsync(
+        long absenceId,
+        HubAbsenceUpsertRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /hub/absences/{id} — удаление ручной записи (ответ {ok:true}).</summary>
+    Task DeleteHubAbsenceAsync(long absenceId, CancellationToken cancellationToken);
+
+    // ---- Центр уведомлений ----
+
+    /// <summary>
+    /// GET /hub/notifications/poll?since=&limit=&unread_only= — лента уведомлений
+    /// (новые сверху, unread 0/1) + unread_counts в том же ответе.
+    /// since — курсор максимального created_at прошлой выдачи: сервер отдаёт
+    /// только записи строго новее (created_at > since); пустой since — свежая
+    /// голова списка. limit клампится сервером в 1..200.
+    /// </summary>
+    Task<HubNotificationPoll> GetNotificationsPollAsync(
+        string? since,
+        int limit,
+        bool unreadOnly,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /hub/notifications/unread-counts — счётчики бейджа колокола.</summary>
+    Task<HubNotificationUnreadCounts> GetNotificationUnreadCountsAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/notifications/{id}/read → {ok, notification_id}.
+    /// 404 «Notification not found» — HubApiException с detail в Message.
+    /// </summary>
+    Task<HubNotificationReadResult> MarkNotificationReadAsync(
+        string notificationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /hub/notifications/read-all → {ok, marked_count}.</summary>
+    Task<HubNotificationReadAllResult> MarkAllNotificationsReadAsync(
         CancellationToken cancellationToken);
 
     // ---- Почта ----
@@ -128,6 +408,34 @@ public interface IHubApiClient
         string messageId,
         string? mailboxId,
         bool permanent,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /mail/messages/{id}/restore {mailbox_id} — возврат письма из «Удалённых»
+    /// (аналог restoreMessage веб-почты); ответ {ok, moved_to}.
+    /// </summary>
+    Task<HubMailActionResult> RestoreMailMessageAsync(
+        string messageId,
+        string? mailboxId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /mail/messages/{id}/headers — полные заголовки письма
+    /// ({items: [{name, value}]}, как message_headers_payload веба).
+    /// </summary>
+    Task<HubMailMessageHeaders> GetMailMessageHeadersAsync(
+        string messageId,
+        string? mailboxId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /mail/messages/{id}/eml — исходник письма (RFC822) стримом в destination;
+    /// возвращает имя файла из Content-Disposition (как DownloadMailAttachmentAsync).
+    /// </summary>
+    Task<string> DownloadMailMessageSourceAsync(
+        string messageId,
+        string? mailboxId,
+        Stream destination,
         CancellationToken cancellationToken);
 
     /// <summary>POST /mail/messages/{id}/move {mailbox_id, target_folder} — перенос в другую папку.</summary>
@@ -202,6 +510,99 @@ public interface IHubApiClient
     Task<HubMailUnreadCount> GetMailUnreadCountAsync(
         string? mailboxId,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /mail/folders {mailbox_id, name, parent_folder_id, scope} — пользовательская
+    /// папка; parent_folder_id пустой — корень области (scope=mailbox|archive).
+    /// Ответ — сериализованный узел дерева (как элементы folders/tree).
+    /// </summary>
+    Task<HubMailFolder> CreateMailFolderAsync(
+        string? mailboxId,
+        string name,
+        string? parentFolderId,
+        string? scope,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /mail/folders/{id}?mailbox_id= {name} — переименование пользовательской
+    /// папки; стандартные backend отклоняет (can_rename=false в дереве).
+    /// </summary>
+    Task<HubMailFolder> RenameMailFolderAsync(
+        string folderId,
+        string? mailboxId,
+        string name,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /mail/folders/{id}?mailbox_id= → {ok, folder_id}; только пользовательские.</summary>
+    Task<HubMailFolderDeleteResult> DeleteMailFolderAsync(
+        string folderId,
+        string? mailboxId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /mail/folders/{id}/favorite {mailbox_id, favorite} → {ok, folder_id, favorite};
+    /// избранное детерминированно по дереву — сервер согласует флаг.
+    /// </summary>
+    Task<HubMailFolderFavoriteResult> SetMailFolderFavoriteAsync(
+        string folderId,
+        string? mailboxId,
+        bool favorite,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /mail/messages/{id}/importance {importance, mailbox_id} → {ok, importance};
+    /// importance = high|normal|low.
+    /// </summary>
+    Task<HubMailImportanceResult> SetMailMessageImportanceAsync(
+        string messageId,
+        string? mailboxId,
+        string importance,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /mail/messages/{id}/summarize?mailbox_id= → {summary}.
+    /// Серверный гейт: MAIL_AI_ENABLED kill-switch + rate limit
+    /// (403 MAIL_AI_DISABLED / 429 MAIL_AI_RATE_LIMITED).
+    /// </summary>
+    Task<HubMailSummaryResult> SummarizeMailMessageAsync(
+        string messageId,
+        string? mailboxId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /mail/messages/{id}/smart-replies?mailbox_id= → {suggestions} (до 3).</summary>
+    Task<HubMailSmartRepliesResult> GetMailSmartRepliesAsync(
+        string messageId,
+        string? mailboxId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /mail/templates?include_inactive= — шаблоны IT-заявок для формы
+    /// «Заявка в IT» (активные по умолчанию; поля fields[] по mail_template_model).
+    /// </summary>
+    Task<IReadOnlyList<HubMailTemplate>> GetMailTemplatesAsync(
+        bool includeInactive,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /mail/messages/send-it-request {template_id, fields} — заявка без
+    /// файлов; сервер рендерит тему/тело шаблона и шлёт на адреса ИТ.
+    /// </summary>
+    Task<HubMailSendResult> SendMailItRequestAsync(
+        string templateId,
+        IReadOnlyDictionary<string, object?> fields,
+        CancellationToken cancellationToken,
+        string? idempotencyKey = null);
+
+    /// <summary>
+    /// POST /mail/messages/send-it-request-multipart — та же заявка с файлами:
+    /// поля template_id + fields_json (JSON-объект) + повторяющееся files[].
+    /// </summary>
+    Task<HubMailSendResult> SendMailItRequestMultipartAsync(
+        string templateId,
+        IReadOnlyDictionary<string, object?> fields,
+        IReadOnlyList<HubMailOutgoingAttachment> attachments,
+        CancellationToken cancellationToken,
+        string? idempotencyKey = null);
 
     // ---- Документооборот 1С ----
 
@@ -309,6 +710,43 @@ public interface IHubApiClient
     /// </summary>
     Task<HubDocflowAssignmentCommandResult> GetDocflowAssignmentCommandAsync(
         string commandId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /docflow/profile/test {login,password} — проверка связи с 1С по
+    /// введённым кредам без их сохранения (на backend rate-limit 5/мин — не спамить).
+    /// </summary>
+    Task<HubDocflowConnectionTestResult> TestDocflowCredentialsAsync(
+        string login,
+        string password,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /docflow/profile/credentials {login,password} — сохранить креды 1С
+    /// (зашифрованные на backend); ответ — обновлённый профиль.
+    /// </summary>
+    Task<HubDocflowProfile> SaveDocflowCredentialsAsync(
+        string login,
+        string password,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /docflow/profile/credentials → 204: удалить креды, отключить 1С.</summary>
+    Task DeleteDocflowCredentialsAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /docflow/metadata — справочник типов задач/процессов конфигурации 1С.
+    /// Только docflow.admin (для прочих 403); в веб-UI не показывается.
+    /// </summary>
+    Task<HubDocflowMetadata> GetDocflowMetadataAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /docflow/absences?on=&employee_code= — записи об отсутствиях из 1С
+    /// на дату (on — YYYY-MM-DD, по умолчанию сегодня; employee_code сужает до
+    /// сотрудника адресной книги). Требует docflow.read + address_book.read.
+    /// </summary>
+    Task<HubDocflowAbsenceList> GetDocflowAbsencesAsync(
+        string? employeeCode,
+        string? on,
         CancellationToken cancellationToken);
 
     // ---- Билеты ----
@@ -423,6 +861,15 @@ public interface IHubApiClient
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// DELETE /tickets/requests/{id}/attachments/{attachment_id} → 204.
+    /// Право tickets.write; backend пишет attachment_deleted в историю заявки.
+    /// </summary>
+    Task DeleteTicketAttachmentAsync(
+        long requestId,
+        string attachmentId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// GET /tickets/kanban?object_ids=&assignee_ids= — доска заявок: словарь
     /// «русское имя колонки» → карточки (фильтры — csv id, как в веб-канбане).
     /// </summary>
@@ -433,6 +880,146 @@ public interface IHubApiClient
 
     /// <summary>GET /tickets/dashboard — сводка: metrics, per_object, top_problems/top_assignees.</summary>
     Task<HubTicketsDashboard> GetTicketDashboardAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /tickets/objects?include_inactive= — справочник объектов целиком:
+    /// include_inactive=true отдаёт и отключённые (управление справочником в вебе).
+    /// </summary>
+    Task<HubTicketObjectList> GetTicketObjectsAsync(
+        bool includeInactive,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /tickets/objects → созданный объект (tickets.write; сервер дополнительно
+    /// требует роль admin — fail-closed и в клиенте). Веб шлёт только {name}.
+    /// </summary>
+    Task<HubTicketObject> CreateTicketObjectAsync(
+        HubTicketObjectUpsert request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /tickets/objects/{id} — только заданные поля (tickets.write + admin).
+    /// 403 без admin, 404/422 — HubApiException с detail в Message.
+    /// </summary>
+    Task<HubTicketObject> UpdateTicketObjectAsync(
+        long objectId,
+        HubTicketObjectUpsert request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /tickets/employees/{id} → карточка с documents и date_of_birth.
+    /// Без tickets.personal_data.read личные поля замаскированы «** **** ******».
+    /// </summary>
+    Task<HubTicketEmployeeDetail> GetTicketEmployeeAsync(
+        long employeeId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /tickets/employees → созданный сотрудник с документами (tickets.write).</summary>
+    Task<HubTicketEmployeeDetail> CreateTicketEmployeeAsync(
+        HubTicketEmployeeUpsert request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /tickets/employees/{id} — правка полей/текущего документа (tickets.write).
+    /// Документ с id правится, без id — создаётся; маскированные значения не шлём.
+    /// </summary>
+    Task<HubTicketEmployeeDetail> UpdateTicketEmployeeAsync(
+        long employeeId,
+        HubTicketEmployeeUpsert request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /tickets/import/upload — multipart file (.xlsx, ≤50 МБ — лимит backend'а)
+    /// → job {id,file_name,status}. Только tickets.write; 413/422 — HubApiException.
+    /// </summary>
+    Task<HubTicketImportJob> UploadTicketImportAsync(
+        string fileName,
+        Stream content,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /tickets/import/{job}/preview → листы с классификацией и color_map
+    /// (tickets.write). 404 — job не найден, 409 — статус не uploaded/previewed.
+    /// </summary>
+    Task<HubTicketImportPreview> GetTicketImportPreviewAsync(
+        string jobId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /tickets/import/{job}/execute → счётчики и детали результата (tickets.write).</summary>
+    Task<HubTicketImportResult> ExecuteTicketImportAsync(
+        string jobId,
+        HubTicketImportExecute request,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /tickets/financial-ops — финоперации с фильтрами и page-пагинацией (tickets.read).</summary>
+    Task<HubTicketFinancialOpPage> GetTicketFinancialOpsAsync(
+        HubTicketFinOpQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /tickets/financial-ops → созданная операция (tickets.write; 422 при невалидных полях).</summary>
+    Task<HubTicketFinancialOp> CreateTicketFinancialOpAsync(
+        HubTicketFinancialOpUpsert request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /tickets/financial-ops/{id} → обновлённая операция (tickets.write;
+    /// сервер разрешает amount/reason/refund_status/op_date/op_type).
+    /// </summary>
+    Task<HubTicketFinancialOp> UpdateTicketFinancialOpAsync(
+        long opId,
+        HubTicketFinancialOpUpsert request,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /tickets/financial-ops/{id} → 204; мягкое удаление на сервере (tickets.write).</summary>
+    Task DeleteTicketFinancialOpAsync(
+        long opId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /tickets/reports/losses — отчёт потерь: items + totals{total_losses,
+    /// total_refunds,balance} + pagination (tickets.read; период ≤366 дней, ≤50/стр).
+    /// </summary>
+    Task<HubTicketLossReport> GetTicketLossesReportAsync(
+        HubTicketLossesQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /tickets/reports/losses/export — xlsx-поток в destination
+    /// (tickets.write). Возвращает имя файла из Content-Disposition (или пустую строку).
+    /// </summary>
+    Task<string> ExportTicketLossesAsync(
+        HubTicketLossesQuery query,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /tickets/reports/requests/export — xlsx-поток заявок в destination
+    /// (tickets.write). Фильтры как у списка: statuses/object_ids/search/sort_*.
+    /// </summary>
+    Task<string> ExportTicketRequestsAsync(
+        HubTicketQuery query,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /tickets/notifications/rules → {items} (tickets.write).</summary>
+    Task<HubTicketNotificationRuleList> GetTicketNotificationRulesAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /tickets/notifications/rules/{id} — только изменённые поля
+    /// (tickets.write; сервер дополнительно требует admin — 403 без роли).
+    /// </summary>
+    Task<HubTicketNotificationRule> UpdateTicketNotificationRuleAsync(
+        long ruleId,
+        HubTicketNotificationRulePatch patch,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /tickets/notifications/pending → {items} отложенных SLA-уведомлений (tickets.read).</summary>
+    Task<HubTicketPendingNotificationList> GetTicketPendingNotificationsAsync(CancellationToken cancellationToken);
+
+    /// <summary>POST /tickets/notifications/{id}/dismiss → 204: скрыть уведомление (tickets.read).</summary>
+    Task DismissTicketNotificationAsync(
+        string notificationId,
+        CancellationToken cancellationToken);
 
     // ---- Адресная книга ----
 
@@ -680,11 +1267,118 @@ public interface IHubApiClient
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// POST /equipment/{item_id}/photos — простая multipart-загрузка фото
+    /// (database.write): одно поле формы «file», description уходит
+    /// query-параметром. Лимит бэкенда — 15 МБ; большие файлы надёжнее
+    /// чанками (CreateEquipmentPhotoUploadSessionAsync).
+    /// </summary>
+    Task<HubEquipmentPhotoUploadResult> UploadEquipmentPhotoAsync(
+        long itemId,
+        string fileName,
+        byte[] content,
+        string? mimeType,
+        string? description,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/{item_id}/photo-uploads — сессия чанковой загрузки
+    /// (database.write). client_id делает её идемпотентной: повтор с тем же id
+    /// возвращает текущее состояние (в т.ч. уже завершённую — с file_no).
+    /// </summary>
+    Task<HubEquipmentPhotoUploadSession> CreateEquipmentPhotoUploadSessionAsync(
+        long itemId,
+        HubEquipmentPhotoUploadSessionCreate request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /equipment/photo-uploads/{upload_id}/chunks/{chunk_index} — кусок
+    /// файла телом octet-stream (256 КБ, последний — остаток). Порядок и
+    /// повторы свободны; ответ — актуальное состояние сессии.
+    /// </summary>
+    Task<HubEquipmentPhotoUploadSession> UploadEquipmentPhotoChunkAsync(
+        string uploadId,
+        int chunkIndex,
+        ReadOnlyMemory<byte> data,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/photo-uploads/{upload_id}/complete — сборка и вставка
+    /// фото в FILES. Повтор на завершённой сессии отдаёт исходный результат.
+    /// </summary>
+    Task<HubEquipmentPhotoUploadResult> CompleteEquipmentPhotoUploadAsync(
+        string uploadId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/{item_id}/photos/{file_no}/verify — отметка «проверено»
+    /// (database.photo_verify). Ответ — карточка фото, как в списке.
+    /// </summary>
+    Task<HubEquipmentPhoto> VerifyEquipmentPhotoAsync(
+        long itemId,
+        long fileNo,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/{item_id}/photos/{file_no}/reject — отклонение фото
+    /// (database.photo_verify), тело {reason} обязательно (до 500 символов).
+    /// </summary>
+    Task<HubEquipmentPhoto> RejectEquipmentPhotoAsync(
+        long itemId,
+        long fileNo,
+        string reason,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /equipment/{item_id}/photos/{file_no}/reject — правка причины
+    /// отклонения уже отклонённого фото (database.photo_verify).
+    /// </summary>
+    Task<HubEquipmentPhoto> UpdateEquipmentPhotoRejectReasonAsync(
+        long itemId,
+        long fileNo,
+        string reason,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/{item_id}/photos/{file_no}/rotate — поворот снимка по
+    /// часовой на 90/180/270 (database.write или database.photo_verify).
+    /// Контент и миниатюра меняются на сервере — кэш картинок сбрасываем
+    /// сменой query-параметра у /content.
+    /// </summary>
+    Task<HubEquipmentPhotoRotateResult> RotateEquipmentPhotoAsync(
+        long itemId,
+        long fileNo,
+        int degrees,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// GET /equipment/{inv_no}/history — история перемещений CI_HISTORY:
     /// сотрудник/филиал/локация old→new, пользователь, комментарий.
     /// </summary>
     Task<HubEquipmentHistoryResponse> GetEquipmentHistoryAsync(
         string invNo,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /equipment/employee/{owner_no}/items?employee_name= — вся техника
+    /// владельца (EquipmentSearchResponse). employee_name сервер использует
+    /// для resolve владельца в других базах (all_databases не шлём).
+    /// </summary>
+    Task<HubEmployeeItemsResponse> GetEmployeeItemsAsync(
+        long ownerNo,
+        string? employeeName,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /equipment/employee/{owner_no}/history?direction=&q=&page=&limit= —
+    /// движения техники по сотруднику: direction all|incoming|outgoing,
+    /// q — подстрока модели/инв./серийного номера, page-пагинация + total.
+    /// </summary>
+    Task<HubEmployeeHistoryResponse> GetEmployeeHistoryAsync(
+        long ownerNo,
+        string? direction,
+        string? q,
+        int page,
+        int limit,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -717,12 +1411,54 @@ public interface IHubApiClient
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// GET /equipment/locations?branch_no=&only_branch=true — только локации
+    /// выбранного филиала (LOC_BRANCH или занятые его техникой): как
+    /// getLocations(branchNo, {onlyBranch: true}) в веб-формах карточки.
+    /// </summary>
+    Task<IReadOnlyList<HubEquipmentLocation>> GetEquipmentBranchLocationsAsync(
+        string branchId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /equipment/statuses — справочник статусов карточки для редактора.
+    /// </summary>
+    Task<IReadOnlyList<HubEquipmentStatus>> GetEquipmentStatusesAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /equipment/models?type_no=&ci_type=1 — модели выбранного типа;
+    /// ответ — обёртка {models:[]}, как getModels в веб-справочниках.
+    /// </summary>
+    Task<IReadOnlyList<HubEquipmentModel>> GetEquipmentModelsAsync(
+        int typeNo,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /equipment/owners/search?q=&limit= — подбор владельца в форме
+    /// карточки (ФИО или отдел; как searchOwners в веб-диалоге «Добавить»).
+    /// </summary>
+    Task<IReadOnlyList<HubEquipmentOwner>> SearchEquipmentOwnersAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// POST /equipment/transfer — перемещение оборудования другому сотруднику
     /// (права database.write). Ответ job-based: queued/processing досматриваются
     /// через GetTransferActJobAsync; operation_id — idempotency-key клиента.
     /// </summary>
     Task<HubTransferExecuteResponse> TransferEquipmentAsync(
         HubEquipmentTransferRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/transfer/location — перемещение позиций в другой
+    /// филиал/локацию без смены владельца и без актов (права database.write).
+    /// Ответ job-based: та же TransferExecuteResponse, поллинг —
+    /// GetTransferActJobAsync; operation_id — обязательный idempotency-key.
+    /// </summary>
+    Task<HubTransferExecuteResponse> TransferEquipmentLocationAsync(
+        HubTransferLocationRequest request,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -740,6 +1476,118 @@ public interface IHubApiClient
     Task<string> DownloadTransferActAsync(
         string actId,
         Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/transfer/act-only — акт(ы) по выбранным позициям БЕЗ
+    /// смены владельца/филиала/локации (database.write): «кто выдал» —
+    /// issuer_employee (+issuer_owner_no из справочника), получатель в акте —
+    /// текущий владелец позиции. Тот же job-флоу: поллинг GetTransferActJobAsync.
+    /// </summary>
+    Task<HubTransferExecuteResponse> TransferActOnlyAsync(
+        HubTransferActOnlyRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/acts/upload/parse — распознать PDF подписанного акта
+    /// (database.write): multipart-поле file; manualMode=true добавляет
+    /// ?manual_mode=true (черновик без распознавания). Таймаут длинный — как у веба.
+    /// </summary>
+    Task<HubUploadedActDraft> ParseUploadedActAsync(
+        string fileName,
+        byte[] content,
+        bool manualMode,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/acts/upload/commit — запись загруженного акта
+    /// (database.write): DOCS+FILES и привязка позиций по inv-номерам;
+    /// reminder_id/source_task_id в теле привязывают акт к reminder-задаче.
+    /// </summary>
+    Task<HubUploadedActCommitResult> CommitUploadedActAsync(
+        HubUploadedActCommitRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /equipment/transfer/reminders/{reminder_id} — персистентное
+    /// напоминание «загрузить подписанные акты» (database.write): задача,
+    /// сотрудник-получатель, pending/completed группы позиций.
+    /// </summary>
+    Task<HubTransferActReminder> GetTransferReminderAsync(
+        string reminderId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/acts/upload/email — письмо с записанным актом
+    /// (database.write): mode=auto резолвит получателей по ФИО акта,
+    /// mode=selected — по списку owner_nos.
+    /// </summary>
+    Task<HubUploadedActEmailResult> SendUploadedActEmailAsync(
+        HubUploadedActEmailRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /equipment/acts/{doc_no}/file — файл записанного акта: тело стримится
+    /// в destination, возвращается имя из Content-Disposition (может быть пустым).
+    /// </summary>
+    Task<string> DownloadEquipmentActFileAsync(
+        long docNo,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /equipment/{inv_no} — точечная правка карточки (database.write):
+    /// только изменённые поля diff'а; ответ — обновлённая карточка целиком
+    /// (та же форма, что у GET /equipment/{inv_no}).
+    /// </summary>
+    Task<HubEquipmentItem> UpdateEquipmentAsync(
+        string invNo,
+        HubEquipmentUpdateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/create — новая позиция ITEMS (database.write): сервер
+    /// создаёт владельца/модель при отсутствии, присваивает inv_no и шлёт его
+    /// в ответе. MAC-адрес нормализуется и валидируется на сервере.
+    /// </summary>
+    Task<HubEquipmentCreateResult> CreateEquipmentAsync(
+        HubEquipmentCreateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /equipment/consumables/lookup?only_positive_qty=&limit= — справочник
+    /// складских расходников (CI_TYPE=4) с остатком и адресом; в вебе экран МФУ
+    /// грузит его отдельно от SNMP-снабженцев (у SNMP-строк нет item_id/inv_no).
+    /// </summary>
+    Task<IReadOnlyList<HubConsumableLookupItem>> GetConsumablesLookupAsync(
+        bool onlyPositiveQty,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/consumables/consume — списание остатка (database.write):
+    /// позиция по item_id (иначе inv_no), qty ≥ 1. С operation_id уходит
+    /// durable-путь сервера (idempotency-key, как у transfer).
+    /// </summary>
+    Task<HubConsumableConsumeResponse> ConsumeConsumableAsync(
+        HubConsumableConsumeRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /equipment/consumables/qty — точная установка остатка
+    /// (database.write): позиция по item_id (иначе inv_no), qty ≥ 0.
+    /// </summary>
+    Task<HubConsumableQtyUpdateResponse> UpdateConsumableQtyAsync(
+        HubConsumableQtyUpdateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /equipment/consumables/create — новая позиция CI_TYPE=4
+    /// (database.write): branch_no/loc_no/type_no/qty обязательны, модель —
+    /// model_no или свободный model_name (сервер создаст при отсутствии).
+    /// </summary>
+    Task<HubConsumableCreateResponse> CreateConsumableAsync(
+        HubConsumableCreateRequest request,
         CancellationToken cancellationToken);
 
     // ---- Доступ к группам AD ----
@@ -784,6 +1632,69 @@ public interface IHubApiClient
     /// </summary>
     Task<HubVcsLaunchToken> CreateVcsLaunchTokenAsync(
         string computerId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /vcs/computers {name, ip_address, location} → созданный терминал.
+    /// Право — vcs.manage; 422 при нарушении ограничений (name ≤ 100,
+    /// ip_address 7..50) — HubApiException с текстом сервера.
+    /// </summary>
+    Task<HubVcsComputer> CreateVcsComputerAsync(
+        HubVcsComputerInput computer,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /vcs/computers/{id} {name, ip_address, location} → обновлённый
+    /// терминал (как в вебе, шлём все поля формы). 404 «Computer not found»
+    /// и 403 без vcs.manage — HubApiException.
+    /// </summary>
+    Task<HubVcsComputer> UpdateVcsComputerAsync(
+        string computerId,
+        HubVcsComputerInput computer,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// DELETE /vcs/computers/{id} → {"success": true}; 404 — HubApiException.
+    /// Требует vcs.manage.
+    /// </summary>
+    Task DeleteVcsComputerAsync(
+        string computerId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /vcs/computers/order {"order": [id, …]} — порядок карточек целиком;
+    /// маршрут сервера объявлен до /computers/{id}, «order» с id не путается.
+    /// Требует vcs.manage.
+    /// </summary>
+    Task UpdateVcsComputersOrderAsync(
+        IReadOnlyList<string> orderedIds,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /vcs/config → {password_hex: "", password_configured}: сервер не
+    /// отдаёт сохранённый секрет — только флаг. Право чтения — vcs.read.
+    /// </summary>
+    Task<HubVcsConfig> GetVcsConfigAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /vcs/config {"password_hex": "…"} → актуальный {password_configured};
+    /// пустая строка — сброс пароля. Требует vcs.manage.
+    /// </summary>
+    Task<HubVcsConfig> UpdateVcsConfigAsync(
+        string passwordHex,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /vcs/info → {content} — текст инфо-блока ВКС; без vcs.manage сервер
+    /// вырезает поля password из JSON-таблицы. Право чтения — vcs.read.
+    /// </summary>
+    Task<HubVcsInfo> GetVcsInfoAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /vcs/info {"content": "…"} → сохранённый текст. Требует vcs.manage.
+    /// </summary>
+    Task<HubVcsInfo> UpdateVcsInfoAsync(
+        string content,
         CancellationToken cancellationToken);
 
     // ---- Мониторинг ----
@@ -863,6 +1774,145 @@ public interface IHubApiClient
     /// </summary>
     Task<HubPcComponentsStatistics> GetPcComponentsStatisticsAsync(
         int periodDays,
+        CancellationToken cancellationToken);
+
+    // ---- Журнал работ по карточке оборудования (/json/works*) ----
+
+    /// <summary>
+    /// GET /json/works/cartridge/history?serial_number=&hw_serial_number=&inv_no=
+    /// &cartridge_model= — сводка замен картриджа по оборудованию
+    /// {last_date, count, time_ago_str}. Пустые параметры в запрос не идут.
+    /// Право чтения — database.read.
+    /// </summary>
+    Task<HubMaintenanceHistory> GetCartridgeWorkHistoryAsync(
+        string? serialNumber,
+        string? hwSerialNumber,
+        string? invNo,
+        string? cartridgeModel,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/works/battery/history?serial_number=&hw_serial_number= —
+    /// сводка замен батареи по серийнику. Право чтения — database.read.
+    /// </summary>
+    Task<HubMaintenanceHistory> GetBatteryWorkHistoryAsync(
+        string? serialNumber,
+        string? hwSerialNumber,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/works/component/history?serial_number=&hw_serial_number=
+    /// &component_type=&component_name= — сводка замен комплектующих
+    /// (объединённые записи ПК- и принтер-компонентов). Право — database.read.
+    /// </summary>
+    Task<HubMaintenanceHistory> GetComponentWorkHistoryAsync(
+        string? serialNumber,
+        string? hwSerialNumber,
+        string? componentType,
+        string? componentName,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/works/cleaning/history?serial_number=&hw_serial_number=&inv_no=
+    /// &equipment_id= — сводка чисток ПК по оборудованию. Право — database.read.
+    /// </summary>
+    Task<HubMaintenanceHistory> GetCleaningWorkHistoryAsync(
+        string? serialNumber,
+        string? hwSerialNumber,
+        string? invNo,
+        long? equipmentId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/works/cartridge?limit= — последние записи журнала картриджей
+    /// (серверного фильтра по серийнику у эндпоинта нет — поток фильтруем
+    /// клиентом по serial/hw_serial/inv_no, как _record_matches_serial бэкенда).
+    /// Право — database.read.
+    /// </summary>
+    Task<IReadOnlyList<HubCartridgeWorkRecord>> GetCartridgeWorksAsync(
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/works/battery?serial_number=&limit= — записи журнала батарей;
+    /// serial_number опционален (точное совпадение serial_number|serial_no).
+    /// Право — database.read.
+    /// </summary>
+    Task<IReadOnlyList<HubBatteryWorkRecord>> GetBatteryWorksAsync(
+        string? serialNumber,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/works/component?serial_number=&limit= — записи журнала
+    /// комплектующих (объединённый список ПК+принтер). Право — database.read.
+    /// </summary>
+    Task<IReadOnlyList<HubComponentWorkRecord>> GetComponentWorksAsync(
+        string? serialNumber,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/works/cleaning?serial_number=&limit= — записи журнала чисток.
+    /// Право — database.read.
+    /// </summary>
+    Task<IReadOnlyList<HubCleaningWorkRecord>> GetCleaningWorksAsync(
+        string? serialNumber,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/works/cleaning/statistics/remaining?period_days=&branch= —
+    /// ПК филиала без чистки за период (диалог «ПК без чистки» веб-статистики).
+    /// branch обязателен на бэкенде (422 при пустом). Право — database.read.
+    /// </summary>
+    Task<HubPcCleaningRemaining> GetPcCleaningRemainingAsync(
+        int periodDays,
+        string branch,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /json/cartridges/compatibility/{printer_model} — таблица
+    /// совместимости принтера: OEM-картридж, совместимые модели, флаг цвета и
+    /// комплектующие. 404 → HubApiException. Требует активную сессию.
+    /// </summary>
+    Task<HubCartridgeCompatibility> GetCartridgeCompatibilityAsync(
+        string printerModel,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /json/works/cartridge → 201 CartridgeReplacementResponse — запись
+    /// замены картриджа/принтерной комплектующей в журнал. Право — database.write;
+    /// 400 при отказе валидации бэкенда — HubApiException с текстом сервера.
+    /// </summary>
+    Task<HubCartridgeWorkRecord> RegisterCartridgeWorkAsync(
+        HubCartridgeWorkRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /json/works/battery → 201 BatteryReplacementResponse — запись
+    /// замены батареи. Право — database.write.
+    /// </summary>
+    Task<HubBatteryWorkRecord> RegisterBatteryWorkAsync(
+        HubBatteryWorkRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /json/works/component → 201 ComponentReplacementResponse — запись
+    /// замены комплектующей (ПК — component_replacements.json, принтер —
+    /// картриджный файл, решает бэкенд по component_type/equipment_kind).
+    /// Право — database.write.
+    /// </summary>
+    Task<HubComponentWorkRecord> RegisterComponentWorkAsync(
+        HubComponentWorkRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /json/works/cleaning → 201 PcCleaningResponse — запись чистки ПК.
+    /// Право — database.write.
+    /// </summary>
+    Task<HubCleaningWorkRecord> RegisterCleaningWorkAsync(
+        HubCleaningWorkRequest request,
         CancellationToken cancellationToken);
 
     // ---- Чат ----
@@ -1118,6 +2168,449 @@ public interface IHubApiClient
     /// <summary>POST /chat/ws-ticket: короткоживущий тикет для in-socket реавторизации.</summary>
     Task<HubWsTicket> GetChatWsTicketAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// PATCH /chat/conversations/{id}/members/{userId}/role {member_role}
+    /// — назначить/снять модератора (только owner; web допускает только
+    /// moderator|member). Ответ — свежий detail.
+    /// </summary>
+    Task<HubChatConversationDetail> UpdateChatGroupMemberRoleAsync(
+        string conversationId,
+        int userId,
+        string memberRole,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /chat/conversations/{id}/members/{userId}/restriction
+    /// {duration_seconds: 3600|86400|604800|null} — запрет писать в группу;
+    /// null — бессрочно до снятия. Ответ — свежий detail.
+    /// </summary>
+    Task<HubChatConversationDetail> RestrictChatGroupMemberAsync(
+        string conversationId,
+        int userId,
+        int? durationSeconds,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// DELETE /chat/conversations/{id}/members/{userId}/restriction —
+    /// снять ограничение на отправку. Ответ — свежий detail.
+    /// </summary>
+    Task<HubChatConversationDetail> LiftChatGroupMemberRestrictionAsync(
+        string conversationId,
+        int userId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/conversations/{id}/join-requests → {items, open_count,
+    /// approval_required} — заявки на вступление (owner/moderator).
+    /// </summary>
+    Task<HubChatJoinRequestList> GetChatJoinRequestsAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /chat/conversations/{id}/join-approval {approval_required} —
+    /// режим «вступление по заявкам» (owner/moderator).
+    /// </summary>
+    Task<HubChatJoinApproval> SetChatJoinApprovalAsync(
+        string conversationId,
+        bool approvalRequired,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /chat/conversations/{id}/join-requests/{requestId} {decision:
+    /// approve|reject} — решение по заявке → {id, status, added}.
+    /// </summary>
+    Task<HubChatJoinRequestResolution> ResolveChatJoinRequestAsync(
+        string conversationId,
+        long requestId,
+        string decision,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/conversations/{id}/messages/{mid}/report
+    /// {reason: spam|abuse|illegal|other, comment?} → {id, status,
+    /// already_reported} — повторная жалоба того же пользователя дедупится.
+    /// </summary>
+    Task<HubChatMessageReportResult> ReportChatMessageAsync(
+        string conversationId,
+        string messageId,
+        string reason,
+        string? comment,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/conversations/{id}/reports → {items, open_count} —
+    /// открытые жалобы на сообщения (owner/moderator).
+    /// </summary>
+    Task<HubChatMessageReportList> GetChatMessageReportsAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /chat/conversations/{id}/reports/{reportId}
+    /// {resolution: dismissed|resolved} → {id, status}.
+    /// </summary>
+    Task<HubChatMessageReportResolution> ResolveChatMessageReportAsync(
+        string conversationId,
+        long reportId,
+        string resolution,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/conversations/{id}/invite-link → {token, expires_at:
+    /// now+7d, conversation_id}. На группу одновременно одна активная
+    /// ссылка: создание новой инвалидирует прежнюю.
+    /// </summary>
+    Task<HubChatInviteLink> CreateChatGroupInviteLinkAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /chat/conversations/{id}/invite-link → {revoked}.</summary>
+    Task<HubChatInviteRevokeResult> RevokeChatGroupInviteLinkAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/invite-links/{token} — превью группы по ссылке:
+    /// conversation_id приходит только уже состоящим участникам.
+    /// </summary>
+    Task<HubChatInvitePreview> GetChatInviteLinkPreviewAsync(
+        string token,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/invite-links/{token}/join → {joined, requested,
+    /// request_status, conversation}. При approval_required группа —
+    /// requested=true и conversation=null (заявка ждёт решения).
+    /// </summary>
+    Task<HubChatInviteJoinResult> JoinChatByInviteLinkAsync(
+        string token,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// DELETE /chat/conversations/{id} — удаление диалога владельцем
+    /// (группы; direct удаляет backend по своим правилам — web зовёт тот же
+    /// endpoint, сервер решает).
+    /// </summary>
+    Task DeleteChatConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /chat/conversations/support → summary диалога поддержки.</summary>
+    Task<HubChatConversation> CreateChatSupportConversationAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /chat/conversations/{id}/profile — карточка группы: title и
+    /// posting_policy/slow_mode_seconds/members_send_files только owner,
+    /// description — owner/moderator (web-гейты). null = не менять.
+    /// </summary>
+    Task<HubChatConversationDetail> UpdateChatGroupProfileAsync(
+        string conversationId,
+        string? title,
+        string? description,
+        string? postingPolicy,
+        int? slowModeSeconds,
+        bool? membersSendFiles,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/conversations/{id}/avatar — multipart file (image, ≤5 МБ)
+    /// → свежий detail с avatar_url. Только owner.
+    /// </summary>
+    Task<HubChatConversationDetail> UploadChatGroupAvatarAsync(
+        string conversationId,
+        string fileName,
+        Stream content,
+        string? mimeType,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /chat/conversations/{id}/avatar → свежий detail.</summary>
+    Task<HubChatConversationDetail> DeleteChatGroupAvatarAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/conversations/{id}/shareable-tasks?q=&limit= — задачи
+    /// для «Поделиться задачей» (требует chat.read + tasks.read).
+    /// </summary>
+    Task<HubChatShareableTaskList> GetChatShareableTasksAsync(
+        string conversationId,
+        string? query,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/conversations/{id}/messages/task-share
+    /// {task_id, client_message_id?, reply_to_message_id?} → сообщение
+    /// kind="task_share" с task_preview.
+    /// </summary>
+    Task<HubChatMessage> SendChatTaskShareAsync(
+        string conversationId,
+        string taskId,
+        string? clientMessageId,
+        string? replyToMessageId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/conversations/{id}/messages/hydrate?message_ids=a,b,c —
+    /// догрузка read_by_count/delivery_status/reactions для уже загруженных
+    /// сообщений (после bootstrap-переходов статусы успевают устареть).
+    /// </summary>
+    Task<HubChatThreadHydrateResult> HydrateChatMessagesAsync(
+        string conversationId,
+        IReadOnlyList<string> messageIds,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/config → {group_max_members, scheduled_messages_enabled,
+    /// support_user_id} — серверные флаги чата; кешируем на сессию как web
+    /// (getChatConfigCached): запрос один раз за загрузку страницы.
+    /// </summary>
+    Task<HubChatConfig> GetChatConfigAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/conversations/{id}/scheduled → {items} — свои отложенные
+    /// сообщения диалога (status scheduled|sending|failed), по времени отправки.
+    /// </summary>
+    Task<HubChatScheduledMessageList> GetChatScheduledMessagesAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/conversations/{id}/scheduled {body, body_format, scheduled_for,
+    /// reply_to_message_id?} — запланировать текстовое сообщение.
+    /// Только текст: файлы/опросы сервер не планирует (как в web).
+    /// </summary>
+    Task<HubChatScheduledMessage> CreateChatScheduledMessageAsync(
+        string conversationId,
+        string body,
+        DateTimeOffset scheduledFor,
+        string? replyToMessageId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /chat/scheduled/{id} {body?, scheduled_for?} — правка текста/времени
+    /// своего отложенного (только status scheduled|failed; failed возвращается
+    /// в очередь). null-поля сервер игнорирует.
+    /// </summary>
+    Task<HubChatScheduledMessage> UpdateChatScheduledMessageAsync(
+        string scheduledId,
+        string? body,
+        DateTimeOffset? scheduledFor,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /chat/scheduled/{id} → {id, status: cancelled}.</summary>
+    Task<HubChatScheduledCancelResult> CancelChatScheduledMessageAsync(
+        string scheduledId,
+        CancellationToken cancellationToken);
+
+    // ---- Чат: папки диалогов (/chat/folders*, chat.read / chat.write) ----
+
+    /// <summary>
+    /// GET /chat/folders → {items, conversation_ids_by_folder, folder_unread_counts}.
+    /// Непрочитанные по системным вкладкам считает сервер (personal/groups/tasks/
+    /// archived/ai; архивные и действующие mute не входят — как в web).
+    /// </summary>
+    Task<HubChatFolderList> GetChatFoldersAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /chat/folders {name} → {ok, item} — новая пользовательская папка.</summary>
+    Task<HubChatFolderMutation> CreateChatFolderAsync(
+        string name,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /chat/folders/{id} → ChatFolderSummary (с conversation_ids).</summary>
+    Task<HubChatFolder> GetChatFolderAsync(
+        string folderId,
+        CancellationToken cancellationToken);
+
+    /// <summary>PATCH /chat/folders/{id} {name?, sort_order?} → {ok, item}. null = не менять.</summary>
+    Task<HubChatFolderMutation> UpdateChatFolderAsync(
+        string folderId,
+        string? name,
+        int? sortOrder,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /chat/folders/{id} → {ok, id} — папка удаляется, диалоги остаются.</summary>
+    Task<HubChatFolderDeleteResult> DeleteChatFolderAsync(
+        string folderId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /chat/folders/{id}/conversations {conversation_ids:[…]} — полная замена
+    /// членства папки → {ok, item}.
+    /// </summary>
+    Task<HubChatFolderMutation> ReplaceChatFolderConversationsAsync(
+        string folderId,
+        IReadOnlyList<string> conversationIds,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /chat/folders/{id}/conversations/{conversation_id} → {ok, item}.</summary>
+    Task<HubChatFolderMutation> AddChatFolderConversationAsync(
+        string folderId,
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /chat/folders/{id}/conversations/{conversation_id} → {ok, item}.</summary>
+    Task<HubChatFolderMutation> RemoveChatFolderConversationAsync(
+        string folderId,
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    // ---- Чат: стикеры (/chat/sticker-packs*, /chat/stickers/*) ----
+
+    /// <summary>
+    /// GET /chat/sticker-packs → {items:[{id, short_name, title, sticker_type,
+    /// is_added, stickers:[{id, emoji, format, mime_type, file_url, preview_url}]}]} —
+    /// добавленные пользователем паки. Превью стикеров качается тем же
+    /// DownloadImageAsync (file_url/preview_url — same-origin Bearer-маршруты).
+    /// </summary>
+    Task<HubChatStickerPackList> GetChatStickerPacksAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/sticker-packs/import {source} → {items} — импорт пака по
+    /// ссылке/short_name Telegram (пользовательский жест в web-панели стикеров).
+    /// </summary>
+    Task<HubChatStickerPackList> ImportChatStickerPackAsync(
+        string source,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/sticker-packs/preview/{short_name} → ChatStickerPackResponse —
+    /// общий (ещё не добавленный) пак по ссылке.
+    /// </summary>
+    Task<HubChatStickerPack> GetChatStickerPackPreviewAsync(
+        string shortName,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/conversations/{id}/messages/sticker
+    /// {sticker_id, client_message_id?, reply_to_message_id?} → ChatMessageResponse.
+    /// </summary>
+    Task<HubChatMessage> SendChatStickerMessageAsync(
+        string conversationId,
+        string stickerId,
+        string? clientMessageId,
+        string? replyToMessageId,
+        CancellationToken cancellationToken);
+
+    // ---- Чат: ИИ-ассистент (/chat/ai/*, chat.ai.use) ----
+
+    /// <summary>
+    /// GET /chat/ai/bots → {items:[AiBotSummary], configured} — доступные
+    /// ассистенты (пустой список/403 без chat.ai.use — раздел скрываем).
+    /// </summary>
+    Task<HubChatAiBotList> GetChatAiBotsAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/ai/bots/{botId}/open → ChatConversationSummary — открыть
+    /// существующий диалог с ботом или создать новый (как web openAiBotConversation).
+    /// </summary>
+    Task<HubChatConversation> OpenChatAiBotConversationAsync(
+        string botId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/ai/bots/{botId}/conversations → ChatConversationSummary —
+    /// «Новый чат с этим помощником» (всегда новый диалог).
+    /// </summary>
+    Task<HubChatConversation> CreateChatAiBotConversationAsync(
+        string botId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/ai/conversations → ChatConversationSummary — общий чат с
+    /// ассистентом без привязки к конкретному боту (web GENERAL_AI_OPENING_ID).
+    /// </summary>
+    Task<HubChatConversation> CreateChatAiConversationAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>PATCH /chat/ai/conversations/{id} {title} → ChatConversationSummary.</summary>
+    Task<HubChatConversation> UpdateChatAiConversationAsync(
+        string conversationId,
+        string title,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /chat/ai/conversations/{id} → {ok, conversation_id}.</summary>
+    Task<bool> DeleteChatAiConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/conversations/{id}/ai-status → AiConversationStatusResponse —
+    /// прогресс запуска ассистента (опрашиваем, пока queued|running или сокет
+    /// не подключён — как shouldPollActiveAiThread в web).
+    /// </summary>
+    Task<HubChatAiStatus> GetChatAiStatusAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /chat/ai/conversations/{id}/stop → AiConversationStatusResponse.</summary>
+    Task<HubChatAiStatus> StopChatAiConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /chat/ai/conversations/{id}/retry → AiConversationStatusResponse.</summary>
+    Task<HubChatAiStatus> RetryChatAiConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/ai/conversations/{id}/reset-context →
+    /// {ok, conversation_id, context_reset_seq} — ассистент перестаёт учитывать
+    /// старые сообщения (видимыми они остаются).
+    /// </summary>
+    Task<HubChatAiResetResult> ResetChatAiContextAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /chat/ai/actions/{actionId}/confirm {choice?|format?|scope?} →
+    /// обновлённый action_card dict (payload как в web onConfirmAction).
+    /// </summary>
+    Task<HubChatActionCard> ConfirmChatAiActionAsync(
+        string actionId,
+        string? choice,
+        string? format,
+        string? scope,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /chat/ai/actions/{actionId}/cancel → обновлённый action_card.</summary>
+    Task<HubChatActionCard> CancelChatAiActionAsync(
+        string actionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /chat/ai/memory → {enabled, items, limits} — личная память
+    /// ассистента (AiPersonalMemoryManager в web).
+    /// </summary>
+    Task<HubChatAiMemoryList> GetChatAiMemoryAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>PATCH /chat/ai/memory/settings {enabled} → свежий список памяти.</summary>
+    Task<HubChatAiMemoryList> UpdateChatAiMemorySettingsAsync(
+        bool enabled,
+        CancellationToken cancellationToken);
+
+    /// <summary>PATCH /chat/ai/memory/{id} {content} → AiMemoryItemResponse.</summary>
+    Task<HubChatAiMemoryItem> UpdateChatAiMemoryItemAsync(
+        string memoryId,
+        string content,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /chat/ai/memory/{id} → {ok, id}.</summary>
+    Task<HubChatAiMemoryDeleteResult> DeleteChatAiMemoryItemAsync(
+        string memoryId,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /chat/ai/memory → {ok, deleted_count} — очистить всю память.</summary>
+    Task<HubChatAiMemoryDeleteResult> ClearChatAiMemoryAsync(
+        CancellationToken cancellationToken);
+
     // ---- Мои файлы ----
 
     /// <summary>GET /my-files/libraries → {items, can_manage}: общие папки пользователя.</summary>
@@ -1220,6 +2713,110 @@ public interface IHubApiClient
     /// <summary>DELETE /my-files/folders/{id}/share → 204: публичная ссылка папки отозвана.</summary>
     Task RevokeMyFileFolderShareAsync(string folderId, CancellationToken cancellationToken);
 
+    // ---- Мои файлы: корзина, квота, копия, архив, предпросмотр, библиотеки ----
+
+    /// <summary>
+    /// GET /my-files/trash?library_id= → {items, folders}: удалённые объекты
+    /// личного диска (library_id=null) или библиотеки (нужна роль manage).
+    /// </summary>
+    Task<HubMyFileTrash> GetMyFilesTrashAsync(string? libraryId, CancellationToken cancellationToken);
+
+    /// <summary>POST /my-files/trash/empty?library_id= → 204: корзина очищена навсегда.</summary>
+    Task EmptyMyFilesTrashAsync(string? libraryId, CancellationToken cancellationToken);
+
+    /// <summary>POST /my-files/trash/files/{id}/restore → 204: файл возвращён из корзины.</summary>
+    Task RestoreMyFileAsync(string fileId, CancellationToken cancellationToken);
+
+    /// <summary>POST /my-files/trash/folders/{id}/restore → 204: папка возвращена из корзины.</summary>
+    Task RestoreMyFileFolderAsync(string folderId, CancellationToken cancellationToken);
+
+    /// <summary>DELETE /my-files/trash/files/{id} → 204: файл удалён навсегда.</summary>
+    Task PurgeMyFileAsync(string fileId, CancellationToken cancellationToken);
+
+    /// <summary>DELETE /my-files/trash/folders/{id} → 204: папка удалена навсегда.</summary>
+    Task PurgeMyFileFolderAsync(string folderId, CancellationToken cancellationToken);
+
+    /// <summary>GET /my-files/quota → {used_bytes, limit_bytes, remaining_bytes} (личный диск).</summary>
+    Task<HubMyFileQuota> GetMyFilesQuotaAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /my-files/{id}/copy {folder_id, library_id} → 201 + копия (MyFileResponse).
+    /// folder_id+library_id=null — корень личного диска.
+    /// </summary>
+    Task<HubMyFileItem> CopyMyFileAsync(
+        string fileId,
+        string? folderId,
+        string? libraryId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Архив папки по реальному контракту: POST /my-files/folders/{id}/archive-grant
+    /// выдаёт одноразовый download_path, GET по нему стримит zip в destination —
+    /// тот же конвейер, что DownloadMyFileAsync. Возвращает имя из Content-Disposition.
+    /// </summary>
+    Task<string> DownloadMyFileFolderArchiveAsync(
+        string folderId,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /my-files/{id}/preview → {preview_kind, …}: метаданные предпросмотра.
+    /// 404/«preview недоступен» — HubApiException.
+    /// </summary>
+    Task<HubMyFilePreview> GetMyFilePreviewAsync(string fileId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /my-files/{id}/preview/content?variant= — тело предпросмотра в destination
+    /// (ResponseHeadersRead). Возвращает Content-Type ответа (или пустую строку).
+    /// </summary>
+    Task<string> DownloadMyFilePreviewContentAsync(
+        string fileId,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /my-files/libraries {name, quota_bytes} → 201 + LibraryResponse (право my_files.libraries.manage).</summary>
+    Task<HubMyFileLibrary> CreateMyFileLibraryAsync(
+        string name,
+        long quotaBytes,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /my-files/libraries/{id} {name?, quota_bytes?} → LibraryResponse.
+    /// Шлём оба поля; backend игнорирует null (право my_files.libraries.manage).
+    /// </summary>
+    Task<HubMyFileLibrary> UpdateMyFileLibraryAsync(
+        string libraryId,
+        string? name,
+        long? quotaBytes,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /my-files/libraries/{id} → 204 (право my_files.libraries.manage).</summary>
+    Task DeleteMyFileLibraryAsync(string libraryId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /my-files/libraries/{id}/members → {items} — участники библиотеки.
+    /// Доступ: глобальное право libraries.manage или своя роль manage в библиотеке.
+    /// </summary>
+    Task<HubMyFileLibraryMembers> GetMyFileLibraryMembersAsync(
+        string libraryId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /my-files/libraries/{id}/members {members[]} → {items}: полная замена
+    /// состава (contract-семантика set_members — как у руководителей отдела).
+    /// </summary>
+    Task<HubMyFileLibraryMembers> SetMyFileLibraryMembersAsync(
+        string libraryId,
+        IReadOnlyList<HubMyFileLibraryMemberInput> members,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /my-files/office/groups → {items}: отделы для выбора участников
+    /// библиотеки (право my_files.share; при 403 возвращаем пустой список — как веб).
+    /// </summary>
+    Task<IReadOnlyList<HubMyFileOfficeGroup>> GetMyFileOfficeGroupsAsync(
+        CancellationToken cancellationToken);
+
     // ---- База знаний ----
 
     /// <summary>
@@ -1285,6 +2882,28 @@ public interface IHubApiClient
         int offset,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// PATCH /feedback/{id} {status?, admin_note?} → элемент с author{}
+    /// (право feedback.manage). Ключи шлём только при реальном изменении —
+    /// backend читает exclude_unset, null admin_note очистил бы комментарий.
+    /// </summary>
+    Task<HubAdminFeedbackItem> UpdateFeedbackAsync(
+        string itemId,
+        string? status,
+        string? adminNote,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /feedback {category, title, message, section} → 201 + предложение
+    /// (право dashboard.read — кнопка «Предложить улучшение HUB» веб-дашборда).
+    /// </summary>
+    Task<HubFeedbackSuggestion> CreateFeedbackAsync(
+        HubFeedbackCreate request,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /feedback/mine?limit= → {items,total}: мои обращения и их статусы.</summary>
+    Task<HubMyFeedbackPage> GetMyFeedbackAsync(int limit, CancellationToken cancellationToken);
+
     /// <summary>GET /system/request-metrics?limit=&sort_by= → снимок метрик запросов (admin).</summary>
     Task<HubAdminRequestMetrics> GetAdminRequestMetricsAsync(
         int limit,
@@ -1293,6 +2912,194 @@ public interface IHubApiClient
 
     /// <summary>GET /ai-bots → административный список AI-ботов (admin или settings.ai.manage).</summary>
     Task<IReadOnlyList<HubAdminAiBot>> GetAdminAiBotsAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /ai-bots/{bot_id} → AiBotAdminResponse (admin или settings.ai.manage).
+    /// Тело — только изменённые поля (exclude_unset). 404 «AI bot not found» и
+    /// 422 валидации — HubApiException с detail в Message.
+    /// </summary>
+    Task<HubAdminAiBot> UpdateAiBotAsync(
+        string botId,
+        HubAiBotUpdateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /ai-bots → созданный бот (admin или settings.ai.manage).
+    /// Дубликат slug — ошибка сервера текстом в Message.
+    /// </summary>
+    Task<HubAdminAiBot> CreateAiBotAsync(
+        HubAiBotCreateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PUT /departments/{id}/managers {manager_user_ids} → {items} memberships
+    /// (право departments.manage). Полная замена набора руководителей;
+    /// 404 «Department not found» — HubApiException с detail в Message.
+    /// </summary>
+    Task<HubAdminDepartmentMembers> SetDepartmentManagersAsync(
+        string departmentId,
+        IReadOnlyList<long> managerUserIds,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /auth/users/{id} → User (право settings.users.manage).
+    /// Тело — только изменённые поля (exclude_unset). Ограничения сервера:
+    /// свой is_active=false → 400, свои role/permissions → 403, не-admin —
+    /// только {email, full_name, department, job_title} не-admin целей.
+    /// 400/403/404 — HubApiException с detail в Message.
+    /// </summary>
+    Task<HubAdminUser> UpdateUserAsync(
+        long userId,
+        HubUserUpdateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /auth/users → User (201, право settings.users.manage).
+    /// Admin — все поля; не-admin — только role=viewer без кастомных полей.
+    /// </summary>
+    Task<HubAdminUser> CreateUserAsync(
+        HubUserCreateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /auth/users/{id}/reset-2fa → счётчики сброса TOTP (admin):
+    /// гасит секрет/backup-коды, отзывает доверенные устройства и биометрию,
+    /// закрывает активные сессии пользователя.
+    /// </summary>
+    Task<HubResetTwoFactorResult> ResetUserTwoFactorAsync(
+        long userId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /mail/mailbox-quota-snapshots/latest → MailboxQuotaSnapshotSummary
+    /// (право mail.quotas.read; admin — автоматически).
+    /// 404 «No snapshots found» — HubApiException (снимков ещё не импортировали).
+    /// </summary>
+    Task<HubMailQuotaSnapshot> GetLatestMailQuotaSnapshotAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /mail/mailbox-quota-snapshots?limit= → история снимков по убыванию
+    /// даты (право mail.quotas.read). Источник для селектора снимка и
+    /// запасной путь, когда latest отвечает 404.
+    /// </summary>
+    Task<IReadOnlyList<HubMailQuotaSnapshot>> GetMailQuotaSnapshotsAsync(
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /mail/mailbox-quota-snapshots/{id}/summary → MailboxQuotaSnapshotStats:
+    /// счётчики total/with_quota/no_quota/over_quota/warning_90 + разрез by_database.
+    /// 404 «Snapshot not found» — HubApiException.
+    /// </summary>
+    Task<HubMailQuotaSnapshotStats> GetMailQuotaSnapshotSummaryAsync(
+        int snapshotId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /mail/mailbox-quota-snapshots/{id}/rows?search=&over_quota=&warning_90=&
+    /// no_quota=&database_name=&limit=&offset= → MailboxQuotaRowsPage {items,total,snapshot}.
+    /// Пустые строки и false-флаги в query не уходят (как в вебе).
+    /// </summary>
+    Task<HubMailQuotaRowsPage> GetMailQuotaRowsAsync(
+        int snapshotId,
+        HubMailQuotaRowsQuery query,
+        CancellationToken cancellationToken);
+
+    // ---- Администрирование новостей (раздел «Новости») ----
+
+    /// <summary>
+    /// GET /hub/announcements/manage?status=&q=&category_id=&tag=&limit=&offset=
+    /// → {items,status,total,limit,offset,has_more,next_offset}.
+    /// Гейт _require_announcement_manager: announcements.write ИЛИ
+    /// announcements.moderate/admin; не-модератор видит только свои новости,
+    /// модератор — все (ограничение на стороне сервера).
+    /// </summary>
+    Task<HubAnnouncementManagePage> GetManagedAnnouncementsAsync(
+        HubAnnouncementManageQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/announcements → созданная новость (право announcements.write —
+    /// строже manage-гейта: у модератора без write создания нет).
+    /// Без файлов — JSON; с файлами — multipart/form-data, скаляры строками,
+    /// tags — JSON-массивом, файлы повторяющимся полем files
+    /// (лимит сервера 20 МБ на файл — MAX_ANNOUNCEMENT_FILE_BYTES).
+    /// </summary>
+    Task<HubAnnouncementItem> CreateAnnouncementAsync(
+        HubAnnouncementCreateRequest request,
+        IReadOnlyList<HubAnnouncementOutgoingFile>? files,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/announcements/drafts — JSON-тело как у create; сервер
+    /// принудительно ставит status=draft (веб-драфт autosave, announcements.write).
+    /// </summary>
+    Task<HubAnnouncementItem> CreateAnnouncementDraftAsync(
+        HubAnnouncementCreateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// PATCH /hub/announcements/{id} → обновлённая новость (write|moderate;
+    /// автор или модератор — сервер проверяет). Тело — только изменённые поля.
+    /// </summary>
+    Task<HubAnnouncementItem> UpdateAnnouncementAsync(
+        string announcementId,
+        HubAnnouncementUpdateRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /hub/announcements/{id}/publish → обновлённая новость (status=published).</summary>
+    Task<HubAnnouncementItem> PublishAnnouncementAsync(
+        string announcementId,
+        CancellationToken cancellationToken);
+
+    /// <summary>POST /hub/announcements/{id}/archive → обновлённая новость (status=archived).</summary>
+    Task<HubAnnouncementItem> ArchiveAnnouncementAsync(
+        string announcementId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// DELETE /hub/announcements/{id} → {ok} (announcements.moderate/admin —
+    /// веб прячет кнопку от авторов-write, мы тоже).
+    /// </summary>
+    Task DeleteManagedAnnouncementAsync(
+        string announcementId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/announcement-categories?include_inactive= → {items}.
+    /// announcements.read; include_inactive=true требует moderate (иначе 403).
+    /// </summary>
+    Task<HubAnnouncementCategoryList> GetAnnouncementCategoriesAsync(
+        bool includeInactive,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/announcement-categories {name} → созданная категория
+    /// (announcements.moderate; name ≥ 2 символов).
+    /// </summary>
+    Task<HubAnnouncementCategory> CreateAnnouncementCategoryAsync(
+        string name,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /hub/announcement-tags → {items:[{id,name,slug,usage_count}]} (announcements.read).</summary>
+    Task<HubAnnouncementTagList> GetAnnouncementTagsAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /hub/announcements/{id}/attachments — multipart с полем file
+    /// (manage-гейт + автор/модератор; лимит 20 МБ). Ответ — созданное вложение.
+    /// </summary>
+    Task<HubAnnouncementAttachment> UploadAnnouncementAttachmentAsync(
+        string announcementId,
+        HubAnnouncementOutgoingFile file,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /hub/announcements/{id}/analytics → {items:[read-строки], summary}
+    /// (manage-гейт + автор/модератор). Возвращается пустая модель при пустом теле.
+    /// </summary>
+    Task<HubAnnouncementAnalytics> GetAnnouncementAnalyticsAsync(
+        string announcementId,
+        CancellationToken cancellationToken);
 
     // ---- Настройки ----
 
@@ -1350,6 +3157,138 @@ public interface IHubApiClient
     /// </summary>
     Task<byte[]> DownloadImageAsync(string uriOrPath, CancellationToken cancellationToken);
 
+    // ---- Строительство ----
+
+    /// <summary>
+    /// GET /construction/objects?q&kind&limit&cursor&refresh — портфель объектов
+    /// строительства/направлений 1С (право construction.read).
+    /// kind: all|project|general|unassigned.
+    /// </summary>
+    Task<HubConstructionObjectsResponse> GetConstructionObjectsAsync(
+        HubConstructionObjectsQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /construction/objects/{object_id} — карточка объекта:
+    /// реквизиты, номенклатурные группы (направления), команда (construction.read).
+    /// object_id — managed id либо group_ref 1С (как у веб-клиента:
+    /// managed_object_id || object_ref из карточки портфеля).
+    /// </summary>
+    Task<HubConstructionObjectDetail> GetConstructionObjectDetailAsync(
+        string objectId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /construction/objects/{object_id}/requests?view&q&limit&cursor&refresh —
+    /// заявки объекта по всем направлениям + direction_stats/сводка (construction.read).
+    /// view: active|history|all.
+    /// </summary>
+    Task<HubConstructionObjectRequestsResponse> GetConstructionObjectRequestsAsync(
+        string objectId,
+        HubConstructionRequestsQuery query,
+        CancellationToken cancellationToken);
+
+    // ---- Склад 1С ----
+
+    /// <summary>
+    /// GET /warehouse-1c/nomenclature/search?q&limit — подсказки номенклатуры 1С
+    /// (право warehouse_1c.read). Ответ — массив либо конверт {items}; клиент
+    /// нормализует оба варианта, как веб (normalizeWarehouse1cListResponse).
+    /// </summary>
+    Task<IReadOnlyList<HubWarehouse1cCatalogItem>> SearchWarehouse1cNomenclatureAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/warehouses/search?q&limit — подсказки складов 1С
+    /// (warehouse_1c.read). Та же нормализация массив/конверт.
+    /// </summary>
+    Task<IReadOnlyList<HubWarehouse1cCatalogItem>> SearchWarehouse1cWarehousesAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/balances?nomenclature_ref&warehouse_ref&q&limit&include_meta=true —
+    /// остатки номенклатуры с серверными фильтрами (warehouse_1c.read).
+    /// Backend требует хотя бы один фильтр; has_more/truncated помечают неполную выдачу.
+    /// </summary>
+    Task<HubWarehouse1cBalancesResponse> GetWarehouse1cBalancesAsync(
+        HubWarehouse1cBalancesQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/movements?nomenclature_ref&warehouse_ref&series_ref&date_from&
+    /// date_to&limit&cursor&include_meta=true — ведомость движений (warehouse_1c.read).
+    /// nomenclature_ref обязателен; next_cursor хранится в конверте ответа.
+    /// </summary>
+    Task<HubWarehouse1cMovementsResponse> GetWarehouse1cMovementsAsync(
+        HubWarehouse1cMovementsQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/movements/detail?registrar_ref — карточка документа-регистратора:
+    /// маршрут перемещения, контрагент, приложенные файлы (warehouse_1c.read).
+    /// </summary>
+    Task<HubWarehouse1cMovementDetail> GetWarehouse1cMovementDetailAsync(
+        string registrarRef,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/movements/files/{file_ref}?registrar_ref — бинарная выгрузка
+    /// приложенного к документу файла в destination; имя — из Content-Disposition.
+    /// </summary>
+    Task<string> DownloadWarehouse1cMovementFileAsync(
+        string registrarRef,
+        string fileRef,
+        Stream destination,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/dismissed-warehouses?limit&include_meta=true — склады,
+    /// закреплённые за уволенными сотрудниками, с суммами и остатками (warehouse_1c.read).
+    /// </summary>
+    Task<HubWarehouse1cDismissedResponse> GetWarehouse1cDismissedWarehousesAsync(
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/catalog/status — возраст/полнота кэша справочников 1С,
+    /// от которого идут автодополнения номенклатуры и складов (warehouse_1c.read).
+    /// </summary>
+    Task<HubWarehouse1cCatalogStatus> GetWarehouse1cCatalogStatusAsync(
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/it-requests?view&q&stage&warehouse_ref&overdue&limit&cursor&refresh —
+    /// заявки на МПЗ (право warehouse_1c.it_requests.read). view: active|history|all.
+    /// </summary>
+    Task<HubItRequestsResponse> GetWarehouse1cItRequestsAsync(
+        HubItRequestsQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /warehouse-1c/it-requests/{request_ref} — деталь заявки: позиции,
+    /// маршрут (journey), документы (timeline), группы номенклатуры.
+    /// </summary>
+    Task<HubItRequestItem> GetWarehouse1cItRequestDetailAsync(
+        string requestRef,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// POST /desktop-presence/heartbeat {} — heartbeat «десктоп онлайн» для
+    /// нативного шелла (веб вызывает его только в desktop-runtime, 60 c ± джиттер,
+    /// rate-limit 120/мин). Best-effort: ошибки глотаются вызывающим циклом.
+    /// </summary>
+    Task<HubDesktopPresence> SendDesktopPresenceHeartbeatAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// DELETE /desktop-presence/current — graceful disconnect при выходе;
+    /// TTL на сервере остаётся границей корректности, если вызов не дошёл.
+    /// </summary>
+    Task<HubDesktopPresence> DisconnectDesktopPresenceAsync(CancellationToken cancellationToken);
+
     /// <summary>
     /// Актуальный access-токен для WebSocket-handshake (refresh при необходимости).
     /// null — сессии нет.
@@ -1358,6 +3297,72 @@ public interface IHubApiClient
 
     /// <summary>Origin сервера (для построения wss:// URL realtime-подключений).</summary>
     Uri BaseUri { get; }
+
+    // ==================== DLP-мониторинг (admin-only на сервере) ====================
+
+    /// <summary>GET /inventory/dlp/hosts?category= — статистика по ПК (файлы/визиты/филиал).</summary>
+    Task<HubDlpHostsResponse> ListDlpHostsAsync(string? category, CancellationToken cancellationToken);
+
+    /// <summary>GET /inventory/dlp/summary — счётчики дня для шапки страницы.</summary>
+    Task<HubDlpSummaryResponse> GetDlpSummaryAsync(CancellationToken cancellationToken);
+
+    /// <summary>GET /inventory/dlp/attention?day= — сводка за день (YYYY-MM-DD).</summary>
+    Task<HubDlpAttentionResponse> GetDlpAttentionAsync(string? day, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /inventory/dlp/activity?computer_name=&day= — 5-минутные бакеты дня.
+    /// day — «YYYY-MM-DD» в локальном времени филиала; пустая строка → сегодня.
+    /// </summary>
+    Task<HubDlpActivityResponse> GetDlpActivityAsync(
+        string computerName,
+        string? day,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /inventory/dlp/work-schedules — графики филиалов + список филиалов.</summary>
+    Task<HubDlpWorkSchedulesResponse> ListDlpWorkSchedulesAsync(CancellationToken cancellationToken);
+
+    /// <summary>PUT /inventory/dlp/work-schedules/{branch} — создать/обновить график.</summary>
+    Task<HubDlpWorkScheduleSaveResponse> SaveDlpWorkScheduleAsync(
+        string branchName,
+        int workStartMin,
+        int workEndMin,
+        int? lunchStartMin,
+        int? lunchEndMin,
+        int tzOffsetMinutes,
+        int workdaysMask,
+        CancellationToken cancellationToken);
+
+    /// <summary>DELETE /inventory/dlp/work-schedules/{branch} — сброс к поведению без графика.</summary>
+    Task DeleteDlpWorkScheduleAsync(string branchName, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// GET /inventory/fs-egress?computer_name=&channel=&group=1 — файлы хоста (вкладка «Файлы»).
+    /// channel: usb | telegram | max | deleted | пусто — все каналы.
+    /// </summary>
+    Task<HubFsEgressResponse> ListFsEgressEventsAsync(
+        string? computerName,
+        string? channel,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /inventory/telegram-probe?computer_name=&limit= — диалоги Telegram.</summary>
+    Task<HubDlpChatsResponse> ListTelegramChatsAsync(
+        string? computerName,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /inventory/max-probe?computer_name=&limit= — диалоги MAX.</summary>
+    Task<HubDlpChatsResponse> ListMaxChatsAsync(
+        string? computerName,
+        int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>GET /inventory/browser-probe?computer_name=&day=&merge=1 — визиты браузера.</summary>
+    Task<HubBrowserVisitsResponse> ListBrowserVisitsAsync(
+        string? computerName,
+        string? day,
+        int limit,
+        CancellationToken cancellationToken);
 
     /// <summary>Best-effort logout (ревокация refresh на сервере) + локальная очистка.</summary>
     Task LogoutAsync(CancellationToken cancellationToken);

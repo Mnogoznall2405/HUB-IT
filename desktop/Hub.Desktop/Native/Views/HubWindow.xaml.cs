@@ -21,12 +21,16 @@ public partial class HubWindow : Window
     private readonly IDesktopNotificationService? _notifications;
     private string? _pendingPage;
     private string? _pendingConversationId;
+    private (string? ReminderId, string? SourceTaskId)? _pendingUploadActReminder;
+    private string? _pendingInviteToken;
 
     public HubWindow(IHubApiClient api, IDesktopNotificationService? notifications = null)
     {
         ArgumentNullException.ThrowIfNull(api);
         InitializeComponent();
         NativeThemeManager.EnsureFallbackPalette(this);
+        // Свёрнутое меню переживает перезапуск (HKCU) — применяем до первого кадра.
+        ApplySavedNavigationPreference();
         _notifications = notifications;
         _viewModel = new HubShellViewModel(api);
         DataContext = _viewModel;
@@ -154,6 +158,15 @@ public partial class HubWindow : Window
         _pendingConversationId = _pendingPage == "chat"
             ? TryGetQueryValue(route, "conversation")
             : null;
+        // Ссылка-приглашение «/chat?join=TOKEN» — как web useChatInviteJoin.
+        _pendingInviteToken = _pendingPage == "chat"
+            ? TryGetQueryValue(route, "join")
+            : null;
+        // Диплинк reminder-загрузки акта: веб /database?upload_act=1&reminder_id=…
+        // &source_task_id=… (upload_act_reminder — альтернативный флаг).
+        _pendingUploadActReminder = _pendingPage == "database"
+            ? TryParseUploadActReminderRoute(route)
+            : null;
         ApplyPendingPage();
     }
 
@@ -171,6 +184,42 @@ public partial class HubWindow : Window
             _pendingConversationId = null;
             _ = _viewModel.Chat.SelectConversationByIdAsync(conversationId);
         }
+
+        if (_pendingInviteToken is { } inviteToken)
+        {
+            _pendingInviteToken = null;
+            _ = _viewModel.Chat.JoinConversationByInviteTokenAsync(inviteToken);
+        }
+
+        if (_pendingUploadActReminder is { } reminder)
+        {
+            _pendingUploadActReminder = null;
+            // Query потребляется однократно — как handledSignature в вебе;
+            // ошибки (права, reminder GET) внутри уходят в баннер/панель диалога.
+            _ = _viewModel.Database.OpenUploadActReminderAsync(
+                reminder.ReminderId, reminder.SourceTaskId);
+        }
+    }
+
+    /// <summary>
+    /// Query reminder-загрузки акта (/database?upload_act=1&amp;reminder_id=…&amp;
+    /// source_task_id=…): флаг — upload_act=1 или upload_act_reminder; id
+    /// напоминания — reminder_id или сам upload_act_reminder.
+    /// </summary>
+    internal static (string? ReminderId, string? SourceTaskId)? TryParseUploadActReminderRoute(string? route)
+    {
+        var uploadFlag = TryGetQueryValue(route, "upload_act");
+        var reminderAlias = TryGetQueryValue(route, "upload_act_reminder");
+        var reminderId = TryGetQueryValue(route, "reminder_id") ?? reminderAlias;
+        var sourceTaskId = TryGetQueryValue(route, "source_task_id");
+        var flagged = string.Equals(uploadFlag, "1", StringComparison.Ordinal)
+            || !string.IsNullOrEmpty(reminderAlias);
+        if (!flagged || (string.IsNullOrEmpty(reminderId) && string.IsNullOrEmpty(sourceTaskId)))
+        {
+            return null;
+        }
+
+        return (reminderId, sourceTaskId);
     }
 
     /// <summary>Значение query-параметра маршрута вида «/chat?conversation=7&message=1».</summary>
@@ -262,11 +311,34 @@ public partial class HubWindow : Window
         }
     }
 
+    /// <summary>
+    /// Escape закрывает центр уведомлений (скрим кликом — NotificationsScrim_MouseDown).
+    /// Закрытая панель не перехватывает клавишу: проходит к страницам дальше.
+    /// </summary>
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape && _viewModel.Notifications.IsPanelOpen)
+        {
+            _viewModel.Notifications.IsPanelOpen = false;
+            e.Handled = true;
+            return;
+        }
+
+        base.OnPreviewKeyDown(e);
+    }
+
+    /// <summary>Клик по скриму вне панели — стандартное закрытие всплывающей панели.</summary>
+    private void NotificationsScrim_MouseDown(
+        object sender,
+        System.Windows.Input.MouseButtonEventArgs e) =>
+        _viewModel.Notifications.IsPanelOpen = false;
+
     /// <summary>Закрытие окна останавливает realtime-цикл (reconnect живёт до выхода процесса иначе).</summary>
     protected override void OnClosed(EventArgs e)
     {
         NativeThemeManager.EffectiveThemeChanged -= NativeThemeManager_EffectiveThemeChanged;
         _viewModel.Chat.Reset();
+        _viewModel.Notifications.Reset();
         base.OnClosed(e);
     }
 
@@ -279,6 +351,67 @@ public partial class HubWindow : Window
             : WindowState.Maximized;
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    // ---- Главное меню: свернуть/развернуть (гамбургер титлбара) ----
+
+    private bool _navigationPaneCollapsed;
+
+    /// <summary>Состояние бокового меню переживает перезапуск (HKCU, как автозапуск).</summary>
+    private const string PreferencesKeyPath = @"Software\HUB-IT\Desktop";
+    private const string NavCollapsedValueName = "NavigationCollapsed";
+
+    private static bool ReadNavCollapsedPreference()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(PreferencesKeyPath);
+            return key?.GetValue(NavCollapsedValueName) is int stored && stored == 1;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void WriteNavCollapsedPreference(bool collapsed)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(PreferencesKeyPath);
+            key?.SetValue(NavCollapsedValueName, collapsed ? 1 : 0, Microsoft.Win32.RegistryValueKind.DWord);
+        }
+        catch
+        {
+            // Настройка необязательна: молча продолжаем с состоянием сессии.
+        }
+    }
+
+    /// <summary>
+    /// Свернуть главное меню в компактную рейку иконок 56 DIP — контент получает
+    /// освободившиеся ~160 DIP. Раскрытое меню и рейка — одни и те же биндинги
+    /// ViewModel (страницы, unread-счётчики), это представление, а не вторая
+    /// навигация; состояние сохраняется в HKCU между перезапусками.
+    /// </summary>
+    public void SetNavigationPaneCollapsed(bool collapsed)
+    {
+        _navigationPaneCollapsed = collapsed;
+        NavColumn.Width = new GridLength(collapsed ? 56 : 216);
+        NavPane.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        NavRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        WriteNavCollapsedPreference(collapsed);
+    }
+
+    /// <summary>Приоритет сохранённого состояния меню — вызывается после InitializeComponent.</summary>
+    private void ApplySavedNavigationPreference()
+    {
+        if (ReadNavCollapsedPreference())
+        {
+            SetNavigationPaneCollapsed(true);
+        }
+    }
+
+    private void NavToggleButton_Click(object sender, RoutedEventArgs e) =>
+        SetNavigationPaneCollapsed(!_navigationPaneCollapsed);
 
     private void SignInButton_Click(object sender, RoutedEventArgs e) => SubmitSignIn();
 

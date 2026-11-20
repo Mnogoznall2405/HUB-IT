@@ -8,8 +8,8 @@
         Icon="../../Assets/hub-icon.ico"
         Width="1280"
         Height="800"
-        MinWidth="980"
-        MinHeight="620"
+        MinWidth="900"
+        MinHeight="540"
         WindowStyle="None"
         ResizeMode="CanResize"
         WindowStartupLocation="CenterOwner"
@@ -75,6 +75,15 @@
             <DataTemplate DataType="{x:Type vm:DocflowViewModel}">
                 <local:DocflowView />
             </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:ConstructionViewModel}">
+                <local:ConstructionView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:WarehouseViewModel}">
+                <local:WarehouseView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:ItRequestsViewModel}">
+                <local:ItRequestsView />
+            </DataTemplate>
             <DataTemplate DataType="{x:Type vm:MyFilesViewModel}">
                 <local:MyFilesView />
             </DataTemplate>
@@ -126,6 +135,9 @@
             <DataTemplate DataType="{x:Type vm:AdminViewModel}">
                 <local:AdminView />
             </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:DlpViewModel}">
+                <local:DlpView />
+            </DataTemplate>
         </ResourceDictionary>
     </Window.Resources>
 
@@ -149,15 +161,28 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Margin="14,0,0,0"
                                 Orientation="Horizontal"
-                                VerticalAlignment="Center"
-                                IsHitTestVisible="False">
-                        <Image Width="20" Height="20" Margin="0,0,9,0"
-                               Source="pack://siteoforigin:,,,/Assets/hub-icon.png" Stretch="Uniform" />
-                        <TextBlock VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold"
-                                   Text="HUB" />
-                        <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontSize="12"
-                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                   Text="Desktop" />
+                                VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal"
+                                    VerticalAlignment="Center"
+                                    IsHitTestVisible="False">
+                            <Image Width="20" Height="20" Margin="0,0,9,0"
+                                   Source="pack://siteoforigin:,,,/Assets/hub-icon.png" Stretch="Uniform" />
+                            <TextBlock VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold"
+                                       Text="HUB" />
+                            <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontSize="12"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="Desktop" />
+                        </StackPanel>
+                        <!-- Гамбургер (Win11 NavigationView): скрывает главное меню,
+                             освобождая место контенту — например, письму в почте. -->
+                        <Button Margin="14,0,0,0"
+                                Style="{StaticResource HubTitleBarButtonStyle}"
+                                Click="NavToggleButton_Click"
+                                AutomationProperties.Name="Свернуть или развернуть главное меню">
+                            <TextBlock FontFamily="Segoe MDL2 Assets"
+                                       FontSize="13"
+                                       Text="&#xE700;" />
+                        </Button>
                     </StackPanel>
                     <Button Grid.Column="1"
                             Style="{StaticResource HubTitleBarButtonStyle}"
@@ -302,7 +327,9 @@
                                             <ControlTemplate TargetType="Button">
                                                 <Border x:Name="Surface"
                                                         Background="{TemplateBinding Background}"
-                                                        CornerRadius="4"
+                                                        BorderBrush="{DynamicResource HubAccentHoverBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="8"
                                                         SnapsToDevicePixels="True">
                                                     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                                                 </Border>
@@ -339,12 +366,96 @@
             <Grid Grid.Row="1"
                   Visibility="{Binding IsReady, Converter={StaticResource BoolToVisibility}}">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="216" />
+                    <ColumnDefinition x:Name="NavColumn" Width="216" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
-                <!-- Левая навигация -->
-                <Border Grid.Column="0"
+                <!-- Компактная рейка (свернутое меню): те же команды/состояния VM,
+                     только иконки 56 DIP + точки unread; ToolTip — название раздела. -->
+                <ScrollViewer x:Name="NavRail"
+                              Grid.Column="0"
+                              Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="4,10,4,10">
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsDashboardPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="dashboard"
+                                     Content="🏠"
+                                     ToolTip="Главная (Ctrl+1)"
+                                     AutomationProperties.Name="Страница: главная" />
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsTasksPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="tasks"
+                                     Content="✅"
+                                     ToolTip="Мои задачи (Ctrl+2)"
+                                     AutomationProperties.Name="Страница: мои задачи" />
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsTicketsPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="tickets"
+                                     Content="🎫"
+                                     ToolTip="Билеты (Ctrl+8)"
+                                     AutomationProperties.Name="Страница: билеты" />
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsNewsPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="news"
+                                     Content="📰"
+                                     ToolTip="Новости (Ctrl+3)"
+                                     AutomationProperties.Name="Страница: новости" />
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsChatPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="chat"
+                                     Content="💬"
+                                     ToolTip="Чат (Ctrl+4)"
+                                     AutomationProperties.Name="Страница: чат" />
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsMailPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="mail"
+                                     Content="✉"
+                                     ToolTip="Почта (Ctrl+M)"
+                                     AutomationProperties.Name="Страница: почта" />
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsDocflowPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="docflow"
+                                     Content="📄"
+                                     ToolTip="Документы (Ctrl+7)"
+                                     AutomationProperties.Name="Страница: документы" />
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsMyFilesPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="myfiles"
+                                     Content="📁"
+                                     ToolTip="Файлы (Ctrl+0)"
+                                     AutomationProperties.Name="Страница: файлы" />
+                        <RadioButton GroupName="ShellNavCompact"
+                                     Style="{StaticResource HubNavRailItemStyle}"
+                                     IsChecked="{Binding IsAddressBookPage, Mode=TwoWay}"
+                                     Command="{Binding NavigateToPageCommand}"
+                                     CommandParameter="addressbook"
+                                     Content="👥"
+                                     ToolTip="Контакты (Ctrl+9)"
+                                     AutomationProperties.Name="Страница: контакты" />
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Левая навигация (раскрытое меню) -->
+                <Border x:Name="NavPane"
+                        Grid.Column="0"
                         BorderBrush="{DynamicResource HubBorderDimBrush}"
                         BorderThickness="0,0,1,0">
                     <Grid>
@@ -354,6 +465,7 @@
                         </Grid.RowDefinitions>
 
                         <ScrollViewer Grid.Row="0"
+                                      Style="{StaticResource HubOverlayScrollViewerStyle}"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalScrollBarVisibility="Disabled">
                             <StackPanel Margin="0,10,0,0">
@@ -511,6 +623,34 @@
                             </RadioButton>
                             <RadioButton GroupName="ShellNav"
                                          Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsConstructionPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="construction"
+                                         Content="🏗  Строительство"
+                                         ToolTip="Строительство"
+                                         Visibility="{Binding IsConstructionVisible, Converter={StaticResource BoolToVisibility}}"
+                                         AutomationProperties.Name="Страница: строительство" />
+                            <!-- Складские разделы — гейты warehouse_1c.read / it_requests.read, как в вебе. -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsWarehousePage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="warehouse"
+                                         Content="📦  Склад 1С"
+                                         ToolTip="Склад 1С"
+                                         Visibility="{Binding IsWarehouseVisible, Converter={StaticResource BoolToVisibility}}"
+                                         AutomationProperties.Name="Страница: склад 1С" />
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsItRequestsPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="itrequests"
+                                         Content="🛒  Заявки ИТ"
+                                         ToolTip="Заявки на МПЗ"
+                                         Visibility="{Binding IsItRequestsVisible, Converter={StaticResource BoolToVisibility}}"
+                                         AutomationProperties.Name="Страница: заявки на МПЗ" />
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
                                          IsChecked="{Binding IsMyFilesPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="myfiles"
@@ -658,25 +798,67 @@
                                          Content="🛠  Админ"
                                          ToolTip="Администрирование"
                                          AutomationProperties.Name="Страница: администрирование" />
+                            <!-- «DLP» — /dlp (adminOnly): пункт виден только при role=admin
+                                 (IsDlpVisible — fail-closed, см. HubShellViewModel). -->
+                            <RadioButton GroupName="ShellNav"
+                                         Style="{StaticResource HubNavItemStyle}"
+                                         IsChecked="{Binding IsDlpPage, Mode=TwoWay}"
+                                         Command="{Binding NavigateToPageCommand}"
+                                         CommandParameter="dlp"
+                                         Content="🛡  DLP"
+                                         ToolTip="Мониторинг утечек (DLP)"
+                                         Visibility="{Binding IsDlpVisible, Converter={StaticResource BoolToVisibility}}"
+                                         AutomationProperties.Name="Страница: мониторинг утечек DLP" />
                             </StackPanel>
                         </ScrollViewer>
 
-                        <!-- Пользователь + выход -->
+                        <!-- Колокол + пользователь + выход -->
                         <Border Grid.Row="1"
-                                Padding="16,12"
+                                Padding="10,8"
                                 BorderBrush="{DynamicResource HubBorderDimBrush}"
                                 BorderThickness="0,1,0,0">
                             <Grid>
                                 <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock VerticalAlignment="Center"
+                                <!-- Колокол центра уведомлений: бейдж — непрочитанные
+                                     (unread_counts.notifications_unread_total, как у веб-шелла). -->
+                                <Button Grid.Column="0"
+                                        Padding="6,4"
+                                        VerticalAlignment="Center"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding Notifications.TogglePanelCommand}"
+                                        ToolTip="Уведомления"
+                                        AutomationProperties.Name="{Binding NotificationsBadgeName}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock VerticalAlignment="Center"
+                                                   FontSize="15"
+                                                   Text="🔔" />
+                                        <Border Margin="4,0,0,0"
+                                                MinWidth="18"
+                                                Padding="5,1"
+                                                VerticalAlignment="Center"
+                                                CornerRadius="9"
+                                                Background="{DynamicResource HubAccentBrush}"
+                                                Visibility="{Binding HasNotificationsUnread, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock HorizontalAlignment="Center"
+                                                       FontSize="10"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubOnAccentBrush}"
+                                                       Text="{Binding NotificationsUnreadBadgeText}" />
+                                        </Border>
+                                    </StackPanel>
+                                </Button>
+                                <TextBlock Grid.Column="1"
+                                           Margin="8,0,0,0"
+                                           VerticalAlignment="Center"
                                            FontSize="13"
                                            Text="{Binding UserDisplayName}"
                                            TextTrimming="CharacterEllipsis"
                                            AutomationProperties.Name="Текущий пользователь" />
-                                <Button Grid.Column="1"
+                                <Button Grid.Column="2"
                                         Style="{StaticResource HubGhostButtonStyle}"
                                         Command="{Binding LogoutCommand}"
                                         Content="Выйти"
@@ -690,6 +872,233 @@
                 <ContentControl Grid.Column="1"
                                 Content="{Binding CurrentPage}"
                                 Focusable="False" />
+            </Grid>
+
+            <!-- Центр уведомлений: скрим + панель поверх шелла.
+                 Скрим ловит клики вне панели (закрытие), Escape — в code-behind. -->
+            <Grid Grid.Row="1"
+                  Visibility="{Binding Notifications.IsPanelOpen, Converter={StaticResource BoolToVisibility}}">
+                <Border Background="#33000000"
+                        MouseDown="NotificationsScrim_MouseDown"
+                        AutomationProperties.Name="Закрыть центр уведомлений" />
+                <Border Width="380"
+                        MaxHeight="480"
+                        Margin="8,0,0,64"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Bottom"
+                        Background="{DynamicResource HubFlyoutSurfaceBrush}"
+                        BorderBrush="{DynamicResource HubBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Effect="{StaticResource HubFlyoutShadow}"
+                        AutomationProperties.Name="Центр уведомлений">
+                    <Grid DataContext="{Binding Notifications}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Шапка: заголовок + «Прочитать все» + закрытие -->
+                        <Grid Margin="16,10,8,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock VerticalAlignment="Center"
+                                       FontSize="15"
+                                       FontWeight="SemiBold"
+                                       Text="Уведомления" />
+                            <Button Grid.Column="1"
+                                    Padding="8,2"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding MarkAllReadCommand}"
+                                    Content="Прочитать все"
+                                    AutomationProperties.Name="Отметить все уведомления прочитанными" />
+                            <Button Grid.Column="2"
+                                    Padding="8,2"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding ClosePanelCommand}"
+                                    Content="✕"
+                                    AutomationProperties.Name="Закрыть центр уведомлений" />
+                        </Grid>
+
+                        <!-- Полоска загрузки (как бегущая ProgressBar шелла). -->
+                        <Border Grid.Row="1"
+                                Height="3"
+                                ClipToBounds="True"
+                                Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}">
+                            <Border Width="48"
+                                    HorizontalAlignment="Left"
+                                    Background="{DynamicResource HubAccentBrush}">
+                                <Border.RenderTransform>
+                                    <TranslateTransform />
+                                </Border.RenderTransform>
+                                <Border.Triggers>
+                                    <EventTrigger RoutedEvent="Loaded">
+                                        <BeginStoryboard>
+                                            <Storyboard RepeatBehavior="Forever">
+                                                <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)"
+                                                                 From="-48" To="380" Duration="0:0:1.4" />
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </EventTrigger>
+                                </Border.Triggers>
+                            </Border>
+                        </Border>
+
+                        <!-- Баннер ошибки: текст + повтор + скрыть -->
+                        <Border Grid.Row="2"
+                                Padding="12,8"
+                                Margin="12,4,12,0"
+                                Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                BorderBrush="{DynamicResource HubErrorTextBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Visibility="{Binding HasBannerError, Converter={StaticResource BoolToVisibility}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubErrorTextBrush}"
+                                           Text="{Binding BannerErrorText}"
+                                           TextWrapping="Wrap" />
+                                <Button Grid.Column="1"
+                                        Padding="8,2"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding RefreshCommand}"
+                                        Content="Повторить"
+                                        AutomationProperties.Name="Повторить загрузку уведомлений" />
+                                <Button Grid.Column="2"
+                                        Padding="8,2"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding DismissBannerCommand}"
+                                        Content="✕"
+                                        AutomationProperties.Name="Скрыть ошибку уведомлений" />
+                            </Grid>
+                        </Border>
+
+                        <!-- Лента и пустое состояние -->
+                        <Grid Grid.Row="3" Margin="6,2,6,8">
+                            <StackPanel HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock HorizontalAlignment="Center"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Text="Нет уведомлений" />
+                                <TextBlock Margin="0,6,0,0"
+                                           HorizontalAlignment="Center"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Text="Новые события появятся здесь." />
+                            </StackPanel>
+                            <ListBox Style="{StaticResource HubListBoxStyle}"
+                                     ItemsSource="{Binding Items}"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     Visibility="{Binding HasContent, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.Name="Лента уведомлений">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem"
+                                           BasedOn="{StaticResource HubTaskCardStyle}">
+                                        <Setter Property="Focusable" Value="False" />
+                                        <Setter Property="Padding" Value="0" />
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Button Grid.Column="0"
+                                                    HorizontalContentAlignment="Stretch"
+                                                    Command="{Binding DataContext.OpenCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                    CommandParameter="{Binding}"
+                                                    AutomationProperties.Name="{Binding AccessibleName}">
+                                                <Button.Template>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border x:Name="Surface"
+                                                                Padding="8,7"
+                                                                Background="Transparent"
+                                                                BorderThickness="0"
+                                                                CornerRadius="8">
+                                                            <ContentPresenter />
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSelectionBrush}" />
+                                                            </Trigger>
+                                                            <Trigger Property="IsFocused" Value="True">
+                                                                <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                                                                <Setter TargetName="Surface" Property="BorderThickness" Value="1" />
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Button.Template>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border Width="8"
+                                                            Height="8"
+                                                            Margin="2,6,10,0"
+                                                            VerticalAlignment="Top"
+                                                            CornerRadius="4"
+                                                            Background="{DynamicResource HubAccentBrush}"
+                                                            Visibility="{Binding IsUnread, Converter={StaticResource BoolToVisibility}}" />
+                                                    <StackPanel Grid.Column="1">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock FontSize="13"
+                                                                       FontWeight="SemiBold"
+                                                                       Text="{Binding Title}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Grid.Column="1"
+                                                                       Margin="8,0,0,0"
+                                                                       VerticalAlignment="Center"
+                                                                       FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding DateText}" />
+                                                        </Grid>
+                                                        <TextBlock Margin="0,2,0,0"
+                                                                   FontSize="12"
+                                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                   Text="{Binding Body}"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   TextWrapping="Wrap"
+                                                                   MaxHeight="34" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Button>
+                                            <Button Grid.Column="1"
+                                                    Padding="6,2"
+                                                    VerticalAlignment="Top"
+                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding DataContext.MarkReadCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                    CommandParameter="{Binding}"
+                                                    Content="✓"
+                                                    ToolTip="Отметить прочитанным"
+                                                    Visibility="{Binding IsUnread, Converter={StaticResource BoolToVisibility}}"
+                                                    AutomationProperties.Name="Отметить уведомление прочитанным" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </Grid>
+                </Border>
             </Grid>
         </Grid>
     </Border>

@@ -14,9 +14,9 @@
             <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
             <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
             <local:NonEmptyStringToVisibilityConverter x:Key="NonEmptyStringToVisibility" />
+            <local:MailGroupHeaderConverter x:Key="MailGroupHeader" />
 
             <Style x:Key="ChipRadioStyle" TargetType="RadioButton" BasedOn="{StaticResource HubChipToggleStyle}" />
-
             <Style x:Key="MetaLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
                 <Setter Property="FontSize" Value="12" />
             </Style>
@@ -32,27 +32,146 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Верхняя панель: поиск по текущей папке, обновить -->
-        <Border Grid.Row="0" Padding="20,16,20,0">
+        <!-- Командная панель Outlook: Создание | Сообщения (второстепенные в «Ещё»)
+             | фильтры-чипы | поиск + обновление. -->
+        <Border Grid.Row="0"
+                Padding="12,7,12,6"
+                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                BorderThickness="0,0,0,1">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <Grid>
+
+                <StackPanel Orientation="Horizontal">
+                    <Button MinHeight="30"
+                            Padding="12,3"
+                            Style="{StaticResource HubPrimaryButtonStyle}"
+                            Command="{Binding NewMessageCommand}"
+                            Content="Новое письмо"
+                            AutomationProperties.Name="Новое письмо" />
+                    <Button Margin="6,0,0,0"
+                            MinHeight="30"
+                            Padding="10,3"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding OpenItRequestCommand}"
+                            Content="IT-заявка"
+                            Visibility="{Binding ShowSetupHint, Converter={StaticResource InverseBoolToVisibility}}"
+                            AutomationProperties.Name="Открыть форму заявки в IT" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1"
+                            Margin="10,0,0,0"
+                            Orientation="Horizontal">
+                    <Border Width="1" Background="{DynamicResource HubBorderDimBrush}" Margin="0,3" />
+                    <Button Margin="8,0,0,0"
+                            MinHeight="30"
+                            Padding="10,3"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding ReplyCommand}"
+                            Content="Ответить"
+                            AutomationProperties.Name="Ответить на письмо" />
+                    <Button Margin="4,0,0,0"
+                            MinHeight="30"
+                            Padding="10,3"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Command="{Binding DeleteCommand}"
+                            Foreground="{DynamicResource HubErrorTextBrush}"
+                            Content="Удалить"
+                            AutomationProperties.Name="Удалить письмо в папку «Удалённые»" />
+                    <Button Margin="4,0,0,0"
+                            MinHeight="30"
+                            Padding="10,3"
+                            Style="{StaticResource HubGhostButtonStyle}"
+                            Tag="{Binding}"
+                            Click="HeaderMoreMenuButton_Click"
+                            Content="Ещё ▾"
+                            AutomationProperties.Name="Другие действия с письмом">
+                        <Button.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Ответить всем"
+                                          Command="{Binding PlacementTarget.Tag.ReplyAllCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          AutomationProperties.Name="Ответить всем адресатам письма" />
+                                <MenuItem Header="Переслать"
+                                          Command="{Binding PlacementTarget.Tag.ForwardCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          AutomationProperties.Name="Переслать письмо" />
+                                <MenuItem Header="Переместить в…"
+                                          ItemsSource="{Binding PlacementTarget.Tag.MoveTargets, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          AutomationProperties.Name="Переместить письмо в папку">
+                                    <MenuItem.ItemContainerStyle>
+                                        <Style TargetType="MenuItem">
+                                            <Setter Property="Header" Value="{Binding Label}" />
+                                            <Setter Property="Command" Value="{Binding PlacementTarget.Tag.MoveCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                            <Setter Property="CommandParameter" Value="{Binding Id}" />
+                                        </Style>
+                                    </MenuItem.ItemContainerStyle>
+                                </MenuItem>
+                                <Separator />
+                                <MenuItem Header="{Binding PlacementTarget.Tag.Detail.ToggleReadButtonText, RelativeSource={RelativeSource AncestorType=ContextMenu}, TargetNullValue=Прочитано}"
+                                          Command="{Binding PlacementTarget.Tag.ToggleReadCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          AutomationProperties.Name="Переключить отметку о прочтении письма" />
+                                <MenuItem Header="{Binding PlacementTarget.Tag.Detail.ImportanceToggleText, RelativeSource={RelativeSource AncestorType=ContextMenu}, TargetNullValue=Важное}"
+                                          Command="{Binding PlacementTarget.Tag.ToggleImportanceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          AutomationProperties.Name="Переключить важность письма" />
+                                <MenuItem Header="{Binding PlacementTarget.Tag.Detail.HeadersToggleText, RelativeSource={RelativeSource AncestorType=ContextMenu}, TargetNullValue=Показать заголовки}"
+                                          Command="{Binding PlacementTarget.Tag.ToggleDetailHeadersCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          AutomationProperties.Name="Показать или скрыть полные заголовки письма" />
+                                <MenuItem Header="Скачать исходник (.eml)"
+                                          Command="{Binding PlacementTarget.Tag.DownloadMessageSourceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          AutomationProperties.Name="Скачать исходник письма в формате EML" />
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                    </Button>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2"
+                            Margin="12,0,0,0"
+                            Orientation="Horizontal">
+                    <Border Width="1" Background="{DynamicResource HubBorderDimBrush}" Margin="0,3" />
+                    <RadioButton Margin="8,0,0,0"
+                                 VerticalAlignment="Center"
+                                 GroupName="MailFilter"
+                                 Style="{StaticResource ChipRadioStyle}"
+                                 IsChecked="{Binding IsFilterAll, Mode=TwoWay}"
+                                 Command="{Binding SelectFilterCommand}"
+                                 CommandParameter="all"
+                                 Content="Все"
+                                 AutomationProperties.Name="Фильтр: все письма" />
+                    <RadioButton GroupName="MailFilter"
+                                 Style="{StaticResource ChipRadioStyle}"
+                                 IsChecked="{Binding IsFilterUnread, Mode=TwoWay}"
+                                 Command="{Binding SelectFilterCommand}"
+                                 CommandParameter="unread"
+                                 Content="Непрочитанные"
+                                 AutomationProperties.Name="Фильтр: непрочитанные письма" />
+                    <ToggleButton Margin="8,0,0,0"
+                                  VerticalAlignment="Center"
+                                  Style="{StaticResource HubChipToggleStyle}"
+                                  IsChecked="{Binding SearchAllFolders, Mode=TwoWay}"
+                                  Command="{Binding RefreshCommand}"
+                                  Content="Все папки"
+                                  ToolTip="Искать во всех папках"
+                                  AutomationProperties.Name="Искать во всех папках" />
+                </StackPanel>
+
+                <Grid Grid.Column="4" MinWidth="200" MaxWidth="300">
                     <TextBox x:Name="SearchInput"
-                             MaxWidth="460"
-                             HorizontalAlignment="Left"
-                             MinWidth="240"
+                             MaxWidth="300"
+                             HorizontalAlignment="Right"
+                             MinWidth="200"
                              Style="{StaticResource HubTextBoxStyle}"
                              Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                              KeyDown="SearchInput_KeyDown"
-                             AutomationProperties.Name="Поиск по письмам папки" />
+                             AutomationProperties.Name="Поиск по письмам" />
                     <TextBlock Margin="13,0,0,0"
                                VerticalAlignment="Center"
                                IsHitTestVisible="False"
@@ -70,43 +189,22 @@
                         </TextBlock.Style>
                     </TextBlock>
                 </Grid>
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal">
-                    <Button Style="{StaticResource HubPrimaryButtonStyle}"
-                            Command="{Binding NewMessageCommand}"
-                            Content="Новое письмо"
-                            AutomationProperties.Name="Новое письмо" />
-                    <Button Margin="10,0,0,0"
-                            Style="{StaticResource HubGhostButtonStyle}"
-                            Command="{Binding RefreshCommand}"
-                            Content="Обновить"
-                            AutomationProperties.Name="Обновить папки и письма" />
-                </StackPanel>
+                <Button Grid.Column="5"
+                        Margin="8,0,0,0"
+                        MinHeight="30"
+                        MinWidth="30"
+                        Padding="6,3"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Command="{Binding RefreshCommand}"
+                        Content="&#xE72C;"
+                        FontFamily="Segoe MDL2 Assets"
+                        ToolTip="Обновить папки и письма"
+                        AutomationProperties.Name="Обновить папки и письма" />
             </Grid>
         </Border>
 
-        <!-- Фильтры-чипы -->
-        <StackPanel Grid.Row="1"
-                    Margin="20,12,20,0"
-                    Orientation="Horizontal">
-            <RadioButton GroupName="MailFilter"
-                         Style="{StaticResource ChipRadioStyle}"
-                         IsChecked="{Binding IsFilterAll, Mode=TwoWay}"
-                         Command="{Binding SelectFilterCommand}"
-                         CommandParameter="all"
-                         Content="Все"
-                         AutomationProperties.Name="Фильтр: все письма" />
-            <RadioButton GroupName="MailFilter"
-                         Style="{StaticResource ChipRadioStyle}"
-                         IsChecked="{Binding IsFilterUnread, Mode=TwoWay}"
-                         Command="{Binding SelectFilterCommand}"
-                         CommandParameter="unread"
-                         Content="Непрочитанные"
-                         AutomationProperties.Name="Фильтр: непрочитанные письма" />
-        </StackPanel>
-
         <!-- Баннер ошибки -->
-        <Border Grid.Row="2"
+        <Border Grid.Row="1"
                 Margin="20,10,20,0"
                 Padding="14,10"
                 Background="{DynamicResource HubSurfaceBrush}"
@@ -140,69 +238,234 @@
         </Border>
 
         <!-- Папки | Список писем | Чтение -->
-        <Grid Grid.Row="3" Margin="20,14,20,10">
+        <Grid Grid.Row="2" Margin="20,10,20,8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="200" MinWidth="160" />
+                <ColumnDefinition x:Name="MailRailColumn" Width="200" MinWidth="180" />
                 <ColumnDefinition Width="6" />
-                <ColumnDefinition Width="360" MinWidth="280" />
+                <ColumnDefinition Width="340" MinWidth="280" />
                 <ColumnDefinition Width="6" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
             <!-- Рейка папок -->
-            <Grid Grid.Column="0">
+            <Grid x:Name="MailRailContent" Grid.Column="0">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                <TextBlock Grid.Row="0"
-                           Margin="0,0,0,8"
-                           Style="{StaticResource HubMutedTextStyle}"
-                           FontSize="12"
-                           Text="{Binding MailboxLabel}"
-                           TextTrimming="CharacterEllipsis"
-                           Visibility="{Binding MailboxLabel, Converter={StaticResource NonEmptyStringToVisibility}}" />
-                <ListBox Grid.Row="1"
+                <Grid Grid.Row="0" Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center"
+                               Style="{StaticResource HubMutedTextStyle}"
+                               FontSize="12"
+                               Text="{Binding MailboxLabel}"
+                               TextTrimming="CharacterEllipsis"
+                               Visibility="{Binding MailboxLabel, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Padding="8,2"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding NewFolderCommand}"
+                                Content="＋ Папка"
+                                AutomationProperties.Name="Создать папку" />
+                        <Button Margin="4,0,0,0"
+                                MinHeight="22"
+                                Padding="6,1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Click="CollapseMailRailButton_Click"
+                                ToolTip="Свернуть панель папок"
+                                AutomationProperties.Name="Свернуть панель папок">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="10" Text="&#xE76B;" />
+                        </Button>
+                    </StackPanel>
+                </Grid>
+                <!-- Inline-редактор имени папки -->
+                <Border Grid.Row="1"
+                        Margin="0,0,0,6"
+                        Padding="10"
+                        CornerRadius="8"
+                        Background="{DynamicResource HubSurfaceAltBrush}"
+                        BorderBrush="{DynamicResource HubBorderDimBrush}"
+                        BorderThickness="1"
+                        Visibility="{Binding IsFolderEditorOpen, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                   FontSize="12"
+                                   Text="{Binding FolderEditorTitle}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBox x:Name="FolderEditorNameInput"
+                                 Margin="0,6,0,0"
+                                 Style="{StaticResource HubTextBoxStyle}"
+                                 Text="{Binding FolderEditorName, UpdateSourceTrigger=PropertyChanged}"
+                                 KeyDown="FolderEditorName_KeyDown"
+                                 AutomationProperties.Name="Имя папки" />
+                        <TextBlock Margin="0,4,0,0"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource HubErrorTextBrush}"
+                                   Text="{Binding FolderEditorErrorText}"
+                                   TextWrapping="Wrap"
+                                   Visibility="{Binding HasFolderEditorError, Converter={StaticResource BoolToVisibility}}" />
+                        <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
+                            <Button Style="{StaticResource HubSecondaryButtonStyle}"
+                                    Command="{Binding ConfirmFolderEditorCommand}"
+                                    Content="{Binding FolderEditorConfirmText}"
+                                    AutomationProperties.Name="Подтвердить имя папки" />
+                            <Button Margin="8,0,0,0"
+                                    Padding="10,4"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    Command="{Binding CancelFolderEditorCommand}"
+                                    Content="✕"
+                                    AutomationProperties.Name="Отменить редактирование папки" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+                <ListBox Grid.Row="2"
                          Style="{StaticResource HubListBoxStyle}"
+                         ItemContainerStyle="{StaticResource MailFolderItemStyle}"
                          ItemsSource="{Binding Folders}"
                          SelectedItem="{Binding SelectedFolder}"
+                         VirtualizingStackPanel.VirtualizationMode="Recycling"
+                         VirtualizingStackPanel.ScrollUnit="Pixel"
+                         AllowDrop="True"
+                         DragOver="FolderList_DragOver"
+                         DragLeave="FolderList_DragLeave"
+                         Drop="FolderList_Drop"
                          AutomationProperties.Name="Список папок почты">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <Grid>
+                            <Grid Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=ListBox}}">
+                                <Grid.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="{Binding FavoriteText}"
+                                                  Command="{Binding PlacementTarget.Tag.ToggleFolderFavoriteCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding}"
+                                                  IsEnabled="{Binding AreActionsEnabled}"
+                                                  AutomationProperties.Name="Переключить избранное папки" />
+                                        <MenuItem Header="Создать вложенную папку"
+                                                  Command="{Binding PlacementTarget.Tag.NewSubfolderCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding}"
+                                                  IsEnabled="{Binding AreActionsEnabled}"
+                                                  Visibility="{Binding CanCreateChildren, Converter={StaticResource BoolToVisibility}}"
+                                                  AutomationProperties.Name="Создать вложенную папку" />
+                                        <MenuItem Header="Переименовать"
+                                                  Command="{Binding PlacementTarget.Tag.RenameFolderCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding}"
+                                                  IsEnabled="{Binding AreActionsEnabled}"
+                                                  Visibility="{Binding ShowRename, Converter={StaticResource BoolToVisibility}}"
+                                                  AutomationProperties.Name="Переименовать папку" />
+                                        <MenuItem Header="{Binding DeleteText}"
+                                                  Command="{Binding PlacementTarget.Tag.DeleteFolderCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                  CommandParameter="{Binding}"
+                                                  IsEnabled="{Binding AreActionsEnabled}"
+                                                  Foreground="{DynamicResource HubErrorTextBrush}"
+                                                  Visibility="{Binding ShowDelete, Converter={StaticResource BoolToVisibility}}"
+                                                  AutomationProperties.Name="Удалить папку" />
+                                    </ContextMenu>
+                                </Grid.ContextMenu>
                                 <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock VerticalAlignment="Center"
-                                           FontSize="13"
+                                <!-- Подсветка drag-over: после ColumnDefinitions (MC3088). -->
+                                <Border Background="{DynamicResource HubSelectionBrush}"
+                                        BorderBrush="{DynamicResource HubAccentBrush}"
+                                        BorderThickness="1"
+                                        Grid.ColumnSpan="7"
+                                        Visibility="{Binding IsDropTarget, Converter={StaticResource BoolToVisibility}}" />
+                                <!-- Отступ иерархии -->
+                                <Border Width="{Binding IndentWidth}" />
+                                <!-- Chevron раскрытия детей -->
+                                <Button Grid.Column="1"
+                                        Width="16" Height="16"
+                                        MinWidth="0" MinHeight="16"
+                                        Padding="0"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding DataContext.ToggleFolderExpandedCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                        CommandParameter="{Binding}"
+                                        Visibility="{Binding HasChildren, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Развернуть или свернуть вложенные папки">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets"
+                                               FontSize="9"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="{Binding ChevronText}" />
+                                </Button>
+                                <TextBlock Grid.Column="2"
+                                           VerticalAlignment="Center"
+                                           FontSize="14"
+                                           Foreground="{DynamicResource HubTextBrush}"
                                            Text="{Binding IconGlyph}" />
-                                <TextBlock Grid.Column="1"
-                                           Margin="8,0,0,0"
+                                <TextBlock Grid.Column="3"
+                                           Margin="4,0,0,0"
+                                           VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubWarningBrush}"
+                                           Text="★"
+                                           ToolTip="Папка в избранном"
+                                           Visibility="{Binding IsFavorite, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Grid.Column="4"
+                                           Margin="6,0,0,0"
                                            VerticalAlignment="Center"
                                            FontSize="13"
+                                           Foreground="{DynamicResource HubTextBrush}"
                                            Text="{Binding Label}"
-                                           TextTrimming="CharacterEllipsis" />
-                                <Border Grid.Column="2"
-                                        Margin="8,0,0,0"
-                                        MinWidth="18"
-                                        Height="18"
-                                        Padding="5,0"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Label}" />
+                                <!-- Счётчик всех писем -->
+                                <Border Grid.Column="5"
+                                        Margin="6,0,0,0"
+                                        VerticalAlignment="Center"
+                                        MinWidth="20" Height="18" Padding="6,0"
                                         CornerRadius="9"
-                                        Background="{DynamicResource HubAccentBrush}"
+                                        Background="{DynamicResource HubScrollThumbBrush}"
+                                        Visibility="{Binding TotalText, Converter={StaticResource NonEmptyStringToVisibility}}"
+                                        AutomationProperties.Name="{Binding TotalText, StringFormat='Всего писем в папке: {0}'}">
+                                    <TextBlock HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               FontSize="10"
+                                               Foreground="{DynamicResource HubTextBrush}"
+                                               Text="{Binding TotalText}" />
+                                </Border>
+                                <!-- Бейдж непрочитанных -->
+                                <Border Grid.Column="6"
+                                        Margin="4,0,0,0"
+                                        MinWidth="20" Height="18" Padding="6,0"
+                                        CornerRadius="9"
+                                        Background="{DynamicResource HubBadgeNeutralBrush}"
                                         Visibility="{Binding HasUnread, Converter={StaticResource BoolToVisibility}}">
                                     <TextBlock HorizontalAlignment="Center"
                                                VerticalAlignment="Center"
                                                FontSize="10"
                                                FontWeight="SemiBold"
-                                               Foreground="{DynamicResource HubOnAccentBrush}"
+                                               Foreground="White"
                                                Text="{Binding UnreadBadgeText}" />
                                 </Border>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
+                <!-- Полоса «развернуть папки» -->
+                <Button x:Name="MailRailExpandButton"
+                        Grid.Row="2"
+                        Margin="0,8,0,0"
+                        HorizontalAlignment="Stretch"
+                        VerticalAlignment="Top"
+                        MinHeight="22"
+                        Padding="0,1"
+                        Visibility="Collapsed"
+                        Style="{StaticResource HubGhostButtonStyle}"
+                        Click="ExpandMailRailButton_Click"
+                        ToolTip="Развернуть панель папок"
+                        AutomationProperties.Name="Развернуть панель папок">
+                    <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="10" Text="&#xE76C;" />
+                </Button>
             </Grid>
 
             <GridSplitter Grid.Column="1"
@@ -219,35 +482,70 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
                 <ProgressBar Grid.Row="0"
-                             Height="3"
-                             Margin="0,0,0,6"
-                             IsIndeterminate="True"
-                             Foreground="{DynamicResource HubAccentBrush}"
-                             Background="{DynamicResource HubSurfaceRaisedBrush}"
-                             Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
-                             AutomationProperties.Name="Индикатор загрузки писем" />
+                              Height="3"
+                              Margin="0,0,0,6"
+                              IsIndeterminate="True"
+                              Foreground="{DynamicResource HubAccentBrush}"
+                              Background="{DynamicResource HubSurfaceRaisedBrush}"
+                              Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                              AutomationProperties.Name="Индикатор загрузки писем" />
                 <Grid Grid.Row="1">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <!-- Панель массовых действий: «Все» всегда, действия — при выборе -->
+                    <!-- Заголовок списка -->
                     <Grid Grid.Row="0" Margin="0,0,0,6">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <Button Style="{StaticResource HubGhostButtonStyle}"
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontSize="15"
+                                           FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis"
+                                           Text="{Binding ListHeaderTitle}"
+                                           AutomationProperties.Name="Текущая папка" />
+                                <TextBlock Grid.Column="1"
+                                           Margin="10,0,0,0"
+                                           VerticalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="{Binding ListHeaderCountText}"
+                                           Visibility="{Binding ListHeaderCountText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                            </Grid>
+                            <TextBlock Margin="0,2,0,0"
+                                       FontSize="11"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="{Binding SearchStatusText}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding SearchStatusText, Converter={StaticResource NonEmptyStringToVisibility}}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                VerticalAlignment="Top"
+                                MinHeight="22"
+                                Padding="8,1"
+                                Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding SelectAllCommand}"
                                 Content="☑ Все"
-                                Padding="10,4"
                                 AutomationProperties.Name="Выбрать все письма страницы" />
-                        <StackPanel Grid.Column="1"
-                                    HorizontalAlignment="Right"
-                                    Orientation="Horizontal"
-                                    Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}">
+                    </Grid>
+
+                    <!-- Панель массовых действий -->
+                    <Grid Grid.Row="1"
+                          Margin="0,0,0,6"
+                          Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}">
+                        <WrapPanel HorizontalAlignment="Right">
                             <TextBlock Margin="0,0,10,0"
                                        VerticalAlignment="Center"
                                        FontSize="12"
@@ -300,7 +598,7 @@
                                     Command="{Binding BulkDeleteCommand}"
                                     Content="Удалить"
                                     Padding="10,4"
-                                    Visibility="{Binding IsTrashFolder, Converter={StaticResource InverseBoolToVisibility}}"
+                                    Visibility="{Binding ShowBulkSoftDelete, Converter={StaticResource BoolToVisibility}}"
                                     AutomationProperties.Name="Удалить выбранные письма в «Удалённые»" />
                             <Button Margin="6,0,0,0"
                                     Style="{StaticResource HubGhostButtonStyle}"
@@ -316,116 +614,246 @@
                                     Content="✕"
                                     Padding="10,4"
                                     AutomationProperties.Name="Снять выбор писем" />
-                        </StackPanel>
+                        </WrapPanel>
                     </Grid>
 
-                    <Grid Grid.Row="1">
+                    <Grid Grid.Row="2">
                         <ListBox Style="{StaticResource HubListBoxStyle}"
+                                 ItemContainerStyle="{StaticResource MailMessageItemStyle}"
                                  ItemsSource="{Binding Items}"
                                  SelectedItem="{Binding SelectedItem}"
+                                 VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                 VirtualizingStackPanel.ScrollUnit="Pixel"
+                                 PreviewMouseLeftButtonDown="MessageList_PreviewMouseLeftButtonDown"
+                                 PreviewMouseMove="MessageList_PreviewMouseMove"
+                                 KeyDown="MessageList_KeyDown"
+                                 Loaded="MessageList_Loaded"
                                  AutomationProperties.Name="Список писем">
+                            <!-- Группировка по датам (Outlook) -->
+                            <ListBox.GroupStyle>
+                                <GroupStyle>
+                                    <GroupStyle.HeaderTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Margin="10,8,0,3"
+                                                       Padding="0,0,0,2"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding Name, Converter={StaticResource MailGroupHeader}}"
+                                                       AutomationProperties.LiveSetting="Polite" />
+                                        </DataTemplate>
+                                    </GroupStyle.HeaderTemplate>
+                                    <GroupStyle.ContainerStyle>
+                                        <Style TargetType="GroupItem">
+                                            <Setter Property="Margin" Value="0,2,0,0" />
+                                        </Style>
+                                    </GroupStyle.ContainerStyle>
+                                </GroupStyle>
+                            </ListBox.GroupStyle>
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <CheckBox VerticalAlignment="Top"
-                                                      Margin="0,0,4,0"
-                                                      IsChecked="{Binding IsChecked, Mode=TwoWay}"
-                                                      AutomationProperties.Name="Выбрать письмо для массового действия" />
-                                            <!-- Точка непрочитанного -->
-                                            <Ellipse Grid.Column="1"
-                                                     Width="8"
-                                                     Height="8"
-                                                     Margin="0,0,6,0"
-                                                     VerticalAlignment="Center"
-                                                     Fill="{DynamicResource HubAccentBrush}"
-                                                     Visibility="{Binding IsUnread, Converter={StaticResource BoolToVisibility}}" />
-                                            <TextBlock Grid.Column="2"
-                                                       FontSize="13"
-                                                       Text="{Binding SenderText}"
-                                                       TextTrimming="CharacterEllipsis">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
-                                                        <Setter Property="FontWeight" Value="SemiBold" />
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding IsUnread}" Value="True">
-                                                                <Setter Property="FontWeight" Value="Bold" />
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
-                                            <TextBlock Grid.Column="3"
-                                                       Margin="10,0,0,0"
-                                                       FontSize="11"
+                                    <Grid Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=ListBox}}">
+                                        <!-- Контекстное меню строки -->
+                                        <Grid.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="{Binding ToggleReadItemText}"
+                                                          Command="{Binding PlacementTarget.Tag.ToggleItemReadCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}"
+                                                          AutomationProperties.Name="Переключить отметку о прочтении письма" />
+                                                <MenuItem Header="В архив"
+                                                          Command="{Binding PlacementTarget.Tag.ArchiveItemCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}"
+                                                          AutomationProperties.Name="Переместить письмо в архив" />
+                                                <MenuItem Header="Переместить в…"
+                                                          ItemsSource="{Binding PlacementTarget.Tag.MoveTargets, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          AutomationProperties.Name="Переместить письмо в папку">
+                                                    <MenuItem.ItemContainerStyle>
+                                                        <Style TargetType="MenuItem">
+                                                            <Setter Property="Header" Value="{Binding Label}" />
+                                                            <Setter Property="Command" Value="{Binding PlacementTarget.Tag.MoveItemFromKebabCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                                            <Setter Property="CommandParameter" Value="{Binding Id}" />
+                                                        </Style>
+                                                    </MenuItem.ItemContainerStyle>
+                                                </MenuItem>
+                                                <MenuItem Header="Восстановить"
+                                                          Command="{Binding PlacementTarget.Tag.RestoreItemCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}"
+                                                          Visibility="{Binding PlacementTarget.Tag.IsTrashFolder, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}"
+                                                          AutomationProperties.Name="Восстановить письмо из удалённых" />
+                                                <Separator />
+                                                <MenuItem Header="{Binding PlacementTarget.Tag.ItemDeleteMenuText, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          Command="{Binding PlacementTarget.Tag.DeleteItemCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}"
+                                                          AutomationProperties.Name="Удалить письмо" />
+                                            </ContextMenu>
+                                        </Grid.ContextMenu>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="16" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <!-- Чекбокс массового выбора -->
+                                        <CheckBox VerticalAlignment="Center"
+                                                  Margin="0,0,6,0"
+                                                  IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                                  AutomationProperties.Name="Выбрать письмо для массового действия">
+                                            <CheckBox.Style>
+                                                <Style TargetType="CheckBox" BasedOn="{StaticResource HubCheckBoxStyle}">
+                                                    <Setter Property="Opacity" Value="0.8" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                            <Setter Property="Opacity" Value="1" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsChecked}" Value="True">
+                                                            <Setter Property="Opacity" Value="1" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </CheckBox.Style>
+                                        </CheckBox>
+                                        <!-- Read-status: зелёная точка -->
+                                        <Ellipse Grid.Column="1"
+                                                 Width="10" Height="10"
+                                                 HorizontalAlignment="Center"
+                                                 VerticalAlignment="Center"
+                                                 Fill="{DynamicResource HubUnreadDotBrush}"
+                                                 Visibility="{Binding IsUnread, Converter={StaticResource BoolToVisibility}}"
+                                                 AutomationProperties.Name="Непрочитанное письмо" />
+                                        <StackPanel Grid.Column="2" Margin="4,0,0,0">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock FontSize="14"
+                                                           Foreground="{DynamicResource HubTextBrush}"
+                                                           Text="{Binding SenderText}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           TextWrapping="NoWrap"
+                                                           MaxHeight="18"
+                                                           ToolTip="{Binding SenderText}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsUnread}" Value="True">
+                                                                    <Setter Property="FontWeight" Value="Bold" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                                <TextBlock Grid.Column="1"
+                                                           Margin="10,0,0,0"
+                                                           FontSize="13"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding DateText}" />
+                                            </Grid>
+                                            <Grid Margin="0,3,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock FontSize="14"
+                                                           Foreground="{DynamicResource HubTextBrush}"
+                                                           Text="{Binding Subject}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           TextWrapping="NoWrap"
+                                                           MaxHeight="18"
+                                                           ToolTip="{Binding Subject}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="FontWeight" Value="Normal" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsUnread}" Value="True">
+                                                                    <Setter Property="FontWeight" Value="Bold" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                                <!-- icon-info: скрепка + звезда + kebab -->
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                    <TextBlock VerticalAlignment="Center"
+                                                               FontFamily="Segoe MDL2 Assets"
+                                                               FontSize="13"
+                                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                               Text="&#xE723;"
+                                                               ToolTip="{Binding AttachmentsText}"
+                                                               AutomationProperties.Name="{Binding AttachmentsText, StringFormat='Вложения: {0}'}"
+                                                               Visibility="{Binding AttachmentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                    <Button Margin="4,0,0,0"
+                                                            MinWidth="22" MinHeight="20" Padding="4,0"
+                                                            Command="{Binding DataContext.ToggleItemImportanceCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                            CommandParameter="{Binding}"
+                                                            ToolTip="Переключить важность"
+                                                            AutomationProperties.Name="Переключить важность письма">
+                                                        <Button.Style>
+                                                            <Style TargetType="Button" BasedOn="{StaticResource HubGhostButtonStyle}">
+                                                                <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                                                                <Setter Property="Opacity" Value="0.8" />
+                                                                <Style.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter Property="Opacity" Value="1" />
+                                                                    </Trigger>
+                                                                    <DataTrigger Binding="{Binding IsImportant}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
+                                                                        <Setter Property="Opacity" Value="1" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Button.Style>
+                                                        <TextBlock FontSize="13" Text="{Binding StarText}" />
+                                                    </Button>
+                                                    <Button Margin="4,0,0,0"
+                                                            MinWidth="22" MinHeight="20" Padding="4,0"
+                                                            Click="RowMoreMenuButton_Click"
+                                                            ToolTip="Меню письма"
+                                                            AutomationProperties.Name="Меню письма">
+                                                        <Button.Style>
+                                                            <Style TargetType="Button" BasedOn="{StaticResource HubGhostButtonStyle}">
+                                                                <Setter Property="Opacity" Value="0.8" />
+                                                                <Style.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter Property="Opacity" Value="1" />
+                                                                    </Trigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Button.Style>
+                                                        <TextBlock FontFamily="Segoe MDL2 Assets"
+                                                                   FontSize="11"
+                                                                   Text="&#xE712;" />
+                                                    </Button>
+                                                </StackPanel>
+                                            </Grid>
+                                            <!-- Превью: одна строка -->
+                                            <TextBlock Margin="0,2,0,0"
+                                                       FontSize="12"
                                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                       Text="{Binding DateText}" />
-                                        </Grid>
-                                        <Grid Grid.Row="1" Margin="14,3,0,0">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock FontSize="13"
-                                                       Text="{Binding Subject}"
-                                                       TextTrimming="CharacterEllipsis">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
-                                                        <Setter Property="FontWeight" Value="Regular" />
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding IsUnread}" Value="True">
-                                                                <Setter Property="FontWeight" Value="SemiBold" />
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
-                                            <Border Grid.Column="1"
-                                                    Margin="8,0,0,0"
-                                                    Style="{StaticResource HubStatusPillStyle}"
-                                                    BorderBrush="{DynamicResource HubWarningBrush}"
-                                                    Visibility="{Binding IsImportant, Converter={StaticResource BoolToVisibility}}">
-                                                <TextBlock FontSize="11"
-                                                           FontWeight="SemiBold"
-                                                           Foreground="{DynamicResource HubWarningBrush}"
-                                                           Text="Важно" />
-                                            </Border>
-                                        </Grid>
-                                        <TextBlock Grid.Row="2"
-                                                   Margin="14,2,0,0"
-                                                   Style="{StaticResource HubMutedTextStyle}"
-                                                   FontSize="12"
-                                                   Text="{Binding Preview}"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   MaxHeight="32" />
-                                        <TextBlock Grid.Row="3"
-                                                   Margin="14,4,0,0"
-                                                   FontSize="12"
-                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                   Text="{Binding AttachmentsText}"
-                                                   Visibility="{Binding AttachmentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                       Text="{Binding Preview}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       TextWrapping="NoWrap"
+                                                       MaxHeight="16"
+                                                       ToolTip="{Binding Preview}"
+                                                       Visibility="{Binding Preview, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        </StackPanel>
                                     </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
 
-                        <!-- Пустое состояние -->
+                        <!-- Пустое состояние списка -->
                         <StackPanel HorizontalAlignment="Center"
                                     VerticalAlignment="Center"
+                                    Opacity="0.6"
                                     Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
                             <TextBlock HorizontalAlignment="Center"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       FontSize="30"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="&#xE715;" />
+                            <TextBlock Margin="0,8,0,0"
+                                       HorizontalAlignment="Center"
                                        FontSize="16"
                                        FontWeight="SemiBold"
                                        Text="Писем нет" />
@@ -433,9 +861,17 @@
                                        HorizontalAlignment="Center"
                                        Style="{StaticResource HubMutedTextStyle}"
                                        Text="В этой папке пусто, либо поиску ничего не подходит." />
+                            <Button Margin="0,12,0,0"
+                                    HorizontalAlignment="Center"
+                                    MinHeight="26" Padding="12,2"
+                                    Style="{StaticResource HubSecondaryButtonStyle}"
+                                    Command="{Binding ResetListFiltersCommand}"
+                                    Content="Сбросить фильтры"
+                                    Visibility="{Binding HasActiveListFilters, Converter={StaticResource BoolToVisibility}}"
+                                    AutomationProperties.Name="Сбросить поиск и фильтры" />
                         </StackPanel>
                     </Grid>
-                    <Button Grid.Row="2"
+                    <Button Grid.Row="3"
                             Margin="0,8,0,0"
                             Style="{StaticResource HubSecondaryButtonStyle}"
                             Command="{Binding LoadMoreCommand}"
@@ -464,7 +900,7 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <!-- Ошибка детали/действия -->
+                    <!-- Ошибка детали -->
                     <Border Grid.Row="0"
                             Margin="18,14,18,0"
                             Padding="12,8"
@@ -480,26 +916,69 @@
                     </Border>
 
                     <Grid Grid.Row="1">
-                        <!-- Пустая деталь -->
+                        <!-- Пустая деталь: привет-панель -->
                         <StackPanel HorizontalAlignment="Center"
                                     VerticalAlignment="Center"
+                                    MaxWidth="420"
+                                    Opacity="0.85"
                                     Visibility="{Binding ShowDetailEmpty, Converter={StaticResource BoolToVisibility}}">
-                            <TextBlock HorizontalAlignment="Center"
-                                       FontSize="16"
+                            <Border Width="64" Height="64"
+                                    HorizontalAlignment="Center"
+                                    CornerRadius="32"
+                                    Background="{DynamicResource HubStatusMutedSoftBrush}"
+                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                    BorderThickness="1">
+                                <TextBlock HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           FontFamily="Segoe MDL2 Assets"
+                                           FontSize="26"
+                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                           Text="&#xE715;" />
+                            </Border>
+                            <TextBlock Margin="0,14,0,0"
+                                       HorizontalAlignment="Center"
+                                       FontSize="17"
                                        FontWeight="SemiBold"
                                        Text="Выберите письмо" />
                             <TextBlock Margin="0,6,0,0"
                                        HorizontalAlignment="Center"
                                        Style="{StaticResource HubMutedTextStyle}"
+                                       TextAlignment="Center"
                                        Text="Письмо из списка откроется здесь для чтения." />
+                            <Border Margin="0,18,0,0"
+                                    Padding="14,10"
+                                    CornerRadius="8"
+                                    Background="{DynamicResource HubSurfaceAltBrush}"
+                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                    BorderThickness="1">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                               Text="Быстрые действия" />
+                                    <TextBlock Margin="0,6,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="• Клик по строке — открыть письмо" />
+                                    <TextBlock Margin="0,3,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="• Правый клик или ⋮ — прочитано, архив, перемещение" />
+                                    <TextBlock Margin="0,3,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="★ — важное письмо, Del — удалить выбранное" />
+                                    <TextBlock Margin="0,3,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               Text="Esc в поиске — сбросить фильтры" />
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
 
                         <!-- Загрузка детали -->
                         <StackPanel HorizontalAlignment="Center"
                                     VerticalAlignment="Center"
                                     Visibility="{Binding ShowDetailLoading, Converter={StaticResource BoolToVisibility}}">
-                            <ProgressBar Width="18"
-                                         Height="18"
+                            <ProgressBar Width="18" Height="18"
                                          HorizontalAlignment="Center"
                                          IsIndeterminate="True" />
                             <TextBlock Margin="0,8,0,0"
@@ -508,202 +987,390 @@
                                        Text="Загружаю письмо…" />
                         </StackPanel>
 
+                        <!-- Деталь: шапка (тема/от/действия/вложения) + тело -->
                         <Grid Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}">
                             <Grid.RowDefinitions>
+                                <!-- Шапка: собственный ограниченный скроллер -->
+                                <RowDefinition Height="Auto" MaxHeight="340" />
+                                <!-- Тело: фиксированная область — HWND WebView2
+                                     ограничен границами этой строки (ScrollViewer
+                                     не клипает HwndHost — первопричина белого
+                                     прямоугольника до низа окна). -->
                                 <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
-                            <ScrollViewer Padding="22,18"
+                            <ScrollViewer x:Name="DetailScrollViewer"
+                                          Grid.Row="0"
+                                          Padding="18,12,18,4"
                                           VerticalScrollBarVisibility="Auto"
                                           DataContext="{Binding Detail}">
-                                <StackPanel>
+                                <StackPanel MaxWidth="1100"
+                                            HorizontalAlignment="Stretch">
+                                    <!-- Тема + пилюли -->
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock FontSize="20"
-                                                   FontWeight="SemiBold"
+                                                   FontWeight="Bold"
                                                    Text="{Binding Subject}"
                                                    TextWrapping="Wrap" />
-                                        <Border Grid.Column="1"
-                                                Margin="14,2,0,0"
-                                                VerticalAlignment="Top"
-                                                Style="{StaticResource HubStatusPillStyle}"
-                                                BorderBrush="{DynamicResource HubWarningBrush}"
-                                                Visibility="{Binding IsImportant, Converter={StaticResource BoolToVisibility}}">
-                                            <TextBlock FontSize="12"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource HubWarningBrush}"
-                                                       Text="{Binding ImportanceText}" />
-                                        </Border>
+                                        <StackPanel Grid.Column="1"
+                                                    Margin="14,2,0,0"
+                                                    Orientation="Horizontal">
+                                            <Border Style="{StaticResource HubStatusPillStyle}"
+                                                    local:HubTone.Value="warning"
+                                                    Visibility="{Binding IsImportant, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           Style="{StaticResource HubToneTextStyle}"
+                                                           Text="{Binding ImportanceText}" />
+                                            </Border>
+                                            <Border Margin="6,0,0,0"
+                                                    Style="{StaticResource HubStatusPillStyle}"
+                                                    local:HubTone.Value="info"
+                                                    Visibility="{Binding IsDraft, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           Style="{StaticResource HubToneTextStyle}"
+                                                           Text="Черновик" />
+                                            </Border>
+                                        </StackPanel>
                                     </Grid>
 
-                                    <Grid Margin="0,16,0,0">
+                                    <!-- Действия: первичные в ряд, StackPanel (не WrapPanel) -->
+                                    <StackPanel Margin="0,10,0,0"
+                                                HorizontalAlignment="Right"
+                                                Orientation="Horizontal">
+                                        <Button MinHeight="24" Padding="10,2"
+                                                Style="{StaticResource HubSecondaryButtonStyle}"
+                                                Command="{Binding DataContext.ReplyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                Content="Ответить"
+                                                AutomationProperties.Name="Ответить на письмо" />
+                                        <Button Margin="6,0,0,0"
+                                                MinHeight="24" Padding="10,2"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding DataContext.ReplyAllCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                Content="Ответить всем"
+                                                AutomationProperties.Name="Ответить всем адресатам письма" />
+                                        <Button Margin="6,0,0,0"
+                                                MinHeight="24" Padding="10,2"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Command="{Binding DataContext.ForwardCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                Content="Переслать"
+                                                AutomationProperties.Name="Переслать письмо" />
+                                        <!-- Восстановить (только в «Удалённых») -->
+                                        <Button Margin="6,0,0,0"
+                                                MinHeight="24" Padding="10,2"
+                                                Style="{StaticResource HubSecondaryButtonStyle}"
+                                                Command="{Binding DataContext.RestoreItemCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                CommandParameter="{Binding}"
+                                                Content="Восстановить"
+                                                Visibility="{Binding DataContext.IsTrashFolder, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
+                                                AutomationProperties.Name="Восстановить письмо из удалённых" />
+                                        <!-- Ещё ▾ -->
+                                        <Button Margin="6,0,0,0"
+                                                MinHeight="24" Padding="10,2"
+                                                Style="{StaticResource HubGhostButtonStyle}"
+                                                Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                Click="HeaderMoreMenuButton_Click"
+                                                Content="Ещё ▾"
+                                                AutomationProperties.Name="Другие действия с письмом">
+                                            <Button.ContextMenu>
+                                                <ContextMenu>
+                                                    <MenuItem Header="Переместить в…"
+                                                              ItemsSource="{Binding PlacementTarget.Tag.MoveTargets, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                              AutomationProperties.Name="Переместить письмо в папку">
+                                                        <MenuItem.ItemContainerStyle>
+                                                            <Style TargetType="MenuItem">
+                                                                <Setter Property="Header" Value="{Binding Label}" />
+                                                                <Setter Property="Command" Value="{Binding PlacementTarget.Tag.MoveCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                                                <Setter Property="CommandParameter" Value="{Binding Id}" />
+                                                            </Style>
+                                                        </MenuItem.ItemContainerStyle>
+                                                    </MenuItem>
+                                                    <MenuItem Header="{Binding ImportanceToggleText}"
+                                                              Command="{Binding PlacementTarget.Tag.ToggleImportanceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                              AutomationProperties.Name="Переключить важность письма" />
+                                                    <MenuItem Header="{Binding ToggleReadButtonText}"
+                                                              Command="{Binding PlacementTarget.Tag.ToggleReadCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                              AutomationProperties.Name="Переключить отметку о прочтении письма" />
+                                                    <MenuItem Header="{Binding PlacementTarget.Tag.Detail.HeadersToggleText, RelativeSource={RelativeSource AncestorType=ContextMenu}, TargetNullValue=Показать заголовки}"
+                                                              Command="{Binding PlacementTarget.Tag.ToggleDetailHeadersCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                              AutomationProperties.Name="Показать или скрыть полные заголовки письма" />
+                                                    <MenuItem Header="Скачать исходник (.eml)"
+                                                              Command="{Binding PlacementTarget.Tag.DownloadMessageSourceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                              AutomationProperties.Name="Скачать исходник письма в формате EML" />
+                                                    <Separator />
+                                                    <MenuItem Header="Редактировать черновик"
+                                                              Command="{Binding PlacementTarget.Tag.EditDraftCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                              Visibility="{Binding PlacementTarget.Tag.Detail.IsDraft, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}"
+                                                              AutomationProperties.Name="Открыть черновик в композере" />
+                                                    <MenuItem Header="Удалить черновик"
+                                                              Command="{Binding PlacementTarget.Tag.DeleteDraftCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                              Visibility="{Binding PlacementTarget.Tag.Detail.IsDraft, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVisibility}}"
+                                                              AutomationProperties.Name="Удалить черновик безвозвратно" />
+                                                    <Separator />
+                                                    <MenuItem Header="Удалить"
+                                                              Command="{Binding PlacementTarget.Tag.DeleteCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                              Foreground="{DynamicResource HubErrorTextBrush}"
+                                                              AutomationProperties.Name="Удалить письмо в папку «Удалённые»" />
+                                                </ContextMenu>
+                                            </Button.ContextMenu>
+                                        </Button>
+                                    </StackPanel>
+
+                                    <!-- Шапка отправителя (Gmail/Яндекс) -->
+                                    <Grid Margin="0,14,0,0">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="110" />
+                                            <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource MetaLabelStyle}" Text="От" />
-                                        <StackPanel Grid.Row="0" Grid.Column="1">
-                                            <TextBlock Style="{StaticResource MetaValueStyle}" Text="{Binding SenderText}" />
-                                            <TextBlock Style="{StaticResource MetaLabelStyle}"
-                                                       Text="{Binding SenderEmail}"
-                                                       Visibility="{Binding SenderEmail, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                        <Border Width="26" Height="26"
+                                                VerticalAlignment="Center"
+                                                CornerRadius="13"
+                                                Background="{DynamicResource HubScrollThumbBrush}"
+                                                AutomationProperties.Name="{Binding SenderText, StringFormat='Отправитель: {0}'}">
+                                            <TextBlock HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding AvatarInitials}" />
+                                        </Border>
+                                        <StackPanel Grid.Column="1"
+                                                    Margin="10,0,0,0"
+                                                    VerticalAlignment="Center">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource HubTextBrush}"
+                                                           Text="{Binding SenderText}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Margin="8,0,0,0"
+                                                           VerticalAlignment="Center"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding SenderEmail}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Visibility="{Binding SenderEmail, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            </StackPanel>
+                                            <TextBlock Margin="0,2,0,0"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding ToText}">
+                                                <Run Text="Кому: " />
+                                                <Run Text="{Binding ToText, Mode=OneWay}" />
+                                            </TextBlock>
                                         </StackPanel>
-                                        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Кому" />
-                                        <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,8,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding ToText}" />
-                                        <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Копия"
-                                                   Visibility="{Binding CcText, Converter={StaticResource NonEmptyStringToVisibility}}" />
-                                        <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,8,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding CcText}"
-                                                   Visibility="{Binding CcText, Converter={StaticResource NonEmptyStringToVisibility}}" />
-                                        <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Дата" />
-                                        <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,8,0,0" Style="{StaticResource MetaValueStyle}" Text="{Binding DateText}" />
-                                        <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Вложения"
-                                                   Visibility="{Binding AttachmentsText, Converter={StaticResource NonEmptyStringToVisibility}}" />
-                                        <StackPanel Grid.Row="4" Grid.Column="1" Margin="0,8,0,0"
-                                                    Visibility="{Binding AttachmentsText, Converter={StaticResource NonEmptyStringToVisibility}}">
-                                            <TextBlock Style="{StaticResource MetaValueStyle}" Text="{Binding AttachmentsText}" />
-                                            <ItemsControl Margin="0,4,0,0"
-                                                          ItemsSource="{Binding Attachments}">
-                                                <ItemsControl.ItemsPanel>
-                                                    <ItemsPanelTemplate>
-                                                        <WrapPanel />
-                                                    </ItemsPanelTemplate>
-                                                </ItemsControl.ItemsPanel>
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Button Margin="0,0,6,4"
-                                                                Padding="8,3"
-                                                                Style="{StaticResource HubGhostButtonStyle}"
-                                                                Command="{Binding DataContext.OpenAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                                                CommandParameter="{Binding}"
-                                                                AutomationProperties.Name="{Binding Name, StringFormat='Скачать вложение {0}'}">
-                                                            <StackPanel Orientation="Horizontal">
-                                                                <TextBlock FontSize="12" Text="📎 " />
-                                                                <TextBlock FontSize="12" Text="{Binding DownloadText}" />
-                                                                <TextBlock Margin="6,0,0,0"
-                                                                           FontSize="11"
-                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                                           Text="{Binding SizeText}"
-                                                                           Visibility="{Binding SizeText, Converter={StaticResource NonEmptyStringToVisibility}}" />
-                                                            </StackPanel>
-                                                        </Button>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                        <TextBlock Grid.Row="5" Grid.Column="0" Margin="0,8,0,0" Style="{StaticResource MetaLabelStyle}" Text="Статус" />
-                                        <TextBlock Grid.Row="5" Grid.Column="1" Margin="0,8,0,0" FontSize="13">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
-                                                    <Setter Property="Text" Value="Прочитано" />
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding IsUnread}" Value="True">
-                                                            <Setter Property="Text" Value="Непрочитано" />
-                                                            <Setter Property="Foreground" Value="{DynamicResource HubAccentBrush}" />
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
+                                        <TextBlock Grid.Column="2"
+                                                   Margin="12,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                   Text="{Binding DateText}" />
                                     </Grid>
+                                    <TextBlock Margin="36,4,0,0"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding CcText}"
+                                               Visibility="{Binding CcText, Converter={StaticResource NonEmptyStringToVisibility}}">
+                                        <Run Text="Копия: " />
+                                        <Run Text="{Binding CcText, Mode=OneWay}" />
+                                    </TextBlock>
 
-                                    <TextBlock Margin="0,18,0,6"
-                                               Style="{StaticResource HubSectionTitleStyle}"
-                                               FontSize="14"
-                                               Text="Текст письма" />
-                                    <TextBlock FontSize="13"
-                                               Text="{Binding Body}"
-                                               TextWrapping="Wrap"
-                                               TextOptions.TextFormattingMode="Ideal"
-                                               Visibility="{Binding HasBody, Converter={StaticResource BoolToVisibility}}" />
-                                    <TextBlock Style="{StaticResource HubMutedTextStyle}"
-                                               Text="Текст письма отсутствует."
-                                               Visibility="{Binding HasBody, Converter={StaticResource InverseBoolToVisibility}}" />
+                                    <!-- Полные заголовки -->
+                                    <Border Margin="0,12,0,0"
+                                            Padding="12,10"
+                                            CornerRadius="6"
+                                            Background="{DynamicResource HubSurfaceAltBrush}"
+                                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                            BorderThickness="1"
+                                            Visibility="{Binding AreHeadersVisible, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                                       Text="Полные заголовки" />
+                                            <TextBlock Margin="0,2,0,0"
+                                                       Style="{StaticResource MetaLabelStyle}"
+                                                       Text="{Binding HeadersSourceName}"
+                                                       Visibility="{Binding HeadersSourceName, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            <TextBlock Margin="0,6,0,0"
+                                                       FontFamily="Cascadia Mono, Consolas"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource HubTextBrush}"
+                                                       Text="{Binding HeadersText}"
+                                                       TextWrapping="Wrap"
+                                                       Visibility="{Binding HeadersText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                            <TextBlock Margin="0,6,0,0"
+                                                       Style="{StaticResource MetaLabelStyle}"
+                                                       Text="Загружаем заголовки…"
+                                                       Visibility="{Binding IsHeadersLoading, Converter={StaticResource BoolToVisibility}}" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Вложения -->
+                                    <StackPanel Margin="0,12,0,0"
+                                                Visibility="{Binding AttachmentsText, Converter={StaticResource NonEmptyStringToVisibility}}">
+                                        <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Вложения" />
+                                        <ItemsControl Margin="0,4,0,0"
+                                                      ItemsSource="{Binding Attachments}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Button Margin="0,0,6,4"
+                                                            Padding="8,3"
+                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                            Command="{Binding DataContext.OpenAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}"
+                                                            AutomationProperties.Name="{Binding Name, StringFormat='Скачать вложение {0}'}">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock FontSize="12" Text="📎 " />
+                                                            <TextBlock FontSize="12" Text="{Binding DownloadText}" />
+                                                            <TextBlock Margin="6,0,0,0"
+                                                                       FontSize="11"
+                                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                       Text="{Binding SizeText}"
+                                                                       Visibility="{Binding SizeText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                        </StackPanel>
+                                                    </Button>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+
+                                    <!-- AI-действия -->
+                                    <StackPanel Margin="0,16,0,0"
+                                                Visibility="{Binding DataContext.ShowAiActions, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}">
+                                        <WrapPanel>
+                                            <Button Padding="10,4"
+                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding DataContext.SummarizeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    Content="📝 Кратко"
+                                                    AutomationProperties.Name="Сделать пересказ письма" />
+                                            <Button Margin="8,0,0,0"
+                                                    Padding="10,4"
+                                                    Style="{StaticResource HubGhostButtonStyle}"
+                                                    Command="{Binding DataContext.SmartRepliesCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    Content="💬 Быстрые ответы"
+                                                    AutomationProperties.Name="Предложить варианты ответа" />
+                                        </WrapPanel>
+                                        <!-- AI согласие -->
+                                        <Border Margin="0,8,0,0"
+                                                Padding="10"
+                                                CornerRadius="8"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                BorderBrush="{DynamicResource HubAccentBrush}"
+                                                BorderThickness="1"
+                                                Visibility="{Binding DataContext.AiConsentOpen, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}">
+                                            <StackPanel>
+                                                <TextBlock FontSize="13"
+                                                           FontWeight="SemiBold"
+                                                           Text="ИИ для писем" />
+                                                <TextBlock Margin="0,6,0,0"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding DataContext.MailAiDisclosureText, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                           TextWrapping="Wrap" />
+                                                <StackPanel Margin="0,10,0,0" Orientation="Horizontal">
+                                                    <Button Style="{StaticResource HubSecondaryButtonStyle}"
+                                                            Command="{Binding DataContext.AcceptAiConsentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            Content="Разрешить ИИ"
+                                                            AutomationProperties.Name="Разрешить ИИ для писем" />
+                                                    <Button Margin="8,0,0,0"
+                                                            Padding="10,4"
+                                                            Style="{StaticResource HubGhostButtonStyle}"
+                                                            Command="{Binding DataContext.DismissAiConsentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            Content="Отмена"
+                                                            AutomationProperties.Name="Не включать ИИ" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                        <!-- Пересказ -->
+                                        <Border Margin="0,8,0,0"
+                                                Padding="10"
+                                                CornerRadius="8"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                Visibility="{Binding DataContext.ShowSummaryPanel, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource HubMutedTextStyle}"
+                                                           FontSize="11"
+                                                           Text="Пересказ" />
+                                                <TextBlock Margin="0,4,0,0"
+                                                           FontSize="13"
+                                                           Text="{Binding DataContext.SummaryPanelText, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                           TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                        <TextBlock Margin="0,6,0,0"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource HubErrorTextBrush}"
+                                                   Text="{Binding DataContext.AiErrorText, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{Binding DataContext.HasAiError, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}" />
+                                    </StackPanel>
+
+                                    <!-- Чипы быстрых ответов -->
+                                    <TextBlock Margin="0,12,0,0"
+                                               Style="{StaticResource HubMutedTextStyle}"
+                                               FontSize="12"
+                                               Text="{Binding DataContext.SmartRepliesHintText, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                               Visibility="{Binding DataContext.IsSmartRepliesLoading, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}" />
+                                    <ItemsControl Margin="0,12,0,0"
+                                                  ItemsSource="{Binding DataContext.SmartReplies, RelativeSource={RelativeSource AncestorType=UserControl}}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button Margin="0,0,6,6"
+                                                        Padding="10,5"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.ApplySmartReplyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}"
+                                                        AutomationProperties.Name="Вставить подсказку в ответ">
+                                                    <TextBlock MaxWidth="360"
+                                                               FontSize="12"
+                                                               Text="{Binding}"
+                                                               TextWrapping="Wrap" />
+                                                </Button>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                 </StackPanel>
                             </ScrollViewer>
 
-                            <!-- Действия над письмом -->
-                            <Border Grid.Row="1"
-                                    Padding="22,14"
-                                    BorderBrush="{DynamicResource HubBorderDimBrush}"
-                                    BorderThickness="0,1,0,0"
-                                    DataContext="{Binding Detail}">
-                                <WrapPanel HorizontalAlignment="Right">
-                                    <Button Margin="0,0,0,8"
-                                            Style="{StaticResource HubSecondaryButtonStyle}"
-                                            Command="{Binding DataContext.ReplyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            Content="Ответить"
-                                            AutomationProperties.Name="Ответить на письмо" />
-                                    <Button Margin="8,0,0,8"
-                                            Style="{StaticResource HubGhostButtonStyle}"
-                                            Command="{Binding DataContext.ReplyAllCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            Content="Ответить всем"
-                                            AutomationProperties.Name="Ответить всем адресатам письма" />
-                                    <Button Margin="8,0,0,8"
-                                            Style="{StaticResource HubGhostButtonStyle}"
-                                            Command="{Binding DataContext.ForwardCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            Content="Переслать"
-                                            AutomationProperties.Name="Переслать письмо" />
-                                    <Button Margin="8,0,0,8"
-                                            Padding="10,4"
-                                            Style="{StaticResource HubGhostButtonStyle}"
-                                            Content="Переместить ▾"
-                                            IsEnabled="{Binding CanMove}"
-                                            Tag="{Binding DataContext.MoveCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            Click="MoveMenuButton_Click"
-                                            AutomationProperties.Name="Переместить письмо в другую папку">
-                                        <Button.ContextMenu>
-                                            <ContextMenu>
-                                                <ContextMenu.ItemContainerStyle>
-                                                    <Style TargetType="MenuItem">
-                                                        <Setter Property="Header" Value="{Binding Label}" />
-                                                        <Setter Property="Command" Value="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
-                                                        <Setter Property="CommandParameter" Value="{Binding Id}" />
-                                                    </Style>
-                                                </ContextMenu.ItemContainerStyle>
-                                            </ContextMenu>
-                                        </Button.ContextMenu>
-                                    </Button>
-                                    <Button Margin="8,0,0,8"
-                                            Style="{StaticResource HubGhostButtonStyle}"
-                                            Command="{Binding DataContext.EditDraftCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            Content="Редактировать"
-                                            Visibility="{Binding DataContext.Detail.IsDraft, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
-                                            AutomationProperties.Name="Открыть черновик в композере" />
-                                    <Button Margin="8,0,0,8"
-                                            Style="{StaticResource HubGhostButtonStyle}"
-                                            Command="{Binding DataContext.DeleteDraftCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            IsEnabled="{Binding CanRunActions}"
-                                            Content="Удалить черновик"
-                                            Foreground="{DynamicResource HubErrorTextBrush}"
-                                            Visibility="{Binding DataContext.Detail.IsDraft, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
-                                            AutomationProperties.Name="Удалить черновик безвозвратно" />
-                                    <Button Margin="8,0,0,8"
-                                            Style="{StaticResource HubSecondaryButtonStyle}"
-                                            Command="{Binding DataContext.ToggleReadCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            IsEnabled="{Binding CanRunActions}"
-                                            Content="{Binding ToggleReadButtonText}"
-                                            AutomationProperties.Name="Переключить отметку о прочтении письма" />
-                                    <Button Margin="8,0,0,8"
-                                            Style="{StaticResource HubGhostButtonStyle}"
-                                            Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            IsEnabled="{Binding CanRunActions}"
-                                            Content="Удалить"
-                                            AutomationProperties.Name="Удалить письмо в папку «Удалённые»" />
-                                </WrapPanel>
-                            </Border>
+                            <!-- Тело письма: фиксированная область Grid — HWND
+                                 ограничен этой областью; скролл внутри браузера. -->
+                            <Grid Grid.Row="1"
+                                  Margin="0,4,0,0"
+                                  DataContext="{Binding Detail}">
+                                <TextBlock Padding="18,8,18,16"
+                                           FontSize="13"
+                                           MaxWidth="1100"
+                                           HorizontalAlignment="Stretch"
+                                           Text="{Binding Body}"
+                                           TextWrapping="Wrap"
+                                           TextOptions.TextFormattingMode="Ideal"
+                                           Visibility="{Binding HasBody, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Padding="18,8"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Style="{StaticResource HubMutedTextStyle}"
+                                           Text="Текст письма отсутствует."
+                                           Visibility="{Binding HasAnyBody, Converter={StaticResource InverseBoolToVisibility}}" />
+                                <!-- HTML: WebView2 лениво в code-behind -->
+                                <Grid x:Name="MailBodyHost" />
+                            </Grid>
                         </Grid>
                     </Grid>
                 </Grid>
@@ -727,15 +1394,13 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <!-- Заголовок -->
-                    <Grid Grid.Row="0"
-                          Margin="18,14,18,0">
+                    <Grid Grid.Row="0" Margin="20,16,20,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock VerticalAlignment="Center"
-                                   FontSize="16"
+                                   FontSize="17"
                                    FontWeight="SemiBold"
                                    Text="{Binding Title}" />
                         <Button Grid.Column="1"
@@ -745,9 +1410,8 @@
                                 AutomationProperties.Name="Закрыть композер" />
                     </Grid>
 
-                    <!-- Ошибка отправки/сохранения: поля не стираются -->
                     <Border Grid.Row="1"
-                            Margin="18,10,18,0"
+                            Margin="20,10,20,0"
                             Padding="12,8"
                             Background="{DynamicResource HubSurfaceAltBrush}"
                             BorderBrush="{DynamicResource HubErrorTextBrush}"
@@ -762,7 +1426,7 @@
                     </Border>
 
                     <ScrollViewer Grid.Row="2"
-                                  Margin="18,10,18,0"
+                                  Margin="20,12,20,4"
                                   VerticalScrollBarVisibility="Auto">
                         <StackPanel>
                             <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Кому" />
@@ -774,7 +1438,7 @@
                                      GotFocus="RecipientTextBox_GotFocus"
                                      KeyDown="RecipientTextBox_KeyDown"
                                      AutomationProperties.Name="Получатели письма (Кому)" />
-                            <TextBlock Margin="0,8,0,0"
+                            <TextBlock Margin="0,10,0,0"
                                        Style="{StaticResource MetaLabelStyle}"
                                        Text="Копия" />
                             <TextBox x:Name="CcInput"
@@ -785,7 +1449,7 @@
                                      GotFocus="RecipientTextBox_GotFocus"
                                      KeyDown="RecipientTextBox_KeyDown"
                                      AutomationProperties.Name="Получатели копии (Копия)" />
-                            <TextBlock Margin="0,8,0,0"
+                            <TextBlock Margin="0,10,0,0"
                                        Style="{StaticResource MetaLabelStyle}"
                                        Text="Скрытая копия" />
                             <TextBox x:Name="BccInput"
@@ -796,23 +1460,23 @@
                                      GotFocus="RecipientTextBox_GotFocus"
                                      KeyDown="RecipientTextBox_KeyDown"
                                      AutomationProperties.Name="Получатели скрытой копии" />
-                            <TextBlock Margin="0,8,0,0"
+                            <TextBlock Margin="0,10,0,0"
                                        Style="{StaticResource MetaLabelStyle}"
                                        Text="Тема" />
                             <TextBox Style="{StaticResource HubTextBoxStyle}"
                                      Text="{Binding Subject, UpdateSourceTrigger=PropertyChanged}"
                                      AutomationProperties.Name="Тема письма" />
-                            <TextBlock Margin="0,8,0,0"
+                            <TextBlock Margin="0,10,0,0"
                                        Style="{StaticResource MetaLabelStyle}"
                                        Text="Текст письма" />
-                            <TextBox MinHeight="140"
+                            <TextBox MinHeight="180"
                                      Style="{StaticResource HubTextBoxStyle}"
                                      AcceptsReturn="True"
                                      TextWrapping="Wrap"
                                      VerticalScrollBarVisibility="Auto"
                                      Text="{Binding Body, UpdateSourceTrigger=PropertyChanged}"
                                      AutomationProperties.Name="Текст нового письма" />
-                            <TextBlock Margin="0,8,0,0"
+                            <TextBlock Margin="0,10,0,0"
                                        Style="{StaticResource MetaLabelStyle}"
                                        Foreground="{DynamicResource HubSuccessBrush}"
                                        Text="{Binding RetainedAttachmentsText}"
@@ -856,33 +1520,43 @@
                     </ScrollViewer>
 
                     <!-- Действия композера -->
-                    <StackPanel Grid.Row="3"
-                                Margin="18,10,18,14"
-                                Orientation="Horizontal">
-                        <Button Style="{StaticResource HubPrimaryButtonStyle}"
-                                Command="{Binding SendCommand}"
-                                Content="{Binding SendButtonText}"
-                                AutomationProperties.Name="Отправить письмо" />
-                        <Button Margin="10,0,0,0"
-                                Style="{StaticResource HubSecondaryButtonStyle}"
-                                Command="{Binding SaveDraftCommand}"
-                                Content="{Binding SaveDraftButtonText}"
-                                AutomationProperties.Name="Сохранить письмо в черновики" />
-                        <Button Margin="10,0,0,0"
-                                Style="{StaticResource HubGhostButtonStyle}"
-                                Command="{Binding DeleteDraftCommand}"
-                                Content="Удалить черновик"
-                                Foreground="{DynamicResource HubErrorTextBrush}"
-                                Visibility="{Binding HasDraft, Converter={StaticResource BoolToVisibility}}"
-                                AutomationProperties.Name="Удалить черновик безвозвратно" />
-                        <Button Margin="10,0,0,0"
-                                Style="{StaticResource HubGhostButtonStyle}"
-                                Command="{Binding AttachCommand}"
-                                Content="📎"
-                                AutomationProperties.Name="Прикрепить файл к письму" />
-                    </StackPanel>
+                    <Border Grid.Row="3"
+                            Padding="20,12,20,16"
+                            BorderBrush="{DynamicResource HubBorderDimBrush}"
+                            BorderThickness="0,1,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{StaticResource HubPrimaryButtonStyle}"
+                                        Command="{Binding SendCommand}"
+                                        Content="{Binding SendButtonText}"
+                                        AutomationProperties.Name="Отправить письмо" />
+                                <Button Margin="10,0,0,0"
+                                        Style="{StaticResource HubSecondaryButtonStyle}"
+                                        Command="{Binding SaveDraftCommand}"
+                                        Content="{Binding SaveDraftButtonText}"
+                                        AutomationProperties.Name="Сохранить письмо в черновики" />
+                                <Button Margin="10,0,0,0"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding DeleteDraftCommand}"
+                                        Content="Удалить черновик"
+                                        Foreground="{DynamicResource HubErrorTextBrush}"
+                                        Visibility="{Binding HasDraft, Converter={StaticResource BoolToVisibility}}"
+                                        AutomationProperties.Name="Удалить черновик безвозвратно" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <Button Style="{StaticResource HubGhostButtonStyle}"
+                                        Command="{Binding AttachCommand}"
+                                        Content="📎"
+                                        AutomationProperties.Name="Прикрепить файл к письму" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
 
-                    <!-- Автоподсказка контактов: PlacementTarget ставит code-behind на активное поле -->
+                    <!-- Автоподсказка контактов -->
                     <Popup x:Name="ContactPopup"
                            Grid.RowSpan="4"
                            IsOpen="{Binding IsContactPopupOpen, Mode=TwoWay}"
@@ -928,7 +1602,7 @@
                 </Grid>
             </Border>
 
-            <!-- Ящик не настроен: перекрывает рабочую область -->
+            <!-- Ящик не настроен -->
             <Border Grid.Column="0"
                     Grid.ColumnSpan="5"
                     Panel.ZIndex="1"
@@ -958,7 +1632,7 @@
         </Grid>
 
         <!-- Статус-бар -->
-        <Border Grid.Row="4"
+        <Border Grid.Row="3"
                 Padding="20,8"
                 Background="{DynamicResource HubSurfaceAltBrush}"
                 BorderBrush="{DynamicResource HubBorderDimBrush}"
@@ -966,12 +1640,6 @@
             <Grid>
                 <StackPanel Orientation="Horizontal">
                     <TextBlock FontSize="12"
-                               Foreground="{DynamicResource HubTextSecondaryBrush}">
-                        <Run Text="Писем в папке:" />
-                        <Run Text="{Binding TotalText, Mode=OneWay}" />
-                    </TextBlock>
-                    <TextBlock Margin="14,0,0,0"
-                               FontSize="12"
                                Foreground="{DynamicResource HubTextSecondaryBrush}">
                         <Run Text="Непрочитанных:" />
                         <Run Text="{Binding UnreadText, Mode=OneWay}" />
@@ -998,5 +1666,211 @@
                 </StackPanel>
             </Grid>
         </Border>
+
+        <!-- Заявка в IT -->
+        <Grid Grid.RowSpan="4"
+              Panel.ZIndex="2"
+              Background="#B3000000"
+              PreviewKeyDown="ItRequestOverlay_PreviewKeyDown"
+              Visibility="{Binding IsItRequestOpen, Converter={StaticResource BoolToVisibility}}">
+            <Border MaxWidth="560"
+                    MaxHeight="720"
+                    Margin="24"
+                    Background="{DynamicResource HubSurfaceBrush}"
+                    BorderBrush="{DynamicResource HubBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    DataContext="{Binding ItRequest}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="18,14,18,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding Title}" />
+                        <Button Grid.Column="1"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CloseCommand}"
+                                Content="✕"
+                                AutomationProperties.Name="Закрыть форму заявки в IT" />
+                    </Grid>
+
+                    <Border Grid.Row="1"
+                            Margin="18,10,18,0"
+                            Padding="12,8"
+                            Background="{DynamicResource HubSurfaceAltBrush}"
+                            BorderBrush="{DynamicResource HubErrorTextBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Foreground="{DynamicResource HubErrorTextBrush}"
+                                   FontSize="12"
+                                   Text="{Binding ErrorText}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+
+                    <ProgressBar Grid.Row="2"
+                                 Height="3"
+                                 Margin="18,8,18,0"
+                                 IsIndeterminate="True"
+                                 Foreground="{DynamicResource HubAccentBrush}"
+                                 Background="{DynamicResource HubSurfaceRaisedBrush}"
+                                 Visibility="{Binding IsSending, Converter={StaticResource BoolToVisibility}}"
+                                 AutomationProperties.Name="Индикатор отправки заявки" />
+
+                    <ScrollViewer Grid.Row="3"
+                                  Margin="18,10,18,0"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource MetaLabelStyle}" Text="Шаблон" />
+                            <ComboBox ItemsSource="{Binding Templates}"
+                                      SelectedItem="{Binding SelectedTemplate}"
+                                      DisplayMemberPath="DisplayTitle"
+                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                      Foreground="{DynamicResource HubTextBrush}"
+                                      AutomationProperties.Name="Шаблон заявки в IT" />
+                            <TextBlock Margin="0,8,0,0"
+                                       Style="{StaticResource HubMutedTextStyle}"
+                                       Text="Нет доступных шаблонов заявок."
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding HasTemplates, Converter={StaticResource InverseBoolToVisibility}}" />
+
+                            <ItemsControl Margin="0,4,0,0"
+                                          ItemsSource="{Binding Fields}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="0,10,0,0">
+                                            <TextBlock Style="{StaticResource MetaLabelStyle}"
+                                                       Text="{Binding LabelText}"
+                                                       Visibility="{Binding IsCheckbox, Converter={StaticResource InverseBoolToVisibility}}" />
+                                            <TextBox Style="{StaticResource HubTextBoxStyle}"
+                                                     Text="{Binding TextValue, UpdateSourceTrigger=PropertyChanged}"
+                                                     Visibility="{Binding IsTextInput, Converter={StaticResource BoolToVisibility}}"
+                                                     AutomationProperties.Name="{Binding Label}" />
+                                            <TextBox MinHeight="64"
+                                                     MaxHeight="140"
+                                                     Style="{StaticResource HubTextBoxStyle}"
+                                                     AcceptsReturn="True"
+                                                     TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Auto"
+                                                     VerticalContentAlignment="Top"
+                                                     Text="{Binding TextValue, UpdateSourceTrigger=PropertyChanged}"
+                                                     Visibility="{Binding IsTextarea, Converter={StaticResource BoolToVisibility}}"
+                                                     AutomationProperties.Name="{Binding Label}" />
+                                            <ComboBox ItemsSource="{Binding OptionValues}"
+                                                      SelectedItem="{Binding SelectedOption}"
+                                                      Background="{DynamicResource HubSurfaceAltBrush}"
+                                                      Foreground="{DynamicResource HubTextBrush}"
+                                                      Visibility="{Binding IsSelect, Converter={StaticResource BoolToVisibility}}"
+                                                      AutomationProperties.Name="{Binding Label}" />
+                                            <ItemsControl ItemsSource="{Binding OptionItems}"
+                                                          Visibility="{Binding IsMultiSelect, Converter={StaticResource BoolToVisibility}}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <CheckBox Margin="0,2,0,0"
+                                                                  IsChecked="{Binding IsSelected}"
+                                                                  Content="{Binding Text}"
+                                                                  AutomationProperties.Name="{Binding Text}" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <DatePicker SelectedDate="{Binding DateValue}"
+                                                        Background="{DynamicResource HubSurfaceAltBrush}"
+                                                        Foreground="{DynamicResource HubTextBrush}"
+                                                        Visibility="{Binding IsDate, Converter={StaticResource BoolToVisibility}}"
+                                                        AutomationProperties.Name="{Binding Label}" />
+                                            <CheckBox Margin="0,2,0,0"
+                                                      IsChecked="{Binding BoolValue}"
+                                                      Content="{Binding LabelText}"
+                                                      Visibility="{Binding IsCheckbox, Converter={StaticResource BoolToVisibility}}"
+                                                      AutomationProperties.Name="{Binding LabelText}" />
+                                            <TextBlock Margin="0,3,0,0"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding HelpText}"
+                                                       TextWrapping="Wrap"
+                                                       Visibility="{Binding HasHelpText, Converter={StaticResource BoolToVisibility}}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <ItemsControl Margin="0,10,0,0"
+                                          ItemsSource="{Binding Attachments}"
+                                          Visibility="{Binding HasAttachments, Converter={StaticResource BoolToVisibility}}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,6,4"
+                                                Padding="8,3"
+                                                Background="{DynamicResource HubSurfaceAltBrush}"
+                                                BorderBrush="{DynamicResource HubBorderDimBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="6">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock FontSize="12" Text="📎 " />
+                                                <TextBlock FontSize="12" Text="{Binding Name}" />
+                                                <TextBlock Margin="6,0,0,0"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                           Text="{Binding SizeText}"
+                                                           Visibility="{Binding SizeText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                                                <Button Margin="8,0,0,0"
+                                                        Padding="2,0"
+                                                        Style="{StaticResource HubGhostButtonStyle}"
+                                                        Command="{Binding DataContext.RemoveAttachmentCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        CommandParameter="{Binding}"
+                                                        Content="✕"
+                                                        AutomationProperties.Name="{Binding Name, StringFormat='Убрать вложение {0}'}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <Grid Grid.Row="4" Margin="18,12,18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Style="{StaticResource HubSecondaryButtonStyle}"
+                                Command="{Binding AttachCommand}"
+                                Content="📎"
+                                AutomationProperties.Name="Прикрепить файл к заявке" />
+                        <Button Grid.Column="1"
+                                Margin="8,0,0,0"
+                                Style="{StaticResource HubGhostButtonStyle}"
+                                Command="{Binding CancelCommand}"
+                                Content="Отмена"
+                                AutomationProperties.Name="Отменить заявку" />
+                        <Button Grid.Column="2"
+                                Margin="8,0,0,0"
+                                Style="{StaticResource HubPrimaryButtonStyle}"
+                                Command="{Binding SubmitCommand}"
+                                Content="Отправить заявку"
+                                AutomationProperties.Name="Отправить заявку в IT" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
 </UserControl>

@@ -2,17 +2,22 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- Палитра нативного шелла, тёмная тема в духе Windows 11 / Fluent (WinUI 3):
-         слои поверхностей поверх Mica-базы #202020, нейтральные границы,
-         акцент фирменного «sky» в светлом варианте для тёмной темы.
+         лестница поверхностей с холодным подтоном
+         background #191B1F → sunken #1F232A → surface #24282F →
+         raised #2C3139 → flyout #31363F; границы — полупрозрачный белый
+         (#26FFFFFF / #14FFFFFF), поэтому читаются на любом слое.
+         Акцент фирменного «sky» #1EA7EC; выбранное состояние — акцентный
+         тинт #1E4258 (не нейтральный серый).
          Набор ключей зеркалит HubColorsLight.xaml — менять только парой. -->
-    <Color x:Key="HubBackgroundColor">#202020</Color>
-    <Color x:Key="HubSurfaceColor">#2C2C2C</Color>
-    <Color x:Key="HubSurfaceAltColor">#262626</Color>
-    <Color x:Key="HubSurfaceRaisedColor">#333333</Color>
-    <Color x:Key="HubBorderColor">#404040</Color>
-    <Color x:Key="HubBorderDimColor">#303030</Color>
-    <Color x:Key="HubTextColor">#E7E7E7</Color>
-    <Color x:Key="HubTextSecondaryColor">#B0B0B0</Color>
+    <Color x:Key="HubBackgroundColor">#191B1F</Color>
+    <Color x:Key="HubSurfaceColor">#24282F</Color>
+    <Color x:Key="HubSurfaceAltColor">#1F232A</Color>
+    <Color x:Key="HubSurfaceRaisedColor">#2C3139</Color>
+    <Color x:Key="HubFlyoutSurfaceColor">#31363F</Color>
+    <Color x:Key="HubBorderColor">#26FFFFFF</Color>
+    <Color x:Key="HubBorderDimColor">#14FFFFFF</Color>
+    <Color x:Key="HubTextColor">#F0F2F5</Color>
+    <Color x:Key="HubTextSecondaryColor">#A3AAB4</Color>
     <Color x:Key="HubAccentColor">#1EA7EC</Color>
     <Color x:Key="HubAccentHoverColor">#3FB9F4</Color>
     <Color x:Key="HubAccentPressedColor">#0E8FD0</Color>
@@ -26,19 +31,20 @@
     <Color x:Key="HubStatusReviewColor">#A78BFA</Color>
     <Color x:Key="HubStatusDoneColor">#34D399</Color>
     <Color x:Key="HubStatusOverdueColor">#F87171</Color>
-    <Color x:Key="HubHoverColor">#333333</Color>
-    <Color x:Key="HubPressedColor">#2A2A2A</Color>
-    <Color x:Key="HubSelectionColor">#37434D</Color>
-    <Color x:Key="HubScrollThumbColor">#565656</Color>
-    <Color x:Key="HubScrollThumbHoverColor">#676767</Color>
-    <Color x:Key="HubScrollThumbPressedColor">#7A7A7A</Color>
-    <Color x:Key="HubLoginGradientStartColor">#1E2836</Color>
-    <Color x:Key="HubLoginGradientEndColor">#10131A</Color>
+    <Color x:Key="HubHoverColor">#30353D</Color>
+    <Color x:Key="HubPressedColor">#262B32</Color>
+    <Color x:Key="HubSelectionColor">#1E4258</Color>
+    <Color x:Key="HubScrollThumbColor">#4B525B</Color>
+    <Color x:Key="HubScrollThumbHoverColor">#5B626C</Color>
+    <Color x:Key="HubScrollThumbPressedColor">#6B737E</Color>
+    <Color x:Key="HubLoginGradientStartColor">#1C2836</Color>
+    <Color x:Key="HubLoginGradientEndColor">#0E131B</Color>
 
     <SolidColorBrush x:Key="HubBackgroundBrush" Color="{StaticResource HubBackgroundColor}" />
     <SolidColorBrush x:Key="HubSurfaceBrush" Color="{StaticResource HubSurfaceColor}" />
     <SolidColorBrush x:Key="HubSurfaceAltBrush" Color="{StaticResource HubSurfaceAltColor}" />
     <SolidColorBrush x:Key="HubSurfaceRaisedBrush" Color="{StaticResource HubSurfaceRaisedColor}" />
+    <SolidColorBrush x:Key="HubFlyoutSurfaceBrush" Color="{StaticResource HubFlyoutSurfaceColor}" />
     <SolidColorBrush x:Key="HubBorderBrush" Color="{StaticResource HubBorderColor}" />
     <SolidColorBrush x:Key="HubBorderDimBrush" Color="{StaticResource HubBorderDimColor}" />
     <SolidColorBrush x:Key="HubTextBrush" Color="{StaticResource HubTextColor}" />
@@ -60,11 +66,106 @@
     <SolidColorBrush x:Key="HubStatusReviewBrush" Color="{StaticResource HubStatusReviewColor}" />
     <SolidColorBrush x:Key="HubStatusDoneBrush" Color="{StaticResource HubStatusDoneColor}" />
     <SolidColorBrush x:Key="HubStatusOverdueBrush" Color="{StaticResource HubStatusOverdueColor}" />
+    <!-- Мягкие тонированные заливки статусов (~15-20% тона на поверхности):
+         фон пилюль/бейджей — текст поверх берёт обычную HubStatus*Brush. -->
+    <SolidColorBrush x:Key="HubStatusNewSoftBrush" Color="#203A4D" />
+    <SolidColorBrush x:Key="HubStatusInProgressSoftBrush" Color="#45381F" />
+    <SolidColorBrush x:Key="HubStatusReviewSoftBrush" Color="#383050" />
+    <SolidColorBrush x:Key="HubStatusDoneSoftBrush" Color="#1F4537" />
+    <SolidColorBrush x:Key="HubStatusOverdueSoftBrush" Color="#4A2A28" />
+    <SolidColorBrush x:Key="HubStatusMutedSoftBrush" Color="#2E333A" />
+    <!-- Токены почтового списка в духе Thunderbird (threadCard.css / about3Pane.css):
+         нейтральный серый бейдж непрочитанных папок (gray-50) и зелёная точка
+         непрочитанного письма (green-40) одинаковы в обеих темах; выбранная
+         строка папки — нейтральный gray-70, а не акцентный тинт. -->
+    <SolidColorBrush x:Key="HubBadgeNeutralBrush" Color="#71717A" />
+    <SolidColorBrush x:Key="HubUnreadDotBrush" Color="#4ADE80" />
+    <SolidColorBrush x:Key="HubRowSelectedNeutralBrush" Color="#3F3F46" />
     <SolidColorBrush x:Key="HubHoverBrush" Color="{StaticResource HubHoverColor}" />
     <SolidColorBrush x:Key="HubPressedBrush" Color="{StaticResource HubPressedColor}" />
     <SolidColorBrush x:Key="HubSelectionBrush" Color="{StaticResource HubSelectionColor}" />
     <SolidColorBrush x:Key="HubScrollThumbBrush" Color="{StaticResource HubScrollThumbColor}" />
     <SolidColorBrush x:Key="HubScrollThumbHoverBrush" Color="{StaticResource HubScrollThumbHoverColor}" />
     <SolidColorBrush x:Key="HubScrollThumbPressedBrush" Color="{StaticResource HubScrollThumbPressedColor}" />
+    <!-- Едва заметный вертикальный «верхний свет» для KPI/hero-карточек. -->
+    <LinearGradientBrush x:Key="HubCardGradientBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#2A2F37" Offset="0" />
+        <GradientStop Color="#24282F" Offset="1" />
+    </LinearGradientBrush>
+
+    <!-- Чат — ночная палитра Telegram Desktop: панели/шапка/composer #17212B,
+         лента #0E1621, входящий пузырь #182533, исходящий #2B5278 с белым
+         текстом и сталевой метой #B4CFE0 (время/галочки). Вторичный текст
+         #708499, hover строки #202B36, выбранная строка #2B5278, акцент
+         (бейдж непрочитанных, FAB отправки) #5188C1, ссылки/подписи #4D9ECB.
+         Пилюля дня/системного события — #1C2B3A с текстом #8DA2B5. -->
+    <SolidColorBrush x:Key="HubChatAreaBrush" Color="#0E1621" />
+    <SolidColorBrush x:Key="HubChatPanelBrush" Color="#17212B" />
+    <SolidColorBrush x:Key="HubChatInputBrush" Color="#242F3D" />
+    <SolidColorBrush x:Key="HubChatBubbleInBrush" Color="#182533" />
+    <SolidColorBrush x:Key="HubChatBubbleOutBrush" Color="#2B5278" />
+    <SolidColorBrush x:Key="HubChatOutTextBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="HubChatOutTextMutedBrush" Color="#B4CFE0" />
+    <SolidColorBrush x:Key="HubChatSecondaryBrush" Color="#708499" />
+    <SolidColorBrush x:Key="HubChatHoverBrush" Color="#202B36" />
+    <!-- Hover строки сообщения — едва заметный белый тинт ~5% (tdesktop historyMsgHover). -->
+    <SolidColorBrush x:Key="HubChatRowHoverBrush" Color="#0DFFFFFF" />
+    <!-- Вспышка строки после перехода к якорю (reply/pinned/search):
+         акцент ~20%, как msgSelectOverlay в tdesktop. -->
+    <SolidColorBrush x:Key="HubChatRowFlashBrush" Color="#335188C1" />
+    <SolidColorBrush x:Key="HubChatRowSelectedBrush" Color="#2B5278" />
+    <SolidColorBrush x:Key="HubChatRowSelectedTextBrush" Color="#A8C7E6" />
+    <SolidColorBrush x:Key="HubChatAccentBrush" Color="#5188C1" />
+    <SolidColorBrush x:Key="HubChatAccentHoverBrush" Color="#6499CE" />
+    <SolidColorBrush x:Key="HubChatAccentPressedBrush" Color="#46719E" />
+    <SolidColorBrush x:Key="HubChatOnAccentBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="HubChatMutedBadgeBrush" Color="#3E454A" />
+    <SolidColorBrush x:Key="HubChatLinkBrush" Color="#4D9ECB" />
+    <!-- Красный префикс «Черновик: » в строке диалога — Telegram draft red. -->
+    <SolidColorBrush x:Key="HubChatDraftBrush" Color="#E8675C" />
+    <SolidColorBrush x:Key="HubChatPillBrush" Color="#1C2B3A" />
+    <SolidColorBrush x:Key="HubChatPillTextBrush" Color="#8DA2B5" />
+    <!-- Фон ленты чата: дефолтный «обойный» паттерн tdesktop — редкие точки
+         ~5% белого по тайлу 48px поверх #0E1621 (прозрачная подложка кисти). -->
+    <DrawingBrush x:Key="HubChatAreaPatternBrush"
+                  TileMode="Tile"
+                  Viewport="0,0,48,48"
+                  ViewportUnits="Absolute"
+                  Viewbox="0,0,48,48"
+                  ViewboxUnits="Absolute">
+        <DrawingBrush.Drawing>
+            <DrawingGroup>
+                <GeometryDrawing Brush="#0DFFFFFF">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="9,11" RadiusX="1.4" RadiusY="1.4" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#09FFFFFF">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="33,7" RadiusX="1.1" RadiusY="1.1" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#0BFFFFFF">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="41,30" RadiusX="1.5" RadiusY="1.5" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#08FFFFFF">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="18,38" RadiusX="1.2" RadiusY="1.2" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#0AFFFFFF">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="26,22" RadiusX="0.9" RadiusY="0.9" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+            </DrawingGroup>
+        </DrawingBrush.Drawing>
+    </DrawingBrush>
+    <!-- Подложка активной вкладки вертикальной полосы папок — тинт акцента. -->
+    <SolidColorBrush x:Key="HubChatRailActiveBrush" Color="#592B5278" />
+    <!-- Плитка иконки вкладки папки — стальной синий квадрат со скруглением. -->
+    <SolidColorBrush x:Key="HubChatRailIconBrush" Color="#3E546A" />
 
 </ResourceDictionary>

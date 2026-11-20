@@ -1,3 +1,6 @@
+using System.Text;
+using System.Text.Json;
+using System.Threading;
 using Hub.Desktop.Native.Api;
 using Hub.Desktop.Native.ViewModels;
 using Hub.Desktop.Tests.Fakes;
@@ -113,6 +116,60 @@ public sealed class NativeMailViewModelTests
     }
 
     [Fact]
+    public async Task SlowFolderResponseCannotReplaceNewerUnreadResults()
+    {
+        var delayed = new TaskCompletionSource<HubMailMessagePage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = new FakeHubApiClient
+        {
+            MailMessagesPageAsyncFactory = query => query.UnreadOnly
+                ? Task.FromResult(new HubMailMessagePage { Items = [MakePreview("unread", isRead: false)] })
+                : delayed.Task,
+        };
+        var model = new MailViewModel(api);
+        var loadFolder = ((NativeAsyncCommand)model.SelectFolderCommand).ExecuteAsync("sent");
+
+        await ((NativeAsyncCommand)model.SelectFilterCommand).ExecuteAsync("unread");
+        delayed.SetResult(new HubMailMessagePage { Items = [MakePreview("stale")] });
+        await loadFolder;
+
+        Assert.True(model.UnreadOnly);
+        Assert.Equal("unread", Assert.Single(model.Items).Id);
+    }
+
+    [Fact]
+    public async Task SearchAcrossFoldersShowsPartialResultsWarningAndClearsItOnFullResponse()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие"), MakeFolder("trash", "Удалённые")], items: []),
+            MailMessagesPage = new HubMailMessagePage
+            {
+                Items = [MakePreview("old")],
+                SearchLimited = true,
+                SkippedFolders = 1,
+            },
+        };
+        var model = new MailViewModel(api) { SearchText = "отчёт", SearchAllFolders = true };
+        await model.LoadAsync();
+
+        Assert.Equal("all", api.LastMailQuery?.FolderScope);
+        Assert.Single(model.Items);
+        Assert.Contains("Выдача неполная", model.SearchStatusText);
+        Assert.Contains("Недоступные папки: 1", model.SearchStatusText);
+
+        await ((NativeAsyncCommand)model.SelectFolderCommand).ExecuteAsync("trash");
+        Assert.Single(model.Items).IsChecked = true;
+        Assert.False(model.BulkDeletePermanentCommand.CanExecute(null));
+        Assert.False(model.BulkDeleteCommand.CanExecute(null));
+
+        api.MailMessagesPage = new HubMailMessagePage();
+        model.SearchAllFolders = false;
+        await ((NativeAsyncCommand)model.RefreshCommand).ExecuteAsync(null);
+        Assert.Equal("current", api.LastMailQuery?.FolderScope);
+        Assert.Null(model.SearchStatusText);
+    }
+
+    [Fact]
     public async Task SelectingMessageLoadsDetailAndMarksRead()
     {
         var received = new DateTimeOffset(2026, 3, 2, 9, 15, 0, TimeSpan.FromHours(3));
@@ -158,6 +215,110 @@ public sealed class NativeMailViewModelTests
         Assert.Equal("📎 1", model.Detail.AttachmentsText);
         Assert.Equal(received.ToLocalTime().ToString("dd.MM.yyyy HH:mm"), model.Detail.DateText);
         Assert.True(model.HasDetail);
+    }
+
+    [Fact]
+    public async Task DetailWithBodyHtmlExposesHtmlAndPlainFallback()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                IsRead = true,
+                BodyHtml = "<p>Привет, <b>коллеги</b>!</p><p>Вторая строка</p>",
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        Assert.True(model.Detail!.HasBodyHtml);
+        Assert.True(model.Detail.HasAnyBody);
+        Assert.Equal(
+            "<p>Привет, <b>коллеги</b>!</p><p>Вторая строка</p>",
+            model.Detail.BodyHtml);
+        // Текстовый fallback — body_html грубо очищен до plain text
+        // (показывается, если WebView2-ридер недоступен).
+        Assert.Equal("Привет, коллеги !\nВторая строка", model.Detail.Body);
+    }
+
+    [Fact]
+    public async Task DetailPrefersBodyTextForPlainBody()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                IsRead = true,
+                BodyText = "Готовый текст от backend",
+                BodyHtml = "<p>Игнорируется в plain-ветке</p>",
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        // Html-путь всё равно активен: ридер возьмёт body_html,
+        // а Body — готовый body_text (как раньше).
+        Assert.True(model.Detail!.HasBodyHtml);
+        Assert.Equal("Готовый текст от backend", model.Detail.Body);
+    }
+
+    [Fact]
+    public async Task DetailWithoutBodyHtmlKeepsPlainBody()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                IsRead = true,
+                BodyText = "Обычный текст",
+                BodyHtml = "   ",
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        Assert.False(model.Detail!.HasBodyHtml);
+        Assert.True(model.Detail.HasAnyBody);
+        Assert.Equal("Обычный текст", model.Detail.Body);
+        Assert.Equal(string.Empty, model.Detail.BodyHtml);
+    }
+
+    [Fact]
+    public async Task DetailWithoutAnyBodyHasNoContent()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail { Id = "m1", IsRead = true },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        Assert.False(model.Detail!.HasBody);
+        Assert.False(model.Detail.HasBodyHtml);
+        Assert.False(model.Detail.HasAnyBody);
     }
 
     [Fact]
@@ -210,6 +371,34 @@ public sealed class NativeMailViewModelTests
         Assert.Equal("m3", model.Items[2].Id);
         Assert.Equal(2, api.LastMailQuery?.Offset);
         Assert.False(model.HasMore);
+    }
+
+    [Fact]
+    public async Task LoadMoreSkipsItemsAlreadyShownWhenOffsetsShift()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1"), MakePreview("m2")],
+                total: 3,
+                hasMore: true,
+                nextOffset: 2),
+            MailMessagesPageFactory = query => new HubMailMessagePage
+            {
+                Items = [MakePreview("m2"), MakePreview("m3", subject: "Третье")],
+                Total = 3,
+                Offset = query.Offset,
+                HasMore = false,
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        await ((NativeAsyncCommand)model.LoadMoreCommand).ExecuteAsync(null);
+
+        Assert.Equal(3, model.Items.Count);
+        Assert.Equal(["m1", "m2", "m3"], model.Items.Select(item => item.Id).ToArray());
     }
 
     [Fact]
@@ -1334,6 +1523,1419 @@ public sealed class NativeMailViewModelTests
         Assert.Equal(0, model.SelectedCount);
         Assert.False(model.Items[0].IsChecked);
     }
+
+    // ---- Папки: создание/переименование/удаление/избранное ----
+
+    [Fact]
+    public async Task NewFolderCommandOpensEditorAndConfirmCreatesFolder()
+    {
+        var created = new HubMailFolder
+        {
+            Id = "custom-new",
+            Label = "Проекты 2026",
+            Name = "Проекты 2026",
+            Scope = "mailbox",
+            IconKey = "folder",
+            CanRename = true,
+            CanDelete = true,
+            CanCreateChildren = true,
+        };
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1")]),
+            MailFolderCreateResult = created,
+            // После мутации VM догоняет дерево — backend уже вернул папку в tree.
+            MailFolderTree = new HubMailFolderTree
+            {
+                Items = [MakeFolder("inbox", "Входящие"), created],
+            },
+            MailMessagesPage = new HubMailMessagePage { Items = [], Folder = "custom-new" },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        model.NewFolderCommand.Execute(null);
+
+        Assert.True(model.IsFolderEditorOpen);
+        Assert.Equal("Новая папка", model.FolderEditorTitle);
+        Assert.Equal("Создать", model.FolderEditorConfirmText);
+
+        model.FolderEditorName = "  Проекты 2026  ";
+        await ((NativeAsyncCommand)model.ConfirmFolderEditorCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.MailFolderCreateCalls);
+        Assert.Equal("mb-1", call.MailboxId);
+        Assert.Equal("Проекты 2026", call.Name);
+        Assert.Null(call.ParentFolderId);
+        Assert.Equal("mailbox", call.Scope);
+        Assert.False(model.IsFolderEditorOpen);
+        Assert.Contains(model.Folders, folder => folder.Id == "custom-new");
+        Assert.Equal("custom-new", model.CurrentFolder);
+        Assert.Equal("custom-new", model.SelectedFolder?.Id);
+        Assert.Equal("Папка «Проекты 2026» создана", model.StatusInfoText);
+    }
+
+    [Fact]
+    public async Task FolderEditorEmptyNameShowsLocalErrorWithoutApiCall()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие")]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.NewFolderCommand.Execute(null);
+
+        model.FolderEditorName = "   ";
+        await ((NativeAsyncCommand)model.ConfirmFolderEditorCommand).ExecuteAsync(null);
+
+        Assert.True(model.IsFolderEditorOpen);
+        Assert.True(model.HasFolderEditorError);
+        Assert.Equal("Введите имя папки.", model.FolderEditorErrorText);
+        Assert.Empty(api.MailFolderCreateCalls);
+    }
+
+    [Fact]
+    public async Task NewSubfolderCommandSendsParentIdOfFolder()
+    {
+        var custom = MakeFolder("custom-1", "Проекты", wellKnown: null) with
+        {
+            CanCreateChildren = true,
+        };
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие"), custom],
+                items: [MakePreview("m1")]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        var parent = model.Folders.Single(f => f.Id == "custom-1");
+
+        model.NewSubfolderCommand.Execute(parent);
+
+        Assert.True(model.IsFolderEditorOpen);
+        Assert.Equal("Новая вложенная в «Проекты»", model.FolderEditorTitle);
+        model.FolderEditorName = "2027";
+        await ((NativeAsyncCommand)model.ConfirmFolderEditorCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.MailFolderCreateCalls);
+        Assert.Equal("custom-1", call.ParentFolderId);
+        Assert.Equal("mailbox", call.Scope);
+    }
+
+    [Fact]
+    public async Task RenameFolderCommandPrefillsAndConfirmPatchesLabel()
+    {
+        var custom = MakeFolder("custom-1", "Старое", wellKnown: null) with
+        {
+            CanRename = true,
+            CanDelete = true,
+        };
+        var renamed = custom with { Label = "Новое", Name = "Новое" };
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие"), custom],
+                items: [MakePreview("m1")]),
+            MailFolderRenameResult = renamed,
+            MailFolderTree = new HubMailFolderTree
+            {
+                Items = [MakeFolder("inbox", "Входящие"), renamed],
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        var folder = model.Folders.Single(f => f.Id == "custom-1");
+        Assert.True(folder.ShowRename);
+        Assert.True(folder.ShowDelete);
+
+        model.RenameFolderCommand.Execute(folder);
+
+        Assert.True(model.IsFolderEditorOpen);
+        Assert.Equal("Переименовать папку", model.FolderEditorTitle);
+        Assert.Equal("Переименовать", model.FolderEditorConfirmText);
+        Assert.Equal("Старое", model.FolderEditorName);
+
+        model.FolderEditorName = "Новое";
+        await ((NativeAsyncCommand)model.ConfirmFolderEditorCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.MailFolderRenameCalls);
+        Assert.Equal("custom-1", call.FolderId);
+        Assert.Equal("mb-1", call.MailboxId);
+        Assert.Equal("Новое", call.Name);
+        Assert.False(model.IsFolderEditorOpen);
+        Assert.Equal("Новое", model.Folders.Single(f => f.Id == "custom-1").Label);
+        Assert.Equal("Папка переименована в «Новое»", model.StatusInfoText);
+    }
+
+    [Fact]
+    public async Task StandardFolderDoesNotExposeRenameOrDelete()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие")]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        var inbox = model.Folders[0];
+
+        Assert.False(inbox.IsCustom);
+        Assert.False(inbox.ShowRename);
+        Assert.False(inbox.ShowDelete);
+
+        // Страж команды тоже не открывает редактор по системной папке.
+        model.RenameFolderCommand.Execute(inbox);
+        Assert.False(model.IsFolderEditorOpen);
+    }
+
+    [Fact]
+    public async Task DeleteFolderRequiresArmedSecondClickAndRemovesIt()
+    {
+        var custom = MakeFolder("custom-1", "Проекты", wellKnown: null) with
+        {
+            CanDelete = true,
+        };
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие"), custom],
+                items: [MakePreview("m1")]),
+            MailFolderTree = new HubMailFolderTree
+            {
+                Items = [MakeFolder("inbox", "Входящие")],
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        var folder = model.Folders.Single(f => f.Id == "custom-1");
+
+        // Первый клик по «Удалить» в меню только взводит подтверждение.
+        await ((NativeAsyncCommand)model.DeleteFolderCommand).ExecuteAsync(folder);
+
+        Assert.True(folder.DeleteArmed);
+        Assert.Equal("Точно удалить?", folder.DeleteText);
+        Assert.Empty(api.MailFolderDeleteCalls);
+        Assert.Equal(2, model.Folders.Count);
+
+        await ((NativeAsyncCommand)model.DeleteFolderCommand).ExecuteAsync(folder);
+
+        var call = Assert.Single(api.MailFolderDeleteCalls);
+        Assert.Equal("custom-1", call.FolderId);
+        Assert.Equal("mb-1", call.MailboxId);
+        var remaining = Assert.Single(model.Folders);
+        Assert.Equal("inbox", remaining.Id);
+        Assert.Equal("Папка «Проекты» удалена", model.StatusInfoText);
+    }
+
+    [Fact]
+    public async Task DeleteCurrentFolderFallsBackToInbox()
+    {
+        var custom = MakeFolder("custom-1", "Проекты", wellKnown: null) with
+        {
+            CanDelete = true,
+        };
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие"), custom],
+                items: [MakePreview("m1")]),
+            MailFolderTree = new HubMailFolderTree
+            {
+                Items = [MakeFolder("inbox", "Входящие")],
+            },
+            MailMessagesPage = new HubMailMessagePage
+            {
+                Items = [MakePreview("m2")],
+                Folder = "inbox",
+                Total = 1,
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        var folder = model.Folders.Single(f => f.Id == "custom-1");
+        await ((NativeAsyncCommand)model.SelectFolderCommand).ExecuteAsync("custom-1");
+        Assert.Equal("custom-1", model.CurrentFolder);
+
+        await ((NativeAsyncCommand)model.DeleteFolderCommand).ExecuteAsync(folder);
+        await ((NativeAsyncCommand)model.DeleteFolderCommand).ExecuteAsync(folder);
+
+        Assert.Equal("inbox", model.CurrentFolder);
+        Assert.Equal("inbox", model.SelectedFolder?.Id);
+    }
+
+    [Fact]
+    public async Task FolderFavoriteTogglesOptimisticallyWithApiFlag()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1")]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        var inbox = model.Folders[0];
+        Assert.False(inbox.IsFavorite);
+        Assert.Equal("☆ В избранное", inbox.FavoriteText);
+
+        await ((NativeAsyncCommand)model.ToggleFolderFavoriteCommand).ExecuteAsync(inbox);
+
+        var call = Assert.Single(api.MailFolderFavoriteCalls);
+        Assert.Equal("inbox", call.FolderId);
+        Assert.Equal("mb-1", call.MailboxId);
+        Assert.True(call.Favorite);
+        Assert.True(inbox.IsFavorite);
+        Assert.Equal("★ Убрать из избранного", inbox.FavoriteText);
+    }
+
+    [Fact]
+    public async Task FolderFavoriteFailureRollsBackFlag()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1")]),
+            MailFolderMutationException = new InvalidOperationException("сбой"),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        var inbox = model.Folders[0];
+
+        await ((NativeAsyncCommand)model.ToggleFolderFavoriteCommand).ExecuteAsync(inbox);
+
+        Assert.False(inbox.IsFavorite);
+        Assert.True(model.HasBannerError);
+        Assert.False(inbox.IsBusy);
+    }
+
+    // ---- Важность письма ----
+
+    [Fact]
+    public async Task ToggleImportancePostsHighThenNormalAndSyncsListPill()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                Subject = "Письмо",
+                SenderEmail = "sender@zsgp.ru",
+                IsRead = true,
+                Importance = "normal",
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+        Assert.False(model.Detail!.IsImportant);
+        Assert.False(model.Items[0].IsImportant);
+        Assert.Equal("❗ Важное", model.Detail.ImportanceToggleText);
+
+        await ((NativeAsyncCommand)model.ToggleImportanceCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.MailImportanceCalls);
+        Assert.Equal("m1", call.MessageId);
+        Assert.Equal("mb-1", call.MailboxId);
+        Assert.Equal("high", call.Importance);
+        Assert.True(model.Detail.IsImportant);
+        Assert.Equal("Важно", model.Detail.ImportanceText);
+        Assert.Equal("Снять важность", model.Detail.ImportanceToggleText);
+        Assert.True(model.Items[0].IsImportant);
+
+        await ((NativeAsyncCommand)model.ToggleImportanceCommand).ExecuteAsync(null);
+
+        Assert.Equal(2, api.MailImportanceCalls.Count);
+        Assert.Equal("normal", api.MailImportanceCalls[1].Importance);
+        Assert.False(model.Detail.IsImportant);
+        Assert.False(model.Items[0].IsImportant);
+    }
+
+    [Fact]
+    public async Task ToggleImportanceFailureRollsBackBothFlags()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                IsRead = true,
+                Importance = "normal",
+            },
+            MailImportanceException = new InvalidOperationException("сбой"),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        await ((NativeAsyncCommand)model.ToggleImportanceCommand).ExecuteAsync(null);
+
+        Assert.False(model.Detail!.IsImportant);
+        Assert.False(model.Items[0].IsImportant);
+        Assert.True(model.HasDetailError);
+    }
+
+    [Fact]
+    public async Task StarToggleUpdatesRowWithoutOpeningAndKeepsDetailInSync()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true), MakePreview("m2", isRead: false)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                IsRead = true,
+                Importance = "normal",
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+        Assert.Equal("☆", model.Items[1].StarText);
+
+        // Звезда строки без открытия письма: деталь другого письма не трогаем.
+        await ((NativeAsyncCommand)model.ToggleItemImportanceCommand).ExecuteAsync(model.Items[1]);
+
+        Assert.True(model.Items[1].IsImportant);
+        Assert.Equal("★", model.Items[1].StarText);
+        Assert.False(model.Items[0].IsImportant);
+        Assert.False(model.Detail!.IsImportant);
+        var call = Assert.Single(api.MailImportanceCalls);
+        Assert.Equal("m2", call.MessageId);
+        Assert.Equal("mb-1", call.MailboxId);
+        Assert.Equal("high", call.Importance);
+
+        // Звезда строки письма, открытого в панели чтения, — деталь синхронна.
+        await ((NativeAsyncCommand)model.ToggleItemImportanceCommand).ExecuteAsync(model.Items[0]);
+
+        Assert.True(model.Items[0].IsImportant);
+        Assert.True(model.Detail.IsImportant);
+        Assert.Equal(2, api.MailImportanceCalls.Count);
+        Assert.Equal("m1", api.MailImportanceCalls[1].MessageId);
+        Assert.Equal("high", api.MailImportanceCalls[1].Importance);
+    }
+
+    [Fact]
+    public async Task StarToggleFailureRollsBackRowAndOpenDetail()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                IsRead = true,
+                Importance = "normal",
+            },
+            MailImportanceException = new InvalidOperationException("сбой"),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        await ((NativeAsyncCommand)model.ToggleItemImportanceCommand).ExecuteAsync(model.Items[0]);
+
+        Assert.False(model.Items[0].IsImportant);
+        Assert.Equal("☆", model.Items[0].StarText);
+        Assert.False(model.Detail!.IsImportant);
+        Assert.True(model.HasBannerError);
+    }
+
+    [Fact]
+    public async Task KebabReadToggleMarksOneItemAndAdjustsBadges()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие", unread: 2)],
+                items: [MakePreview("m1", isRead: false), MakePreview("m2", isRead: false)],
+                unreadCount: 2),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        Assert.Equal("Пометить прочитанным", model.Items[1].ToggleReadItemText);
+
+        await ((NativeAsyncCommand)model.ToggleItemReadCommand).ExecuteAsync(model.Items[1]);
+
+        var (action, ids, targetFolder, permanent) = Assert.Single(api.MailBulkCalls);
+        Assert.Equal("mark_read", action);
+        Assert.Equal(["m2"], ids);
+        Assert.Null(targetFolder);
+        Assert.False(permanent);
+        Assert.False(model.Items[1].IsUnread);
+        Assert.Equal("Пометить непрочитанным", model.Items[1].ToggleReadItemText);
+        Assert.True(model.Items[0].IsUnread);
+        Assert.Equal(1, model.Folders[0].Unread);
+        Assert.Equal(1, model.TotalUnreadCount);
+    }
+
+    [Fact]
+    public async Task KebabArchiveRemovesRowWithoutTouchingOthers()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders:
+                [
+                    MakeFolder("inbox", "Входящие", unread: 1),
+                    MakeFolder("archive", "Архив"),
+                ],
+                items: [MakePreview("m1", isRead: false), MakePreview("m2", isRead: true)],
+                unreadCount: 1),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        await ((NativeAsyncCommand)model.ArchiveItemCommand).ExecuteAsync(model.Items[0]);
+
+        var (action, ids, targetFolder, permanent) = Assert.Single(api.MailBulkCalls);
+        Assert.Equal("archive", action);
+        Assert.Equal(["m1"], ids);
+        Assert.False(permanent);
+        var remaining = Assert.Single(model.Items);
+        Assert.Equal("m2", remaining.Id);
+        // Непрочитанное ушло — бейдж папки и агрегат пересчитались.
+        Assert.Equal(0, model.Folders[0].Unread);
+        Assert.Equal(0, model.TotalUnreadCount);
+    }
+
+    [Fact]
+    public async Task KebabDeleteRemovesRowAndClosesDetailOfDeletedLetter()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true), MakePreview("m2", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail { Id = "m1", IsRead = true },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+        Assert.Equal("Удалить", model.ItemDeleteMenuText);
+
+        // Удаляем другое письмо — открытая деталь не меняется.
+        await ((NativeAsyncCommand)model.DeleteItemCommand).ExecuteAsync(model.Items[1]);
+
+        Assert.Single(model.Items);
+        Assert.NotNull(model.Detail);
+        var calls = api.MailBulkCalls;
+        Assert.Single(calls);
+        Assert.Equal("delete", calls[0].Action);
+        Assert.Equal(["m2"], calls[0].Ids);
+        Assert.False(calls[0].Permanent);
+
+        // Удаляем открытый — деталь закрывается.
+        await ((NativeAsyncCommand)model.DeleteItemCommand).ExecuteAsync(model.Items[0]);
+
+        Assert.Empty(model.Items);
+        Assert.Null(model.Detail);
+        Assert.Null(model.SelectedItem);
+        Assert.Equal("0", model.TotalText);
+    }
+
+    [Fact]
+    public async Task MoveItemToFolderMovesSingleItemViaBulkCore()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders:
+                [
+                    MakeFolder("inbox", "Входящие"),
+                    MakeFolder("archive", "Архив"),
+                ],
+                items: [MakePreview("m1", isRead: true), MakePreview("m2", isRead: true)]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        await model.MoveItemToFolderSafelyAsync(model.Items[0], "archive", CancellationToken.None);
+
+        var (action, ids, targetFolder, permanent) = Assert.Single(api.MailBulkCalls);
+        Assert.Equal("move", action);
+        Assert.Equal(["m1"], ids);
+        Assert.Equal("archive", targetFolder);
+        Assert.False(permanent);
+        var remaining = Assert.Single(model.Items);
+        Assert.Equal("m2", remaining.Id);
+    }
+
+    [Fact]
+    public async Task KebabMoveCommandUsesOpenRowAndClearsContext()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders:
+                [
+                    MakeFolder("inbox", "Входящие"),
+                    MakeFolder("archive", "Архив"),
+                ],
+                items: [MakePreview("m1", isRead: true), MakePreview("m2", isRead: true)]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        // Пункт подменю активен только при открытом контексте строки.
+        var moveCommand = (NativeAsyncCommand)model.MoveItemFromKebabCommand;
+        Assert.False(moveCommand.CanExecute("archive"));
+        model.KebabTargetItem = model.Items[1];
+        Assert.True(moveCommand.CanExecute("archive"));
+
+        await moveCommand.ExecuteAsync("archive");
+
+        var (action, ids, targetFolder, _) = Assert.Single(api.MailBulkCalls);
+        Assert.Equal("move", action);
+        Assert.Equal(["m2"], ids);
+        Assert.Equal("archive", targetFolder);
+        Assert.Null(model.KebabTargetItem);
+        Assert.False(moveCommand.CanExecute("archive"));
+        var remaining = Assert.Single(model.Items);
+        Assert.Equal("m1", remaining.Id);
+    }
+
+    [Fact]
+    public async Task MoveItemToFolderFailureSetsBannerWithoutThrow()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders:
+                [
+                    MakeFolder("inbox", "Входящие"),
+                    MakeFolder("archive", "Архив"),
+                ],
+                items: [MakePreview("m1", isRead: true)]),
+            MailBulkException = new InvalidOperationException("сбой"),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        // Drag&drop-путь не бросает исключение наружу: ошибка уходит в баннер.
+        await model.MoveItemToFolderSafelyAsync(model.Items[0], "archive", CancellationToken.None);
+
+        Assert.True(model.HasBannerError);
+        Assert.Single(model.Items);
+    }
+
+    [Fact]
+    public async Task ListHeaderShowsFolderNameAndSwitchesToAllFoldersSearch()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        Assert.Equal("Входящие", model.ListHeaderTitle);
+        Assert.False(model.SearchAllFolders);
+
+        // Поиск по всем папкам: заголовок честно говорит «Все папки»,
+        // а не имя выбранной строки рейки.
+        model.SearchAllFolders = true;
+
+        Assert.Equal("Все папки", model.ListHeaderTitle);
+        model.SearchAllFolders = false;
+        Assert.Equal("Входящие", model.ListHeaderTitle);
+    }
+
+    [Fact]
+    public async Task ResetListFiltersClearsSearchFilterAndReloadsList()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        await ((NativeAsyncCommand)model.SelectFilterCommand).ExecuteAsync("unread");
+        model.SearchText = "отчёт";
+        Assert.True(model.HasActiveListFilters);
+
+        await ((NativeAsyncCommand)model.ResetListFiltersCommand).ExecuteAsync(null);
+
+        Assert.Equal(string.Empty, model.SearchText);
+        Assert.Equal("all", model.Filter);
+        Assert.False(model.HasActiveListFilters);
+    }
+
+    [Fact]
+    public async Task HasActiveListFiltersReflectsSearchState()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        Assert.False(model.HasActiveListFilters);
+
+        model.SearchText = "abc";
+        Assert.True(model.HasActiveListFilters);
+
+        model.SearchText = string.Empty;
+        Assert.False(model.HasActiveListFilters);
+
+        model.SearchAllFolders = true;
+        Assert.True(model.HasActiveListFilters);
+    }
+
+    [Fact]
+    public async Task RestoreFromRowCallsEndpointAndRemovesListRow()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders:
+                [
+                    MakeFolder("inbox", "Входящие"),
+                    MakeFolder("trash", "Удалённые"),
+                ],
+                items: [MakePreview("m1", isRead: false), MakePreview("m2", isRead: true)],
+                unreadCount: 1),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        await ((NativeAsyncCommand)model.RestoreItemCommand).ExecuteAsync(model.Items[0]);
+
+        var call = Assert.Single(api.MailRestoreCalls);
+        Assert.Equal("m1", call.MessageId);
+        Assert.Equal("mb-1", call.MailboxId);
+        var remaining = Assert.Single(model.Items);
+        Assert.Equal("m2", remaining.Id);
+        // Непрочитанное уходит из выдачи — бейдж папки и агрегат пересчитаны.
+        Assert.Equal(0, model.Folders[0].Unread);
+        Assert.Equal(0, model.TotalUnreadCount);
+        Assert.Contains("восстановлено", model.StatusInfoText);
+    }
+
+    [Fact]
+    public async Task RestoreFromOpenDetailRemovesRowAndClosesDetail()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders:
+                [
+                    MakeFolder("inbox", "Входящие"),
+                    MakeFolder("trash", "Удалённые"),
+                ],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail { Id = "m1", IsRead = true },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        // Из шапки чтения параметр — сама деталь.
+        await ((NativeAsyncCommand)model.RestoreItemCommand).ExecuteAsync(model.Detail);
+
+        Assert.Empty(model.Items);
+        Assert.Null(model.Detail);
+        Assert.Null(model.SelectedItem);
+        Assert.Equal("0", model.TotalText);
+        Assert.Single(api.MailRestoreCalls);
+    }
+
+    [Fact]
+    public async Task RestoreFailureKeepsRowAndSetsBanner()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailRestoreException = new InvalidOperationException("сбой"),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        await ((NativeAsyncCommand)model.RestoreItemCommand).ExecuteAsync(model.Items[0]);
+
+        Assert.Single(model.Items);
+        Assert.True(model.HasBannerError);
+    }
+
+    private static HubMailFolder NestedFolder(
+        string id, string label, string? parentId = null, int unread = 0) =>
+        new()
+        {
+            Id = id,
+            Label = label,
+            Scope = "mailbox",
+            Total = unread + 1,
+            Unread = unread,
+            ParentId = parentId,
+        };
+
+    [Fact]
+    public async Task FolderTreeKeepsChildrenUnderParentInDfsOrder()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders:
+                [
+                    MakeFolder("inbox", "Входящие"),
+                    NestedFolder("f-projects", "Проекты"),
+                    NestedFolder("f-alpha", "Альфа", parentId: "f-projects"),
+                    NestedFolder("f-beta", "Бета", parentId: "f-projects"),
+                ],
+                items: [MakePreview("m1", isRead: true)]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        // DFS: дети следуют за родителем; уровень задаёт отступ и chevron.
+        Assert.Equal(
+            ["inbox", "f-projects", "f-alpha", "f-beta"],
+            model.Folders.Select(f => f.Id).ToArray());
+        Assert.True(model.Folders[1].HasChildren);
+        Assert.False(model.Folders[0].HasChildren);
+        Assert.Equal(0, model.Folders[1].Depth);
+        Assert.Equal(1, model.Folders[2].Depth);
+        Assert.Equal(1, model.Folders[3].Depth);
+        Assert.Equal(16, model.Folders[2].IndentWidth);
+        Assert.True(model.Folders[2].IsTreeVisible);
+    }
+
+    [Fact]
+    public async Task CollapsingFolderBranchHidesChildrenUntilExpanded()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders:
+                [
+                    MakeFolder("inbox", "Входящие"),
+                    NestedFolder("f-projects", "Проекты"),
+                    NestedFolder("f-alpha", "Альфа", parentId: "f-projects"),
+                    NestedFolder("f-beta", "Бета", parentId: "f-projects"),
+                ],
+                items: [MakePreview("m1", isRead: true)]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        ((NativeRelayCommand)model.ToggleFolderExpandedCommand).Execute(model.Folders[1]);
+
+        // Ветка свёрнута: сам узел виден, дети скрыты.
+        Assert.False(model.Folders[1].IsExpanded);
+        Assert.True(model.Folders[1].IsTreeVisible);
+        Assert.False(model.Folders[2].IsTreeVisible);
+        Assert.False(model.Folders[3].IsTreeVisible);
+        Assert.True(model.Folders[0].IsTreeVisible);
+
+        ((NativeRelayCommand)model.ToggleFolderExpandedCommand).Execute(model.Folders[1]);
+
+        Assert.True(model.Folders[1].IsExpanded);
+        Assert.True(model.Folders[2].IsTreeVisible);
+        Assert.True(model.Folders[3].IsTreeVisible);
+    }
+
+    [Fact]
+    public async Task DetailHeadersLoadOnceAndToggleOffWithoutRefetch()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail { Id = "m1", IsRead = true },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+        Assert.False(model.Detail!.AreHeadersVisible);
+        Assert.Equal("Показать заголовки", model.Detail.HeadersToggleText);
+
+        await ((NativeAsyncCommand)model.ToggleDetailHeadersCommand).ExecuteAsync(null);
+
+        Assert.True(model.Detail.AreHeadersVisible);
+        Assert.Equal("Скрыть заголовки", model.Detail.HeadersToggleText);
+        var call = Assert.Single(api.MailHeadersCalls);
+        Assert.Equal("m1", call.MessageId);
+        Assert.Equal("mb-1", call.MailboxId);
+        // Моноширинный список: элементы payload построчно.
+        Assert.Contains("Message-ID: <CALd=eM1@mail.zsgp.ru>", model.Detail.HeadersText);
+        Assert.Contains("Received: ", model.Detail.HeadersText);
+        Assert.Equal("message.eml", model.Detail.HeadersSourceName);
+
+        // Повторное скрытие/раскрытие не перезагружает — текст кэширован в детали.
+        await ((NativeAsyncCommand)model.ToggleDetailHeadersCommand).ExecuteAsync(null);
+        Assert.False(model.Detail.AreHeadersVisible);
+        await ((NativeAsyncCommand)model.ToggleDetailHeadersCommand).ExecuteAsync(null);
+        Assert.True(model.Detail.AreHeadersVisible);
+        Assert.Single(api.MailHeadersCalls);
+    }
+
+    [Fact]
+    public async Task DetailHeadersFailureSetsDetailErrorAndStopsLoading()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail { Id = "m1", IsRead = true },
+            MailHeadersException = new InvalidOperationException("сбой"),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        await ((NativeAsyncCommand)model.ToggleDetailHeadersCommand).ExecuteAsync(null);
+
+        Assert.True(model.Detail!.AreHeadersVisible);
+        Assert.False(model.Detail.IsHeadersLoading);
+        Assert.True(model.HasDetailError);
+    }
+
+    [Fact]
+    public async Task DownloadMessageSourceFetchesEmlForOpenDetail()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail { Id = "m1", IsRead = true },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        // Шов заменяет весь путь сохранения (как AttachmentSaver): команда
+        // доходит до сохранения с открытой деталью, без %TEMP% и проводника.
+        MailDetailViewModel? savedDetail = null;
+        model.MessageSourceSaver = detail =>
+        {
+            savedDetail = detail;
+            return Task.CompletedTask;
+        };
+
+        var downloadCommand = (NativeAsyncCommand)model.DownloadMessageSourceCommand;
+        Assert.True(downloadCommand.CanExecute(null));
+        await downloadCommand.ExecuteAsync(null);
+
+        Assert.Same(model.Detail, savedDetail);
+
+        // Смена фильтра гасит деталь — команда скачивания становится недоступной.
+        await ((NativeAsyncCommand)model.SelectFilterCommand).ExecuteAsync("unread");
+        Assert.Null(model.Detail);
+        Assert.False(downloadCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void DateGroupKeysSortChronologicallyAndCoverPeriods()
+    {
+        var now = DateTimeOffset.Now;
+        // Числовые префиксы гарантируют порядок групп при строковой сортировке WPF.
+        var today = MailListItemViewModel.ComputeDateGroup(now.ToString("O"));
+        var yesterday = MailListItemViewModel.ComputeDateGroup(now.AddDays(-1).ToString("O"));
+        var thisWeek = MailListItemViewModel.ComputeDateGroup(now.AddDays(-3).ToString("O"));
+        var broken = MailListItemViewModel.ComputeDateGroup("не-дата");
+
+        Assert.Matches("^0\\|Сегодня$", today);
+        Assert.Matches("^1\\|Вчера$", yesterday);
+        Assert.Matches("^2\\|Ранее на этой неделе$", thisWeek);
+        Assert.Matches("^4\\|Ранее$", broken);
+        Assert.True(string.CompareOrdinal(today, yesterday) < 0);
+        Assert.True(string.CompareOrdinal(yesterday, thisWeek) < 0);
+    }
+
+    // ---- AI: пересказ и быстрые ответы ----
+
+    [Fact]
+    public async Task SummarizeAsksConsentThenShowsSummaryPanel()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                IsRead = true,
+                BodyText = "Длинный текст письма",
+            },
+            MailSummaryResult = new HubMailSummaryResult { Summary = "Короткое содержание" },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+        Assert.True(model.ShowAiActions);
+        Assert.False(model.IsMailAiEnabled);
+
+        // Без opt-in: кнопка открывает согласие, запроса нет.
+        await ((NativeAsyncCommand)model.SummarizeCommand).ExecuteAsync(null);
+
+        Assert.True(model.AiConsentOpen);
+        Assert.Equal(0, api.MailSummarizeCallCount);
+        Assert.False(model.ShowSummaryPanel);
+        Assert.Contains("внешний сервис ИИ", model.MailAiDisclosureText);
+
+        await ((NativeAsyncCommand)model.AcceptAiConsentCommand).ExecuteAsync(null);
+
+        Assert.True(model.IsMailAiEnabled);
+        Assert.False(model.AiConsentOpen);
+        Assert.Equal(1, api.MailSummarizeCallCount);
+        Assert.True(model.ShowSummaryPanel);
+        Assert.Equal("Короткое содержание", model.AiSummaryText);
+        Assert.False(model.HasAiError);
+    }
+
+    [Fact]
+    public async Task SummarizeServerDisabledHidesAiButtons()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail { Id = "m1", IsRead = true },
+            MailAiException = new HubApiException(
+                HubApiErrorKind.Http,
+                "MAIL_AI_DISABLED",
+                System.Net.HttpStatusCode.Forbidden),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        await ((NativeAsyncCommand)model.SummarizeCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.AcceptAiConsentCommand).ExecuteAsync(null);
+
+        // «Проба+скрытие»: 403 → кнопки AI исчезают, локальной ошибки нет.
+        Assert.True(model.MailAiServerDisabled);
+        Assert.False(model.ShowAiActions);
+        Assert.False(model.AiConsentOpen);
+        Assert.False(model.HasAiError);
+        Assert.Equal(1, api.MailSummarizeCallCount);
+    }
+
+    [Fact]
+    public async Task AiFailureShowsLocalErrorAndKeepsButtons()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail { Id = "m1", IsRead = true },
+            MailAiException = new InvalidOperationException("сбой"),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        await ((NativeAsyncCommand)model.SummarizeCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.AcceptAiConsentCommand).ExecuteAsync(null);
+
+        Assert.True(model.HasAiError);
+        Assert.False(model.MailAiServerDisabled);
+        Assert.True(model.ShowAiActions);
+    }
+
+    [Fact]
+    public async Task SmartRepliesShowChipsAndApplyIntoReplyComposer()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                Subject = "Вопрос",
+                SenderDisplay = "Иван Иванов",
+                SenderEmail = "ivan@zsgp.ru",
+                IsRead = true,
+                BodyText = "Привет?",
+            },
+            MailSmartRepliesResult = new HubMailSmartRepliesResult
+            {
+                Suggestions = ["Да, подтверждаю.", "Нет, спасибо.", "Уточню завтра.", "  "],
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        await ((NativeAsyncCommand)model.SmartRepliesCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.AcceptAiConsentCommand).ExecuteAsync(null);
+
+        Assert.Equal(1, api.MailSmartRepliesCallCount);
+        Assert.Equal(3, model.SmartReplies.Count);
+        Assert.Contains("Да, подтверждаю.", model.SmartReplies);
+        Assert.Null(model.Composer);
+
+        model.ApplySmartReplyCommand.Execute("Да, подтверждаю.");
+
+        var composer = model.Composer;
+        Assert.NotNull(composer);
+        Assert.Equal("reply", composer!.Mode);
+        Assert.Equal("ivan@zsgp.ru", composer.To);
+        Assert.StartsWith("Да, подтверждаю.", composer.Body);
+        Assert.Contains("Привет?", composer.Body); // цитата осталась ниже подсказки
+    }
+
+    [Fact]
+    public async Task SmartReplyAppliesIntoAlreadyOpenReplyComposer()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1", isRead: true)]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                Subject = "Вопрос",
+                SenderEmail = "ivan@zsgp.ru",
+                IsRead = true,
+                BodyText = "Привет?",
+            },
+            MailSmartRepliesResult = new HubMailSmartRepliesResult
+            {
+                Suggestions = ["Спасибо, посмотрю"],
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+        await ((NativeAsyncCommand)model.SmartRepliesCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.AcceptAiConsentCommand).ExecuteAsync(null);
+
+        model.ReplyCommand.Execute(null);
+        var composer = model.Composer;
+        Assert.NotNull(composer);
+        Assert.Equal("reply", composer!.Mode);
+        composer.Body = "Набранный текст" + composer.Body;
+
+        model.ApplySmartReplyCommand.Execute("Спасибо, посмотрю");
+
+        Assert.StartsWith("Спасибо, посмотрю", composer.Body);
+        Assert.Contains("Набранный текст", composer.Body);
+        Assert.Equal("reply", composer.Mode);
+    }
+
+    // ---- Заявка в IT: открытие, динамическая форма, отправка ----
+
+    [Fact]
+    public async Task ItRequestOpensListsTemplatesAndBuildsDynamicFields()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие")]),
+            MailTemplates = [MakeItTemplate()],
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        Assert.True(model.OpenItRequestCommand.CanExecute(null));
+        await ((NativeAsyncCommand)model.OpenItRequestCommand).ExecuteAsync(null);
+
+        var form = Assert.IsType<MailItRequestViewModel>(model.ItRequest);
+        Assert.True(model.IsItRequestOpen);
+        Assert.Equal(1, api.MailTemplatesCallCount);
+        Assert.False(api.LastMailTemplatesIncludeInactive);
+        var option = Assert.Single(form.Templates);
+        Assert.Equal("tpl-1", option.Id);
+        Assert.Equal("Замена картриджа", option.Title);
+
+        form.SelectedTemplate = option;
+        Assert.True(form.HasFields);
+        // order backend'а задаёт порядок: model(0) перед comment(1).
+        Assert.Equal(8, form.Fields.Count);
+        Assert.Equal("model", form.Fields[0].Key);
+        Assert.Equal("comment", form.Fields[1].Key);
+
+        var text = form.Fields[0];
+        Assert.True(text.IsTextInput);
+        Assert.True(text.Required);
+        Assert.Equal("Модель *", text.LabelText);
+        Assert.Equal("HP M404", text.TextValue); // default_value применился
+
+        var area = form.Fields[1];
+        Assert.True(area.IsTextarea);
+        Assert.False(area.Required);
+        Assert.Equal("Комментарий", area.LabelText);
+
+        var select = form.Fields[2];
+        Assert.True(select.IsSelect);
+        Assert.Equal(["ч/б", "цвет"], select.OptionValues);
+        Assert.Equal("цвет", select.SelectedOption);
+
+        var multi = form.Fields[3];
+        Assert.True(multi.IsMultiSelect);
+        Assert.Equal(2, multi.OptionItems.Count);
+        Assert.True(multi.OptionItems[0].IsSelected);  // default ["барабан"]
+        Assert.False(multi.OptionItems[1].IsSelected);
+
+        var date = form.Fields[4];
+        Assert.True(date.IsDate);
+        Assert.Equal(new DateTime(2026, 5, 4), date.DateValue);
+
+        var flag = form.Fields[5];
+        Assert.True(flag.IsCheckbox);
+        Assert.False(flag.BoolValue);
+
+        // email/tel — однострочные поля, как text.
+        Assert.True(form.Fields[6].IsTextInput);
+        Assert.True(form.Fields[7].IsTextInput);
+    }
+
+    [Fact]
+    public async Task ItRequestRequiredValidationBlocksSendAndKeepsOverlay()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие")]),
+            MailTemplates =
+            [
+                new HubMailTemplate
+                {
+                    Id = "tpl-req",
+                    Title = "Согласование",
+                    IsActive = true,
+                    Fields =
+                    [
+                        new HubMailTemplateField { Key = "reason", Label = "Причина", Type = "text", Required = true },
+                        new HubMailTemplateField { Key = "agree", Label = "Согласен", Type = "checkbox", Required = true },
+                    ],
+                },
+            ],
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenItRequestCommand).ExecuteAsync(null);
+        var form = model.ItRequest!;
+        form.SelectedTemplate = form.Templates[0];
+
+        await ((NativeAsyncCommand)form.SendCommand).ExecuteAsync(null);
+
+        Assert.True(form.HasError);
+        Assert.Contains("Причина", form.ErrorText);
+        Assert.Contains("Согласен", form.ErrorText);
+        Assert.Empty(api.MailItRequestCalls);
+        Assert.Empty(api.MailItRequestMultipartCalls);
+        Assert.True(model.IsItRequestOpen);
+
+        // После заполнения required-полей отправка проходит.
+        form.Fields[0].TextValue = "сломался принтер";
+        form.Fields[1].BoolValue = true;
+        await ((NativeAsyncCommand)form.SendCommand).ExecuteAsync(null);
+        var call = Assert.Single(api.MailItRequestCalls);
+        Assert.Equal("tpl-req", call.TemplateId);
+        Assert.Equal("сломался принтер", call.Fields["reason"]);
+        Assert.True((bool)call.Fields["agree"]!);
+        Assert.False(model.IsItRequestOpen);
+    }
+
+    [Fact]
+    public async Task ItRequestSendWithoutFilesPostsJsonAndCloses()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие")]),
+            MailTemplates = [MakeItTemplate()],
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenItRequestCommand).ExecuteAsync(null);
+        var form = model.ItRequest!;
+        form.SelectedTemplate = form.Templates[0];
+
+        await ((NativeAsyncCommand)form.SendCommand).ExecuteAsync(null);
+
+        var call = Assert.Single(api.MailItRequestCalls);
+        Assert.Equal("tpl-1", call.TemplateId);
+        Assert.Equal("HP M404", call.Fields["model"]);
+        Assert.Equal("цвет", call.Fields["color"]);
+        Assert.Equal("2026-05-04", call.Fields["due"]);
+        Assert.False((bool)call.Fields["urgent"]!);
+        Assert.Equal(["барабан"], Assert.IsType<List<string>>(call.Fields["parts"]));
+        Assert.Empty(api.MailItRequestMultipartCalls);
+        Assert.False(model.IsItRequestOpen);
+        Assert.Equal("Отправлено", model.StatusInfoText);
+    }
+
+    [Fact]
+    public async Task ItRequestSendWithFilesPostsMultipart()
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $"it-req-{Guid.NewGuid():N}.txt");
+        try
+        {
+            await File.WriteAllTextAsync(temp, "спецификация");
+            var api = new FakeHubApiClient
+            {
+                MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие")]),
+                MailTemplates = [MakeItTemplate()],
+            };
+            var model = new MailViewModel(api) { ComposeFilePicker = () => [temp] };
+            await model.LoadAsync();
+            await ((NativeAsyncCommand)model.OpenItRequestCommand).ExecuteAsync(null);
+            var form = model.ItRequest!;
+            form.SelectedTemplate = form.Templates[0];
+
+            await ((NativeAsyncCommand)form.AttachCommand).ExecuteAsync(null);
+            var chip = Assert.Single(form.Attachments);
+            Assert.Equal(temp, chip.Path);
+            Assert.True(form.HasAttachments);
+
+            await ((NativeAsyncCommand)form.SendCommand).ExecuteAsync(null);
+
+            Assert.Empty(api.MailItRequestCalls);
+            var call = Assert.Single(api.MailItRequestMultipartCalls);
+            Assert.Equal("tpl-1", call.TemplateId);
+            Assert.Equal("HP M404", call.Fields["model"]);
+            var file = Assert.Single(call.Attachments);
+            Assert.Equal(Path.GetFileName(temp), file.FileName);
+            Assert.Equal("text/plain", file.ContentType);
+            Assert.Equal("спецификация", Encoding.UTF8.GetString(file.Content.ToArray()));
+            Assert.False(model.IsItRequestOpen);
+            Assert.Equal("Отправлено", model.StatusInfoText);
+        }
+        finally
+        {
+            File.Delete(temp);
+        }
+    }
+
+    [Fact]
+    public async Task ItRequestSendErrorKeepsOverlayAndReusesKeyOnRetry()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие")]),
+            MailTemplates = [MakeItTemplate()],
+            MailItRequestException = new InvalidOperationException("smtp down"),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenItRequestCommand).ExecuteAsync(null);
+        var form = model.ItRequest!;
+        form.SelectedTemplate = form.Templates[0];
+
+        await ((NativeAsyncCommand)form.SendCommand).ExecuteAsync(null);
+
+        Assert.True(form.HasError);
+        Assert.NotNull(form.ErrorText);
+        Assert.True(model.IsItRequestOpen);
+        // Значения формы не стираются при ошибке.
+        Assert.Equal("HP M404", form.Fields[0].TextValue);
+
+        api.MailItRequestException = null;
+        await ((NativeAsyncCommand)form.SendCommand).ExecuteAsync(null);
+
+        Assert.Equal(2, api.MailItRequestSendKeys.Count);
+        Assert.False(string.IsNullOrWhiteSpace(api.MailItRequestSendKeys[0]));
+        Assert.Equal(api.MailItRequestSendKeys[0], api.MailItRequestSendKeys[1]);
+    }
+
+    [Fact]
+    public async Task ItRequestCommandBlockedWhenMailNotConfigured()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                configureMailbox: mailbox => mailbox.MailIsConfigured = false),
+            MailTemplates = [MakeItTemplate()],
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        Assert.True(model.ShowSetupHint);
+        Assert.False(model.OpenItRequestCommand.CanExecute(null));
+        await ((NativeAsyncCommand)model.OpenItRequestCommand).ExecuteAsync(null);
+        Assert.Equal(0, api.MailTemplatesCallCount);
+        Assert.Null(model.ItRequest);
+    }
+
+    [Fact]
+    public async Task ItRequestCloseCommandHidesOverlay()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(folders: [MakeFolder("inbox", "Входящие")]),
+            MailTemplates = [MakeItTemplate()],
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        await ((NativeAsyncCommand)model.OpenItRequestCommand).ExecuteAsync(null);
+        var form = model.ItRequest!;
+
+        form.CloseCommand.Execute(null);
+
+        Assert.False(model.IsItRequestOpen);
+        Assert.Null(model.ItRequest);
+    }
+
+    private static HubMailTemplate MakeItTemplate() =>
+        new()
+        {
+            Id = "tpl-1",
+            Code = "cart",
+            Title = "Замена картриджа",
+            Category = "Оргтехника",
+            IsActive = true,
+            Fields =
+            [
+                new HubMailTemplateField { Key = "comment", Label = "Комментарий", Type = "textarea", Required = false, Order = 1 },
+                new HubMailTemplateField { Key = "model", Label = "Модель", Type = "text", Required = true, Order = 0, DefaultValue = JsonDefault("\"HP M404\"") },
+                new HubMailTemplateField { Key = "color", Label = "Цвет", Type = "select", Required = true, Order = 2, Options = ["ч/б", "цвет"], DefaultValue = JsonDefault("\"цвет\"") },
+                new HubMailTemplateField { Key = "parts", Label = "Узлы", Type = "multiselect", Required = false, Order = 3, Options = ["барабан", "ролик"], DefaultValue = JsonDefault("[\"барабан\"]") },
+                new HubMailTemplateField { Key = "due", Label = "Срок", Type = "date", Required = false, Order = 4, DefaultValue = JsonDefault("\"2026-05-04\"") },
+                new HubMailTemplateField { Key = "urgent", Label = "Срочно", Type = "checkbox", Required = false, Order = 5 },
+                new HubMailTemplateField { Key = "mail", Label = "E-mail", Type = "email", Required = false, Order = 6 },
+                new HubMailTemplateField { Key = "phone", Label = "Телефон", Type = "tel", Required = false, Order = 7 },
+            ],
+        };
+
+    /// <summary>default_value шаблона — сырое JSON; Clone отвязывает от временного документа.</summary>
+    private static JsonElement JsonDefault(string json) =>
+        JsonDocument.Parse(json).RootElement.Clone();
 
     private static NativeSession Session() =>
         new(

@@ -19,12 +19,22 @@
                     <Border Margin="2"
                             BorderBrush="{DynamicResource HubFocusBrush}"
                             BorderThickness="2"
-                            CornerRadius="4"
+                            CornerRadius="6"
                             SnapsToDevicePixels="True" />
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
     </Style>
+
+    <!-- Мягкая тень флайаутов (меню, попапы, диалоги, панели-оверлеи) —
+         одна на приложение: замороженный Effect безопасно делить между
+         несколькими поверхностями. НЕ вешать на элементы списков —
+         только разовые overlay-слои. -->
+    <DropShadowEffect x:Key="HubFlyoutShadow"
+                      BlurRadius="24"
+                      ShadowDepth="1"
+                      Opacity="0.3"
+                      Color="#000000" />
 
     <!-- Кнопки заголовка окна (chrome). -->
     <Style x:Key="HubTitleBarButtonStyle" TargetType="Button">
@@ -92,11 +102,16 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
+                    <!-- Тонкая светлая кромка по периметру акцентной заливки —
+                         Fluent-«rim», кнопка перестаёт быть плоским прямоугольником. -->
                     <Border x:Name="Surface"
                             Background="{TemplateBinding Background}"
-                            CornerRadius="4"
+                            BorderBrush="{DynamicResource HubAccentHoverBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
                             SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -104,9 +119,11 @@
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
                             <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubAccentPressedBrush}" />
+                            <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentPressedBrush}" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                            <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
                             <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -127,9 +144,10 @@
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="1"
-                            CornerRadius="4"
+                            CornerRadius="8"
                             SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -158,9 +176,10 @@
                 <ControlTemplate TargetType="Button">
                     <Border x:Name="Surface"
                             Background="{TemplateBinding Background}"
-                            CornerRadius="4"
+                            CornerRadius="8"
                             SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -170,6 +189,58 @@
                             <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubPressedBrush}" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Чекбокс с явным шаблоном: Aero-дефолт на тёмной теме почти не виден
+         (рамка тоне в фоне, галочка теряется). Тонкая рамка secondary, при
+         checked — акцентная заливка с контрастной галочкой; hover подсвечивает
+         рамку. ContentPresenter сохраняет подписи полей форм. -->
+    <Style x:Key="HubCheckBoxStyle" TargetType="CheckBox">
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource HubFocusStyle}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <Border x:Name="Box"
+                                Width="16"
+                                Height="16"
+                                VerticalAlignment="Center"
+                                Background="Transparent"
+                                BorderBrush="{DynamicResource HubTextSecondaryBrush}"
+                                BorderThickness="1"
+                                CornerRadius="3">
+                            <Path x:Name="Check"
+                                  Data="M 3.4,8.0 L 6.6,11.2 L 12.4,4.4"
+                                  Stroke="{DynamicResource HubOnAccentBrush}"
+                                  StrokeThickness="2"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Visibility="Collapsed" />
+                        </Border>
+                        <ContentPresenter Margin="8,0,0,0"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Box" Property="Background" Value="{DynamicResource HubAccentBrush}" />
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                            <Setter TargetName="Check" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource HubTextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Box" Property="Opacity" Value="0.5" />
                             <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -198,12 +269,13 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="4"
+                                CornerRadius="8"
                                 SnapsToDevicePixels="True">
                             <ScrollViewer x:Name="PART_ContentHost" Margin="0" />
                         </Border>
                         <Border x:Name="FocusLine"
                                 Height="2"
+                                Margin="2,0"
                                 VerticalAlignment="Bottom"
                                 Background="{DynamicResource HubAccentBrush}"
                                 CornerRadius="1"
@@ -239,12 +311,13 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="4"
+                                CornerRadius="8"
                                 SnapsToDevicePixels="True">
                             <ScrollViewer x:Name="PART_ContentHost" Margin="0" />
                         </Border>
                         <Border x:Name="FocusLine"
                                 Height="2"
+                                Margin="2,0"
                                 VerticalAlignment="Bottom"
                                 Background="{DynamicResource HubAccentBrush}"
                                 CornerRadius="1"
@@ -260,6 +333,859 @@
             </Setter.Value>
         </Setter>
     </Style>
+
+    <!-- ═══ Поля выбора и даты: неявные стили ComboBox / DatePicker / Calendar.
+         Без них контролы рендерятся дефолтным Aero и остаются белыми в тёмной
+         теме. Внешний вид повторяет HubTextBoxStyle: заливка HubSurfaceAlt,
+         1px HubBorder, радиус 4, акцентная нижняя линия при фокусе/попапе. ═══ -->
+
+    <!-- Прозрачная кликабельная плоскость ComboBox (ToggleButton). -->
+    <Style x:Key="HubComboBoxToggleStyle" TargetType="ToggleButton">
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="IsTabStop" Value="False" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border Background="{TemplateBinding Background}"
+                            SnapsToDevicePixels="True" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Шеврон выпадающего списка (Segoe MDL2 — как глифы хрома окна). -->
+    <Style x:Key="HubChevronDownStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+        <Setter Property="FontSize" Value="10" />
+        <Setter Property="Text" Value="&#xE70D;" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
+    </Style>
+
+    <!-- Редактируемое поле внутри ComboBox IsEditable: прозрачный chrome,
+         рамку рисует сам шаблон комбобокса. -->
+    <Style x:Key="HubComboBoxTextBoxStyle" TargetType="TextBox">
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource HubAccentBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <ScrollViewer x:Name="PART_ContentHost"
+                                  BorderThickness="0"
+                                  HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <ControlTemplate x:Key="HubComboBoxTemplate" TargetType="ComboBox">
+        <Grid SnapsToDevicePixels="True">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="32" />
+            </Grid.ColumnDefinitions>
+            <Border x:Name="Surface"
+                    Grid.ColumnSpan="2"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="8" />
+            <Border x:Name="FocusLine"
+                    Grid.ColumnSpan="2"
+                    Height="2"
+                    Margin="4,0"
+                    VerticalAlignment="Bottom"
+                    Background="{DynamicResource HubAccentBrush}"
+                    CornerRadius="1"
+                    Visibility="Collapsed" />
+            <ContentPresenter x:Name="ContentSite"
+                              Content="{TemplateBinding SelectionBoxItem}"
+                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                              ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                              Margin="{TemplateBinding Padding}"
+                              TextElement.Foreground="{TemplateBinding Foreground}"
+                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                              IsHitTestVisible="False" />
+            <ToggleButton x:Name="ToggleButton"
+                          Grid.ColumnSpan="2"
+                          ClickMode="Press"
+                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                          Style="{StaticResource HubComboBoxToggleStyle}" />
+            <TextBlock x:Name="Chevron"
+                       Grid.Column="1"
+                       Style="{StaticResource HubChevronDownStyle}" />
+            <Popup x:Name="PART_Popup"
+                   MinWidth="{TemplateBinding ActualWidth}"
+                   AllowsTransparency="True"
+                   Focusable="False"
+                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                   Placement="Bottom"
+                   PopupAnimation="Slide"
+                   VerticalOffset="1">
+                <Border x:Name="DropDownBorder"
+                        Padding="4"
+                        Background="{DynamicResource HubFlyoutSurfaceBrush}"
+                        BorderBrush="{DynamicResource HubBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Effect="{StaticResource HubFlyoutShadow}"
+                        SnapsToDevicePixels="True">
+                    <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                  SnapsToDevicePixels="True"
+                                  HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}"
+                                  VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"
+                                  TextElement.FontSize="{TemplateBinding FontSize}"
+                                  TextElement.FontWeight="{TemplateBinding FontWeight}"
+                                  TextElement.Foreground="{TemplateBinding Foreground}">
+                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                    </ScrollViewer>
+                </Border>
+            </Popup>
+        </Grid>
+        <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="FocusLine" Property="Visibility" Value="Visible" />
+            </Trigger>
+            <Trigger Property="IsDropDownOpen" Value="True">
+                <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                <Setter TargetName="FocusLine" Property="Visibility" Value="Visible" />
+                <Setter TargetName="Chevron" Property="RenderTransform">
+                    <Setter.Value>
+                        <RotateTransform Angle="180" />
+                    </Setter.Value>
+                </Setter>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                <Setter TargetName="Chevron" Property="Opacity" Value="0.5" />
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <ControlTemplate x:Key="HubEditableComboBoxTemplate" TargetType="ComboBox">
+        <Grid SnapsToDevicePixels="True">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="32" />
+            </Grid.ColumnDefinitions>
+            <Border x:Name="Surface"
+                    Grid.ColumnSpan="2"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="8" />
+            <Border x:Name="FocusLine"
+                    Grid.ColumnSpan="2"
+                    Height="2"
+                    Margin="4,0"
+                    VerticalAlignment="Bottom"
+                    Background="{DynamicResource HubAccentBrush}"
+                    CornerRadius="1"
+                    Visibility="Collapsed" />
+            <TextBox x:Name="PART_EditableTextBox"
+                     Margin="{TemplateBinding Padding}"
+                     Foreground="{TemplateBinding Foreground}"
+                     FontSize="{TemplateBinding FontSize}"
+                     IsReadOnly="{TemplateBinding IsReadOnly}"
+                     HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                     VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                     AutomationProperties.Name="{TemplateBinding AutomationProperties.Name}"
+                     Style="{StaticResource HubComboBoxTextBoxStyle}" />
+            <Border x:Name="DropDownOverlay"
+                    Grid.Column="1"
+                    Width="24"
+                    Margin="4"
+                    Background="Transparent"
+                    CornerRadius="6" />
+            <ToggleButton x:Name="ToggleButton"
+                          Grid.Column="1"
+                          Margin="3"
+                          ClickMode="Press"
+                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                          Style="{StaticResource HubComboBoxToggleStyle}" />
+            <TextBlock x:Name="Chevron"
+                       Grid.Column="1"
+                       Style="{StaticResource HubChevronDownStyle}" />
+            <Popup x:Name="PART_Popup"
+                   MinWidth="{TemplateBinding ActualWidth}"
+                   AllowsTransparency="True"
+                   Focusable="False"
+                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                   Placement="Bottom"
+                   PopupAnimation="Slide"
+                   VerticalOffset="1">
+                <Border x:Name="DropDownBorder"
+                        Padding="4"
+                        Background="{DynamicResource HubFlyoutSurfaceBrush}"
+                        BorderBrush="{DynamicResource HubBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Effect="{StaticResource HubFlyoutShadow}"
+                        SnapsToDevicePixels="True">
+                    <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                  SnapsToDevicePixels="True"
+                                  HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}"
+                                  VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}"
+                                  TextElement.FontSize="{TemplateBinding FontSize}"
+                                  TextElement.FontWeight="{TemplateBinding FontWeight}"
+                                  TextElement.Foreground="{TemplateBinding Foreground}">
+                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                    </ScrollViewer>
+                </Border>
+            </Popup>
+        </Grid>
+        <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="FocusLine" Property="Visibility" Value="Visible" />
+            </Trigger>
+            <Trigger Property="IsDropDownOpen" Value="True">
+                <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                <Setter TargetName="FocusLine" Property="Visibility" Value="Visible" />
+                <Setter TargetName="Chevron" Property="RenderTransform">
+                    <Setter.Value>
+                        <RotateTransform Angle="180" />
+                    </Setter.Value>
+                </Setter>
+            </Trigger>
+            <Trigger SourceName="ToggleButton" Property="IsMouseOver" Value="True">
+                <Setter TargetName="DropDownOverlay" Property="Background" Value="{DynamicResource HubHoverBrush}" />
+            </Trigger>
+            <Trigger SourceName="ToggleButton" Property="IsPressed" Value="True">
+                <Setter TargetName="DropDownOverlay" Property="Background" Value="{DynamicResource HubPressedBrush}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                <Setter TargetName="Chevron" Property="Opacity" Value="0.5" />
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <!-- Элемент списка: подсветка наведения и мягкий акцент выбранного
+         (как пункт навигации HubNavItemStyle, но без отступа слева). -->
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="Margin" Value="2,1" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Surface"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="6"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <Grid>
+                            <Border x:Name="Indicator"
+                                    Width="3"
+                                    Height="14"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Margin="-8,0,0,0"
+                                    CornerRadius="1.5"
+                                    Background="Transparent" />
+                            <ContentPresenter />
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubHoverBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSelectionBrush}" />
+                            <Setter TargetName="Indicator" Property="Background" Value="{DynamicResource HubAccentBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ComboBox">
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="MinWidth" Value="60" />
+        <Setter Property="Padding" Value="12,0,6,0" />
+        <Setter Property="Background" Value="{DynamicResource HubSurfaceAltBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto" />
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto" />
+        <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource HubFocusStyle}" />
+        <Setter Property="Template" Value="{StaticResource HubComboBoxTemplate}" />
+        <Style.Triggers>
+            <Trigger Property="IsEditable" Value="True">
+                <Setter Property="Template" Value="{StaticResource HubEditableComboBoxTemplate}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Поле даты: chrome HubTextBoxStyle + ghost-кнопка календаря (MDL2 E787). -->
+    <Style TargetType="DatePickerTextBox">
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource HubAccentBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DatePickerTextBox">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="WatermarkStates">
+                                <VisualState x:Name="Unwatermarked" />
+                                <VisualState x:Name="Watermarked">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PART_Watermark"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1"
+                                                         Duration="0" />
+                                    </Storyboard>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Grid>
+                            <ContentControl x:Name="PART_Watermark"
+                                            Opacity="0"
+                                            Focusable="False"
+                                            IsHitTestVisible="False"
+                                            TextElement.Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                            VerticalContentAlignment="Center" />
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          BorderThickness="0"
+                                          Padding="0"
+                                          HorizontalScrollBarVisibility="Hidden"
+                                          VerticalContentAlignment="Center" />
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="DatePicker">
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="Padding" Value="12,0,4,0" />
+        <Setter Property="Background" Value="{DynamicResource HubSurfaceAltBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource HubFocusStyle}" />
+        <Setter Property="CalendarStyle" Value="{StaticResource HubCalendarStyle}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DatePicker">
+                    <Grid SnapsToDevicePixels="True">
+                        <Grid x:Name="PART_Root">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="34" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="Surface"
+                                    Grid.ColumnSpan="2"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="8" />
+                            <DatePickerTextBox x:Name="PART_TextBox"
+                                               Padding="{TemplateBinding Padding}"
+                                               Foreground="{TemplateBinding Foreground}"
+                                               HorizontalAlignment="Stretch"
+                                               VerticalAlignment="Stretch"
+                                               KeyboardNavigation.TabIndex="0" />
+                            <Button x:Name="PART_Button"
+                                    Grid.Column="1"
+                                    Margin="3"
+                                    Padding="0"
+                                    MinWidth="0"
+                                    MinHeight="0"
+                                    Focusable="False"
+                                    Style="{StaticResource HubGhostButtonStyle}"
+                                    TextElement.Foreground="{DynamicResource HubTextSecondaryBrush}">
+                                <TextBlock FontFamily="Segoe MDL2 Assets"
+                                           FontSize="13"
+                                           Text="&#xE787;" />
+                            </Button>
+                        </Grid>
+                        <Border x:Name="FocusLine"
+                                Height="2"
+                                Margin="4,0"
+                                VerticalAlignment="Bottom"
+                                Background="{DynamicResource HubAccentBrush}"
+                                CornerRadius="1"
+                                Visibility="Collapsed" />
+                        <Popup x:Name="PART_Popup"
+                               AllowsTransparency="True"
+                               Focusable="False"
+                               Placement="Bottom"
+                               PlacementTarget="{Binding ElementName=PART_Root}"
+                               StaysOpen="False" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubBorderDimBrush}" />
+                            <Setter TargetName="FocusLine" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Календарь попапа DatePicker: цвета хранятся в обычных свойствах,
+         задаются DynamicResource-сеттерами; кнопки дней/месяцев и шапка —
+         собственные шаблоны, иначе дефолтные чёрные глифы тонут в тёмной теме. -->
+    <Style x:Key="HubCalendarDayButtonStyle" TargetType="CalendarDayButton">
+        <Setter Property="MinWidth" Value="30" />
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="Margin" Value="1" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CalendarDayButton">
+                    <Grid>
+                        <Rectangle x:Name="TodayBackground"
+                                   Fill="{DynamicResource HubAccentBrush}"
+                                   Opacity="0"
+                                   RadiusX="99"
+                                   RadiusY="99" />
+                        <Rectangle x:Name="SelectedBackground"
+                                   Fill="{DynamicResource HubSelectionBrush}"
+                                   Stroke="{DynamicResource HubAccentBrush}"
+                                   StrokeThickness="1.5"
+                                   Opacity="0"
+                                   RadiusX="99"
+                                   RadiusY="99" />
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" />
+                        <Rectangle x:Name="HighlightBackground"
+                                   Fill="{DynamicResource HubHoverBrush}"
+                                   Opacity="0"
+                                   RadiusX="99"
+                                   RadiusY="99" />
+                        <ContentPresenter x:Name="NormalText"
+                                          Margin="4,1"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          TextBlock.Foreground="{DynamicResource HubTextBrush}" />
+                        <Rectangle x:Name="DayButtonFocusVisual"
+                                   IsHitTestVisible="False"
+                                   RadiusX="1"
+                                   RadiusY="1"
+                                   Stroke="{DynamicResource HubFocusBrush}"
+                                   StrokeThickness="1"
+                                   Visibility="Collapsed" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="MouseOver">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HighlightBackground"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1"
+                                                         Duration="0" />
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HighlightBackground"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1"
+                                                         Duration="0" />
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="NormalText"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.35"
+                                                         Duration="0" />
+                                    </Storyboard>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="SelectionStates">
+                                <VisualState x:Name="Unselected" />
+                                <VisualState x:Name="Selected">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SelectedBackground"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1"
+                                                         Duration="0" />
+                                    </Storyboard>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="CalendarButtonFocusStates">
+                                <VisualState x:Name="CalendarButtonFocused">
+                                    <Storyboard>
+                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="DayButtonFocusVisual"
+                                                                       Storyboard.TargetProperty="Visibility"
+                                                                       Duration="0">
+                                            <DiscreteObjectKeyFrame KeyTime="0" Value="{x:Static Visibility.Visible}" />
+                                        </ObjectAnimationUsingKeyFrames>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="CalendarButtonUnfocused" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="ActiveStates">
+                                <VisualState x:Name="Active" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="DayStates">
+                                <VisualState x:Name="RegularDay" />
+                                <VisualState x:Name="Today">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="TodayBackground"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1"
+                                                         Duration="0" />
+                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="NormalText"
+                                                                       Storyboard.TargetProperty="(TextBlock.Foreground)">
+                                            <DiscreteObjectKeyFrame KeyTime="0" Value="{DynamicResource HubOnAccentBrush}" />
+                                        </ObjectAnimationUsingKeyFrames>
+                                    </Storyboard>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="BlackoutDayStates">
+                                <VisualState x:Name="BlackoutDay">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="NormalText"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.35"
+                                                         Duration="0" />
+                                    </Storyboard>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="HubCalendarButtonStyle" TargetType="CalendarButton">
+        <Setter Property="MinWidth" Value="48" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="Margin" Value="1" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CalendarButton">
+                    <Grid>
+                        <Rectangle x:Name="SelectedBackground"
+                                   Fill="{DynamicResource HubSelectionBrush}"
+                                   Opacity="0"
+                                   RadiusX="99"
+                                   RadiusY="99" />
+                        <Rectangle x:Name="Background"
+                                   Fill="{DynamicResource HubHoverBrush}"
+                                   Opacity="0"
+                                   RadiusX="99"
+                                   RadiusY="99" />
+                        <ContentPresenter x:Name="NormalText"
+                                          Margin="1,0"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          TextBlock.Foreground="{DynamicResource HubTextBrush}" />
+                        <Rectangle x:Name="CalendarButtonFocusVisual"
+                                   IsHitTestVisible="False"
+                                   RadiusX="99"
+                                   RadiusY="99"
+                                   Stroke="{DynamicResource HubFocusBrush}"
+                                   Visibility="Collapsed" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="MouseOver">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Background"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1"
+                                                         Duration="0" />
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Background"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1"
+                                                         Duration="0" />
+                                    </Storyboard>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="SelectionStates">
+                                <VisualState x:Name="Unselected" />
+                                <VisualState x:Name="Selected">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SelectedBackground"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1"
+                                                         Duration="0" />
+                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="NormalText"
+                                                                       Storyboard.TargetProperty="(TextBlock.Foreground)">
+                                            <DiscreteObjectKeyFrame KeyTime="0" Value="{DynamicResource HubAccentBrush}" />
+                                        </ObjectAnimationUsingKeyFrames>
+                                    </Storyboard>
+                                </VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="ActiveStates">
+                                <VisualState x:Name="Active" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="CalendarButtonFocusStates">
+                                <VisualState x:Name="CalendarButtonFocused">
+                                    <Storyboard>
+                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="CalendarButtonFocusVisual"
+                                                                       Storyboard.TargetProperty="Visibility"
+                                                                       Duration="0">
+                                            <DiscreteObjectKeyFrame KeyTime="0" Value="{x:Static Visibility.Visible}" />
+                                        </ObjectAnimationUsingKeyFrames>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="CalendarButtonUnfocused" />
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="HubCalendarItemStyle" TargetType="CalendarItem">
+        <Setter Property="Margin" Value="0" />
+        <Setter Property="Padding" Value="8,6" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CalendarItem">
+                    <Grid x:Name="PART_Root">
+                        <Grid KeyboardNavigation.TabNavigation="Local">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Grid Grid.Row="0" KeyboardNavigation.TabIndex="0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="PART_HeaderButton"
+                                        Grid.Column="0"
+                                        Margin="2,2,2,4"
+                                        Padding="6,3"
+                                        MinWidth="0"
+                                        MinHeight="28"
+                                        HorizontalAlignment="Left"
+                                        HorizontalContentAlignment="Left"
+                                        FontSize="13"
+                                        FontWeight="SemiBold"
+                                        Foreground="{DynamicResource HubTextBrush}"
+                                        Style="{StaticResource HubGhostButtonStyle}" />
+                                <Button x:Name="PART_PreviousButton"
+                                        Grid.Column="1"
+                                        Width="26"
+                                        Height="26"
+                                        Margin="2,2,2,4"
+                                        Padding="0"
+                                        MinWidth="0"
+                                        MinHeight="0"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        AutomationProperties.Name="Предыдущий">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets"
+                                               FontSize="10"
+                                               Text="&#xE76B;" />
+                                </Button>
+                                <Button x:Name="PART_NextButton"
+                                        Grid.Column="2"
+                                        Width="26"
+                                        Height="26"
+                                        Margin="2,2,2,4"
+                                        Padding="0"
+                                        MinWidth="0"
+                                        MinHeight="0"
+                                        Style="{StaticResource HubGhostButtonStyle}"
+                                        AutomationProperties.Name="Следующий">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets"
+                                               FontSize="10"
+                                               Text="&#xE76C;" />
+                                </Button>
+                            </Grid>
+                            <Border Grid.Row="1"
+                                    Height="1"
+                                    Margin="0,0,0,4"
+                                    Background="{DynamicResource HubBorderDimBrush}" />
+                            <Grid x:Name="PART_MonthView"
+                                  Grid.Row="2"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  KeyboardNavigation.TabNavigation="Once"
+                                  KeyboardNavigation.TabIndex="1"
+                                  Visibility="Visible">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                            </Grid>
+                            <Grid x:Name="PART_YearView"
+                                  Grid.Row="2"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  KeyboardNavigation.TabNavigation="Once"
+                                  KeyboardNavigation.TabIndex="1"
+                                  Visibility="Hidden">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                            </Grid>
+                            <Rectangle x:Name="PART_DisabledVisual"
+                                       Grid.Row="0"
+                                       Grid.RowSpan="3"
+                                       Fill="{DynamicResource HubSurfaceBrush}"
+                                       Opacity="0.65"
+                                       RadiusX="4"
+                                       RadiusY="4"
+                                       Stretch="Fill"
+                                       Visibility="Collapsed" />
+                        </Grid>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="PART_DisabledVisual" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <DataTrigger Binding="{Binding DisplayMode, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type Calendar}}}" Value="Year">
+                            <Setter TargetName="PART_MonthView" Property="Visibility" Value="Hidden" />
+                            <Setter TargetName="PART_YearView" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding DisplayMode, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type Calendar}}}" Value="Decade">
+                            <Setter TargetName="PART_MonthView" Property="Visibility" Value="Hidden" />
+                            <Setter TargetName="PART_YearView" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </ControlTemplate.Triggers>
+                    <ControlTemplate.Resources>
+                        <DataTemplate x:Key="{x:Static CalendarItem.DayTitleTemplateResourceKey}">
+                            <TextBlock Margin="1"
+                                       Padding="4,2"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="{Binding}" />
+                        </DataTemplate>
+                    </ControlTemplate.Resources>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="HubCalendarStyle" TargetType="Calendar">
+        <Setter Property="CalendarButtonStyle" Value="{StaticResource HubCalendarButtonStyle}" />
+        <Setter Property="CalendarDayButtonStyle" Value="{StaticResource HubCalendarDayButtonStyle}" />
+        <Setter Property="CalendarItemStyle" Value="{StaticResource HubCalendarItemStyle}" />
+        <Setter Property="Background" Value="{DynamicResource HubFlyoutSurfaceBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Calendar">
+                    <Border x:Name="PART_Root"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="10"
+                            Effect="{StaticResource HubFlyoutShadow}"
+                            SnapsToDevicePixels="True">
+                        <CalendarItem x:Name="PART_CalendarItem"
+                                      Margin="0"
+                                      HorizontalAlignment="Stretch"
+                                      VerticalAlignment="Stretch"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      Style="{TemplateBinding CalendarItemStyle}" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="Calendar" BasedOn="{StaticResource HubCalendarStyle}" />
 
     <!-- Фильтр-чип (ToggleButton): Все / Новые / В работе / ... -->
     <Style x:Key="HubChipToggleStyle" TargetType="ToggleButton">
@@ -312,7 +1238,7 @@
                             Background="{DynamicResource HubSurfaceBrush}"
                             BorderBrush="{DynamicResource HubBorderDimBrush}"
                             BorderThickness="1"
-                            CornerRadius="8"
+                            CornerRadius="12"
                             Padding="14,12"
                             SnapsToDevicePixels="True">
                         <ContentPresenter />
@@ -339,11 +1265,98 @@
         <Setter Property="ItemContainerStyle" Value="{StaticResource HubTaskCardStyle}" />
     </Style>
 
+    <!-- ═══ Строки почтового шелла (страница «Почта»): плоская строка дерева папок
+         и карточка письма. Живут в теме, а не в разметке страницы: это состояние
+         контейнеров (hover/selected/unread/collapse), общее для всего дизайна. ═══ -->
+
+    <!-- Строка папки — как в дереве папок Thunderbird (tree-listbox.css /
+         about3Pane.css): плоская полновысокая строка без скруглений, hover — серая
+         заливка (gray-20/gray-60), выбранная — нейтральный gray-30/gray-70, а не
+         акцентный тинт; свёрнутая ветка дерева не занимает место в списке. -->
+    <Style x:Key="MailFolderItemStyle" TargetType="ListBoxItem">
+        <Setter Property="MinHeight" Value="24" />
+        <Setter Property="Padding" Value="6,3,8,3" />
+        <Setter Property="Margin" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource HubFocusStyle}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Surface"
+                            Background="Transparent"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubHoverBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubRowSelectedNeutralBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <!-- Свёрнутая ветка дерева не занимает место в рейке. -->
+            <DataTrigger Binding="{Binding IsTreeVisible}" Value="False">
+                <Setter Property="Visibility" Value="Collapsed" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Карточка письма — анатомия thread-card Thunderbird: радиус 3px
+         (listbox-border-radius), тонкая рамка, непрочитанное — заливка
+         surface-raised и полужирный текст, выбранное — акцентный тинт
+         с акцентной рамкой (selected-item 15-20% + border 30%). -->
+    <Style x:Key="MailMessageItemStyle" TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Margin" Value="3,1" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource HubFocusStyle}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Surface"
+                            Background="{DynamicResource HubSurfaceBrush}"
+                            BorderBrush="{DynamicResource HubBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="3"
+                            Padding="8,4"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- Порядок = приоритет, hover ≠ выбрано: наведение — нейтральная
+                             рамка и мягкий тон (не акцент!), выбранное — акцент. -->
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubHoverBrush}" />
+                            <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+                        </Trigger>
+                        <DataTrigger Binding="{Binding IsUnread}" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+                        </DataTrigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSelectionBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Пункт левой навигации шелла (Win11 NavigationView): акцент-пилл у левого
-         края + подсветка (состояние читается не только цветом). -->
+         края + акцентный тинт выбранного + hover-слой (состояние читается
+         не только цветом: пилюля и вес шрифта). -->
     <Style x:Key="HubNavItemStyle" TargetType="RadioButton">
         <Setter Property="MinHeight" Value="40" />
-        <Setter Property="Padding" Value="12,8" />
+        <Setter Property="Padding" Value="14,8" />
         <Setter Property="Margin" Value="8,2" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
@@ -356,16 +1369,16 @@
                 <ControlTemplate TargetType="RadioButton">
                     <Border x:Name="Surface"
                             Background="{TemplateBinding Background}"
-                            CornerRadius="6"
+                            CornerRadius="8"
                             Padding="{TemplateBinding Padding}"
                             SnapsToDevicePixels="True">
                         <Grid>
                             <Border x:Name="Indicator"
                                     Width="3"
-                                    Height="16"
+                                    Height="20"
                                     HorizontalAlignment="Left"
                                     VerticalAlignment="Center"
-                                    Margin="-10,0,0,0"
+                                    Margin="-12,0,0,0"
                                     CornerRadius="1.5"
                                     Background="Transparent" />
                             <ContentPresenter Margin="4,0,0,0"
@@ -390,15 +1403,62 @@
         </Setter>
     </Style>
 
+    <!-- Пункт компактной рейки (свернутое меню): центрированная иконка 48×40,
+         выбранный — акцентный тинт + пилюля; подпись живёт в ToolTip. -->
+    <Style x:Key="HubNavRailItemStyle" TargetType="RadioButton">
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="MinWidth" Value="48" />
+        <Setter Property="Margin" Value="0,1" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+        <Setter Property="FontSize" Value="16" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource HubFocusStyle}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="Surface"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="8"
+                            SnapsToDevicePixels="True">
+                        <Grid>
+                            <Border x:Name="Indicator"
+                                    Width="3"
+                                    Height="18"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Margin="-2,0,0,0"
+                                    CornerRadius="1.5"
+                                    Background="Transparent" />
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubHoverBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSelectionBrush}" />
+                            <Setter TargetName="Indicator" Property="Background" Value="{DynamicResource HubAccentBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Тонкий скроллбар. -->
     <Style x:Key="HubScrollBarThumbStyle" TargetType="Thumb">
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Thumb">
                     <Border x:Name="Bar"
-                            Margin="1,1,2,1"
                             Background="{DynamicResource HubScrollThumbBrush}"
-                            CornerRadius="4" />
+                            CornerRadius="1" />
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Bar" Property="Background" Value="{DynamicResource HubScrollThumbHoverBrush}" />
@@ -454,6 +1514,50 @@
         </Style.Resources>
     </Style>
 
+    <!-- Overlay-скроллбар как в Telegram Desktop: тонкий слой поверх контента,
+         не съедает ширину раскладки и виден всегда, когда контент прокручивается. -->
+    <Style x:Key="HubOverlayScrollViewerStyle" TargetType="ScrollViewer">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollViewer">
+                    <Grid>
+                        <ScrollContentPresenter x:Name="PART_ScrollContentPresenter"
+                                                CanContentScroll="{TemplateBinding CanContentScroll}"
+                                                Content="{TemplateBinding Content}"
+                                                ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                Margin="{TemplateBinding Padding}"
+                                                SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                        <ScrollBar x:Name="PART_HorizontalScrollBar"
+                                   VerticalAlignment="Bottom"
+                                   Panel.ZIndex="2"
+                                   Height="2"
+                                   Opacity="0"
+                                   Orientation="Horizontal"
+                                   AutomationProperties.Name="Горизонтальная прокрутка"
+                                   Maximum="{TemplateBinding ScrollableWidth}"
+                                   ViewportSize="{TemplateBinding ViewportWidth}"
+                                   Value="{TemplateBinding HorizontalOffset}"
+                                   Visibility="{TemplateBinding ComputedHorizontalScrollBarVisibility}" />
+                        <ScrollBar x:Name="PART_VerticalScrollBar"
+                                   HorizontalAlignment="Right"
+                                   Panel.ZIndex="2"
+                                   Width="2"
+                                   Opacity="0"
+                                   AutomationProperties.Name="Вертикальная прокрутка"
+                                   Maximum="{TemplateBinding ScrollableHeight}"
+                                   ViewportSize="{TemplateBinding ViewportHeight}"
+                                   Value="{TemplateBinding VerticalOffset}"
+                                   Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Дефолт для всех ScrollViewer приложения — Telegram-подобный оверлей:
+         постоянных полос прокрутки нет нигде, ползунок проявляется при наведении. -->
+    <Style TargetType="ScrollViewer" BasedOn="{StaticResource HubOverlayScrollViewerStyle}" />
+
     <!-- Плашка статуса: текст + цвет (статус читается не только по цвету).
          Тон задаётся attached-свойством local:HubTone.Value (info|warning|
          review|success|danger|muted, константы HubStatusTone) на самой рамке —
@@ -463,21 +1567,27 @@
         <Setter Property="CornerRadius" Value="10" />
         <Setter Property="Padding" Value="10,3" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="BorderBrush" Value="{DynamicResource HubTextSecondaryBrush}" />
+        <Setter Property="Background" Value="{DynamicResource HubStatusMutedSoftBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
         <Style.Triggers>
             <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="info">
+                <Setter Property="Background" Value="{DynamicResource HubStatusNewSoftBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource HubStatusNewBrush}" />
             </DataTrigger>
             <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="warning">
+                <Setter Property="Background" Value="{DynamicResource HubStatusInProgressSoftBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource HubStatusInProgressBrush}" />
             </DataTrigger>
             <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="review">
+                <Setter Property="Background" Value="{DynamicResource HubStatusReviewSoftBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource HubStatusReviewBrush}" />
             </DataTrigger>
             <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="success">
+                <Setter Property="Background" Value="{DynamicResource HubStatusDoneSoftBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource HubStatusDoneBrush}" />
             </DataTrigger>
             <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="danger">
+                <Setter Property="Background" Value="{DynamicResource HubStatusOverdueSoftBrush}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource HubStatusOverdueBrush}" />
             </DataTrigger>
         </Style.Triggers>
@@ -551,9 +1661,245 @@
         </Style.Triggers>
     </Style>
 
+    <!-- Мягкая тонированная заливка по HubTone.Value — фон чипов/бейджей
+         и KPI-индикаторов (пара обычным HubStatus*Brush для текста/глифов). -->
+    <Style x:Key="HubToneSoftFillStyle" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource HubStatusMutedSoftBrush}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="info">
+                <Setter Property="Background" Value="{DynamicResource HubStatusNewSoftBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="warning">
+                <Setter Property="Background" Value="{DynamicResource HubStatusInProgressSoftBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="review">
+                <Setter Property="Background" Value="{DynamicResource HubStatusReviewSoftBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="success">
+                <Setter Property="Background" Value="{DynamicResource HubStatusDoneSoftBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Path=(local:HubTone.Value), RelativeSource={RelativeSource Self}}" Value="danger">
+                <Setter Property="Background" Value="{DynamicResource HubStatusOverdueSoftBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ═══ Fluent-флайауты: контекстные меню, пункты, разделители, тултипы.
+         Раньше они рендерились дефолтным светлым Aero-хромом и в тёмной
+         теме выглядели чужеродно. Popup'ы с AllowsTransparency получают
+         HubFlyoutShadow; ContextMenu дополнительно просит системную тень. ═══ -->
+
+    <Style TargetType="ContextMenu">
+        <Setter Property="Background" Value="{DynamicResource HubFlyoutSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="4" />
+        <Setter Property="HasDropShadow" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContextMenu">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="8"
+                            Padding="{TemplateBinding Padding}"
+                            Effect="{StaticResource HubFlyoutShadow}"
+                            SnapsToDevicePixels="True">
+                        <StackPanel IsItemsHost="True"
+                                    KeyboardNavigation.DirectionalNavigation="Cycle" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="MenuItem">
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Padding" Value="10,5" />
+        <Setter Property="MinHeight" Value="28" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="MenuItem">
+                    <Border x:Name="Surface"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="5"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True"
+                            TextElement.Foreground="{TemplateBinding Foreground}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="18" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="14" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="CheckGlyph"
+                                       VerticalAlignment="Center"
+                                       FontSize="11"
+                                       Text="✓"
+                                       Visibility="Collapsed" />
+                            <ContentPresenter Grid.Column="1"
+                                              Content="{TemplateBinding Header}"
+                                              ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding HeaderTemplateSelector}"
+                                              ContentStringFormat="{TemplateBinding HeaderStringFormat}"
+                                              RecognizesAccessKey="True"
+                                              VerticalAlignment="Center" />
+                            <TextBlock x:Name="Arrow"
+                                       Grid.Column="2"
+                                       VerticalAlignment="Center"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       FontSize="9"
+                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                       Text="&#xE76C;"
+                                       Visibility="Collapsed" />
+                            <Popup x:Name="SubmenuPopup"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   IsOpen="{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}"
+                                   Placement="Right"
+                                   HorizontalOffset="-2"
+                                   VerticalOffset="-4"
+                                   PopupAnimation="Fade">
+                                <Border Background="{DynamicResource HubFlyoutSurfaceBrush}"
+                                        BorderBrush="{DynamicResource HubBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="4"
+                                        Effect="{StaticResource HubFlyoutShadow}"
+                                        SnapsToDevicePixels="True">
+                                    <StackPanel IsItemsHost="True"
+                                                KeyboardNavigation.DirectionalNavigation="Cycle" />
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubHoverBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="CheckGlyph" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="HasItems" Value="True">
+                            <Setter TargetName="Arrow" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+                            <Setter TargetName="Surface" Property="Opacity" Value="0.6" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="Separator">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Separator">
+                    <Border Height="1"
+                            Margin="6,4"
+                            Background="{DynamicResource HubBorderDimBrush}"
+                            SnapsToDevicePixels="True" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="{DynamicResource HubFlyoutSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource HubBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Padding" Value="8,5" />
+        <Setter Property="HasDropShadow" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToolTip">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="6"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True"
+                            TextElement.Foreground="{TemplateBinding Foreground}">
+                        <ContentPresenter />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Прогресс-бар: тонкий Fluent-трек + акцентная заливка с закруглёнными
+         концами; indeterminate — бегущая 30%-я полоса через анимацию
+         смещений градиентной маски (Offset-анимации не требуют биндингов,
+         поэтому Storyboard свободно замораживается в шаблоне; цвет берёт
+         Foreground — кастомные цвета полос у вью продолжают работать). -->
+    <Style TargetType="ProgressBar">
+        <Setter Property="Background" Value="{DynamicResource HubSurfaceRaisedBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource HubAccentBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="MinHeight" Value="4" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ProgressBar">
+                    <Border x:Name="PART_Track"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="99"
+                            ClipToBounds="True"
+                            SnapsToDevicePixels="True">
+                        <Grid>
+                            <Decorator x:Name="PART_Indicator" HorizontalAlignment="Left">
+                                <Border CornerRadius="99"
+                                        Background="{TemplateBinding Foreground}"
+                                        SnapsToDevicePixels="True" />
+                            </Decorator>
+                            <Border x:Name="Runner"
+                                    Background="{TemplateBinding Foreground}"
+                                    Visibility="Collapsed">
+                                <Border.OpacityMask>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                        <GradientStop x:Name="MarqueeLead" Color="Transparent" Offset="-0.30" />
+                                        <GradientStop x:Name="MarqueeMid" Color="#FF000000" Offset="-0.15" />
+                                        <GradientStop x:Name="MarqueeTail" Color="Transparent" Offset="0.00" />
+                                    </LinearGradientBrush>
+                                </Border.OpacityMask>
+                            </Border>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsIndeterminate" Value="True">
+                            <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="Runner" Property="Visibility" Value="Visible" />
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <DoubleAnimation Storyboard.TargetName="MarqueeLead"
+                                                         Storyboard.TargetProperty="Offset"
+                                                         From="-0.30" To="1.00" Duration="0:0:1.6" />
+                                        <DoubleAnimation Storyboard.TargetName="MarqueeMid"
+                                                         Storyboard.TargetProperty="Offset"
+                                                         From="-0.15" To="1.15" Duration="0:0:1.6" />
+                                        <DoubleAnimation Storyboard.TargetName="MarqueeTail"
+                                                         Storyboard.TargetProperty="Offset"
+                                                         From="0.00" To="1.30" Duration="0:0:1.6" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Типографика. -->
     <Style x:Key="HubSectionTitleStyle" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="16" />
+        <Setter Property="FontSize" Value="14" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
     </Style>

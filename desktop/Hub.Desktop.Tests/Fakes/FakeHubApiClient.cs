@@ -1,3 +1,4 @@
+using System.Globalization;
 using Hub.Desktop.Native.Api;
 
 namespace Hub.Desktop.Tests.Fakes;
@@ -33,6 +34,71 @@ public class FakeHubApiClient : IHubApiClient
     public HubTaskTransition? LastTransition { get; private set; }
     public string? LastTransitionComment { get; private set; }
 
+    // Задачи: комментарии/обсуждение/вложения
+    public Exception? TaskCommentsException { get; set; }
+    public Exception? TaskCommentCreateException { get; set; }
+    public Exception? TaskMarkSeenException { get; set; }
+    public Exception? TaskDiscussionException { get; set; }
+    public Exception? TaskAttachmentUploadException { get; set; }
+    public Exception? TaskAttachmentDeleteException { get; set; }
+    public Exception? TaskAttachmentDownloadException { get; set; }
+    public Exception? TaskAttachmentPreviewException { get; set; }
+    public HubTaskCommentList TaskComments { get; set; } = new() { Items = [] };
+    public HubTaskDiscussion? TaskDiscussion { get; set; }
+    /// <summary>Если задан — ответ POST comments по тексту.</summary>
+    public Func<long, string, HubTaskComment>? TaskCommentCreateFactory { get; set; }
+    /// <summary>Если задан — ответ POST attachments по имени файла.</summary>
+    public Func<long, string, HubTaskAttachment>? TaskAttachmentUploadFactory { get; set; }
+    /// <summary>Байты, которые пишет фейк-скачивание вложения задачи в destination.</summary>
+    public byte[] TaskAttachmentBytes { get; set; } = [1, 2, 3];
+    public string TaskAttachmentDownloadFileName { get; set; } = "task-file.bin";
+    public string TaskAttachmentPreviewFileName { get; set; } = "preview.pdf";
+    public List<long> TaskCommentListCalls { get; } = [];
+    public List<(long TaskId, string Body)> TaskCommentCreateCalls { get; } = [];
+    public List<long> TaskMarkSeenCalls { get; } = [];
+    public List<long> TaskDiscussionCalls { get; } = [];
+    public List<(long TaskId, string FileName)> TaskAttachmentUploadCalls { get; } = [];
+    public List<(long TaskId, string AttachmentId)> TaskAttachmentDeleteCalls { get; } = [];
+    public List<(long TaskId, string AttachmentId)> TaskAttachmentDownloadCalls { get; } = [];
+    public List<(long TaskId, string AttachmentId)> TaskAttachmentPreviewCalls { get; } = [];
+
+    // Задачи: создание и справочники формы
+    public Exception? TaskCreateException { get; set; }
+    public Exception? SubtaskCreateException { get; set; }
+    public Exception? TaskAssigneeSearchException { get; set; }
+    public Exception? TaskControllersException { get; set; }
+    public Exception? TaskProjectsException { get; set; }
+    public Exception? TaskObjectsException { get; set; }
+    public HubTaskCreateResult TaskCreateResult { get; set; } = new() { Created = 1 };
+    /// <summary>Если задана — ответ POST /hub/tasks по телу запроса (нужен свежий id).</summary>
+    public Func<HubTaskCreateRequest, HubTaskCreateResult>? TaskCreateFactory { get; set; }
+    /// <summary>Если задана — ответ POST …/subtasks по (parentId, телу).</summary>
+    public Func<long, HubTaskSubtaskCreateRequest, HubTaskDetail>? SubtaskCreateFactory { get; set; }
+    public HubTaskUserList TaskAssignees { get; set; } = new() { Items = [] };
+    public HubTaskUserList TaskControllers { get; set; } = new() { Items = [] };
+    public HubTaskProjectList TaskProjects { get; set; } = new() { Items = [] };
+    public HubTaskObjectList TaskObjects { get; set; } = new() { Items = [] };
+    public List<HubTaskCreateRequest> TaskCreateCalls { get; } = [];
+    public List<(long TaskId, HubTaskSubtaskCreateRequest Request)> SubtaskCreateCalls { get; } = [];
+    public List<(string? Query, int Limit)> TaskAssigneeSearchCalls { get; } = [];
+    public int TaskControllersCallCount { get; private set; }
+    public int TaskProjectsCallCount { get; private set; }
+    public int TaskObjectsCallCount { get; private set; }
+    public string? LastTaskObjectsProjectId { get; private set; }
+
+    // Задачи: аналитика (GET /hub/tasks/analytics + /export)
+    public Exception? TaskAnalyticsException { get; set; }
+    public Exception? TaskAnalyticsExportException { get; set; }
+    public HubTaskAnalyticsPayload TaskAnalyticsPayload { get; set; } = new();
+    /// <summary>Байты, которые пишет фейк-экспорт отчёта в destination.</summary>
+    public byte[] TaskAnalyticsExportBytes { get; set; } = [1, 2, 3];
+    public string TaskAnalyticsExportFileName { get; set; } = "task_analytics.xlsx";
+    public List<HubTaskAnalyticsQuery> TaskAnalyticsCalls { get; } = [];
+    public List<HubTaskAnalyticsQuery> TaskAnalyticsExportCalls { get; } = [];
+
+    /// <summary>Если задан — отвечает на analytics-запрос асинхронно (тесты dedupe/in-flight).</summary>
+    public Func<HubTaskAnalyticsQuery, CancellationToken, Task<HubTaskAnalyticsPayload>>? TaskAnalyticsHandler { get; set; }
+
     // Дашборд
     public Exception? DashboardException { get; set; }
     public HubDashboard Dashboard { get; set; } = new();
@@ -54,12 +120,86 @@ public class FakeHubApiClient : IHubApiClient
     public List<string> ReadMarkedIds { get; } = [];
     public List<string> AckedIds { get; } = [];
 
+    // Новости: вовлечение — реакции/лайки/закладки/опрос/комментарии/вложения
+    public Exception? AnnouncementReactionException { get; set; }
+    public Exception? AnnouncementLikeException { get; set; }
+    public Exception? AnnouncementBookmarkException { get; set; }
+    public Exception? AnnouncementVoteException { get; set; }
+    public Exception? AnnouncementCommentsException { get; set; }
+    public Exception? AnnouncementCommentCreateException { get; set; }
+    public Exception? AnnouncementAttachmentDownloadException { get; set; }
+
+    /// <summary>Если задан — ответ reaction/like независимо от аргументов.</summary>
+    public HubAnnouncementReactionState? AnnouncementReactionResult { get; set; }
+    public HubAnnouncementReactionUserList AnnouncementReactionUsers { get; set; } = new() { Items = [] };
+    /// <summary>Если задан — ответ vote (иначе голос проецируется на опрос детали).</summary>
+    public HubAnnouncementPollVoteResult? AnnouncementVoteResult { get; set; }
+    public HubAnnouncementCommentPage AnnouncementCommentsPage { get; set; } = new() { Items = [] };
+    /// <summary>Если задана — ответ comments-list по параметрам запроса (пагинация/ветки).</summary>
+    public Func<HubAnnouncementCommentQuery, HubAnnouncementCommentPage>? AnnouncementCommentsPageFactory { get; set; }
+    /// <summary>Если задана — ответ POST comments по (body, parent_comment_id).</summary>
+    public Func<string, string?, HubAnnouncementComment>? AnnouncementCommentCreateFactory { get; set; }
+
+    public List<(string AnnouncementId, string? ReactionType)> AnnouncementReactionCalls { get; } = [];
+    public List<(string AnnouncementId, bool Liked)> AnnouncementLikeCalls { get; } = [];
+    public List<(string AnnouncementId, bool Bookmarked)> AnnouncementBookmarkCalls { get; } = [];
+    public List<(string AnnouncementId, string[] OptionIds)> AnnouncementVoteCalls { get; } = [];
+    public List<(string AnnouncementId, HubAnnouncementCommentQuery Query)> AnnouncementCommentListCalls { get; } = [];
+    public List<(string AnnouncementId, string Body, string? ParentCommentId)> AnnouncementCommentCreateCalls { get; } = [];
+    public List<(string AnnouncementId, string CommentId, string Body)> AnnouncementCommentUpdateCalls { get; } = [];
+    public List<(string AnnouncementId, string CommentId)> AnnouncementCommentDeleteCalls { get; } = [];
+    public List<(string AnnouncementId, string CommentId, string? ReactionType)> AnnouncementCommentReactionCalls { get; } = [];
+    public List<(string AnnouncementId, string? CommentId, string AttachmentId)> AnnouncementAttachmentDownloads { get; } = [];
+
+    /// <summary>Байты, которые пишет фейк-скачивание в destination.</summary>
+    public byte[] AnnouncementAttachmentBytes { get; set; } = [1, 2, 3];
+    public string AnnouncementAttachmentFileName { get; set; } = "attachment.bin";
+
     // Отсутствия
     public Exception? AbsencesException { get; set; }
     public HubAbsenceRangeList AbsencesList { get; set; } = new() { Items = [], ZupItems = [] };
     public string? LastAbsencesOn { get; private set; }
     public string? LastAbsencesStartsOn { get; private set; }
     public string? LastAbsencesEndsOn { get; private set; }
+    public int AbsencesCallCount { get; private set; }
+    public Exception? AbsenceCreateException { get; set; }
+    public Exception? AbsenceUpdateException { get; set; }
+    public Exception? AbsenceDeleteException { get; set; }
+
+    /// <summary>Если задан — ответ create/update независимо от тела запроса.</summary>
+    public HubAbsenceItem? AbsenceWriteResult { get; set; }
+    public List<HubAbsenceUpsertRequest> AbsenceCreateCalls { get; } = [];
+    public List<(long Id, HubAbsenceUpsertRequest Request)> AbsenceUpdateCalls { get; } = [];
+    public List<long> AbsenceDeleteCalls { get; } = [];
+
+    // Центр уведомлений
+    public Exception? NotificationsPollException { get; set; }
+    public HubNotificationPoll NotificationsPoll { get; set; } = new()
+    {
+        Items = [],
+        UnreadCounts = new HubNotificationUnreadCounts(),
+    };
+
+    /// <summary>Если задана — отвечает на poll по параметрам (since/limit/unread_only).</summary>
+    public Func<string?, int, bool, HubNotificationPoll>? NotificationsPollFactory { get; set; }
+
+    /// <summary>Если задан — отвечает на poll асинхронно (тесты in-flight/очереди).</summary>
+    public Func<CancellationToken, Task<HubNotificationPoll>>? NotificationsPollHandler { get; set; }
+    public int NotificationsPollCallCount { get; private set; }
+    public string? LastNotificationsPollSince { get; private set; }
+    public int LastNotificationsPollLimit { get; private set; }
+    public bool LastNotificationsPollUnreadOnly { get; private set; }
+    public Exception? NotificationUnreadCountsException { get; set; }
+    public HubNotificationUnreadCounts NotificationUnreadCounts { get; set; } = new();
+    public int NotificationUnreadCountsCallCount { get; private set; }
+    public Exception? NotificationMarkReadException { get; set; }
+    public List<string> NotificationReadMarkedIds { get; } = [];
+    public Exception? NotificationReadAllException { get; set; }
+    public int NotificationReadAllCallCount { get; private set; }
+    public HubNotificationReadAllResult NotificationReadAllResult { get; set; } = new()
+    {
+        Ok = true,
+    };
 
     // Почта
     public Exception? MailBootstrapException { get; set; }
@@ -80,6 +220,7 @@ public class FakeHubApiClient : IHubApiClient
 
     /// <summary>Если задана — отвечает на запросы списка писем по параметрам запроса (пагинация).</summary>
     public Func<HubMailMessageQuery, HubMailMessagePage>? MailMessagesPageFactory { get; set; }
+    public Func<HubMailMessageQuery, Task<HubMailMessagePage>>? MailMessagesPageAsyncFactory { get; set; }
     public HubMailMessageQuery? LastMailQuery { get; private set; }
     public int MailMessagesCallCount { get; private set; }
     public Exception? MailFolderTreeException { get; set; }
@@ -133,6 +274,36 @@ public class FakeHubApiClient : IHubApiClient
     public int MailContactsCallCount { get; private set; }
     public List<string> MailDraftDeletedIds { get; } = [];
 
+    // Мутации папок (создание/переименование/удаление/избранное)
+    public Exception? MailFolderMutationException { get; set; }
+    public List<(string? MailboxId, string Name, string? ParentFolderId, string? Scope)> MailFolderCreateCalls { get; } = [];
+    public List<(string FolderId, string? MailboxId, string Name)> MailFolderRenameCalls { get; } = [];
+    public List<(string FolderId, string? MailboxId)> MailFolderDeleteCalls { get; } = [];
+    public List<(string FolderId, string? MailboxId, bool Favorite)> MailFolderFavoriteCalls { get; } = [];
+    public HubMailFolder? MailFolderCreateResult { get; set; }
+    public HubMailFolder? MailFolderRenameResult { get; set; }
+    public HubMailFolderDeleteResult MailFolderDeleteResult { get; set; } = new() { Ok = true };
+
+    // Важность письма и AI-действия (summarize / smart-replies)
+    public Exception? MailImportanceException { get; set; }
+    public List<(string MessageId, string? MailboxId, string Importance)> MailImportanceCalls { get; } = [];
+    public HubMailImportanceResult MailImportanceResult { get; set; } = new() { Ok = true };
+    public Exception? MailAiException { get; set; }
+    public HubMailSummaryResult MailSummaryResult { get; set; } = new();
+    public HubMailSmartRepliesResult MailSmartRepliesResult { get; set; } = new();
+    public int MailSummarizeCallCount { get; private set; }
+    public int MailSmartRepliesCallCount { get; private set; }
+
+    // Шаблоны и отправка IT-заявок (/mail/templates, send-it-request*)
+    public Exception? MailTemplatesException { get; set; }
+    public List<HubMailTemplate> MailTemplates { get; set; } = [];
+    public bool? LastMailTemplatesIncludeInactive { get; private set; }
+    public int MailTemplatesCallCount { get; private set; }
+    public Exception? MailItRequestException { get; set; }
+    public List<(string TemplateId, IReadOnlyDictionary<string, object?> Fields)> MailItRequestCalls { get; } = [];
+    public List<(string TemplateId, IReadOnlyDictionary<string, object?> Fields, IReadOnlyList<HubMailOutgoingAttachment> Attachments)> MailItRequestMultipartCalls { get; } = [];
+    public HubMailSendResult MailItRequestResult { get; set; } = new() { Ok = true, MessageId = "it-req-1" };
+
     // Чат
     public Exception? ChatConversationsException { get; set; }
     public Exception? ChatMessagesException { get; set; }
@@ -147,6 +318,13 @@ public class FakeHubApiClient : IHubApiClient
     public string? LastConversationsQuery { get; private set; }
     public int ConversationsCallCount { get; private set; }
     public HubChatMessageList ChatMessages { get; set; } = new() { Items = [] };
+
+    /// <summary>Если задана — отвечает на запросы ленты по before-курсору (старшие страницы).</summary>
+    public Func<string?, HubChatMessageList>? ChatMessagesFactory { get; set; }
+
+    /// <summary>Полностью управляемый ответ истории (задержки, гонки): принимает
+    /// conversationId и before-курсор; приоритетнее синхронной фабрики.</summary>
+    public Func<string, string?, Task<HubChatMessageList>>? ChatMessagesAsyncFactory { get; set; }
     public Func<HubChatMessage>? SendMessageFactory { get; set; }
     public HubChatConversation? DirectConversationResult { get; set; }
     public Exception? CreateDirectException { get; set; }
@@ -278,6 +456,249 @@ public class FakeHubApiClient : IHubApiClient
         return Task.FromResult(result);
     }
 
+    public Task<HubTaskCommentList> GetTaskCommentsAsync(
+        long taskId,
+        CancellationToken cancellationToken)
+    {
+        TaskCommentListCalls.Add(taskId);
+        if (TaskCommentsException is not null)
+        {
+            return Task.FromException<HubTaskCommentList>(TaskCommentsException);
+        }
+
+        return Task.FromResult(TaskComments);
+    }
+
+    public Task<HubTaskComment> AddTaskCommentAsync(
+        long taskId,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        TaskCommentCreateCalls.Add((taskId, body));
+        if (TaskCommentCreateException is not null)
+        {
+            return Task.FromException<HubTaskComment>(TaskCommentCreateException);
+        }
+
+        return Task.FromResult(TaskCommentCreateFactory?.Invoke(taskId, body) ?? new HubTaskComment
+        {
+            Id = Guid.NewGuid().ToString("D"),
+            TaskId = taskId.ToString(CultureInfo.InvariantCulture),
+            UserId = 7,
+            Username = "tester",
+            FullName = "Test User",
+            Body = body,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+    }
+
+    public Task MarkTaskCommentsSeenAsync(
+        long taskId,
+        CancellationToken cancellationToken)
+    {
+        TaskMarkSeenCalls.Add(taskId);
+        return TaskMarkSeenException is not null
+            ? Task.FromException(TaskMarkSeenException)
+            : Task.CompletedTask;
+    }
+
+    public Task<HubTaskDiscussion> OpenTaskDiscussionAsync(
+        long taskId,
+        CancellationToken cancellationToken)
+    {
+        TaskDiscussionCalls.Add(taskId);
+        if (TaskDiscussionException is not null)
+        {
+            return Task.FromException<HubTaskDiscussion>(TaskDiscussionException);
+        }
+
+        return Task.FromResult(TaskDiscussion ?? new HubTaskDiscussion
+        {
+            ConversationId = "conv-" + taskId.ToString(CultureInfo.InvariantCulture),
+            Created = true,
+            Title = "Задача: task",
+            Kind = "task",
+        });
+    }
+
+    public Task<HubTaskAttachment> UploadTaskAttachmentAsync(
+        long taskId,
+        string fileName,
+        Stream content,
+        string? mimeType,
+        CancellationToken cancellationToken)
+    {
+        TaskAttachmentUploadCalls.Add((taskId, fileName));
+        if (TaskAttachmentUploadException is not null)
+        {
+            return Task.FromException<HubTaskAttachment>(TaskAttachmentUploadException);
+        }
+
+        return Task.FromResult(TaskAttachmentUploadFactory?.Invoke(taskId, fileName) ?? new HubTaskAttachment
+        {
+            Id = Guid.NewGuid().ToString("D"),
+            TaskId = taskId.ToString(CultureInfo.InvariantCulture),
+            Scope = "task",
+            FileName = fileName,
+            FileMime = mimeType,
+            FileSize = content.Length,
+            UploadedByUserId = 7,
+            UploadedByUsername = "tester",
+            UploadedAt = DateTimeOffset.UtcNow,
+        });
+    }
+
+    public Task DeleteTaskAttachmentAsync(
+        long taskId,
+        string attachmentId,
+        CancellationToken cancellationToken)
+    {
+        TaskAttachmentDeleteCalls.Add((taskId, attachmentId));
+        return TaskAttachmentDeleteException is not null
+            ? Task.FromException(TaskAttachmentDeleteException)
+            : Task.CompletedTask;
+    }
+
+    public async Task<string> DownloadTaskAttachmentAsync(
+        long taskId,
+        string attachmentId,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        TaskAttachmentDownloadCalls.Add((taskId, attachmentId));
+        if (TaskAttachmentDownloadException is not null)
+        {
+            throw TaskAttachmentDownloadException;
+        }
+
+        await destination.WriteAsync(TaskAttachmentBytes, cancellationToken);
+        return TaskAttachmentDownloadFileName;
+    }
+
+    public async Task<string> DownloadTaskAttachmentPreviewPdfAsync(
+        long taskId,
+        string attachmentId,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        TaskAttachmentPreviewCalls.Add((taskId, attachmentId));
+        if (TaskAttachmentPreviewException is not null)
+        {
+            throw TaskAttachmentPreviewException;
+        }
+
+        await destination.WriteAsync(TaskAttachmentBytes, cancellationToken);
+        return TaskAttachmentPreviewFileName;
+    }
+
+    public Task<HubTaskCreateResult> CreateTaskAsync(
+        HubTaskCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        TaskCreateCalls.Add(request);
+        if (TaskCreateException is not null)
+        {
+            return Task.FromException<HubTaskCreateResult>(TaskCreateException);
+        }
+
+        return Task.FromResult(TaskCreateFactory?.Invoke(request) ?? TaskCreateResult);
+    }
+
+    public Task<HubTaskDetail> CreateSubtaskAsync(
+        long taskId,
+        HubTaskSubtaskCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        SubtaskCreateCalls.Add((taskId, request));
+        if (SubtaskCreateException is not null)
+        {
+            return Task.FromException<HubTaskDetail>(SubtaskCreateException);
+        }
+
+        return Task.FromResult(
+            SubtaskCreateFactory?.Invoke(taskId, request)
+            ?? new HubTaskDetail { Id = taskId + 1000, Title = request.Title });
+    }
+
+    public Task<HubTaskUserList> SearchTaskAssigneesAsync(
+        string? query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        TaskAssigneeSearchCalls.Add((query, limit));
+        if (TaskAssigneeSearchException is not null)
+        {
+            return Task.FromException<HubTaskUserList>(TaskAssigneeSearchException);
+        }
+
+        return Task.FromResult(TaskAssignees);
+    }
+
+    public Task<HubTaskUserList> GetTaskControllersAsync(CancellationToken cancellationToken)
+    {
+        TaskControllersCallCount++;
+        if (TaskControllersException is not null)
+        {
+            return Task.FromException<HubTaskUserList>(TaskControllersException);
+        }
+
+        return Task.FromResult(TaskControllers);
+    }
+
+    public Task<HubTaskProjectList> GetTaskProjectsAsync(CancellationToken cancellationToken)
+    {
+        TaskProjectsCallCount++;
+        if (TaskProjectsException is not null)
+        {
+            return Task.FromException<HubTaskProjectList>(TaskProjectsException);
+        }
+
+        return Task.FromResult(TaskProjects);
+    }
+
+    public Task<HubTaskObjectList> GetTaskObjectsAsync(
+        string? projectId,
+        CancellationToken cancellationToken)
+    {
+        TaskObjectsCallCount++;
+        LastTaskObjectsProjectId = projectId;
+        if (TaskObjectsException is not null)
+        {
+            return Task.FromException<HubTaskObjectList>(TaskObjectsException);
+        }
+
+        return Task.FromResult(TaskObjects);
+    }
+
+    public Task<HubTaskAnalyticsPayload> GetTaskAnalyticsAsync(
+        HubTaskAnalyticsQuery query,
+        CancellationToken cancellationToken)
+    {
+        TaskAnalyticsCalls.Add(query);
+        if (TaskAnalyticsException is not null)
+        {
+            return Task.FromException<HubTaskAnalyticsPayload>(TaskAnalyticsException);
+        }
+
+        return TaskAnalyticsHandler?.Invoke(query, cancellationToken)
+            ?? Task.FromResult(TaskAnalyticsPayload);
+    }
+
+    public async Task<string> ExportTaskAnalyticsAsync(
+        HubTaskAnalyticsQuery query,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        TaskAnalyticsExportCalls.Add(query);
+        if (TaskAnalyticsExportException is not null)
+        {
+            throw TaskAnalyticsExportException;
+        }
+
+        await destination.WriteAsync(TaskAnalyticsExportBytes, cancellationToken);
+        return TaskAnalyticsExportFileName;
+    }
+
     public Task<HubAnnouncementListPage> GetAnnouncementsAsync(
         HubAnnouncementQuery query,
         CancellationToken cancellationToken)
@@ -329,6 +750,270 @@ public class FakeHubApiClient : IHubApiClient
         return Task.CompletedTask;
     }
 
+    public Task<HubAnnouncementReactionState> SetAnnouncementReactionAsync(
+        string announcementId,
+        string reactionType,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementReactionCalls.Add((announcementId, reactionType));
+        if (AnnouncementReactionException is not null)
+        {
+            return Task.FromException<HubAnnouncementReactionState>(AnnouncementReactionException);
+        }
+
+        return Task.FromResult(AnnouncementReactionResult ?? new HubAnnouncementReactionState
+        {
+            AnnouncementId = announcementId,
+            ViewerReaction = reactionType,
+            ReactionCounts = new Dictionary<string, int> { [reactionType] = 1 },
+            ReactionsCount = 1,
+            ViewerHasLiked = reactionType == "like",
+            LikesCount = reactionType == "like" ? 1 : 0,
+        });
+    }
+
+    public Task<HubAnnouncementReactionState> ClearAnnouncementReactionAsync(
+        string announcementId,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementReactionCalls.Add((announcementId, null));
+        if (AnnouncementReactionException is not null)
+        {
+            return Task.FromException<HubAnnouncementReactionState>(AnnouncementReactionException);
+        }
+
+        return Task.FromResult(AnnouncementReactionResult ?? new HubAnnouncementReactionState
+        {
+            AnnouncementId = announcementId,
+        });
+    }
+
+    public Task<HubAnnouncementReactionUserList> GetAnnouncementReactionUsersAsync(
+        string announcementId,
+        string? reactionType,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken) => Task.FromResult(AnnouncementReactionUsers);
+
+    public Task<HubAnnouncementReactionState> SetAnnouncementLikeAsync(
+        string announcementId,
+        bool liked,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementLikeCalls.Add((announcementId, liked));
+        if (AnnouncementLikeException is not null)
+        {
+            return Task.FromException<HubAnnouncementReactionState>(AnnouncementLikeException);
+        }
+
+        return Task.FromResult(AnnouncementReactionResult ?? new HubAnnouncementReactionState
+        {
+            AnnouncementId = announcementId,
+            ViewerReaction = liked ? "like" : null,
+            ReactionCounts = liked ? new Dictionary<string, int> { ["like"] = 1 } : new(),
+            ReactionsCount = liked ? 1 : 0,
+            ViewerHasLiked = liked,
+            LikesCount = liked ? 1 : 0,
+        });
+    }
+
+    public Task<HubAnnouncementBookmarkState> SetAnnouncementBookmarkAsync(
+        string announcementId,
+        bool bookmarked,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementBookmarkCalls.Add((announcementId, bookmarked));
+        if (AnnouncementBookmarkException is not null)
+        {
+            return Task.FromException<HubAnnouncementBookmarkState>(AnnouncementBookmarkException);
+        }
+
+        return Task.FromResult(new HubAnnouncementBookmarkState
+        {
+            AnnouncementId = announcementId,
+            ViewerBookmarked = bookmarked,
+        });
+    }
+
+    public Task<HubAnnouncementPollVoteResult> VoteAnnouncementPollAsync(
+        string announcementId,
+        IReadOnlyList<string> optionIds,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementVoteCalls.Add((announcementId, optionIds.ToArray()));
+        if (AnnouncementVoteException is not null)
+        {
+            return Task.FromException<HubAnnouncementPollVoteResult>(AnnouncementVoteException);
+        }
+
+        if (AnnouncementVoteResult is not null)
+        {
+            return Task.FromResult(AnnouncementVoteResult);
+        }
+
+        // Проекция голоса на опрос детали: счётчики пересчитываются «как сервер» —
+        // старый голос снимается, новые варианты получают +1.
+        var poll = AnnouncementDetail?.Poll;
+        if (poll is null)
+        {
+            return Task.FromResult(new HubAnnouncementPollVoteResult { AnnouncementId = announcementId });
+        }
+
+        var voted = new HashSet<string>(optionIds, StringComparer.Ordinal);
+        var options = (poll.Options ?? [])
+            .Select(o =>
+            {
+                var votes = o.VotesCount - (o.ViewerVoted ? 1 : 0)
+                    + (o.Id is not null && voted.Contains(o.Id) ? 1 : 0);
+                return new HubAnnouncementPollOption
+                {
+                    Id = o.Id,
+                    Text = o.Text,
+                    SortOrder = o.SortOrder,
+                    VotesCount = votes,
+                    ViewerVoted = o.Id is not null && voted.Contains(o.Id),
+                };
+            })
+            .ToList();
+        var updated = poll with
+        {
+            Options = options,
+            ViewerOptionIds = optionIds,
+            HasVoted = optionIds.Count > 0,
+            TotalVoters = poll.TotalVoters - (poll.HasVoted ? 1 : 0) + (optionIds.Count > 0 ? 1 : 0),
+            TotalVotes = options.Sum(o => o.VotesCount),
+        };
+        AnnouncementDetail = AnnouncementDetail! with { Poll = updated };
+        return Task.FromResult(new HubAnnouncementPollVoteResult
+        {
+            AnnouncementId = announcementId,
+            Poll = updated,
+        });
+    }
+
+    public Task<HubAnnouncementCommentPage> GetAnnouncementCommentsAsync(
+        string announcementId,
+        HubAnnouncementCommentQuery query,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementCommentListCalls.Add((announcementId, query));
+        if (AnnouncementCommentsException is not null)
+        {
+            return Task.FromException<HubAnnouncementCommentPage>(AnnouncementCommentsException);
+        }
+
+        return Task.FromResult(
+            AnnouncementCommentsPageFactory?.Invoke(query) ?? AnnouncementCommentsPage);
+    }
+
+    public Task<HubAnnouncementComment> CreateAnnouncementCommentAsync(
+        string announcementId,
+        string body,
+        string? parentCommentId,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementCommentCreateCalls.Add((announcementId, body, parentCommentId));
+        if (AnnouncementCommentCreateException is not null)
+        {
+            return Task.FromException<HubAnnouncementComment>(AnnouncementCommentCreateException);
+        }
+
+        if (AnnouncementCommentCreateFactory is not null)
+        {
+            return Task.FromResult(AnnouncementCommentCreateFactory(body, parentCommentId));
+        }
+
+        return Task.FromResult(new HubAnnouncementComment
+        {
+            Id = Guid.NewGuid().ToString("N")[..8],
+            AnnouncementId = announcementId,
+            Body = body,
+            ParentCommentId = parentCommentId,
+            RootCommentId = parentCommentId,
+            FullName = "Иван Иванов",
+            Username = "ivanov",
+            CreatedAt = DateTimeOffset.Now,
+            CanEdit = true,
+            CanDelete = true,
+        });
+    }
+
+    public Task<HubAnnouncementComment> UpdateAnnouncementCommentAsync(
+        string announcementId,
+        string commentId,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementCommentUpdateCalls.Add((announcementId, commentId, body));
+        return Task.FromResult(new HubAnnouncementComment
+        {
+            Id = commentId,
+            AnnouncementId = announcementId,
+            Body = body,
+            CreatedAt = DateTimeOffset.Now.AddMinutes(-10),
+            UpdatedAt = DateTimeOffset.Now,
+            CanEdit = true,
+            CanDelete = true,
+        });
+    }
+
+    public Task DeleteAnnouncementCommentAsync(
+        string announcementId,
+        string commentId,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementCommentDeleteCalls.Add((announcementId, commentId));
+        return Task.CompletedTask;
+    }
+
+    public Task<HubAnnouncementCommentReactionState> SetAnnouncementCommentReactionAsync(
+        string announcementId,
+        string commentId,
+        string? reactionType,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementCommentReactionCalls.Add((announcementId, commentId, reactionType));
+        return Task.FromResult(new HubAnnouncementCommentReactionState
+        {
+            CommentId = commentId,
+            ViewerReaction = reactionType,
+            ReactionCounts = reactionType is null
+                ? new Dictionary<string, int>()
+                : new Dictionary<string, int> { [reactionType] = 1 },
+        });
+    }
+
+    public Task<string> DownloadAnnouncementAttachmentAsync(
+        string announcementId,
+        string attachmentId,
+        Stream destination,
+        CancellationToken cancellationToken) =>
+        WriteAnnouncementAttachmentAsync(announcementId, null, attachmentId, destination);
+
+    public Task<string> DownloadAnnouncementCommentAttachmentAsync(
+        string announcementId,
+        string commentId,
+        string attachmentId,
+        Stream destination,
+        CancellationToken cancellationToken) =>
+        WriteAnnouncementAttachmentAsync(announcementId, commentId, attachmentId, destination);
+
+    private async Task<string> WriteAnnouncementAttachmentAsync(
+        string announcementId,
+        string? commentId,
+        string attachmentId,
+        Stream destination)
+    {
+        AnnouncementAttachmentDownloads.Add((announcementId, commentId, attachmentId));
+        if (AnnouncementAttachmentDownloadException is not null)
+        {
+            throw AnnouncementAttachmentDownloadException;
+        }
+
+        await destination.WriteAsync(AnnouncementAttachmentBytes);
+        return AnnouncementAttachmentFileName;
+    }
+
     public Task<HubAbsenceRangeList> GetAbsencesAsync(
         string? on,
         string? startsOn,
@@ -336,6 +1021,7 @@ public class FakeHubApiClient : IHubApiClient
         int limit,
         CancellationToken cancellationToken)
     {
+        AbsencesCallCount++;
         LastAbsencesOn = on;
         LastAbsencesStartsOn = startsOn;
         LastAbsencesEndsOn = endsOn;
@@ -345,6 +1031,135 @@ public class FakeHubApiClient : IHubApiClient
         }
 
         return Task.FromResult(AbsencesList);
+    }
+
+    public Task<HubAbsenceItem> CreateHubAbsenceAsync(
+        HubAbsenceUpsertRequest request,
+        CancellationToken cancellationToken)
+    {
+        AbsenceCreateCalls.Add(request);
+        if (AbsenceCreateException is not null)
+        {
+            return Task.FromException<HubAbsenceItem>(AbsenceCreateException);
+        }
+
+        return Task.FromResult(AbsenceWriteResult ?? new HubAbsenceItem
+        {
+            Id = (900 + AbsenceCreateCalls.Count).ToString(),
+            DisplayName = request.DisplayName,
+            Kind = request.Kind,
+            StartsOn = request.StartsOn,
+            EndsOn = request.EndsOn,
+            Comment = request.Comment,
+            Department = request.Department,
+            Source = "manual",
+        });
+    }
+
+    public Task<HubAbsenceItem> UpdateHubAbsenceAsync(
+        long absenceId,
+        HubAbsenceUpsertRequest request,
+        CancellationToken cancellationToken)
+    {
+        AbsenceUpdateCalls.Add((absenceId, request));
+        if (AbsenceUpdateException is not null)
+        {
+            return Task.FromException<HubAbsenceItem>(AbsenceUpdateException);
+        }
+
+        return Task.FromResult(AbsenceWriteResult ?? new HubAbsenceItem
+        {
+            Id = absenceId.ToString(),
+            DisplayName = request.DisplayName,
+            Kind = request.Kind,
+            StartsOn = request.StartsOn,
+            EndsOn = request.EndsOn,
+            Comment = request.Comment,
+            Department = request.Department,
+            Source = "manual",
+        });
+    }
+
+    public Task DeleteHubAbsenceAsync(long absenceId, CancellationToken cancellationToken)
+    {
+        AbsenceDeleteCalls.Add(absenceId);
+        return AbsenceDeleteException is not null
+            ? Task.FromException(AbsenceDeleteException)
+            : Task.CompletedTask;
+    }
+
+    public Task<HubNotificationPoll> GetNotificationsPollAsync(
+        string? since,
+        int limit,
+        bool unreadOnly,
+        CancellationToken cancellationToken)
+    {
+        NotificationsPollCallCount++;
+        LastNotificationsPollSince = since;
+        LastNotificationsPollLimit = limit;
+        LastNotificationsPollUnreadOnly = unreadOnly;
+        if (NotificationsPollException is not null)
+        {
+            return Task.FromException<HubNotificationPoll>(NotificationsPollException);
+        }
+
+        return NotificationsPollHandler?.Invoke(cancellationToken)
+            ?? Task.FromResult(
+                NotificationsPollFactory?.Invoke(since, limit, unreadOnly) ?? NotificationsPoll);
+    }
+
+    public Task<HubNotificationUnreadCounts> GetNotificationUnreadCountsAsync(
+        CancellationToken cancellationToken)
+    {
+        NotificationUnreadCountsCallCount++;
+        if (NotificationUnreadCountsException is not null)
+        {
+            return Task.FromException<HubNotificationUnreadCounts>(NotificationUnreadCountsException);
+        }
+
+        return Task.FromResult(NotificationUnreadCounts);
+    }
+
+    public Task<HubNotificationReadResult> MarkNotificationReadAsync(
+        string notificationId,
+        CancellationToken cancellationToken)
+    {
+        NotificationReadMarkedIds.Add(notificationId);
+        if (NotificationMarkReadException is not null)
+        {
+            return Task.FromException<HubNotificationReadResult>(NotificationMarkReadException);
+        }
+
+        // Имитация сервера: отметка фиксируется и в отложенном poll-ответе.
+        var updated = NotificationsPoll.Items?.Select(item =>
+            item.Id == notificationId ? item with { Unread = 0 } : item).ToList();
+        NotificationsPoll = NotificationsPoll with { Items = updated };
+        return Task.FromResult(new HubNotificationReadResult
+        {
+            Ok = true,
+            NotificationId = notificationId,
+        });
+    }
+
+    public Task<HubNotificationReadAllResult> MarkAllNotificationsReadAsync(
+        CancellationToken cancellationToken)
+    {
+        NotificationReadAllCallCount++;
+        if (NotificationReadAllException is not null)
+        {
+            return Task.FromException<HubNotificationReadAllResult>(NotificationReadAllException);
+        }
+
+        var marked = NotificationsPoll.Items?.Count(item => item.Unread != 0) ?? 0;
+        NotificationsPoll = NotificationsPoll with
+        {
+            Items = NotificationsPoll.Items?.Select(item => item with { Unread = 0 }).ToList(),
+        };
+        return Task.FromResult(NotificationReadAllResult with
+        {
+            Ok = true,
+            MarkedCount = marked,
+        });
     }
 
     public Task<HubMailBootstrap> GetMailBootstrapAsync(
@@ -384,7 +1199,8 @@ public class FakeHubApiClient : IHubApiClient
             return Task.FromException<HubMailMessagePage>(MailMessagesException);
         }
 
-        return Task.FromResult(MailMessagesPageFactory?.Invoke(query) ?? MailMessagesPage);
+        return MailMessagesPageAsyncFactory?.Invoke(query)
+            ?? Task.FromResult(MailMessagesPageFactory?.Invoke(query) ?? MailMessagesPage);
     }
 
     public Task<HubMailMessageDetail> GetMailMessageAsync(
@@ -445,6 +1261,75 @@ public class FakeHubApiClient : IHubApiClient
 
         MailDeletedIds.Add((messageId, permanent));
         return Task.FromResult(new HubMailActionResult { Ok = true });
+    }
+
+    public List<(string MessageId, string? MailboxId)> MailRestoreCalls { get; } = [];
+
+    public Exception? MailRestoreException { get; set; }
+
+    public Task<HubMailActionResult> RestoreMailMessageAsync(
+        string messageId,
+        string? mailboxId,
+        CancellationToken cancellationToken)
+    {
+        MailRestoreCalls.Add((messageId, mailboxId));
+        if (MailRestoreException is not null)
+        {
+            return Task.FromException<HubMailActionResult>(MailRestoreException);
+        }
+
+        return Task.FromResult(new HubMailActionResult { Ok = true, MovedTo = "inbox" });
+    }
+
+    public List<(string MessageId, string? MailboxId)> MailHeadersCalls { get; } = [];
+
+    public Exception? MailHeadersException { get; set; }
+
+    public Task<HubMailMessageHeaders> GetMailMessageHeadersAsync(
+        string messageId,
+        string? mailboxId,
+        CancellationToken cancellationToken)
+    {
+        MailHeadersCalls.Add((messageId, mailboxId));
+        if (MailHeadersException is not null)
+        {
+            return Task.FromException<HubMailMessageHeaders>(MailHeadersException);
+        }
+
+        return Task.FromResult(MailHeadersResult);
+    }
+
+    public HubMailMessageHeaders MailHeadersResult { get; set; } = new()
+    {
+        MessageId = "m1",
+        SourceName = "message.eml",
+        Items =
+        [
+            new HubMailMessageHeaderItem { Name = "Received", Value = "from mail.zsgp.ru by hub.zsgp.ru with SMTP; Fri, 20 Nov 2026 10:00:00 +0300" },
+            new HubMailMessageHeaderItem { Name = "Message-ID", Value = "<CALd=eM1@mail.zsgp.ru>" },
+            new HubMailMessageHeaderItem { Name = "Subject", Value = "Регламентные работы в ДЦ — график на выходные" },
+        ],
+    };
+
+    public List<string> MailSourceDownloadCalls { get; } = [];
+
+    public Exception? MailSourceDownloadException { get; set; }
+
+    public Task<string> DownloadMailMessageSourceAsync(
+        string messageId,
+        string? mailboxId,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        MailSourceDownloadCalls.Add(messageId);
+        if (MailSourceDownloadException is not null)
+        {
+            return Task.FromException<string>(MailSourceDownloadException);
+        }
+
+        var payload = "From: sender@zsgp.ru"u8.ToArray();
+        destination.Write(payload, 0, payload.Length);
+        return Task.FromResult("message.eml");
     }
 
     public Task<HubMailActionResult> MoveMailMessageAsync(
@@ -581,6 +1466,184 @@ public class FakeHubApiClient : IHubApiClient
         }
 
         return Task.FromResult(MailUnreadCount);
+    }
+
+    public Task<HubMailFolder> CreateMailFolderAsync(
+        string? mailboxId,
+        string name,
+        string? parentFolderId,
+        string? scope,
+        CancellationToken cancellationToken)
+    {
+        MailFolderCreateCalls.Add((mailboxId, name, parentFolderId, scope));
+        if (MailFolderMutationException is not null)
+        {
+            return Task.FromException<HubMailFolder>(MailFolderMutationException);
+        }
+
+        return Task.FromResult(MailFolderCreateResult ?? new HubMailFolder
+        {
+            Id = "custom-" + (MailFolderCreateCalls.Count + 100),
+            Name = name,
+            Label = name,
+            Scope = string.IsNullOrWhiteSpace(scope) ? "mailbox" : scope,
+            ParentId = parentFolderId,
+            IconKey = "folder",
+            CanRename = true,
+            CanDelete = true,
+            CanCreateChildren = true,
+        });
+    }
+
+    public Task<HubMailFolder> RenameMailFolderAsync(
+        string folderId,
+        string? mailboxId,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        MailFolderRenameCalls.Add((folderId, mailboxId, name));
+        if (MailFolderMutationException is not null)
+        {
+            return Task.FromException<HubMailFolder>(MailFolderMutationException);
+        }
+
+        return Task.FromResult(MailFolderRenameResult ?? new HubMailFolder
+        {
+            Id = folderId,
+            Name = name,
+            Label = name,
+            Scope = "mailbox",
+            IconKey = "folder",
+            CanRename = true,
+            CanDelete = true,
+            CanCreateChildren = true,
+        });
+    }
+
+    public Task<HubMailFolderDeleteResult> DeleteMailFolderAsync(
+        string folderId,
+        string? mailboxId,
+        CancellationToken cancellationToken)
+    {
+        MailFolderDeleteCalls.Add((folderId, mailboxId));
+        if (MailFolderMutationException is not null)
+        {
+            return Task.FromException<HubMailFolderDeleteResult>(MailFolderMutationException);
+        }
+
+        return Task.FromResult(MailFolderDeleteResult with { FolderId = folderId });
+    }
+
+    public Task<HubMailFolderFavoriteResult> SetMailFolderFavoriteAsync(
+        string folderId,
+        string? mailboxId,
+        bool favorite,
+        CancellationToken cancellationToken)
+    {
+        MailFolderFavoriteCalls.Add((folderId, mailboxId, favorite));
+        if (MailFolderMutationException is not null)
+        {
+            return Task.FromException<HubMailFolderFavoriteResult>(MailFolderMutationException);
+        }
+
+        return Task.FromResult(new HubMailFolderFavoriteResult
+        {
+            Ok = true,
+            FolderId = folderId,
+            Favorite = favorite,
+        });
+    }
+
+    public Task<HubMailImportanceResult> SetMailMessageImportanceAsync(
+        string messageId,
+        string? mailboxId,
+        string importance,
+        CancellationToken cancellationToken)
+    {
+        MailImportanceCalls.Add((messageId, mailboxId, importance));
+        if (MailImportanceException is not null)
+        {
+            return Task.FromException<HubMailImportanceResult>(MailImportanceException);
+        }
+
+        return Task.FromResult(MailImportanceResult with { Importance = importance });
+    }
+
+    public Task<HubMailSummaryResult> SummarizeMailMessageAsync(
+        string messageId,
+        string? mailboxId,
+        CancellationToken cancellationToken)
+    {
+        MailSummarizeCallCount++;
+        if (MailAiException is not null)
+        {
+            return Task.FromException<HubMailSummaryResult>(MailAiException);
+        }
+
+        return Task.FromResult(MailSummaryResult);
+    }
+
+    public Task<HubMailSmartRepliesResult> GetMailSmartRepliesAsync(
+        string messageId,
+        string? mailboxId,
+        CancellationToken cancellationToken)
+    {
+        MailSmartRepliesCallCount++;
+        if (MailAiException is not null)
+        {
+            return Task.FromException<HubMailSmartRepliesResult>(MailAiException);
+        }
+
+        return Task.FromResult(MailSmartRepliesResult);
+    }
+
+    public Task<IReadOnlyList<HubMailTemplate>> GetMailTemplatesAsync(
+        bool includeInactive,
+        CancellationToken cancellationToken)
+    {
+        MailTemplatesCallCount++;
+        LastMailTemplatesIncludeInactive = includeInactive;
+        if (MailTemplatesException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubMailTemplate>>(MailTemplatesException);
+        }
+
+        return Task.FromResult<IReadOnlyList<HubMailTemplate>>(MailTemplates);
+    }
+
+    public List<string?> MailItRequestSendKeys { get; } = [];
+
+    public Task<HubMailSendResult> SendMailItRequestAsync(
+        string templateId,
+        IReadOnlyDictionary<string, object?> fields,
+        CancellationToken cancellationToken,
+        string? idempotencyKey = null)
+    {
+        MailItRequestSendKeys.Add(idempotencyKey);
+        MailItRequestCalls.Add((templateId, fields));
+        if (MailItRequestException is not null)
+        {
+            return Task.FromException<HubMailSendResult>(MailItRequestException);
+        }
+
+        return Task.FromResult(MailItRequestResult);
+    }
+
+    public Task<HubMailSendResult> SendMailItRequestMultipartAsync(
+        string templateId,
+        IReadOnlyDictionary<string, object?> fields,
+        IReadOnlyList<HubMailOutgoingAttachment> attachments,
+        CancellationToken cancellationToken,
+        string? idempotencyKey = null)
+    {
+        MailItRequestSendKeys.Add(idempotencyKey);
+        MailItRequestMultipartCalls.Add((templateId, fields, attachments));
+        if (MailItRequestException is not null)
+        {
+            return Task.FromException<HubMailSendResult>(MailItRequestException);
+        }
+
+        return Task.FromResult(MailItRequestResult);
     }
 
     // ---- Документооборот 1С ----
@@ -807,6 +1870,89 @@ public class FakeHubApiClient : IHubApiClient
             ?? new HubDocflowAssignmentCommandResult { CommandId = commandId, Status = "applied" });
     }
 
+    public Task<HubDocflowConnectionTestResult> TestDocflowCredentialsAsync(
+        string login,
+        string password,
+        CancellationToken cancellationToken)
+    {
+        DocflowCredentialTestCalls.Add((login, password));
+        if (DocflowCredentialTestException is not null)
+        {
+            return Task.FromException<HubDocflowConnectionTestResult>(
+                DocflowCredentialTestException);
+        }
+
+        return Task.FromResult(
+            DocflowConnectionTestResultFactory?.Invoke()
+            ?? DocflowConnectionTestResult
+            ?? new HubDocflowConnectionTestResult
+            {
+                Connected = true,
+                Configuration = "Документооборот КОРП",
+            });
+    }
+
+    public Task<HubDocflowProfile> SaveDocflowCredentialsAsync(
+        string login,
+        string password,
+        CancellationToken cancellationToken)
+    {
+        DocflowCredentialSaveCalls.Add((login, password));
+        if (DocflowCredentialSaveException is not null)
+        {
+            return Task.FromException<HubDocflowProfile>(DocflowCredentialSaveException);
+        }
+
+        return Task.FromResult(
+            DocflowCredentialSaveResultFactory?.Invoke()
+            ?? DocflowProfile with
+            {
+                Configured = true,
+                Login = login.Trim(),
+                Status = "configured",
+            });
+    }
+
+    public Task DeleteDocflowCredentialsAsync(CancellationToken cancellationToken)
+    {
+        DocflowCredentialDeleteCallCount++;
+        if (DocflowCredentialDeleteException is not null)
+        {
+            return Task.FromException(DocflowCredentialDeleteException);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<HubDocflowMetadata> GetDocflowMetadataAsync(
+        CancellationToken cancellationToken)
+    {
+        DocflowMetadataCallCount++;
+        if (DocflowMetadataException is not null)
+        {
+            return Task.FromException<HubDocflowMetadata>(DocflowMetadataException);
+        }
+
+        return Task.FromResult(DocflowMetadata);
+    }
+
+    public Task<HubDocflowAbsenceList> GetDocflowAbsencesAsync(
+        string? employeeCode,
+        string? on,
+        CancellationToken cancellationToken)
+    {
+        DocflowAbsencesCallCount++;
+        DocflowAbsencesQueries.Add((employeeCode ?? string.Empty, on ?? string.Empty));
+        if (DocflowAbsencesException is not null)
+        {
+            return Task.FromException<HubDocflowAbsenceList>(DocflowAbsencesException);
+        }
+
+        return Task.FromResult(
+            DocflowAbsencesFactory?.Invoke(employeeCode ?? string.Empty, on ?? string.Empty)
+            ?? DocflowAbsences);
+    }
+
     public Exception? DocflowTasksException { get; set; }
     public HubDocflowTaskListPage DocflowTasksPage { get; set; } = new() { Items = [] };
 
@@ -891,6 +2037,40 @@ public class FakeHubApiClient : IHubApiClient
     /// <summary>Очередь ответов GET /assignments/commands/{id}: пустая — DocflowAssignmentCommandResult.</summary>
     public Queue<HubDocflowAssignmentCommandResult> DocflowAssignmentCommandResults { get; } = new();
     public List<string> DocflowAssignmentCommandPolls { get; } = [];
+
+    // ---- Учётная запись 1С: проверка/сохранение/удаление кредов ----
+    public Exception? DocflowCredentialTestException { get; set; }
+    public HubDocflowConnectionTestResult? DocflowConnectionTestResult { get; set; }
+
+    /// <summary>Если задана — отвечает на POST /profile/test (например, connected=false).</summary>
+    public Func<HubDocflowConnectionTestResult>? DocflowConnectionTestResultFactory { get; set; }
+    public List<(string Login, string Password)> DocflowCredentialTestCalls { get; } = [];
+    public Exception? DocflowCredentialSaveException { get; set; }
+
+    /// <summary>Если задана — отвечает на PUT /profile/credentials (профиль со статусом).</summary>
+    public Func<HubDocflowProfile>? DocflowCredentialSaveResultFactory { get; set; }
+    public List<(string Login, string Password)> DocflowCredentialSaveCalls { get; } = [];
+    public Exception? DocflowCredentialDeleteException { get; set; }
+    public int DocflowCredentialDeleteCallCount { get; private set; }
+    public Exception? DocflowMetadataException { get; set; }
+    public HubDocflowMetadata DocflowMetadata { get; set; } = new()
+    {
+        Configuration = "Документооборот КОРП",
+        MappingReady = true,
+    };
+    public int DocflowMetadataCallCount { get; private set; }
+    public Exception? DocflowAbsencesException { get; set; }
+    public HubDocflowAbsenceList DocflowAbsences { get; set; } = new()
+    {
+        Status = "available",
+        Items = [],
+        Count = 0,
+    };
+
+    /// <summary>Если задана — отвечает на GET /absences по (employee_code, on).</summary>
+    public Func<string, string, HubDocflowAbsenceList>? DocflowAbsencesFactory { get; set; }
+    public List<(string EmployeeCode, string On)> DocflowAbsencesQueries { get; } = [];
+    public int DocflowAbsencesCallCount { get; private set; }
 
     // ---- Билеты ----
     public Exception? TicketsListException { get; set; }
@@ -1201,6 +2381,23 @@ public class FakeHubApiClient : IHubApiClient
             FileType = fileType,
             FileSize = buffer.Length,
         };
+    }
+
+    public Exception? TicketAttachmentDeleteException { get; set; }
+    public List<(long RequestId, string AttachmentId)> TicketAttachmentDeletes { get; } = [];
+
+    public Task DeleteTicketAttachmentAsync(
+        long requestId,
+        string attachmentId,
+        CancellationToken cancellationToken)
+    {
+        TicketAttachmentDeletes.Add((requestId, attachmentId));
+        if (TicketAttachmentDeleteException is not null)
+        {
+            return Task.FromException(TicketAttachmentDeleteException);
+        }
+
+        return Task.CompletedTask;
     }
 
     // ---- Канбан и сводка заявок ----
@@ -1772,6 +2969,179 @@ public class FakeHubApiClient : IHubApiClient
         return Task.FromResult(EquipmentPhotosFactory?.Invoke(itemId) ?? EquipmentPhotos);
     }
 
+    // ---- Фото: загрузка (простая + чанковая) и модерация ----
+
+    public Exception? EquipmentPhotoUploadException { get; set; }
+    public HubEquipmentPhotoUploadResult? EquipmentPhotoUploadResult { get; set; }
+    /// <summary>Ответ загрузки по параметрам (item_id, file_name, размер, mime), иначе — EquipmentPhotoUploadResult.</summary>
+    public Func<long, string, byte[], string?, string?, HubEquipmentPhotoUploadResult>? EquipmentPhotoUploadFactory { get; set; }
+    public List<(long ItemId, string FileName, byte[] Content, string? MimeType, string? Description)> EquipmentPhotoUploadCalls { get; } = [];
+
+    public Task<HubEquipmentPhotoUploadResult> UploadEquipmentPhotoAsync(
+        long itemId,
+        string fileName,
+        byte[] content,
+        string? mimeType,
+        string? description,
+        CancellationToken cancellationToken)
+    {
+        EquipmentPhotoUploadCalls.Add((itemId, fileName, content, mimeType, description));
+        if (EquipmentPhotoUploadException is not null)
+        {
+            return Task.FromException<HubEquipmentPhotoUploadResult>(EquipmentPhotoUploadException);
+        }
+
+        return Task.FromResult(
+            EquipmentPhotoUploadFactory?.Invoke(itemId, fileName, content, mimeType, description)
+            ?? EquipmentPhotoUploadResult
+            ?? new HubEquipmentPhotoUploadResult { ItemId = itemId, FileNo = 9901, FileName = fileName });
+    }
+
+    public Exception? PhotoUploadSessionException { get; set; }
+    /// <summary>Сессия по запросу, иначе — открытая «uploading» с upload_id из client_id.</summary>
+    public Func<long, HubEquipmentPhotoUploadSessionCreate, HubEquipmentPhotoUploadSession>? PhotoUploadSessionFactory { get; set; }
+    public List<(long ItemId, HubEquipmentPhotoUploadSessionCreate Request)> PhotoUploadSessionCalls { get; } = [];
+    public List<(string UploadId, int ChunkIndex, byte[] Data)> PhotoUploadChunkCalls { get; } = [];
+    public List<string> PhotoUploadCompleteCalls { get; } = [];
+    public HubEquipmentPhotoUploadResult? PhotoUploadCompleteResult { get; set; }
+
+    public Task<HubEquipmentPhotoUploadSession> CreateEquipmentPhotoUploadSessionAsync(
+        long itemId,
+        HubEquipmentPhotoUploadSessionCreate request,
+        CancellationToken cancellationToken)
+    {
+        PhotoUploadSessionCalls.Add((itemId, request));
+        if (PhotoUploadSessionException is not null)
+        {
+            return Task.FromException<HubEquipmentPhotoUploadSession>(PhotoUploadSessionException);
+        }
+
+        var size = request?.Size ?? 0;
+        return Task.FromResult(
+            PhotoUploadSessionFactory?.Invoke(itemId, request!)
+            ?? new HubEquipmentPhotoUploadSession
+            {
+                UploadId = "0123456789abcdef0123456789abcdef",
+                Status = "uploading",
+                ItemId = itemId,
+                Size = size,
+                ChunkSize = 256 * 1024,
+                TotalChunks = (int)Math.Max(1, (size + 256 * 1024 - 1) / (256 * 1024)),
+                Received = [],
+            });
+    }
+
+    public Task<HubEquipmentPhotoUploadSession> UploadEquipmentPhotoChunkAsync(
+        string uploadId,
+        int chunkIndex,
+        ReadOnlyMemory<byte> data,
+        CancellationToken cancellationToken)
+    {
+        PhotoUploadChunkCalls.Add((uploadId, chunkIndex, data.ToArray()));
+        if (PhotoUploadSessionException is not null)
+        {
+            return Task.FromException<HubEquipmentPhotoUploadSession>(PhotoUploadSessionException);
+        }
+
+        return Task.FromResult(new HubEquipmentPhotoUploadSession
+        {
+            UploadId = uploadId,
+            Status = "uploading",
+            Received = [chunkIndex],
+        });
+    }
+
+    public Task<HubEquipmentPhotoUploadResult> CompleteEquipmentPhotoUploadAsync(
+        string uploadId,
+        CancellationToken cancellationToken)
+    {
+        PhotoUploadCompleteCalls.Add(uploadId);
+        if (PhotoUploadSessionException is not null)
+        {
+            return Task.FromException<HubEquipmentPhotoUploadResult>(PhotoUploadSessionException);
+        }
+
+        return Task.FromResult(
+            PhotoUploadCompleteResult
+            ?? new HubEquipmentPhotoUploadResult { FileNo = 9901, FileName = "photo.jpg" });
+    }
+
+    public Exception? PhotoModerationException { get; set; }
+    /// <summary>Карточка после verify/reject/patch по (item_id, file_no), иначе — отметки по вызову.</summary>
+    public Func<long, long, string, string?, HubEquipmentPhoto>? PhotoModerationFactory { get; set; }
+    public List<(long ItemId, long FileNo)> PhotoVerifyCalls { get; } = [];
+    public List<(long ItemId, long FileNo, string Reason)> PhotoRejectCalls { get; } = [];
+    public List<(long ItemId, long FileNo, string Reason)> PhotoRejectReasonPatchCalls { get; } = [];
+    public List<(long ItemId, long FileNo, int Degrees)> PhotoRotateCalls { get; } = [];
+    public HubEquipmentPhotoRotateResult? PhotoRotateResult { get; set; }
+
+    public Task<HubEquipmentPhoto> VerifyEquipmentPhotoAsync(
+        long itemId,
+        long fileNo,
+        CancellationToken cancellationToken)
+    {
+        PhotoVerifyCalls.Add((itemId, fileNo));
+        if (PhotoModerationException is not null)
+        {
+            return Task.FromException<HubEquipmentPhoto>(PhotoModerationException);
+        }
+
+        return Task.FromResult(
+            PhotoModerationFactory?.Invoke(itemId, fileNo, "verify", null)
+            ?? new HubEquipmentPhoto { FileNo = fileNo, Verified = true, VerifiedBy = "moderator" });
+    }
+
+    public Task<HubEquipmentPhoto> RejectEquipmentPhotoAsync(
+        long itemId,
+        long fileNo,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        PhotoRejectCalls.Add((itemId, fileNo, reason));
+        if (PhotoModerationException is not null)
+        {
+            return Task.FromException<HubEquipmentPhoto>(PhotoModerationException);
+        }
+
+        return Task.FromResult(
+            PhotoModerationFactory?.Invoke(itemId, fileNo, "reject", reason)
+            ?? new HubEquipmentPhoto { FileNo = fileNo, Rejected = true, RejectedBy = "moderator", RejectReason = reason });
+    }
+
+    public Task<HubEquipmentPhoto> UpdateEquipmentPhotoRejectReasonAsync(
+        long itemId,
+        long fileNo,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        PhotoRejectReasonPatchCalls.Add((itemId, fileNo, reason));
+        if (PhotoModerationException is not null)
+        {
+            return Task.FromException<HubEquipmentPhoto>(PhotoModerationException);
+        }
+
+        return Task.FromResult(
+            PhotoModerationFactory?.Invoke(itemId, fileNo, "reject-patch", reason)
+            ?? new HubEquipmentPhoto { FileNo = fileNo, Rejected = true, RejectedBy = "moderator", RejectReason = reason });
+    }
+
+    public Task<HubEquipmentPhotoRotateResult> RotateEquipmentPhotoAsync(
+        long itemId,
+        long fileNo,
+        int degrees,
+        CancellationToken cancellationToken)
+    {
+        PhotoRotateCalls.Add((itemId, fileNo, degrees));
+        if (PhotoModerationException is not null)
+        {
+            return Task.FromException<HubEquipmentPhotoRotateResult>(PhotoModerationException);
+        }
+
+        return Task.FromResult(
+            PhotoRotateResult
+            ?? new HubEquipmentPhotoRotateResult { Ok = true, FileNo = fileNo, HasThumb = true });
+    }
+
     public Exception? EquipmentHistoryException { get; set; }
     public HubEquipmentHistoryResponse EquipmentHistory { get; set; } = new();
     public List<string> EquipmentHistoryCalls { get; } = [];
@@ -1787,6 +3157,58 @@ public class FakeHubApiClient : IHubApiClient
         }
 
         return Task.FromResult(EquipmentHistory);
+    }
+
+    // ---- Карточка сотрудника (/equipment/employee/{owner_no}) ----
+    public Exception? EmployeeItemsException { get; set; }
+    public HubEmployeeItemsResponse EmployeeItems { get; set; } = new();
+    public List<(long OwnerNo, string? EmployeeName)> EmployeeItemsCalls { get; } = [];
+    public Exception? EmployeeHistoryException { get; set; }
+    public HubEmployeeHistoryResponse EmployeeHistory { get; set; } = new();
+
+    /// <summary>Страница истории по (owner, direction, q, page) — иначе общая EmployeeHistory.</summary>
+    public Func<(long OwnerNo, string? Direction, string? Q, int Page, int Limit), HubEmployeeHistoryResponse>?
+        EmployeeHistoryFactory { get; set; }
+    public List<(long OwnerNo, string? Direction, string? Q, int Page, int Limit)> EmployeeHistoryCalls { get; } = [];
+
+    /// <summary>Шов задержки истории — тест гонки «панель закрыта до ответа».</summary>
+    public Func<CancellationToken, Task>? EmployeeHistoryDelay { get; set; }
+
+    public Task<HubEmployeeItemsResponse> GetEmployeeItemsAsync(
+        long ownerNo,
+        string? employeeName,
+        CancellationToken cancellationToken)
+    {
+        EmployeeItemsCalls.Add((ownerNo, employeeName));
+        if (EmployeeItemsException is not null)
+        {
+            return Task.FromException<HubEmployeeItemsResponse>(EmployeeItemsException);
+        }
+
+        return Task.FromResult(EmployeeItems);
+    }
+
+    public async Task<HubEmployeeHistoryResponse> GetEmployeeHistoryAsync(
+        long ownerNo,
+        string? direction,
+        string? q,
+        int page,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        EmployeeHistoryCalls.Add((ownerNo, direction, q, page, limit));
+        if (EmployeeHistoryException is not null)
+        {
+            throw EmployeeHistoryException;
+        }
+
+        if (EmployeeHistoryDelay is not null)
+        {
+            await EmployeeHistoryDelay(cancellationToken);
+        }
+
+        var call = (ownerNo, direction, q, page, limit);
+        return EmployeeHistoryFactory?.Invoke(call) ?? EmployeeHistory;
     }
 
     public Task<IReadOnlyList<HubEquipmentType>> GetEquipmentTypesAsync(
@@ -1814,6 +3236,8 @@ public class FakeHubApiClient : IHubApiClient
     public List<string?> EquipmentLocationsCalls { get; } = [];
     public Exception? TransferException { get; set; }
     public List<HubEquipmentTransferRequest> TransferRequests { get; } = [];
+    public List<HubTransferLocationRequest> LocationTransferRequests { get; } = [];
+    public Exception? LocationTransferException { get; set; }
 
     /// <summary>Ответы transfer/job по очереди: фабрика по номеру вызова, иначе TransferResponse.</summary>
     public Func<int, HubTransferExecuteResponse>? TransferResponseFactory { get; set; }
@@ -1866,6 +3290,123 @@ public class FakeHubApiClient : IHubApiClient
         return Task.FromResult(EquipmentLocations);
     }
 
+    // ---- Справочники и запись карточки оборудования (редактор «Базы») ----
+    public Exception? EquipmentBranchLocationsException { get; set; }
+    public IReadOnlyList<HubEquipmentLocation> EquipmentBranchLocations { get; set; } = [];
+
+    /// <summary>Ответ локаций по branch_id, иначе — общий EquipmentBranchLocations.</summary>
+    public Func<string, IReadOnlyList<HubEquipmentLocation>>? EquipmentBranchLocationsFactory { get; set; }
+    public List<string> EquipmentBranchLocationsCalls { get; } = [];
+    public Exception? EquipmentStatusesException { get; set; }
+    public IReadOnlyList<HubEquipmentStatus> EquipmentStatuses { get; set; } = [];
+    public int EquipmentStatusesCallCount { get; private set; }
+    public Exception? EquipmentModelsException { get; set; }
+    public IReadOnlyList<HubEquipmentModel> EquipmentModels { get; set; } = [];
+
+    /// <summary>Ответ моделей по type_no, иначе — общий EquipmentModels.</summary>
+    public Func<int, IReadOnlyList<HubEquipmentModel>>? EquipmentModelsFactory { get; set; }
+    public List<int> EquipmentModelsCalls { get; } = [];
+    public Exception? EquipmentOwnersException { get; set; }
+    public IReadOnlyList<HubEquipmentOwner> EquipmentOwners { get; set; } = [];
+    public List<(string Query, int Limit)> EquipmentOwnersCalls { get; } = [];
+    public Exception? EquipmentUpdateException { get; set; }
+    public HubEquipmentItem? EquipmentUpdateResult { get; set; }
+    public List<(string InvNo, HubEquipmentUpdateRequest Request)> EquipmentUpdateCalls { get; } = [];
+    public Exception? EquipmentCreateException { get; set; }
+    public HubEquipmentCreateResult EquipmentCreateResult { get; set; } = new()
+    {
+        Success = true,
+        InvNo = "100500",
+    };
+    public List<HubEquipmentCreateRequest> EquipmentCreateCalls { get; } = [];
+
+    public Task<IReadOnlyList<HubEquipmentLocation>> GetEquipmentBranchLocationsAsync(
+        string branchId,
+        CancellationToken cancellationToken)
+    {
+        EquipmentBranchLocationsCalls.Add(branchId);
+        if (EquipmentBranchLocationsException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubEquipmentLocation>>(EquipmentBranchLocationsException);
+        }
+
+        return Task.FromResult(
+            EquipmentBranchLocationsFactory?.Invoke(branchId) ?? EquipmentBranchLocations);
+    }
+
+    public Task<IReadOnlyList<HubEquipmentStatus>> GetEquipmentStatusesAsync(
+        CancellationToken cancellationToken)
+    {
+        EquipmentStatusesCallCount++;
+        if (EquipmentStatusesException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubEquipmentStatus>>(EquipmentStatusesException);
+        }
+
+        return Task.FromResult(EquipmentStatuses);
+    }
+
+    public Task<IReadOnlyList<HubEquipmentModel>> GetEquipmentModelsAsync(
+        int typeNo,
+        CancellationToken cancellationToken)
+    {
+        EquipmentModelsCalls.Add(typeNo);
+        if (EquipmentModelsException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubEquipmentModel>>(EquipmentModelsException);
+        }
+
+        return Task.FromResult(
+            EquipmentModelsFactory?.Invoke(typeNo) ?? EquipmentModels);
+    }
+
+    public Task<IReadOnlyList<HubEquipmentOwner>> SearchEquipmentOwnersAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        EquipmentOwnersCalls.Add((query, limit));
+        if (EquipmentOwnersException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubEquipmentOwner>>(EquipmentOwnersException);
+        }
+
+        return Task.FromResult(EquipmentOwners);
+    }
+
+    public Task<HubEquipmentItem> UpdateEquipmentAsync(
+        string invNo,
+        HubEquipmentUpdateRequest request,
+        CancellationToken cancellationToken)
+    {
+        EquipmentUpdateCalls.Add((invNo, request));
+        if (EquipmentUpdateException is not null)
+        {
+            return Task.FromException<HubEquipmentItem>(EquipmentUpdateException);
+        }
+
+        return Task.FromResult(
+            EquipmentUpdateResult
+            ?? EquipmentDetail
+            ?? new HubEquipmentItem
+            {
+                InvNo = double.TryParse(invNo, out var n) ? n : null,
+            });
+    }
+
+    public Task<HubEquipmentCreateResult> CreateEquipmentAsync(
+        HubEquipmentCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        EquipmentCreateCalls.Add(request);
+        if (EquipmentCreateException is not null)
+        {
+            return Task.FromException<HubEquipmentCreateResult>(EquipmentCreateException);
+        }
+
+        return Task.FromResult(EquipmentCreateResult);
+    }
+
     public Task<HubTransferExecuteResponse> TransferEquipmentAsync(
         HubEquipmentTransferRequest request,
         CancellationToken cancellationToken)
@@ -1878,6 +3419,20 @@ public class FakeHubApiClient : IHubApiClient
 
         return Task.FromResult(
             TransferResponseFactory?.Invoke(TransferRequests.Count) ?? TransferResponse);
+    }
+
+    public Task<HubTransferExecuteResponse> TransferEquipmentLocationAsync(
+        HubTransferLocationRequest request,
+        CancellationToken cancellationToken)
+    {
+        LocationTransferRequests.Add(request);
+        if (LocationTransferException is not null)
+        {
+            return Task.FromException<HubTransferExecuteResponse>(LocationTransferException);
+        }
+
+        return Task.FromResult(
+            TransferResponseFactory?.Invoke(LocationTransferRequests.Count) ?? TransferResponse);
     }
 
     public Task<HubTransferExecuteResponse> GetTransferActJobAsync(
@@ -1911,6 +3466,271 @@ public class FakeHubApiClient : IHubApiClient
         }
 
         return Task.FromResult(TransferActDownloadName ?? "act.pdf");
+    }
+
+    // ---- «Только акт» и загрузка подписанного акта ----
+    public Exception? ActOnlyTransferException { get; set; }
+    public List<HubTransferActOnlyRequest> ActOnlyTransferRequests { get; } = [];
+    public Exception? UploadedActParseException { get; set; }
+
+    /// <summary>Ошибка parse по номеру вызова (1-based): авто→manual fallback тестам.</summary>
+    public Func<int, Exception?>? UploadedActParseExceptionFactory { get; set; }
+    public HubUploadedActDraft UploadedActParseResult { get; set; } = new()
+    {
+        DraftId = "draft-1",
+        FileName = "act.pdf",
+        FromEmployee = "Иванов И.И.",
+        ToEmployee = "Петров П.П.",
+        DocDate = "2025-01-15",
+        EquipmentInvNos = ["100234", "100235"],
+        ResolvedItems =
+        [
+            new HubUploadedActResolvedItem
+            {
+                ItemId = 42,
+                InvNo = "100234",
+                SerialNo = "SN-1",
+                ModelName = "ThinkPad T14",
+                EmployeeName = "Иванов И.И.",
+                BranchName = "Центральный",
+                LocationName = "Офис 101",
+            },
+        ],
+    };
+    public List<(string FileName, long Size, bool ManualMode)> UploadedActParseCalls { get; } = [];
+    public Exception? UploadedActCommitException { get; set; }
+    public HubUploadedActCommitResult UploadedActCommitResult { get; set; } = new()
+    {
+        Success = true,
+        DocNo = 501,
+        DocNumber = "А-501",
+        FileNo = 7001,
+        LinkedItemIds = [42],
+        LinkedInvNos = ["100234", "100235"],
+    };
+    public List<HubUploadedActCommitRequest> UploadedActCommitRequests { get; } = [];
+    public Exception? EquipmentActDownloadException { get; set; }
+    public List<long> EquipmentActDownloads { get; } = [];
+    public string? EquipmentActDownloadName { get; set; }
+    public byte[]? EquipmentActBytes { get; set; }
+
+    // ---- Напоминания о загрузке актов и email-отправка акта ----
+    public Exception? TransferReminderException { get; set; }
+    public HubTransferActReminder TransferReminderResult { get; set; } = new()
+    {
+        ReminderId = "rem-1",
+        TaskId = "901",
+        NewEmployeeNo = "77",
+        NewEmployeeName = "Иванов И.И.",
+        Status = "pending",
+        PendingGroupsTotal = 1,
+        CompletedGroupsTotal = 0,
+        PendingGroups =
+        [
+            new HubTransferActReminderGroup
+            {
+                Id = "g-1",
+                OldEmployeeName = "Петров П.П.",
+                InvNos = ["100234", "100235"],
+                EquipmentCount = 2,
+            },
+        ],
+        UploadUrl = "/database?upload_act=1&reminder_id=rem-1&source_task_id=901",
+    };
+    public List<string> TransferReminderCalls { get; } = [];
+    public Exception? UploadedActEmailException { get; set; }
+    public HubUploadedActEmailResult UploadedActEmailResult { get; set; } = new()
+    {
+        DocNo = 501,
+        Subject = "Акт №501",
+        SuccessCount = 1,
+        FailedCount = 0,
+        Recipients =
+        [
+            new HubUploadedActEmailRecipient
+            {
+                OwnerNo = 77,
+                EmployeeName = "Иванов И.И.",
+                Email = "ivanov@hub.test",
+                Status = "sent",
+            },
+        ],
+    };
+    public List<HubUploadedActEmailRequest> UploadedActEmailRequests { get; } = [];
+
+    public Task<HubTransferExecuteResponse> TransferActOnlyAsync(
+        HubTransferActOnlyRequest request,
+        CancellationToken cancellationToken)
+    {
+        ActOnlyTransferRequests.Add(request);
+        if (ActOnlyTransferException is not null)
+        {
+            return Task.FromException<HubTransferExecuteResponse>(ActOnlyTransferException);
+        }
+
+        return Task.FromResult(
+            TransferResponseFactory?.Invoke(ActOnlyTransferRequests.Count) ?? TransferResponse);
+    }
+
+    public Task<HubUploadedActDraft> ParseUploadedActAsync(
+        string fileName,
+        byte[] content,
+        bool manualMode,
+        CancellationToken cancellationToken)
+    {
+        UploadedActParseCalls.Add((fileName, content?.Length ?? 0, manualMode));
+        var exception = UploadedActParseExceptionFactory?.Invoke(UploadedActParseCalls.Count)
+            ?? UploadedActParseException;
+        if (exception is not null)
+        {
+            return Task.FromException<HubUploadedActDraft>(exception);
+        }
+
+        return Task.FromResult(UploadedActParseResult);
+    }
+
+    public Task<HubUploadedActCommitResult> CommitUploadedActAsync(
+        HubUploadedActCommitRequest request,
+        CancellationToken cancellationToken)
+    {
+        UploadedActCommitRequests.Add(request);
+        if (UploadedActCommitException is not null)
+        {
+            return Task.FromException<HubUploadedActCommitResult>(UploadedActCommitException);
+        }
+
+        return Task.FromResult(UploadedActCommitResult);
+    }
+
+    public Task<HubTransferActReminder> GetTransferReminderAsync(
+        string reminderId,
+        CancellationToken cancellationToken)
+    {
+        TransferReminderCalls.Add(reminderId);
+        if (TransferReminderException is not null)
+        {
+            return Task.FromException<HubTransferActReminder>(TransferReminderException);
+        }
+
+        return Task.FromResult(TransferReminderResult);
+    }
+
+    public Task<HubUploadedActEmailResult> SendUploadedActEmailAsync(
+        HubUploadedActEmailRequest request,
+        CancellationToken cancellationToken)
+    {
+        UploadedActEmailRequests.Add(request);
+        if (UploadedActEmailException is not null)
+        {
+            return Task.FromException<HubUploadedActEmailResult>(UploadedActEmailException);
+        }
+
+        return Task.FromResult(UploadedActEmailResult);
+    }
+
+    public Task<string> DownloadEquipmentActFileAsync(
+        long docNo,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        EquipmentActDownloads.Add(docNo);
+        if (EquipmentActDownloadException is not null)
+        {
+            return Task.FromException<string>(EquipmentActDownloadException);
+        }
+
+        if (EquipmentActBytes is not null)
+        {
+            destination.Write(EquipmentActBytes, 0, EquipmentActBytes.Length);
+        }
+
+        return Task.FromResult(EquipmentActDownloadName ?? "act.pdf");
+    }
+
+    // ---- Расходники склада (/equipment/consumables*) ----
+    public Exception? ConsumablesLookupException { get; set; }
+    public IReadOnlyList<HubConsumableLookupItem> ConsumablesLookup { get; set; } = [];
+    public List<(bool OnlyPositiveQty, int Limit)> ConsumablesLookupCalls { get; } = [];
+
+    /// <summary>Шов задержки справочника — тест гонки «устройство сменилось до ответа».</summary>
+    public Func<CancellationToken, Task>? ConsumablesLookupDelay { get; set; }
+    public Exception? ConsumableConsumeException { get; set; }
+    public List<HubConsumableConsumeRequest> ConsumableConsumeRequests { get; } = [];
+    public HubConsumableConsumeResponse ConsumableConsumeResponse { get; set; } = new()
+    {
+        Success = true,
+        QtyNew = 0,
+    };
+    public Exception? ConsumableQtyUpdateException { get; set; }
+    public List<HubConsumableQtyUpdateRequest> ConsumableQtyUpdateRequests { get; } = [];
+    public HubConsumableQtyUpdateResponse ConsumableQtyUpdateResponse { get; set; } = new()
+    {
+        Success = true,
+        QtyNew = 0,
+    };
+    public Exception? ConsumableCreateException { get; set; }
+    public List<HubConsumableCreateRequest> ConsumableCreateRequests { get; } = [];
+    public HubConsumableCreateResponse ConsumableCreateResponse { get; set; } = new()
+    {
+        Success = true,
+    };
+
+    public async Task<IReadOnlyList<HubConsumableLookupItem>> GetConsumablesLookupAsync(
+        bool onlyPositiveQty,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ConsumablesLookupCalls.Add((onlyPositiveQty, limit));
+        if (ConsumablesLookupException is not null)
+        {
+            throw ConsumablesLookupException;
+        }
+
+        if (ConsumablesLookupDelay is not null)
+        {
+            await ConsumablesLookupDelay(cancellationToken);
+        }
+
+        return ConsumablesLookup;
+    }
+
+    public Task<HubConsumableConsumeResponse> ConsumeConsumableAsync(
+        HubConsumableConsumeRequest request,
+        CancellationToken cancellationToken)
+    {
+        ConsumableConsumeRequests.Add(request);
+        if (ConsumableConsumeException is not null)
+        {
+            return Task.FromException<HubConsumableConsumeResponse>(ConsumableConsumeException);
+        }
+
+        return Task.FromResult(ConsumableConsumeResponse);
+    }
+
+    public Task<HubConsumableQtyUpdateResponse> UpdateConsumableQtyAsync(
+        HubConsumableQtyUpdateRequest request,
+        CancellationToken cancellationToken)
+    {
+        ConsumableQtyUpdateRequests.Add(request);
+        if (ConsumableQtyUpdateException is not null)
+        {
+            return Task.FromException<HubConsumableQtyUpdateResponse>(ConsumableQtyUpdateException);
+        }
+
+        return Task.FromResult(ConsumableQtyUpdateResponse);
+    }
+
+    public Task<HubConsumableCreateResponse> CreateConsumableAsync(
+        HubConsumableCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        ConsumableCreateRequests.Add(request);
+        if (ConsumableCreateException is not null)
+        {
+            return Task.FromException<HubConsumableCreateResponse>(ConsumableCreateException);
+        }
+
+        return Task.FromResult(ConsumableCreateResponse);
     }
 
     // ---- Доступ к группам AD ----
@@ -2017,6 +3837,152 @@ public class FakeHubApiClient : IHubApiClient
 
         return Task.FromResult(
             VcsLaunchTokenFactory?.Invoke(computerId) ?? VcsLaunchToken);
+    }
+
+    // ---- Терминалы ВКС: управление (vcs.manage) ----
+    public Exception? VcsComputerWriteException { get; set; }
+
+    /// <summary>Ответ create/update по (id — null для create, тело), иначе — echo тела.</summary>
+    public Func<string?, HubVcsComputerInput, HubVcsComputer>? VcsComputerWriteFactory { get; set; }
+    public List<(string? Id, HubVcsComputerInput Input)> VcsComputerWriteCalls { get; } = [];
+    public Exception? VcsComputerDeleteException { get; set; }
+    public List<string> VcsComputerDeleteCalls { get; } = [];
+    public Exception? VcsOrderException { get; set; }
+
+    /// <summary>Если задана — управляемая задержка ответа PUT …/order (гонки reorder).</summary>
+    public Func<CancellationToken, Task>? VcsOrderDelay { get; set; }
+    public List<IReadOnlyList<string>> VcsOrderCalls { get; } = [];
+    public Exception? VcsConfigException { get; set; }
+    public Exception? VcsConfigUpdateException { get; set; }
+    public HubVcsConfig VcsConfig { get; set; } = new() { PasswordConfigured = true };
+    public int VcsConfigGetCount { get; private set; }
+    public List<string> VcsConfigUpdateCalls { get; } = [];
+    public Exception? VcsInfoException { get; set; }
+    public Exception? VcsInfoUpdateException { get; set; }
+    public HubVcsInfo VcsInfo { get; set; } = new() { Content = string.Empty };
+    public int VcsInfoGetCount { get; private set; }
+    public List<string> VcsInfoUpdateCalls { get; } = [];
+
+    public Task<HubVcsComputer> CreateVcsComputerAsync(
+        HubVcsComputerInput computer,
+        CancellationToken cancellationToken)
+    {
+        VcsComputerWriteCalls.Add((null, computer));
+        if (VcsComputerWriteException is not null)
+        {
+            return Task.FromException<HubVcsComputer>(VcsComputerWriteException);
+        }
+
+        return Task.FromResult(
+            VcsComputerWriteFactory?.Invoke(null, computer)
+            ?? new HubVcsComputer
+            {
+                Id = "vcs-new",
+                Name = computer.Name,
+                IpAddress = computer.IpAddress,
+                Location = computer.Location,
+            });
+    }
+
+    public Task<HubVcsComputer> UpdateVcsComputerAsync(
+        string computerId,
+        HubVcsComputerInput computer,
+        CancellationToken cancellationToken)
+    {
+        VcsComputerWriteCalls.Add((computerId, computer));
+        if (VcsComputerWriteException is not null)
+        {
+            return Task.FromException<HubVcsComputer>(VcsComputerWriteException);
+        }
+
+        return Task.FromResult(
+            VcsComputerWriteFactory?.Invoke(computerId, computer)
+            ?? new HubVcsComputer
+            {
+                Id = computerId,
+                Name = computer.Name,
+                IpAddress = computer.IpAddress,
+                Location = computer.Location,
+            });
+    }
+
+    public Task DeleteVcsComputerAsync(
+        string computerId,
+        CancellationToken cancellationToken)
+    {
+        VcsComputerDeleteCalls.Add(computerId);
+        return VcsComputerDeleteException is not null
+            ? Task.FromException(VcsComputerDeleteException)
+            : Task.CompletedTask;
+    }
+
+    public async Task UpdateVcsComputersOrderAsync(
+        IReadOnlyList<string> orderedIds,
+        CancellationToken cancellationToken)
+    {
+        VcsOrderCalls.Add(orderedIds);
+        if (VcsOrderException is not null)
+        {
+            throw VcsOrderException;
+        }
+
+        if (VcsOrderDelay is not null)
+        {
+            await VcsOrderDelay(cancellationToken);
+        }
+    }
+
+    public Task<HubVcsConfig> GetVcsConfigAsync(
+        CancellationToken cancellationToken)
+    {
+        VcsConfigGetCount++;
+        if (VcsConfigException is not null)
+        {
+            return Task.FromException<HubVcsConfig>(VcsConfigException);
+        }
+
+        return Task.FromResult(VcsConfig);
+    }
+
+    public Task<HubVcsConfig> UpdateVcsConfigAsync(
+        string passwordHex,
+        CancellationToken cancellationToken)
+    {
+        VcsConfigUpdateCalls.Add(passwordHex);
+        if (VcsConfigUpdateException is not null)
+        {
+            return Task.FromException<HubVcsConfig>(VcsConfigUpdateException);
+        }
+
+        // Как сервер: password_configured — по непустому hex.
+        VcsConfig = new HubVcsConfig { PasswordConfigured = passwordHex.Trim().Length > 0 };
+        return Task.FromResult(VcsConfig);
+    }
+
+    public Task<HubVcsInfo> GetVcsInfoAsync(
+        CancellationToken cancellationToken)
+    {
+        VcsInfoGetCount++;
+        if (VcsInfoException is not null)
+        {
+            return Task.FromException<HubVcsInfo>(VcsInfoException);
+        }
+
+        return Task.FromResult(VcsInfo);
+    }
+
+    public Task<HubVcsInfo> UpdateVcsInfoAsync(
+        string content,
+        CancellationToken cancellationToken)
+    {
+        VcsInfoUpdateCalls.Add(content);
+        if (VcsInfoUpdateException is not null)
+        {
+            return Task.FromException<HubVcsInfo>(VcsInfoUpdateException);
+        }
+
+        VcsInfo = new HubVcsInfo { Content = content };
+        return Task.FromResult(VcsInfo);
     }
 
     // ---- Мониторинг ----
@@ -2190,6 +4156,264 @@ public class FakeHubApiClient : IHubApiClient
         return Task.FromResult(PcComponentsStatistics);
     }
 
+    // ---- Журнал работ по карточке оборудования (/json/works*) ----
+
+    public Exception? CartridgeWorkHistoryException { get; set; }
+    public HubMaintenanceHistory CartridgeWorkHistory { get; set; } = new();
+    public List<(string? SerialNumber, string? HwSerialNumber, string? InvNo, string? CartridgeModel)> CartridgeWorkHistoryCalls { get; } = [];
+
+    public Exception? BatteryWorkHistoryException { get; set; }
+    public HubMaintenanceHistory BatteryWorkHistory { get; set; } = new();
+    public List<(string? SerialNumber, string? HwSerialNumber)> BatteryWorkHistoryCalls { get; } = [];
+
+    public Exception? ComponentWorkHistoryException { get; set; }
+    public HubMaintenanceHistory ComponentWorkHistory { get; set; } = new();
+    public List<(string? SerialNumber, string? HwSerialNumber, string? ComponentType, string? ComponentName)> ComponentWorkHistoryCalls { get; } = [];
+
+    public Exception? CleaningWorkHistoryException { get; set; }
+    public HubMaintenanceHistory CleaningWorkHistory { get; set; } = new();
+    public List<(string? SerialNumber, string? HwSerialNumber, string? InvNo, long? EquipmentId)> CleaningWorkHistoryCalls { get; } = [];
+
+    public Task<HubMaintenanceHistory> GetCartridgeWorkHistoryAsync(
+        string? serialNumber,
+        string? hwSerialNumber,
+        string? invNo,
+        string? cartridgeModel,
+        CancellationToken cancellationToken)
+    {
+        CartridgeWorkHistoryCalls.Add((serialNumber, hwSerialNumber, invNo, cartridgeModel));
+        if (CartridgeWorkHistoryException is not null)
+        {
+            return Task.FromException<HubMaintenanceHistory>(CartridgeWorkHistoryException);
+        }
+
+        return Task.FromResult(CartridgeWorkHistory);
+    }
+
+    public Task<HubMaintenanceHistory> GetBatteryWorkHistoryAsync(
+        string? serialNumber,
+        string? hwSerialNumber,
+        CancellationToken cancellationToken)
+    {
+        BatteryWorkHistoryCalls.Add((serialNumber, hwSerialNumber));
+        if (BatteryWorkHistoryException is not null)
+        {
+            return Task.FromException<HubMaintenanceHistory>(BatteryWorkHistoryException);
+        }
+
+        return Task.FromResult(BatteryWorkHistory);
+    }
+
+    public Task<HubMaintenanceHistory> GetComponentWorkHistoryAsync(
+        string? serialNumber,
+        string? hwSerialNumber,
+        string? componentType,
+        string? componentName,
+        CancellationToken cancellationToken)
+    {
+        ComponentWorkHistoryCalls.Add((serialNumber, hwSerialNumber, componentType, componentName));
+        if (ComponentWorkHistoryException is not null)
+        {
+            return Task.FromException<HubMaintenanceHistory>(ComponentWorkHistoryException);
+        }
+
+        return Task.FromResult(ComponentWorkHistory);
+    }
+
+    public Task<HubMaintenanceHistory> GetCleaningWorkHistoryAsync(
+        string? serialNumber,
+        string? hwSerialNumber,
+        string? invNo,
+        long? equipmentId,
+        CancellationToken cancellationToken)
+    {
+        CleaningWorkHistoryCalls.Add((serialNumber, hwSerialNumber, invNo, equipmentId));
+        if (CleaningWorkHistoryException is not null)
+        {
+            return Task.FromException<HubMaintenanceHistory>(CleaningWorkHistoryException);
+        }
+
+        return Task.FromResult(CleaningWorkHistory);
+    }
+
+    public Exception? CartridgeWorksException { get; set; }
+    public IReadOnlyList<HubCartridgeWorkRecord> CartridgeWorks { get; set; } = [];
+    public List<int> CartridgeWorksCalls { get; } = [];
+
+    public Exception? BatteryWorksException { get; set; }
+    public IReadOnlyList<HubBatteryWorkRecord> BatteryWorks { get; set; } = [];
+    public List<(string? SerialNumber, int Limit)> BatteryWorksCalls { get; } = [];
+
+    public Exception? ComponentWorksException { get; set; }
+    public IReadOnlyList<HubComponentWorkRecord> ComponentWorks { get; set; } = [];
+    public List<(string? SerialNumber, int Limit)> ComponentWorksCalls { get; } = [];
+
+    public Exception? CleaningWorksException { get; set; }
+    public IReadOnlyList<HubCleaningWorkRecord> CleaningWorks { get; set; } = [];
+    public List<(string? SerialNumber, int Limit)> CleaningWorksCalls { get; } = [];
+
+    public Task<IReadOnlyList<HubCartridgeWorkRecord>> GetCartridgeWorksAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        CartridgeWorksCalls.Add(limit);
+        if (CartridgeWorksException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubCartridgeWorkRecord>>(CartridgeWorksException);
+        }
+
+        return Task.FromResult(CartridgeWorks);
+    }
+
+    public Task<IReadOnlyList<HubBatteryWorkRecord>> GetBatteryWorksAsync(
+        string? serialNumber,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        BatteryWorksCalls.Add((serialNumber, limit));
+        if (BatteryWorksException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubBatteryWorkRecord>>(BatteryWorksException);
+        }
+
+        return Task.FromResult(BatteryWorks);
+    }
+
+    public Task<IReadOnlyList<HubComponentWorkRecord>> GetComponentWorksAsync(
+        string? serialNumber,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ComponentWorksCalls.Add((serialNumber, limit));
+        if (ComponentWorksException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubComponentWorkRecord>>(ComponentWorksException);
+        }
+
+        return Task.FromResult(ComponentWorks);
+    }
+
+    public Task<IReadOnlyList<HubCleaningWorkRecord>> GetCleaningWorksAsync(
+        string? serialNumber,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        CleaningWorksCalls.Add((serialNumber, limit));
+        if (CleaningWorksException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubCleaningWorkRecord>>(CleaningWorksException);
+        }
+
+        return Task.FromResult(CleaningWorks);
+    }
+
+    public Exception? PcCleaningRemainingException { get; set; }
+    public HubPcCleaningRemaining PcCleaningRemaining { get; set; } = new()
+    {
+        RemainingPcs = [],
+    };
+    public List<(int PeriodDays, string Branch)> PcCleaningRemainingCalls { get; } = [];
+
+    public Task<HubPcCleaningRemaining> GetPcCleaningRemainingAsync(
+        int periodDays,
+        string branch,
+        CancellationToken cancellationToken)
+    {
+        PcCleaningRemainingCalls.Add((periodDays, branch));
+        if (PcCleaningRemainingException is not null)
+        {
+            return Task.FromException<HubPcCleaningRemaining>(PcCleaningRemainingException);
+        }
+
+        return Task.FromResult(PcCleaningRemaining);
+    }
+
+    public Exception? CartridgeCompatibilityException { get; set; }
+    public HubCartridgeCompatibility? CartridgeCompatibility { get; set; }
+    public List<string> CartridgeCompatibilityCalls { get; } = [];
+
+    public Task<HubCartridgeCompatibility> GetCartridgeCompatibilityAsync(
+        string printerModel,
+        CancellationToken cancellationToken)
+    {
+        CartridgeCompatibilityCalls.Add(printerModel);
+        if (CartridgeCompatibilityException is not null)
+        {
+            return Task.FromException<HubCartridgeCompatibility>(CartridgeCompatibilityException);
+        }
+
+        return Task.FromResult(CartridgeCompatibility
+            ?? new HubCartridgeCompatibility { PrinterModel = printerModel, CompatibleModels = [], Components = [] });
+    }
+
+    public Exception? RegisterCartridgeWorkException { get; set; }
+    public HubCartridgeWorkRecord RegisterCartridgeWorkResponse { get; set; } = new();
+    public List<HubCartridgeWorkRequest> RegisterCartridgeWorkRequests { get; } = [];
+
+    public Exception? RegisterBatteryWorkException { get; set; }
+    public HubBatteryWorkRecord RegisterBatteryWorkResponse { get; set; } = new();
+    public List<HubBatteryWorkRequest> RegisterBatteryWorkRequests { get; } = [];
+
+    public Exception? RegisterComponentWorkException { get; set; }
+    public HubComponentWorkRecord RegisterComponentWorkResponse { get; set; } = new();
+    public List<HubComponentWorkRequest> RegisterComponentWorkRequests { get; } = [];
+
+    public Exception? RegisterCleaningWorkException { get; set; }
+    public HubCleaningWorkRecord RegisterCleaningWorkResponse { get; set; } = new();
+    public List<HubCleaningWorkRequest> RegisterCleaningWorkRequests { get; } = [];
+
+    public Task<HubCartridgeWorkRecord> RegisterCartridgeWorkAsync(
+        HubCartridgeWorkRequest request,
+        CancellationToken cancellationToken)
+    {
+        RegisterCartridgeWorkRequests.Add(request);
+        if (RegisterCartridgeWorkException is not null)
+        {
+            return Task.FromException<HubCartridgeWorkRecord>(RegisterCartridgeWorkException);
+        }
+
+        return Task.FromResult(RegisterCartridgeWorkResponse);
+    }
+
+    public Task<HubBatteryWorkRecord> RegisterBatteryWorkAsync(
+        HubBatteryWorkRequest request,
+        CancellationToken cancellationToken)
+    {
+        RegisterBatteryWorkRequests.Add(request);
+        if (RegisterBatteryWorkException is not null)
+        {
+            return Task.FromException<HubBatteryWorkRecord>(RegisterBatteryWorkException);
+        }
+
+        return Task.FromResult(RegisterBatteryWorkResponse);
+    }
+
+    public Task<HubComponentWorkRecord> RegisterComponentWorkAsync(
+        HubComponentWorkRequest request,
+        CancellationToken cancellationToken)
+    {
+        RegisterComponentWorkRequests.Add(request);
+        if (RegisterComponentWorkException is not null)
+        {
+            return Task.FromException<HubComponentWorkRecord>(RegisterComponentWorkException);
+        }
+
+        return Task.FromResult(RegisterComponentWorkResponse);
+    }
+
+    public Task<HubCleaningWorkRecord> RegisterCleaningWorkAsync(
+        HubCleaningWorkRequest request,
+        CancellationToken cancellationToken)
+    {
+        RegisterCleaningWorkRequests.Add(request);
+        if (RegisterCleaningWorkException is not null)
+        {
+            return Task.FromException<HubCleaningWorkRecord>(RegisterCleaningWorkException);
+        }
+
+        return Task.FromResult(RegisterCleaningWorkResponse);
+    }
+
     // ---- База знаний ----
     public Exception? KbCategoriesException { get; set; }
     public IReadOnlyList<HubKbCategory> KbCategories { get; set; } = [];
@@ -2293,7 +4517,14 @@ public class FakeHubApiClient : IHubApiClient
             return Task.FromException<HubChatMessageList>(ChatMessagesException);
         }
 
-        return Task.FromResult(ChatMessages);
+        if (ChatMessagesAsyncFactory is { } asyncFactory)
+        {
+            return asyncFactory(conversationId, beforeMessageId);
+        }
+
+        // Фабрика — постраничная лента по before-курсору (как у диалогов);
+        // без неё — единый список, как было.
+        return Task.FromResult(ChatMessagesFactory?.Invoke(beforeMessageId) ?? ChatMessages);
     }
 
     public Task<HubChatMessage> SendChatMessageAsync(
@@ -2926,6 +5157,406 @@ public class FakeHubApiClient : IHubApiClient
     public HubChatConversationDetail? TransferOwnershipResult { get; set; }
     public List<(string ConversationId, int OwnerUserId)> TransferOwnershipCalls { get; } = [];
 
+    // ---- Модерация группы: роли, ограничения, заявки, жалобы, ссылки ----
+
+    public Exception? MemberRoleException { get; set; }
+    public HubChatConversationDetail? MemberRoleResult { get; set; }
+    public List<(string ConversationId, int UserId, string Role)> MemberRoleCalls { get; } = [];
+    public Exception? RestrictMemberException { get; set; }
+    public HubChatConversationDetail? RestrictMemberResult { get; set; }
+    public List<(string ConversationId, int UserId, int? DurationSeconds)> RestrictMemberCalls { get; } = [];
+    public List<(string ConversationId, int UserId)> LiftRestrictionCalls { get; } = [];
+    public Exception? JoinRequestsException { get; set; }
+    public HubChatJoinRequestList JoinRequestsResult { get; set; } = new() { Items = [] };
+    public List<string> JoinRequestsCalls { get; } = [];
+    public Exception? JoinApprovalException { get; set; }
+    public List<(string ConversationId, bool ApprovalRequired)> JoinApprovalCalls { get; } = [];
+    public Exception? JoinRequestDecisionException { get; set; }
+    public HubChatJoinRequestResolution? JoinRequestDecisionResult { get; set; }
+    public List<(string ConversationId, long RequestId, string Decision)> JoinRequestDecisionCalls { get; } = [];
+    public Exception? ReportException { get; set; }
+    public HubChatMessageReportResult? ReportResult { get; set; }
+    public List<(string ConversationId, string MessageId, string Reason, string? Comment)> ReportCalls { get; } = [];
+    public Exception? ReportsException { get; set; }
+    public HubChatMessageReportList ReportsResult { get; set; } = new() { Items = [] };
+    public List<string> ReportsCalls { get; } = [];
+    public Exception? ReportResolveException { get; set; }
+    public List<(string ConversationId, long ReportId, string Resolution)> ReportResolveCalls { get; } = [];
+    public Exception? InviteLinkException { get; set; }
+    public HubChatInviteLink InviteLinkResult { get; set; } = new()
+    {
+        Token = "invite-token",
+        ConversationId = "g1",
+        ExpiresAt = DateTimeOffset.UtcNow.AddDays(7),
+    };
+    public List<string> InviteLinkCalls { get; } = [];
+    public List<string> InviteRevokeCalls { get; } = [];
+    public Exception? InviteJoinException { get; set; }
+    public HubChatInviteJoinResult? InviteJoinResult { get; set; }
+    public List<string> InviteJoinCalls { get; } = [];
+    public Exception? DeleteConversationException { get; set; }
+    public List<string> DeletedConversations { get; } = [];
+    public Exception? SupportException { get; set; }
+    public HubChatConversation? SupportConversationResult { get; set; }
+    public int SupportCalls { get; private set; }
+    public Exception? GroupProfileException { get; set; }
+    public HubChatConversationDetail? GroupProfileResult { get; set; }
+    public List<(string ConversationId, string? Title, string? Description, string? PostingPolicy, int? SlowModeSeconds, bool? MembersSendFiles)> GroupProfileCalls { get; } = [];
+    public Exception? GroupAvatarException { get; set; }
+    public HubChatConversationDetail? GroupAvatarResult { get; set; }
+    public List<(string ConversationId, string FileName, string? MimeType, long Size)> GroupAvatarCalls { get; } = [];
+    public List<string> GroupAvatarDeleteCalls { get; } = [];
+    public Exception? ShareableTasksException { get; set; }
+    public HubChatShareableTaskList ShareableTasksResult { get; set; } = new() { Items = [] };
+    public List<(string ConversationId, string? Query, int Limit)> ShareableTasksCalls { get; } = [];
+    public Exception? TaskShareException { get; set; }
+    public Func<HubChatMessage>? TaskShareFactory { get; set; }
+    public List<(string ConversationId, string TaskId)> TaskShareCalls { get; } = [];
+    public Exception? HydrateException { get; set; }
+    public HubChatThreadHydrateResult? HydrateResult { get; set; }
+    public List<(string ConversationId, IReadOnlyList<string> MessageIds)> HydrateCalls { get; } = [];
+
+    public Task<HubChatConversationDetail> UpdateChatGroupMemberRoleAsync(
+        string conversationId,
+        int userId,
+        string memberRole,
+        CancellationToken cancellationToken)
+    {
+        MemberRoleCalls.Add((conversationId, userId, memberRole));
+        if (MemberRoleException is not null)
+        {
+            return Task.FromException<HubChatConversationDetail>(MemberRoleException);
+        }
+
+        return Task.FromResult(
+            MemberRoleResult ?? ConversationDetailResult ?? DefaultDetail(conversationId));
+    }
+
+    public Task<HubChatConversationDetail> RestrictChatGroupMemberAsync(
+        string conversationId,
+        int userId,
+        int? durationSeconds,
+        CancellationToken cancellationToken)
+    {
+        RestrictMemberCalls.Add((conversationId, userId, durationSeconds));
+        if (RestrictMemberException is not null)
+        {
+            return Task.FromException<HubChatConversationDetail>(RestrictMemberException);
+        }
+
+        return Task.FromResult(
+            RestrictMemberResult ?? ConversationDetailResult ?? DefaultDetail(conversationId));
+    }
+
+    public Task<HubChatConversationDetail> LiftChatGroupMemberRestrictionAsync(
+        string conversationId,
+        int userId,
+        CancellationToken cancellationToken)
+    {
+        LiftRestrictionCalls.Add((conversationId, userId));
+        if (RestrictMemberException is not null)
+        {
+            return Task.FromException<HubChatConversationDetail>(RestrictMemberException);
+        }
+
+        return Task.FromResult(
+            RestrictMemberResult ?? ConversationDetailResult ?? DefaultDetail(conversationId));
+    }
+
+    public Task<HubChatJoinRequestList> GetChatJoinRequestsAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        JoinRequestsCalls.Add(conversationId);
+        if (JoinRequestsException is not null)
+        {
+            return Task.FromException<HubChatJoinRequestList>(JoinRequestsException);
+        }
+
+        return Task.FromResult(JoinRequestsResult);
+    }
+
+    public Task<HubChatJoinApproval> SetChatJoinApprovalAsync(
+        string conversationId,
+        bool approvalRequired,
+        CancellationToken cancellationToken)
+    {
+        JoinApprovalCalls.Add((conversationId, approvalRequired));
+        if (JoinApprovalException is not null)
+        {
+            return Task.FromException<HubChatJoinApproval>(JoinApprovalException);
+        }
+
+        return Task.FromResult(new HubChatJoinApproval { ApprovalRequired = approvalRequired });
+    }
+
+    public Task<HubChatJoinRequestResolution> ResolveChatJoinRequestAsync(
+        string conversationId,
+        long requestId,
+        string decision,
+        CancellationToken cancellationToken)
+    {
+        JoinRequestDecisionCalls.Add((conversationId, requestId, decision));
+        if (JoinRequestDecisionException is not null)
+        {
+            return Task.FromException<HubChatJoinRequestResolution>(JoinRequestDecisionException);
+        }
+
+        return Task.FromResult(JoinRequestDecisionResult ?? new HubChatJoinRequestResolution
+        {
+            Id = requestId,
+            Status = decision == "approve" ? "approved" : "rejected",
+            Added = decision == "approve",
+        });
+    }
+
+    public Task<HubChatMessageReportResult> ReportChatMessageAsync(
+        string conversationId,
+        string messageId,
+        string reason,
+        string? comment,
+        CancellationToken cancellationToken)
+    {
+        ReportCalls.Add((conversationId, messageId, reason, comment));
+        if (ReportException is not null)
+        {
+            return Task.FromException<HubChatMessageReportResult>(ReportException);
+        }
+
+        return Task.FromResult(ReportResult ?? new HubChatMessageReportResult
+        {
+            Id = 101,
+            Status = "open",
+            AlreadyReported = false,
+        });
+    }
+
+    public Task<HubChatMessageReportList> GetChatMessageReportsAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ReportsCalls.Add(conversationId);
+        if (ReportsException is not null)
+        {
+            return Task.FromException<HubChatMessageReportList>(ReportsException);
+        }
+
+        return Task.FromResult(ReportsResult);
+    }
+
+    public Task<HubChatMessageReportResolution> ResolveChatMessageReportAsync(
+        string conversationId,
+        long reportId,
+        string resolution,
+        CancellationToken cancellationToken)
+    {
+        ReportResolveCalls.Add((conversationId, reportId, resolution));
+        if (ReportResolveException is not null)
+        {
+            return Task.FromException<HubChatMessageReportResolution>(ReportResolveException);
+        }
+
+        return Task.FromResult(new HubChatMessageReportResolution
+        {
+            Id = reportId,
+            Status = resolution,
+        });
+    }
+
+    public Task<HubChatInviteLink> CreateChatGroupInviteLinkAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        InviteLinkCalls.Add(conversationId);
+        if (InviteLinkException is not null)
+        {
+            return Task.FromException<HubChatInviteLink>(InviteLinkException);
+        }
+
+        return Task.FromResult(InviteLinkResult);
+    }
+
+    public Task<HubChatInviteRevokeResult> RevokeChatGroupInviteLinkAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        InviteRevokeCalls.Add(conversationId);
+        if (InviteLinkException is not null)
+        {
+            return Task.FromException<HubChatInviteRevokeResult>(InviteLinkException);
+        }
+
+        return Task.FromResult(new HubChatInviteRevokeResult { Revoked = 1 });
+    }
+
+    public Task<HubChatInvitePreview> GetChatInviteLinkPreviewAsync(
+        string token,
+        CancellationToken cancellationToken)
+    {
+        if (InviteLinkException is not null)
+        {
+            return Task.FromException<HubChatInvitePreview>(InviteLinkException);
+        }
+
+        return Task.FromResult(new HubChatInvitePreview { Title = "Группа" });
+    }
+
+    public Task<HubChatInviteJoinResult> JoinChatByInviteLinkAsync(
+        string token,
+        CancellationToken cancellationToken)
+    {
+        InviteJoinCalls.Add(token);
+        if (InviteJoinException is not null)
+        {
+            return Task.FromException<HubChatInviteJoinResult>(InviteJoinException);
+        }
+
+        return Task.FromResult(InviteJoinResult ?? new HubChatInviteJoinResult
+        {
+            Joined = true,
+            Conversation = new HubChatConversation
+            {
+                Id = "joined-" + token,
+                Kind = "group",
+                Title = "Группа",
+            },
+        });
+    }
+
+    public Task DeleteChatConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        DeletedConversations.Add(conversationId);
+        return DeleteConversationException is null
+            ? Task.CompletedTask
+            : Task.FromException(DeleteConversationException);
+    }
+
+    public Task<HubChatConversation> CreateChatSupportConversationAsync(
+        CancellationToken cancellationToken)
+    {
+        SupportCalls++;
+        if (SupportException is not null)
+        {
+            return Task.FromException<HubChatConversation>(SupportException);
+        }
+
+        return Task.FromResult(SupportConversationResult ?? new HubChatConversation
+        {
+            Id = "support-1",
+            Kind = "support",
+            Title = "Поддержка HUB",
+            IsSupport = true,
+        });
+    }
+
+    public Task<HubChatConversationDetail> UpdateChatGroupProfileAsync(
+        string conversationId,
+        string? title,
+        string? description,
+        string? postingPolicy,
+        int? slowModeSeconds,
+        bool? membersSendFiles,
+        CancellationToken cancellationToken)
+    {
+        GroupProfileCalls.Add(
+            (conversationId, title, description, postingPolicy, slowModeSeconds, membersSendFiles));
+        if (GroupProfileException is not null)
+        {
+            return Task.FromException<HubChatConversationDetail>(GroupProfileException);
+        }
+
+        return Task.FromResult(
+            GroupProfileResult ?? ConversationDetailResult ?? DefaultDetail(conversationId));
+    }
+
+    public async Task<HubChatConversationDetail> UploadChatGroupAvatarAsync(
+        string conversationId,
+        string fileName,
+        Stream content,
+        string? mimeType,
+        CancellationToken cancellationToken)
+    {
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer, cancellationToken);
+        GroupAvatarCalls.Add((conversationId, fileName, mimeType, buffer.Length));
+        if (GroupAvatarException is not null)
+        {
+            throw GroupAvatarException;
+        }
+
+        return GroupAvatarResult ?? ConversationDetailResult ?? DefaultDetail(conversationId);
+    }
+
+    public Task<HubChatConversationDetail> DeleteChatGroupAvatarAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        GroupAvatarDeleteCalls.Add(conversationId);
+        if (GroupAvatarException is not null)
+        {
+            return Task.FromException<HubChatConversationDetail>(GroupAvatarException);
+        }
+
+        return Task.FromResult(
+            GroupAvatarResult ?? ConversationDetailResult ?? DefaultDetail(conversationId));
+    }
+
+    public Task<HubChatShareableTaskList> GetChatShareableTasksAsync(
+        string conversationId,
+        string? query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ShareableTasksCalls.Add((conversationId, query, limit));
+        if (ShareableTasksException is not null)
+        {
+            return Task.FromException<HubChatShareableTaskList>(ShareableTasksException);
+        }
+
+        return Task.FromResult(ShareableTasksResult);
+    }
+
+    public Task<HubChatMessage> SendChatTaskShareAsync(
+        string conversationId,
+        string taskId,
+        string? clientMessageId,
+        string? replyToMessageId,
+        CancellationToken cancellationToken)
+    {
+        TaskShareCalls.Add((conversationId, taskId));
+        if (TaskShareException is not null)
+        {
+            return Task.FromException<HubChatMessage>(TaskShareException);
+        }
+
+        return Task.FromResult(TaskShareFactory?.Invoke() ?? new HubChatMessage
+        {
+            Id = "task-share-" + TaskShareCalls.Count,
+            ConversationId = conversationId,
+            Kind = "task_share",
+            CreatedAt = DateTimeOffset.UtcNow,
+            IsOwn = true,
+            ClientMessageId = clientMessageId,
+            TaskPreview = new HubChatTaskPreview { Id = taskId, Title = "Задача " + taskId },
+        });
+    }
+
+    public Task<HubChatThreadHydrateResult> HydrateChatMessagesAsync(
+        string conversationId,
+        IReadOnlyList<string> messageIds,
+        CancellationToken cancellationToken)
+    {
+        HydrateCalls.Add((conversationId, messageIds));
+        if (HydrateException is not null)
+        {
+            return Task.FromException<HubChatThreadHydrateResult>(HydrateException);
+        }
+
+        return Task.FromResult(HydrateResult ?? new HubChatThreadHydrateResult { Items = [] });
+    }
+
     public Task<HubChatGlobalSearchResult> SearchChatGlobalMessagesAsync(
         string query,
         int limit,
@@ -2966,6 +5597,728 @@ public class FakeHubApiClient : IHubApiClient
     public List<string> ReadsCalls { get; } = [];
     public List<(string Query, int Limit)> GlobalSearchQueries { get; } = [];
     public int NotesCalls { get; private set; }
+
+    // Чат: «Отправить позже» (config + CRUD запланированных)
+    public Exception? ChatConfigException { get; set; }
+    public HubChatConfig ChatConfig { get; set; } = new();
+    public int ChatConfigCallCount { get; private set; }
+    public Exception? ScheduledListException { get; set; }
+    public Exception? ScheduledCreateException { get; set; }
+    public Exception? ScheduledUpdateException { get; set; }
+    public Exception? ScheduledCancelException { get; set; }
+
+    /// <summary>Хранилище отложенных по conversation_id — GET …/scheduled отдаёт отсюда.</summary>
+    public Dictionary<string, List<HubChatScheduledMessage>> ScheduledItems { get; } = new();
+
+    /// <summary>Если задана — ответ create по (conversationId, body, when, replyId).</summary>
+    public Func<string, string, DateTimeOffset, string?, HubChatScheduledMessage>? ScheduledCreateFactory { get; set; }
+
+    /// <summary>Если задан — ответ update по (id, body, when).</summary>
+    public Func<string, string?, DateTimeOffset?, HubChatScheduledMessage>? ScheduledUpdateFactory { get; set; }
+    public int ScheduledListCallCount { get; private set; }
+    public string? LastScheduledListConversationId { get; private set; }
+    public List<(string ConversationId, string Body, DateTimeOffset ScheduledFor, string? ReplyToMessageId)> ScheduledCreateCalls { get; } = [];
+    public List<(string Id, string? Body, DateTimeOffset? ScheduledFor)> ScheduledUpdateCalls { get; } = [];
+    public List<string> ScheduledCancelCalls { get; } = [];
+
+    public Task<HubChatConfig> GetChatConfigAsync(CancellationToken cancellationToken)
+    {
+        ChatConfigCallCount++;
+        if (ChatConfigException is not null)
+        {
+            return Task.FromException<HubChatConfig>(ChatConfigException);
+        }
+
+        return Task.FromResult(ChatConfig);
+    }
+
+    public Task<HubChatScheduledMessageList> GetChatScheduledMessagesAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ScheduledListCallCount++;
+        LastScheduledListConversationId = conversationId;
+        if (ScheduledListException is not null)
+        {
+            return Task.FromException<HubChatScheduledMessageList>(ScheduledListException);
+        }
+
+        var items = ScheduledItems.TryGetValue(conversationId, out var list) ? list : [];
+        return Task.FromResult(new HubChatScheduledMessageList { Items = items });
+    }
+
+    public Task<HubChatScheduledMessage> CreateChatScheduledMessageAsync(
+        string conversationId,
+        string body,
+        DateTimeOffset scheduledFor,
+        string? replyToMessageId,
+        CancellationToken cancellationToken)
+    {
+        ScheduledCreateCalls.Add((conversationId, body, scheduledFor, replyToMessageId));
+        if (ScheduledCreateException is not null)
+        {
+            return Task.FromException<HubChatScheduledMessage>(ScheduledCreateException);
+        }
+
+        var created = ScheduledCreateFactory?.Invoke(conversationId, body, scheduledFor, replyToMessageId)
+            ?? new HubChatScheduledMessage
+            {
+                Id = $"sched-{ScheduledCreateCalls.Count}",
+                ConversationId = conversationId,
+                Body = body,
+                BodyFormat = "plain",
+                ReplyToMessageId = replyToMessageId,
+                ScheduledFor = scheduledFor,
+                Status = "scheduled",
+            };
+        if (ScheduledItems.TryGetValue(conversationId, out var existing))
+        {
+            existing.Add(created);
+        }
+        else
+        {
+            ScheduledItems[conversationId] = [created];
+        }
+
+        return Task.FromResult(created);
+    }
+
+    public Task<HubChatScheduledMessage> UpdateChatScheduledMessageAsync(
+        string scheduledId,
+        string? body,
+        DateTimeOffset? scheduledFor,
+        CancellationToken cancellationToken)
+    {
+        ScheduledUpdateCalls.Add((scheduledId, body, scheduledFor));
+        if (ScheduledUpdateException is not null)
+        {
+            return Task.FromException<HubChatScheduledMessage>(ScheduledUpdateException);
+        }
+
+        var stored = ScheduledItems.Values.SelectMany(items => items)
+            .FirstOrDefault(item => item.Id == scheduledId);
+        var updated = ScheduledUpdateFactory?.Invoke(scheduledId, body, scheduledFor)
+            ?? new HubChatScheduledMessage
+            {
+                Id = scheduledId,
+                ConversationId = stored?.ConversationId ?? "conv-1",
+                Body = body ?? stored?.Body ?? string.Empty,
+                BodyFormat = stored?.BodyFormat ?? "plain",
+                ScheduledFor = scheduledFor ?? stored?.ScheduledFor,
+                Status = stored?.Status ?? "scheduled",
+            };
+        return Task.FromResult(updated);
+    }
+
+    public Task<HubChatScheduledCancelResult> CancelChatScheduledMessageAsync(
+        string scheduledId,
+        CancellationToken cancellationToken)
+    {
+        ScheduledCancelCalls.Add(scheduledId);
+        if (ScheduledCancelException is not null)
+        {
+            return Task.FromException<HubChatScheduledCancelResult>(ScheduledCancelException);
+        }
+
+        foreach (var items in ScheduledItems.Values)
+        {
+            items.RemoveAll(item => item.Id == scheduledId);
+        }
+
+        return Task.FromResult(new HubChatScheduledCancelResult
+        {
+            Id = scheduledId,
+            Status = "cancelled",
+        });
+    }
+
+    // ---- Папки диалогов (/chat/folders*) ----
+
+    public Exception? ChatFoldersException { get; set; }
+    public Exception? ChatFolderMutationException { get; set; }
+    public HubChatFolderList ChatFolders { get; set; } = new() { Items = [] };
+    public int ChatFoldersCallCount { get; private set; }
+    public List<string> ChatFolderCreateNames { get; } = [];
+    public List<(string FolderId, string? Name, int? SortOrder)> ChatFolderUpdateCalls { get; } = [];
+    public List<string> ChatFolderDeleteCalls { get; } = [];
+    public List<(string FolderId, string ConversationId)> ChatFolderAddCalls { get; } = [];
+    public List<(string FolderId, string ConversationId)> ChatFolderRemoveCalls { get; } = [];
+    public List<(string FolderId, IReadOnlyList<string> ConversationIds)> ChatFolderReplaceCalls { get; } = [];
+
+    /// <summary>Созданные фейком папки — отражаются в ChatFolders для последующих GET.</summary>
+    public List<HubChatFolder> ChatFolderItems { get; } = [];
+
+    public Task<HubChatFolderList> GetChatFoldersAsync(CancellationToken cancellationToken)
+    {
+        ChatFoldersCallCount++;
+        if (ChatFoldersException is not null)
+        {
+            return Task.FromException<HubChatFolderList>(ChatFoldersException);
+        }
+
+        var result = ChatFolders;
+        if (ChatFolderItems.Count > 0)
+        {
+            result = new HubChatFolderList
+            {
+                Items = result.Items is { } existing
+                    ? [.. existing, .. ChatFolderItems]
+                    : ChatFolderItems.ToList(),
+                ConversationIdsByFolder = result.ConversationIdsByFolder,
+                FolderUnreadCounts = result.FolderUnreadCounts,
+            };
+        }
+
+        return Task.FromResult(result);
+    }
+
+    public Task<HubChatFolderMutation> CreateChatFolderAsync(
+        string name,
+        CancellationToken cancellationToken)
+    {
+        ChatFolderCreateNames.Add(name);
+        if (ChatFolderMutationException is not null)
+        {
+            return Task.FromException<HubChatFolderMutation>(ChatFolderMutationException);
+        }
+
+        var item = new HubChatFolder
+        {
+            Id = $"f{ChatFolderItems.Count + 1}",
+            Name = name,
+            ConversationIds = [],
+        };
+        ChatFolderItems.Add(item);
+        return Task.FromResult(new HubChatFolderMutation { Ok = true, Item = item });
+    }
+
+    public Task<HubChatFolder> GetChatFolderAsync(
+        string folderId,
+        CancellationToken cancellationToken)
+    {
+        var item = ChatFolderItems.FirstOrDefault(f => f.Id == folderId)
+            ?? ChatFolders.Items?.FirstOrDefault(f => f.Id == folderId)
+            ?? new HubChatFolder { Id = folderId };
+        return Task.FromResult(item);
+    }
+
+    public Task<HubChatFolderMutation> UpdateChatFolderAsync(
+        string folderId,
+        string? name,
+        int? sortOrder,
+        CancellationToken cancellationToken)
+    {
+        ChatFolderUpdateCalls.Add((folderId, name, sortOrder));
+        if (ChatFolderMutationException is not null)
+        {
+            return Task.FromException<HubChatFolderMutation>(ChatFolderMutationException);
+        }
+
+        var item = new HubChatFolder
+        {
+            Id = folderId,
+            Name = name,
+            SortOrder = sortOrder ?? 0,
+        };
+        var index = ChatFolderItems.FindIndex(f => f.Id == folderId);
+        if (index >= 0)
+        {
+            ChatFolderItems[index] = ChatFolderItems[index] with
+            {
+                Name = name ?? ChatFolderItems[index].Name,
+                SortOrder = sortOrder ?? ChatFolderItems[index].SortOrder,
+            };
+            item = ChatFolderItems[index];
+        }
+
+        return Task.FromResult(new HubChatFolderMutation { Ok = true, Item = item });
+    }
+
+    public Task<HubChatFolderDeleteResult> DeleteChatFolderAsync(
+        string folderId,
+        CancellationToken cancellationToken)
+    {
+        ChatFolderDeleteCalls.Add(folderId);
+        if (ChatFolderMutationException is not null)
+        {
+            return Task.FromException<HubChatFolderDeleteResult>(ChatFolderMutationException);
+        }
+
+        ChatFolderItems.RemoveAll(f => f.Id == folderId);
+        return Task.FromResult(new HubChatFolderDeleteResult { Ok = true, Id = folderId });
+    }
+
+    public Task<HubChatFolderMutation> ReplaceChatFolderConversationsAsync(
+        string folderId,
+        IReadOnlyList<string> conversationIds,
+        CancellationToken cancellationToken)
+    {
+        ChatFolderReplaceCalls.Add((folderId, conversationIds));
+        if (ChatFolderMutationException is not null)
+        {
+            return Task.FromException<HubChatFolderMutation>(ChatFolderMutationException);
+        }
+
+        var item = UpsertFakeFolder(folderId, conversationIds);
+        return Task.FromResult(new HubChatFolderMutation { Ok = true, Item = item });
+    }
+
+    public Task<HubChatFolderMutation> AddChatFolderConversationAsync(
+        string folderId,
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ChatFolderAddCalls.Add((folderId, conversationId));
+        if (ChatFolderMutationException is not null)
+        {
+            return Task.FromException<HubChatFolderMutation>(ChatFolderMutationException);
+        }
+
+        var current = FakeFolderIds(folderId);
+        if (!current.Contains(conversationId))
+        {
+            current.Add(conversationId);
+        }
+
+        var item = UpsertFakeFolder(folderId, current);
+        return Task.FromResult(new HubChatFolderMutation { Ok = true, Item = item });
+    }
+
+    public Task<HubChatFolderMutation> RemoveChatFolderConversationAsync(
+        string folderId,
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ChatFolderRemoveCalls.Add((folderId, conversationId));
+        if (ChatFolderMutationException is not null)
+        {
+            return Task.FromException<HubChatFolderMutation>(ChatFolderMutationException);
+        }
+
+        var current = FakeFolderIds(folderId);
+        current.Remove(conversationId);
+        var item = UpsertFakeFolder(folderId, current);
+        return Task.FromResult(new HubChatFolderMutation { Ok = true, Item = item });
+    }
+
+    private List<string> FakeFolderIds(string folderId) =>
+        (ChatFolderItems.FirstOrDefault(f => f.Id == folderId)?.ConversationIds
+            ?? ChatFolders.Items?.FirstOrDefault(f => f.Id == folderId)?.ConversationIds
+            ?? []).ToList();
+
+    private HubChatFolder UpsertFakeFolder(string folderId, IReadOnlyList<string> conversationIds)
+    {
+        var index = ChatFolderItems.FindIndex(f => f.Id == folderId);
+        var item = index >= 0
+            ? ChatFolderItems[index] with { ConversationIds = conversationIds, ConversationCount = conversationIds.Count }
+            : new HubChatFolder
+            {
+                Id = folderId,
+                ConversationIds = conversationIds,
+                ConversationCount = conversationIds.Count,
+            };
+        if (index >= 0)
+        {
+            ChatFolderItems[index] = item;
+        }
+        else
+        {
+            ChatFolderItems.Add(item);
+        }
+
+        return item;
+    }
+
+    // ---- Стикеры (/chat/sticker-packs*, /chat/stickers/*) ----
+
+    public Exception? ChatStickerPacksException { get; set; }
+    public Exception? ChatStickerImportException { get; set; }
+    public Exception? ChatStickerSendException { get; set; }
+    public HubChatStickerPackList ChatStickerPacks { get; set; } = new() { Items = [] };
+    public Func<string, HubChatStickerPackList>? ChatStickerImportFactory { get; set; }
+    public Func<string, string?, string?, HubChatMessage>? ChatStickerSendFactory { get; set; }
+    public int ChatStickerPacksCallCount { get; private set; }
+    public List<string> ChatStickerImportSources { get; } = [];
+    public List<(string ConversationId, string StickerId, string? ClientMessageId, string? ReplyToMessageId)> ChatStickerSendCalls { get; } = [];
+
+    public Task<HubChatStickerPackList> GetChatStickerPacksAsync(CancellationToken cancellationToken)
+    {
+        ChatStickerPacksCallCount++;
+        if (ChatStickerPacksException is not null)
+        {
+            return Task.FromException<HubChatStickerPackList>(ChatStickerPacksException);
+        }
+
+        return Task.FromResult(ChatStickerPacks);
+    }
+
+    public Task<HubChatStickerPackList> ImportChatStickerPackAsync(
+        string source,
+        CancellationToken cancellationToken)
+    {
+        ChatStickerImportSources.Add(source);
+        if (ChatStickerImportException is not null)
+        {
+            return Task.FromException<HubChatStickerPackList>(ChatStickerImportException);
+        }
+
+        var result = ChatStickerImportFactory?.Invoke(source) ?? ChatStickerPacks;
+        ChatStickerPacks = result;
+        return Task.FromResult(result);
+    }
+
+    public Task<HubChatStickerPack> GetChatStickerPackPreviewAsync(
+        string shortName,
+        CancellationToken cancellationToken)
+    {
+        var item = ChatStickerPacks.Items?.FirstOrDefault(
+            p => string.Equals(p.ShortName, shortName, StringComparison.Ordinal))
+            ?? new HubChatStickerPack { Id = "preview-" + shortName, ShortName = shortName };
+        return Task.FromResult(item);
+    }
+
+    public Task<HubChatMessage> SendChatStickerMessageAsync(
+        string conversationId,
+        string stickerId,
+        string? clientMessageId,
+        string? replyToMessageId,
+        CancellationToken cancellationToken)
+    {
+        ChatStickerSendCalls.Add((conversationId, stickerId, clientMessageId, replyToMessageId));
+        if (ChatStickerSendException is not null)
+        {
+            return Task.FromException<HubChatMessage>(ChatStickerSendException);
+        }
+
+        var message = ChatStickerSendFactory?.Invoke(conversationId, clientMessageId, replyToMessageId)
+            ?? new HubChatMessage
+            {
+                Id = "sticker-msg-" + ChatStickerSendCalls.Count,
+                ConversationId = conversationId,
+                ClientMessageId = clientMessageId,
+                CreatedAt = DateTimeOffset.UtcNow,
+                IsOwn = true,
+                Attachments =
+                [
+                    new HubChatAttachment
+                    {
+                        Id = "sticker-att-" + stickerId,
+                        Kind = "file",
+                        MediaKind = "sticker",
+                        FileName = stickerId + ".webp",
+                        MimeType = "image/webp",
+                    },
+                ],
+            };
+        return Task.FromResult(message);
+    }
+
+    // ---- ИИ-ассистент (/chat/ai/*) ----
+
+    public Exception? ChatAiBotsException { get; set; }
+    public Exception? ChatAiActionException { get; set; }
+    public Exception? ChatAiMemoryException { get; set; }
+    public HubChatAiBotList ChatAiBots { get; set; } = new() { Items = [] };
+    public int ChatAiBotsCallCount { get; private set; }
+    public HubChatConversation? ChatAiOpenResult { get; set; }
+    public Func<string, HubChatConversation>? ChatAiOpenFactory { get; set; }
+    public Func<string, HubChatConversation>? ChatAiCreateBotFactory { get; set; }
+    public Func<HubChatConversation>? ChatAiCreateGeneralFactory { get; set; }
+    public HubChatAiStatus? ChatAiStatus { get; set; }
+    public Func<string, HubChatAiStatus>? ChatAiStatusFactory { get; set; }
+    public List<string> ChatAiOpenCalls { get; } = [];
+    public List<string> ChatAiCreateBotCalls { get; } = [];
+    public int ChatAiCreateGeneralCalls { get; private set; }
+    public List<(string ConversationId, string Title)> ChatAiRenameCalls { get; } = [];
+    public List<string> ChatAiDeleteCalls { get; } = [];
+    public List<string> ChatAiStatusCalls { get; } = [];
+    public List<string> ChatAiStopCalls { get; } = [];
+    public List<string> ChatAiRetryCalls { get; } = [];
+    public List<string> ChatAiResetCalls { get; } = [];
+    public List<(string ActionId, string? Choice, string? Format, string? Scope)> ChatAiConfirmCalls { get; } = [];
+    public List<string> ChatAiCancelCalls { get; } = [];
+    public HubChatActionCard? ChatAiConfirmResult { get; set; }
+    public HubChatActionCard? ChatAiCancelResult { get; set; }
+    public HubChatAiMemoryList ChatAiMemory { get; set; } = new() { Enabled = true, Items = [] };
+    public int ChatAiMemoryCallCount { get; private set; }
+    public List<bool> ChatAiMemorySettingsCalls { get; } = [];
+    public List<(string MemoryId, string Content)> ChatAiMemoryUpdateCalls { get; } = [];
+    public List<string> ChatAiMemoryDeleteCalls { get; } = [];
+    public int ChatAiMemoryClearCalls { get; private set; }
+
+    public Task<HubChatAiBotList> GetChatAiBotsAsync(CancellationToken cancellationToken)
+    {
+        ChatAiBotsCallCount++;
+        if (ChatAiBotsException is not null)
+        {
+            return Task.FromException<HubChatAiBotList>(ChatAiBotsException);
+        }
+
+        return Task.FromResult(ChatAiBots);
+    }
+
+    public Task<HubChatConversation> OpenChatAiBotConversationAsync(
+        string botId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiOpenCalls.Add(botId);
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatConversation>(ChatAiActionException);
+        }
+
+        var conversation = ChatAiOpenFactory?.Invoke(botId)
+            ?? ChatAiOpenResult
+            ?? new HubChatConversation { Id = "ai-" + botId, Kind = "ai", Title = "HUB Ассистент" };
+        return Task.FromResult(conversation);
+    }
+
+    public Task<HubChatConversation> CreateChatAiBotConversationAsync(
+        string botId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiCreateBotCalls.Add(botId);
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatConversation>(ChatAiActionException);
+        }
+
+        var conversation = ChatAiCreateBotFactory?.Invoke(botId)
+            ?? new HubChatConversation
+            {
+                Id = "ai-" + botId + "-" + ChatAiCreateBotCalls.Count,
+                Kind = "ai",
+                Title = "HUB Ассистент",
+            };
+        return Task.FromResult(conversation);
+    }
+
+    public Task<HubChatConversation> CreateChatAiConversationAsync(
+        CancellationToken cancellationToken)
+    {
+        ChatAiCreateGeneralCalls++;
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatConversation>(ChatAiActionException);
+        }
+
+        var conversation = ChatAiCreateGeneralFactory?.Invoke()
+            ?? new HubChatConversation
+            {
+                Id = "ai-general-" + ChatAiCreateGeneralCalls,
+                Kind = "ai",
+                Title = "HUB Ассистент",
+            };
+        return Task.FromResult(conversation);
+    }
+
+    public Task<HubChatConversation> UpdateChatAiConversationAsync(
+        string conversationId,
+        string title,
+        CancellationToken cancellationToken)
+    {
+        ChatAiRenameCalls.Add((conversationId, title));
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatConversation>(ChatAiActionException);
+        }
+
+        return Task.FromResult(new HubChatConversation { Id = conversationId, Kind = "ai", Title = title });
+    }
+
+    public Task<bool> DeleteChatAiConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiDeleteCalls.Add(conversationId);
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<bool>(ChatAiActionException);
+        }
+
+        return Task.FromResult(true);
+    }
+
+    public Task<HubChatAiStatus> GetChatAiStatusAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiStatusCalls.Add(conversationId);
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatAiStatus>(ChatAiActionException);
+        }
+
+        var status = ChatAiStatusFactory?.Invoke(conversationId)
+            ?? ChatAiStatus
+            ?? new HubChatAiStatus { ConversationId = conversationId };
+        return Task.FromResult(status);
+    }
+
+    public Task<HubChatAiStatus> StopChatAiConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiStopCalls.Add(conversationId);
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatAiStatus>(ChatAiActionException);
+        }
+
+        var status = ChatAiStatusFactory?.Invoke(conversationId)
+            ?? ChatAiStatus
+            ?? new HubChatAiStatus { ConversationId = conversationId, Status = "cancelled" };
+        return Task.FromResult(status with { Status = status.Status ?? "cancelled" });
+    }
+
+    public Task<HubChatAiStatus> RetryChatAiConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiRetryCalls.Add(conversationId);
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatAiStatus>(ChatAiActionException);
+        }
+
+        var status = ChatAiStatusFactory?.Invoke(conversationId)
+            ?? ChatAiStatus
+            ?? new HubChatAiStatus { ConversationId = conversationId, Status = "queued" };
+        return Task.FromResult(status with { Status = status.Status ?? "queued" });
+    }
+
+    public Task<HubChatAiResetResult> ResetChatAiContextAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiResetCalls.Add(conversationId);
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatAiResetResult>(ChatAiActionException);
+        }
+
+        return Task.FromResult(new HubChatAiResetResult
+        {
+            Ok = true,
+            ConversationId = conversationId,
+        });
+    }
+
+    public Task<HubChatActionCard> ConfirmChatAiActionAsync(
+        string actionId,
+        string? choice,
+        string? format,
+        string? scope,
+        CancellationToken cancellationToken)
+    {
+        ChatAiConfirmCalls.Add((actionId, choice, format, scope));
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatActionCard>(ChatAiActionException);
+        }
+
+        var card = ChatAiConfirmResult
+            ?? new HubChatActionCard { Id = actionId, Status = "confirmed" };
+        return Task.FromResult(card);
+    }
+
+    public Task<HubChatActionCard> CancelChatAiActionAsync(
+        string actionId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiCancelCalls.Add(actionId);
+        if (ChatAiActionException is not null)
+        {
+            return Task.FromException<HubChatActionCard>(ChatAiActionException);
+        }
+
+        var card = ChatAiCancelResult
+            ?? new HubChatActionCard { Id = actionId, Status = "cancelled" };
+        return Task.FromResult(card);
+    }
+
+    public Task<HubChatAiMemoryList> GetChatAiMemoryAsync(CancellationToken cancellationToken)
+    {
+        ChatAiMemoryCallCount++;
+        if (ChatAiMemoryException is not null)
+        {
+            return Task.FromException<HubChatAiMemoryList>(ChatAiMemoryException);
+        }
+
+        return Task.FromResult(ChatAiMemory);
+    }
+
+    public Task<HubChatAiMemoryList> UpdateChatAiMemorySettingsAsync(
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        ChatAiMemorySettingsCalls.Add(enabled);
+        if (ChatAiMemoryException is not null)
+        {
+            return Task.FromException<HubChatAiMemoryList>(ChatAiMemoryException);
+        }
+
+        ChatAiMemory = ChatAiMemory with { Enabled = enabled };
+        return Task.FromResult(ChatAiMemory);
+    }
+
+    public Task<HubChatAiMemoryItem> UpdateChatAiMemoryItemAsync(
+        string memoryId,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        ChatAiMemoryUpdateCalls.Add((memoryId, content));
+        if (ChatAiMemoryException is not null)
+        {
+            return Task.FromException<HubChatAiMemoryItem>(ChatAiMemoryException);
+        }
+
+        var item = new HubChatAiMemoryItem { Id = memoryId, Content = content };
+        var items = ChatAiMemory.Items?.ToList() ?? [];
+        var index = items.FindIndex(i => i.Id == memoryId);
+        if (index >= 0)
+        {
+            items[index] = item;
+        }
+        else
+        {
+            items.Add(item);
+        }
+
+        ChatAiMemory = ChatAiMemory with { Items = items };
+        return Task.FromResult(item);
+    }
+
+    public Task<HubChatAiMemoryDeleteResult> DeleteChatAiMemoryItemAsync(
+        string memoryId,
+        CancellationToken cancellationToken)
+    {
+        ChatAiMemoryDeleteCalls.Add(memoryId);
+        if (ChatAiMemoryException is not null)
+        {
+            return Task.FromException<HubChatAiMemoryDeleteResult>(ChatAiMemoryException);
+        }
+
+        ChatAiMemory = ChatAiMemory with
+        {
+            Items = (ChatAiMemory.Items ?? []).Where(i => i.Id != memoryId).ToList(),
+        };
+        return Task.FromResult(new HubChatAiMemoryDeleteResult { Ok = true, Id = memoryId });
+    }
+
+    public Task<HubChatAiMemoryDeleteResult> ClearChatAiMemoryAsync(
+        CancellationToken cancellationToken)
+    {
+        ChatAiMemoryClearCalls++;
+        if (ChatAiMemoryException is not null)
+        {
+            return Task.FromException<HubChatAiMemoryDeleteResult>(ChatAiMemoryException);
+        }
+
+        var count = ChatAiMemory.Items?.Count ?? 0;
+        ChatAiMemory = ChatAiMemory with { Items = [] };
+        return Task.FromResult(new HubChatAiMemoryDeleteResult { Ok = true, DeletedCount = count });
+    }
 
     // ---- Мои файлы ----
 
@@ -3383,6 +6736,293 @@ public class FakeHubApiClient : IHubApiClient
         return Task.FromResult(AdminAiBots);
     }
 
+    public Exception? UpdateAiBotException { get; set; }
+    public List<(string BotId, HubAiBotUpdateRequest Request)> UpdateAiBotCalls { get; } = [];
+    /// <summary>Ответ PATCH вместо сгенерированного из записанного запроса.</summary>
+    public Func<string, HubAiBotUpdateRequest, HubAdminAiBot>? UpdateAiBotResponder { get; set; }
+    public Exception? CreateAiBotException { get; set; }
+    public List<HubAiBotCreateRequest> CreateAiBotCalls { get; } = [];
+    public Func<HubAiBotCreateRequest, HubAdminAiBot>? CreateAiBotResponder { get; set; }
+    public Exception? SetDepartmentManagersException { get; set; }
+    public List<(string DepartmentId, IReadOnlyList<long> ManagerUserIds)> SetDepartmentManagersCalls { get; } = [];
+    /// <summary>Ответ PUT вместо сгенерированного из текущих memberships.</summary>
+    public Func<string, IReadOnlyList<long>, HubAdminDepartmentMembers>? SetDepartmentManagersResponder { get; set; }
+
+    public Task<HubAdminAiBot> UpdateAiBotAsync(
+        string botId,
+        HubAiBotUpdateRequest request,
+        CancellationToken cancellationToken)
+    {
+        UpdateAiBotCalls.Add((botId, request));
+        if (UpdateAiBotException is not null)
+        {
+            return Task.FromException<HubAdminAiBot>(UpdateAiBotException);
+        }
+
+        if (UpdateAiBotResponder is not null)
+        {
+            return Task.FromResult(UpdateAiBotResponder(botId, request));
+        }
+
+        // Имитация сервера: исходник списка + применённые поля запроса.
+        var original = AdminAiBots.FirstOrDefault(bot =>
+            string.Equals(bot.Id?.Trim(), botId.Trim(), StringComparison.Ordinal)) ?? new HubAdminAiBot { Id = botId };
+        return Task.FromResult(original with
+        {
+            Title = request.Title ?? original.Title,
+            Description = request.Description ?? original.Description,
+            SystemPrompt = request.SystemPrompt ?? original.SystemPrompt,
+            Model = request.Model ?? original.Model,
+            Temperature = request.Temperature ?? original.Temperature,
+            MaxTokens = request.MaxTokens ?? original.MaxTokens,
+            AllowedKbScope = request.AllowedKbScope ?? original.AllowedKbScope,
+            AllowFileInput = request.AllowFileInput ?? original.AllowFileInput,
+            AllowGeneratedArtifacts = request.AllowGeneratedArtifacts ?? original.AllowGeneratedArtifacts,
+            AllowKbDocumentDelivery = request.AllowKbDocumentDelivery ?? original.AllowKbDocumentDelivery,
+            IsEnabled = request.IsEnabled ?? original.IsEnabled,
+        });
+    }
+
+    public Task<HubAdminAiBot> CreateAiBotAsync(
+        HubAiBotCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        CreateAiBotCalls.Add(request);
+        if (CreateAiBotException is not null)
+        {
+            return Task.FromException<HubAdminAiBot>(CreateAiBotException);
+        }
+
+        if (CreateAiBotResponder is not null)
+        {
+            return Task.FromResult(CreateAiBotResponder(request));
+        }
+
+        var created = new HubAdminAiBot
+        {
+            Id = $"bot_{(AdminAiBots.Count + 1).ToString(CultureInfo.InvariantCulture)}",
+            Slug = request.Slug,
+            Title = request.Title,
+            Description = request.Description,
+            SystemPrompt = request.SystemPrompt,
+            Model = request.Model,
+            Temperature = request.Temperature,
+            MaxTokens = request.MaxTokens,
+            AllowedKbScope = request.AllowedKbScope,
+            AllowFileInput = request.AllowFileInput,
+            AllowGeneratedArtifacts = request.AllowGeneratedArtifacts,
+            AllowKbDocumentDelivery = request.AllowKbDocumentDelivery,
+            IsEnabled = request.IsEnabled,
+            Configured = true,
+        };
+        return Task.FromResult(created);
+    }
+
+    public Task<HubAdminDepartmentMembers> SetDepartmentManagersAsync(
+        string departmentId,
+        IReadOnlyList<long> managerUserIds,
+        CancellationToken cancellationToken)
+    {
+        SetDepartmentManagersCalls.Add((departmentId, managerUserIds));
+        if (SetDepartmentManagersException is not null)
+        {
+            return Task.FromException<HubAdminDepartmentMembers>(SetDepartmentManagersException);
+        }
+
+        if (SetDepartmentManagersResponder is not null)
+        {
+            return Task.FromResult(SetDepartmentManagersResponder(departmentId, managerUserIds));
+        }
+
+        // Имитация сервера: member-записи сохраняются, manager-набор заменяется.
+        var kept = (AdminDepartmentMembers.Items ?? [])
+            .Where(item => !string.Equals(item.Role?.Trim(), "manager", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var added = managerUserIds
+            .Select((userId, index) =>
+            {
+                var existing = (AdminDepartmentMembers.Items ?? [])
+                    .FirstOrDefault(item => item.UserId == userId && item.User is not null);
+                return new HubAdminDepartmentMember
+                {
+                    Id = 1000L + index,
+                    UserId = userId,
+                    Role = "manager",
+                    Source = "manual",
+                    IsActive = true,
+                    User = existing?.User,
+                };
+            });
+        return Task.FromResult(new HubAdminDepartmentMembers
+        {
+            Department = AdminDepartmentMembers.Department,
+            Items = kept.Concat(added).ToList(),
+        });
+    }
+
+    public Exception? UpdateUserException { get; set; }
+    public List<(long UserId, HubUserUpdateRequest Request)> UpdateUserCalls { get; } = [];
+    /// <summary>Ответ PATCH вместо сгенерированного из записанного запроса.</summary>
+    public Func<long, HubUserUpdateRequest, HubAdminUser>? UpdateUserResponder { get; set; }
+    public Exception? CreateUserException { get; set; }
+    public List<HubUserCreateRequest> CreateUserCalls { get; } = [];
+    public Func<HubUserCreateRequest, HubAdminUser>? CreateUserResponder { get; set; }
+    public Exception? ResetTwoFactorException { get; set; }
+    public List<long> ResetTwoFactorCalls { get; } = [];
+    public HubResetTwoFactorResult ResetTwoFactorResult { get; set; } = new() { Success = true };
+
+    public Task<HubAdminUser> UpdateUserAsync(
+        long userId,
+        HubUserUpdateRequest request,
+        CancellationToken cancellationToken)
+    {
+        UpdateUserCalls.Add((userId, request));
+        if (UpdateUserException is not null)
+        {
+            return Task.FromException<HubAdminUser>(UpdateUserException);
+        }
+
+        if (UpdateUserResponder is not null)
+        {
+            return Task.FromResult(UpdateUserResponder(userId, request));
+        }
+
+        // Имитация сервера: исходник списка + применённые поля запроса.
+        var original = AdminUsers.FirstOrDefault(user => user.Id == userId) ?? new HubAdminUser { Id = userId };
+        return Task.FromResult(original with
+        {
+            Email = request.Email ?? original.Email,
+            FullName = request.FullName ?? original.FullName,
+            Department = request.Department ?? original.Department,
+            JobTitle = request.JobTitle ?? original.JobTitle,
+            Role = request.Role ?? original.Role,
+            IsActive = request.IsActive ?? original.IsActive,
+        });
+    }
+
+    public Task<HubAdminUser> CreateUserAsync(
+        HubUserCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        CreateUserCalls.Add(request);
+        if (CreateUserException is not null)
+        {
+            return Task.FromException<HubAdminUser>(CreateUserException);
+        }
+
+        if (CreateUserResponder is not null)
+        {
+            return Task.FromResult(CreateUserResponder(request));
+        }
+
+        var created = new HubAdminUser
+        {
+            Id = (AdminUsers.Count > 0 ? AdminUsers.Max(user => user.Id) : 0) + 1,
+            Username = request.Username,
+            FullName = request.FullName,
+            Email = request.Email,
+            Department = request.Department,
+            JobTitle = request.JobTitle,
+            Role = request.Role,
+            IsActive = request.IsActive,
+            AuthSource = request.AuthSource,
+        };
+        return Task.FromResult(created);
+    }
+
+    public Task<HubResetTwoFactorResult> ResetUserTwoFactorAsync(
+        long userId,
+        CancellationToken cancellationToken)
+    {
+        ResetTwoFactorCalls.Add(userId);
+        if (ResetTwoFactorException is not null)
+        {
+            return Task.FromException<HubResetTwoFactorResult>(ResetTwoFactorException);
+        }
+
+        return Task.FromResult(ResetTwoFactorResult with { UserId = userId });
+    }
+
+    // ---- Квоты почтовых ящиков ----
+
+    public Exception? MailQuotaLatestException { get; set; }
+    /// <summary>null — имитация 404 «No snapshots found», как у сервера без снимков.</summary>
+    public HubMailQuotaSnapshot? MailQuotaLatest { get; set; }
+    public int MailQuotaLatestCallCount { get; private set; }
+    public Exception? MailQuotaSnapshotsException { get; set; }
+    public IReadOnlyList<HubMailQuotaSnapshot> MailQuotaSnapshots { get; set; } = [];
+    public int? LastMailQuotaSnapshotsLimit { get; private set; }
+    public Exception? MailQuotaSummaryException { get; set; }
+    public HubMailQuotaSnapshotStats MailQuotaSummary { get; set; } = new();
+    public List<int> MailQuotaSummaryCalls { get; } = [];
+    public Exception? MailQuotaRowsException { get; set; }
+    public HubMailQuotaRowsPage MailQuotaRowsPage { get; set; } = new() { Items = [] };
+    public List<(int SnapshotId, HubMailQuotaRowsQuery Query)> MailQuotaRowsCalls { get; } = [];
+    /// <summary>Ответ rows вместо MailQuotaRowsPage — для постраничных сценариев.</summary>
+    public Func<int, HubMailQuotaRowsQuery, HubMailQuotaRowsPage>? MailQuotaRowsResponder { get; set; }
+
+    public Task<HubMailQuotaSnapshot> GetLatestMailQuotaSnapshotAsync(CancellationToken cancellationToken)
+    {
+        MailQuotaLatestCallCount++;
+        if (MailQuotaLatestException is not null)
+        {
+            return Task.FromException<HubMailQuotaSnapshot>(MailQuotaLatestException);
+        }
+
+        if (MailQuotaLatest is null)
+        {
+            return Task.FromException<HubMailQuotaSnapshot>(new HubApiException(
+                HubApiErrorKind.Http, "No snapshots found", System.Net.HttpStatusCode.NotFound));
+        }
+
+        return Task.FromResult(MailQuotaLatest);
+    }
+
+    public Task<IReadOnlyList<HubMailQuotaSnapshot>> GetMailQuotaSnapshotsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        LastMailQuotaSnapshotsLimit = limit;
+        if (MailQuotaSnapshotsException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubMailQuotaSnapshot>>(MailQuotaSnapshotsException);
+        }
+
+        return Task.FromResult(MailQuotaSnapshots);
+    }
+
+    public Task<HubMailQuotaSnapshotStats> GetMailQuotaSnapshotSummaryAsync(
+        int snapshotId,
+        CancellationToken cancellationToken)
+    {
+        MailQuotaSummaryCalls.Add(snapshotId);
+        if (MailQuotaSummaryException is not null)
+        {
+            return Task.FromException<HubMailQuotaSnapshotStats>(MailQuotaSummaryException);
+        }
+
+        return Task.FromResult(MailQuotaSummary with { SnapshotId = snapshotId });
+    }
+
+    public Task<HubMailQuotaRowsPage> GetMailQuotaRowsAsync(
+        int snapshotId,
+        HubMailQuotaRowsQuery query,
+        CancellationToken cancellationToken)
+    {
+        MailQuotaRowsCalls.Add((snapshotId, query));
+        if (MailQuotaRowsException is not null)
+        {
+            return Task.FromException<HubMailQuotaRowsPage>(MailQuotaRowsException);
+        }
+
+        if (MailQuotaRowsResponder is not null)
+        {
+            return Task.FromResult(MailQuotaRowsResponder(snapshotId, query));
+        }
+
+        return Task.FromResult(MailQuotaRowsPage);
+    }
+
     // ---- Настройки ----
 
     public Exception? CurrentUserException { get; set; }
@@ -3511,6 +7151,37 @@ public class FakeHubApiClient : IHubApiClient
     public Task<string?> GetAccessTokenAsync(CancellationToken cancellationToken) =>
         Task.FromResult(AccessTokenToReturn);
 
+    // ---- Desktop presence ----
+
+    public int PresenceHeartbeatCallCount { get; private set; }
+    public int PresenceDisconnectCallCount { get; private set; }
+    public Exception? PresenceException { get; set; }
+    /// <summary>Шов задержки heartbeat-тика (для тестов остановки цикла).</summary>
+    public Func<CancellationToken, Task<HubDesktopPresence>>? PresenceHeartbeatHandler { get; set; }
+
+    public Task<HubDesktopPresence> SendDesktopPresenceHeartbeatAsync(CancellationToken cancellationToken)
+    {
+        PresenceHeartbeatCallCount++;
+        if (PresenceException is not null)
+        {
+            return Task.FromException<HubDesktopPresence>(PresenceException);
+        }
+
+        return PresenceHeartbeatHandler?.Invoke(cancellationToken)
+            ?? Task.FromResult(new HubDesktopPresence { Active = true, ExpiresInSeconds = 90 });
+    }
+
+    public Task<HubDesktopPresence> DisconnectDesktopPresenceAsync(CancellationToken cancellationToken)
+    {
+        PresenceDisconnectCallCount++;
+        if (PresenceException is not null)
+        {
+            return Task.FromException<HubDesktopPresence>(PresenceException);
+        }
+
+        return Task.FromResult(new HubDesktopPresence { Active = false, ExpiresInSeconds = 0 });
+    }
+
     // ---- Картинки (DownloadImageAsync: фото контактов/руководителей, превью) ----
 
     public Exception? ImageDownloadException { get; set; }
@@ -3532,9 +7203,1394 @@ public class FakeHubApiClient : IHubApiClient
             ImageDownloadBytesFactory?.Invoke(uriOrPath) ?? ImageDownloadBytes ?? []);
     }
 
+    // ============================================================================
+    // Новости: администрирование (раздел «Новости» AdminViewModel).
+    // ManagedAnnouncementsItems — мутируемый список: publish/archive/delete
+    // фейк правит его как сервер, чтобы reload в тестах отражал новый статус.
+    // ============================================================================
+
+    public Exception? ManagedAnnouncementsException { get; set; }
+    public List<HubAnnouncementItem> ManagedAnnouncementsItems { get; set; } = [];
+    public List<HubAnnouncementManageQuery> ManagedAnnouncementsCalls { get; } = [];
+    /// <summary>Ответ вместо сгенерированной страницы из ManagedAnnouncementsItems.</summary>
+    public HubAnnouncementManagePage? ManagedAnnouncementsPageOverride { get; set; }
+
+    public Task<HubAnnouncementManagePage> GetManagedAnnouncementsAsync(
+        HubAnnouncementManageQuery query,
+        CancellationToken cancellationToken)
+    {
+        ManagedAnnouncementsCalls.Add(query);
+        if (ManagedAnnouncementsException is not null)
+        {
+            return Task.FromException<HubAnnouncementManagePage>(ManagedAnnouncementsException);
+        }
+
+        if (ManagedAnnouncementsPageOverride is not null)
+        {
+            return Task.FromResult(ManagedAnnouncementsPageOverride);
+        }
+
+        // Как сервер: фильтр по запрошенному статусу (regex-обязателен в контракте).
+        var items = ManagedAnnouncementsItems
+            .Where(item => string.Equals(
+                (item.Status ?? "draft").Trim(), query.Status ?? "draft", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return Task.FromResult(new HubAnnouncementManagePage
+        {
+            Items = items,
+            Status = query.Status,
+            Total = items.Count,
+            Limit = query.Limit,
+            Offset = query.Offset,
+        });
+    }
+
+    public Exception? AnnouncementCreateException { get; set; }
+    public List<HubAnnouncementCreateRequest> AnnouncementCreateCalls { get; } = [];
+    public List<IReadOnlyList<HubAnnouncementOutgoingFile>> AnnouncementCreateFileCalls { get; } = [];
+    public Func<HubAnnouncementCreateRequest, HubAnnouncementItem>? AnnouncementCreateResponder { get; set; }
+    public int AnnouncementCreateSeq { get; set; }
+
+    public Task<HubAnnouncementItem> CreateAnnouncementAsync(
+        HubAnnouncementCreateRequest request,
+        IReadOnlyList<HubAnnouncementOutgoingFile>? files,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementCreateCalls.Add(request);
+        AnnouncementCreateFileCalls.Add(files ?? []);
+        if (AnnouncementCreateException is not null)
+        {
+            return Task.FromException<HubAnnouncementItem>(AnnouncementCreateException);
+        }
+
+        var created = AnnouncementCreateResponder?.Invoke(request) ?? new HubAnnouncementItem
+        {
+            Id = $"news-{++AnnouncementCreateSeq}",
+            Title = request.Title,
+            Preview = request.Preview,
+            Body = request.Body,
+            Priority = request.Priority,
+            Status = request.Status,
+            CategoryId = request.CategoryId,
+            Category = request.CategoryId is null
+                ? null
+                : new HubAnnouncementCategory { Id = request.CategoryId },
+            Tags = (request.Tags ?? []).Select(t => new HubAnnouncementTag { Name = t }).ToList(),
+            RequiresAck = request.RequiresAck,
+            IsPinned = request.IsPinned,
+            CanManage = true,
+        };
+        ManagedAnnouncementsItems.Add(created);
+        return Task.FromResult(created);
+    }
+
+    public Exception? AnnouncementDraftException { get; set; }
+    public List<HubAnnouncementCreateRequest> AnnouncementDraftCalls { get; } = [];
+
+    public Task<HubAnnouncementItem> CreateAnnouncementDraftAsync(
+        HubAnnouncementCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementDraftCalls.Add(request);
+        if (AnnouncementDraftException is not null)
+        {
+            return Task.FromException<HubAnnouncementItem>(AnnouncementDraftException);
+        }
+
+        // Как роут /drafts: status принудительно draft.
+        var created = new HubAnnouncementItem
+        {
+            Id = $"news-{++AnnouncementCreateSeq}",
+            Title = request.Title,
+            Preview = request.Preview,
+            Body = request.Body,
+            Priority = request.Priority,
+            Status = "draft",
+            CategoryId = request.CategoryId,
+            Tags = (request.Tags ?? []).Select(t => new HubAnnouncementTag { Name = t }).ToList(),
+            RequiresAck = request.RequiresAck,
+            IsPinned = request.IsPinned,
+            CanManage = true,
+        };
+        ManagedAnnouncementsItems.Add(created);
+        return Task.FromResult(created);
+    }
+
+    public Exception? AnnouncementUpdateException { get; set; }
+    public List<(string Id, HubAnnouncementUpdateRequest Request)> AnnouncementUpdateCalls { get; } = [];
+    public Func<string, HubAnnouncementUpdateRequest, HubAnnouncementItem>? AnnouncementUpdateResponder { get; set; }
+
+    public Task<HubAnnouncementItem> UpdateAnnouncementAsync(
+        string announcementId,
+        HubAnnouncementUpdateRequest request,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementUpdateCalls.Add((announcementId, request));
+        if (AnnouncementUpdateException is not null)
+        {
+            return Task.FromException<HubAnnouncementItem>(AnnouncementUpdateException);
+        }
+
+        if (AnnouncementUpdateResponder is not null)
+        {
+            return Task.FromResult(AnnouncementUpdateResponder(announcementId, request));
+        }
+
+        // Имитация сервера: исходник списка + применённые (не-null) поля запроса.
+        var index = ManagedAnnouncementsItems.FindIndex(item =>
+            string.Equals(item.Id?.Trim(), announcementId.Trim(), StringComparison.Ordinal));
+        var original = index >= 0 ? ManagedAnnouncementsItems[index] : new HubAnnouncementItem { Id = announcementId };
+        var updated = original with
+        {
+            Title = request.Title ?? original.Title,
+            Preview = request.Preview ?? original.Preview,
+            Body = request.Body ?? original.Body,
+            Priority = request.Priority ?? original.Priority,
+            CategoryId = request.CategoryId ?? original.CategoryId,
+            Tags = request.Tags is null
+                ? original.Tags
+                : request.Tags.Select(t => new HubAnnouncementTag { Name = t }).ToList(),
+            RequiresAck = request.RequiresAck ?? original.RequiresAck,
+            IsPinned = request.IsPinned ?? original.IsPinned,
+        };
+        if (index >= 0)
+        {
+            ManagedAnnouncementsItems[index] = updated;
+        }
+
+        return Task.FromResult(updated);
+    }
+
+    public Exception? AnnouncementPublishException { get; set; }
+    public List<string> AnnouncementPublishCalls { get; } = [];
+    public Exception? AnnouncementArchiveException { get; set; }
+    public List<string> AnnouncementArchiveCalls { get; } = [];
+
+    private Task<HubAnnouncementItem> ChangeAnnouncementStatusAsync(
+        string announcementId,
+        string status,
+        Exception? exception)
+    {
+        if (exception is not null)
+        {
+            return Task.FromException<HubAnnouncementItem>(exception);
+        }
+
+        var index = ManagedAnnouncementsItems.FindIndex(item =>
+            string.Equals(item.Id?.Trim(), announcementId.Trim(), StringComparison.Ordinal));
+        var updated = index >= 0
+            ? ManagedAnnouncementsItems[index] with { Status = status }
+            : new HubAnnouncementItem { Id = announcementId, Status = status };
+        if (index >= 0)
+        {
+            ManagedAnnouncementsItems[index] = updated;
+        }
+
+        return Task.FromResult(updated);
+    }
+
+    public Task<HubAnnouncementItem> PublishAnnouncementAsync(
+        string announcementId,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementPublishCalls.Add(announcementId);
+        return ChangeAnnouncementStatusAsync(announcementId, "published", AnnouncementPublishException);
+    }
+
+    public Task<HubAnnouncementItem> ArchiveAnnouncementAsync(
+        string announcementId,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementArchiveCalls.Add(announcementId);
+        return ChangeAnnouncementStatusAsync(announcementId, "archived", AnnouncementArchiveException);
+    }
+
+    public Exception? AnnouncementDeleteException { get; set; }
+    public List<string> AnnouncementDeleteCalls { get; } = [];
+
+    public Task DeleteManagedAnnouncementAsync(
+        string announcementId,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementDeleteCalls.Add(announcementId);
+        if (AnnouncementDeleteException is not null)
+        {
+            return Task.FromException(AnnouncementDeleteException);
+        }
+
+        ManagedAnnouncementsItems.RemoveAll(item =>
+            string.Equals(item.Id?.Trim(), announcementId.Trim(), StringComparison.Ordinal));
+        return Task.CompletedTask;
+    }
+
+    public Exception? AnnouncementCategoriesException { get; set; }
+    public HubAnnouncementCategoryList AnnouncementCategories { get; set; } = new() { Items = [] };
+    public bool? LastAnnouncementCategoriesIncludeInactive { get; private set; }
+
+    public Task<HubAnnouncementCategoryList> GetAnnouncementCategoriesAsync(
+        bool includeInactive,
+        CancellationToken cancellationToken)
+    {
+        LastAnnouncementCategoriesIncludeInactive = includeInactive;
+        if (AnnouncementCategoriesException is not null)
+        {
+            return Task.FromException<HubAnnouncementCategoryList>(AnnouncementCategoriesException);
+        }
+
+        return Task.FromResult(AnnouncementCategories);
+    }
+
+    public Exception? AnnouncementCategoryCreateException { get; set; }
+    public List<string> AnnouncementCategoryCreateCalls { get; } = [];
+
+    public Task<HubAnnouncementCategory> CreateAnnouncementCategoryAsync(
+        string name,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementCategoryCreateCalls.Add(name);
+        if (AnnouncementCategoryCreateException is not null)
+        {
+            return Task.FromException<HubAnnouncementCategory>(AnnouncementCategoryCreateException);
+        }
+
+        var created = new HubAnnouncementCategory
+        {
+            Id = $"cat-{AnnouncementCategoryCreateCalls.Count}",
+            Name = name,
+            Slug = name.ToLowerInvariant().Replace(' ', '-'),
+            IsActive = true,
+        };
+        AnnouncementCategories = AnnouncementCategories with
+        {
+            Items = [.. (AnnouncementCategories.Items ?? []), created],
+        };
+        return Task.FromResult(created);
+    }
+
+    public Exception? AnnouncementTagsException { get; set; }
+    public HubAnnouncementTagList AnnouncementTags { get; set; } = new() { Items = [] };
+
+    public Task<HubAnnouncementTagList> GetAnnouncementTagsAsync(CancellationToken cancellationToken)
+    {
+        if (AnnouncementTagsException is not null)
+        {
+            return Task.FromException<HubAnnouncementTagList>(AnnouncementTagsException);
+        }
+
+        return Task.FromResult(AnnouncementTags);
+    }
+
+    public Exception? AnnouncementAttachmentUploadException { get; set; }
+    public List<(string AnnouncementId, HubAnnouncementOutgoingFile File)> AnnouncementAttachmentUploadCalls { get; } = [];
+
+    public Task<HubAnnouncementAttachment> UploadAnnouncementAttachmentAsync(
+        string announcementId,
+        HubAnnouncementOutgoingFile file,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementAttachmentUploadCalls.Add((announcementId, file));
+        if (AnnouncementAttachmentUploadException is not null)
+        {
+            return Task.FromException<HubAnnouncementAttachment>(AnnouncementAttachmentUploadException);
+        }
+
+        return Task.FromResult(new HubAnnouncementAttachment
+        {
+            Id = $"att-{AnnouncementAttachmentUploadCalls.Count}",
+            AnnouncementId = announcementId,
+            FileName = file.FileName,
+            FileMime = file.ContentType,
+            FileSize = file.Content.Length,
+        });
+    }
+
+    public Exception? AnnouncementAnalyticsException { get; set; }
+    public HubAnnouncementAnalytics AnnouncementAnalytics { get; set; } = new();
+    public List<string> AnnouncementAnalyticsCalls { get; } = [];
+
+    public Task<HubAnnouncementAnalytics> GetAnnouncementAnalyticsAsync(
+        string announcementId,
+        CancellationToken cancellationToken)
+    {
+        AnnouncementAnalyticsCalls.Add(announcementId);
+        if (AnnouncementAnalyticsException is not null)
+        {
+            return Task.FromException<HubAnnouncementAnalytics>(AnnouncementAnalyticsException);
+        }
+
+        return Task.FromResult(AnnouncementAnalytics);
+    }
+
+    // ---- Строительство ----
+    public Exception? ConstructionObjectsException { get; set; }
+    public HubConstructionObjectsResponse ConstructionObjects { get; set; } = new() { Items = [] };
+    public int ConstructionObjectsCallCount { get; private set; }
+    public List<HubConstructionObjectsQuery> ConstructionObjectsCalls { get; } = [];
+
+    /// <summary>Страница объектов по запросу (поиск/kind/cursor), иначе — общий ConstructionObjects.</summary>
+    public Func<HubConstructionObjectsQuery, HubConstructionObjectsResponse>? ConstructionObjectsFactory { get; set; }
+
+    public Task<HubConstructionObjectsResponse> GetConstructionObjectsAsync(
+        HubConstructionObjectsQuery query,
+        CancellationToken cancellationToken)
+    {
+        ConstructionObjectsCallCount++;
+        ConstructionObjectsCalls.Add(query);
+        if (ConstructionObjectsException is not null)
+        {
+            return Task.FromException<HubConstructionObjectsResponse>(ConstructionObjectsException);
+        }
+
+        return Task.FromResult(
+            ConstructionObjectsFactory?.Invoke(query) ?? ConstructionObjects);
+    }
+
+    public Exception? ConstructionObjectDetailException { get; set; }
+    public HubConstructionObjectDetail? ConstructionObjectDetail { get; set; }
+    public List<string> ConstructionObjectDetailCalls { get; } = [];
+
+    /// <summary>Карточка по id объекта (managed:…|group_ref), иначе — общий ConstructionObjectDetail.</summary>
+    public Func<string, HubConstructionObjectDetail?>? ConstructionObjectDetailFactory { get; set; }
+
+    /// <summary>
+    /// Задержка ответа детали: тесты гонки выбора ставят Task.Delay/TaskCompletionSource.
+    /// </summary>
+    public Func<string, CancellationToken, Task>? ConstructionObjectDetailDelay { get; set; }
+
+    public async Task<HubConstructionObjectDetail> GetConstructionObjectDetailAsync(
+        string objectId,
+        CancellationToken cancellationToken)
+    {
+        ConstructionObjectDetailCalls.Add(objectId);
+        if (ConstructionObjectDetailException is not null)
+        {
+            throw ConstructionObjectDetailException;
+        }
+
+        if (ConstructionObjectDetailDelay is not null)
+        {
+            await ConstructionObjectDetailDelay(objectId, cancellationToken);
+        }
+
+        return ConstructionObjectDetailFactory?.Invoke(objectId)
+            ?? ConstructionObjectDetail
+            ?? new HubConstructionObjectDetail
+            {
+                Id = objectId,
+                Name = objectId,
+                Kind = "project",
+                IsActive = true,
+                Groups = [],
+                Team = [],
+            };
+    }
+
+    public Exception? ConstructionObjectRequestsException { get; set; }
+    public HubConstructionObjectRequestsResponse ConstructionObjectRequests { get; set; } = new() { Items = [] };
+    public List<(string ObjectId, HubConstructionRequestsQuery Query)> ConstructionObjectRequestsCalls { get; } = [];
+
+    /// <summary>Страница заявок по id объекта и запросу (view/cursor), иначе — общий ConstructionObjectRequests.</summary>
+    public Func<string, HubConstructionRequestsQuery, HubConstructionObjectRequestsResponse>? ConstructionObjectRequestsFactory { get; set; }
+
+    public Task<HubConstructionObjectRequestsResponse> GetConstructionObjectRequestsAsync(
+        string objectId,
+        HubConstructionRequestsQuery query,
+        CancellationToken cancellationToken)
+    {
+        ConstructionObjectRequestsCalls.Add((objectId, query));
+        if (ConstructionObjectRequestsException is not null)
+        {
+            return Task.FromException<HubConstructionObjectRequestsResponse>(ConstructionObjectRequestsException);
+        }
+
+        return Task.FromResult(
+            ConstructionObjectRequestsFactory?.Invoke(objectId, query) ?? ConstructionObjectRequests);
+    }
+
+    // ---- Склад 1С ----
+    public List<HubWarehouse1cCatalogItem> Warehouse1cNomenclatureSearch { get; set; } = [];
+    public List<string> Warehouse1cNomenclatureSearchQueries { get; } = [];
+
+    public Task<IReadOnlyList<HubWarehouse1cCatalogItem>> SearchWarehouse1cNomenclatureAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cNomenclatureSearchQueries.Add(query);
+        return Task.FromResult<IReadOnlyList<HubWarehouse1cCatalogItem>>(Warehouse1cNomenclatureSearch);
+    }
+
+    public List<HubWarehouse1cCatalogItem> Warehouse1cWarehousesSearch { get; set; } = [];
+    public List<string> Warehouse1cWarehousesSearchQueries { get; } = [];
+
+    public Task<IReadOnlyList<HubWarehouse1cCatalogItem>> SearchWarehouse1cWarehousesAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cWarehousesSearchQueries.Add(query);
+        return Task.FromResult<IReadOnlyList<HubWarehouse1cCatalogItem>>(Warehouse1cWarehousesSearch);
+    }
+
+    public Exception? Warehouse1cBalancesException { get; set; }
+    public HubWarehouse1cBalancesResponse Warehouse1cBalances { get; set; } = new() { Items = [] };
+    public List<HubWarehouse1cBalancesQuery> Warehouse1cBalancesCalls { get; } = [];
+
+    /// <summary>Страница остатков по запросу (фильтры), иначе — общий Warehouse1cBalances.</summary>
+    public Func<HubWarehouse1cBalancesQuery, HubWarehouse1cBalancesResponse>? Warehouse1cBalancesFactory { get; set; }
+
+    public Task<HubWarehouse1cBalancesResponse> GetWarehouse1cBalancesAsync(
+        HubWarehouse1cBalancesQuery query,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cBalancesCalls.Add(query);
+        if (Warehouse1cBalancesException is not null)
+        {
+            return Task.FromException<HubWarehouse1cBalancesResponse>(Warehouse1cBalancesException);
+        }
+
+        return Task.FromResult(
+            Warehouse1cBalancesFactory?.Invoke(query) ?? Warehouse1cBalances);
+    }
+
+    public Exception? Warehouse1cMovementsException { get; set; }
+    public HubWarehouse1cMovementsResponse Warehouse1cMovements { get; set; } = new() { Items = [] };
+    public List<HubWarehouse1cMovementsQuery> Warehouse1cMovementsCalls { get; } = [];
+
+    /// <summary>Страница движений по запросу (фильтры/cursor), иначе — общий Warehouse1cMovements.</summary>
+    public Func<HubWarehouse1cMovementsQuery, HubWarehouse1cMovementsResponse>? Warehouse1cMovementsFactory { get; set; }
+
+    public Task<HubWarehouse1cMovementsResponse> GetWarehouse1cMovementsAsync(
+        HubWarehouse1cMovementsQuery query,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cMovementsCalls.Add(query);
+        if (Warehouse1cMovementsException is not null)
+        {
+            return Task.FromException<HubWarehouse1cMovementsResponse>(Warehouse1cMovementsException);
+        }
+
+        return Task.FromResult(
+            Warehouse1cMovementsFactory?.Invoke(query) ?? Warehouse1cMovements);
+    }
+
+    public Exception? Warehouse1cMovementDetailException { get; set; }
+    public HubWarehouse1cMovementDetail? Warehouse1cMovementDetail { get; set; }
+    public List<string> Warehouse1cMovementDetailCalls { get; } = [];
+
+    /// <summary>Задержка ответа детали: тесты гонки выбора ставят TaskCompletionSource.</summary>
+    public Func<string, CancellationToken, Task>? Warehouse1cMovementDetailDelay { get; set; }
+
+    public async Task<HubWarehouse1cMovementDetail> GetWarehouse1cMovementDetailAsync(
+        string registrarRef,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cMovementDetailCalls.Add(registrarRef);
+        if (Warehouse1cMovementDetailException is not null)
+        {
+            throw Warehouse1cMovementDetailException;
+        }
+
+        if (Warehouse1cMovementDetailDelay is not null)
+        {
+            await Warehouse1cMovementDetailDelay(registrarRef, cancellationToken);
+        }
+
+        return Warehouse1cMovementDetail ?? new HubWarehouse1cMovementDetail
+        {
+            RegistrarRef = registrarRef,
+            RegistrarName = "Поступление товаров и услуг",
+            RegistrarNumber = "000-123",
+            Files = [],
+        };
+    }
+
+    public List<(string RegistrarRef, string FileRef)> Warehouse1cFileCalls { get; } = [];
+    public byte[] Warehouse1cFileContent { get; set; } = [];
+    public string Warehouse1cFileName { get; set; } = "file.bin";
+
+    public async Task<string> DownloadWarehouse1cMovementFileAsync(
+        string registrarRef,
+        string fileRef,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cFileCalls.Add((registrarRef, fileRef));
+        await destination.WriteAsync(Warehouse1cFileContent, cancellationToken);
+        return Warehouse1cFileName;
+    }
+
+    public Exception? Warehouse1cDismissedException { get; set; }
+    public HubWarehouse1cDismissedResponse Warehouse1cDismissed { get; set; } = new() { Items = [] };
+    public int Warehouse1cDismissedCallCount { get; private set; }
+
+    public Task<HubWarehouse1cDismissedResponse> GetWarehouse1cDismissedWarehousesAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cDismissedCallCount++;
+        if (Warehouse1cDismissedException is not null)
+        {
+            return Task.FromException<HubWarehouse1cDismissedResponse>(Warehouse1cDismissedException);
+        }
+
+        return Task.FromResult(Warehouse1cDismissed);
+    }
+
+    public Exception? Warehouse1cCatalogStatusException { get; set; }
+    public HubWarehouse1cCatalogStatus? Warehouse1cCatalogStatus { get; set; }
+
+    public Task<HubWarehouse1cCatalogStatus> GetWarehouse1cCatalogStatusAsync(
+        CancellationToken cancellationToken)
+    {
+        if (Warehouse1cCatalogStatusException is not null)
+        {
+            return Task.FromException<HubWarehouse1cCatalogStatus>(Warehouse1cCatalogStatusException);
+        }
+
+        return Task.FromResult(Warehouse1cCatalogStatus ?? new HubWarehouse1cCatalogStatus());
+    }
+
+    public Exception? Warehouse1cItRequestsException { get; set; }
+    public HubItRequestsResponse Warehouse1cItRequests { get; set; } = new() { Items = [] };
+    public List<HubItRequestsQuery> Warehouse1cItRequestsCalls { get; } = [];
+
+    /// <summary>Страница заявок по запросу (view/стадия/cursor), иначе — общий Warehouse1cItRequests.</summary>
+    public Func<HubItRequestsQuery, HubItRequestsResponse>? Warehouse1cItRequestsFactory { get; set; }
+
+    public Task<HubItRequestsResponse> GetWarehouse1cItRequestsAsync(
+        HubItRequestsQuery query,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cItRequestsCalls.Add(query);
+        if (Warehouse1cItRequestsException is not null)
+        {
+            return Task.FromException<HubItRequestsResponse>(Warehouse1cItRequestsException);
+        }
+
+        return Task.FromResult(
+            Warehouse1cItRequestsFactory?.Invoke(query) ?? Warehouse1cItRequests);
+    }
+
+    public Exception? Warehouse1cItRequestDetailException { get; set; }
+    public HubItRequestItem? Warehouse1cItRequestDetail { get; set; }
+    public List<string> Warehouse1cItRequestDetailCalls { get; } = [];
+
+    /// <summary>Деталь по ref заявки, иначе — общий Warehouse1cItRequestDetail.</summary>
+    public Func<string, HubItRequestItem?>? Warehouse1cItRequestDetailFactory { get; set; }
+
+    /// <summary>Задержка ответа детали: тесты гонки выбора ставят TaskCompletionSource.</summary>
+    public Func<string, CancellationToken, Task>? Warehouse1cItRequestDetailDelay { get; set; }
+
+    public async Task<HubItRequestItem> GetWarehouse1cItRequestDetailAsync(
+        string requestRef,
+        CancellationToken cancellationToken)
+    {
+        Warehouse1cItRequestDetailCalls.Add(requestRef);
+        if (Warehouse1cItRequestDetailException is not null)
+        {
+            throw Warehouse1cItRequestDetailException;
+        }
+
+        if (Warehouse1cItRequestDetailDelay is not null)
+        {
+            await Warehouse1cItRequestDetailDelay(requestRef, cancellationToken);
+        }
+
+        return Warehouse1cItRequestDetailFactory?.Invoke(requestRef)
+            ?? Warehouse1cItRequestDetail
+            ?? new HubItRequestItem { RequestRef = requestRef };
+    }
+
+    // ==================== DLP-мониторинг ====================
+
+    public Exception? DlpException { get; set; }
+    public HubDlpHostsResponse? DlpHosts { get; set; }
+    public HubDlpSummaryResponse? DlpSummary { get; set; }
+
+    /// <summary>Сводка за день по ключу даты, иначе общий DlpAttention.</summary>
+    public Func<string?, HubDlpAttentionResponse?>? DlpAttentionFactory { get; set; }
+    public HubDlpAttentionResponse? DlpAttention { get; set; }
+    public List<string?> DlpAttentionCalls { get; } = [];
+
+    /// <summary>Активность по ключу (computer, day), иначе общий DlpActivity.</summary>
+    public Func<string, string?, HubDlpActivityResponse?>? DlpActivityFactory { get; set; }
+    public HubDlpActivityResponse? DlpActivity { get; set; }
+    public List<(string Computer, string? Day)> DlpActivityCalls { get; } = [];
+
+    public Exception? DlpSchedulesException { get; set; }
+    public HubDlpWorkSchedulesResponse? DlpWorkSchedules { get; set; }
+
+    /// <summary>Сохранённые через PUT графики — тесты проверяют payload.</summary>
+    public List<(string Branch, int WorkStartMin, int WorkEndMin, int? LunchStartMin, int? LunchEndMin, int TzOffsetMinutes, int WorkdaysMask)> DlpScheduleSaves { get; } = [];
+    public List<string> DlpScheduleDeletes { get; } = [];
+    public Exception? DlpScheduleSaveException { get; set; }
+    public Exception? DlpScheduleDeleteException { get; set; }
+    public Func<HubDlpWorkSchedule?>? DlpScheduleSaveFactory { get; set; }
+
+    /// <summary>Файловые события по компьютеру — вкладка «Файлы».</summary>
+    public Func<string?, string?, HubFsEgressResponse?>? FsEgressFactory { get; set; }
+    public HubFsEgressResponse? FsEgress { get; set; }
+
+    public Func<string?, HubDlpChatsResponse?>? TelegramChatsFactory { get; set; }
+    public HubDlpChatsResponse? TelegramChats { get; set; }
+    public Func<string?, HubDlpChatsResponse?>? MaxChatsFactory { get; set; }
+    public HubDlpChatsResponse? MaxChats { get; set; }
+    public Func<string?, string?, HubBrowserVisitsResponse?>? BrowserVisitsFactory { get; set; }
+    public HubBrowserVisitsResponse? BrowserVisits { get; set; }
+
+    public Task<HubDlpHostsResponse> ListDlpHostsAsync(
+        string? category,
+        CancellationToken cancellationToken)
+    {
+        if (DlpException is not null)
+        {
+            throw DlpException;
+        }
+
+        return Task.FromResult(DlpHosts ?? new HubDlpHostsResponse());
+    }
+
+    public Task<HubDlpSummaryResponse> GetDlpSummaryAsync(
+        CancellationToken cancellationToken)
+    {
+        if (DlpException is not null)
+        {
+            throw DlpException;
+        }
+
+        return Task.FromResult(DlpSummary ?? new HubDlpSummaryResponse());
+    }
+
+    public Task<HubDlpAttentionResponse> GetDlpAttentionAsync(
+        string? day,
+        CancellationToken cancellationToken)
+    {
+        DlpAttentionCalls.Add(day);
+        if (DlpException is not null)
+        {
+            throw DlpException;
+        }
+
+        return Task.FromResult(
+            DlpAttentionFactory?.Invoke(day)
+            ?? DlpAttention
+            ?? new HubDlpAttentionResponse());
+    }
+
+    public Task<HubDlpActivityResponse> GetDlpActivityAsync(
+        string computerName,
+        string? day,
+        CancellationToken cancellationToken)
+    {
+        DlpActivityCalls.Add((computerName, day));
+        if (DlpException is not null)
+        {
+            throw DlpException;
+        }
+
+        return Task.FromResult(
+            DlpActivityFactory?.Invoke(computerName, day)
+            ?? DlpActivity
+            ?? new HubDlpActivityResponse());
+    }
+
+    public Task<HubDlpWorkSchedulesResponse> ListDlpWorkSchedulesAsync(
+        CancellationToken cancellationToken)
+    {
+        if (DlpSchedulesException is not null)
+        {
+            throw DlpSchedulesException;
+        }
+
+        return Task.FromResult(DlpWorkSchedules ?? new HubDlpWorkSchedulesResponse());
+    }
+
+    public Task<HubDlpWorkScheduleSaveResponse> SaveDlpWorkScheduleAsync(
+        string branchName,
+        int workStartMin,
+        int workEndMin,
+        int? lunchStartMin,
+        int? lunchEndMin,
+        int tzOffsetMinutes,
+        int workdaysMask,
+        CancellationToken cancellationToken)
+    {
+        DlpScheduleSaves.Add(
+            (branchName, workStartMin, workEndMin, lunchStartMin, lunchEndMin, tzOffsetMinutes, workdaysMask));
+        if (DlpScheduleSaveException is not null)
+        {
+            throw DlpScheduleSaveException;
+        }
+
+        return Task.FromResult(new HubDlpWorkScheduleSaveResponse
+        {
+            Success = true,
+            Schedule = DlpScheduleSaveFactory?.Invoke(),
+        });
+    }
+
+    public Task DeleteDlpWorkScheduleAsync(
+        string branchName,
+        CancellationToken cancellationToken)
+    {
+        DlpScheduleDeletes.Add(branchName);
+        if (DlpScheduleDeleteException is not null)
+        {
+            throw DlpScheduleDeleteException;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<HubFsEgressResponse> ListFsEgressEventsAsync(
+        string? computerName,
+        string? channel,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(
+            FsEgressFactory?.Invoke(computerName, channel)
+            ?? FsEgress
+            ?? new HubFsEgressResponse());
+    }
+
+    public Task<HubDlpChatsResponse> ListTelegramChatsAsync(
+        string? computerName,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(
+            TelegramChatsFactory?.Invoke(computerName)
+            ?? TelegramChats
+            ?? new HubDlpChatsResponse());
+    }
+
+    public Task<HubDlpChatsResponse> ListMaxChatsAsync(
+        string? computerName,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(
+            MaxChatsFactory?.Invoke(computerName)
+            ?? MaxChats
+            ?? new HubDlpChatsResponse());
+    }
+
+    public Task<HubBrowserVisitsResponse> ListBrowserVisitsAsync(
+        string? computerName,
+        string? day,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(
+            BrowserVisitsFactory?.Invoke(computerName, day)
+            ?? BrowserVisits
+            ?? new HubBrowserVisitsResponse());
+    }
+
     public Task LogoutAsync(CancellationToken cancellationToken)
     {
         CurrentSession = null;
+        return Task.CompletedTask;
+    }
+
+    // ---- Мои файлы: корзина / квота / копия / архив / предпросмотр / библиотеки ----
+
+    public Exception? MyFilesTrashException { get; set; }
+    public HubMyFileTrash? MyFilesTrash { get; set; }
+    public Func<string?, HubMyFileTrash>? MyFilesTrashFactory { get; set; }
+    public List<string?> MyFilesTrashCalls { get; } = [];
+    public Exception? MyFilesTrashEmptyException { get; set; }
+    public List<string?> MyFilesTrashEmptyCalls { get; } = [];
+    public Exception? MyFilesTrashRestoreException { get; set; }
+    public List<(string Kind, string Id)> MyFilesRestored { get; } = [];
+    public Exception? MyFilesTrashPurgeException { get; set; }
+    public List<(string Kind, string Id)> MyFilesPurged { get; } = [];
+    public Exception? MyFilesQuotaException { get; set; }
+    public HubMyFileQuota? MyFilesQuota { get; set; }
+    public int MyFilesQuotaCallCount { get; private set; }
+    public Exception? MyFilesCopyException { get; set; }
+    public HubMyFileItem? MyFilesCopyResult { get; set; }
+    public List<(string FileId, string? FolderId, string? LibraryId)> MyFilesCopied { get; } = [];
+    public Exception? MyFilesArchiveException { get; set; }
+    public byte[]? MyFilesArchiveBytes { get; set; }
+    public string? MyFilesArchiveName { get; set; }
+    public List<string> MyFilesArchiveCalls { get; } = [];
+    public Exception? MyFilesPreviewException { get; set; }
+    public HubMyFilePreview? MyFilesPreview { get; set; }
+    public List<string> MyFilesPreviewCalls { get; } = [];
+    public Exception? MyFilesPreviewContentException { get; set; }
+    public byte[]? MyFilesPreviewContentBytes { get; set; }
+    public string? MyFilesPreviewContentType { get; set; }
+    public List<string> MyFilesPreviewContentCalls { get; } = [];
+
+    public Task<HubMyFileTrash> GetMyFilesTrashAsync(
+        string? libraryId,
+        CancellationToken cancellationToken)
+    {
+        MyFilesTrashCalls.Add(libraryId);
+        if (MyFilesTrashException is not null)
+        {
+            return Task.FromException<HubMyFileTrash>(MyFilesTrashException);
+        }
+
+        return Task.FromResult(
+            MyFilesTrashFactory?.Invoke(libraryId)
+            ?? MyFilesTrash
+            ?? new HubMyFileTrash { Items = [], Folders = [] });
+    }
+
+    public Task EmptyMyFilesTrashAsync(string? libraryId, CancellationToken cancellationToken)
+    {
+        MyFilesTrashEmptyCalls.Add(libraryId);
+        if (MyFilesTrashEmptyException is not null)
+        {
+            return Task.FromException(MyFilesTrashEmptyException);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task RestoreMyFileAsync(string fileId, CancellationToken cancellationToken)
+    {
+        if (MyFilesTrashRestoreException is not null)
+        {
+            return Task.FromException(MyFilesTrashRestoreException);
+        }
+
+        MyFilesRestored.Add(("file", fileId));
+        return Task.CompletedTask;
+    }
+
+    public Task RestoreMyFileFolderAsync(string folderId, CancellationToken cancellationToken)
+    {
+        if (MyFilesTrashRestoreException is not null)
+        {
+            return Task.FromException(MyFilesTrashRestoreException);
+        }
+
+        MyFilesRestored.Add(("folder", folderId));
+        return Task.CompletedTask;
+    }
+
+    public Task PurgeMyFileAsync(string fileId, CancellationToken cancellationToken)
+    {
+        if (MyFilesTrashPurgeException is not null)
+        {
+            return Task.FromException(MyFilesTrashPurgeException);
+        }
+
+        MyFilesPurged.Add(("file", fileId));
+        return Task.CompletedTask;
+    }
+
+    public Task PurgeMyFileFolderAsync(string folderId, CancellationToken cancellationToken)
+    {
+        if (MyFilesTrashPurgeException is not null)
+        {
+            return Task.FromException(MyFilesTrashPurgeException);
+        }
+
+        MyFilesPurged.Add(("folder", folderId));
+        return Task.CompletedTask;
+    }
+
+    public Task<HubMyFileQuota> GetMyFilesQuotaAsync(CancellationToken cancellationToken)
+    {
+        MyFilesQuotaCallCount++;
+        if (MyFilesQuotaException is not null)
+        {
+            return Task.FromException<HubMyFileQuota>(MyFilesQuotaException);
+        }
+
+        return Task.FromResult(MyFilesQuota ?? new HubMyFileQuota());
+    }
+
+    public Task<HubMyFileItem> CopyMyFileAsync(
+        string fileId,
+        string? folderId,
+        string? libraryId,
+        CancellationToken cancellationToken)
+    {
+        if (MyFilesCopyException is not null)
+        {
+            return Task.FromException<HubMyFileItem>(MyFilesCopyException);
+        }
+
+        MyFilesCopied.Add((fileId, folderId, libraryId));
+        return Task.FromResult(MyFilesCopyResult ?? new HubMyFileItem
+        {
+            Id = "copy-" + MyFilesCopied.Count,
+            OriginalFileName = "копия.bin",
+            Status = "ready",
+        });
+    }
+
+    public async Task<string> DownloadMyFileFolderArchiveAsync(
+        string folderId,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        if (MyFilesArchiveException is not null)
+        {
+            throw MyFilesArchiveException;
+        }
+
+        MyFilesArchiveCalls.Add(folderId);
+        var bytes = MyFilesArchiveBytes ?? [];
+        await destination.WriteAsync(bytes, cancellationToken);
+        return MyFilesArchiveName ?? string.Empty;
+    }
+
+    public Task<HubMyFilePreview> GetMyFilePreviewAsync(
+        string fileId,
+        CancellationToken cancellationToken)
+    {
+        MyFilesPreviewCalls.Add(fileId);
+        if (MyFilesPreviewException is not null)
+        {
+            return Task.FromException<HubMyFilePreview>(MyFilesPreviewException);
+        }
+
+        return Task.FromResult(MyFilesPreview ?? new HubMyFilePreview { PreviewKind = "image" });
+    }
+
+    public async Task<string> DownloadMyFilePreviewContentAsync(
+        string fileId,
+        Stream destination,
+        CancellationToken cancellationToken)
+    {
+        MyFilesPreviewContentCalls.Add(fileId);
+        if (MyFilesPreviewContentException is not null)
+        {
+            throw MyFilesPreviewContentException;
+        }
+
+        var bytes = MyFilesPreviewContentBytes ?? [];
+        await destination.WriteAsync(bytes, cancellationToken);
+        return MyFilesPreviewContentType ?? "image/png";
+    }
+
+    // ---- Мои файлы: управление библиотеками ----
+
+    public Exception? MyFilesLibraryCreateException { get; set; }
+    public HubMyFileLibrary? MyFilesLibraryCreateResult { get; set; }
+    public List<(string Name, long QuotaBytes)> MyFilesLibraryCreated { get; } = [];
+    public Exception? MyFilesLibraryUpdateException { get; set; }
+    public HubMyFileLibrary? MyFilesLibraryUpdateResult { get; set; }
+    public List<(string Id, string? Name, long? QuotaBytes)> MyFilesLibraryUpdated { get; } = [];
+    public Exception? MyFilesLibraryDeleteException { get; set; }
+    public List<string> MyFilesLibraryDeleted { get; } = [];
+    public Exception? MyFilesLibraryMembersException { get; set; }
+    public Func<string, HubMyFileLibraryMembers>? MyFilesLibraryMembersFactory { get; set; }
+    public HubMyFileLibraryMembers? MyFilesLibraryMembers { get; set; }
+    public List<string> MyFilesLibraryMembersCalls { get; } = [];
+    public Exception? MyFilesLibraryMembersSetException { get; set; }
+    public Func<string, IReadOnlyList<HubMyFileLibraryMemberInput>, HubMyFileLibraryMembers>?
+        MyFilesLibraryMembersSetResponder { get; set; }
+    public List<(string Id, IReadOnlyList<HubMyFileLibraryMemberInput> Members)>
+        MyFilesLibraryMembersSet { get; } = [];
+    public Exception? MyFilesOfficeGroupsException { get; set; }
+    public IReadOnlyList<HubMyFileOfficeGroup>? MyFilesOfficeGroups { get; set; }
+
+    public Task<HubMyFileLibrary> CreateMyFileLibraryAsync(
+        string name,
+        long quotaBytes,
+        CancellationToken cancellationToken)
+    {
+        if (MyFilesLibraryCreateException is not null)
+        {
+            return Task.FromException<HubMyFileLibrary>(MyFilesLibraryCreateException);
+        }
+
+        MyFilesLibraryCreated.Add((name, quotaBytes));
+        return Task.FromResult(MyFilesLibraryCreateResult ?? new HubMyFileLibrary
+        {
+            Id = "lib-new-" + MyFilesLibraryCreated.Count,
+            Name = name,
+            QuotaBytes = quotaBytes,
+            MyRole = "manage",
+        });
+    }
+
+    public Task<HubMyFileLibrary> UpdateMyFileLibraryAsync(
+        string libraryId,
+        string? name,
+        long? quotaBytes,
+        CancellationToken cancellationToken)
+    {
+        if (MyFilesLibraryUpdateException is not null)
+        {
+            return Task.FromException<HubMyFileLibrary>(MyFilesLibraryUpdateException);
+        }
+
+        MyFilesLibraryUpdated.Add((libraryId, name, quotaBytes));
+        var original = MyFileLibraries?.Items?.FirstOrDefault(
+            library => string.Equals(library.Id?.Trim(), libraryId.Trim(), StringComparison.Ordinal))
+            ?? new HubMyFileLibrary { Id = libraryId };
+        return Task.FromResult(MyFilesLibraryUpdateResult ?? original with
+        {
+            Name = name ?? original.Name,
+            QuotaBytes = quotaBytes ?? original.QuotaBytes,
+        });
+    }
+
+    public Task DeleteMyFileLibraryAsync(string libraryId, CancellationToken cancellationToken)
+    {
+        if (MyFilesLibraryDeleteException is not null)
+        {
+            return Task.FromException(MyFilesLibraryDeleteException);
+        }
+
+        MyFilesLibraryDeleted.Add(libraryId);
+        return Task.CompletedTask;
+    }
+
+    public Task<HubMyFileLibraryMembers> GetMyFileLibraryMembersAsync(
+        string libraryId,
+        CancellationToken cancellationToken)
+    {
+        MyFilesLibraryMembersCalls.Add(libraryId);
+        if (MyFilesLibraryMembersException is not null)
+        {
+            return Task.FromException<HubMyFileLibraryMembers>(MyFilesLibraryMembersException);
+        }
+
+        return Task.FromResult(
+            MyFilesLibraryMembersFactory?.Invoke(libraryId)
+            ?? MyFilesLibraryMembers
+            ?? new HubMyFileLibraryMembers { Items = [] });
+    }
+
+    public Task<HubMyFileLibraryMembers> SetMyFileLibraryMembersAsync(
+        string libraryId,
+        IReadOnlyList<HubMyFileLibraryMemberInput> members,
+        CancellationToken cancellationToken)
+    {
+        if (MyFilesLibraryMembersSetException is not null)
+        {
+            return Task.FromException<HubMyFileLibraryMembers>(MyFilesLibraryMembersSetException);
+        }
+
+        MyFilesLibraryMembersSet.Add((libraryId, members));
+        return Task.FromResult(
+            MyFilesLibraryMembersSetResponder?.Invoke(libraryId, members)
+            ?? new HubMyFileLibraryMembers
+            {
+                Items = members.Select(m => new HubMyFileLibraryMember
+                {
+                    PrincipalType = m.PrincipalType,
+                    PrincipalId = m.PrincipalId,
+                    Role = m.Role,
+                }).ToList(),
+            });
+    }
+
+    public Task<IReadOnlyList<HubMyFileOfficeGroup>> GetMyFileOfficeGroupsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (MyFilesOfficeGroupsException is not null)
+        {
+            return Task.FromException<IReadOnlyList<HubMyFileOfficeGroup>>(MyFilesOfficeGroupsException);
+        }
+
+        return Task.FromResult(MyFilesOfficeGroups ?? (IReadOnlyList<HubMyFileOfficeGroup>)[]);
+    }
+
+    // ---- Обратная связь ----
+
+    public Exception? FeedbackCreateException { get; set; }
+    public List<HubFeedbackCreate> FeedbackCreated { get; } = [];
+    public Func<HubFeedbackCreate, HubFeedbackSuggestion>? FeedbackCreateResponder { get; set; }
+    public Exception? MyFeedbackException { get; set; }
+    public HubMyFeedbackPage? MyFeedbackPage { get; set; }
+    public int MyFeedbackCallCount { get; private set; }
+    public Exception? UpdateFeedbackException { get; set; }
+    public List<(string Id, string? Status, string? AdminNote)> FeedbackUpdated { get; } = [];
+    public Func<string, string?, string?, HubAdminFeedbackItem>? UpdateFeedbackResponder { get; set; }
+
+    public Task<HubFeedbackSuggestion> CreateFeedbackAsync(
+        HubFeedbackCreate request,
+        CancellationToken cancellationToken)
+    {
+        if (FeedbackCreateException is not null)
+        {
+            return Task.FromException<HubFeedbackSuggestion>(FeedbackCreateException);
+        }
+
+        FeedbackCreated.Add(request);
+        return Task.FromResult(
+            FeedbackCreateResponder?.Invoke(request)
+            ?? new HubFeedbackSuggestion
+            {
+                Id = "fb-new-" + FeedbackCreated.Count,
+                Category = request.Category,
+                Title = request.Title,
+                Message = request.Message,
+                Section = request.Section,
+                Status = "new",
+            });
+    }
+
+    public Task<HubMyFeedbackPage> GetMyFeedbackAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        MyFeedbackCallCount++;
+        if (MyFeedbackException is not null)
+        {
+            return Task.FromException<HubMyFeedbackPage>(MyFeedbackException);
+        }
+
+        return Task.FromResult(
+            MyFeedbackPage ?? new HubMyFeedbackPage { Items = [], Total = 0 });
+    }
+
+    public Task<HubAdminFeedbackItem> UpdateFeedbackAsync(
+        string itemId,
+        string? status,
+        string? adminNote,
+        CancellationToken cancellationToken)
+    {
+        if (UpdateFeedbackException is not null)
+        {
+            return Task.FromException<HubAdminFeedbackItem>(UpdateFeedbackException);
+        }
+
+        FeedbackUpdated.Add((itemId, status, adminNote));
+        var original = AdminFeedbackPage.Items?.FirstOrDefault(
+            item => string.Equals(item.Id?.Trim(), itemId.Trim(), StringComparison.Ordinal))
+            ?? new HubAdminFeedbackItem { Id = itemId };
+        return Task.FromResult(
+            UpdateFeedbackResponder?.Invoke(itemId, status, adminNote)
+            ?? original with
+            {
+                Status = status ?? original.Status,
+                AdminNote = adminNote ?? original.AdminNote,
+            });
+    }
+    // ---- Админка заявок (tickets admin) ----
+
+    public List<HubTicketObjectUpsert> CreatedTicketObjects { get; } = [];
+    public List<(long Id, HubTicketObjectUpsert Request)> UpdatedTicketObjects { get; } = [];
+    public Exception? TicketObjectMutationException { get; set; }
+
+    public Task<HubTicketObjectList> GetTicketObjectsAsync(bool includeInactive, CancellationToken cancellationToken)
+        => TicketObjectsException is not null
+            ? Task.FromException<HubTicketObjectList>(TicketObjectsException)
+            : Task.FromResult(TicketObjects);
+
+    public Task<HubTicketObject> CreateTicketObjectAsync(HubTicketObjectUpsert request, CancellationToken cancellationToken)
+    {
+        if (TicketObjectMutationException is not null)
+        {
+            return Task.FromException<HubTicketObject>(TicketObjectMutationException);
+        }
+
+        CreatedTicketObjects.Add(request);
+        var created = new HubTicketObject { Id = TicketObjects.Items?.Count + 1 ?? 1, Name = request.Name };
+        return Task.FromResult(created);
+    }
+
+    public Task<HubTicketObject> UpdateTicketObjectAsync(long objectId, HubTicketObjectUpsert request, CancellationToken cancellationToken)
+    {
+        if (TicketObjectMutationException is not null)
+        {
+            return Task.FromException<HubTicketObject>(TicketObjectMutationException);
+        }
+
+        UpdatedTicketObjects.Add((objectId, request));
+        var original = TicketObjects.Items?.FirstOrDefault(item => item.Id == objectId)
+            ?? new HubTicketObject { Id = objectId };
+        return Task.FromResult(original with { Name = request.Name ?? original.Name });
+    }
+
+    public HubTicketEmployeeDetail TicketEmployeeDetail { get; set; } = new();
+    public List<HubTicketEmployeeUpsert> CreatedTicketEmployees { get; } = [];
+    public List<(long Id, HubTicketEmployeeUpsert Request)> UpdatedTicketEmployees { get; } = [];
+    public Exception? TicketEmployeeDetailException { get; set; }
+    public Exception? TicketEmployeeMutationException { get; set; }
+
+    public Task<HubTicketEmployeeDetail> GetTicketEmployeeAsync(long employeeId, CancellationToken cancellationToken)
+        => TicketEmployeeDetailException is not null
+            ? Task.FromException<HubTicketEmployeeDetail>(TicketEmployeeDetailException)
+            : Task.FromResult(TicketEmployeeDetail);
+
+    public Task<HubTicketEmployeeDetail> CreateTicketEmployeeAsync(HubTicketEmployeeUpsert request, CancellationToken cancellationToken)
+    {
+        if (TicketEmployeeMutationException is not null)
+        {
+            return Task.FromException<HubTicketEmployeeDetail>(TicketEmployeeMutationException);
+        }
+
+        CreatedTicketEmployees.Add(request);
+        return Task.FromResult(TicketEmployeeDetail);
+    }
+
+    public Task<HubTicketEmployeeDetail> UpdateTicketEmployeeAsync(long employeeId, HubTicketEmployeeUpsert request, CancellationToken cancellationToken)
+    {
+        if (TicketEmployeeMutationException is not null)
+        {
+            return Task.FromException<HubTicketEmployeeDetail>(TicketEmployeeMutationException);
+        }
+
+        UpdatedTicketEmployees.Add((employeeId, request));
+        return Task.FromResult(TicketEmployeeDetail);
+    }
+
+    public HubTicketImportJob? UploadedTicketImport { get; set; }
+    public HubTicketImportPreview? TicketImportPreview { get; set; }
+    public HubTicketImportResult? TicketImportResult { get; set; }
+    public Exception? TicketImportException { get; set; }
+    public string? LastTicketImportFileName { get; private set; }
+    public string? LastTicketImportJobId { get; private set; }
+
+    public Task<HubTicketImportJob> UploadTicketImportAsync(string fileName, Stream content, CancellationToken cancellationToken)
+    {
+        LastTicketImportFileName = fileName;
+        return TicketImportException is not null
+            ? Task.FromException<HubTicketImportJob>(TicketImportException)
+            : Task.FromResult(UploadedTicketImport ?? new HubTicketImportJob { Id = "job-1" });
+    }
+
+    public Task<HubTicketImportPreview> GetTicketImportPreviewAsync(string jobId, CancellationToken cancellationToken)
+    {
+        LastTicketImportJobId = jobId;
+        return TicketImportException is not null
+            ? Task.FromException<HubTicketImportPreview>(TicketImportException)
+            : Task.FromResult(TicketImportPreview ?? new HubTicketImportPreview());
+    }
+
+    public Task<HubTicketImportResult> ExecuteTicketImportAsync(string jobId, HubTicketImportExecute request, CancellationToken cancellationToken)
+    {
+        LastTicketImportJobId = jobId;
+        return TicketImportException is not null
+            ? Task.FromException<HubTicketImportResult>(TicketImportException)
+            : Task.FromResult(TicketImportResult ?? new HubTicketImportResult());
+    }
+
+    public HubTicketFinancialOpPage TicketFinancialOpsPage { get; set; } = new() { Items = [] };
+    public List<HubTicketFinancialOpUpsert> CreatedTicketFinancialOps { get; } = [];
+    public List<(long Id, HubTicketFinancialOpUpsert Request)> UpdatedTicketFinancialOps { get; } = [];
+    public List<long> DeletedTicketFinancialOps { get; } = [];
+    public Exception? TicketFinancialOpsException { get; set; }
+    public Exception? TicketFinancialOpMutationException { get; set; }
+    public HubTicketFinOpQuery? LastTicketFinOpQuery { get; private set; }
+
+    public Task<HubTicketFinancialOpPage> GetTicketFinancialOpsAsync(HubTicketFinOpQuery query, CancellationToken cancellationToken)
+    {
+        LastTicketFinOpQuery = query;
+        return TicketFinancialOpsException is not null
+            ? Task.FromException<HubTicketFinancialOpPage>(TicketFinancialOpsException)
+            : Task.FromResult(TicketFinancialOpsPage);
+    }
+
+    public Task<HubTicketFinancialOp> CreateTicketFinancialOpAsync(HubTicketFinancialOpUpsert request, CancellationToken cancellationToken)
+    {
+        if (TicketFinancialOpMutationException is not null)
+        {
+            return Task.FromException<HubTicketFinancialOp>(TicketFinancialOpMutationException);
+        }
+
+        CreatedTicketFinancialOps.Add(request);
+        return Task.FromResult(new HubTicketFinancialOp { Id = CreatedTicketFinancialOps.Count });
+    }
+
+    public Task<HubTicketFinancialOp> UpdateTicketFinancialOpAsync(long opId, HubTicketFinancialOpUpsert request, CancellationToken cancellationToken)
+    {
+        if (TicketFinancialOpMutationException is not null)
+        {
+            return Task.FromException<HubTicketFinancialOp>(TicketFinancialOpMutationException);
+        }
+
+        UpdatedTicketFinancialOps.Add((opId, request));
+        return Task.FromResult(new HubTicketFinancialOp { Id = opId });
+    }
+
+    public Task DeleteTicketFinancialOpAsync(long opId, CancellationToken cancellationToken)
+    {
+        if (TicketFinancialOpMutationException is not null)
+        {
+            return Task.FromException(TicketFinancialOpMutationException);
+        }
+
+        DeletedTicketFinancialOps.Add(opId);
+        return Task.CompletedTask;
+    }
+
+    public HubTicketLossReport TicketLossesReport { get; set; } = new();
+    public Exception? TicketLossesException { get; set; }
+    public HubTicketLossesQuery? LastTicketLossesQuery { get; private set; }
+    public List<string> TicketExports { get; } = [];
+
+    public Task<HubTicketLossReport> GetTicketLossesReportAsync(HubTicketLossesQuery query, CancellationToken cancellationToken)
+    {
+        LastTicketLossesQuery = query;
+        return TicketLossesException is not null
+            ? Task.FromException<HubTicketLossReport>(TicketLossesException)
+            : Task.FromResult(TicketLossesReport);
+    }
+
+    public async Task<string> ExportTicketLossesAsync(HubTicketLossesQuery query, Stream destination, CancellationToken cancellationToken)
+    {
+        if (TicketLossesException is not null)
+        {
+            throw TicketLossesException;
+        }
+
+        var fileName = "ticket-losses.xlsx";
+        TicketExports.Add(fileName);
+        var bytes = System.Text.Encoding.UTF8.GetBytes("demo");
+        await destination.WriteAsync(bytes, cancellationToken);
+        return fileName;
+    }
+
+    public async Task<string> ExportTicketRequestsAsync(HubTicketQuery query, Stream destination, CancellationToken cancellationToken)
+    {
+        if (TicketLossesException is not null)
+        {
+            throw TicketLossesException;
+        }
+
+        var fileName = "ticket-requests.xlsx";
+        TicketExports.Add(fileName);
+        var bytes = System.Text.Encoding.UTF8.GetBytes("demo");
+        await destination.WriteAsync(bytes, cancellationToken);
+        return fileName;
+    }
+
+    public HubTicketNotificationRuleList TicketNotificationRules { get; set; } = new() { Items = [] };
+    public List<(long Id, HubTicketNotificationRulePatch Patch)> UpdatedTicketNotificationRules { get; } = [];
+    public Exception? TicketNotificationRulesException { get; set; }
+
+    public Task<HubTicketNotificationRuleList> GetTicketNotificationRulesAsync(CancellationToken cancellationToken)
+        => TicketNotificationRulesException is not null
+            ? Task.FromException<HubTicketNotificationRuleList>(TicketNotificationRulesException)
+            : Task.FromResult(TicketNotificationRules);
+
+    public Task<HubTicketNotificationRule> UpdateTicketNotificationRuleAsync(long ruleId, HubTicketNotificationRulePatch patch, CancellationToken cancellationToken)
+    {
+        if (TicketNotificationRulesException is not null)
+        {
+            return Task.FromException<HubTicketNotificationRule>(TicketNotificationRulesException);
+        }
+
+        UpdatedTicketNotificationRules.Add((ruleId, patch));
+        var original = TicketNotificationRules.Items?.FirstOrDefault(item => item.Id == ruleId)
+            ?? new HubTicketNotificationRule { Id = ruleId };
+        return Task.FromResult(original);
+    }
+
+    public HubTicketPendingNotificationList TicketPendingNotifications { get; set; } = new() { Items = [] };
+    public List<string> DismissedTicketNotifications { get; } = [];
+
+    public Task<HubTicketPendingNotificationList> GetTicketPendingNotificationsAsync(CancellationToken cancellationToken)
+        => Task.FromResult(TicketPendingNotifications);
+
+    public Task DismissTicketNotificationAsync(string notificationId, CancellationToken cancellationToken)
+    {
+        DismissedTicketNotifications.Add(notificationId);
         return Task.CompletedTask;
     }
 }
