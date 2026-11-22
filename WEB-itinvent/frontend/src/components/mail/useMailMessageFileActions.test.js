@@ -224,6 +224,69 @@ describe('useMailMessageFileActions', () => {
     expect(savedBlob.type).not.toBe('application/pdf');
   });
 
+  it('rebuilds the PDF preview when the office viewer frame fails after a config fetch', async () => {
+    const props = createProps({
+      openOfficeWithDesktopApplication: vi.fn(async () => ({ accepted: false, status: 'unavailable' })),
+      mailAPI: {
+        getMessageHeaders: vi.fn(),
+        downloadMessageSource: vi.fn(),
+        downloadAttachment: vi.fn(),
+        getAttachmentOfficeView: vi.fn().mockResolvedValue({
+          config: { document: { key: 'view-1' } },
+          public_path: '/onlyoffice',
+        }),
+        getAttachmentPreview: vi.fn().mockResolvedValue({
+          status: 'ready',
+          preview_kind: 'office_pdf',
+          source_kind: 'word',
+          pdf_filename: 'memo.pdf',
+          page_count: 1,
+        }),
+        downloadAttachmentPreviewPdf: vi.fn().mockResolvedValue({
+          data: new Blob(['%PDF-1.4'], { type: 'application/pdf' }),
+          headers: {
+            'content-type': 'application/pdf',
+            'content-disposition': 'attachment; filename="memo.pdf"',
+          },
+        }),
+      },
+    });
+    const { result } = renderHook(() => useMailMessageFileActions(props));
+    const message = { id: 'msg-1', mailbox_id: 'mb-1' };
+    const attachment = {
+      id: 'att-docx',
+      name: 'memo.docx',
+      content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+
+    await act(async () => {
+      await result.current.openAttachmentPreview(message, attachment);
+    });
+
+    expect(result.current.attachmentPreview).toMatchObject({
+      open: true,
+      kind: 'office_view',
+    });
+    expect(typeof result.current.attachmentPreview.officeView.onError).toBe('function');
+
+    await act(async () => {
+      await result.current.attachmentPreview.officeView.onError();
+    });
+
+    expect(props.mailAPI.getAttachmentOfficeView).toHaveBeenCalledTimes(1);
+    expect(props.mailAPI.downloadAttachmentPreviewPdf).toHaveBeenCalledWith(
+      'msg-1',
+      'att-docx',
+      { mailboxId: 'mb-1' },
+    );
+    expect(result.current.attachmentPreview).toMatchObject({
+      open: true,
+      loading: false,
+      kind: 'office_pdf',
+    });
+    expect(result.current.attachmentPreview.officeView).toBeFalsy();
+  });
+
   it('deduplicates concurrent attachment downloads for the same message and attachment', async () => {
     let resolveDownload;
     const downloadPromise = new Promise((resolve) => {
