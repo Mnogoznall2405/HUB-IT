@@ -152,7 +152,7 @@ High/Medium подтверждены повторным чтением кода 
 | FE-0011 | /scan-center: переполнение 12px при 1920 (MuiGrid spacing) → горизонтальный скролл; при 1366/1280 чисто | ScanCenter (Grid «Состояние контура») | Confirmed (замер+скриншот) |
 | FE-0012 | /docflow: дубль идентичных `tasks?scope=inbox` на загрузке (222+195 мс) | Docflow.jsx | Confirmed (сеть) |
 | FE-0015 | Сессия сброшена при смене UA (mobile-эмуляция): /auth/me → 401 → auth-required → logout. После находки FE-0059 более вероятен общий механизм: перезагрузка попала в окно ротации (grace 15 c), UA-пиннинг не подтверждён | AuthContext + backend deps | Suspected (см. FE-0059) |
-| FE-0016 | Транзиентные 5×401 в консоли при rapid-switch вкладок /tasks; при повторе не воспроизведены; возможно, окно разлогина | неизвестный ресурс | Suspected |
+| FE-0016 | Транзиентные 5×401 в консоли при rapid-switch вкладок /tasks; при повторе не воспроизведены. **Источник 401 не установлен** (первая проба без сохранения URL; повтор с захватом — чисто) — `file` намеренно отсутствует с явным `fileNote` в JSON | file отсутствует намеренно | Suspected |
 | FE-0017 | ESLint: 1 error (`chatRegressionFlows.test.jsx:426` 'describe' no-undef) + 1143 warnings chat, 735 warnings mail (no-unused-vars) | eslint-конфиг | Confirmed |
 | FE-0018 | /voice: три запроса ~1.2–1.3 c на загрузку (jobs?limit=100, meetings?limit=20, meetings?limit=1) | VoiceVideo; причина — backend | Confirmed (замер) |
 | FE-0019 | /admin: 30 API-вызовов на загрузку, auth/sessions 1.1 c | Admin/UsersTab | Confirmed (замер) |
@@ -171,7 +171,7 @@ High/Medium подтверждены повторным чтением кода 
 | FE-0048 | swrCache: force-чтение присоединяется к идущему обычному запросу — «Обновить» не гарантирует fetch | `src/lib/swrCache.js:114–117` | Confirmed |
 | FE-0049 | Computers: loadChangesDeferred без abort/cancelled (setState после unmount) | `Computers.jsx:950–960` | Confirmed |
 | FE-0050 | ChatOpen: createDirectConversation дважды в StrictMode dev | `ChatOpen.jsx:56` | Suspected (dev-only) |
-| FE-0051 | swrCache: потребитель может применить «отсоединённый» ответ без перепроверки | `src/lib/swrCache.js` | Suspected |
+| FE-0051 | swrCache: потребитель может применить «отсоединённый» ответ без перепроверки | `WEB-itinvent/frontend/src/lib/swrCache.js:63–77 (detach), 120–129 (отвязанный fetch резолвится вызвавшему)` | Suspected |
 | FE-0052 | Мобильный заголовок /scan-center — «Scan Center», десктоп — «Контроль документов»; остальные страницы русские | `ScanCenterPage.jsx:2028` | Confirmed |
 | FE-0054 | При открытии диалога создания задачи — 2 идентичных GET `/hub/users/controllers` | TasksCreateDialog wiring | Confirmed (сеть) |
 | FE-0057 | Панель чтения письма: блок даты (76×42, pointer-events:auto) наезжает на кнопки «Удалить»/«Ещё действия» — клик по центру кнопки попадает в дату | Mail reading pane | Confirmed (замер геометрии) |

@@ -363,11 +363,13 @@
       "category": "Reliability",
       "severity": "Low",
       "status": "Suspected",
+      "fileNote": "источник 401 НЕ УСТАНОВЛЕН: первая проба прочитала console без поля url (записи израсходованы до сохранения адресов), кодовая привязка невозможна без выдумывания пути; повторная проба с полным захватом console+network — ошибок нет",
       "verification": [
         "live-production"
       ],
       "evidence": [
-        "console capture 2026-11-22 (URL ресурсов не сохранён — проба без захвата); при повторе с захватом — чисто",
+        "console capture 2026-11-22: 5x «Failed to load resource: 401» во время rapid-switch вкладок /tasks; URL ресурсов не сохранён",
+        "повтор с захватом network — без 4xx/5xx",
         "вероятно связано с окном разлогина FE-0059"
       ],
       "related": [
@@ -1009,8 +1011,12 @@
       "severity": "Low",
       "status": "Suspected",
       "file": "WEB-itinvent/frontend/src/lib/swrCache.js",
+      "lines": "63-77 (invalidateSWRCacheByPrefix: отсоединение in-flight), 120-129 (runDedupedFetch: отсоединённый fetch всё равно резолвится данными вызвавшему — публикация в кэш блокируется, возврат данных нет)",
       "verification": [
         "static"
+      ],
+      "evidence": [
+        "комментарий в коде (123-124) сам фиксирует контракт «Publish only while still the registered read…»; вызывающий, начавший чтение до мутации, применит дофетченные данные без перепроверки актуальности"
       ],
       "source": "agent D",
       "evidence": [
