@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Form, File, UploadFile, Response, Request, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.api.deps import ensure_user_permission, get_current_active_user, get_current_admin_user, get_current_session_id
@@ -2073,7 +2073,8 @@ async def get_message_attachment_office_view(
         )
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
-    if not office_view_source_store.put(
+    if not await run_in_threadpool(
+        office_view_source_store.put,
         _office_source_key(token),
         filename=src_filename or filename,
         content_type=src_content_type,
@@ -2121,19 +2122,33 @@ async def download_office_view_source(t: str = Query("", max_length=2000)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна") from exc
     if not (claims.get("uid") and claims.get("mid") and claims.get("ref")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна")
-    entry = office_view_source_store.get(_office_source_key(t))
+    entry = await run_in_threadpool(office_view_source_store.get, _office_source_key(t))
     if entry is None:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Ссылка устарела, откройте предпросмотр заново")
-    # Stream the parked file instead of a second in-memory copy: FileResponse
-    # chunks it, so peak RAM stays ~1x attachment (the prefetch bytes) not ~2x.
-    return FileResponse(
-        path=str(entry.payload_path),
-        media_type=entry.content_type,
-        headers={
-            "Content-Disposition": _build_content_disposition(entry.filename or "attachment", "inline"),
-            **_nosniff_headers(),
-        },
-    )
+    # Stream from the handle pinned at get() time: eviction cannot delete the
+    # payload mid-response, and peak RAM stays ~1x attachment (prefetch bytes),
+    # not ~2x.
+    handle = entry.payload_handle
+
+    def _entry_stream():
+        try:
+            if handle is None:
+                return
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            entry.close()
+
+    headers = {
+        "Content-Disposition": _build_content_disposition(entry.filename or "attachment", "inline"),
+        **_nosniff_headers(),
+    }
+    if entry.size:
+        headers["Content-Length"] = str(entry.size)
+    return StreamingResponse(_entry_stream(), media_type=entry.content_type, headers=headers)
 
 
 @router.get("/messages/{message_id}/headers")

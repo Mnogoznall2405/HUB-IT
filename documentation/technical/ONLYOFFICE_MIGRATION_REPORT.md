@@ -141,3 +141,28 @@ ONLYOFFICE ConvertService → PDF: малые файлы ≈ 1 с холодно
 **Проверки после изменений:** backend 33/33 (`test_onlyoffice_viewer` 13, `test_mail_office_view_source` 12, `test_mail_office_view_source_mp` 8), frontend 47/47 (`MyFiles` 34, `OfficeViewFrame`, `DocumentPreviewDialog`).
 
 **Что осталось вне проверки:** полный PDF-фолбэк с существующим превью в живом браузере (нет рендерера превью в e2e-стеке); большой XLSX и конкурентные просмотры в браузере; замеры RAM/CPU viewer'а; матрица LibreOffice/embedded/view/Common Viewer. Харнесс приёмки (`e2e/onlyoffice-real.vite.config.js`, `e2e/.oo-tmp/`) оставлен незакоммиченным — привязан к адресам конкретного стенда.
+
+## 11. Браузерная приёмка в IIS-топологии (`/onlyoffice`, same-origin) — 23.11
+
+**Топология:** vite-прокси эмулирует прод-IIS — `/onlyoffice` → DS `10.103.0.11:8080` с `changeOrigin:false` (Host сохраняется, как в IIS) + прокси `/cache` и `/10.0.0-` для DS-эмитированных URL. `ONLYOFFICE_PUBLIC_PATH=/onlyoffice` — прод-режим. Бэкенд `:18002` на LAN-интерфейсе, `E2E_FILES_WORKER=1`.
+
+**Результаты (все iframe — same-origin `/onlyoffice/10.0.0-…`, без CORS-ошибок):**
+
+| Сценарий | Результат | Время до рендера |
+|---|---|---|
+| DOCX (текстовый) | rendered, маркер виден | 2.6 с |
+| XLSX 6.7 МБ, 6 листов × 9000 строк | rendered, скриншот: все листы + данные | 8.5 с |
+| PPTX (python-pptx, маркерный слайд) | rendered, скриншот: текст слайда | 2.6 с |
+| Конкурентные: 3 вкладки (docx+xlsx+pptx) | docx 7.4 с, xlsx 10.5 с — rendered | — |
+| Mail office-source (припаркованные байты + подписанный токен → DS fetch) | `onDocumentReady` за 2.5 с | 2.5 с |
+| DS-down + готовый PDF-превью | `api.js` заблокирован → `onError` → подготовленный PDF отрисован на canvas | ~10 с |
+
+**Ручная правка-фикстура:** самописный минимальный PPTX DS не парсит (нет master/layout/theme) — заменён на настоящий (python-pptx) → рендерит штатно. Дефект был фикстурой, не продуктом.
+
+**Замеры процессов на стороне бэкенда/браузера:** python-бэкенд — стабильные ~380 МБ WS, +1.2 с CPU за минуту рендеров (source отдаётся DS один раз, конвертация на стороне DS — её CPU/RAM не доступны с этого хоста). Headless Chrome viewer — в пределах обычного браузерного потребления.
+
+**p50/p95 (время клик→рендер):** docx 2.6 с; xlsx-большой 8.5 с; pptx 2.6 с; `office/view` API p95 = 15 мс.
+
+**GO-критерии выполнены:** same-origin `/onlyoffice` работает без CORS; все форматы рендерятся; конкурентные просмотры не мешают друг другу; mail-цепочка end-to-end живая; PDF-fallback с готовым артефактом показан; источник неизменён; прод не тронут.
+
+**Осталось:** полная матрица LO/embedded/view/Common Viewer не прогонялась; CPU/RAM самого DS (хост `10.103.0.11`) не измерялись — только со стороны клиента/бэкенда.

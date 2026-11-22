@@ -23,11 +23,17 @@ Consistency & concurrency:
   releases it automatically if a process dies mid-write — no stale locks.
   Byte-range locks are supported by SMB redirectors; the bounded wait raises
   ``OfficeViewSourceLockTimeout`` instead of hanging forever.
-- Capacity (count/bytes) is reserved *inside* the lock right before the meta
-  is published, so parallel processes cannot oversubscribe the store.
-- Readers take no lock: expiry is in the meta; eviction may delete a payload
-  between meta-read and file-open, which degrades to a clean 410, never to
-  corrupted bytes.
+- Capacity (count/bytes) is reserved *inside* the lock before the payload is
+  written: a ``.tmp-*`` placeholder truncated to the entry size, so every
+  other process counts it via ``st_size``. On-disk bytes can never exceed
+  ``MAX_BYTES`` — published entries, orphans and in-flight writes included.
+- Readers take the lock briefly: the meta is validated and the payload opened
+  inside the lock, so an eviction cannot delete the file between meta-read and
+  file-open. An open payload survives unlink on POSIX and cannot be deleted
+  on Windows — the reader either gets a clean MISS or a complete stream.
+- Sweep compares file ages against the *lock file* mtime, not the local
+  wall clock: on shared storage the file-server clock is the common domain,
+  so skewed hosts never sweep each other's active writes.
 
 Cleanup (lazy, under the lock): expired entries, corrupt metas, orphaned
 payloads and half-written ``.tmp-*`` files older than the grace period. Files
@@ -99,10 +105,26 @@ class OfficeViewSourceEntry:
     filename: str
     content_type: str
     payload_path: Path
+    size: int = 0
+    payload_handle: object | None = None
 
     @property
     def content(self) -> bytes:
         return self.payload_path.read_bytes()
+
+    def close(self) -> None:
+        handle, self.payload_handle = self.payload_handle, None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+    def __enter__(self) -> "OfficeViewSourceEntry":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
 
 class _InterProcessLock:
@@ -180,9 +202,6 @@ class OfficeViewSourceStore:
     def _meta_path(self, key: str) -> Path:
         return self._root / f"{key}.json"
 
-    def _payload_path(self, key: str, payload_id: str) -> Path:
-        return self._root / f"{key}.{payload_id}.bin"
-
     @staticmethod
     def _write_atomic(path: Path, data: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,13 +235,55 @@ class OfficeViewSourceStore:
         except Exception:
             return None
 
-    def _remove_entry(self, key: str, meta: dict | None) -> None:
+    def _remove_entry(self, key: str, meta: dict | None) -> int:
+        """Delete meta+payload; returns the meta-declared size for accounting."""
+        size = int((meta or {}).get("size") or 0)
         self._safe_unlink(self._meta_path(key))
         payload_name = str((meta or {}).get("payload") or "")
         if payload_name:
             self._safe_unlink(self._root / payload_name)
+        return size
 
-    def _sweep_locked(self, now: float) -> None:
+    def _fs_now_locked(self) -> float:
+        """Filesystem-clock 'now': the lock file mtime.
+
+        On shared (SMB) storage file ages must be compared against the file
+        server's clock, not this host's wall clock — otherwise a skewed host
+        could sweep another host's in-flight writes.
+        """
+        lock_path = self._root / ".mvsrc.lock"
+        try:
+            os.utime(lock_path)
+            return lock_path.stat().st_mtime
+        except OSError:
+            return time.time()
+
+    def _disk_bytes_locked(self) -> tuple[int, int]:
+        """(total bytes, tmp bytes) of payload data on disk.
+
+        Counts ``.bin`` payloads (published, orphan, in-flight) and ``.tmp-*``
+        placeholders — the byte cap bounds attachment bytes; meta files are
+        bounded separately by the entries cap.
+        """
+        total = 0
+        tmp_bytes = 0
+        try:
+            for path in self._root.iterdir():
+                name = path.name
+                if not path.is_file() or not (name.endswith(".bin") or ".tmp-" in name):
+                    continue
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                total += size
+                if ".tmp-" in name:
+                    tmp_bytes += size
+        except OSError:
+            pass
+        return total, tmp_bytes
+
+    def _sweep_locked(self, now: float, fs_now: float | None = None) -> None:
         """Drop expired/corrupt entries plus orphan payloads/tmp files (grace-guarded)."""
         referenced: set[str] = set()
         for meta_path in self._root.glob("*.json"):
@@ -237,7 +298,7 @@ class OfficeViewSourceStore:
                 self._remove_entry(key, meta)
                 continue
             referenced.add(str(meta.get("payload") or ""))
-        grace_before = now - sweep_grace_sec()
+        grace_before = (fs_now if fs_now is not None else now) - sweep_grace_sec()
         for path in self._root.iterdir():
             name = path.name
             if name in referenced or name in {".mvsrc.lock"}:
@@ -280,12 +341,51 @@ class OfficeViewSourceStore:
         size = len(content or b"")
         if not key or size > max_source_entry_bytes() or size > max_source_total_bytes():
             return False
-        # Immutable payload published outside the lock: parallel puts on
-        # different keys don't serialise on I/O; an unreferenced payload is
-        # just an orphan for the sweeper, never a visible entry.
         payload_id = uuid.uuid4().hex[:16]
         payload_name = f"{key}.{payload_id}.bin"
-        self._write_atomic(self._root / payload_name, content or b"")
+        payload_tmp = None
+        # Reserve capacity BEFORE any payload bytes hit the disk: a .tmp-*
+        # placeholder truncated to the entry size is created inside the lock,
+        # so other processes count it via st_size. Accounting covers every
+        # file on disk (published, orphan, in-flight) — MAX_BYTES is a real
+        # disk bound, not just a sum over published metas.
+        with self._lock():
+            now = time.time()
+            self._sweep_locked(now, self._fs_now_locked())
+            disk_bytes, _tmp_bytes = self._disk_bytes_locked()
+            rows = self._entries_locked(now)
+            rows.sort(key=lambda row: row[1])  # soonest-expiring evicted first
+            count = len(rows) + 1
+            need = disk_bytes + size
+            for evict_key, _expires, evict_size, evict_meta in rows:
+                if count <= max_source_entries() and need <= max_source_total_bytes():
+                    break
+                if evict_key != key:
+                    need -= self._remove_entry(evict_key, evict_meta)
+                    count -= 1
+            if count > max_source_entries() or need > max_source_total_bytes():
+                return False
+            fd, payload_tmp = tempfile.mkstemp(prefix=f".{payload_name}.tmp-", dir=str(self._root))
+            try:
+                os.ftruncate(fd, size)
+            except OSError:
+                os.close(fd)
+                self._safe_unlink(Path(payload_tmp))
+                return False
+        # Payload bytes are written outside the lock into the reserved
+        # placeholder: parallel puts don't serialise on I/O, and an
+        # unfinished placeholder is just a swept file, never a visible entry.
+        try:
+            with os.fdopen(fd, "r+b") as handle:
+                handle.write(content or b"")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(payload_tmp, self._root / payload_name)
+            payload_tmp = None
+        except Exception:
+            if payload_tmp is not None:
+                self._safe_unlink(Path(payload_tmp))
+            raise
         meta = {
             "payload": payload_name,
             "expires_at": time.time() + max(1, int(ttl_sec)),
@@ -294,22 +394,6 @@ class OfficeViewSourceStore:
             "size": size,
         }
         with self._lock():
-            now = time.time()
-            self._sweep_locked(now)
-            rows = self._entries_locked(now)
-            rows.sort(key=lambda row: row[1])  # soonest-expiring evicted first
-            total = sum(row[2] for row in rows) + size
-            count = len(rows) + 1
-            for evict_key, _expires, evict_size, evict_meta in rows:
-                if count <= max_source_entries() and total <= max_source_total_bytes():
-                    break
-                if evict_key != key:
-                    self._remove_entry(evict_key, evict_meta)
-                    total -= evict_size
-                    count -= 1
-            if count > max_source_entries() or total > max_source_total_bytes():
-                self._safe_unlink(self._root / payload_name)
-                return False
             previous = self._read_meta(key)
             self._write_atomic(self._meta_path(key), json.dumps(meta, ensure_ascii=False).encode("utf-8"))
             # Meta published → the old payload is now an orphan.
@@ -321,35 +405,37 @@ class OfficeViewSourceStore:
     def get(self, key: str) -> OfficeViewSourceEntry | None:
         """Return the parked entry; records stay readable until expiry (DS may retry).
 
-        Lock-free by design: payloads are immutable, so a concurrent ``put`` for
-        the same key can only replace the meta pointer — the reader sees one
-        complete version or the other.
+        The lock is held while the meta is validated and the payload opened:
+        eviction cannot remove the file between meta-read and open, an
+        expired record is never served (a lock timeout is a clean MISS, not
+        stale bytes), and the returned open handle pins the bytes — a later
+        unlink cannot break the response mid-stream.
         """
         key = _safe_key(key)
         if not key:
             return None
-        meta = self._read_meta(key)
-        if meta and float(meta.get("expires_at") or 0) <= time.time():
-            # Deleting outside the lock could race a fresh ``put`` for the same
-            # key; re-check under the lock and serve the newer meta if present.
-            try:
-                with self._lock():
-                    meta = self._read_meta(key)
-                    if meta and float(meta.get("expires_at") or 0) <= time.time():
-                        self._remove_entry(key, meta)
-                        meta = None
-            except OfficeViewSourceLockTimeout:
-                pass  # sweeper will collect it on a later put
-        if not meta:
+        try:
+            with self._lock():
+                meta = self._read_meta(key)
+                if not meta:
+                    return None
+                if float(meta.get("expires_at") or 0) <= time.time():
+                    self._remove_entry(key, meta)
+                    return None
+                payload = self._root / str(meta.get("payload") or "")
+                try:
+                    handle = payload.open("rb")
+                except OSError:
+                    return None
+                return OfficeViewSourceEntry(
+                    filename=str(meta.get("filename") or "attachment"),
+                    content_type=str(meta.get("content_type") or "") or "application/octet-stream",
+                    payload_path=payload,
+                    size=int(meta.get("size") or 0),
+                    payload_handle=handle,
+                )
+        except OfficeViewSourceLockTimeout:
             return None
-        payload = self._root / str(meta.get("payload") or "")
-        if not payload.is_file():
-            return None
-        return OfficeViewSourceEntry(
-            filename=str(meta.get("filename") or "attachment"),
-            content_type=str(meta.get("content_type") or "") or "application/octet-stream",
-            payload_path=payload,
-        )
 
 
 office_view_source_store = OfficeViewSourceStore()
