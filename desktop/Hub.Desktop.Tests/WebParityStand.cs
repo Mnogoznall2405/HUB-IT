@@ -462,9 +462,11 @@ public sealed class WebParityStand
 
             case "focus_el":
             {
-                // Поставить фокус на именованный элемент: {"op":"focus_el","name":"ComposerInput"}.
+                // Поставить фокус на элемент: {"op":"focus_el","name":"ComposerInput"}
+                // — по x:Name, фолбэк на AutomationProperties.Name.
                 var elName = GetStr(cmd, "name", "");
-                var el = FindNamed(window, elName) as UIElement;
+                var el = (FindNamed(window, elName) ?? FindByAutomationName(window, elName))
+                    as UIElement;
                 if (el is null)
                 {
                     return Fail($"element not found: {elName}");
@@ -699,6 +701,26 @@ public sealed class WebParityStand
         {
             var child = FindNamed(VisualTreeHelper.GetChild(root, i), name);
             if (child is not null) return child;
+        }
+
+        return null;
+    }
+
+    private static FrameworkElement? FindByAutomationName(DependencyObject root, string name)
+    {
+        if (root is FrameworkElement fe
+            && System.Windows.Automation.AutomationProperties.GetName(fe) == name)
+        {
+            return fe;
+        }
+
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            if (FindByAutomationName(VisualTreeHelper.GetChild(root, i), name) is { } found)
+            {
+                return found;
+            }
         }
 
         return null;
