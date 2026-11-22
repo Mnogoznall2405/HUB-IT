@@ -2810,7 +2810,7 @@ export default function MyFiles() {
         <DocumentPreviewDialog
           open={documentPreview.open}
           title={getMyFileName(documentPreview.item)}
-          subtitle={documentPreview.kind === 'image' ? 'Изображение' : documentPreview.sourceKind === 'excel' ? 'Excel' : 'PDF-предпросмотр'}
+          subtitle={documentPreview.kind === 'image' ? 'Изображение' : documentPreview.kind === 'office_view' ? 'Просмотр (только чтение)' : documentPreview.sourceKind === 'excel' ? 'Excel' : 'PDF-предпросмотр'}
           kind={documentPreview.kind}
           sourceKind={documentPreview.sourceKind}
           objectUrl={documentPreview.objectUrl}

@@ -81,7 +81,11 @@ def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
 
 
 def load_settings() -> OnlyOfficeSettings:
-    public_path = "/" + str(os.getenv("ONLYOFFICE_PUBLIC_PATH", "/onlyoffice") or "/onlyoffice").strip().strip("/")
+    raw_public_path = str(os.getenv("ONLYOFFICE_PUBLIC_PATH", "/onlyoffice") or "/onlyoffice").strip()
+    if raw_public_path.lower().startswith(("http://", "https://")):
+        public_path = raw_public_path.rstrip("/")
+    else:
+        public_path = "/" + raw_public_path.strip("/")
     return OnlyOfficeSettings(
         enabled=_flag("ONLYOFFICE_ENABLED"),
         jwt_secret=str(os.getenv("ONLYOFFICE_JWT_SECRET", "") or "").strip(),
