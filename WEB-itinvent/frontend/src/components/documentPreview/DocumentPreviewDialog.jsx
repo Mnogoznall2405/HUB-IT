@@ -160,7 +160,11 @@ export default function DocumentPreviewDialog({
     if (hasOfficeView) {
       return (
         <Suspense fallback={surfaceFallback}>
-          <OfficeViewFrame config={officeView.config} publicPath={officeView.publicPath} />
+          <OfficeViewFrame
+            config={officeView.config}
+            publicPath={officeView.publicPath}
+            onError={officeView.onError}
+          />
         </Suspense>
       );
     }

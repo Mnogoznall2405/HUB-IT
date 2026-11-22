@@ -67,29 +67,9 @@ export function useMyFilesPreviewController({ downloadFile }) {
       sourceKind: fallbackSourceKind,
     });
 
-    try {
-      // Office documents open directly in the read-only DocEditor viewer:
-      // no conversion round-trip and no editing session. Falls back to the
-      // prepared PDF preview when Document Server is unavailable.
-      if (fallbackSourceKind) {
-        try {
-          const viewPayload = await myFilesOfficeAPI.getViewConfig(fileId, { uiTheme: officeUiTheme });
-          if (!isCurrent()) return;
-          setDocumentPreview({
-            open: true,
-            item,
-            loading: false,
-            error: '',
-            kind: 'office_view',
-            sourceKind: fallbackSourceKind,
-            officeView: { config: viewPayload.config, publicPath: viewPayload.public_path },
-          });
-          return;
-        } catch {
-          // Viewer config unavailable — continue with the prepared-PDF path.
-        }
-      }
-
+    // Prepared-PDF/excel fallback: used when the viewer config is unavailable
+    // or the DocEditor frame itself fails after a successful config fetch.
+    const loadPreparedPreview = async () => {
       const metadata = normalizeAttachmentPreviewMetadata(await myFilesAPI.getPreviewMeta(fileId));
       if (!isCurrent()) return;
       const resolvedSourceKind = metadata.sourceKind || fallbackSourceKind;
@@ -138,6 +118,52 @@ export function useMyFilesPreviewController({ downloadFile }) {
         sheets: metadata.sheets,
         pdfFilename: previewFilename || metadata.pdfFilename,
       });
+    };
+
+    try {
+      // Office documents open directly in the read-only DocEditor viewer:
+      // no conversion round-trip and no editing session. Falls back to the
+      // prepared PDF preview when Document Server is unavailable — both when
+      // the config fetch fails and when the frame itself cannot render.
+      if (fallbackSourceKind) {
+        try {
+          const viewPayload = await myFilesOfficeAPI.getViewConfig(fileId, { uiTheme: officeUiTheme });
+          if (!isCurrent()) return;
+          setDocumentPreview({
+            open: true,
+            item,
+            loading: false,
+            error: '',
+            kind: 'office_view',
+            sourceKind: fallbackSourceKind,
+            officeView: {
+              config: viewPayload.config,
+              publicPath: viewPayload.public_path,
+              onError: () => {
+                if (!isCurrent()) return;
+                setDocumentPreview((current) => ({
+                  ...current,
+                  loading: true,
+                  officeView: null,
+                }));
+                void loadPreparedPreview().catch((error) => {
+                  if (!isCurrent()) return;
+                  setDocumentPreview((current) => ({
+                    ...current,
+                    loading: false,
+                    error: resolveMyFilePreviewError(error, item),
+                  }));
+                });
+              },
+            },
+          });
+          return;
+        } catch {
+          // Viewer config unavailable — continue with the prepared-PDF path.
+        }
+      }
+
+      await loadPreparedPreview();
     } catch (error) {
       if (!isCurrent()) return;
       setDocumentPreview((current) => ({

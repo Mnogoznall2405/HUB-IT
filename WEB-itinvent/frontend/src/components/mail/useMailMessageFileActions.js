@@ -303,6 +303,46 @@ export default function useMailMessageFileActions({
           }
           return;
         }
+        if (previewState?.officeView) {
+          // The DocEditor frame can still fail after a successful config fetch:
+          // rebuild the preview through the prepared-PDF/excel path instead.
+          previewState.officeView = {
+            ...previewState.officeView,
+            onError: async () => {
+              if (!isCurrentPreview()) return;
+              setAttachmentPreview((current) => ({
+                ...current,
+                loading: true,
+                officeView: null,
+              }));
+              try {
+                const fallbackState = await buildOfficeAttachmentPreviewState({
+                  mailAPI,
+                  messageId,
+                  attachmentRef,
+                  mailboxId,
+                  attachment,
+                  filename,
+                  contentType,
+                  allowOfficeView: false,
+                });
+                if (!isCurrentPreview()) return;
+                setAttachmentPreview({
+                  ...createEmptyAttachmentPreview(),
+                  ...fallbackState,
+                  downloadContext,
+                });
+              } catch {
+                if (!isCurrentPreview()) return;
+                setAttachmentPreview((current) => ({
+                  ...current,
+                  loading: false,
+                  error: 'Не удалось подготовить предпросмотр Office-файла.',
+                }));
+              }
+            },
+          };
+        }
         setAttachmentPreview({
           ...createEmptyAttachmentPreview(),
           ...previewState,

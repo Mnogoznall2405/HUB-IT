@@ -8,10 +8,22 @@ let officeViewSeq = 0;
  * Compact read-only document surface: mounts the ONLYOFFICE DocEditor in
  * view mode (embedded/Common Viewer) from a server-issued viewer config.
  */
-export default function OfficeViewFrame({ config, publicPath }) {
+export default function OfficeViewFrame({ config, publicPath, onError }) {
   const hostRef = useRef(null);
   const [phase, setPhase] = useState('loading');
   const [error, setError] = useState('');
+  const fatalNotified = useRef(false);
+  const errorRef = useRef(onError);
+  errorRef.current = onError;
+
+  const notifyFatal = (message) => {
+    setPhase('error');
+    setError(message);
+    if (!fatalNotified.current) {
+      fatalNotified.current = true;
+      errorRef.current?.(message);
+    }
+  };
 
   useEffect(() => {
     if (!config || !publicPath) {
@@ -40,8 +52,7 @@ export default function OfficeViewFrame({ config, publicPath }) {
             },
             onError: () => {
               if (!disposed) {
-                setPhase('error');
-                setError('Не удалось открыть документ в просмотрщике.');
+                notifyFatal('Не удалось открыть документ в просмотрщике.');
               }
             },
           },
@@ -49,8 +60,7 @@ export default function OfficeViewFrame({ config, publicPath }) {
       })
       .catch(() => {
         if (!disposed) {
-          setPhase('error');
-          setError('Сервер редактора документов недоступен');
+          notifyFatal('Сервер редактора документов недоступен');
         }
       });
 

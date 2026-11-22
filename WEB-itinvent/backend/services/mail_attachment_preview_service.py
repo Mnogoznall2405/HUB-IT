@@ -281,11 +281,19 @@ def _convert_source_to_pdf(*, source_path: Path, output_dir: Path, timeout_sec: 
         except MailAttachmentPreviewError:
             raise
         except Exception as exc:
-            raise MailAttachmentPreviewError(f"ONLYOFFICE conversion failed: {exc}") from exc
-        output_dir.mkdir(parents=True, exist_ok=True)
-        target = output_dir / f"{source_path.stem}.pdf"
-        target.write_bytes(pdf_bytes)
-        return target
+            # Only the "auto" resolution fails over to LibreOffice at runtime:
+            # an explicit OFFICE_PREVIEW_PROVIDER=onlyoffice must fail loudly.
+            if office_preview_provider() != PROVIDER_AUTO:
+                raise MailAttachmentPreviewError(f"ONLYOFFICE conversion failed: {exc}") from exc
+            logger.warning(
+                "ONLYOFFICE conversion failed under auto provider, falling back to LibreOffice: %s",
+                exc,
+            )
+        else:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            target = output_dir / f"{source_path.stem}.pdf"
+            target.write_bytes(pdf_bytes)
+            return target
     return _run_soffice_convert(
         soffice=resolve_soffice_path(),
         source_path=source_path,

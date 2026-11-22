@@ -16,6 +16,7 @@ export const buildOfficeAttachmentPreviewState = async ({
   contentType,
   previewMetadata = null,
   uiTheme = '',
+  allowOfficeView = true,
   signal,
   createObjectUrl = (blob) => (
     typeof globalThis.URL?.createObjectURL === 'function'
@@ -27,7 +28,7 @@ export const buildOfficeAttachmentPreviewState = async ({
   const requestOptions = signal ? { mailboxId, signal } : { mailboxId };
 
   // Direct read-only DocEditor preview: no conversion wait and no editing session.
-  if (officeSourceKind && typeof mailAPI?.getAttachmentOfficeView === 'function') {
+  if (officeSourceKind && allowOfficeView && typeof mailAPI?.getAttachmentOfficeView === 'function') {
     try {
       const viewPayload = await mailAPI.getAttachmentOfficeView(messageId, attachmentRef, {
         ...requestOptions,

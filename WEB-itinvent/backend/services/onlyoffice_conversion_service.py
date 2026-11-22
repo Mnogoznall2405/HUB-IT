@@ -123,30 +123,48 @@ def convert_document_to_pdf(
         while True:
             attempt += 1
             try:
-                response = client.post(
+                with client.stream(
+                    "POST",
                     f"{settings.internal_url}/converter/from-file",
                     data={"params": params_json, "token": token},
                     files={"file": (str(filename or "document"), content)},
-                )
+                ) as response:
+                    content_type = str(response.headers.get("content-type") or "").lower()
+                    if response.status_code == 200 and "json" not in content_type:
+                        chunks: list[bytes] = []
+                        total = 0
+                        for chunk in response.iter_bytes(1 << 20):
+                            total += len(chunk)
+                            if total > output_cap:
+                                raise OnlyOfficeConversionError(
+                                    "Converted PDF exceeds the size limit."
+                                )
+                            chunks.append(chunk)
+                        pdf_bytes = b"".join(chunks)
+                        if not pdf_bytes.startswith(b"%PDF"):
+                            raise OnlyOfficeConversionError(
+                                "Document Server returned a non-PDF result."
+                            )
+                        elapsed = time.monotonic() - started
+                        if attempt > 1 or elapsed > 5:
+                            logger.info(
+                                "onlyoffice conversion finished elapsed=%.1fs attempts=%d",
+                                elapsed,
+                                attempt,
+                            )
+                        return pdf_bytes
+
+                    if response.status_code == 413:
+                        raise OnlyOfficeConversionError(
+                            "Document exceeds the Document Server download limit (413)."
+                        )
+                    response.read()
+                    payload = _describe_response(response)
+            except OnlyOfficeConversionError:
+                raise
             except httpx.HTTPError as exc:
                 raise OnlyOfficeConversionError(f"Document Server conversion request failed: {exc}") from exc
 
-            content_type = str(response.headers.get("content-type") or "").lower()
-            if response.status_code == 200 and "json" not in content_type:
-                pdf_bytes = response.content
-                if not pdf_bytes.startswith(b"%PDF"):
-                    raise OnlyOfficeConversionError("Document Server returned a non-PDF result.")
-                if len(pdf_bytes) > output_cap:
-                    raise OnlyOfficeConversionError("Converted PDF exceeds the size limit.")
-                elapsed = time.monotonic() - started
-                if attempt > 1 or elapsed > 5:
-                    logger.info("onlyoffice conversion finished elapsed=%.1fs attempts=%d", elapsed, attempt)
-                return pdf_bytes
-
-            if response.status_code == 413:
-                raise OnlyOfficeConversionError("Document exceeds the Document Server download limit (413).")
-
-            payload = _describe_response(response)
             if response.status_code == 200 and payload.get("endConvert") is False:
                 if time.monotonic() >= deadline:
                     raise OnlyOfficeConversionError("Document Server conversion timed out.")

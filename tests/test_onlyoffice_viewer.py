@@ -131,6 +131,23 @@ class _FakeResponse:
     def json(self):
         return self._payload
 
+    def read(self):
+        return self.content
+
+    def iter_bytes(self, _chunk_size):
+        yield self.content
+
+
+class _FakeStream:
+    def __init__(self, response):
+        self._response = response
+
+    def __enter__(self):
+        return self._response
+
+    def __exit__(self, *args):
+        return False
+
 
 class _FakeClient:
     def __init__(self, responses):
@@ -143,9 +160,9 @@ class _FakeClient:
     def __exit__(self, *args):
         return False
 
-    def post(self, url, data=None, files=None):
+    def stream(self, method, url, data=None, files=None):
         self.calls.append({"url": url, "data": data, "files": files})
-        return self._responses.pop(0)
+        return _FakeStream(self._responses.pop(0))
 
 
 def test_onlyoffice_conversion_polls_then_returns_pdf(_onlyoffice_env, monkeypatch):
@@ -174,6 +191,74 @@ def test_onlyoffice_conversion_maps_server_error(_onlyoffice_env, monkeypatch):
     monkeypatch.setattr(conversion.httpx, "Client", lambda *a, **k: client)
 
     with pytest.raises(OnlyOfficeConversionError, match="error -3"):
+        convert_document_to_pdf(filename="memo.docx", content=b"bytes", timeout_sec=10)
+
+
+def test_convert_source_to_pdf_auto_fails_over_to_libreoffice(_onlyoffice_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFICE_PREVIEW_PROVIDER", "auto")
+    source = tmp_path / "source.docx"
+    source.write_bytes(b"docx-content")
+    out_dir = tmp_path / "out"
+
+    import backend.services.onlyoffice_conversion_service as conversion
+
+    def broken_convert(**_kwargs):
+        raise RuntimeError("Document Server unreachable")
+
+    monkeypatch.setattr(conversion, "convert_document_to_pdf", broken_convert)
+    monkeypatch.setattr(
+        preview_service,
+        "resolve_soffice_path",
+        lambda: tmp_path / "soffice.exe",
+    )
+
+    def fake_soffice(*, soffice, source_path, output_dir, timeout_sec):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pdf = output_dir / f"{source_path.stem}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 from-lo")
+        return pdf
+
+    monkeypatch.setattr(preview_service, "_run_soffice_convert", fake_soffice)
+
+    result = preview_service._convert_source_to_pdf(
+        source_path=source, output_dir=out_dir, timeout_sec=30
+    )
+    assert result.read_bytes() == b"%PDF-1.4 from-lo"
+
+
+def test_convert_source_to_pdf_explicit_onlyoffice_fails_loudly(_onlyoffice_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFICE_PREVIEW_PROVIDER", "onlyoffice")
+    source = tmp_path / "source.docx"
+    source.write_bytes(b"docx-content")
+
+    import backend.services.onlyoffice_conversion_service as conversion
+
+    def broken_convert(**_kwargs):
+        raise RuntimeError("Document Server unreachable")
+
+    monkeypatch.setattr(conversion, "convert_document_to_pdf", broken_convert)
+    monkeypatch.setattr(
+        preview_service,
+        "_run_soffice_convert",
+        lambda **_kwargs: pytest.fail("must not fall back when provider is pinned"),
+    )
+
+    with pytest.raises(preview_service.MailAttachmentPreviewError, match="ONLYOFFICE"):
+        preview_service._convert_source_to_pdf(
+            source_path=source, output_dir=tmp_path / "out", timeout_sec=30
+        )
+
+
+def test_onlyoffice_conversion_rejects_oversized_stream(_onlyoffice_env, monkeypatch):
+    import backend.services.onlyoffice_conversion_service as conversion
+
+    client = _FakeClient([
+        _FakeResponse(body=b"%PDF" + b"x" * 100, content_type="application/pdf")
+    ])
+    monkeypatch.setattr(conversion.httpx, "Client", lambda *a, **k: client)
+    monkeypatch.setattr(conversion, "conversion_max_output_bytes", lambda: 8)
+
+    with pytest.raises(OnlyOfficeConversionError, match="size limit"):
         convert_document_to_pdf(filename="memo.docx", content=b"bytes", timeout_sec=10)
 
 
