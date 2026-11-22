@@ -81,6 +81,13 @@ def _describe_response(response: httpx.Response) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def conversion_configured() -> bool:
+    """Conversion needs ``enabled`` + JWT + internal URL; ``app_base_url`` is
+    required by editing sessions (document.url) but not by ``/converter/*``."""
+    settings = load_settings()
+    return bool(settings.enabled and settings.jwt_secret and settings.internal_url)
+
+
 def convert_document_to_pdf(
     *,
     filename: str,
@@ -95,11 +102,9 @@ def convert_document_to_pdf(
     """
     if not content:
         raise OnlyOfficeConversionError("Document payload is empty.")
-    # Conversion only needs enabled + JWT + internal URL; ``app_base_url`` is
-    # required by editing sessions (document.url) but not by /converter/*.
-    settings: OnlyOfficeSettings = load_settings()
-    if not (settings.enabled and settings.jwt_secret and settings.internal_url):
+    if not conversion_configured():
         raise OnlyOfficeConversionError("ONLYOFFICE is not configured")
+    settings: OnlyOfficeSettings = load_settings()
     output_cap = int(max_output_bytes or conversion_max_output_bytes())
     timeout = max(5, int(timeout_sec or 120))
 
@@ -182,9 +187,9 @@ def convert_document_to_pdf(
 
 def describe_conversion_runtime() -> dict[str, Any]:
     """Settings-only probe for diagnostics; performs no network request."""
-    settings = load_settings()
-    if not (settings.enabled and settings.jwt_secret and settings.internal_url):
+    if not conversion_configured():
         return {"configured": False, "error": "ONLYOFFICE is not configured"}
+    settings = load_settings()
     return {
         "configured": True,
         "internal_url": settings.internal_url,

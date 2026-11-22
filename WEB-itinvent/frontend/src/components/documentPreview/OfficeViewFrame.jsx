@@ -4,6 +4,10 @@ import { loadDocsApi } from '../myFiles/useMyFilesEditorSession';
 
 let officeViewSeq = 0;
 
+// Bounded wait for the SDK: if neither onDocumentReady nor onError arrives,
+// the host falls back to the prepared preview instead of spinning forever.
+const READY_TIMEOUT_MS = 60_000;
+
 /**
  * Compact read-only document surface: mounts the ONLYOFFICE DocEditor in
  * view mode (embedded/Common Viewer) from a server-issued viewer config.
@@ -38,6 +42,11 @@ export default function OfficeViewFrame({ config, publicPath, onError }) {
     const target = document.createElement('div');
     target.id = `office-view-${++officeViewSeq}`;
     hostRef.current?.replaceChildren(target);
+    const readyTimer = window.setTimeout(() => {
+      if (!disposed) {
+        notifyFatal('Просмотрщик не ответил вовремя, показываем запасной вариант.');
+      }
+    }, READY_TIMEOUT_MS);
 
     loadDocsApi(publicPath)
       .then(() => {
@@ -48,7 +57,10 @@ export default function OfficeViewFrame({ config, publicPath, onError }) {
           height: '100%',
           events: {
             onDocumentReady: () => {
-              if (!disposed) setPhase('ready');
+              if (!disposed) {
+                window.clearTimeout(readyTimer);
+                setPhase('ready');
+              }
             },
             onError: () => {
               if (!disposed) {
@@ -66,6 +78,7 @@ export default function OfficeViewFrame({ config, publicPath, onError }) {
 
     return () => {
       disposed = true;
+      window.clearTimeout(readyTimer);
       try {
         editor?.destroyEditor?.();
       } catch {

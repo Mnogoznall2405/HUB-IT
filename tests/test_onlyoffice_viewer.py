@@ -97,6 +97,21 @@ def test_provider_auto_falls_back_to_libreoffice(monkeypatch):
     assert preview_service.resolve_office_preview_provider() == "libreoffice"
 
 
+def test_scan_server_provider_honours_enabled_flag(_onlyoffice_env, monkeypatch):
+    import scan_server.document_conversion as scan_conv
+
+    # "0" is disabled — the old non-empty-string check treated it as configured.
+    monkeypatch.setenv("ONLYOFFICE_ENABLED", "0")
+    assert scan_conv._onlyoffice_configured() is False
+
+    monkeypatch.setenv("ONLYOFFICE_ENABLED", "1")
+    assert scan_conv._onlyoffice_configured() is True
+
+    monkeypatch.delenv("ONLYOFFICE_JWT_SECRET", raising=False)
+    monkeypatch.setenv("ONLYOFFICE_JWT_SECRET", "")
+    assert scan_conv._onlyoffice_configured() is False
+
+
 def test_convert_source_to_pdf_routes_to_onlyoffice(_onlyoffice_env, monkeypatch, tmp_path):
     monkeypatch.setenv("OFFICE_PREVIEW_PROVIDER", "onlyoffice")
     source = tmp_path / "source.docx"

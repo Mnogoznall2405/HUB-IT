@@ -103,10 +103,12 @@ def _office_to_pdf_via_onlyoffice(document_bytes: bytes, file_name: str) -> byte
 
 
 def _onlyoffice_configured() -> bool:
-    return all(
-        str(os.getenv(name, "") or "").strip()
-        for name in ("ONLYOFFICE_ENABLED", "ONLYOFFICE_JWT_SECRET", "ONLYOFFICE_INTERNAL_URL")
-    )
+    """Shared check: ``ONLYOFFICE_ENABLED=0`` is off, a non-empty string is not enough."""
+    try:
+        from backend.services.onlyoffice_conversion_service import conversion_configured
+    except Exception:
+        return False
+    return conversion_configured()
 
 
 def _libreoffice_path() -> Path:

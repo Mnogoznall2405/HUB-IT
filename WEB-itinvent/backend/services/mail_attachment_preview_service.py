@@ -134,10 +134,9 @@ def resolve_office_preview_provider() -> str:
     if provider != PROVIDER_AUTO:
         return provider
     try:
-        from backend.services.onlyoffice_service import load_settings
+        from backend.services.onlyoffice_conversion_service import conversion_configured
 
-        settings = load_settings()
-        if settings.enabled and settings.jwt_secret and settings.internal_url:
+        if conversion_configured():
             return PROVIDER_ONLYOFFICE
     except Exception:
         pass

@@ -612,6 +612,31 @@ def test_office_presence_is_empty_without_a_live_session_and_denied_to_strangers
     assert env.client.get(f"/api/v1/my-files/{file_id}/office/presence").status_code == 404
 
 
+def test_view_config_key_tracks_content_blob_and_stays_out_of_the_edit_session(env):
+    file_id = env.upload("plan.docx", b"original")
+
+    first = env.client.get(f"/api/v1/my-files/{file_id}/office/view")
+    assert first.status_code == 200, first.text
+    first_key = first.json()["config"]["document"]["key"]
+    assert first_key.startswith("view-")
+
+    repeat = env.client.get(f"/api/v1/my-files/{file_id}/office/view")
+    assert repeat.json()["config"]["document"]["key"] == first_key
+
+    # edit → save → reopen: the view key must change with the content or
+    # Document Server would serve its cached stale copy.
+    edit_config = env.editor_config(file_id)
+    assert not edit_config["document"]["key"].startswith("view-")
+    env.callback(edit_config, status_code=2, document=b"edited", users=[str(OWNER)])
+
+    second = env.client.get(f"/api/v1/my-files/{file_id}/office/view")
+    second_key = second.json()["config"]["document"]["key"]
+    assert second_key.startswith("view-")
+    assert second_key != first_key
+    # The editing session key semantics are untouched by viewing.
+    assert env.editor_config(file_id)["document"]["key"] != second_key
+
+
 def test_editor_config_passes_ui_theme_through_and_ignores_invalid_values(env):
     file_id = env.upload("cells.xlsx", b"AAAA")
 

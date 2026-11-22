@@ -460,12 +460,15 @@ async def get_office_view_config(
         raise _service_error_to_http(exc) from exc
     source_token = oo.make_source_token(settings, file_id=session["file_id"], blob_id=session["blob_id"])
     source_url = f"{settings.app_base_url.rstrip('/')}/api/v1/my-files/office/source?t={source_token}"
-    # A distinct "view-" key keeps viewers out of editing sessions (presence, autosave).
+    # Key on the content blob, not the editing session key: the session key is
+    # pinned while a session lives, so a re-view after edit→save must get a new
+    # key or Document Server would serve its cached stale copy. The "view-"
+    # prefix still keeps viewers out of editing sessions (presence, autosave).
     config = oo.build_viewer_config(
         settings,
         file_name=session["file_name"],
         source_url=source_url,
-        document_key=f"view-{session['document_key']}",
+        document_key=f"view-{session['file_id']}-{session['blob_id']}",
         ui_theme=ui_theme,
         user_id=int(current_user.id),
         user_name=str(getattr(current_user, "full_name", "") or current_user.username or ""),

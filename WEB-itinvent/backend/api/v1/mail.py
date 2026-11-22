@@ -37,6 +37,7 @@ import hashlib
 
 from backend.services import onlyoffice_service as oo
 from backend.services.mail_attachment_preview_service import classify_office_source
+from backend.services.mail_office_view_source_store import office_view_source_store
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
 from backend.services.mail_service import MailPayloadTooLargeError, MailServiceError, mail_service
@@ -2027,8 +2028,10 @@ async def download_message_attachment_preview_pdf(
 
 
 def _office_settings_or_503():
+    # require_enabled rejects disabled/incomplete config: an empty JWT secret
+    # would otherwise sign and verify tokens with a known-empty HMAC key.
     try:
-        return oo.load_settings()
+        return oo.require_enabled()
     except oo.OnlyOfficeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Сервер редактора не настроен") from exc
 
@@ -2057,6 +2060,27 @@ async def get_message_attachment_office_view(
         attachment_ref=attachment_ref,
         mailbox_id=_normalize_text(mailbox_id),
     )
+    # Document Server fetches /mail/office-source anonymously (no user session):
+    # download the attachment now, under this user's mailbox credentials, and
+    # park the bytes for the token — primary_session auth works here only.
+    try:
+        src_filename, src_content_type, src_content = await _run_in_mail_executor(
+            mail_service.download_attachment,
+            user_id=int(current_user.id),
+            mailbox_id=_normalize_text(mailbox_id) or None,
+            message_id=message_id,
+            attachment_ref=attachment_ref,
+        )
+    except MailServiceError as exc:
+        raise _mail_http_exception(exc, current_user=current_user) from exc
+    if not office_view_source_store.put(
+        _office_source_key(token),
+        filename=src_filename or filename,
+        content_type=src_content_type,
+        content=src_content,
+        ttl_sec=oo.SOURCE_TOKEN_TTL_SEC,
+    ):
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Файл слишком велик для предпросмотра в редакторе")
     source_url = (
         f"{settings.app_base_url.rstrip('/')}/api/v1"
         f"/mail/office-source?t={token}"
@@ -2083,28 +2107,27 @@ async def get_message_attachment_office_view(
     return {"config": config, "public_path": settings.public_path, "filename": filename}
 
 
+def _office_source_key(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8", "replace")).hexdigest()
+
+
 @router.get("/office-source")
 async def download_office_view_source(t: str = Query("", max_length=2000)):
-    """Document Server fetches the attachment bytes via a short-lived signed URL."""
+    """Document Server fetches the prefetched attachment bytes via a signed URL."""
     settings = _office_settings_or_503()
     try:
         claims = oo.read_mail_view_source_token(settings, t)
     except oo.OnlyOfficeError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна") from exc
-    try:
-        filename, content_type, content = await run_in_threadpool(
-            mail_service.download_attachment,
-            user_id=int(claims.get("uid") or 0),
-            mailbox_id=_normalize_text(claims.get("mbx")) or None,
-            message_id=str(claims.get("mid") or ""),
-            attachment_ref=str(claims.get("ref") or ""),
-        )
-    except MailServiceError as exc:
-        raise _mail_http_exception(exc, user_id=int(claims.get("uid") or 0)) from exc
+    if not (claims.get("uid") and claims.get("mid") and claims.get("ref")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна")
+    entry = office_view_source_store.get(_office_source_key(t))
+    if entry is None:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Ссылка устарела, откройте предпросмотр заново")
     return Response(
-        content=content,
-        media_type=content_type or "application/octet-stream",
-        headers={"Content-Disposition": _build_content_disposition(filename or "attachment"), **_nosniff_headers()},
+        content=entry.content,
+        media_type=entry.content_type,
+        headers={"Content-Disposition": _build_content_disposition(entry.filename or "attachment"), **_nosniff_headers()},
     )
 
 
