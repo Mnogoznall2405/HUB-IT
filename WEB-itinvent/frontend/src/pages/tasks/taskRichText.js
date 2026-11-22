@@ -1,16 +1,56 @@
+import DOMPurify from 'dompurify';
+
 const escapeEditorHtml = (value) => String(value || '')
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
   .replace(/>/g, '&gt;');
 
+const isEditorLinkHrefAllowed = (value) => {
+  const href = String(value || '').trim();
+  if (!href) return false;
+  if (/["'<>`\\]/.test(href)) return false;
+  return /^(https?:\/\/|mailto:|tel:|\/|#)/i.test(href);
+};
+
 const sanitizeLinkHref = (value) => {
   const href = String(value || '').trim();
-  if (!href) return '';
-  if (/["'<>`\\]/.test(href)) return '';
-  if (/^(https?:\/\/|mailto:|tel:|\/|#)/i.test(href)) {
-    return href.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  if (!isEditorLinkHrefAllowed(href)) return '';
+  return href.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+};
+
+/**
+ * Паст (FE-0064): список тегов/атрибутов, поддерживаемых редактором описания задачи
+ * (по тому же набору, что понимает editorHtmlToMarkdown). После DOMPurify —
+ * второй проход: href валидируется по строгим правилам isEditorLinkHrefAllowed
+ * (те же, что создают ссылки при markdownToEditorHtml).
+ */
+const EDITOR_PASTE_ALLOWED_TAGS = ['A', 'STRONG', 'B', 'EM', 'I', 'S', 'STRIKE', 'DEL', 'UL', 'OL', 'LI', 'DIV', 'P', 'BR'];
+
+export const sanitizeEditorPasteHtml = (html) => {
+  const source = String(html || '');
+  if (typeof document === 'undefined' || !source.trim()) return '';
+  let cleaned = '';
+  try {
+    cleaned = DOMPurify.sanitize(source, {
+      ALLOWED_TAGS: EDITOR_PASTE_ALLOWED_TAGS,
+      ALLOWED_ATTR: ['href'],
+      ALLOW_DATA_ATTR: false,
+      ALLOW_UNKNOWN_PROTOCOLS: false,
+    });
+  } catch {
+    cleaned = '';
   }
-  return '';
+  const container = document.createElement('div');
+  container.innerHTML = cleaned;
+  container.querySelectorAll('a[href]').forEach((anchor) => {
+    const rawHref = String(anchor.getAttribute('href') || '').trim();
+    if (isEditorLinkHrefAllowed(rawHref)) {
+      anchor.setAttribute('href', rawHref);
+    } else {
+      anchor.removeAttribute('href');
+    }
+  });
+  return container.innerHTML;
 };
 
 const applyInlineMarkdownToHtml = (value) => {
