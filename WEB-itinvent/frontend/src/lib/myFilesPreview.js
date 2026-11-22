@@ -48,6 +48,7 @@ export const createEmptyDocumentPreviewState = () => ({
   objectUrl: '',
   previewBlob: null,
   excelWorkbook: null,
+  officeView: null,
   pageCount: 0,
   sheets: [],
   pdfFilename: '',

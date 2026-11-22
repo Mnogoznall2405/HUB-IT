@@ -35,8 +35,9 @@ import { getDesktopOfficeOpenLabel, openOriginalWithDesktopApplication } from '.
 
 const MailPdfPreviewSurface = lazy(() => import('../mail/MailPdfPreviewSurface'));
 const MailExcelPreviewGrid = lazy(() => import('../mail/MailExcelPreviewGrid'));
+const OfficeViewFrame = lazy(() => import('./OfficeViewFrame'));
 
-const DOCUMENT_PREVIEW_KINDS = new Set(['pdf', 'office_pdf', 'office_excel']);
+const DOCUMENT_PREVIEW_KINDS = new Set(['pdf', 'office_pdf', 'office_excel', 'office_view']);
 
 const surfaceFallback = (
   <Skeleton variant="rectangular" height={420} sx={{ borderRadius: '8px' }} />
@@ -52,6 +53,7 @@ export default function DocumentPreviewDialog({
   sourceKind = '',
   objectUrl = '',
   excelWorkbook = null,
+  officeView = null,
   pageCount = 0,
   sheets = [],
   loading = false,
@@ -69,6 +71,7 @@ export default function DocumentPreviewDialog({
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const isExcel = sourceKind === 'excel' || kind === 'office_excel';
   const hasExcelTable = Boolean(isExcel && excelWorkbook);
+  const hasOfficeView = Boolean(kind === 'office_view' && officeView?.config && officeView?.publicPath);
   const hasPdfPreview = Boolean(objectUrl && (kind === 'pdf' || kind === 'office_pdf' || isExcel));
   const hasImagePreview = Boolean(objectUrl && kind === 'image');
   const canOpenInDesktopApplication = Boolean(onDownloadOriginal && canDownloadOriginal && isNativeShellRuntime());
@@ -124,7 +127,7 @@ export default function DocumentPreviewDialog({
   const showModeTabs = hasExcelTable && hasPdfPreview;
   const resolvedMode = hasExcelTable && mode === 'table' ? 'table' : 'pdf';
   const heading = title || 'Документ';
-  const subheading = subtitle || (isExcel ? 'Excel' : kind === 'office_pdf' ? 'PDF-предпросмотр' : 'PDF');
+  const subheading = subtitle || (hasOfficeView ? 'Просмотр (только чтение)' : isExcel ? 'Excel' : kind === 'office_pdf' ? 'PDF-предпросмотр' : 'PDF');
 
   const body = useMemo(() => {
     if (loading) {
@@ -151,6 +154,14 @@ export default function DocumentPreviewDialog({
             </Button>
           ) : null}
         </Stack>
+      );
+    }
+
+    if (hasOfficeView) {
+      return (
+        <Suspense fallback={surfaceFallback}>
+          <OfficeViewFrame config={officeView.config} publicPath={officeView.publicPath} />
+        </Suspense>
       );
     }
 
@@ -226,7 +237,9 @@ export default function DocumentPreviewDialog({
     excelWorkbook,
     hasExcelTable,
     hasImagePreview,
+    hasOfficeView,
     hasPdfPreview,
+    officeView,
     heading,
     isMobile,
     loading,

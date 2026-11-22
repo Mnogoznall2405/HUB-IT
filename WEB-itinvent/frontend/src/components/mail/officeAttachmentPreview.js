@@ -15,6 +15,7 @@ export const buildOfficeAttachmentPreviewState = async ({
   filename,
   contentType,
   previewMetadata = null,
+  uiTheme = '',
   signal,
   createObjectUrl = (blob) => (
     typeof globalThis.URL?.createObjectURL === 'function'
@@ -24,6 +25,34 @@ export const buildOfficeAttachmentPreviewState = async ({
 }) => {
   const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
   const requestOptions = signal ? { mailboxId, signal } : { mailboxId };
+
+  // Direct read-only DocEditor preview: no conversion wait and no editing session.
+  if (officeSourceKind && typeof mailAPI?.getAttachmentOfficeView === 'function') {
+    try {
+      const viewPayload = await mailAPI.getAttachmentOfficeView(messageId, attachmentRef, {
+        ...requestOptions,
+        name: filename,
+        contentType,
+        uiTheme,
+      });
+      if (viewPayload?.config && viewPayload?.public_path) {
+        return {
+          open: true,
+          loading: false,
+          error: '',
+          filename,
+          contentType,
+          kind: 'office_view',
+          previewKind: 'office_view',
+          sourceKind: officeSourceKind,
+          officeView: { config: viewPayload.config, publicPath: viewPayload.public_path },
+        };
+      }
+    } catch {
+      // Viewer config unavailable — continue with the prepared-PDF/excel paths.
+    }
+  }
+
   let metadataPromise = null;
   const loadPreviewMetadata = () => {
     if (previewMetadata) return Promise.resolve(previewMetadata);

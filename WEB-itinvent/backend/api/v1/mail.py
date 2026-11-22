@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Form, File, UploadFile, Response, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Form, File, UploadFile, Response, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -33,6 +33,10 @@ from backend.services.request_auth_context_service import (
     pop_request_session_id,
     push_request_session_id,
 )
+import hashlib
+
+from backend.services import onlyoffice_service as oo
+from backend.services.mail_attachment_preview_service import classify_office_source
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
 from backend.services.mail_service import MailPayloadTooLargeError, MailServiceError, mail_service
@@ -2020,6 +2024,80 @@ async def download_message_attachment_preview_pdf(
             message_id_len=len(str(message_id or "")),
             ref_len=len(str(attachment_ref or "")),
         )
+
+
+def _office_settings_or_503():
+    try:
+        return oo.load_settings()
+    except oo.OnlyOfficeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Сервер редактора не настроен") from exc
+
+
+@router.get("/messages/{message_id}/attachments/{attachment_ref}/office-view")
+async def get_message_attachment_office_view(
+    request: Request,
+    message_id: str,
+    attachment_ref: str,
+    mailbox_id: str = Query("", min_length=0),
+    name: str = Query("", max_length=300),
+    content_type: str = Query("", max_length=300),
+    ui_theme: str = Query("", max_length=32),
+    current_user: User = Depends(get_current_mail_user),
+):
+    """Compact read-only DocEditor config for a mail attachment (no edit session)."""
+    filename = _normalize_text(name) or _normalize_text(attachment_ref) or "attachment"
+    source_kind = classify_office_source(filename=filename, content_type=content_type)
+    if not source_kind:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Формат не поддерживает предпросмотр в редакторе")
+    settings = _office_settings_or_503()
+    token = oo.make_mail_view_source_token(
+        settings,
+        user_id=int(current_user.id),
+        message_id=message_id,
+        attachment_ref=attachment_ref,
+        mailbox_id=_normalize_text(mailbox_id),
+    )
+    source_url = (
+        f"{settings.app_base_url.rstrip('/')}/api/v1"
+        f"/mail/office-source?t={token}"
+    )
+    digest = hashlib.sha256(f"mail-view|{message_id}|{attachment_ref}".encode("utf-8", "replace")).hexdigest()
+    config = oo.build_viewer_config(
+        settings,
+        file_name=filename,
+        source_url=source_url,
+        document_key=f"view-mail-{digest[:48]}",
+        source_kind=source_kind,
+        ui_theme=ui_theme or None,
+        user_id=int(current_user.id),
+        user_name=str(getattr(current_user, "full_name", "") or current_user.username or ""),
+    )
+    return {"config": config, "public_path": settings.public_path, "filename": filename}
+
+
+@router.get("/office-source")
+async def download_office_view_source(t: str = Query("", max_length=2000)):
+    """Document Server fetches the attachment bytes via a short-lived signed URL."""
+    settings = _office_settings_or_503()
+    try:
+        claims = oo.read_mail_view_source_token(settings, t)
+    except oo.OnlyOfficeError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна") from exc
+    try:
+        filename, content_type, content = await run_in_threadpool(
+            mail_service.download_attachment,
+            user_id=int(claims.get("uid") or 0),
+            mailbox_id=_normalize_text(claims.get("mbx")) or None,
+            message_id=str(claims.get("mid") or ""),
+            attachment_ref=str(claims.get("ref") or ""),
+        )
+    except MailServiceError as exc:
+        raise _mail_http_exception(exc, user_id=int(claims.get("uid") or 0)) from exc
+    return Response(
+        content=content,
+        media_type=content_type or "application/octet-stream",
+        headers={"Content-Disposition": _build_content_disposition(filename or "attachment"), **_nosniff_headers()},
+    )
 
 
 @router.get("/messages/{message_id}/headers")

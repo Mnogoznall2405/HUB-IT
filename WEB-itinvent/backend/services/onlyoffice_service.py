@@ -326,6 +326,99 @@ def build_editor_config(
     return config
 
 
+# Compact read-only preview: embedded viewers use the Common Viewer (no live co-editing).
+_VIEWER_SOURCE_KINDS = {"word": "word", "excel": "cell", "presentation": "slide"}
+VIEWER_TYPES = frozenset({"embedded", "view"})
+
+
+def viewer_document_type(*, file_name: str, source_kind: str = "") -> str:
+    """Map a previewable office file to a DocEditor documentType."""
+    kind = _VIEWER_SOURCE_KINDS.get(str(source_kind or "").lower())
+    if kind:
+        return kind
+    return document_type_for(file_name)
+
+
+def build_viewer_config(
+    settings: OnlyOfficeSettings,
+    *,
+    file_name: str,
+    source_url: str,
+    document_key: str,
+    source_kind: str = "",
+    ui_theme: str | None = None,
+    viewer_type: str = "embedded",
+    user_id: int = 0,
+    user_name: str = "",
+) -> dict:
+    """Read-only DocEditor config: no edit session, no callback, Common Viewer."""
+    kind = str(viewer_type or "embedded").lower()
+    config: dict = {
+        # ``embedded`` gives the compact Common Viewer UI (no editing ribbon).
+        "type": "embedded" if kind == "embedded" else "desktop",
+        "documentType": viewer_document_type(file_name=file_name, source_kind=source_kind),
+        "document": {
+            "fileType": editable_extension(file_name).lstrip("."),
+            "key": str(document_key or "")[:128],
+            "title": file_name,
+            "url": str(source_url or ""),
+            "permissions": {
+                "edit": False,
+                "comment": False,
+                "review": False,
+                "fillForms": False,
+                "download": True,
+                "print": True,
+                "copy": True,
+            },
+        },
+        "editorConfig": {
+            "mode": "view",
+            "lang": "ru",
+            "user": {"id": str(int(user_id or 0)) or "0", "name": str(user_name or "viewer")[:120]},
+            "customization": {
+                "autosave": False,
+                "compactHeader": kind == "embedded",
+                "compactToolbar": kind == "embedded",
+                "toolbarNoTabs": kind == "embedded",
+                "coEditing": {"mode": "strict", "change": False},
+            },
+        },
+    }
+    if ui_theme in {"theme-dark", "theme-light"}:
+        config["editorConfig"]["customization"]["uiTheme"] = ui_theme
+    config["token"] = _sign(config, settings.jwt_secret)
+    return config
+
+
+_MAIL_VIEW_TOKEN_TYPE = "mvsrc"
+
+
+def make_mail_view_source_token(
+    settings: OnlyOfficeSettings,
+    *,
+    user_id: int,
+    message_id: str,
+    attachment_ref: str,
+    mailbox_id: str,
+) -> str:
+    return make_url_token(
+        settings,
+        _MAIL_VIEW_TOKEN_TYPE,
+        {
+            "uid": int(user_id),
+            "mid": str(message_id or "")[:200],
+            "ref": str(attachment_ref or "")[:300],
+            "mbx": str(mailbox_id or "")[:200],
+        },
+        ttl_sec=SOURCE_TOKEN_TTL_SEC,
+    )
+
+
+def read_mail_view_source_token(settings: OnlyOfficeSettings, token: str) -> dict:
+    return read_url_token(settings, token, _MAIL_VIEW_TOKEN_TYPE)
+
+
 def verify_callback(settings: OnlyOfficeSettings, body: dict, authorization: str = "") -> dict:
     """Return the signed callback claims; unsigned bodies are rejected."""
     token = str(body.get("token") or "").strip()

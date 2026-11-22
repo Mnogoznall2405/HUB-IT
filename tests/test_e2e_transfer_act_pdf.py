@@ -23,6 +23,8 @@ def transfer_http(monkeypatch, tmp_path):
 
     monkeypatch.setattr(local_store, "_STORE_SINGLETON", None)
     local_store.get_local_store(data_dir=tmp_path / "local_store")
+    # Act PDF conversion in these tests goes through the LibreOffice path.
+    monkeypatch.setenv("OFFICE_PREVIEW_PROVIDER", "libreoffice")
     from backend.api import deps
     from backend.api.v1 import equipment
     from backend.appdb.db import app_session, get_app_engine

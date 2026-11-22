@@ -78,6 +78,37 @@ def _image_to_pdf(document_bytes: bytes, extension: str) -> bytes:
     return bytes(pdf_bytes)
 
 
+def _office_provider() -> str:
+    raw = str(os.getenv("SCAN_OFFICE_PROVIDER", "auto") or "auto").strip().lower()
+    return raw if raw in {"auto", "onlyoffice", "libreoffice"} else "auto"
+
+
+def _office_to_pdf_via_onlyoffice(document_bytes: bytes, file_name: str) -> bytes:
+    """Reuse the web backend's Document Server conversion when configured."""
+    try:
+        from backend.services.onlyoffice_conversion_service import (
+            convert_document_to_pdf as oo_convert,
+        )
+    except Exception as exc:  # pragma: no cover - backend package unavailable
+        raise DocumentConversionError(f"ONLYOFFICE conversion is unavailable: {exc}") from exc
+    timeout_sec = max(30, int(os.getenv("SCAN_OFFICE_CONVERT_TIMEOUT_SEC", "180") or 180))
+    try:
+        return oo_convert(
+            filename=Path(file_name).name or "document",
+            content=document_bytes,
+            timeout_sec=timeout_sec,
+        )
+    except Exception as exc:
+        raise DocumentConversionError(f"ONLYOFFICE conversion failed: {exc}") from exc
+
+
+def _onlyoffice_configured() -> bool:
+    return all(
+        str(os.getenv(name, "") or "").strip()
+        for name in ("ONLYOFFICE_ENABLED", "ONLYOFFICE_JWT_SECRET", "ONLYOFFICE_INTERNAL_URL")
+    )
+
+
 def _libreoffice_path() -> Path:
     configured = str(os.getenv("SCAN_LIBREOFFICE_CMD", "")).strip()
     candidates = [
@@ -92,6 +123,9 @@ def _libreoffice_path() -> Path:
 
 
 def _office_to_pdf(document_bytes: bytes, file_name: str, extension: str) -> bytes:
+    provider = _office_provider()
+    if provider == "onlyoffice" or (provider == "auto" and _onlyoffice_configured()):
+        return _office_to_pdf_via_onlyoffice(document_bytes, file_name)
     soffice = _libreoffice_path()
     timeout_sec = max(30, int(os.getenv("SCAN_OFFICE_CONVERT_TIMEOUT_SEC", "180") or 180))
     with tempfile.TemporaryDirectory(prefix="scan-office-") as raw_temp:

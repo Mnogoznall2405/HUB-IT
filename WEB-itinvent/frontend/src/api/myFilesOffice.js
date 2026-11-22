@@ -24,6 +24,10 @@ export const myFilesOfficeAPI = {
     const response = await apiClient.get(fileUrl(fileId, '/config'), { signal, params: uiTheme ? { ui_theme: uiTheme } : {} });
     return response.data;
   },
+  getViewConfig: async (fileId, { signal, uiTheme } = {}) => {
+    const response = await apiClient.get(fileUrl(fileId, '/view'), { signal, params: uiTheme ? { ui_theme: uiTheme } : {} });
+    return response.data;
+  },
   renameDocument: async (fileId, name, { signal } = {}) => {
     const response = await apiClient.post(fileUrl(fileId, '/rename'), { name }, { signal });
     return response.data;

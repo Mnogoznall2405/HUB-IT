@@ -51,6 +51,7 @@ export default function MailAttachmentPreviewDialog({
         sourceKind={attachmentPreview.sourceKind}
         objectUrl={attachmentPreview.objectUrl}
         excelWorkbook={attachmentPreview.excelWorkbook}
+        officeView={attachmentPreview.officeView}
         pageCount={attachmentPreview.pageCount}
         sheets={attachmentPreview.sheets}
         loading={attachmentPreview.loading}

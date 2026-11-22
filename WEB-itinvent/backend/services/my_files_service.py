@@ -4518,12 +4518,21 @@ class MyFilesService:
     @staticmethod
     def _office_preview_runtime_available() -> bool:
         from backend.services.mail_attachment_preview_service import (
+            PROVIDER_ONLYOFFICE,
             is_office_preview_enabled,
+            resolve_office_preview_provider,
             resolve_soffice_path,
         )
 
         if not is_office_preview_enabled():
             return False
+        if resolve_office_preview_provider() == PROVIDER_ONLYOFFICE:
+            from backend.services.onlyoffice_service import load_settings
+
+            try:
+                return load_settings().enabled
+            except Exception:
+                return False
         try:
             resolve_soffice_path()
             return True

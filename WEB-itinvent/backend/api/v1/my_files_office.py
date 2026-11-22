@@ -444,6 +444,37 @@ async def get_office_editor_config(
             "checkpoint_interval_sec": settings.checkpoint_interval_sec if session["role"] in oo.EDITING_ROLES else 0}
 
 
+@router.get("/{file_id}/office/view", response_model=OfficeEditorConfigResponse)
+async def get_office_view_config(
+    file_id: str,
+    ui_theme: str | None = Query(default=None, max_length=32),
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+) -> dict:
+    """Compact read-only DocEditor config: no edit session, no callback wiring."""
+    settings = _settings_or_503()
+    try:
+        session = await run_in_threadpool(
+            my_files_collab_service.get_editor_session, file_id=file_id, user_id=int(current_user.id)
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+    source_token = oo.make_source_token(settings, file_id=session["file_id"], blob_id=session["blob_id"])
+    source_url = f"{settings.app_base_url.rstrip('/')}/api/v1/my-files/office/source?t={source_token}"
+    # A distinct "view-" key keeps viewers out of editing sessions (presence, autosave).
+    config = oo.build_viewer_config(
+        settings,
+        file_name=session["file_name"],
+        source_url=source_url,
+        document_key=f"view-{session['document_key']}",
+        ui_theme=ui_theme,
+        user_id=int(current_user.id),
+        user_name=str(getattr(current_user, "full_name", "") or current_user.username or ""),
+    )
+    return {"config": config, "role": session["role"], "public_path": settings.public_path,
+            "can_rename": False, "can_manage_access": False,
+            "checkpoint_interval_sec": 0}
+
+
 @router.get("/{file_id}/office/export")
 async def export_office_document(
     file_id: str,

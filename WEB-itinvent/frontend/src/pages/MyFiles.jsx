@@ -2815,6 +2815,7 @@ export default function MyFiles() {
           sourceKind={documentPreview.sourceKind}
           objectUrl={documentPreview.objectUrl}
           excelWorkbook={documentPreview.excelWorkbook}
+          officeView={documentPreview.officeView}
           pageCount={documentPreview.pageCount}
           sheets={documentPreview.sheets}
           loading={documentPreview.loading}

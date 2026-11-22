@@ -19,7 +19,29 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from dotenv import dotenv_values
 
 from backend.services.task_email_service import task_email_service
-from backend.services.mail_attachment_preview_service import resolve_soffice_path, _run_soffice_convert
+from backend.services.mail_attachment_preview_service import (
+    PROVIDER_ONLYOFFICE,
+    _convert_source_to_pdf,
+    _run_soffice_convert,
+    resolve_office_preview_provider,
+    resolve_soffice_path,
+)
+
+
+def _convert_act_source_to_pdf(*, source_path: Path, output_dir: Path, timeout_sec: int) -> Path:
+    """Route act conversion through the configured engine (ONLYOFFICE or LibreOffice)."""
+    if resolve_office_preview_provider() == PROVIDER_ONLYOFFICE:
+        return _convert_source_to_pdf(
+            source_path=source_path,
+            output_dir=output_dir,
+            timeout_sec=timeout_sec,
+        )
+    return _run_soffice_convert(
+        soffice=resolve_soffice_path(),
+        source_path=source_path,
+        output_dir=output_dir,
+        timeout_sec=timeout_sec,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -293,13 +315,12 @@ def _try_convert_to_pdf(docx_path: Path) -> tuple[Path, str]:
         with _PDF_CONVERT_LOCK:
             if _is_valid_pdf(pdf_path):
                 return pdf_path, "pdf"
-            # The existing converter uses a private LibreOffice profile. A
-            # temporary output cannot be mistaken for a completed act on retry.
+            # The converter writes into a temporary directory: an unfinished
+            # output cannot be mistaken for a completed act on retry.
             with tempfile.TemporaryDirectory(
                 prefix=".act-pdf-", dir=docx_path.parent, ignore_cleanup_errors=True,
             ) as temp_dir:
-                generated = _run_soffice_convert(
-                    soffice=resolve_soffice_path(),
+                generated = _convert_act_source_to_pdf(
                     source_path=docx_path.resolve(),
                     output_dir=Path(temp_dir),
                     timeout_sec=timeout_sec,

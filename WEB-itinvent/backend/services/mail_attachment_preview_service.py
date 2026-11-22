@@ -1,4 +1,4 @@
-"""LibreOffice-based preview conversion for mail Office attachments."""
+"""Office-attachment preview conversion (ONLYOFFICE primary, LibreOffice fallback)."""
 from __future__ import annotations
 
 import hashlib
@@ -116,6 +116,32 @@ def classify_office_source(*, filename: str, content_type: str) -> str:
 
 def is_office_preview_enabled() -> bool:
     return _bool_env("MAIL_OFFICE_PREVIEW_ENABLED", True)
+
+
+PROVIDER_ONLYOFFICE = "onlyoffice"
+PROVIDER_LIBREOFFICE = "libreoffice"
+PROVIDER_AUTO = "auto"
+
+
+def office_preview_provider() -> str:
+    raw = str(os.getenv("OFFICE_PREVIEW_PROVIDER", PROVIDER_AUTO) or PROVIDER_AUTO).strip().lower()
+    return raw if raw in {PROVIDER_ONLYOFFICE, PROVIDER_LIBREOFFICE, PROVIDER_AUTO} else PROVIDER_AUTO
+
+
+def resolve_office_preview_provider() -> str:
+    """Concrete engine for this process: ``auto`` prefers configured ONLYOFFICE."""
+    provider = office_preview_provider()
+    if provider != PROVIDER_AUTO:
+        return provider
+    try:
+        from backend.services.onlyoffice_service import load_settings
+
+        settings = load_settings()
+        if settings.enabled and settings.jwt_secret and settings.internal_url:
+            return PROVIDER_ONLYOFFICE
+    except Exception:
+        pass
+    return PROVIDER_LIBREOFFICE
 
 
 def office_preview_max_bytes() -> int:
@@ -239,6 +265,35 @@ def _run_soffice_convert(*, soffice: Path, source_path: Path, output_dir: Path, 
     raise MailAttachmentPreviewError("LibreOffice conversion produced no PDF output.")
 
 
+def _convert_source_to_pdf(*, source_path: Path, output_dir: Path, timeout_sec: int) -> Path:
+    """Convert ``source_path`` to ``output_dir/<stem>.pdf`` through the active provider."""
+    provider = resolve_office_preview_provider()
+    if provider == PROVIDER_ONLYOFFICE:
+        from backend.services.onlyoffice_conversion_service import convert_document_to_pdf
+
+        try:
+            with _CONVERT_SEMAPHORE:
+                pdf_bytes = convert_document_to_pdf(
+                    filename=source_path.name,
+                    content=source_path.read_bytes(),
+                    timeout_sec=timeout_sec,
+                )
+        except MailAttachmentPreviewError:
+            raise
+        except Exception as exc:
+            raise MailAttachmentPreviewError(f"ONLYOFFICE conversion failed: {exc}") from exc
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target = output_dir / f"{source_path.stem}.pdf"
+        target.write_bytes(pdf_bytes)
+        return target
+    return _run_soffice_convert(
+        soffice=resolve_soffice_path(),
+        source_path=source_path,
+        output_dir=output_dir,
+        timeout_sec=timeout_sec,
+    )
+
+
 _EXCEL_WORKBOOK_XML = "xl/workbook.xml"
 _EXCEL_MAIN_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
@@ -358,7 +413,7 @@ def _write_single_sheet_workbook(source_path: Path, *, sheet_index: int, target_
         raise MailAttachmentPreviewError("Excel workbook cannot be prepared for preview.") from exc
 
 
-def _excel_sheet_metadata(*, source_path: Path, work_dir: Path, soffice: Path, timeout_sec: int) -> tuple[list[dict[str, Any]], bytes]:
+def _excel_sheet_metadata(*, source_path: Path, work_dir: Path, timeout_sec: int) -> tuple[list[dict[str, Any]], bytes]:
     worksheets = _excel_sheet_descriptors(source_path)
     if sum(1 for item in worksheets if not item["hidden"]) > excel_preview_max_sheets():
         raise MailAttachmentPreviewError("Excel workbook has too many sheets for preview.")
@@ -383,8 +438,7 @@ def _excel_sheet_metadata(*, source_path: Path, work_dir: Path, soffice: Path, t
 
         sheet_source = work_dir / f"sheet_{index}{source_path.suffix or '.xlsx'}"
         _write_single_sheet_workbook(source_path, sheet_index=index, target_path=sheet_source)
-        sheet_pdf = _run_soffice_convert(
-            soffice=soffice,
+        sheet_pdf = _convert_source_to_pdf(
             source_path=sheet_source,
             output_dir=work_dir / f"sheet_{index}_pdf",
             timeout_sec=timeout_sec,
@@ -417,7 +471,7 @@ def _excel_sheet_metadata(*, source_path: Path, work_dir: Path, soffice: Path, t
 
 def _cache_key(*, filename: str, content: bytes) -> str:
     digest = hashlib.sha256(content).hexdigest()
-    return f"{_file_extension(filename)}:{digest}"
+    return f"{resolve_office_preview_provider()}:{_file_extension(filename)}:{digest}"
 
 
 def _prune_cache_locked(*, now: float) -> None:
@@ -470,7 +524,6 @@ def _build_office_preview_artifact_uncached(
     content: bytes,
     source_kind: str,
 ) -> PreviewArtifact:
-    soffice = resolve_soffice_path()
     timeout_sec = office_preview_timeout_sec()
     extension = _file_extension(filename) or ("xlsx" if source_kind == "excel" else "docx")
     stem = Path(str(filename or "attachment.bin")).stem or "attachment"
@@ -486,13 +539,11 @@ def _build_office_preview_artifact_uncached(
                 sheets, pdf_bytes = _excel_sheet_metadata(
                     source_path=source_path,
                     work_dir=work_dir,
-                    soffice=soffice,
                     timeout_sec=timeout_sec,
                 )
             except Exception:
                 logger.exception("Excel sheet preview failed; falling back to workbook PDF conversion")
-                pdf_path = _run_soffice_convert(
-                    soffice=soffice,
+                pdf_path = _convert_source_to_pdf(
                     source_path=source_path,
                     output_dir=work_dir / "pdf",
                     timeout_sec=timeout_sec,
@@ -500,8 +551,7 @@ def _build_office_preview_artifact_uncached(
                 pdf_bytes = pdf_path.read_bytes()
                 sheets = []
         else:
-            pdf_path = _run_soffice_convert(
-                soffice=soffice,
+            pdf_path = _convert_source_to_pdf(
                 source_path=source_path,
                 output_dir=work_dir / "pdf",
                 timeout_sec=timeout_sec,
@@ -595,14 +645,26 @@ def build_preview_metadata(
 
 def describe_preview_runtime() -> dict[str, Any]:
     enabled = is_office_preview_enabled()
+    provider = resolve_office_preview_provider()
     soffice = ""
     soffice_ready = False
     error = ""
-    try:
-        soffice = str(resolve_soffice_path())
-        soffice_ready = True
-    except MailAttachmentPreviewError as exc:
-        error = str(exc)
+    if provider == PROVIDER_LIBREOFFICE:
+        try:
+            soffice = str(resolve_soffice_path())
+            soffice_ready = True
+        except MailAttachmentPreviewError as exc:
+            error = str(exc)
+    onlyoffice: dict[str, Any] = {}
+    if provider == PROVIDER_ONLYOFFICE:
+        try:
+            from backend.services.onlyoffice_conversion_service import describe_conversion_runtime
+
+            onlyoffice = describe_conversion_runtime()
+            if not onlyoffice.get("configured"):
+                error = _normalize_error_text(onlyoffice.get("error"))
+        except Exception as exc:
+            error = str(exc)
     with _PREVIEW_CACHE_LOCK:
         _prune_cache_locked(now=time.monotonic())
         cache_entries = len(_PREVIEW_CACHE)
@@ -610,8 +672,10 @@ def describe_preview_runtime() -> dict[str, Any]:
         inflight = len(_PREVIEW_INFLIGHT)
     return {
         "enabled": enabled,
+        "provider": provider,
         "soffice_path": soffice,
         "soffice_ready": soffice_ready,
+        "onlyoffice": onlyoffice,
         "max_bytes": office_preview_max_bytes(),
         "timeout_sec": office_preview_timeout_sec(),
         "cache_entries": cache_entries,
@@ -622,3 +686,7 @@ def describe_preview_runtime() -> dict[str, Any]:
         "error": error,
         "python": sys.version.split()[0],
     }
+
+
+def _normalize_error_text(value: Any) -> str:
+    return str(value or "").strip()

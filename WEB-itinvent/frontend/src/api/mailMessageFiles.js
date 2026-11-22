@@ -25,6 +25,23 @@ export const mailMessageFilesAPI = {
     return response.data;
   },
 
+  getAttachmentOfficeView: async (messageId, attachmentRef, options = {}) => {
+    const response = await apiClient.get(
+      `/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentRef)}/office-view`,
+      withSignal({
+        params: withMailboxQuery(
+          {
+            name: options?.name || '',
+            content_type: options?.contentType || '',
+            ...(options?.uiTheme ? { ui_theme: options.uiTheme } : {}),
+          },
+          options?.mailboxId,
+        ),
+      }, options?.signal),
+    );
+    return response.data;
+  },
+
   downloadAttachmentPreviewPdf: async (messageId, attachmentRef, options = {}) => (
     apiClient.get(
       `/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentRef)}/preview/pdf`,

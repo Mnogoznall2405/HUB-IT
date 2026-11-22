@@ -83,13 +83,11 @@ def test_excel_sheet_metadata_sets_page_end_per_sheet(monkeypatch, tmp_path: Pat
     source_path.write_bytes(b"xlsx")
     work_dir = tmp_path / "work"
     work_dir.mkdir()
-    soffice = tmp_path / "soffice.exe"
-    soffice.write_text("stub", encoding="utf-8")
 
     def fake_write_single_sheet_workbook(_source_path, *, sheet_index: int, target_path: Path):
         target_path.write_bytes(b"xlsx")
 
-    def fake_run_soffice_convert(*, soffice, source_path, output_dir, timeout_sec):
+    def fake_convert_source_to_pdf(*, source_path, output_dir, timeout_sec):
         output_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = output_dir / f"{source_path.stem}.pdf"
         pdf_path.write_bytes(b"%PDF-1.4\n%%EOF")
@@ -104,7 +102,7 @@ def test_excel_sheet_metadata_sets_page_end_per_sheet(monkeypatch, tmp_path: Pat
         ],
     )
     monkeypatch.setattr(preview_service, "_write_single_sheet_workbook", fake_write_single_sheet_workbook)
-    monkeypatch.setattr(preview_service, "_run_soffice_convert", fake_run_soffice_convert)
+    monkeypatch.setattr(preview_service, "_convert_source_to_pdf", fake_convert_source_to_pdf)
     monkeypatch.setattr(preview_service, "_pdf_page_count", lambda _path: 2)
     monkeypatch.setattr(
         preview_service,
@@ -115,7 +113,6 @@ def test_excel_sheet_metadata_sets_page_end_per_sheet(monkeypatch, tmp_path: Pat
     sheets, _pdf_bytes = preview_service._excel_sheet_metadata(
         source_path=source_path,
         work_dir=work_dir,
-        soffice=soffice,
         timeout_sec=30,
     )
 
@@ -240,7 +237,6 @@ def test_excel_sheet_metadata_caps_visible_sheet_count(monkeypatch, tmp_path: Pa
         preview_service._excel_sheet_metadata(
             source_path=source_path,
             work_dir=work_dir,
-            soffice=tmp_path / "soffice.exe",
             timeout_sec=5,
         )
 
@@ -341,6 +337,7 @@ def test_build_office_preview_artifact_uses_soffice(monkeypatch, tmp_path: Path)
             stderr = ""
         return Result()
 
+    monkeypatch.setenv("OFFICE_PREVIEW_PROVIDER", "libreoffice")
     monkeypatch.setenv("LIBREOFFICE_SOFFICE_PATH", str(soffice))
     monkeypatch.setenv("MAIL_OFFICE_PREVIEW_ENABLED", "1")
     monkeypatch.setattr(preview_service.subprocess, "run", fake_run)
@@ -413,6 +410,7 @@ def test_build_office_preview_artifact_falls_back_when_excel_sheet_metadata_fail
 
         return Result()
 
+    monkeypatch.setenv("OFFICE_PREVIEW_PROVIDER", "libreoffice")
     monkeypatch.setenv("LIBREOFFICE_SOFFICE_PATH", str(soffice))
     monkeypatch.setenv("MAIL_OFFICE_PREVIEW_ENABLED", "1")
     monkeypatch.setattr(preview_service.subprocess, "run", fake_run)

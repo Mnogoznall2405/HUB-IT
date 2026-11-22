@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTheme } from '@mui/material/styles';
 
 import { myFilesAPI } from '../../api/myFiles';
+import { myFilesOfficeAPI } from '../../api/myFilesOffice';
 import { canOpenInDesktopApplication } from '../../components/fileActions/FileActionsContextMenu';
 import { openOriginalWithDesktopApplication } from '../../components/documentPreview/desktopOfficeOpen';
 import {
@@ -20,6 +22,7 @@ import {
 import useRequestGuard from '../../lib/useRequestGuard';
 
 export function useMyFilesPreviewController({ downloadFile }) {
+  const officeUiTheme = useTheme().palette.mode === 'dark' ? 'theme-dark' : 'theme-light';
   const previewObjectUrlRef = useRef('');
   const [documentPreview, setDocumentPreview] = useState(createEmptyDocumentPreviewState);
   const beginPreview = useRequestGuard();
@@ -65,6 +68,28 @@ export function useMyFilesPreviewController({ downloadFile }) {
     });
 
     try {
+      // Office documents open directly in the read-only DocEditor viewer:
+      // no conversion round-trip and no editing session. Falls back to the
+      // prepared PDF preview when Document Server is unavailable.
+      if (fallbackSourceKind) {
+        try {
+          const viewPayload = await myFilesOfficeAPI.getViewConfig(fileId, { uiTheme: officeUiTheme });
+          if (!isCurrent()) return;
+          setDocumentPreview({
+            open: true,
+            item,
+            loading: false,
+            error: '',
+            kind: 'office_view',
+            sourceKind: fallbackSourceKind,
+            officeView: { config: viewPayload.config, publicPath: viewPayload.public_path },
+          });
+          return;
+        } catch {
+          // Viewer config unavailable — continue with the prepared-PDF path.
+        }
+      }
+
       const metadata = normalizeAttachmentPreviewMetadata(await myFilesAPI.getPreviewMeta(fileId));
       if (!isCurrent()) return;
       const resolvedSourceKind = metadata.sourceKind || fallbackSourceKind;
