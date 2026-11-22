@@ -2061,7 +2061,15 @@ async def get_message_attachment_office_view(
         f"{settings.app_base_url.rstrip('/')}/api/v1"
         f"/mail/office-source?t={token}"
     )
-    digest = hashlib.sha256(f"mail-view|{message_id}|{attachment_ref}".encode("utf-8", "replace")).hexdigest()
+    mailbox_key = _normalize_text(mailbox_id)
+    # document.key identifies the cached document on Document Server: scope it
+    # by mailbox and user so attachments from different mailboxes/users can
+    # never collide, while a repeated open of the same file hits the DS cache.
+    digest = hashlib.sha256(
+        f"mail-view|{int(current_user.id)}|{mailbox_key}|{message_id}|{attachment_ref}".encode(
+            "utf-8", "replace"
+        )
+    ).hexdigest()
     config = oo.build_viewer_config(
         settings,
         file_name=filename,
