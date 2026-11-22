@@ -1,0 +1,3 @@
+dest: \\?\UNC\10.103.0.170\Common\IT\Абдулова Л.М\не найдены
+remaining ALLZERO: 7956
+DONE moved=7860 fail=72 skipNotZero=24

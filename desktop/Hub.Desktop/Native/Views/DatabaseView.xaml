@@ -101,10 +101,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Поле: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedFieldFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <Button Margin="8,0,0,0"
@@ -121,10 +120,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Тип: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedTypeFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <Button Margin="8,0,0,0"
@@ -154,7 +152,7 @@
                     <Button Margin="8,0,0,0"
                             Style="{StaticResource HubSecondaryButtonStyle}"
                             Command="{Binding OpenUploadActCommand}"
-                            Content="⇪ Загрузить акт"
+                            Content="Загрузить акт" local:NavGlyph.Icon="{x:Static local:VectorIcons.Upload}"
                             Visibility="{Binding CanTransfer, Converter={StaticResource BoolToVisibility}}"
                             AutomationProperties.Name="Загрузить подписанный акт" />
                     <Button Margin="8,0,0,0"
@@ -196,7 +194,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -241,7 +239,8 @@
                     </Grid.ColumnDefinitions>
                     <Button Style="{StaticResource HubGhostButtonStyle}"
                             Command="{Binding SelectAllCommand}"
-                            Content="☑ Все"
+                            Content="Все"
+                            local:NavGlyph.Icon="{x:Static local:VectorIcons.CheckBox}"
                             Padding="10,4"
                             AutomationProperties.Name="Выбрать все позиции списка" />
                     <StackPanel Grid.Column="1"
@@ -261,7 +260,7 @@
                         <Button Margin="6,0,0,0"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding ClearSelectionCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 Padding="10,4"
                                 Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.Name="Снять выбор позиций" />
@@ -469,14 +468,16 @@
                                         <Button Padding="14,6"
                                                 Style="{StaticResource HubSecondaryButtonStyle}"
                                                 Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                                Content="✎ Изменить карточку"
+                                                Content="Изменить карточку"
+                                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Edit}"
                                                 Visibility="{Binding DataContext.CanTransfer, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
                                                 AutomationProperties.Name="Изменить карточку оборудования" />
                                         <Button Margin="8,0,0,0"
                                                 Padding="14,6"
                                                 Style="{StaticResource HubGhostButtonStyle}"
                                                 Command="{Binding DataContext.OpenTransferCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                                Content="⇄ Передать другому сотруднику"
+                                                Content="Передать другому сотруднику"
+                                                local:NavGlyph.Icon="{x:Static local:VectorIcons.SwapHoriz}"
                                                 Visibility="{Binding DataContext.CanTransfer, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
                                                 AutomationProperties.Name="Передать оборудование другому сотруднику" />
                                     </StackPanel>
@@ -630,7 +631,9 @@
                                     <StackPanel>
                                         <Grid>
                                             <StackPanel Orientation="Horizontal">
-                                                <TextBlock VerticalAlignment="Center" FontSize="13" Text="📷" />
+                                                <local:VectorIcon Size="13"
+                                                                  VerticalAlignment="Center"
+                                                                  Data="{x:Static local:VectorIcons.Photo}" />
                                                 <TextBlock Margin="8,0,0,0"
                                                            VerticalAlignment="Center"
                                                            Style="{StaticResource MetaLabelStyle}"
@@ -717,7 +720,9 @@
                                         Visibility="{Binding HistoryText, Converter={StaticResource NonEmptyStringToVisibility}}">
                                     <StackPanel>
                                         <StackPanel Orientation="Horizontal">
-                                            <TextBlock VerticalAlignment="Center" FontSize="13" Text="📜" />
+                                            <local:VectorIcon Size="13"
+                                                              VerticalAlignment="Center"
+                                                              Data="{x:Static local:VectorIcons.Clock}" />
                                             <TextBlock Margin="8,0,0,0"
                                                        VerticalAlignment="Center"
                                                        Style="{StaticResource MetaLabelStyle}"
@@ -785,7 +790,9 @@
                                         AutomationProperties.Name="Секция работ по оборудованию">
                                     <StackPanel>
                                         <StackPanel Orientation="Horizontal">
-                                            <TextBlock VerticalAlignment="Center" FontSize="13" Text="🛠" />
+                                            <local:VectorIcon Size="13"
+                                                              VerticalAlignment="Center"
+                                                              Data="{x:Static local:VectorIcons.Build}" />
                                             <TextBlock Margin="8,0,0,0"
                                                        VerticalAlignment="Center"
                                                        FontSize="13"
@@ -854,7 +861,13 @@
                                                                        AutomationProperties.Name="{Binding TitleText, StringFormat='Пустой поток: {0}'}" />
                                                             <ItemsControl Margin="0,4,0,0"
                                                                           ItemsSource="{Binding Entries}"
-                                                                          Visibility="{Binding HasEntries, Converter={StaticResource BoolToVisibility}}">
+                                                                          Visibility="{Binding HasEntries, Converter={StaticResource BoolToVisibility}}"
+                                                                          AutomationProperties.Name="Записи потока">
+                                                                <ItemsControl.ItemContainerStyle>
+                                                                    <Style TargetType="ContentPresenter">
+                                                                        <Setter Property="AutomationProperties.Name" Value="{Binding TitleText}" />
+                                                                    </Style>
+                                                                </ItemsControl.ItemContainerStyle>
                                                                 <ItemsControl.ItemTemplate>
                                                                     <DataTemplate>
                                                                         <StackPanel Margin="0,4,0,0">
@@ -918,7 +931,8 @@
                         <Button HorizontalAlignment="Right"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding ClosePhotoViewerCommand}"
-                                Content="✕ Закрыть"
+                                Content="Закрыть"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть просмотр фото" />
                     </Grid>
                     <Image Grid.Row="1"
@@ -950,28 +964,32 @@
                             <Button Style="{StaticResource HubSecondaryButtonStyle}"
                                     Command="{Binding VerifyPhotoCommand}"
                                     CommandParameter="{Binding PhotoViewerItem}"
-                                    Content="✓ Подтвердить"
+                                    Content="Подтвердить"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Check}"
                                     Visibility="{Binding PhotoViewerItem.ShowVerifyButton, Converter={StaticResource BoolToVisibility}}"
                                     AutomationProperties.Name="Подтвердить фото оборудования" />
                             <Button Margin="6,0,0,0"
                                     Style="{StaticResource HubGhostButtonStyle}"
                                     Command="{Binding OpenRejectPhotoCommand}"
                                     CommandParameter="{Binding PhotoViewerItem}"
-                                    Content="✕ Отклонить"
+                                    Content="Отклонить"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                     Visibility="{Binding PhotoViewerItem.ShowRejectButton, Converter={StaticResource BoolToVisibility}}"
                                     AutomationProperties.Name="Отклонить фото оборудования" />
                             <Button Margin="6,0,0,0"
                                     Style="{StaticResource HubGhostButtonStyle}"
                                     Command="{Binding EditRejectPhotoCommand}"
                                     CommandParameter="{Binding PhotoViewerItem}"
-                                    Content="✎ Причина"
+                                    Content="Причина"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Edit}"
                                     Visibility="{Binding PhotoViewerItem.ShowEditReasonButton, Converter={StaticResource BoolToVisibility}}"
                                     AutomationProperties.Name="Изменить причину отклонения фото" />
                             <Button Margin="6,0,0,0"
                                     Style="{StaticResource HubGhostButtonStyle}"
                                     Command="{Binding RotatePhotoCommand}"
                                     CommandParameter="{Binding PhotoViewerItem}"
-                                    Content="⟳ Повернуть"
+                                    Content="Повернуть"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Refresh}"
                                     Visibility="{Binding CanRotatePhotos, Converter={StaticResource BoolToVisibility}}"
                                     AutomationProperties.Name="Повернуть фото оборудования" />
                         </StackPanel>
@@ -1020,7 +1038,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог передачи оборудования" />
                     </Grid>
 
@@ -1104,7 +1122,13 @@
                                         Visibility="{Binding HasTargetList, Converter={StaticResource BoolToVisibility}}"
                                         AutomationProperties.Name="Позиции передачи">
                                     <StackPanel>
-                                        <ItemsControl ItemsSource="{Binding TargetItems}">
+                                        <ItemsControl ItemsSource="{Binding TargetItems}"
+                                                      AutomationProperties.Name="Позиции передачи">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayText}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <TextBlock Margin="0,0,0,2"
@@ -1185,7 +1209,7 @@
                                                 VerticalAlignment="Center"
                                                 Style="{StaticResource HubGhostButtonStyle}"
                                                 Command="{Binding ClearEmployeeCommand}"
-                                                Content="✕"
+                                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                                 AutomationProperties.Name="Сбросить сотрудника передачи" />
                                     </Grid>
                                 </Border>
@@ -1427,7 +1451,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог карточки оборудования" />
                     </Grid>
 
@@ -1566,7 +1590,7 @@
                                             VerticalAlignment="Center"
                                             Style="{StaticResource HubGhostButtonStyle}"
                                             Command="{Binding ClearEmployeeCommand}"
-                                            Content="✕"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                             AutomationProperties.Name="Сбросить сотрудника карточки" />
                                 </Grid>
                             </Border>
@@ -1812,7 +1836,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть панель сотрудника" />
                     </Grid>
 
@@ -2056,7 +2080,7 @@
                         <Button HorizontalAlignment="Right"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог загрузки фото" />
                     </Grid>
 
@@ -2174,7 +2198,7 @@
                         <Button HorizontalAlignment="Right"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог загрузки акта" />
                     </Grid>
 
@@ -2401,7 +2425,13 @@
                                         <TextBlock FontSize="12"
                                                    FontWeight="SemiBold"
                                                    Text="Найдено в базе" />
-                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding ResolvedItems}">
+                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding ResolvedItems}"
+                                                      AutomationProperties.Name="Найденные позиции">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding TitleText}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <Border Margin="0,0,0,6"
@@ -2623,7 +2653,7 @@
                                                                 Style="{StaticResource HubGhostButtonStyle}"
                                                                 Command="{Binding DataContext.RemoveEmailRecipientCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                 CommandParameter="{Binding}"
-                                                                Content="✕"
+                                                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                                                 AutomationProperties.Name="{Binding Title, StringFormat='Убрать получателя {0}'}" />
                                                     </StackPanel>
                                                 </Border>
@@ -2749,7 +2779,7 @@
                         <Button HorizontalAlignment="Right"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CancelRejectPhotoCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог отклонения фото" />
                     </Grid>
 
@@ -2844,7 +2874,7 @@
                                 VerticalAlignment="Top"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть регистрацию работы" />
                     </Grid>
 

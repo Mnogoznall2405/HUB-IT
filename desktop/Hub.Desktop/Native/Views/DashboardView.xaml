@@ -99,7 +99,8 @@
                             VerticalAlignment="Center">
                     <Button Style="{StaticResource HubSecondaryButtonStyle}"
                             Command="{Binding OpenFeedbackCommand}"
-                            Content="💡 Предложить улучшение HUB"
+                            Content="Предложить улучшение HUB"
+                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Lightbulb}"
                             AutomationProperties.Name="Предложить улучшение HUB" />
                     <Button Margin="8,0,0,0"
                             Style="{StaticResource HubGhostButtonStyle}"
@@ -199,7 +200,13 @@
                                        Text="Подробности — в разделах «Задачи» и «Новости» ниже."
                                        Visibility="{Binding HasAttentionSummaryOnly, Converter={StaticResource BoolToVisibility}}" />
                             <ItemsControl Margin="0,8,0,0"
-                                          ItemsSource="{Binding AttentionItems}">
+                                          ItemsSource="{Binding AttentionItems}"
+                                          AutomationProperties.Name="Элементы, требующие внимания">
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <WrapPanel />
@@ -288,7 +295,13 @@
 
                 <!-- Стат-карточки -->
                 <ItemsControl Margin="0,20,0,0"
-                              ItemsSource="{Binding StatCards}">
+                              ItemsSource="{Binding StatCards}"
+                              AutomationProperties.Name="Показатели">
+                    <ItemsControl.ItemContainerStyle>
+                        <Style TargetType="ContentPresenter">
+                            <Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}" />
+                        </Style>
+                    </ItemsControl.ItemContainerStyle>
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <WrapPanel />
@@ -377,7 +390,13 @@
                         </Grid>
 
                         <ItemsControl Margin="0,10,0,0"
-                                      ItemsSource="{Binding UpcomingTasks}">
+                                      ItemsSource="{Binding UpcomingTasks}"
+                                      AutomationProperties.Name="Ближайшие задачи">
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Button Margin="0,0,0,8"
@@ -462,7 +481,13 @@
                         </Grid>
 
                         <ItemsControl Margin="0,10,0,0"
-                                      ItemsSource="{Binding Announcements}">
+                                      ItemsSource="{Binding Announcements}"
+                                      AutomationProperties.Name="Новости">
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Button Margin="0,0,0,8"
@@ -550,7 +575,13 @@
                         </Grid>
 
                         <ItemsControl Margin="0,10,0,0"
-                                      ItemsSource="{Binding Absences}">
+                                      ItemsSource="{Binding Absences}"
+                                      AutomationProperties.Name="Отсутствия коллег">
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Button Margin="0,0,0,6"
@@ -654,7 +685,7 @@
                     <Button Grid.Column="1"
                             Style="{StaticResource HubGhostButtonStyle}"
                             Command="{Binding CloseCommand}"
-                            Content="✕"
+                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                             AutomationProperties.Name="Закрыть диалог предложения" />
                 </Grid>
 

@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Hub.Desktop.Native.Api;
 // ImplicitUsings тянут System.Drawing — там тоже есть Brush/Color/Point;
 // алиасы фиксируют WPF-типы палитры пиров.
@@ -579,6 +580,34 @@ public sealed class ConversationItemViewModel : ObservableObject
         private set => SetProperty(ref _lastMessageIsOwn, value);
     }
 
+    private string? _lastMessageId;
+
+    /// <summary>Id последнего сообщения — сопоставление realtime read-событий (UI-017).</summary>
+    public string? LastMessageId
+    {
+        get => _lastMessageId;
+        private set => SetProperty(ref _lastMessageId, value);
+    }
+
+    private string? _lastMessageStatusText;
+
+    /// <summary>Галочки последнего своего сообщения: «✓»/«✓✓»/null. По списку
+    /// диалогов read-статус не приходит — «✓» = отправлено, «✓✓» только по
+    /// подтверждённому read (UI-017).</summary>
+    public string? LastMessageStatusText
+    {
+        get => _lastMessageStatusText;
+        private set => SetProperty(ref _lastMessageStatusText, value);
+    }
+
+    /// <summary>Достоверный статус по свежему сообщению (initial page, hydrate,
+    /// realtime read): ✓✓ лишь когда пузырь сам показывает прочтение.</summary>
+    public void SyncLastMessageStatus(ChatMessageViewModel message)
+    {
+        LastMessageId = message.Id;
+        LastMessageStatusText = message.IsOwn ? message.StatusText : null;
+    }
+
     public DateTimeOffset? LastMessageAt
     {
         get => _lastMessageAt;
@@ -736,6 +765,9 @@ public sealed class ConversationItemViewModel : ObservableObject
         Preview = StripOwnPreviewPrefix(conversation.LastMessagePreview, conversation.LastMessageIsOwn);
         LastMessageAt = conversation.LastMessageAt;
         LastMessageIsOwn = conversation.LastMessageIsOwn;
+        // По списку диалогов read-статус не приходит — честное «отправлено»,
+        // до ✓✓ доапгрейдится по hydrate/read-событиям (UI-017).
+        LastMessageStatusText = conversation.LastMessageIsOwn ? "✓" : null;
         UnreadCount = conversation.UnreadCount;
         UnreadMentionCount = conversation.UnreadMentionCount;
         KindText = ResolveKindText(conversation);
@@ -757,6 +789,11 @@ public sealed class ConversationItemViewModel : ObservableObject
         }
 
         LastMessageIsOwn = message.IsOwn;
+        LastMessageId = message.Id;
+        // DTO сообщения несёт read_by_count/delivery_status — статус честный (UI-017).
+        LastMessageStatusText = message.IsOwn
+            ? message.DeliveryStatus == "read" || message.ReadByCount > 0 ? "✓✓" : "✓"
+            : null;
         // Новое сообщение в диалоге снимает «печатает…» — как в Telegram.
         SetTyping(null);
 
@@ -1209,6 +1246,13 @@ public sealed class ChatAttachmentItemViewModel : ObservableObject
             "sticker" => "🏷",
             _ => "📎",
         };
+        IconData = IsImage ? Views.VectorIcons.Photo : kind switch
+        {
+            "video" => Views.VectorIcons.Video,
+            "audio" => Views.VectorIcons.Music,
+            "sticker" => Views.VectorIcons.Emoji,
+            _ => Views.VectorIcons.Document,
+        };
         OpenCommand = new NativeRelayCommand(_ =>
         {
             if (openHandler is { } handler)
@@ -1245,6 +1289,9 @@ public sealed class ChatAttachmentItemViewModel : ObservableObject
     public string FileName { get; }
     public string? SizeText { get; }
     public string Icon { get; }
+
+    /// <summary>Векторный глиф вида вложения — XAML использует его вместо эмодзи Icon.</summary>
+    public Geometry IconData { get; }
     public ICommand OpenCommand { get; }
 
     /// <summary>Превью стикера (null, пока грузится, при ошибке и у прочих видов).</summary>
@@ -1265,6 +1312,14 @@ public sealed class ChatAttachmentItemViewModel : ObservableObject
 
     /// <summary>media_kind/kind == "image" — клик открывает просмотрщик, не скачивание.</summary>
     public bool IsImage { get; }
+
+    public double PhotoWidth => Math.Min(280, 220 * PhotoAspectRatio);
+
+    public double PhotoHeight => Math.Max(64, PhotoWidth / PhotoAspectRatio);
+
+    private double PhotoAspectRatio => _attachment.Width is > 0 && _attachment.Height is > 0
+        ? (double)_attachment.Width.Value / _attachment.Height.Value
+        : 4d / 3;
 
     /// <summary>Бэкенд не всегда шлёт mime_type — распознаём фото по расширению
     /// (форматы, которые WPF BitmapDecoder точно декодирует).</summary>
@@ -1312,7 +1367,7 @@ public sealed class ChatAttachmentItemViewModel : ObservableObject
         }
     }
 
-    private static string? FormatSize(long bytes) =>
+    internal static string? FormatSize(long bytes) =>
         bytes <= 0 ? null : bytes switch
         {
             < 1024 => $"{bytes} Б",
@@ -1320,6 +1375,68 @@ public sealed class ChatAttachmentItemViewModel : ObservableObject
             < 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024):0.#} МБ",
             _ => $"{bytes / (1024.0 * 1024 * 1024):0.#} ГБ",
         };
+}
+
+/// <summary>
+/// Файл в очереди подтверждения перед загрузкой (UI-027, tg-send-files):
+/// выбор/вставка/перетаскивание складывают файлы в список с подписью —
+/// сетевая upload-сессия стартует только по «Отправить». Картинка даёт
+/// мини-превью с диска, прочие — векторная иконка вида.
+/// </summary>
+public sealed class PendingAttachmentItemViewModel : ObservableObject
+{
+    public PendingAttachmentItemViewModel(string path, HubChatUploadFileRequest request)
+    {
+        Path = path;
+        Request = request;
+        FileName = string.IsNullOrWhiteSpace(request.FileName) ? "файл" : request.FileName;
+        SizeText = ChatAttachmentItemViewModel.FormatSize(request.Size);
+        IsImage = request.MimeType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true
+            || ChatAttachmentItemViewModel.HasImageExtension(FileName);
+        IconData = IsImage
+            ? Views.VectorIcons.Photo
+            : request.MimeType?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) == true
+                ? Views.VectorIcons.Video
+                : request.MimeType?.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) == true
+                    ? Views.VectorIcons.Music
+                    : Views.VectorIcons.Document;
+
+        if (IsImage)
+        {
+            try
+            {
+                // StreamSource + using: поток закрывается детерминированно
+                // даже при ошибке декода — UriSource при падении держал бы
+                // файл открытым до GC и upload повторно его не прочитал.
+                using var stream = System.IO.File.OpenRead(path);
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.DecodePixelWidth = 96;
+                bitmap.StreamSource = stream;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                Preview = bitmap;
+            }
+            catch (Exception)
+            {
+                // Битая картинка не блокирует отправку — просто строка без превью.
+            }
+        }
+    }
+
+    /// <summary>Путь на диске — источник для upload-чанков после подтверждения.</summary>
+    public string Path { get; }
+
+    /// <summary>Метаданные файла для upload-сессии (имя/mime/размер).</summary>
+    public HubChatUploadFileRequest Request { get; }
+
+    public string FileName { get; }
+    public string? SizeText { get; }
+    public bool IsImage { get; }
+    public Geometry IconData { get; }
+    public ImageSource? Preview { get; }
+    public bool HasPreview => Preview is not null;
 }
 
 /// <summary>
@@ -1440,6 +1557,14 @@ public sealed class ChatMediaItemViewModel : ObservableObject
             "sticker" => "🏷",
             _ => "📎",
         };
+        IconData = kind switch
+        {
+            "image" => Views.VectorIcons.Photo,
+            "video" => Views.VectorIcons.Video,
+            "audio" => Views.VectorIcons.Music,
+            "sticker" => Views.VectorIcons.Emoji,
+            _ => Views.VectorIcons.Document,
+        };
         SizeText = FormatSize(item.FileSize);
         DurationText = item.DurationSeconds is { } seconds && seconds > 0
             ? TimeSpan.FromSeconds(seconds).ToString(
@@ -1480,6 +1605,9 @@ public sealed class ChatMediaItemViewModel : ObservableObject
     public string FileName { get; }
     public string? SizeText { get; }
     public string Icon { get; }
+
+    /// <summary>Векторный глиф вида вложения — XAML использует его вместо эмодзи Icon.</summary>
+    public Geometry IconData { get; }
 
     /// <summary>«m:ss» — бейдж длительности на видео-плитке.</summary>
     public string? DurationText { get; }
@@ -1571,11 +1699,12 @@ public sealed class ChatMessageViewModel : ObservableObject
     private const int ReplyPreviewLength = 60;
 
     /// <summary>
-    /// Первая http(s)-ссылка в тексте — regex портирован с web
-    /// (chatPlainText.CHAT_URL_REGEX): на неё строится карточка превью.
+    /// Http(s)-ссылки в тексте — regex портирован с web
+    /// (chatPlainText.CHAT_URL_REGEX): карточка превью берёт первую,
+    /// LinkifiedTextBlock делает кликабельными все.
     /// </summary>
-    private static readonly Regex ChatUrlRegex = new(
-        @"https?://(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&/=]*)",
+    private static readonly Regex ChatUrlStartRegex = new(
+        @"https?://(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9]+\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly bool _isGroupConversation;
@@ -1670,6 +1799,21 @@ public sealed class ChatMessageViewModel : ObservableObject
 
     /// <summary>Провайдер открытия ссылки — подставляет ChatViewModel (браузер, http/https only).</summary>
     public Func<ChatMessageViewModel, ChatLinkPreviewItemViewModel, Task>? LinkPreviewHandler { get; set; }
+
+    /// <summary>Открытие http(s)-ссылки прямо в тексте пузыря — тот же внешний
+    /// браузер и guard, что у карточки превью; назначает ChatViewModel.</summary>
+    public Func<string, Task>? BodyLinkHandler { get; set; }
+
+    /// <summary>Команда кликабельной ссылки в теле (LinkifiedTextBlock передаёт url).</summary>
+    public ICommand OpenBodyLinkCommand => _openBodyLinkCommand ??= new NativeRelayCommand(parameter =>
+    {
+        if (parameter is string url && BodyLinkHandler is { } handler)
+        {
+            _ = handler(url);
+        }
+    });
+
+    private NativeRelayCommand? _openBodyLinkCommand;
 
     /// <summary>Провайдер голосования — подставляет ChatViewModel (POST poll-vote).</summary>
     public Func<ChatMessageViewModel, int, Task>? PollVoteHandler { get; set; }
@@ -1870,6 +2014,12 @@ public sealed class ChatMessageViewModel : ObservableObject
 
     public string? BodyText => IsDeleted ? "Сообщение удалено" : _body;
 
+    /// <summary>Метаданные (время/«изм.»/галочки) рисуются инлайн в конце
+    /// последней строки текста — пока у сообщения есть тело и нет вложений
+    /// или action-карточки под ним (UI-023).</summary>
+    public bool MetaInlineInText =>
+        !string.IsNullOrEmpty(BodyText) && !HasAttachmentItems && !HasActionCard;
+
     public bool IsDeleted
     {
         get => _isDeleted;
@@ -1878,6 +2028,7 @@ public sealed class ChatMessageViewModel : ObservableObject
             if (SetProperty(ref _isDeleted, value))
             {
                 OnPropertyChanged(nameof(BodyText));
+                OnPropertyChanged(nameof(MetaInlineInText));
                 OnPropertyChanged(nameof(ShowSender));
             }
         }
@@ -2048,6 +2199,7 @@ public sealed class ChatMessageViewModel : ObservableObject
         {
             _body = body;
             OnPropertyChanged(nameof(BodyText));
+            OnPropertyChanged(nameof(MetaInlineInText));
             UpdateLinkPreviewSource();
         }
 
@@ -2069,6 +2221,7 @@ public sealed class ChatMessageViewModel : ObservableObject
         _attachmentModels = null;
         AttachmentItems.Clear();
         OnPropertyChanged(nameof(HasAttachmentItems));
+        OnPropertyChanged(nameof(MetaInlineInText));
         LinkPreviewItems.Clear();
         _linkPreviewUrl = null;
         _linkPreviewRequestedUrl = null;
@@ -2104,6 +2257,7 @@ public sealed class ChatMessageViewModel : ObservableObject
 
         _body = message.Body;
         OnPropertyChanged(nameof(BodyText));
+        OnPropertyChanged(nameof(MetaInlineInText));
         EditedText = message.EditedAt is not null ? "изм." : null;
         ReplyText = FormatReply(message.ReplyPreview);
         ReplyToMessageId = message.ReplyPreview?.Id;
@@ -2257,6 +2411,7 @@ public sealed class ChatMessageViewModel : ObservableObject
         }
 
         OnPropertyChanged(nameof(HasAttachmentItems));
+        OnPropertyChanged(nameof(MetaInlineInText));
     }
 
     /// <summary>Есть чипы вложений — строка ItemsControl видна в пузыре.</summary>
@@ -2365,6 +2520,7 @@ public sealed class ChatMessageViewModel : ObservableObject
             if (SetProperty(ref _actionCard, value))
             {
                 OnPropertyChanged(nameof(HasActionCard));
+            OnPropertyChanged(nameof(MetaInlineInText));
             }
         }
     }
@@ -2403,15 +2559,60 @@ public sealed class ChatMessageViewModel : ObservableObject
     // ---- Превью ссылки ----
 
     /// <summary>Первая http(s)-ссылка в тексте или null (parity web extractFirstChatUrl).</summary>
-    public static string? ExtractFirstChatUrl(string? text)
+    public static string? ExtractFirstChatUrl(string? text) =>
+        MatchChatUrls(text).Select(static match => match.Url).FirstOrDefault();
+
+    internal static IEnumerable<(int Index, string Url)> MatchChatUrls(string? text)
     {
         if (string.IsNullOrEmpty(text))
         {
-            return null;
+            yield break;
         }
 
-        var match = ChatUrlRegex.Match(text);
-        return match.Success ? match.Value : null;
+        var position = 0;
+        while (position < text.Length)
+        {
+            var match = ChatUrlStartRegex.Match(text, position);
+            if (!match.Success)
+            {
+                yield break;
+            }
+
+            var end = match.Index + match.Length;
+            var parenthesisDepth = 0;
+            while (end < text.Length)
+            {
+                var c = text[end];
+                if (c == '(')
+                {
+                    parenthesisDepth++;
+                }
+                else if (c == ')' && parenthesisDepth > 0)
+                {
+                    parenthesisDepth--;
+                }
+                else if (!char.IsAsciiLetterOrDigit(c)
+                    && c is not ('-' or '@' or ':' or '%' or '_' or '+' or '.' or '~' or '#' or '?' or '&' or '/' or '='))
+                {
+                    break;
+                }
+
+                end++;
+            }
+
+            position = end;
+            while (end > match.Index && text[end - 1] is '.' or '?' or ':')
+            {
+                end--;
+            }
+
+            var url = text[match.Index..end];
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
+            {
+                yield return (match.Index, url);
+            }
+        }
     }
 
     /// <summary>

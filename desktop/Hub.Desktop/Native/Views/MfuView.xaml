@@ -210,10 +210,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Филиал: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedBranchFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <Button Margin="8,0,0,0"
@@ -231,10 +230,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Сеть: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedPingFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <Button Margin="8,0,0,0"
@@ -252,10 +250,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="SNMP: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedSnmpFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <ToggleButton Margin="12,0,0,0"
@@ -378,7 +375,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку МФУ" />
             </Grid>
         </Border>
@@ -704,7 +701,13 @@
                                                    TextWrapping="Wrap"
                                                    Visibility="{Binding HasSupplies, Converter={StaticResource InverseBoolToVisibility}}" />
                                         <ItemsControl Margin="0,8,0,0"
-                                                      ItemsSource="{Binding SupplyGroups}">
+                                                      ItemsSource="{Binding SupplyGroups}"
+                                                      AutomationProperties.Name="Группы расходников">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="0,0,0,10">
@@ -713,7 +716,13 @@
                                                                    Foreground="{DynamicResource HubTextSecondaryBrush}"
                                                                    Text="{Binding Title}" />
                                                         <ItemsControl Margin="0,4,0,0"
-                                                                      ItemsSource="{Binding Items}">
+                                                                      ItemsSource="{Binding Items}"
+                                                                      AutomationProperties.Name="Расходники группы">
+                                                            <ItemsControl.ItemContainerStyle>
+                                                                <Style TargetType="ContentPresenter">
+                                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                                                </Style>
+                                                            </ItemsControl.ItemContainerStyle>
                                                             <ItemsControl.ItemTemplate>
                                                                 <DataTemplate>
                                                                     <StackPanel Margin="0,4,0,0">
@@ -774,7 +783,7 @@
                                                 <Button Margin="8,0,0,0"
                                                         Style="{StaticResource HubGhostButtonStyle}"
                                                         Command="{Binding DataContext.OpenCreateConsumableCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                                        Content="＋ Добавить"
+                                                        Content="Добавить" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                                                         Visibility="{Binding DataContext.CanWriteConsumables, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
                                                         AutomationProperties.Name="Добавить расходник на склад" />
                                             </StackPanel>
@@ -887,7 +896,13 @@
                                         AutomationProperties.Name="Дополнительные датчики SNMP">
                                     <StackPanel>
                                         <TextBlock FontSize="13" FontWeight="SemiBold" Text="Дополнительные датчики" />
-                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding CustomMetrics}">
+                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding CustomMetrics}"
+                                                      AutomationProperties.Name="Дополнительные датчики">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <TextBlock Margin="0,2,0,0" FontSize="12.5" Text="{Binding Title}" />
@@ -903,7 +918,13 @@
                                         AutomationProperties.Name="Лотки бумаги">
                                     <StackPanel>
                                         <TextBlock FontSize="13" FontWeight="SemiBold" Text="Лотки бумаги" />
-                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Trays}">
+                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Trays}"
+                                                      AutomationProperties.Name="Лотки бумаги">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="0,0,0,8">
@@ -976,7 +997,13 @@
                                                    Style="{StaticResource MetaLabelStyle}"
                                                    Text="Пока нет накопленных суточных срезов для расчета помесячной печати."
                                                    Visibility="{Binding IsMonthlyEmpty, Converter={StaticResource BoolToVisibility}}" />
-                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding MonthlyItems}">
+                                        <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding MonthlyItems}"
+                                                      AutomationProperties.Name="Помесячная печать">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding TitleText}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="0,4,0,0">
@@ -1007,7 +1034,13 @@
                                                    Style="{StaticResource MetaLabelStyle}"
                                                    Text="По устройству нет зарегистрированных работ."
                                                    Visibility="{Binding IsMaintenanceEmpty, Converter={StaticResource BoolToVisibility}}" />
-                                        <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding MaintenanceItems}">
+                                        <ItemsControl Margin="0,4,0,0" ItemsSource="{Binding MaintenanceItems}"
+                                                      AutomationProperties.Name="История работ">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding TitleText}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="0,4,0,0">
@@ -1059,7 +1092,7 @@
                         <Button HorizontalAlignment="Right"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог расходника" />
                     </Grid>
 
@@ -1165,7 +1198,7 @@
                         <Button HorizontalAlignment="Right"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог добавления расходника" />
                     </Grid>
 

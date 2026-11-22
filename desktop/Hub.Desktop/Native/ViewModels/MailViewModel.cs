@@ -8,7 +8,9 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows.Input;
+using System.Windows.Media;
 using Hub.Desktop.Native.Api;
+using Hub.Desktop.Native.Views;
 
 namespace Hub.Desktop.Native.ViewModels;
 
@@ -25,6 +27,8 @@ internal static class MailHtmlText
     private static readonly Regex SpacesRe = new("[ \\t]+", RegexOptions.Compiled);
     private static readonly Regex LinePadRe = new(" ?\\n ?", RegexOptions.Compiled);
     private static readonly Regex EmptyLinesRe = new("\\n{3,}", RegexOptions.Compiled);
+    private static readonly Regex CidRefRe = new("\\[?cid:[^\\s\\]>\"']+\\]?", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex AnyWhitespaceRe = new("\\s+", RegexOptions.Compiled);
 
     public static string ToPlainText(string? html)
     {
@@ -37,6 +41,22 @@ internal static class MailHtmlText
         var decoded = WebUtility.HtmlDecode(TagRe.Replace(withBreaks, " "));
         var collapsed = LinePadRe.Replace(SpacesRe.Replace(decoded, " "), "\n");
         return EmptyLinesRe.Replace(collapsed, "\n\n").Trim();
+    }
+
+    /// <summary>
+    /// Превью для строки списка: серверный body_preview иногда содержит сырые
+    /// cid:-ссылки на inline-вложения и остатки разметки — чистим в одну строку.
+    /// </summary>
+    public static string ToPreviewText(string? preview)
+    {
+        if (string.IsNullOrWhiteSpace(preview))
+        {
+            return string.Empty;
+        }
+
+        var noCid = CidRefRe.Replace(preview, " ");
+        var plain = ToPlainText(noCid);
+        return AnyWhitespaceRe.Replace(plain, " ").Trim();
     }
 }
 
@@ -99,6 +119,7 @@ public sealed class MailFolderViewModel : ObservableObject
             ? (string.IsNullOrWhiteSpace(folder.Name) ? Id : folder.Name!)
             : folder.Label!;
         IconGlyph = MapIcon(folder.IconKey);
+        IconData = MapIconData(folder.IconKey);
         Total = folder.Total;
         _unread = folder.Unread;
         IsCustom = string.IsNullOrWhiteSpace(folder.WellKnownKey);
@@ -122,6 +143,9 @@ public sealed class MailFolderViewModel : ObservableObject
     }
 
     public string IconGlyph { get; }
+
+    /// <summary>Векторная иконка папки (Geometry) — наследует цвет темы, как в чате.</summary>
+    public Geometry IconData { get; }
     public bool IsCustom { get; }
     public int Total { get; }
 
@@ -157,7 +181,7 @@ public sealed class MailFolderViewModel : ObservableObject
     }
 
     /// <summary>Подпись пункта меню избранного.</summary>
-    public string FavoriteText => IsFavorite ? "★ Убрать из избранного" : "☆ В избранное";
+    public string FavoriteText => IsFavorite ? "Убрать из избранного" : "В избранное";
 
     /// <summary>
     /// Папка под курсором при переносе письма (drag-over): акцентная подсветка
@@ -273,12 +297,19 @@ public sealed class MailFolderViewModel : ObservableObject
             {
                 OnPropertyChanged(nameof(HasUnread));
                 OnPropertyChanged(nameof(UnreadBadgeText));
+                OnPropertyChanged(nameof(AccessibleName));
             }
         }
     }
 
     public bool HasUnread => Unread > 0;
     public string UnreadBadgeText => Unread > 99 ? "99+" : Unread.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Имя строки для скринридера: «Входящие, 12 непрочитанных».</summary>
+    public string AccessibleName => HasUnread ? $"{Label}, {Unread} непрочитанных" : Label;
+
+    /// <summary>Имя шеврона раскрытия: привязка к конкретной папке.</summary>
+    public string ExpanderAccessibleName => $"Развернуть или свернуть вложенные папки: {Label}";
 
     /// <summary>Мягкий счётчик писем папки в рейке; пустая папка место не занимает.</summary>
     public string TotalText => Total > 0 ? Total.ToString(CultureInfo.InvariantCulture) : string.Empty;
@@ -299,6 +330,17 @@ public sealed class MailFolderViewModel : ObservableObject
         "junk" => "⚠",
         "archive" => "🗄",
         _ => "📁",
+    };
+
+    internal static Geometry MapIconData(string? iconKey) => iconKey switch
+    {
+        "inbox" => VectorIcons.Archive,
+        "send" or "sent" => VectorIcons.Send,
+        "drafts" => VectorIcons.Edit,
+        "trash" => VectorIcons.Trash,
+        "junk" => VectorIcons.Warning,
+        "archive" => VectorIcons.InventoryBox,
+        _ => VectorIcons.Folder,
     };
 }
 
@@ -322,7 +364,7 @@ public sealed class MailListItemViewModel : ObservableObject
         SenderText = string.IsNullOrWhiteSpace(item.SenderDisplay)
             ? (string.IsNullOrWhiteSpace(item.Sender) ? "Неизвестный отправитель" : item.Sender!)
             : item.SenderDisplay!;
-        Preview = item.BodyPreview ?? string.Empty;
+        Preview = MailHtmlText.ToPreviewText(item.BodyPreview);
         DateText = FormatListDate(item.ReceivedAt);
         _isUnread = !item.IsRead;
         HasAttachments = item.HasAttachments || item.AttachmentsCount > 0;
@@ -357,12 +399,30 @@ public sealed class MailListItemViewModel : ObservableObject
             if (SetProperty(ref _isImportant, value))
             {
                 OnPropertyChanged(nameof(StarText));
+                OnPropertyChanged(nameof(AccessibleName));
             }
         }
     }
 
     /// <summary>Глиф звезды-флага строки: заполненная у важного, контур у обычного (как button-star в Thunderbird).</summary>
     public string StarText => IsImportant ? "★" : "☆";
+
+    /// <summary>Имя строки для скринридера; без него UIA объявляет имя типа VM.</summary>
+    public string AccessibleName =>
+        $"{SenderText}: {Subject}, {DateText}"
+        + (IsUnread ? ", непрочитанное" : string.Empty)
+        + (HasAttachments ? ", с вложением" : string.Empty)
+        + (IsImportant ? ", важное" : string.Empty);
+
+    /// <summary>Имя чекбокса массового выбора: одинаковая подпись на всех строках
+    /// не даёт скринридеру понять, какое письмо выбирается.</summary>
+    public string CheckBoxAccessibleName => $"Выбрать письмо: {Subject}";
+
+    /// <summary>Имя кнопки-звезды строки — с привязкой к теме письма.</summary>
+    public string StarAccessibleName => $"Переключить важность: {Subject}";
+
+    /// <summary>Имя кнопки «…» строки — с привязкой к теме письма.</summary>
+    public string MenuAccessibleName => $"Меню письма: {Subject}";
 
     /// <summary>Оптимистичный тогл важности из панели чтения (ошибка откатывает).</summary>
     internal void SetImportant(bool important) => IsImportant = important;
@@ -375,6 +435,7 @@ public sealed class MailListItemViewModel : ObservableObject
             if (SetProperty(ref _isUnread, value))
             {
                 OnPropertyChanged(nameof(ToggleReadItemText));
+                OnPropertyChanged(nameof(AccessibleName));
             }
         }
     }
@@ -597,6 +658,13 @@ public sealed class MailDetailViewModel : ObservableObject
     public bool HasBodyHtml => BodyHtml.Length > 0;
     /// <summary>Тело не пусто (текст или html) — плашка «отсутствует» лишь когда пусто совсем.</summary>
     public bool HasAnyBody => HasBody || HasBodyHtml;
+
+    /// <summary>
+    /// Показывать ли plain-text fallback: только когда нет HTML-версии.
+    /// Если есть body_html, WebView2 рендерит письмо и TextBlock не нужен —
+    /// иначе белый фон HWND перекрывает текст снизу (P0-дефект).
+    /// </summary>
+    public bool ShowPlainTextBody => HasBody && !HasBodyHtml;
     public string AttachmentsText { get; private set; } = string.Empty;
     public string AttachmentNamesText { get; private set; } = string.Empty;
 
@@ -605,6 +673,13 @@ public sealed class MailDetailViewModel : ObservableObject
 
     /// <summary>Скачиваемые не-inline вложения — чипы в панели чтения.</summary>
     public IReadOnlyList<MailAttachmentItemViewModel> Attachments { get; private set; } = [];
+
+    /// <summary>
+    /// Есть ли чипы вложений: AttachmentsText считает и inline-картинки
+    /// (подписи cid:), поэтому секция «Вложения» должна зависеть от чипов,
+    /// иначе заголовок висел бы над пустым списком.
+    /// </summary>
+    public bool HasVisibleAttachments => Attachments.Count > 0;
 
     /// <summary>Префилл композера от backend (reply/reply_all/forward); null у старых ответов.</summary>
     public HubMailComposeContext? ComposeContext { get; private set; }
@@ -621,7 +696,7 @@ public sealed class MailDetailViewModel : ObservableObject
     public bool IsImportant { get; private set; }
     public string ImportanceText => IsImportant ? "Важно" : string.Empty;
     /// <summary>Подпись кнопки-тогла важности в панели действий (как ToggleReadButtonText).</summary>
-    public string ImportanceToggleText => IsImportant ? "Снять важность" : "❗ Важное";
+    public string ImportanceToggleText => IsImportant ? "Снять важность" : "Важное";
     public bool CanMove { get; private set; }
 
     /// <summary>Оптимистичный тогл важности: пилюля и кнопка обновятся; ошибка откатывает.</summary>
@@ -2221,7 +2296,9 @@ public sealed class MailViewModel : ObservableObject
             _ => Detail is { CanRunActions: true, DraftContext: not null });
         DismissBannerCommand = new NativeRelayCommand(() => BannerErrorText = null);
         DismissStatusCommand = new NativeRelayCommand(() => StatusInfoText = null);
-        NewMessageCommand = new NativeRelayCommand(() => OpenCompose("new"));
+        // Ненастроенный ящик: композер открылся бы за оверлеем «Почта пока
+        // недоступна» — кнопка честно гасится (как IT-заявка и «Папка»).
+        NewMessageCommand = new NativeRelayCommand(() => OpenCompose("new"), () => !ShowSetupHint);
         OpenItRequestCommand = new NativeAsyncCommand(
             (_, ct) => OpenItRequestAsync(ct),
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
@@ -2461,6 +2538,7 @@ public sealed class MailViewModel : ObservableObject
             if (SetProperty(ref _selectedFolder, value))
             {
                 OnPropertyChanged(nameof(ListHeaderTitle));
+                OnPropertyChanged(nameof(ListHeaderAutomationName));
                 if (value is not null
                     && !string.Equals(value.Id, _currentFolder, StringComparison.Ordinal))
                 {
@@ -2558,6 +2636,8 @@ public sealed class MailViewModel : ObservableObject
             if (SetProperty(ref _searchText, value))
             {
                 OnPropertyChanged(nameof(HasActiveListFilters));
+                OnPropertyChanged(nameof(ListHeaderTitle));
+                OnPropertyChanged(nameof(ListHeaderAutomationName));
             }
         }
     }
@@ -2576,6 +2656,7 @@ public sealed class MailViewModel : ObservableObject
             if (SetProperty(ref _searchAllFolders, value))
             {
                 OnPropertyChanged(nameof(ListHeaderTitle));
+                OnPropertyChanged(nameof(ListHeaderAutomationName));
                 OnPropertyChanged(nameof(HasActiveListFilters));
             }
         }
@@ -2586,9 +2667,15 @@ public sealed class MailViewModel : ObservableObject
     /// при поиске по всем папкам — «Все папки», а не вводящая в заблуждение
     /// выбранная строка рейки.
     /// </summary>
-    public string ListHeaderTitle => SearchAllFolders
+    public string ListHeaderTitle => SearchAllFolders && !string.IsNullOrWhiteSpace(SearchText)
         ? "Все папки"
         : SelectedFolder?.Label ?? "Почта";
+
+    /// <summary>UIA-имя заголовка списка: для поиска по всем папкам это область
+    /// поиска, а не «текущая папка».</summary>
+    public string ListHeaderAutomationName => SearchAllFolders && !string.IsNullOrWhiteSpace(SearchText)
+        ? "Область поиска: все папки"
+        : $"Текущая папка: {SelectedFolder?.Label ?? "Почта"}";
 
     public string? SearchStatusText
     {
@@ -2671,14 +2758,21 @@ public sealed class MailViewModel : ObservableObject
             if (SetProperty(ref _hasMore, value))
             {
                 OnPropertyChanged(nameof(MoreButtonText));
+                OnPropertyChanged(nameof(ListHeaderCountText));
                 ((NativeAsyncCommand)LoadMoreCommand).RaiseCanExecuteChanged();
             }
         }
     }
 
+    /// <summary>Сколько писем текущей выдачи ещё не загружено (total сервера − показано).</summary>
+    public int RemainingCount => Math.Max(0, _total - Items.Count);
+
     public string MoreButtonText => IsLoadingMore
         ? "Загружаем…"
-        : $"Показать ещё ({Math.Max(0, _total - Items.Count)})";
+        : $"Показать ещё ({RemainingCount})";
+
+    /// <summary>Подсказка кнопки догрузки: различает «загружено» и «всего по фильтру».</summary>
+    public string LoadMoreToolTip => $"Загружено {Items.Count} из {_total}; показать следующую порцию";
 
     public string? BannerErrorText
     {
@@ -2725,8 +2819,20 @@ public sealed class MailViewModel : ObservableObject
     /// <summary>
     /// Подпись счётчика для заголовка списка писем («42 письма») — аналог
     /// threadPaneFolderCount в Thunderbird; пустая, когда папка ещё не считана.
+    /// Пока выдача догружается страницами, рядом указываем, сколько уже на экране:
+    /// «854 письма · загружено 50» — иначе два одинаковых числа (заголовок и
+    /// кнопка догрузки) читаются как дубль.
     /// </summary>
-    public string ListHeaderCountText => PluralizeMailCount(TotalText);
+    public string ListHeaderCountText
+    {
+        get
+        {
+            var total = PluralizeMailCount(TotalText);
+            return total.Length > 0 && HasMore && Items.Count > 0
+                ? $"{total} · загружено {Items.Count}"
+                : total;
+        }
+    }
 
     internal static string PluralizeMailCount(string totalText) =>
         int.TryParse(totalText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var total)
@@ -2736,7 +2842,9 @@ public sealed class MailViewModel : ObservableObject
     private static string PluralizeMailCount(int total) => (total % 10, total % 100) switch
     {
         (1, not 11) => $"{total} письмо",
-        (>= 2 and <= 4, not >= 12 and <= 14) => $"{total} письма",
+        // Скобки обязательны: «not >= 12 and <= 14» парсится как
+        // «(not >= 12) and <= 14» — иначе 22-24, 92-94… падают в «писем».
+        (>= 2 and <= 4, not (>= 12 and <= 14)) => $"{total} письма",
         _ => $"{total} писем",
     };
 
@@ -2762,6 +2870,7 @@ public sealed class MailViewModel : ObservableObject
             if (SetProperty(ref _showSetupHint, value))
             {
                 OnPropertyChanged(nameof(IsEmpty));
+                ((NativeRelayCommand)NewMessageCommand).RaiseCanExecuteChanged();
                 ((NativeRelayCommand)NewFolderCommand).RaiseCanExecuteChanged();
                 ((NativeAsyncCommand)OpenItRequestCommand).RaiseCanExecuteChanged();
             }
@@ -2946,6 +3055,26 @@ public sealed class MailViewModel : ObservableObject
     public bool HasSelection => SelectedCount > 0;
 
     public string SelectionText => $"Выбрано: {SelectedCount}";
+
+    /// <summary>
+    /// Трёхсостояний чекбокс «Выбрать все» в заголовке списка: true — все
+    /// загруженные отмечены, null — часть, false — ничего. Сеттер от клика:
+    /// true отмечает все загруженные, false снимает (выбор всех писем папки
+    /// целиком API не поддерживает — действуем только над показанной порцией).
+    /// </summary>
+    public bool? IsAllLoadedChecked
+    {
+        get => Items.Count == 0
+            ? false
+            : SelectedCount == 0 ? false : SelectedCount == Items.Count ? true : null;
+        set
+        {
+            if (value is bool isChecked)
+            {
+                SetAllChecked(isChecked);
+            }
+        }
+    }
 
     /// <summary>Идёт bulk-операция — кнопки панели блокируются, показываем прогресс-текст.</summary>
     public bool IsBulkBusy
@@ -3193,7 +3322,7 @@ public sealed class MailViewModel : ObservableObject
     private void ApplyMailboxInfo(HubMailMailboxInfo? info)
     {
         _mailboxId = info?.Id ?? info?.MailboxId ?? _mailboxId;
-        MailboxLabel = info?.Label ?? info?.MailboxEmail ?? string.Empty;
+        MailboxLabel = (info?.Label ?? info?.MailboxEmail ?? string.Empty).ReplaceLineEndings(" ").Trim();
         if (info is null)
         {
             ShowSetupHint = false;
@@ -4011,6 +4140,13 @@ public sealed class MailViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedCount));
         OnPropertyChanged(nameof(HasSelection));
         OnPropertyChanged(nameof(SelectionText));
+        OnPropertyChanged(nameof(IsAllLoadedChecked));
+        // Items меняется вместе с выбором (догрузка, bulk-удаление) —
+        // подписи счётчиков обновляем из той же точки: иначе «Показать ещё (N)»
+        // оставался со старым N, если HasMore не сменил значение.
+        OnPropertyChanged(nameof(ListHeaderCountText));
+        OnPropertyChanged(nameof(MoreButtonText));
+        OnPropertyChanged(nameof(LoadMoreToolTip));
         RaiseBulkCommandsCanExecuteChanged();
         ((NativeRelayCommand)ClearSelectionCommand).RaiseCanExecuteChanged();
     }

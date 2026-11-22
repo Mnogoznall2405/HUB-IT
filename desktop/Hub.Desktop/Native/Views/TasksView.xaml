@@ -83,9 +83,10 @@
                         <TextBlock FontSize="12"
                                    Text="{Binding Title}"
                                    TextTrimming="CharacterEllipsis" />
-                        <TextBlock Margin="6,0,0,0"
-                                   FontSize="12"
-                                   Text="✕" />
+                        <local:VectorIcon Margin="6,0,0,0"
+                                          Size="12"
+                                          VerticalAlignment="Center"
+                                          Data="{x:Static local:VectorIcons.Close}" />
                     </StackPanel>
                 </Button>
             </DataTemplate>
@@ -165,7 +166,7 @@
                         Margin="0,0,8,0"
                         Style="{StaticResource HubPrimaryButtonStyle}"
                         Command="{Binding NewTaskCommand}"
-                        Content="＋ Новая задача"
+                        Content="Новая задача" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                         Visibility="{Binding CanCreateTasks, Converter={StaticResource BoolToVisibility}}"
                         AutomationProperties.Name="Создать новую задачу" />
                 <Button Grid.Column="3"
@@ -254,7 +255,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -497,11 +498,17 @@
                                             Padding="8,2"
                                             Style="{StaticResource HubGhostButtonStyle}"
                                             Command="{Binding DataContext.AddSubtaskCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            Content="＋ Подзадача"
+                                            Content="Подзадача" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                                             Visibility="{Binding CanCreateSubtask, Converter={StaticResource BoolToVisibility}}"
                                             AutomationProperties.Name="Создать подзадачу" />
                                 </Grid>
-                                <ItemsControl ItemsSource="{Binding Subtasks}">
+                                <ItemsControl ItemsSource="{Binding Subtasks}"
+                                              AutomationProperties.Name="Подзадачи">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Title, StringFormat='Подзадача: {0}'}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border Margin="0,0,0,6"
@@ -626,7 +633,7 @@
                                                 <Button Grid.Column="1"
                                                         Style="{StaticResource HubGhostButtonStyle}"
                                                         Command="{Binding AssigneeSearch.ClearCommand}"
-                                                        Content="✕"
+                                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                                         AutomationProperties.Name="Сбросить исполнителя подзадачи" />
                                             </Grid>
                                         </Border>
@@ -756,7 +763,13 @@
                                             Visibility="{Binding CanUploadFiles, Converter={StaticResource BoolToVisibility}}"
                                             AutomationProperties.Name="Прикрепить файл к задаче" />
                                 </Grid>
-                                <ItemsControl ItemsSource="{Binding Attachments}">
+                                <ItemsControl ItemsSource="{Binding Attachments}"
+                                              AutomationProperties.Name="Вложения задачи">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <WrapPanel />
@@ -773,7 +786,10 @@
                                                         IsEnabled="{Binding IsDownloadEnabled}"
                                                         AutomationProperties.Name="{Binding Name, StringFormat='Скачать файл {0}'}">
                                                     <StackPanel Orientation="Horizontal">
-                                                        <TextBlock FontSize="12" Text="📄 " />
+                                                        <local:VectorIcon Size="12"
+                                                                          VerticalAlignment="Center"
+                                                                          Margin="0,0,4,0"
+                                                                          Data="{x:Static local:VectorIcons.Document}" />
                                                         <TextBlock FontSize="12" Text="{Binding DisplayText}" />
                                                     </StackPanel>
                                                 </Button>
@@ -783,7 +799,7 @@
                                                         Command="{Binding DataContext.PreviewAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                                         CommandParameter="{Binding}"
                                                         IsEnabled="{Binding IsDownloadEnabled}"
-                                                        Content="👁"
+                                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Eye}"
                                                         Visibility="{Binding CanPreview, Converter={StaticResource BoolToVisibility}}"
                                                         AutomationProperties.Name="{Binding Name, StringFormat='Предпросмотр файла {0}'}" />
                                                 <Button Margin="0,0,6,6"
@@ -793,6 +809,7 @@
                                                         CommandParameter="{Binding}"
                                                         IsEnabled="{Binding IsDeleteEnabled}"
                                                         Content="{Binding DeleteText}"
+                                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Trash}"
                                                         Visibility="{Binding CanDelete, Converter={StaticResource BoolToVisibility}}"
                                                         AutomationProperties.Name="{Binding Name, StringFormat='Удалить файл {0}'}" />
                                             </StackPanel>
@@ -814,7 +831,13 @@
                                            TextWrapping="Wrap"
                                            Text="{Binding DiscussionHintText}"
                                            Visibility="{Binding CanOpenDiscussion, Converter={StaticResource BoolToVisibility}}" />
-                                <ItemsControl ItemsSource="{Binding Comments}">
+                                <ItemsControl ItemsSource="{Binding Comments}"
+                                              AutomationProperties.Name="Комментарии задачи">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding MetaText, StringFormat='Комментарий: {0}'}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border Margin="0,0,0,8"
@@ -1088,7 +1111,13 @@
                                           AutomationProperties.Name="Фильтр аналитики по проекту" />
                                 <ItemsControl ItemsSource="{Binding SelectedProjects}"
                                               ItemTemplate="{StaticResource AnalyticsChipTemplate}"
-                                              Visibility="{Binding HasSelectedProjects, Converter={StaticResource BoolToVisibility}}">
+                                              Visibility="{Binding HasSelectedProjects, Converter={StaticResource BoolToVisibility}}"
+                                              AutomationProperties.Name="Выбранные проекты">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <WrapPanel />
@@ -1107,7 +1136,13 @@
                                           AutomationProperties.Name="Фильтр аналитики по объекту" />
                                 <ItemsControl ItemsSource="{Binding SelectedObjects}"
                                               ItemTemplate="{StaticResource AnalyticsChipTemplate}"
-                                              Visibility="{Binding HasSelectedObjects, Converter={StaticResource BoolToVisibility}}">
+                                              Visibility="{Binding HasSelectedObjects, Converter={StaticResource BoolToVisibility}}"
+                                              AutomationProperties.Name="Выбранные объекты">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <WrapPanel />
@@ -1126,7 +1161,13 @@
                                           AutomationProperties.Name="Фильтр аналитики по участнику" />
                                 <ItemsControl ItemsSource="{Binding SelectedParticipants}"
                                               ItemTemplate="{StaticResource AnalyticsChipTemplate}"
-                                              Visibility="{Binding HasSelectedParticipants, Converter={StaticResource BoolToVisibility}}">
+                                              Visibility="{Binding HasSelectedParticipants, Converter={StaticResource BoolToVisibility}}"
+                                              AutomationProperties.Name="Выбранные участники">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <WrapPanel />
@@ -1166,7 +1207,7 @@
                                 <Button Grid.Column="2"
                                         Style="{StaticResource HubGhostButtonStyle}"
                                         Command="{Binding DismissErrorCommand}"
-                                        Content="✕"
+                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                         AutomationProperties.Name="Скрыть ошибку аналитики" />
                             </Grid>
                         </Border>
@@ -1190,7 +1231,7 @@
                                 <Button Grid.Column="1"
                                         Style="{StaticResource HubGhostButtonStyle}"
                                         Command="{Binding DismissStatusCommand}"
-                                        Content="✕"
+                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                         AutomationProperties.Name="Скрыть статус аналитики" />
                             </Grid>
                         </Border>
@@ -1225,7 +1266,13 @@
                                   Visibility="{Binding HasPayload, Converter={StaticResource BoolToVisibility}}">
                         <StackPanel>
                             <!-- KPI-карточки (как KPI-грид веб-отчёта) -->
-                            <ItemsControl ItemsSource="{Binding Kpis}">
+                            <ItemsControl ItemsSource="{Binding Kpis}"
+                                          AutomationProperties.Name="Показатели отчёта">
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <UniformGrid Columns="3" />
@@ -1273,7 +1320,14 @@
                                         <TextBlock Style="{StaticResource HubSectionTitleStyle}"
                                                    Text="По статусам" />
                                         <ItemsControl ItemsSource="{Binding StatusRows}"
-                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}" />
+                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}"
+                                                      AutomationProperties.Name="Разрез по статусам">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
+                                        </ItemsControl>
                                     </StackPanel>
                                 </Border>
                                 <Border Margin="0,2,0,10"
@@ -1287,7 +1341,14 @@
                                         <TextBlock Style="{StaticResource HubSectionTitleStyle}"
                                                    Text="По участникам" />
                                         <ItemsControl ItemsSource="{Binding ParticipantRows}"
-                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}" />
+                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}"
+                                                      AutomationProperties.Name="Разрез по участникам">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
+                                        </ItemsControl>
                                     </StackPanel>
                                 </Border>
                                 <Border Margin="0,0,10,10"
@@ -1301,7 +1362,14 @@
                                         <TextBlock Style="{StaticResource HubSectionTitleStyle}"
                                                    Text="По проектам" />
                                         <ItemsControl ItemsSource="{Binding ProjectRows}"
-                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}" />
+                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}"
+                                                      AutomationProperties.Name="Разрез по проектам">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
+                                        </ItemsControl>
                                     </StackPanel>
                                 </Border>
                                 <Border Margin="0,0,0,10"
@@ -1315,7 +1383,14 @@
                                         <TextBlock Style="{StaticResource HubSectionTitleStyle}"
                                                    Text="По объектам" />
                                         <ItemsControl ItemsSource="{Binding ObjectRows}"
-                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}" />
+                                                      ItemTemplate="{StaticResource AnalyticsRowTemplate}"
+                                                      AutomationProperties.Name="Разрез по объектам">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
+                                        </ItemsControl>
                                     </StackPanel>
                                 </Border>
                             </UniformGrid>
@@ -1333,7 +1408,13 @@
                                         <Run Text="Динамика" /><Run Text="{Binding TrendGranularityText, Mode=OneWay}"
                                                                     Foreground="{DynamicResource HubTextSecondaryBrush}" />
                                     </TextBlock>
-                                    <ItemsControl ItemsSource="{Binding TrendItems}">
+                                    <ItemsControl ItemsSource="{Binding TrendItems}"
+                                                  AutomationProperties.Name="Динамика задач">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Grid Margin="0,8,0,0">
@@ -1418,7 +1499,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть форму создания задачи" />
                     </Grid>
 
@@ -1550,7 +1631,7 @@
                                             VerticalAlignment="Center"
                                             Style="{StaticResource HubGhostButtonStyle}"
                                             Command="{Binding AssigneeSearch.ClearCommand}"
-                                            Content="✕"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                             AutomationProperties.Name="Сбросить выбранного исполнителя" />
                                 </Grid>
                             </Border>

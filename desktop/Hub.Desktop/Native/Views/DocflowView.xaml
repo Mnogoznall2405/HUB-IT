@@ -90,7 +90,7 @@
                             AutomationProperties.Name="Учётная запись 1С: подключение, проверка и креды" />
                     <Button Style="{StaticResource HubPrimaryButtonStyle}"
                             Command="{Binding NewAssignmentCommand}"
-                            Content="＋ Поручение"
+                            Content="Поручение" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                             Visibility="{Binding CanCreateAssignment, Converter={StaticResource BoolToVisibility}}"
                             AutomationProperties.Name="Создать поручение по документу 1С" />
                     <Button Margin="10,0,0,0"
@@ -187,7 +187,13 @@
                                Text="{Binding AbsencesZupNoteText}"
                                TextWrapping="Wrap"
                                Visibility="{Binding HasAbsencesZupNote, Converter={StaticResource BoolToVisibility}}" />
-                    <ItemsControl ItemsSource="{Binding Absences}">
+                    <ItemsControl ItemsSource="{Binding Absences}"
+                                  AutomationProperties.Name="Отсутствия">
+                        <ItemsControl.ItemContainerStyle>
+                            <Style TargetType="ContentPresenter">
+                                <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
+                            </Style>
+                        </ItemsControl.ItemContainerStyle>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <Border Margin="0,4,0,0"
@@ -275,7 +281,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -550,7 +556,13 @@
                                            FontSize="14"
                                            Text="Связанные документы"
                                            Visibility="{Binding HasRelated, Converter={StaticResource BoolToVisibility}}" />
-                                <ItemsControl ItemsSource="{Binding RelatedItems}">
+                                <ItemsControl ItemsSource="{Binding RelatedItems}"
+                                              AutomationProperties.Name="Связанные документы">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <StackPanel Margin="0,0,0,6"
@@ -573,7 +585,13 @@
                                            FontSize="14"
                                            Text="Файлы"
                                            Visibility="{Binding HasFiles, Converter={StaticResource BoolToVisibility}}" />
-                                <ItemsControl ItemsSource="{Binding Files}">
+                                <ItemsControl ItemsSource="{Binding Files}"
+                                              AutomationProperties.Name="Файлы документа">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <WrapPanel />
@@ -589,7 +607,10 @@
                                                     IsEnabled="{Binding IsDownloadEnabled}"
                                                     AutomationProperties.Name="{Binding Name, StringFormat='Скачать файл {0}'}">
                                                 <StackPanel Orientation="Horizontal">
-                                                    <TextBlock FontSize="12" Text="📄 " />
+                                                    <local:VectorIcon Size="12"
+                                                                      VerticalAlignment="Center"
+                                                                      Margin="0,0,4,0"
+                                                                      Data="{x:Static local:VectorIcons.Document}" />
                                                     <TextBlock FontSize="12" Text="{Binding DisplayText}" />
                                                 </StackPanel>
                                             </Button>
@@ -678,7 +699,13 @@
                                 </Grid>
 
                                 <WrapPanel>
-                                    <ItemsControl ItemsSource="{Binding Actions}">
+                                    <ItemsControl ItemsSource="{Binding Actions}"
+                                                  AutomationProperties.Name="Действия документа">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
                                         <ItemsControl.ItemsPanel>
                                             <ItemsPanelTemplate>
                                                 <WrapPanel />
@@ -784,7 +811,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть форму поручения" />
                     </Grid>
 
@@ -909,7 +936,7 @@
                                             VerticalAlignment="Center"
                                             Style="{StaticResource HubGhostButtonStyle}"
                                             Command="{Binding ClearDocumentCommand}"
-                                            Content="✕"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                             AutomationProperties.Name="Сбросить выбранный документ" />
                                 </Grid>
                             </Border>
@@ -1024,7 +1051,7 @@
                                             VerticalAlignment="Center"
                                             Style="{StaticResource HubGhostButtonStyle}"
                                             Command="{Binding ClearAssigneeCommand}"
-                                            Content="✕"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                             AutomationProperties.Name="Сбросить выбранного исполнителя" />
                                 </Grid>
                             </Border>
@@ -1139,7 +1166,7 @@
                                             VerticalAlignment="Center"
                                             Style="{StaticResource HubGhostButtonStyle}"
                                             Command="{Binding ClearControllerCommand}"
-                                            Content="✕"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                             AutomationProperties.Name="Сбросить выбранного контролёра" />
                                 </Grid>
                             </Border>
@@ -1302,7 +1329,7 @@
                             <Button Grid.Column="1"
                                     Style="{StaticResource HubGhostButtonStyle}"
                                     Command="{Binding CloseCommand}"
-                                    Content="✕"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                     AutomationProperties.Name="Закрыть панель учётной записи 1С" />
                         </Grid>
 
@@ -1476,7 +1503,7 @@
                             Padding="4,0"
                             Style="{StaticResource HubGhostButtonStyle}"
                             Command="{Binding DismissStatusCommand}"
-                            Content="✕"
+                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                             AutomationProperties.Name="Скрыть статусное сообщение" />
                 </StackPanel>
             </Grid>

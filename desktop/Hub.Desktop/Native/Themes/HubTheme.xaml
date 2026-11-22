@@ -11,6 +11,8 @@
          (STA-тесты, скриншоты) палитру дозаливает
          NativeThemeManager.EnsureFallbackPalette. -->
 
+    <local:NullToVisibilityConverter x:Key="NullToVisibility" />
+
     <!-- Видимый фокус для клавиатурной навигации (2px периметр). -->
     <Style x:Key="HubFocusStyle">
         <Setter Property="Control.Template">
@@ -110,8 +112,18 @@
                             BorderThickness="1"
                             CornerRadius="8"
                             SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Margin="{TemplateBinding Padding}" />
+                        <!-- DockPanel вместо StackPanel: содержимое получает конечную
+                             меру ширины — TextTrimming текста кнопки работает (UI-005). -->
+                        <DockPanel VerticalAlignment="Center">
+                            <local:VectorIcon DockPanel.Dock="Left"
+                                              Size="14"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,6,0"
+                                              Data="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}}"
+                                              Visibility="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource NullToVisibility}}" />
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </DockPanel>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -146,8 +158,17 @@
                             BorderThickness="1"
                             CornerRadius="8"
                             SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Margin="{TemplateBinding Padding}" />
+                        <!-- DockPanel вместо StackPanel — конечная мера для TextTrimming (UI-005). -->
+                        <DockPanel VerticalAlignment="Center">
+                            <local:VectorIcon DockPanel.Dock="Left"
+                                              Size="14"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,6,0"
+                                              Data="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}}"
+                                              Visibility="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource NullToVisibility}}" />
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </DockPanel>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -171,6 +192,8 @@
         <Setter Property="MinWidth" Value="36" />
         <Setter Property="Padding" Value="10,6" />
         <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -178,8 +201,22 @@
                             Background="{TemplateBinding Background}"
                             CornerRadius="8"
                             SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Margin="{TemplateBinding Padding}" />
+                        <!-- DockPanel вместо StackPanel: презентер получает конечную
+                             меру — длинный текст кнопки троеточится (UI-005). Выравнивание
+                             перенесено на презентер, семантика HorizontalContentAlignment
+                             для кнопок с текстом не меняется. -->
+                        <DockPanel HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                   VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                            <local:VectorIcon DockPanel.Dock="Left"
+                                              Size="14"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,6,0"
+                                              Data="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}}"
+                                              Visibility="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource NullToVisibility}}" />
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </DockPanel>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -218,13 +255,22 @@
                                 BorderBrush="{DynamicResource HubTextSecondaryBrush}"
                                 BorderThickness="1"
                                 CornerRadius="3">
-                            <Path x:Name="Check"
-                                  Data="M 3.4,8.0 L 6.6,11.2 L 12.4,4.4"
-                                  Stroke="{DynamicResource HubOnAccentBrush}"
-                                  StrokeThickness="2"
-                                  StrokeStartLineCap="Round"
-                                  StrokeEndLineCap="Round"
-                                  Visibility="Collapsed" />
+                            <Grid>
+                                <Path x:Name="Check"
+                                      Data="M 3.4,8.0 L 6.6,11.2 L 12.4,4.4"
+                                      Stroke="{DynamicResource HubOnAccentBrush}"
+                                      StrokeThickness="2"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      Visibility="Collapsed" />
+                                <Path x:Name="Dash"
+                                      Data="M 3.5,8 L 12.5,8"
+                                      Stroke="{DynamicResource HubOnAccentBrush}"
+                                      StrokeThickness="2"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      Visibility="Collapsed" />
+                            </Grid>
                         </Border>
                         <ContentPresenter Margin="8,0,0,0"
                                           VerticalAlignment="Center"
@@ -235,6 +281,12 @@
                             <Setter TargetName="Box" Property="Background" Value="{DynamicResource HubAccentBrush}" />
                             <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
                             <Setter TargetName="Check" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <!-- Частичное выделение (IsChecked=null): акцентная рамка + чёрточка. -->
+                        <Trigger Property="IsChecked" Value="{x:Null}">
+                            <Setter TargetName="Box" Property="Background" Value="{DynamicResource HubAccentBrush}" />
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                            <Setter TargetName="Dash" Property="Visibility" Value="Visible" />
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource HubTextBrush}" />
@@ -354,11 +406,11 @@
         </Setter>
     </Style>
 
-    <!-- Шеврон выпадающего списка (Segoe MDL2 — как глифы хрома окна). -->
-    <Style x:Key="HubChevronDownStyle" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
-        <Setter Property="FontSize" Value="10" />
-        <Setter Property="Text" Value="&#xE70D;" />
+    <!-- Шеврон выпадающего списка — монохромная векторная иконка (тема через
+         наследуемый Foreground). Шаблон может вращать его при раскрытии. -->
+    <Style x:Key="HubChevronDownStyle" TargetType="local:VectorIcon">
+        <Setter Property="Size" Value="10" />
+        <Setter Property="Data" Value="{x:Static local:VectorIcons.ChevronDown}" />
         <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
         <Setter Property="HorizontalAlignment" Value="Center" />
         <Setter Property="VerticalAlignment" Value="Center" />
@@ -424,9 +476,9 @@
                           ClickMode="Press"
                           IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
                           Style="{StaticResource HubComboBoxToggleStyle}" />
-            <TextBlock x:Name="Chevron"
-                       Grid.Column="1"
-                       Style="{StaticResource HubChevronDownStyle}" />
+            <local:VectorIcon x:Name="Chevron"
+                              Grid.Column="1"
+                              Style="{StaticResource HubChevronDownStyle}" />
             <Popup x:Name="PART_Popup"
                    MinWidth="{TemplateBinding ActualWidth}"
                    AllowsTransparency="True"
@@ -520,9 +572,9 @@
                           ClickMode="Press"
                           IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
                           Style="{StaticResource HubComboBoxToggleStyle}" />
-            <TextBlock x:Name="Chevron"
-                       Grid.Column="1"
-                       Style="{StaticResource HubChevronDownStyle}" />
+            <local:VectorIcon x:Name="Chevron"
+                              Grid.Column="1"
+                              Style="{StaticResource HubChevronDownStyle}" />
             <Popup x:Name="PART_Popup"
                    MinWidth="{TemplateBinding ActualWidth}"
                    AllowsTransparency="True"
@@ -745,9 +797,8 @@
                                     Focusable="False"
                                     Style="{StaticResource HubGhostButtonStyle}"
                                     TextElement.Foreground="{DynamicResource HubTextSecondaryBrush}">
-                                <TextBlock FontFamily="Segoe MDL2 Assets"
-                                           FontSize="13"
-                                           Text="&#xE787;" />
+                                <local:VectorIcon Size="13"
+                                                  Data="{x:Static local:VectorIcons.Calendar}" />
                             </Button>
                         </Grid>
                         <Border x:Name="FocusLine"
@@ -1046,9 +1097,8 @@
                                         MinHeight="0"
                                         Style="{StaticResource HubGhostButtonStyle}"
                                         AutomationProperties.Name="Предыдущий">
-                                    <TextBlock FontFamily="Segoe MDL2 Assets"
-                                               FontSize="10"
-                                               Text="&#xE76B;" />
+                                    <local:VectorIcon Size="10"
+                                                      Data="{x:Static local:VectorIcons.ChevronLeft}" />
                                 </Button>
                                 <Button x:Name="PART_NextButton"
                                         Grid.Column="2"
@@ -1060,9 +1110,8 @@
                                         MinHeight="0"
                                         Style="{StaticResource HubGhostButtonStyle}"
                                         AutomationProperties.Name="Следующий">
-                                    <TextBlock FontFamily="Segoe MDL2 Assets"
-                                               FontSize="10"
-                                               Text="&#xE76C;" />
+                                    <local:VectorIcon Size="10"
+                                                      Data="{x:Static local:VectorIcons.ChevronRight}" />
                                 </Button>
                             </Grid>
                             <Border Grid.Row="1"
@@ -1207,7 +1256,14 @@
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="16"
                             SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <local:VectorIcon Size="13"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,5,0"
+                                              Data="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}}"
+                                              Visibility="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource NullToVisibility}}" />
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </StackPanel>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -1218,6 +1274,46 @@
                             <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSelectionBrush}" />
                             <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
                             <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Сегмент фильтра (SegmentedControl): компактная кнопка в общей рамке.
+         Активный сегмент — SelectionBrush + accent underline, неактивный — muted. -->
+    <Style x:Key="HubFilterSegmentStyle" TargetType="RadioButton">
+        <Setter Property="MinHeight" Value="24" />
+        <Setter Property="Padding" Value="10,3" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Foreground" Value="{DynamicResource HubTextSecondaryBrush}" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource HubFocusStyle}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="Surface"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            BorderThickness="0,0,0,2"
+                            CornerRadius="4"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <TextBlock Text="{TemplateBinding Content}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubHoverBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Surface" Property="Background" Value="{DynamicResource HubSelectionBrush}" />
+                            <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource HubAccentBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource HubTextBrush}" />
+                            <Setter Property="FontWeight" Value="SemiBold" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -1274,6 +1370,7 @@
          заливка (gray-20/gray-60), выбранная — нейтральный gray-30/gray-70, а не
          акцентный тинт; свёрнутая ветка дерева не занимает место в списке. -->
     <Style x:Key="MailFolderItemStyle" TargetType="ListBoxItem">
+        <Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}" />
         <Setter Property="MinHeight" Value="24" />
         <Setter Property="Padding" Value="6,3,8,3" />
         <Setter Property="Margin" Value="0" />
@@ -1314,6 +1411,7 @@
          surface-raised и полужирный текст, выбранное — акцентный тинт
          с акцентной рамкой (selected-item 15-20% + border 30%). -->
     <Style x:Key="MailMessageItemStyle" TargetType="ListBoxItem">
+        <Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="Margin" Value="3,1" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -1381,9 +1479,21 @@
                                     Margin="-12,0,0,0"
                                     CornerRadius="1.5"
                                     Background="Transparent" />
-                            <ContentPresenter Margin="4,0,0,0"
-                                              HorizontalAlignment="Left"
-                                              VerticalAlignment="Center" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <local:VectorIcon Size="18"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0"
+                                                  Data="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}}"
+                                                  Visibility="{Binding Path=(local:NavGlyph.Icon), RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource NullToVisibility}}" />
+                                <ContentPresenter Grid.Column="1"
+                                                  Margin="4,0,0,0"
+                                                  HorizontalAlignment="Left"
+                                                  VerticalAlignment="Center" />
+                            </Grid>
                         </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
@@ -1735,11 +1845,11 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="14" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock x:Name="CheckGlyph"
-                                       VerticalAlignment="Center"
-                                       FontSize="11"
-                                       Text="✓"
-                                       Visibility="Collapsed" />
+                            <local:VectorIcon x:Name="CheckGlyph"
+                                              Size="11"
+                                              VerticalAlignment="Center"
+                                              Data="{x:Static local:VectorIcons.Check}"
+                                              Visibility="Collapsed" />
                             <ContentPresenter Grid.Column="1"
                                               Content="{TemplateBinding Header}"
                                               ContentTemplate="{TemplateBinding HeaderTemplate}"
@@ -1747,14 +1857,13 @@
                                               ContentStringFormat="{TemplateBinding HeaderStringFormat}"
                                               RecognizesAccessKey="True"
                                               VerticalAlignment="Center" />
-                            <TextBlock x:Name="Arrow"
-                                       Grid.Column="2"
-                                       VerticalAlignment="Center"
-                                       FontFamily="Segoe MDL2 Assets"
-                                       FontSize="9"
-                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="&#xE76C;"
-                                       Visibility="Collapsed" />
+                            <local:VectorIcon x:Name="Arrow"
+                                              Grid.Column="2"
+                                              Size="9"
+                                              VerticalAlignment="Center"
+                                              Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                              Data="{x:Static local:VectorIcons.ChevronRight}"
+                                              Visibility="Collapsed" />
                             <Popup x:Name="SubmenuPopup"
                                    AllowsTransparency="True"
                                    Focusable="False"

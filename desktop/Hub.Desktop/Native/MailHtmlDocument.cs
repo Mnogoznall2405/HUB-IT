@@ -24,6 +24,8 @@ internal static class MailHtmlDocument
         var border = isDark ? "#3D424B" : "#DFE0E3";
         return "<!DOCTYPE html><html><head>" +
             "<meta charset=\"utf-8\" />" +
+            // Title документа — имя Document в дереве UIA (скринридер).
+            "<title>Текст письма</title>" +
             $"<meta name=\"color-scheme\" content=\"{scheme}\" />" +
             "<meta http-equiv=\"Content-Security-Policy\" content=\"" +
             "default-src 'none'; script-src 'none'; " +

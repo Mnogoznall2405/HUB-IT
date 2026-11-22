@@ -1,6 +1,7 @@
 <UserControl x:Class="Hub.Desktop.Native.Views.StatisticsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Hub.Desktop.Native.Views"
              Foreground="{DynamicResource HubTextBrush}"
              FontFamily="Segoe UI Variable Text, Segoe UI"
              SnapsToDevicePixels="True"
@@ -215,10 +216,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Период: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedPeriodText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <Grid Margin="10,0,0,0" VerticalAlignment="Center">
@@ -287,7 +287,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку статистики" />
             </Grid>
         </Border>
@@ -338,7 +338,13 @@
                                     <TextBlock FontSize="13"
                                                FontWeight="SemiBold"
                                                Text="{Binding Title}" />
-                                    <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Chips}">
+                                    <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Chips}"
+                                                  AutomationProperties.Name="Чипы статистики">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="AutomationProperties.Name" Value="{Binding}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
                                         <ItemsControl.ItemsPanel>
                                             <ItemsPanelTemplate>
                                                 <WrapPanel />
@@ -647,7 +653,7 @@
                                 VerticalAlignment="Top"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть список непочищенных ПК" />
                     </Grid>
 

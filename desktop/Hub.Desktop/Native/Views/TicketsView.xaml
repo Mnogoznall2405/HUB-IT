@@ -97,10 +97,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Статус: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedStatusFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <Button Margin="6,0,0,0"
@@ -117,10 +116,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Объект: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedObjectFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                 </StackPanel>
@@ -159,7 +157,7 @@
                     <Button Margin="10,0,0,0"
                             Style="{StaticResource HubPrimaryButtonStyle}"
                             Command="{Binding NewTicketCommand}"
-                            Content="＋ Новая заявка"
+                            Content="Новая заявка" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                             AutomationProperties.Name="Создать новую заявку на билеты" />
                     <Button Margin="10,0,0,0"
                             Style="{StaticResource HubGhostButtonStyle}"
@@ -199,7 +197,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -243,7 +241,13 @@
                               HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Disabled"
                               AutomationProperties.Name="Канбан-доска заявок на билеты">
-                    <ItemsControl ItemsSource="{Binding KanbanColumns}">
+                    <ItemsControl ItemsSource="{Binding KanbanColumns}"
+                                  AutomationProperties.Name="Колонки доски">
+                        <ItemsControl.ItemContainerStyle>
+                            <Style TargetType="ContentPresenter">
+                                <Setter Property="AutomationProperties.Name" Value="{Binding Title, StringFormat='Колонка: {0}'}" />
+                            </Style>
+                        </ItemsControl.ItemContainerStyle>
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <StackPanel Orientation="Horizontal" />
@@ -794,7 +798,7 @@
                                             VerticalAlignment="Top"
                                             Style="{StaticResource HubGhostButtonStyle}"
                                             Command="{Binding DataContext.CloseDetailCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            Content="✕"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                             Visibility="{Binding DataContext.IsKanbanMode, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
                                             AutomationProperties.Name="Закрыть карточку заявки" />
                                 </Grid>
@@ -923,7 +927,13 @@
                                             Visibility="{Binding CanWrite, Converter={StaticResource BoolToVisibility}}"
                                             AutomationProperties.Name="Прикрепить файл к заявке" />
                                 </Grid>
-                                <ItemsControl ItemsSource="{Binding Attachments}">
+                                <ItemsControl ItemsSource="{Binding Attachments}"
+                                              AutomationProperties.Name="Вложения заявки">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
                                             <WrapPanel />
@@ -940,7 +950,10 @@
                                                         IsEnabled="{Binding IsDownloadEnabled}"
                                                         AutomationProperties.Name="{Binding Name, StringFormat='Скачать файл {0}'}">
                                                     <StackPanel Orientation="Horizontal">
-                                                        <TextBlock FontSize="12" Text="📄 " />
+                                                        <local:VectorIcon Size="12"
+                                                                          VerticalAlignment="Center"
+                                                                          Margin="0,0,4,0"
+                                                                          Data="{x:Static local:VectorIcons.Document}" />
                                                         <TextBlock FontSize="12" Text="{Binding DisplayText}" />
                                                     </StackPanel>
                                                 </Button>
@@ -951,6 +964,7 @@
                                                         CommandParameter="{Binding}"
                                                         IsEnabled="{Binding IsDeleteEnabled}"
                                                         Content="{Binding DeleteText}"
+                                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Trash}"
                                                         Visibility="{Binding DataContext.CanWriteTickets, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVisibility}}"
                                                         AutomationProperties.Name="{Binding Name, StringFormat='Удалить файл {0}'}" />
                                             </StackPanel>
@@ -994,7 +1008,13 @@
                                             </TextBlock.Style>
                                         </TextBlock>
                                     </Grid>
-                                    <ItemsControl ItemsSource="{Binding StatusActions}">
+                                    <ItemsControl ItemsSource="{Binding StatusActions}"
+                                                  AutomationProperties.Name="Действия со статусом заявки">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
                                         <ItemsControl.ItemsPanel>
                                             <ItemsPanelTemplate>
                                                 <WrapPanel />
@@ -1020,7 +1040,13 @@
                                            Style="{StaticResource HubSectionTitleStyle}"
                                            FontSize="14"
                                            Text="Комментарии" />
-                                <ItemsControl ItemsSource="{Binding Comments}">
+                                <ItemsControl ItemsSource="{Binding Comments}"
+                                              AutomationProperties.Name="Комментарии заявки">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding MetaText, StringFormat='Комментарий: {0}'}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border Margin="0,0,0,8"
@@ -1191,7 +1217,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть форму создания заявки" />
                     </Grid>
 
@@ -1285,7 +1311,7 @@
                                             VerticalAlignment="Center"
                                             Style="{StaticResource HubGhostButtonStyle}"
                                             Command="{Binding ClearEmployeeCommand}"
-                                            Content="✕"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                             AutomationProperties.Name="Сбросить выбранного сотрудника" />
                                 </Grid>
                             </Border>
@@ -1425,10 +1451,17 @@
                                         Padding="8,2"
                                         Style="{StaticResource HubGhostButtonStyle}"
                                         Command="{Binding AttachCommand}"
-                                        Content="📎 Прикрепить"
+                                        Content="Прикрепить"
+                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Attach}"
                                         AutomationProperties.Name="Прикрепить файл к заявке" />
                             </Grid>
-                            <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Files}">
+                            <ItemsControl Margin="0,6,0,0" ItemsSource="{Binding Files}"
+                                          AutomationProperties.Name="Файлы заявки">
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <WrapPanel />
@@ -1443,14 +1476,17 @@
                                                 BorderThickness="1"
                                                 CornerRadius="6">
                                             <StackPanel Orientation="Horizontal">
-                                                <TextBlock FontSize="12" Text="📎 " />
+                                                <local:VectorIcon Size="12"
+                                                                  VerticalAlignment="Center"
+                                                                  Margin="0,0,4,0"
+                                                                  Data="{x:Static local:VectorIcons.Attach}" />
                                                 <TextBlock FontSize="12" Text="{Binding DisplayText}" />
                                                 <Button Margin="8,0,0,0"
                                                         Padding="2,0"
                                                         Style="{StaticResource HubGhostButtonStyle}"
                                                         Command="{Binding DataContext.RemoveFileCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                         CommandParameter="{Binding}"
-                                                        Content="✕"
+                                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                                         AutomationProperties.Name="{Binding Name, StringFormat='Убрать файл {0}'}" />
                                             </StackPanel>
                                         </Border>
@@ -1508,7 +1544,7 @@
                             Padding="4,0"
                             Style="{StaticResource HubGhostButtonStyle}"
                             Command="{Binding DismissStatusCommand}"
-                            Content="✕"
+                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                             AutomationProperties.Name="Скрыть статусное сообщение" />
                 </StackPanel>
             </Grid>

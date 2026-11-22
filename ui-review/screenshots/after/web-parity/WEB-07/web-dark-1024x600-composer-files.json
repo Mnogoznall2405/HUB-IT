@@ -1,0 +1,26 @@
+{
+  "viewport": {
+    "w": 1024,
+    "h": 600
+  },
+  "shell": {
+    "x": 0,
+    "y": 50,
+    "w": 1024,
+    "h": 550
+  },
+  "sidebar": {
+    "x": 0,
+    "y": 187,
+    "w": 419,
+    "h": 414
+  },
+  "thread": null,
+  "threadScroll": null,
+  "composerDock": null,
+  "composerCapsule": null,
+  "composerTextarea": null,
+  "rightOverlay": null,
+  "rightPersistent": null,
+  "infoButton": null
+}

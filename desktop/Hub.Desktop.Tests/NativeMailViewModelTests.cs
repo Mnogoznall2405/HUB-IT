@@ -1779,7 +1779,7 @@ public sealed class NativeMailViewModelTests
         await model.LoadAsync();
         var inbox = model.Folders[0];
         Assert.False(inbox.IsFavorite);
-        Assert.Equal("☆ В избранное", inbox.FavoriteText);
+        Assert.Equal("В избранное", inbox.FavoriteText);
 
         await ((NativeAsyncCommand)model.ToggleFolderFavoriteCommand).ExecuteAsync(inbox);
 
@@ -1788,7 +1788,7 @@ public sealed class NativeMailViewModelTests
         Assert.Equal("mb-1", call.MailboxId);
         Assert.True(call.Favorite);
         Assert.True(inbox.IsFavorite);
-        Assert.Equal("★ Убрать из избранного", inbox.FavoriteText);
+        Assert.Equal("Убрать из избранного", inbox.FavoriteText);
     }
 
     [Fact]
@@ -1837,7 +1837,7 @@ public sealed class NativeMailViewModelTests
         await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
         Assert.False(model.Detail!.IsImportant);
         Assert.False(model.Items[0].IsImportant);
-        Assert.Equal("❗ Важное", model.Detail.ImportanceToggleText);
+        Assert.Equal("Важное", model.Detail.ImportanceToggleText);
 
         await ((NativeAsyncCommand)model.ToggleImportanceCommand).ExecuteAsync(null);
 
@@ -2152,13 +2152,46 @@ public sealed class NativeMailViewModelTests
         Assert.Equal("Входящие", model.ListHeaderTitle);
         Assert.False(model.SearchAllFolders);
 
-        // Поиск по всем папкам: заголовок честно говорит «Все папки»,
-        // а не имя выбранной строки рейки.
+        // Чип без поискового текста не переключает заголовок: область
+        // «все папки» применяется только при реальном запросе (FolderScope
+        // уходит на сервер только с непустым SearchText).
         model.SearchAllFolders = true;
 
+        Assert.Equal("Входящие", model.ListHeaderTitle);
+        Assert.Equal("Текущая папка: Входящие", model.ListHeaderAutomationName);
+
+        // Поиск по всем папкам: заголовок честно говорит «Все папки»,
+        // а не имя выбранной строки рейки.
+        model.SearchText = "акт";
+
         Assert.Equal("Все папки", model.ListHeaderTitle);
+        Assert.Equal("Область поиска: все папки", model.ListHeaderAutomationName);
+
         model.SearchAllFolders = false;
         Assert.Equal("Входящие", model.ListHeaderTitle);
+        Assert.Equal("Текущая папка: Входящие", model.ListHeaderAutomationName);
+    }
+
+    [Fact]
+    public async Task RowAccessibleNameIncludesUnreadAttachmentAndImportance()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items:
+                [
+                    MakePreview("m1", isRead: false, hasAttachments: true, importance: "high"),
+                    MakePreview("m2", isRead: true),
+                ]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        Assert.Equal(
+            "Отправитель: Письмо, 02.03, непрочитанное, с вложением, важное",
+            model.Items[0].AccessibleName);
+        Assert.Equal("Отправитель: Письмо, 02.03", model.Items[1].AccessibleName);
     }
 
     [Fact]
@@ -2284,6 +2317,260 @@ public sealed class NativeMailViewModelTests
 
         Assert.Single(model.Items);
         Assert.True(model.HasBannerError);
+    }
+
+    // Плюрализация счётчика: паттерн «not >= 12 and <= 14» без скобок читается
+    // как «(not >= 12) and <= 14» — 22-24, 92-94… получали «писем» (этап 29).
+    [Theory]
+    [InlineData(1, "1 письмо")]
+    [InlineData(2, "2 письма")]
+    [InlineData(4, "4 письма")]
+    [InlineData(5, "5 писем")]
+    [InlineData(11, "11 писем")]
+    [InlineData(12, "12 писем")]
+    [InlineData(14, "14 писем")]
+    [InlineData(21, "21 письмо")]
+    [InlineData(22, "22 письма")]
+    [InlineData(24, "24 письма")]
+    [InlineData(25, "25 писем")]
+    [InlineData(71, "71 письмо")]
+    [InlineData(93, "93 письма")]
+    [InlineData(101, "101 письмо")]
+    [InlineData(102, "102 письма")]
+    [InlineData(111, "111 писем")]
+    [InlineData(112, "112 писем")]
+    [InlineData(114, "114 писем")]
+    [InlineData(122, "122 письма")]
+    [InlineData(340, "340 писем")]
+    [InlineData(855, "855 писем")]
+    public void ListHeaderCountPluralizesAcrossBounds(int total, string expected)
+    {
+        Assert.Equal(expected, MailViewModel.PluralizeMailCount(total.ToString()));
+    }
+
+    // Счётчики обязаны показывать три разных числа: всего (сервер) / загружено
+    // (Items.Count) / осталось (total − загружено). «Показать ещё (854)» рядом
+    // с заголовком «854 письма» — регресс этапа 8: Remaining и Total нельзя
+    // взаимозаменять (живой кадр пользователя показал дубль).
+    [Fact]
+    public async Task CountersShowTotalLoadedAndRemainingSeparately()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1"), MakePreview("m2")],
+                total: 5,
+                hasMore: true,
+                nextOffset: 2),
+            MailMessagesPageFactory = query => new HubMailMessagePage
+            {
+                Items = [MakePreview("m3"), MakePreview("m4"), MakePreview("m5")],
+                Total = 5,
+                Offset = query.Offset,
+                HasMore = false,
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        Assert.Equal(2, model.Items.Count);
+        Assert.Equal(3, model.RemainingCount);
+        Assert.Equal("5 писем · загружено 2", model.ListHeaderCountText);
+        Assert.Equal("Показать ещё (3)", model.MoreButtonText);
+        Assert.Equal("Загружено 2 из 5; показать следующую порцию", model.LoadMoreToolTip);
+
+        await ((NativeAsyncCommand)model.LoadMoreCommand).ExecuteAsync(null);
+
+        Assert.False(model.HasMore);
+        Assert.Equal(5, model.Items.Count);
+        Assert.Equal(0, model.RemainingCount);
+        // Всё загружено: приписка «загружено N» исчезает, остаётся итог выдачи.
+        Assert.Equal("5 писем", model.ListHeaderCountText);
+    }
+
+    // Фильтр «Непрочитанные» — серверный (unread_only в запросе): после смены
+    // сегмента список перезагружается и счётчик показывает отфильтрованный
+    // итог сервера, а не полное число папки.
+    [Fact]
+    public async Task UnreadFilterQueriesServerAndShowsFilteredTotal()
+    {
+        var queries = new List<HubMailMessageQuery>();
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1"), MakePreview("m2", isRead: false)],
+                total: 2),
+            MailMessagesPageFactory = query =>
+            {
+                queries.Add(query);
+                return new HubMailMessagePage
+                {
+                    Items = [MakePreview("m2", isRead: false)],
+                    Total = 1,
+                    Offset = query.Offset,
+                    HasMore = false,
+                };
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        Assert.Empty(queries);
+
+        await ((NativeAsyncCommand)model.SelectFilterCommand).ExecuteAsync("unread");
+
+        Assert.Equal("unread", model.Filter);
+        Assert.True(model.UnreadOnly);
+        Assert.True(model.IsFilterUnread);
+        var reloaded = Assert.Single(queries);
+        Assert.True(reloaded.UnreadOnly);
+        Assert.Equal(0, reloaded.Offset);
+        Assert.Single(model.Items);
+        Assert.Equal(0, model.RemainingCount);
+        Assert.Equal("1 письмо", model.ListHeaderCountText);
+    }
+
+    // Три-стейт «Выбрать все загруженные»: ничего → false, часть → null
+    // (indeterminate), все → true; сеттер от чекбокса отмечает/снимает все
+    // показанные строки. Выбор всех писем папки API не поддерживает — поэтому
+    // состояние считается только по загруженной порции (этап 8).
+    [Fact]
+    public async Task SelectAllLoadedCheckboxReflectsPartialAndFullSelection()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1"), MakePreview("m2"), MakePreview("m3")]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        Assert.False(model.IsAllLoadedChecked);
+        Assert.False(model.HasSelection);
+        Assert.Equal("Выбрано: 0", model.SelectionText);
+
+        model.Items[0].IsChecked = true;
+        Assert.Null(model.IsAllLoadedChecked);
+        Assert.True(model.HasSelection);
+        Assert.Equal("Выбрано: 1", model.SelectionText);
+
+        model.Items[1].IsChecked = true;
+        model.Items[2].IsChecked = true;
+        Assert.True(model.IsAllLoadedChecked);
+        Assert.Equal(3, model.SelectedCount);
+        Assert.Equal("Выбрано: 3", model.SelectionText);
+
+        model.IsAllLoadedChecked = false;
+        Assert.Equal(0, model.SelectedCount);
+        Assert.False(model.IsAllLoadedChecked);
+        Assert.False(model.HasSelection);
+
+        model.IsAllLoadedChecked = true;
+        Assert.Equal(3, model.SelectedCount);
+        Assert.True(model.IsAllLoadedChecked);
+    }
+
+    // Ненастроенный ящик: «Новое письмо» (как IT-заявка и «Папка») гасится —
+    // композер открылся бы за оверлеем «Почта пока недоступна» и выглядел
+    // мёртвой кнопкой. После настройки — снова активна.
+    [Fact]
+    public async Task NewMessageDisabledWhenMailboxNotConfigured()
+    {
+        var notConfigured = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(configureMailbox: mailbox => mailbox.MailIsConfigured = false),
+        };
+        var model = new MailViewModel(notConfigured);
+        await model.LoadAsync();
+
+        Assert.True(model.ShowSetupHint);
+        Assert.False(model.NewMessageCommand.CanExecute(null));
+        Assert.False(model.OpenItRequestCommand.CanExecute(null));
+        Assert.False(model.NewFolderCommand.CanExecute(null));
+
+        var configured = new MailViewModel(new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1")]),
+        });
+        await configured.LoadAsync();
+
+        Assert.False(configured.ShowSetupHint);
+        Assert.True(configured.NewMessageCommand.CanExecute(null));
+        Assert.True(configured.NewFolderCommand.CanExecute(null));
+    }
+
+    // Правый клик по строке раньше не выставлял KebabTargetItem (это делал
+    // только kebab-кнопка): «Переместить в…» из контекстного меню был disabled,
+    // а после закрытого kebab-меню перемещал ЧУЖОЕ письмо (устаревшая цель).
+    // Теперь цель ставится на ContextMenuOpening и снимается на Closing —
+    // семантика: перемещается письмо-цель, а не выбранное; пустая цель
+    // блокирует CanExecute.
+    [Fact]
+    public async Task MoveItemFromKebabMovesTargetLetterAndClearsIt()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие"), MakeFolder("archive", "Архив")],
+                items: [MakePreview("m1"), MakePreview("m2")]),
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+        // Для чистоты сценария «правого клика» выбранное письмо — другое.
+        model.SelectedItem = model.Items[0];
+
+        Assert.False(model.MoveItemFromKebabCommand.CanExecute("archive"));
+        model.KebabTargetItem = model.Items[1];
+        Assert.True(model.MoveItemFromKebabCommand.CanExecute("archive"));
+
+        await ((NativeAsyncCommand)model.MoveItemFromKebabCommand).ExecuteAsync("archive");
+
+        var (action, ids, targetFolder, _) = Assert.Single(api.MailBulkCalls);
+        Assert.Equal("move", action);
+        Assert.Equal("archive", targetFolder);
+        Assert.Equal(["m2"], ids);
+        // Цель снята после действия — следующее меню без цели не переместит её.
+        Assert.Null(model.KebabTargetItem);
+        Assert.False(model.MoveItemFromKebabCommand.CanExecute("archive"));
+    }
+
+    // Тулбар без выбранного письма: «Ответить/Ответить всем/Переслать/Удалить»
+    // погашены (CanExecute) — визуальный IsEnabled в XAML следует за ними.
+    [Fact]
+    public async Task MessageCommandsDisabledWithoutSelectedLetter()
+    {
+        var api = new FakeHubApiClient
+        {
+            MailBootstrap = Bootstrap(
+                folders: [MakeFolder("inbox", "Входящие")],
+                items: [MakePreview("m1")]),
+            MailMessageDetail = new HubMailMessageDetail
+            {
+                Id = "m1",
+                Subject = "Тема",
+                IsRead = true,
+                BodyText = "Текст",
+            },
+        };
+        var model = new MailViewModel(api);
+        await model.LoadAsync();
+
+        Assert.False(model.ReplyCommand.CanExecute(null));
+        Assert.False(model.ReplyAllCommand.CanExecute(null));
+        Assert.False(model.ForwardCommand.CanExecute(null));
+        Assert.False(model.DeleteCommand.CanExecute(null));
+
+        model.SelectedItem = model.Items[0];
+        await WaitFor(() => model.Detail is not null && !model.IsDetailLoading);
+
+        Assert.True(model.ReplyCommand.CanExecute(null));
+        Assert.True(model.ReplyAllCommand.CanExecute(null));
+        Assert.True(model.ForwardCommand.CanExecute(null));
+        Assert.True(model.DeleteCommand.CanExecute(null));
     }
 
     private static HubMailFolder NestedFolder(
@@ -2987,7 +3274,9 @@ public sealed class NativeMailViewModelTests
         string id,
         string subject = "Письмо",
         string sender = "sender@zsgp.ru",
-        bool isRead = true) =>
+        bool isRead = true,
+        bool hasAttachments = false,
+        string importance = "normal") =>
         new()
         {
             Id = id,
@@ -2999,6 +3288,8 @@ public sealed class NativeMailViewModelTests
             ReceivedAt = new DateTimeOffset(2026, 3, 2, 10, 0, 0, TimeSpan.FromHours(3)).ToString("O"),
             IsRead = isRead,
             BodyPreview = "Превью письма",
+            HasAttachments = hasAttachments,
+            Importance = importance,
         };
 
     private static HubMailBootstrap Bootstrap(

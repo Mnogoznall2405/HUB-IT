@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Input;
 using Hub.Desktop.Native.Api;
+using Hub.Desktop.Native.Voice;
 using System.Windows;
 // ImplicitUsings тянут System.Drawing — там тоже есть Brush/ImageSource.
 using Brush = System.Windows.Media.Brush;
@@ -88,13 +89,19 @@ public sealed class ChatViewModel : ObservableObject
     private bool _isSelectionMode;
     private readonly List<ChatMessageViewModel> _selectedMessages = [];
     private int _scrollToEndSignal;
-    // Просмотрщик изображений: плоский список image-вложений ленты + позиция.
-    private readonly List<(string MessageId, ChatAttachmentItemViewModel Item)> _mediaViewerItems = [];
+    // Просмотрщик медиа (UI-026): плоский список image/video/audio-вложений —
+    // из ленты сообщений или из галереи (тогда догрузка страниц при листании).
+    private readonly List<MediaViewerEntry> _mediaViewerItems = [];
     private int _mediaViewerIndex = -1;
     private int _mediaViewerLoadMarker;
+    private bool _mediaViewerGallerySource;
     private bool _isMediaViewerOpen;
     private bool _isMediaViewerLoading;
     private ImageSource? _mediaViewerImage;
+    private string? _mediaViewerMediaSource;
+    private string? _mediaViewerPlaybackKind;
+    private string? _mediaViewerUnsupportedText;
+    private string? _mediaViewerStatusText;
     // «Печатает…» по диалогам: маркер таймера на conversation_id —
     // новый started/stopped гасит висящее автоснятие прежнего кадра.
     private readonly Dictionary<string, int> _conversationTypingMarkers = new(StringComparer.Ordinal);
@@ -328,9 +335,11 @@ public sealed class ChatViewModel : ObservableObject
     private bool _isLoading;
     private bool _isLoadingMessages;
     private bool _isLoadingOlder;
+    private bool _hasOlderHistoryError;
     private bool _isSending;
     private bool _isUploading;
     private string? _uploadStatusText;
+    private string? _attachmentCaption;
     private bool _hasOlder;
     private string? _bannerErrorText;
     private string? _historyErrorText;
@@ -368,18 +377,38 @@ public sealed class ChatViewModel : ObservableObject
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
             _ => CanSend);
         AttachCommand = new NativeAsyncCommand(
-            async (_, ct) =>
+            async (parameter, ct) =>
             {
-                var paths = AttachmentPicker?.Invoke() ?? [];
+                // «media»/«document» из меню скрепки: фильтр диалога разделяет
+                // выбор медиа и документов (UI-027), пайплайн дальше общий.
+                var paths = AttachmentPicker?.Invoke(parameter as string) ?? [];
                 await AttachFilesAsync(paths, ct);
             },
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
             _ => CanAttach);
-        // Пути из ОС-драга/вставки картинки — та же upload-сессия, что у «скрепки».
+        // Пути из ОС-драга/вставки картинки — та же очередь подтверждения,
+        // что у «скрепки»: загрузка стартует только из модала (UI-027).
         AttachDroppedFilesCommand = new NativeAsyncCommand(
             (parameter, ct) => AttachFilesAsync(NormalizeDroppedPaths(parameter), ct),
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
             parameter => NormalizeDroppedPaths(parameter).Count > 0 && CanAttach);
+        ConfirmAttachmentsCommand = new NativeAsyncCommand(
+            (_, ct) => ConfirmAttachmentsAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => PendingAttachments.Count > 0 && !IsUploading && !IsSending);
+        RemovePendingAttachmentCommand = new NativeRelayCommand(parameter =>
+        {
+            if (parameter is PendingAttachmentItemViewModel item)
+            {
+                PendingAttachments.Remove(item);
+                RaisePendingAttachmentChanged();
+                if (PendingAttachments.Count == 0)
+                {
+                    ClearPendingAttachments();
+                }
+            }
+        });
+        CancelAttachmentsCommand = new NativeRelayCommand(ClearPendingAttachments);
         LoadOlderCommand = new NativeAsyncCommand(
             (_, ct) => LoadOlderAsync(ct),
             ex => BannerErrorText = TasksViewModel.DescribeError(ex),
@@ -654,7 +683,9 @@ public sealed class ChatViewModel : ObservableObject
         });
         // FAB «вниз»: инкремент сигнала → attached-поведение докручивает ленту.
         ScrollToEndCommand = new NativeRelayCommand(() => ScrollToEndSignal++);
-        // Просмотрщик изображений (media viewer Telegram): навигация, закрытие, ⬇.
+        // Просмотрщик медиа (media viewer Telegram): навигация, закрытие,
+        // явные «Сохранить» (скачать на диск) и «Открыть в другом приложении»
+        // — оба по выбору пользователя, без скрытых запусков (UI-026).
         CloseMediaViewerCommand = new NativeRelayCommand(CloseMediaViewer);
         MediaViewerPrevCommand = new NativeRelayCommand(() => MoveMediaViewer(-1));
         MediaViewerNextCommand = new NativeRelayCommand(() => MoveMediaViewer(1));
@@ -662,10 +693,39 @@ public sealed class ChatViewModel : ObservableObject
         {
             if (_mediaViewerIndex >= 0 && _mediaViewerIndex < _mediaViewerItems.Count)
             {
-                var (messageId, item) = _mediaViewerItems[_mediaViewerIndex];
-                _ = DownloadAndOpenAttachmentAsync(messageId, item.Model, item.FileName);
+                var entry = _mediaViewerItems[_mediaViewerIndex];
+                _ = SaveMediaViewerItemAsync(entry);
             }
         });
+        OpenMediaViewerExternalCommand = new NativeRelayCommand(() =>
+        {
+            if (_mediaViewerIndex >= 0 && _mediaViewerIndex < _mediaViewerItems.Count)
+            {
+                var entry = _mediaViewerItems[_mediaViewerIndex];
+                _ = DownloadAndOpenAttachmentAsync(entry.MessageId, entry.Model, entry.DisplayName);
+            }
+        });
+        // Голосовые (UI-028): запись только по явной команде (FAB-🎤 при
+        // пустом composer), без автостарта; стоп → предпрослушивание,
+        // отмена без сети, отправка — общим upload-пайплайном.
+        StartVoiceRecordingCommand = new NativeAsyncCommand(
+            (_, ct) => StartVoiceRecordingAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => CanVoiceRecord);
+        StopVoiceRecordingCommand = new NativeAsyncCommand(
+            (_, ct) => StopVoiceRecordingAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => IsVoiceRecording);
+        CancelVoiceRecordingCommand = new NativeRelayCommand(
+            CancelVoiceSession,
+            () => IsVoiceRecording || HasVoiceDraft);
+        SendVoiceMessageCommand = new NativeAsyncCommand(
+            (_, ct) => SendVoiceMessageAsync(ct),
+            ex => BannerErrorText = TasksViewModel.DescribeError(ex),
+            _ => HasVoiceDraft && !IsUploading && !IsSending);
+        ToggleVoicePreviewCommand = new NativeRelayCommand(
+            () => IsVoicePreviewPlaying = !IsVoicePreviewPlaying,
+            () => HasVoiceDraft);
         Conversations.CollectionChanged += (_, _) =>
             OnPropertyChanged(nameof(IsConversationSearchEmpty));
         GlobalSearchResults.CollectionChanged += (_, _) =>
@@ -1003,6 +1063,13 @@ public sealed class ChatViewModel : ObservableObject
             SelectedMessage = null;
             OnPropertyChanged(nameof(HasConversation));
             OnPropertyChanged(nameof(IsMessagesEmpty));
+            // UI-027: смена диалога сбрасывает очередь вложений — файлы
+            // и подпись не должны утекать в чужой диалог и мешать
+            // повторному выбору после возврата.
+            ClearPendingAttachments();
+            // UI-028: запись/черновик голосового принадлежит диалогу —
+            // обрываем без сети, чтобы не отправить в чужой чат.
+            CancelVoiceSession();
             RaiseScrollFabBadge();
             RefreshAiConversationState();
             RaiseCommandStates();
@@ -1147,25 +1214,76 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>Заголовок под картинкой — имя файла.</summary>
     public string? MediaViewerTitle =>
         _mediaViewerIndex >= 0 && _mediaViewerIndex < _mediaViewerItems.Count
-            ? _mediaViewerItems[_mediaViewerIndex].Item.FileName
+            ? _mediaViewerItems[_mediaViewerIndex].DisplayName
             : null;
 
-    /// <summary>Счётчик «N из M» — виден, когда image-вложений больше одного.</summary>
+    /// <summary>Счётчик «N из M» — виден, когда элементов больше одного.</summary>
     public string? MediaViewerCounterText =>
         _mediaViewerItems.Count > 1 && _mediaViewerIndex >= 0
             ? $"{_mediaViewerIndex + 1} из {_mediaViewerItems.Count}"
             : null;
 
+    /// <summary>Подсказка в шапке: «Сохранено в …» после явного скачивания.</summary>
+    public string? MediaViewerStatusText
+    {
+        get => _mediaViewerStatusText;
+        private set => SetProperty(ref _mediaViewerStatusText, value);
+    }
+
     public bool MediaViewerCanGoBack => _mediaViewerIndex > 0;
 
     public bool MediaViewerCanGoForward =>
-        _mediaViewerIndex >= 0 && _mediaViewerIndex < _mediaViewerItems.Count - 1;
+        _mediaViewerIndex >= 0 && _mediaViewerIndex < _mediaViewerItems.Count - 1
+        || _mediaViewerGallerySource && HasMoreMedia
+        && _mediaViewerIndex == _mediaViewerItems.Count - 1;
+
+    /// <summary>Локальный файл текущего видео/аудио — Source MediaElement;
+    /// null на смене элемента/закрытии (view гасит воспроизведение).</summary>
+    public string? MediaViewerMediaSource
+    {
+        get => _mediaViewerMediaSource;
+        private set => SetProperty(ref _mediaViewerMediaSource, value);
+    }
+
+    /// <summary>Что показывает просмотрщик: image — картинка, video/audio —
+    /// MediaElement + транспорт, иначе fallback «открыть в другом приложении».</summary>
+    public bool MediaViewerIsImage => _mediaViewerPlaybackKind is null
+        && _mediaViewerUnsupportedText is null && IsMediaViewerOpen;
+
+    public bool MediaViewerIsVideo => _mediaViewerPlaybackKind == "video";
+
+    public bool MediaViewerIsAudio => _mediaViewerPlaybackKind == "audio";
+
+    /// <summary>Формат без встроенного показа — fallback + явный внешний запуск.</summary>
+    public bool MediaViewerIsUnsupported => _mediaViewerUnsupportedText is not null;
+
+    /// <summary>Текст fallback-а неподдерживаемого формата.</summary>
+    public string? MediaViewerUnsupportedText
+    {
+        get => _mediaViewerUnsupportedText;
+        private set => SetProperty(ref _mediaViewerUnsupportedText, value);
+    }
 
     /// <summary>Картинка ещё скачивается — под каркасом крутится подсказка.</summary>
     public bool IsMediaViewerLoading
     {
         get => _isMediaViewerLoading;
         private set => SetProperty(ref _isMediaViewerLoading, value);
+    }
+
+    /// <summary>MediaElement сообщил об ошибке кодека — переводим элемент
+    /// в fallback с явным «Открыть в другом приложении» (UI-026).</summary>
+    public void MarkMediaViewerPlaybackFailed()
+    {
+        if (_mediaViewerPlaybackKind is null)
+        {
+            return;
+        }
+
+        _mediaViewerPlaybackKind = null;
+        MediaViewerMediaSource = null;
+        MediaViewerUnsupportedText = "Формат не поддерживается встроенным воспроизведением.";
+        RaiseMediaViewerKindChanged();
     }
 
     public ICommand CloseMediaViewerCommand { get; }
@@ -1175,6 +1293,9 @@ public sealed class ChatViewModel : ObservableObject
     public ICommand MediaViewerNextCommand { get; }
 
     public ICommand SaveMediaViewerCommand { get; }
+
+    /// <summary>«Открыть в другом приложении» — явный выбор пользователя (UI-026).</summary>
+    public ICommand OpenMediaViewerExternalCommand { get; }
 
     // ---- Состояния ----
 
@@ -1213,6 +1334,12 @@ public sealed class ChatViewModel : ObservableObject
                 RaiseCommandStates();
             }
         }
+    }
+
+    public bool HasOlderHistoryError
+    {
+        get => _hasOlderHistoryError;
+        private set => SetProperty(ref _hasOlderHistoryError, value);
     }
 
     public bool IsSending
@@ -1333,7 +1460,6 @@ public sealed class ChatViewModel : ObservableObject
         {
             if (SetProperty(ref _isUploading, value))
             {
-                OnPropertyChanged(nameof(CanAttach));
                 RaiseCommandStates();
             }
         }
@@ -1354,8 +1480,57 @@ public sealed class ChatViewModel : ObservableObject
 
     public bool HasUploadStatus => !string.IsNullOrEmpty(UploadStatusText);
 
-    /// <summary>Провайдер выбора файлов — подставляет view (OpenFileDialog); null в тестах.</summary>
-    public Func<IReadOnlyList<string>>? AttachmentPicker { get; set; }
+    // ---- Подтверждение вложений (UI-027, tg-send-files) ----
+
+    /// <summary>Файлы, отложенные к подтверждению — выбор/дроп/вставка сначала
+    /// показывают список; upload-сессия создаётся только по «Отправить».</summary>
+    public ObservableCollection<PendingAttachmentItemViewModel> PendingAttachments { get; } = [];
+
+    /// <summary>Диалог-получатель файлов: фиксируется при выборе;
+    /// переключение диалога обнуляет его вместе с очередью (UI-027).</summary>
+    private ConversationItemViewModel? _pendingAttachmentConversation;
+
+    /// <summary>Подпись к отправляемым файлам — отдельное поле модала,
+    /// черновик composer к ней не привязан и после отправки сохраняется.</summary>
+    public string? AttachmentCaption
+    {
+        get => _attachmentCaption;
+        set => SetProperty(ref _attachmentCaption, value);
+    }
+
+    /// <summary>Модал подтверждения виден только в диалоге-владельце очереди;
+    /// переключение чата сбрасывает очередь целиком (UI-027).</summary>
+    public bool IsAttachmentConfirmOpen => PendingAttachments.Count > 0
+        && ReferenceEquals(_pendingAttachmentConversation, _selectedConversation);
+
+    public string? PendingAttachmentTargetTitle => _pendingAttachmentConversation?.Title;
+
+    /// <summary>Заголовок модала: «Отправить файл» / «Отправить 3 файла».</summary>
+    public string PendingAttachmentTitleText => PendingAttachments.Count switch
+    {
+        1 => "Отправить файл",
+        _ => $"Отправить {PendingAttachments.Count} {PluralizeFiles(PendingAttachments.Count)}",
+    };
+
+    private static string PluralizeFiles(int count)
+    {
+        var mod100 = count % 100;
+        if (mod100 is >= 11 and <= 14)
+        {
+            return "файлов";
+        }
+
+        return (count % 10) switch
+        {
+            1 => "файл",
+            2 or 3 or 4 => "файла",
+            _ => "файлов",
+        };
+    }
+
+    /// <summary>Провайдер выбора файлов — подставляет view (OpenFileDialog);
+    /// аргумент — вид («media» фильтрует изображения+видео); null в тестах.</summary>
+    public Func<string?, IReadOnlyList<string>>? AttachmentPicker { get; set; }
 
     /// <summary>Скачивание вложения в temp-папку и открытие системным обработчиком.</summary>
     public Func<HubChatAttachment, string?, Task>? AttachmentSaver { get; set; }
@@ -1390,12 +1565,23 @@ public sealed class ChatViewModel : ObservableObject
 
     public ICommand SendCommand { get; }
 
-    /// <summary>Выбрать файлы и отправить сообщение с вложениями (upload-session).</summary>
+    /// <summary>Выбрать файлы в очередь подтверждения вложений (UI-027);
+    /// параметр — «media»/«document» для фильтра диалога.</summary>
     public ICommand AttachCommand { get; }
 
-    /// <summary>Файлы из drag&amp;drop на ленту/вставки картинки — тот же пайплайн
-    /// upload-session, что и «скрепка» (параметр — пути файлов).</summary>
+    /// <summary>Файлы из drag&amp;drop на ленту/вставки картинки — та же очередь
+    /// подтверждения, что и «скрепка» (параметр — пути файлов).</summary>
     public ICommand AttachDroppedFilesCommand { get; }
+
+    /// <summary>Подтвердить очередь вложений — только здесь стартует
+    /// upload-сессия с показанными файлами и подписью.</summary>
+    public ICommand ConfirmAttachmentsCommand { get; }
+
+    /// <summary>Убрать один файл из очереди подтверждения (крест строки).</summary>
+    public ICommand RemovePendingAttachmentCommand { get; }
+
+    /// <summary>Отменить очередь вложений целиком — черновик не затрагивается.</summary>
+    public ICommand CancelAttachmentsCommand { get; }
 
     public ICommand LoadOlderCommand { get; }
 
@@ -1568,12 +1754,24 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>Подпись кнопки отправки.</summary>
     public string SendButtonText => EditingMessage is not null ? "Сохранить" : "Отправить";
 
+    /// <summary>FAB показывает ➤/✓ — есть текст или идёт правка; голосовая
+    /// панель (запись/черновик) прячет текстовую отправку (UI-028).</summary>
+    public bool ShowSendFab =>
+        (HasComposerText || EditingMessage is not null) && !VoiceBarVisible;
+
+    /// <summary>FAB показывает 🎤 — пустой composer без правки и голосовой
+    /// сессии; запись только по явному нажатию (UI-028).</summary>
+    public bool ShowMicFab =>
+        !HasComposerText && EditingMessage is null && !VoiceBarVisible && HasConversation;
+
     private void RaiseComposerContextChanged()
     {
         OnPropertyChanged(nameof(HasComposerContext));
         OnPropertyChanged(nameof(ComposerContextTitle));
         OnPropertyChanged(nameof(ComposerContextText));
         OnPropertyChanged(nameof(SendButtonText));
+        OnPropertyChanged(nameof(ShowSendFab));
+        OnPropertyChanged(nameof(ShowMicFab));
         OnPropertyChanged(nameof(CanScheduleMessage));
         (OpenScheduleEditorCommand as NativeRelayCommand)?.RaiseCanExecuteChanged();
     }
@@ -3575,9 +3773,18 @@ public sealed class ChatViewModel : ObservableObject
         (LoadMoreMediaCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
     }
 
-    /// <summary>Клик по плитке — тот же путь, что у чипа вложения: скачать и открыть.</summary>
-    private Task OpenMediaItemAsync(ChatMediaItemViewModel item) =>
-        DownloadAndOpenAttachmentAsync(item.MessageId, item.Model, item.FileName);
+    /// <summary>Клик по плитке (UI-026): image/video/audio — тот же
+    /// просмотрщик, что у пузыря; файлы — скачать и открыть как раньше.</summary>
+    private Task OpenMediaItemAsync(ChatMediaItemViewModel item)
+    {
+        if (ResolveMediaViewerKind(item.Model) is not null)
+        {
+            OpenMediaViewerForGalleryItem(item);
+            return Task.CompletedTask;
+        }
+
+        return DownloadAndOpenAttachmentAsync(item.MessageId, item.Model, item.FileName);
+    }
 
     private void CloseMediaPanel()
     {
@@ -3596,11 +3803,18 @@ public sealed class ChatViewModel : ObservableObject
     /// Открытие ссылки из карточки превью — во внешнем браузере;
     /// только http/https, прочие схемы игнорируем (как guard в web).
     /// </summary>
-    private async Task OpenLinkPreviewAsync(
+    private Task OpenLinkPreviewAsync(
         ChatMessageViewModel message,
-        ChatLinkPreviewItemViewModel item)
+        ChatLinkPreviewItemViewModel item) =>
+        OpenExternalLinkAsync(item.Url);
+
+    /// <summary>
+    /// Открытие http(s)-ссылки во внешнем браузере — общий guard для карточки
+    /// превью и кликабельных ссылок в тексте пузыря (прочие схемы игнорируем).
+    /// </summary>
+    private async Task OpenExternalLinkAsync(string url)
     {
-        if (!Uri.TryCreate(item.Url, UriKind.Absolute, out var uri)
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
         {
             return;
@@ -4394,6 +4608,8 @@ public sealed class ChatViewModel : ObservableObject
         IsSending = false;
         IsUploading = false;
         UploadStatusText = null;
+        ClearPendingAttachments();
+        CancelVoiceSession();
         IsLoading = false;
         IsLoadingMessages = false;
         IsLoadingOlder = false;
@@ -4705,6 +4921,7 @@ public sealed class ChatViewModel : ObservableObject
         IsLoadingMessages = true;
         Messages.Clear();
         HasOlder = false;
+        HasOlderHistoryError = false;
         _olderCursor = null;
         HistoryErrorText = null;
         try
@@ -4735,6 +4952,12 @@ public sealed class ChatViewModel : ObservableObject
             ApplyUnreadDivider(conversation.UnreadCount, page.ViewerLastReadMessageId);
             conversation.ClearUnread();
             OnPropertyChanged(nameof(TotalUnreadCount));
+
+            // UI-017: страница истории несёт delivery_status — синк галочек строки.
+            if (Messages.LastOrDefault() is { } tailMessage)
+            {
+                conversation.SyncLastMessageStatus(tailMessage);
+            }
 
             var lastId = Messages.LastOrDefault()?.Id;
             if (!string.IsNullOrEmpty(lastId))
@@ -4844,6 +5067,7 @@ public sealed class ChatViewModel : ObservableObject
         }
 
         IsLoadingOlder = true;
+        HasOlderHistoryError = false;
         try
         {
             var page = await _api.GetChatMessagesAsync(
@@ -4875,7 +5099,7 @@ public sealed class ChatViewModel : ObservableObject
         catch (Exception ex) when (ex is not OperationCanceledException
             && ReferenceEquals(_selectedConversation, conversation))
         {
-            BannerErrorText = TasksViewModel.DescribeError(ex);
+            HasOlderHistoryError = true;
         }
         finally
         {
@@ -4959,19 +5183,26 @@ public sealed class ChatViewModel : ObservableObject
         };
 
     /// <summary>
-    /// Отправка файлов как вложений: POST upload-session → чанки по chunk_size_bytes →
-    /// POST complete → готовое сообщение в ленту. Текст composer и ответ-на идут в тело сессии.
+    /// Постановка файлов в очередь подтверждения (UI-027): валидация и список —
+    /// сеть не трогается. Повторный выбор в том же диалоге дополняет очередь,
+    /// в другом — заменяет (получатель всегда один — открытый диалог выбора).
+    /// Загрузка стартует только из ConfirmAttachmentsAsync.
     /// </summary>
-    internal async Task AttachFilesAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken)
+    internal Task AttachFilesAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken)
     {
         var conversation = SelectedConversation;
-        if (conversation is null || paths.Count == 0 || IsUploading || IsSending)
+        if (conversation is null || paths.Count == 0)
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        var requests = new List<HubChatUploadFileRequest>();
-        var sourcePaths = new List<string>();
+        if (!ReferenceEquals(_pendingAttachmentConversation, conversation))
+        {
+            PendingAttachments.Clear();
+            AttachmentCaption = null;
+        }
+
+        _pendingAttachmentConversation = conversation;
         foreach (var path in paths)
         {
             if (string.IsNullOrWhiteSpace(path))
@@ -4985,31 +5216,348 @@ public sealed class ChatViewModel : ObservableObject
                 if (!info.Exists || info.Length <= 0)
                 {
                     BannerErrorText = $"Файл «{Path.GetFileName(path)}» не найден или пуст.";
-                    return;
+                    return Task.CompletedTask;
                 }
 
-                requests.Add(new HubChatUploadFileRequest
-                {
-                    FileName = info.Name,
-                    MimeType = GuessMimeType(info.Extension),
-                    Size = info.Length,
-                    OriginalSize = info.Length,
-                });
-                sourcePaths.Add(path);
+                PendingAttachments.Add(new PendingAttachmentItemViewModel(
+                    path,
+                    new HubChatUploadFileRequest
+                    {
+                        FileName = info.Name,
+                        MimeType = GuessMimeType(info.Extension),
+                        Size = info.Length,
+                        OriginalSize = info.Length,
+                    }));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 BannerErrorText = $"Нет доступа к файлу «{Path.GetFileName(path)}».";
-                return;
+                return Task.CompletedTask;
             }
         }
 
-        if (requests.Count == 0)
+        RaisePendingAttachmentChanged();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Пересчёт заголовка/счётчика очереди и состояния кнопок модала.</summary>
+    private void RaisePendingAttachmentChanged()
+    {
+        OnPropertyChanged(nameof(IsAttachmentConfirmOpen));
+        OnPropertyChanged(nameof(PendingAttachmentTitleText));
+        OnPropertyChanged(nameof(PendingAttachmentTargetTitle));
+        (ConfirmAttachmentsCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>Сброс очереди подтверждения: модал закрывается, файлы не отправлены.</summary>
+    internal void ClearPendingAttachments()
+    {
+        if (PendingAttachments.Count == 0 && _pendingAttachmentConversation is null)
         {
             return;
         }
 
+        PendingAttachments.Clear();
+        _pendingAttachmentConversation = null;
+        AttachmentCaption = null;
+        RaisePendingAttachmentChanged();
+    }
+
+    // ═══ Голосовые сообщения (UI-028): запись → предпрослушивание → отправка ═══
+
+    private INativeVoiceRecorder? _voiceRecorder;
+    private NativeVoiceRecording? _voiceDraft;
+    private ConversationItemViewModel? _voiceConversation;
+    private CancellationTokenSource? _voiceUiCts;
+    private bool _isVoiceRecording;
+    private bool _isVoicePreviewPlaying;
+    private string _voiceElapsedText = "0:00";
+
+    /// <summary>Идёт запись — composer показывает панель с таймером и отменой.</summary>
+    public bool IsVoiceRecording
+    {
+        get => _isVoiceRecording;
+        private set => SetProperty(ref _isVoiceRecording, value);
+    }
+
+    /// <summary>Запись остановлена и ждёт «Прослушать/Отправить/Удалить».</summary>
+    public bool HasVoiceDraft => _voiceDraft is not null;
+
+    /// <summary>Панель голосового вместо поля ввода (запись или черновик).</summary>
+    public bool VoiceBarVisible => IsVoiceRecording || HasVoiceDraft;
+
+    /// <summary>Текст панели: «Запись m:ss» при записи, «Голосовое m:ss» у черновика.</summary>
+    public string VoiceElapsedText
+    {
+        get => _voiceElapsedText;
+        private set => SetProperty(ref _voiceElapsedText, value);
+    }
+
+    /// <summary>Путь записанного файла — view ставит его в MediaElement превью.</summary>
+    public string? VoicePreviewSource => _voiceDraft?.FilePath;
+
+    /// <summary>Играет ли превью черновика — двигает глиф ▶/⏸ и реальный плеер.</summary>
+    public bool IsVoicePreviewPlaying
+    {
+        get => _isVoicePreviewPlaying;
+        set => SetProperty(ref _isVoicePreviewPlaying, value);
+    }
+
+    /// <summary>Фабрика рекордера — в тестах фейк, в проде MediaCapture (UI-028).</summary>
+    public Func<INativeVoiceRecorder>? VoiceRecorderFactory { get; set; }
+
+    public bool CanVoiceRecord =>
+        HasConversation && !IsSending && !IsUploading && EditingMessage is null && !IsVoiceRecording;
+
+    public ICommand StartVoiceRecordingCommand { get; }
+    public ICommand StopVoiceRecordingCommand { get; }
+    public ICommand CancelVoiceRecordingCommand { get; }
+    public ICommand SendVoiceMessageCommand { get; }
+    public ICommand ToggleVoicePreviewCommand { get; }
+
+    /// <summary>MediaElement доиграл черновик — view сигналит сюда, глиф → ▶.</summary>
+    public void NotifyVoicePreviewEnded() => IsVoicePreviewPlaying = false;
+
+    private static string FormatVoiceElapsed(TimeSpan span) =>
+        span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"m\:ss", CultureInfo.InvariantCulture);
+
+    private async Task StartVoiceRecordingAsync(CancellationToken cancellationToken)
+    {
+        var conversation = SelectedConversation;
+        if (conversation is null || !CanVoiceRecord)
+        {
+            return;
+        }
+
+        var recorder = VoiceRecorderFactory?.Invoke() ?? new MediaCaptureVoiceRecorder();
+        try
+        {
+            await recorder.StartAsync(cancellationToken);
+        }
+        catch (NativeVoiceStartException ex)
+        {
+            BannerErrorText = ex.Kind switch
+            {
+                NativeVoiceStartError.NoDevice => "Микрофон не найден — проверьте подключение.",
+                NativeVoiceStartError.PermissionDenied => "Нет доступа к микрофону — разрешите его в настройках Windows.",
+                _ => "Запись голосовых недоступна на этом устройстве.",
+            };
+            recorder.Dispose();
+            return;
+        }
+        catch (OperationCanceledException)
+        {
+            recorder.Dispose();
+            return;
+        }
+
+        _voiceRecorder = recorder;
+        _voiceConversation = conversation;
+        IsVoiceRecording = true;
+        VoiceElapsedText = "Запись 0:00";
+        _voiceUiCts = new CancellationTokenSource();
+        _ = RunVoiceElapsedLoopAsync(recorder, _voiceUiCts.Token);
+        RaiseVoiceStates();
+    }
+
+    /// <summary>Таймер строки «Запись m:ss» — опрос Elapsed раз в полсекунды.</summary>
+    private async Task RunVoiceElapsedLoopAsync(
+        INativeVoiceRecorder recorder, CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                VoiceElapsedText = "Запись " + FormatVoiceElapsed(recorder.Elapsed);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task StopVoiceRecordingAsync(CancellationToken cancellationToken)
+    {
+        var recorder = _voiceRecorder;
+        _voiceRecorder = null;
+        if (recorder is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _voiceDraft = await recorder.StopAsync(cancellationToken);
+            VoiceElapsedText = "Голосовое " + FormatVoiceElapsed(_voiceDraft.Duration);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            BannerErrorText = TasksViewModel.DescribeError(ex);
+        }
+        finally
+        {
+            _voiceUiCts?.Cancel();
+            _voiceUiCts = null;
+            IsVoiceRecording = false;
+            recorder.Dispose();
+            RaiseVoiceStates();
+        }
+    }
+
+    /// <summary>Отмена записи/черновика: рекордер обрывается, temp-файл чистится,
+    /// сеть не трогается. Смена диалога и сброс сессии идут сюда же (UI-028).</summary>
+    private void CancelVoiceSession()
+    {
+        _voiceUiCts?.Cancel();
+        _voiceUiCts = null;
+        var recorder = _voiceRecorder;
+        _voiceRecorder = null;
+        recorder?.Abort();
+        recorder?.Dispose();
+        DeleteVoiceDraftFile();
+        _voiceDraft = null;
+        _voiceConversation = null;
+        IsVoiceRecording = false;
+        IsVoicePreviewPlaying = false;
+        RaiseVoiceStates();
+    }
+
+    /// <summary>Удалить temp-файл черновика — после отправки и отмены.</summary>
+    private void DeleteVoiceDraftFile()
+    {
+        var path = _voiceDraft?.FilePath;
+        if (path is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private void RaiseVoiceStates()
+    {
+        OnPropertyChanged(nameof(IsVoiceRecording));
+        OnPropertyChanged(nameof(HasVoiceDraft));
+        OnPropertyChanged(nameof(VoiceBarVisible));
+        OnPropertyChanged(nameof(VoicePreviewSource));
+        OnPropertyChanged(nameof(SendButtonText));
+        OnPropertyChanged(nameof(ShowSendFab));
+        OnPropertyChanged(nameof(ShowMicFab));
+        OnPropertyChanged(nameof(CanVoiceRecord));
+        (StartVoiceRecordingCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (StopVoiceRecordingCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (SendVoiceMessageCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>Отправка черновика: та же upload-сессия, файл voice_*.m4a
+    /// с media_kind=audio и duration_seconds — как у web (UI-028).</summary>
+    private async Task SendVoiceMessageAsync(CancellationToken cancellationToken)
+    {
+        var draft = _voiceDraft;
+        var conversation = _voiceConversation;
+        if (draft is null || conversation is null || IsUploading || IsSending)
+        {
+            return;
+        }
+
+        var info = new FileInfo(draft.FilePath);
+        if (!info.Exists || info.Length <= 0)
+        {
+            BannerErrorText = "Запись потеряна — файл черновика недоступен.";
+            CancelVoiceSession();
+            return;
+        }
+
+        var request = new HubChatUploadFileRequest
+        {
+            FileName = Path.GetFileName(draft.FilePath),
+            MimeType = draft.MimeType,
+            MediaKind = "audio",
+            Size = info.Length,
+            OriginalSize = info.Length,
+            DurationSeconds = (int)Math.Round(draft.Duration.TotalSeconds),
+        };
         IsUploading = true;
+        try
+        {
+            if (await UploadFilesToConversationAsync(
+                    conversation, null, [request], [draft.FilePath], cancellationToken))
+            {
+                _voiceUiCts?.Cancel();
+                _voiceUiCts = null;
+                DeleteVoiceDraftFile();
+                _voiceDraft = null;
+                _voiceConversation = null;
+                IsVoicePreviewPlaying = false;
+                RaiseVoiceStates();
+            }
+        }
+        finally
+        {
+            IsUploading = false;
+            UploadStatusText = null;
+        }
+    }
+
+    /// <summary>
+    /// Подтверждение очереди (UI-027): POST upload-session → чанки по
+    /// chunk_size_bytes → POST complete → готовое сообщение в ленту. Подпись
+    /// модала и ответ-на идут в тело сессии; черновик composer не расходуется.
+    /// </summary>
+    private async Task ConfirmAttachmentsAsync(CancellationToken cancellationToken)
+    {
+        var conversation = _pendingAttachmentConversation;
+        if (conversation is null || PendingAttachments.Count == 0 || IsUploading || IsSending)
+        {
+            return;
+        }
+
+        var requests = PendingAttachments.Select(i => i.Request).ToList();
+        var sourcePaths = PendingAttachments.Select(i => i.Path).ToList();
+        var caption = string.IsNullOrWhiteSpace(AttachmentCaption) ? null : AttachmentCaption.Trim();
+
+        IsUploading = true;
+        try
+        {
+            if (await UploadFilesToConversationAsync(
+                    conversation, caption, requests, sourcePaths, cancellationToken))
+            {
+                ClearPendingAttachments();
+            }
+        }
+        finally
+        {
+            IsUploading = false;
+            UploadStatusText = null;
+        }
+    }
+
+    /// <summary>
+    /// Общий upload-пайплайн (UI-027/UI-028): POST upload-session → чанки по
+    /// chunk_size_bytes → POST complete → сообщение в ленту. Подпись и
+    /// ответ-на идут в тело сессии. Возвращает true при успехе — очистка
+    /// очереди/голосового на вызывающей стороне.
+    /// </summary>
+    private async Task<bool> UploadFilesToConversationAsync(
+        ConversationItemViewModel conversation,
+        string? caption,
+        IReadOnlyList<HubChatUploadFileRequest> requests,
+        IReadOnlyList<string> sourcePaths,
+        CancellationToken cancellationToken)
+    {
         UploadStatusText = requests.Count == 1
             ? $"Отправка файла «{requests[0].FileName}»…"
             : $"Отправка {requests.Count} файлов…";
@@ -5018,7 +5566,7 @@ public sealed class ChatViewModel : ObservableObject
         {
             var session = await _api.CreateChatUploadSessionAsync(
                 conversation.Id,
-                string.IsNullOrWhiteSpace(ComposerText) ? null : ComposerText.Trim(),
+                caption,
                 ReplyingTo?.Id,
                 clientMessageId,
                 requests,
@@ -5030,7 +5578,7 @@ public sealed class ChatViewModel : ObservableObject
                 // Сервер обязан вернуть file_id на каждый заявленный файл —
                 // тихо обрезать нельзя: сообщение ушло бы без части файлов.
                 BannerErrorText = "Сервер не принял часть файлов — попробуйте ещё раз.";
-                return;
+                return false;
             }
 
             // Серверный дефолт 2 МБ — fallback только на сломанный ответ.
@@ -5070,42 +5618,41 @@ public sealed class ChatViewModel : ObservableObject
             var message = await _api.CompleteChatUploadSessionAsync(session.SessionId, cancellationToken);
             if (ReferenceEquals(_selectedConversation, conversation))
             {
-                // Чистим composer только когда диалог не сменился за время загрузки —
-                // иначе стираем черновик другого диалога.
+                // Ответ-на израсходован отправкой — снимаем, как при обычной
+                // отправке; черновик composer не трогаем — подпись отдельная.
                 InsertMessage(message, conversation.IsGroupLike);
-                ComposerText = string.Empty;
                 ClearComposerContext();
             }
 
-            // Вложение ушло — черновик диалога сгорает, как при обычной отправке.
-            PersistDraftNow(conversation.Id, null);
             conversation.UpdateLastMessage(message);
             RebuildVisibleConversations();
             BannerErrorText = null;
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             BannerErrorText = TasksViewModel.DescribeError(ex);
-        }
-        finally
-        {
-            IsUploading = false;
-            UploadStatusText = null;
+            return false;
         }
     }
 
-    /// <summary>Вложения, которые скачиваются прямо сейчас — второй клик не дублирует запрос.</summary>
-    private readonly HashSet<string> _attachmentDownloadsInFlight = new(StringComparer.Ordinal);
+    /// <summary>Вложения, которые скачиваются прямо сейчас: все ожидающие
+    /// делят одну задачу — второй клик не дублирует запрос, а просмотрщик
+    /// просто дожидается той же загрузки (UI-026).</summary>
+    private readonly Dictionary<string, Task<string?>> _attachmentDownloadsInFlight =
+        new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Чип вложения нажат: image — полноэкранный просмотрщик (Telegram),
-    /// прочие виды — скачивание в temp и открытие ассоциацией ОС.
+    /// Чип вложения нажат (UI-026): image/video/audio — просмотрщик Telegram
+    /// (встроенное воспроизведение или fallback), файлы/стикеры — скачивание
+    /// в temp и открытие ассоциацией ОС.
     /// </summary>
     private Task OpenAttachmentAsync(
         ChatMessageViewModel message,
         ChatAttachmentItemViewModel item)
     {
-        if (item.IsImage && !string.IsNullOrEmpty(message.Id))
+        if (!string.IsNullOrEmpty(message.Id)
+            && ResolveMediaViewerKind(item.Model) is not null)
         {
             OpenMediaViewer(message, item);
             return Task.CompletedTask;
@@ -5115,8 +5662,8 @@ public sealed class ChatViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Открыть просмотрщик на нажатом image-вложении: список — все image-вложения
-    /// ленты в порядке сообщений, стрелки листают его в обе стороны.
+    /// Открыть просмотрщик на нажатом вложении (UI-026): список — все
+    /// просматриваемые вложения ленты (image+video+audio) в порядке сообщений.
     /// </summary>
     private void OpenMediaViewer(ChatMessageViewModel message, ChatAttachmentItemViewModel clicked)
     {
@@ -5130,29 +5677,92 @@ public sealed class ChatViewModel : ObservableObject
 
             foreach (var attachment in entry.AttachmentItems)
             {
-                if (attachment.IsImage && !string.IsNullOrEmpty(attachment.Id))
+                var kind = ResolveMediaViewerKind(attachment.Model);
+                if (kind is not null && !string.IsNullOrEmpty(attachment.Id))
                 {
-                    _mediaViewerItems.Add((entry.Id!, attachment));
+                    _mediaViewerItems.Add(new MediaViewerEntry(
+                        entry.Id!, attachment.Model, attachment.FileName, kind.Value));
                 }
             }
         }
 
-        var index = _mediaViewerItems.FindIndex(entry => ReferenceEquals(entry.Item, clicked));
+        var index = _mediaViewerItems.FindIndex(
+            entry => string.Equals(entry.Model.Id, clicked.Id, StringComparison.Ordinal));
         if (index < 0)
         {
             return;
         }
 
+        _mediaViewerGallerySource = false;
         IsMediaViewerOpen = true;
         _ = ShowMediaViewerItemAsync(index);
     }
 
-    /// <summary>Показать элемент просмотрщика: имя, счётчик, докачка через AuthImageLoader.</summary>
-    private async Task ShowMediaViewerItemAsync(int index)
+    /// <summary>
+    /// Открыть просмотрщик из плитки галереи (UI-026): список — все
+    /// просматриваемые плитки текущей вкладки в том же порядке; при листании
+    /// к концу загруженного списка дотягивается следующая страница.
+    /// </summary>
+    private void OpenMediaViewerForGalleryItem(ChatMediaItemViewModel clicked)
     {
-        if (index < 0 || index >= _mediaViewerItems.Count || !IsMediaViewerOpen)
+        RebuildMediaViewerEntriesFromGallery();
+        var index = _mediaViewerItems.FindIndex(
+            entry => string.Equals(entry.Model.Id, clicked.Model.Id, StringComparison.Ordinal));
+        if (index < 0)
         {
             return;
+        }
+
+        _mediaViewerGallerySource = true;
+        IsMediaViewerOpen = true;
+        _ = ShowMediaViewerItemAsync(index);
+    }
+
+    /// <summary>Список просмотрщика из плиток галереи: только просматриваемые
+    /// kind'ы, порядок сетки (created_at desc) сохранён.</summary>
+    private void RebuildMediaViewerEntriesFromGallery()
+    {
+        _mediaViewerItems.Clear();
+        foreach (var tile in MediaItems)
+        {
+            var kind = ResolveMediaViewerKind(tile.Model);
+            if (kind is not null && !string.IsNullOrEmpty(tile.Model.Id))
+            {
+                _mediaViewerItems.Add(new MediaViewerEntry(
+                    tile.MessageId, tile.Model, tile.FileName, kind.Value));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Показать элемент просмотрщика (UI-026): image — полный кадр через
+    /// AuthImageLoader; video/audio из проигрываемых контейнеров — скачиваем
+    /// в temp и отдаём MediaElement; прочее — fallback с явным внешним
+    /// запуском. Галерейный список при упоре в конец дотягивает страницу.
+    /// </summary>
+    private async Task ShowMediaViewerItemAsync(int index)
+    {
+        if (!IsMediaViewerOpen || index < 0)
+        {
+            return;
+        }
+
+        if (index >= _mediaViewerItems.Count)
+        {
+            // Галерея: конец загруженного — подтягиваем следующую страницу
+            // и пересобираем список (курсоры/флаги живут в _mediaStreams).
+            if (!_mediaViewerGallerySource || !HasMoreMedia || IsLoadingMoreMedia)
+            {
+                return;
+            }
+
+            await LoadMoreMediaAsync(CancellationToken.None);
+            RebuildMediaViewerEntriesFromGallery();
+            if (index >= _mediaViewerItems.Count)
+            {
+                // Страница ничего просматриваемого не добавила — конец списка.
+                return;
+            }
         }
 
         _mediaViewerIndex = index;
@@ -5163,25 +5773,81 @@ public sealed class ChatViewModel : ObservableObject
 
         var marker = ++_mediaViewerLoadMarker;
         MediaViewerImage = null;
+        MediaViewerMediaSource = null;
+        _mediaViewerPlaybackKind = null;
+        MediaViewerUnsupportedText = null;
+        MediaViewerStatusText = null;
+        RaiseMediaViewerKindChanged();
+        var entry = _mediaViewerItems[index];
+        if (entry.Kind == MediaViewerContentKind.Unsupported)
+        {
+            IsMediaViewerLoading = false;
+            MediaViewerUnsupportedText =
+                $"«{entry.DisplayName}» — формат не поддерживается встроенным просмотром.";
+            RaiseMediaViewerKindChanged();
+            return;
+        }
+
         IsMediaViewerLoading = true;
-        var (messageId, item) = _mediaViewerItems[index];
-        // Полный размер нужен только на экран: ~1600px покрывает и ретину ноутбука.
-        var image = await _imageLoader.LoadAsync(
-            "chat/messages/" + Uri.EscapeDataString(messageId)
-            + "/attachments/" + Uri.EscapeDataString(item.Id) + "/file",
-            decodePixelWidth: 1600);
+        if (entry.Kind == MediaViewerContentKind.Image)
+        {
+            // Полный размер нужен только на экран: ~1600px покрывает и ретину ноутбука.
+            var image = await _imageLoader.LoadAsync(
+                "chat/messages/" + Uri.EscapeDataString(entry.MessageId)
+                + "/attachments/" + Uri.EscapeDataString(entry.Model.Id!) + "/file",
+                decodePixelWidth: 1600);
+            if (marker != _mediaViewerLoadMarker)
+            {
+                // Успели листнуть/закрыть — результат уже не актуален.
+                return;
+            }
+
+            IsMediaViewerLoading = false;
+            MediaViewerImage = image;
+            if (image is null)
+            {
+                MediaViewerUnsupportedText = $"Не удалось показать изображение «{entry.DisplayName}».";
+                RaiseMediaViewerKindChanged();
+            }
+
+            return;
+        }
+
+        // Video/Audio: файл целиком в temp — MediaElement играет с диска,
+        // сетевого стриминга в контракте нет. Путь уходит в Source элемента
+        // view; закрытие/смена элемента обнуляет источник и гасит звук.
+        var localPath = await DownloadAttachmentToTempAsync(
+            entry.MessageId, entry.Model, entry.DisplayName);
         if (marker != _mediaViewerLoadMarker)
         {
-            // Успели листнуть/закрыть — результат уже не актуален.
             return;
         }
 
         IsMediaViewerLoading = false;
-        MediaViewerImage = image;
+        if (localPath is null)
+        {
+            MediaViewerUnsupportedText =
+                $"«{entry.DisplayName}» — файл недоступен для воспроизведения.";
+            RaiseMediaViewerKindChanged();
+            return;
+        }
+
+        _mediaViewerPlaybackKind = entry.Kind == MediaViewerContentKind.Video ? "video" : "audio";
+        RaiseMediaViewerKindChanged();
+        MediaViewerMediaSource = localPath;
     }
 
     private void MoveMediaViewer(int delta) =>
         _ = ShowMediaViewerItemAsync(_mediaViewerIndex + delta);
+
+    /// <summary>Уведомления флагов вида контента просмотрщика (image/video/audio/fallback).</summary>
+    private void RaiseMediaViewerKindChanged()
+    {
+        OnPropertyChanged(nameof(MediaViewerIsImage));
+        OnPropertyChanged(nameof(MediaViewerIsVideo));
+        OnPropertyChanged(nameof(MediaViewerIsAudio));
+        OnPropertyChanged(nameof(MediaViewerIsUnsupported));
+    }
 
     /// <summary>✕ / Esc / смена диалога — закрыть просмотрщик и сбросить список.</summary>
     private void CloseMediaViewer()
@@ -5195,15 +5861,37 @@ public sealed class ChatViewModel : ObservableObject
         IsMediaViewerOpen = false;
         IsMediaViewerLoading = false;
         MediaViewerImage = null;
+        // null-источник — сигнал view остановить MediaElement: звука после
+        // закрытия просмотрщика быть не должно (UI-026).
+        _mediaViewerPlaybackKind = null;
+        MediaViewerMediaSource = null;
+        MediaViewerUnsupportedText = null;
+        MediaViewerStatusText = null;
+        RaiseMediaViewerKindChanged();
         _mediaViewerItems.Clear();
         _mediaViewerIndex = -1;
+        _mediaViewerGallerySource = false;
+    }
+
+    /// <summary>«Сохранить» в просмотрщике: скачать на диск без внешнего
+    /// запуска — статус в шапке показывает целевой путь (UI-026).</summary>
+    private async Task SaveMediaViewerItemAsync(MediaViewerEntry entry)
+    {
+        var path = await DownloadAttachmentToTempAsync(entry.MessageId, entry.Model, entry.DisplayName);
+        if (path is not null && _mediaViewerIndex < _mediaViewerItems.Count
+            && ReferenceEquals(_mediaViewerItems[_mediaViewerIndex], entry))
+        {
+            MediaViewerStatusText = $"Сохранено: {Path.GetFileName(path)}";
+        }
     }
 
     /// <summary>
-    /// Общий путь открытия вложения: чип в пузыре и плитка медиагалереи —
-    /// скачивание в temp (с дедупом) + запуск ассоциацией ОС.
+    /// Скачивание вложения в temp-папку с дедупом: повторный вызов делит
+    /// уже идущую задачу. Возвращает путь к локальному файлу либо null при
+    /// ошибке (баннер выставляется здесь же). Внешний запуск — отдельно:
+    /// просмотрщик и «Сохранить» играют/складывают файл без Process.Start.
     /// </summary>
-    private async Task DownloadAndOpenAttachmentAsync(
+    private async Task<string?> DownloadAttachmentToTempAsync(
         string? messageId,
         HubChatAttachment model,
         string displayName)
@@ -5211,24 +5899,36 @@ public sealed class ChatViewModel : ObservableObject
         var attachmentId = model.Id;
         if (string.IsNullOrEmpty(messageId) || string.IsNullOrEmpty(attachmentId))
         {
-            return;
+            return null;
         }
 
         var downloadKey = messageId + ":" + attachmentId;
-        if (!_attachmentDownloadsInFlight.Add(downloadKey))
+        if (_attachmentDownloadsInFlight.TryGetValue(downloadKey, out var inFlight))
         {
-            // Уже качается — второй FileStream на том же target дал бы «файл занят».
-            return;
+            return await inFlight;
         }
 
+        var task = DownloadAttachmentToTempCoreAsync(messageId, attachmentId, model, displayName, downloadKey);
+        _attachmentDownloadsInFlight[downloadKey] = task;
         try
         {
-            if (AttachmentSaver is not null)
-            {
-                await AttachmentSaver(model, messageId);
-                return;
-            }
+            return await task;
+        }
+        finally
+        {
+            _attachmentDownloadsInFlight.Remove(downloadKey);
+        }
+    }
 
+    private async Task<string?> DownloadAttachmentToTempCoreAsync(
+        string messageId,
+        string attachmentId,
+        HubChatAttachment model,
+        string displayName,
+        string downloadKey)
+    {
+        try
+        {
             var directory = Path.Combine(
                 Path.GetTempPath(), "hub-desktop", "attachments");
             Directory.CreateDirectory(directory);
@@ -5266,17 +5966,98 @@ public sealed class ChatViewModel : ObservableObject
                 }
             }
 
+            return target;
+        }
+        catch (Exception ex)
+        {
+            BannerErrorText = TasksViewModel.DescribeError(ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Общий путь открытия вложения: чип файла в пузыре, «Открыть в другом
+    /// приложении» просмотрщика — скачивание в temp (с дедупом) + запуск
+    /// ассоциацией ОС, только по явному выбору пользователя (UI-026).
+    /// </summary>
+    private async Task DownloadAndOpenAttachmentAsync(
+        string? messageId,
+        HubChatAttachment model,
+        string displayName)
+    {
+        if (AttachmentSaver is not null)
+        {
+            await AttachmentSaver(model, messageId);
+            return;
+        }
+
+        var target = await DownloadAttachmentToTempAsync(messageId, model, displayName);
+        if (target is null)
+        {
+            return;
+        }
+
+        try
+        {
             Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
             BannerErrorText = TasksViewModel.DescribeError(ex);
         }
-        finally
-        {
-            _attachmentDownloadsInFlight.Remove(downloadKey);
-        }
     }
+
+    /// <summary>
+    /// Просматриваемый kind вложения для просмотрщика (UI-026): по
+    /// media_kind/kind → mime → расширению. Файл/стикер/неопознанное —
+    /// null: такие чипы по-прежнему уходят в скачивание+открытие.
+    /// Непроигрываемый контейнер → Unsupported (fallback с явным
+    /// «Открыть в другом приложении»).
+    /// </summary>
+    private static MediaViewerContentKind? ResolveMediaViewerKind(HubChatAttachment attachment)
+    {
+        var kind = attachment.MediaKind ?? attachment.Kind;
+        var mime = attachment.MimeType;
+        var extension = Path.GetExtension(attachment.FileName ?? string.Empty).ToLowerInvariant();
+        var isImage = string.Equals(kind, "image", StringComparison.OrdinalIgnoreCase)
+            || (mime?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ?? false)
+            || ChatAttachmentItemViewModel.HasImageExtension(attachment.FileName);
+        if (isImage)
+        {
+            return MediaViewerContentKind.Image;
+        }
+
+        var isVideo = string.Equals(kind, "video", StringComparison.OrdinalIgnoreCase)
+            || (mime?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) ?? false);
+        if (isVideo)
+        {
+            return PlayableVideoExtensions.Contains(extension)
+                ? MediaViewerContentKind.Video
+                : MediaViewerContentKind.Unsupported;
+        }
+
+        var isAudio = string.Equals(kind, "audio", StringComparison.OrdinalIgnoreCase)
+            || (mime?.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) ?? false);
+        if (isAudio)
+        {
+            return PlayableAudioExtensions.Contains(extension)
+                ? MediaViewerContentKind.Audio
+                : MediaViewerContentKind.Unsupported;
+        }
+
+        return null;
+    }
+
+    /// <summary>Контейнеры, которые WPF MediaElement играет без кодек-паков.</summary>
+    private static readonly HashSet<string> PlayableVideoExtensions = new(StringComparer.Ordinal)
+    {
+        ".mp4", ".m4v", ".mov", ".wmv", ".avi", ".mpg", ".mpeg", ".3gp",
+    };
+
+    private static readonly HashSet<string> PlayableAudioExtensions = new(StringComparer.Ordinal)
+    {
+        ".mp3", ".wav", ".m4a", ".aac", ".wma", ".mid", ".midi",
+    };
 
     private static string GuessMimeType(string? extension) => extension?.ToLowerInvariant() switch
     {
@@ -5366,6 +6147,7 @@ public sealed class ChatViewModel : ObservableObject
             AttachmentHandler = OpenAttachmentAsync,
             LinkPreviewLoader = FetchLinkPreviewCachedAsync,
             LinkPreviewHandler = OpenLinkPreviewAsync,
+            BodyLinkHandler = OpenExternalLinkAsync,
             PollVoteHandler = VotePollAsync,
             PollCloseHandler = ClosePollAsync,
             ReplyTargetHandler = message => OpenReplyTargetAsync(message, CancellationToken.None),
@@ -6139,6 +6921,14 @@ public sealed class ChatViewModel : ObservableObject
                 ? parsed
                 : 0;
         FindMessage(id)?.ApplyDelivery(readByCount, GetStringProperty(payload, "delivery_status"));
+        // UI-017: галочки в строке диалога, когда read относится к её
+        // последнему сообщению (список диалогов read-статус не отдаёт).
+        if (FindMessage(id) is { } readMessage
+            && Messages.LastOrDefault() is { } tail
+            && tail.Id == readMessage.Id)
+        {
+            _selectedConversation?.SyncLastMessageStatus(tail);
+        }
     }
 
     /// <summary>chat.conversation.removed: {conversation_id} — диалог удалён/исключение из группы.</summary>
@@ -10311,6 +11101,12 @@ public sealed class ChatViewModel : ObservableObject
                     }
                 }
             }
+
+            // UI-017: свежий read-статус хвоста истории → галочки строки диалога.
+            if (Messages.LastOrDefault() is { } tail)
+            {
+                conversation.SyncLastMessageStatus(tail);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -10376,15 +11172,47 @@ public sealed class ChatViewModel : ObservableObject
 
     private void RaiseCommandStates()
     {
+        // UI-014: IsEnabled скрепки биндится к CanAttach напрямую, без
+        // уведомления при смене выбора/отправки/загрузки цель остаётся
+        // выключенной при CanAttach=True в VM. Эмодзи и «Поделиться
+        // задачей» — CanExecute по HasConversation: нужен явный raise.
+        OnPropertyChanged(nameof(CanAttach));
+        OnPropertyChanged(nameof(ShowSendFab));
+        OnPropertyChanged(nameof(ShowMicFab));
         (SendCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (AttachCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (AttachDroppedFilesCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (ToggleStickerPanelCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (OpenTaskShareCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (LoadOlderCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (LoadMoreConversationsCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (ConfirmAttachmentsCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (RetryHistoryCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
         (OpenScheduleEditorCommand as NativeRelayCommand)?.RaiseCanExecuteChanged();
         (ConfirmScheduleCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (StartVoiceRecordingCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (StopVoiceRecordingCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (CancelVoiceRecordingCommand as NativeRelayCommand)?.RaiseCanExecuteChanged();
+        (SendVoiceMessageCommand as NativeAsyncCommand)?.RaiseCanExecuteChanged();
+        (ToggleVoicePreviewCommand as NativeRelayCommand)?.RaiseCanExecuteChanged();
     }
+
+    /// <summary>Вид контента просмотрщика: картинка, видео, аудио или fallback.</summary>
+    private enum MediaViewerContentKind
+    {
+        Image,
+        Video,
+        Audio,
+        Unsupported,
+    }
+
+    /// <summary>Элемент списка просмотрщика: источник из ленты или из галереи —
+    /// полей хватает и для докачки, и для определения способа показа (UI-026).</summary>
+    private sealed record MediaViewerEntry(
+        string MessageId,
+        HubChatAttachment Model,
+        string DisplayName,
+        MediaViewerContentKind Kind);
 }
 
 /// <summary>Строка панели «Кто прочитал»: имя и локальное время прочтения.</summary>

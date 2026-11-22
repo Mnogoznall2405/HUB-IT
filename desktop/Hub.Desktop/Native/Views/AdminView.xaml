@@ -259,7 +259,7 @@
                         <Button Grid.Column="2"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding DismissBannerCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Скрыть ошибку администрирования" />
                     </Grid>
                 </Border>
@@ -863,11 +863,11 @@
                                                                            FontWeight="SemiBold"
                                                                            Text="{Binding Title}"
                                                                            TextTrimming="CharacterEllipsis" />
-                                                                <TextBlock Margin="4,0,0,0"
-                                                                           VerticalAlignment="Center"
-                                                                           FontSize="12"
-                                                                           Text="📌"
-                                                                           Visibility="{Binding IsPinned, Converter={StaticResource BoolToVisibility}}" />
+                                                                <local:VectorIcon Margin="4,0,0,0"
+                                                                                  Size="12"
+                                                                                  VerticalAlignment="Center"
+                                                                                  Data="{x:Static local:VectorIcons.Pin}"
+                                                                                  Visibility="{Binding IsPinned, Converter={StaticResource BoolToVisibility}}" />
                                                             </StackPanel>
                                                             <TextBlock FontSize="11"
                                                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
@@ -1329,7 +1329,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог пользователя" />
                     </Grid>
 
@@ -1549,7 +1549,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог AI-бота" />
                     </Grid>
 
@@ -1779,7 +1779,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог руководителей" />
                     </Grid>
 
@@ -1915,7 +1915,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть редактор новости" />
                     </Grid>
 
@@ -2064,7 +2064,8 @@
                             <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
                                 <Button Style="{StaticResource HubGhostButtonStyle}"
                                         Command="{Binding AddFilesCommand}"
-                                        Content="📎 Прикрепить"
+                                        Content="Прикрепить"
+                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Attach}"
                                         AutomationProperties.Name="Прикрепить файлы к новости" />
                                 <TextBlock Margin="10,0,0,0"
                                            VerticalAlignment="Center"
@@ -2102,7 +2103,7 @@
                                                         Style="{StaticResource HubGhostButtonStyle}"
                                                         Command="{Binding DataContext.RemoveAttachmentCommand, RelativeSource={RelativeSource AncestorType=Border}}"
                                                         CommandParameter="{Binding}"
-                                                        Content="✕"
+                                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                                         AutomationProperties.Name="{Binding Name, StringFormat='Убрать файл {0}'}" />
                                             </StackPanel>
                                         </Border>
@@ -2198,7 +2199,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть статистику новости" />
                     </Grid>
 

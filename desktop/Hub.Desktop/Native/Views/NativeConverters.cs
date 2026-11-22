@@ -299,20 +299,6 @@ public static class ChatScrollAssist
 
     public static void SetEndSignal(DependencyObject obj, int value) => obj.SetValue(EndSignalProperty, value);
 
-    // Вертикальный якорь при подгрузке старых сообщений сверху (п.8): когда
-    // в начало коллекции вставляются элементы, контент сдвигается вниз, а
-    // VerticalOffset остаётся — вид «прыгает» на высоту вставки. Запоминаем
-    // ExtentHeight до prepend и после layout-прохода доворачиваем офсет на
-    // дельту: вьюпорт остаётся на том же сообщении, как в Telegram.
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<
-        System.Windows.Controls.ListBox, PrependAnchor> Anchors = new();
-
-    private sealed class PrependAnchor
-    {
-        public bool Pending;
-        public double ExtentBefore;
-    }
-
     private static void OnTrackChanged(DependencyObject sender, DependencyPropertyChangedEventArgs e)
     {
         if (sender is not FrameworkElement element || e.NewValue is not true)
@@ -327,41 +313,6 @@ public static class ChatScrollAssist
         else
         {
             element.Loaded += (_, _) => Hook(element);
-        }
-    }
-
-    private static void OnItemsCollectionChanged(
-        System.Windows.Controls.ListBox listBox,
-        object? sender,
-        System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
-    {
-        if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add
-            && e.NewStartingIndex == 0)
-        {
-            var anchor = Anchors.GetOrCreateValue(listBox);
-            anchor.Pending = true;
-            anchor.ExtentBefore = FindScrollViewer(listBox)?.ExtentHeight ?? 0;
-        }
-        else if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
-        {
-            Anchors.GetOrCreateValue(listBox).Pending = false;
-        }
-    }
-
-    private static void RestorePrependAnchor(DependencyObject element, ScrollViewer scrollViewer)
-    {
-        if (element is not System.Windows.Controls.ListBox listBox
-            || !Anchors.TryGetValue(listBox, out var anchor)
-            || !anchor.Pending)
-        {
-            return;
-        }
-
-        anchor.Pending = false;
-        var delta = scrollViewer.ExtentHeight - anchor.ExtentBefore;
-        if (delta > 0)
-        {
-            scrollViewer.ScrollToVerticalOffset(scrollViewer.VerticalOffset + delta);
         }
     }
 
@@ -390,17 +341,8 @@ public static class ChatScrollAssist
             return;
         }
 
-        scrollViewer.ScrollChanged += (_, _) =>
-        {
-            RestorePrependAnchor(element, scrollViewer);
-            UpdateAwayFromEnd(element, scrollViewer);
-        };
+        scrollViewer.ScrollChanged += (_, _) => UpdateAwayFromEnd(element, scrollViewer);
         scrollViewer.SizeChanged += (_, _) => UpdateAwayFromEnd(element, scrollViewer);
-        if (element is System.Windows.Controls.ListBox listBox)
-        {
-            ((System.Collections.Specialized.INotifyCollectionChanged)listBox.Items)
-                .CollectionChanged += (s, e) => OnItemsCollectionChanged(listBox, s, e);
-        }
 
         UpdateAwayFromEnd(element, scrollViewer);
     }

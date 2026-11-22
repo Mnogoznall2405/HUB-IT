@@ -1329,6 +1329,9 @@ public sealed record HubChatUploadFileRequest
     [JsonPropertyName("size")] public long Size { get; init; }
     [JsonPropertyName("original_size")] public long OriginalSize { get; init; }
     [JsonPropertyName("transfer_encoding")] public string TransferEncoding { get; init; } = "identity";
+    /// <summary>Длительность аудио/видео в секундах (голосовые — UI-028;
+    /// бэкенд читает item.duration_seconds в манифесте сессии).</summary>
+    [JsonPropertyName("duration_seconds")] public int? DurationSeconds { get; init; }
 }
 
 /// <summary>Файл в ответе upload-session: серверный file_id и сетка чанков.</summary>

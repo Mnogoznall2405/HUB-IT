@@ -59,6 +59,15 @@ public sealed class NativeMailHtmlDocumentTests
         Assert.Contains("color:#0067C0", document);
     }
 
+    [Fact]
+    public void WrapDeclaresDocumentTitleForUiAutomation()
+    {
+        var document = MailHtmlDocument.Wrap("<p>x</p>", isDark: true);
+
+        // Без title UIA-Document WebView2 объявляется пустым именем.
+        Assert.Contains("<title>Текст письма</title>", document);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

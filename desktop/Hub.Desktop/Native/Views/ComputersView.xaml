@@ -138,10 +138,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Статус: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedStatusFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <ToggleButton Margin="6,0,0,0"
@@ -221,7 +220,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -568,7 +567,13 @@
                                     </Grid>
                                     <ItemsControl Margin="0,8,0,0"
                                                   ItemsSource="{Binding NetworkDevices}"
-                                                  Visibility="{Binding HasNetworkDevices, Converter={StaticResource BoolToVisibility}}">
+                                                  Visibility="{Binding HasNetworkDevices, Converter={StaticResource BoolToVisibility}}"
+                                                  AutomationProperties.Name="Сетевые устройства">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Border Margin="0,0,0,6"
@@ -601,7 +606,13 @@
                                 <StackPanel>
                                     <TextBlock Style="{StaticResource SectionHeaderStyle}"
                                                Text="Диски и тома" />
-                                    <ItemsControl ItemsSource="{Binding Disks}">
+                                    <ItemsControl ItemsSource="{Binding Disks}"
+                                                  AutomationProperties.Name="Диски и тома">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Border Margin="0,0,0,6"

@@ -1,0 +1,113 @@
+{
+  "window": {
+    "Width": 1280,
+    "Height": 720,
+    "Dpi": 96
+  },
+  "elements": {
+    "ChatAreaGrid": {
+      "X": 57,
+      "Y": 41,
+      "W": 1222,
+      "H": 678,
+      "Visible": true
+    },
+    "SidebarHost": {
+      "X": 57,
+      "Y": 41,
+      "W": 420,
+      "H": 678,
+      "Visible": true
+    },
+    "ChatDropArea": {
+      "X": 482,
+      "Y": 41,
+      "W": 797,
+      "H": 678,
+      "Visible": true
+    },
+    "MessagesList": {
+      "X": 510,
+      "Y": 95,
+      "W": 740,
+      "H": 577,
+      "Visible": true
+    },
+    "ComposerInput": {
+      "X": 540,
+      "Y": 673,
+      "W": 649,
+      "H": 46,
+      "Visible": true
+    },
+    "MessageSearchPanel": {
+      "X": 510,
+      "Y": 95,
+      "W": 0,
+      "H": 0,
+      "Visible": false
+    },
+    "GroupSettingsPanel": {
+      "X": 510,
+      "Y": 95,
+      "W": 0,
+      "H": 0,
+      "Visible": false
+    },
+    "PeerInfoPanel": {
+      "X": 483,
+      "Y": 41,
+      "W": 0,
+      "H": 0,
+      "Visible": false
+    },
+    "HistoryScrollViewer": {
+      "X": 510,
+      "Y": 95,
+      "W": 740,
+      "H": 577,
+      "Visible": true
+    },
+    "MediaViewerOverlay": {
+      "X": 57,
+      "Y": 41,
+      "W": 0,
+      "H": 0,
+      "Visible": false
+    },
+    "HeaderMessageSearchButton": {
+      "X": 1056,
+      "Y": 50,
+      "W": 40,
+      "H": 36,
+      "Visible": true
+    },
+    "DeleteCancelButton": {
+      "X": 627,
+      "Y": 218,
+      "W": 62,
+      "H": 36,
+      "Visible": false
+    },
+    "MentionList": {
+      "X": 515,
+      "Y": 195,
+      "W": 233,
+      "H": 36,
+      "Visible": false
+    },
+    "StickerPanel": {
+      "X": 407,
+      "Y": 132,
+      "W": 0,
+      "H": 0,
+      "Visible": false
+    }
+  },
+  "vm": {
+    "Title": "E2E \u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C",
+    "Messages": 10,
+    "Conversations": 5,
+    "ComposerText": ""
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "viewport": {
+    "w": 1024,
+    "h": 600
+  },
+  "shell": {
+    "x": 0,
+    "y": 50,
+    "w": 1024,
+    "h": 550
+  },
+  "sidebar": {
+    "x": 0,
+    "y": 187,
+    "w": 419,
+    "h": 414
+  },
+  "thread": {
+    "x": 420,
+    "y": 50,
+    "w": 604,
+    "h": 550
+  },
+  "threadScroll": {
+    "x": 421,
+    "y": 104,
+    "w": 603,
+    "h": 438
+  },
+  "composerDock": {
+    "x": 421,
+    "y": 542,
+    "w": 603,
+    "h": 58
+  },
+  "composerCapsule": {
+    "x": 437,
+    "y": 542,
+    "w": 571,
+    "h": 44
+  },
+  "composerTextarea": {
+    "x": 485,
+    "y": 554,
+    "w": 433,
+    "h": 19
+  },
+  "rightOverlay": null,
+  "rightPersistent": null,
+  "infoButton": {
+    "x": 429,
+    "y": 62,
+    "w": 178,
+    "h": 38
+  }
+}
