@@ -243,7 +243,8 @@ def test_expired_entry_is_gone_and_files_removed(monkeypatch):
     key = mail_api_module._office_source_key(token)
     root = source_store_module.office_view_source_store._root
     meta_path = root / f"{key}.json"
-    assert meta_path.is_file() and (root / f"{key}.bin").is_file()
+    payload_paths = list(root.glob(f"{key}.*.bin"))
+    assert meta_path.is_file() and len(payload_paths) == 1
 
     import json as _json
     meta = _json.loads(meta_path.read_text(encoding="utf-8"))
@@ -251,7 +252,7 @@ def test_expired_entry_is_gone_and_files_removed(monkeypatch):
     meta_path.write_text(_json.dumps(meta), encoding="utf-8")
 
     assert client.get(f"/mail/office-source?t={token}").status_code == 410
-    assert not meta_path.exists() and not (root / f"{key}.bin").exists()
+    assert not meta_path.exists() and not list(root.glob(f"{key}.*.bin"))
 
 
 def test_oversized_attachment_refused_and_falls_back(monkeypatch):

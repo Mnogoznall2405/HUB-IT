@@ -2124,10 +2124,15 @@ async def download_office_view_source(t: str = Query("", max_length=2000)):
     entry = office_view_source_store.get(_office_source_key(t))
     if entry is None:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Ссылка устарела, откройте предпросмотр заново")
-    return Response(
-        content=entry.content,
+    # Stream the parked file instead of a second in-memory copy: FileResponse
+    # chunks it, so peak RAM stays ~1x attachment (the prefetch bytes) not ~2x.
+    return FileResponse(
+        path=str(entry.payload_path),
         media_type=entry.content_type,
-        headers={"Content-Disposition": _build_content_disposition(entry.filename or "attachment"), **_nosniff_headers()},
+        headers={
+            "Content-Disposition": _build_content_disposition(entry.filename or "attachment", "inline"),
+            **_nosniff_headers(),
+        },
     )
 
 
