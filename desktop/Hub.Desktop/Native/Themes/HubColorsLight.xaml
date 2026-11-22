@@ -118,6 +118,9 @@
     <SolidColorBrush x:Key="HubChatOnAccentBrush" Color="#FFFFFF" />
     <SolidColorBrush x:Key="HubChatMutedBadgeBrush" Color="#C4C9CC" />
     <SolidColorBrush x:Key="HubChatLinkBrush" Color="#2481CC" />
+    <!-- Ссылка в исходящем пузыре #C3E2F6 — более тёмный синий (tdesktop own-link),
+         обычный #2481CC на нём теряется. -->
+    <SolidColorBrush x:Key="HubChatOutLinkBrush" Color="#1B6AB0" />
     <!-- Красный префикс «Черновик: » в строке диалога — Telegram draft red. -->
     <SolidColorBrush x:Key="HubChatDraftBrush" Color="#CC5049" />
     <SolidColorBrush x:Key="HubChatPillBrush" Color="#C7D0DE" />

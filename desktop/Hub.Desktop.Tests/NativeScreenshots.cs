@@ -511,6 +511,48 @@ public sealed class NativeScreenshots
                         window.UpdateLayout();
                     }
 
+                    // Медиагалерея диалога: оверлей с вкладками «Медиа/Файлы/Аудио» —
+                    // плитки превью и векторные иконки видов вложений.
+                    vm.Chat.ToggleMediaPanelCommand.Execute(null);
+                    PumpUntil(
+                        () => !vm.Chat.IsLoadingMedia && vm.Chat.MediaItems.Count > 0,
+                        TimeSpan.FromSeconds(10));
+                    PumpUntil(
+                        () => vm.Chat.MediaItems.All(
+                            i => i.HasThumbnail
+                                 || !string.Equals(i.Model.MediaKind ?? i.Model.Kind, "image",
+                                     StringComparison.OrdinalIgnoreCase)),
+                        TimeSpan.FromSeconds(10));
+                    window.UpdateLayout();
+                    SavePng(window, Path.Combine(outputDir, filePrefix + "04v-chat-gallery.png"));
+
+                    // Просмотрщик: fallback для непроигрываемого контейнера (UI-026) —
+                    // голосовое .ogg не играет MediaElement'ом: карточка с именем,
+                    // причиной и явными «Сохранить»/«Открыть в другом приложении».
+                    Pump(((NativeAsyncCommand)vm.Chat.SelectMediaTabCommand)
+                        .ExecuteAsync("audio"));
+                    var audioTile = vm.Chat.MediaItems.FirstOrDefault(
+                        i => string.Equals(i.Model.MediaKind ?? i.Model.Kind, "audio",
+                            StringComparison.OrdinalIgnoreCase));
+                    audioTile?.OpenCommand.Execute(null);
+                    PumpUntil(() => vm.Chat.MediaViewerIsUnsupported, TimeSpan.FromSeconds(5));
+                    window.UpdateLayout();
+                    SavePng(window, Path.Combine(outputDir, filePrefix + "04x-chat-media-fallback.png"));
+                    vm.Chat.CloseMediaViewerCommand.Execute(null);
+                    vm.Chat.ToggleMediaPanelCommand.Execute(null);
+                    window.UpdateLayout();
+
+                    // Файл-чипы в пузыре (m4): лента доскроллена к началу — векторные
+                    // иконки вида вложения вместо эмодзи. Возврат в конец ленты.
+                    if (FindNamedListScrollViewer(window, "Сообщения диалога") is { } chatScroll)
+                    {
+                        chatScroll.ScrollToHome();
+                        window.UpdateLayout();
+                        SavePng(window, Path.Combine(outputDir, filePrefix + "04w-chat-files.png"));
+                        chatScroll.ScrollToEnd();
+                        window.UpdateLayout();
+                    }
+
                     // Черновик в невыбранной строке (client-side, parity web
                     // draftPreview): красный «Черновик: » вместо превью.
                     // «Беседы» фильтруют список до групп — кадр переводим на
@@ -743,6 +785,102 @@ public sealed class NativeScreenshots
                     window.UpdateLayout();
                     SavePng(window, Path.Combine(outputDir, filePrefix + "04u-chat-drop.png"));
                     vm.Chat.SetFileDropOverlay(false);
+                    window.UpdateLayout();
+
+                    // Модал «Отправить файлы» (UI-027, tg-send-files): очередь
+                    // с превью картинки и иконкой документа, подпись отдельная,
+                    // «Отправить/Отмена». Файлы реальные — upload не идёт без
+                    // подтверждения, после кадра очередь отменяется.
+                    var attachPhoto = Path.Combine(
+                        Path.GetTempPath(), "hub-shot-photo.png");
+                    var attachDoc = Path.Combine(
+                        Path.GetTempPath(), "hub-shot-spec.txt");
+                    try
+                    {
+                        File.WriteAllBytes(attachPhoto, DemoPng(160, 120));
+                        File.WriteAllText(attachDoc, "спецификация демо");
+                        Pump(vm.Chat.AttachFilesAsync(
+                            new[] { attachPhoto, attachDoc }, CancellationToken.None));
+                        vm.Chat.AttachmentCaption = "Материалы к релизу";
+                        window.UpdateLayout();
+                        SavePng(window, Path.Combine(outputDir, filePrefix + "04y-chat-attach.png"));
+
+                        // Узкое окно: модал читаем, список обрезает имена
+                        // троеточием, кнопки доступны.
+                        var baseAttachW = window.Width;
+                        var baseAttachH = window.Height;
+                        window.Width = 1024;
+                        window.Height = 600;
+                        window.UpdateLayout();
+                        SavePng(window, Path.Combine(outputDir, filePrefix + "04y2-chat-attach-1024.png"));
+                        window.Width = baseAttachW;
+                        window.Height = baseAttachH;
+                        window.UpdateLayout();
+
+                        vm.Chat.CancelAttachmentsCommand.Execute(null);
+                        window.UpdateLayout();
+                    }
+                    finally
+                    {
+                        TryDelete(attachPhoto);
+                        TryDelete(attachDoc);
+                    }
+
+                    // Голосовые (UI-028): панель записи — красная точка, таймер,
+                    // корзина и ✓ «Завершить» вместо композера; черновик — ▶
+                    // предпрослушивание, длительность и ➤ «Отправить». Запись
+                    // идёт через фейк-рекордер — микрофон/сеть не трогаются.
+                    var voiceRecorder = new FakeNativeVoiceRecorder();
+                    vm.Chat.VoiceRecorderFactory = () => voiceRecorder;
+                    Pump(((NativeAsyncCommand)vm.Chat.StartVoiceRecordingCommand).ExecuteAsync(null));
+                    PumpUntil(() => vm.Chat.IsVoiceRecording, TimeSpan.FromSeconds(5));
+                    // Строка «Запись 0:03» — фейк отдаёт Elapsed=3с, таймер
+                    // обновляется раз в полсекунды.
+                    PumpUntil(
+                        () => vm.Chat.VoiceElapsedText == "Запись 0:03",
+                        TimeSpan.FromSeconds(5));
+                    window.UpdateLayout();
+                    SavePng(window, Path.Combine(outputDir, filePrefix + "04z-chat-voice-rec.png"));
+
+                    Pump(((NativeAsyncCommand)vm.Chat.StopVoiceRecordingCommand).ExecuteAsync(null));
+                    PumpUntil(() => vm.Chat.HasVoiceDraft, TimeSpan.FromSeconds(5));
+                    window.UpdateLayout();
+                    SavePng(window, Path.Combine(outputDir, filePrefix + "04z-chat-voice-draft.png"));
+                    vm.Chat.CancelVoiceRecordingCommand.Execute(null);
+                    window.UpdateLayout();
+                    if (voiceRecorder.LastRecordingPath is { } voiceTmp)
+                    {
+                        TryDelete(voiceTmp);
+                    }
+
+                    // UI-022: короткая история (3 сообщения) прижата к нижнему
+                    // краю — воздух над первой строкой, рядом с композером;
+                    // инлайн-мета (UI-023) и хвостики серий (UI-024) видны на
+                    // минимальных пузырях «Да.»/«Хорошо.». Полную страницу
+                    // возвращаем — дальше идут светлый прогон и другие страницы.
+                    var fullChatMessages = api.ChatMessages;
+                    api.ChatMessages = new HubChatMessageList
+                    {
+                        Items =
+                        [
+                            Message("sh1", "c1", "Да.", "Ирина Петрова",
+                                DateTimeOffset.Now.AddMinutes(-4), senderAvatar: "avatars/u11.png"),
+                            Message("sh2", "c1", "Хорошо.", null,
+                                DateTimeOffset.Now.AddMinutes(-3), own: true),
+                            Message("sh3", "c1", "Тогда созвонимся после релиза.", "Пётр Петров",
+                                DateTimeOffset.Now.AddMinutes(-2), senderAvatar: "avatars/u14.png"),
+                        ],
+                        HasOlder = false,
+                    };
+                    vm.Chat.SelectedConversation = null;
+                    vm.Chat.SelectedConversation = openChat;
+                    PumpUntil(() => vm.Chat.Messages.Count == 3, TimeSpan.FromSeconds(10));
+                    window.UpdateLayout();
+                    SavePng(window, Path.Combine(outputDir, filePrefix + "04x-chat-short.png"));
+                    api.ChatMessages = fullChatMessages;
+                    vm.Chat.SelectedConversation = null;
+                    vm.Chat.SelectedConversation = openChat;
+                    PumpUntil(() => vm.Chat.Messages.Count > 3, TimeSpan.FromSeconds(10));
                     window.UpdateLayout();
 
                     vm.Chat.ActiveFolderKey = ChatViewModel.GroupsFolderKey;
@@ -979,6 +1117,21 @@ public sealed class NativeScreenshots
         }
 
         RenderPageFrames("");
+
+        // Компактная рейка навигации (свернутое меню: иконки без подписей) —
+        // отдельная поверхность хрома. Не через SetNavigationPaneCollapsed:
+        // тот пишет HKCU — кадр не должен менять настройку пользователя.
+        var navColumnWidth = window.NavColumn.Width;
+        window.NavRail.Visibility = Visibility.Visible;
+        window.NavPane.Visibility = Visibility.Collapsed;
+        window.NavColumn.Width = new GridLength(56);
+        window.UpdateLayout();
+        SavePng(window, Path.Combine(outputDir, "01z-nav-rail.png"));
+        window.NavRail.Visibility = Visibility.Collapsed;
+        window.NavPane.Visibility = Visibility.Visible;
+        window.NavColumn.Width = navColumnWidth;
+        window.UpdateLayout();
+
         RenderNotificationsFrame("25-notifications.png");
 
         // Светлая проверка: подмена словаря палитры на лету — все страницы и
@@ -1041,6 +1194,21 @@ public sealed class NativeScreenshots
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var stream = File.Create(path);
         encoder.Save(stream);
+    }
+
+    /// <summary>Удаление temp-файла кадра: не существует/занят — не блок кадра.</summary>
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
     }
 
     /// <summary>
@@ -1321,14 +1489,18 @@ public sealed class NativeScreenshots
     /// и спускаемся к шаблонному ScrollViewer — прокрутка в нём проходит тот же
     /// путь, что и у пользователя (ScrollChanged → LoadMore).
     /// </summary>
-    private static ScrollViewer? FindMailListScrollViewer(Window window)
+    private static ScrollViewer? FindMailListScrollViewer(Window window) =>
+        FindNamedListScrollViewer(window, "Список писем");
+
+    /// <summary>ScrollViewer именованного ListBox (AutomationProperties.Name).</summary>
+    private static ScrollViewer? FindNamedListScrollViewer(Window window, string automationName)
     {
         foreach (var descendant in VisualDescendants(window))
         {
             if (descendant is not ListBox list
                 || !string.Equals(
                     AutomationProperties.GetName(list),
-                    "Список писем",
+                    automationName,
                     StringComparison.Ordinal))
             {
                 continue;
@@ -1852,6 +2024,49 @@ public sealed class NativeScreenshots
                 // над m4b (первый входящий после якоря) на каждом открытии
                 // диалога с unread>0 — dark c1/c2, light c1/c5.
                 ViewerLastReadMessageId = "m4",
+            },
+            // Галерея вложений диалога (кадр 04v): фейк режет по kind-вкладкам.
+            ConversationAttachments = new HubChatConversationAttachmentPage
+            {
+                Items =
+                [
+                    new HubChatConversationAttachmentItem
+                    {
+                        Id = "ga1", MessageId = "m4b", Kind = "image",
+                        FileName = "фото_стойки_1.png", MimeType = "image/png",
+                        Width = 1280, Height = 960, FileSize = 380_000,
+                    },
+                    new HubChatConversationAttachmentItem
+                    {
+                        Id = "ga2", MessageId = "m4b", Kind = "image",
+                        FileName = "фото_стойки_2.png", MimeType = "image/png",
+                        Width = 1280, Height = 960, FileSize = 410_000,
+                    },
+                    new HubChatConversationAttachmentItem
+                    {
+                        Id = "ga3", MessageId = "m9", Kind = "video",
+                        FileName = "обход_стойки.mp4", MimeType = "video/mp4",
+                        DurationSeconds = 65, FileSize = 4_800_000,
+                    },
+                    new HubChatConversationAttachmentItem
+                    {
+                        Id = "ga4", MessageId = "m4", Kind = "file",
+                        FileName = "документ_1.pdf", MimeType = "application/pdf",
+                        FileSize = 240_000,
+                    },
+                    new HubChatConversationAttachmentItem
+                    {
+                        Id = "ga5", MessageId = "m4", Kind = "file",
+                        FileName = "документ_2.pdf", MimeType = "application/pdf",
+                        FileSize = 240_000,
+                    },
+                    new HubChatConversationAttachmentItem
+                    {
+                        Id = "ga6", MessageId = "m10", Kind = "audio",
+                        FileName = "голосовое.ogg", MimeType = "audio/ogg",
+                        DurationSeconds = 12, FileSize = 96_000,
+                    },
+                ],
             },
             // Группа c1: участники с ролями и ограничением (viewer — owner).
             ConversationDetailResult = new HubChatConversationDetail

@@ -130,7 +130,7 @@
                         Margin="12,0,0,0"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissErrorCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку управления" />
             </Grid>
         </Border>
@@ -158,7 +158,7 @@
                         Margin="12,0,0,0"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissInfoCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть сообщение управления" />
             </Grid>
         </Border>
@@ -177,7 +177,7 @@
                 <StackPanel Grid.Row="0" Orientation="Horizontal">
                     <Button Style="{StaticResource HubPrimaryButtonStyle}"
                             Command="{Binding NewObjectCommand}"
-                            Content="＋ Новый объект"
+                            Content="Новый объект" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                             Visibility="{Binding CanManage, Converter={StaticResource BoolToVisibility}}"
                             AutomationProperties.Name="Создать объект билетов" />
                     <TextBlock Margin="10,0,0,0"
@@ -298,7 +298,7 @@
                             <Button Grid.Column="1"
                                     Style="{StaticResource HubGhostButtonStyle}"
                                     Command="{Binding CancelCommand}"
-                                    Content="✕"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                     AutomationProperties.Name="Закрыть форму объекта" />
                         </Grid>
                         <Border Grid.Row="1"
@@ -376,7 +376,7 @@
                     <Button Margin="10,0,0,0"
                             Style="{StaticResource HubPrimaryButtonStyle}"
                             Command="{Binding NewEmployeeCommand}"
-                            Content="＋ Новый сотрудник"
+                            Content="Новый сотрудник" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                             AutomationProperties.Name="Создать сотрудника билетов" />
                 </StackPanel>
                 <ProgressBar Grid.Row="1"
@@ -454,14 +454,20 @@
                                              AutomationProperties.Name="Поиск в ЗУП" />
                                     <ItemsControl Margin="0,8,0,0"
                                                   ItemsSource="{Binding ZupOptions}"
-                                                  Visibility="{Binding HasZupOptions, Converter={StaticResource BoolToVisibility}}">
+                                                  Visibility="{Binding HasZupOptions, Converter={StaticResource BoolToVisibility}}"
+                                                  AutomationProperties.Name="Варианты из ЗУП">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Button Style="{StaticResource HubGhostButtonStyle}"
                                                         HorizontalContentAlignment="Left"
                                                         Command="{Binding DataContext.SelectZupCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                         CommandParameter="{Binding}"
-                                                        AutomationProperties.Name="Импортировать сотрудника из ЗУП">
+                                                        AutomationProperties.Name="{Binding Title, StringFormat='Импортировать сотрудника из ЗУП: {0}'}">
                                                     <StackPanel>
                                                         <TextBlock FontWeight="SemiBold"
                                                                    Text="{Binding Title}" />
@@ -502,7 +508,7 @@
                                         <Button Grid.Column="1"
                                                 Style="{StaticResource HubGhostButtonStyle}"
                                                 Command="{Binding CancelCommand}"
-                                                Content="✕"
+                                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                                 AutomationProperties.Name="Закрыть карточку сотрудника" />
                                     </Grid>
                                     <Border Grid.Row="1"
@@ -704,7 +710,13 @@
                             Visibility="{Binding HasPreview, Converter={StaticResource BoolToVisibility}}">
                         <StackPanel>
                             <TextBlock FontWeight="SemiBold" Text="2. Предпросмотр" />
-                            <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Sheets}">
+                            <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Sheets}"
+                                          AutomationProperties.Name="Листы импорта">
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Border Margin="0,0,0,8"
@@ -790,7 +802,13 @@
                                        Text="{Binding ResultText}" />
                             <ItemsControl Margin="0,8,0,0"
                                           ItemsSource="{Binding Issues}"
-                                          Visibility="{Binding HasIssues, Converter={StaticResource BoolToVisibility}}">
+                                          Visibility="{Binding HasIssues, Converter={StaticResource BoolToVisibility}}"
+                                          AutomationProperties.Name="Проблемы импорта">
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding Message}" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <TextBlock Margin="0,0,0,4"
@@ -851,7 +869,7 @@
                     <Button Margin="8,0,0,0"
                             Style="{StaticResource HubPrimaryButtonStyle}"
                             Command="{Binding NewOpCommand}"
-                            Content="＋ Операция"
+                            Content="Операция" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                             AutomationProperties.Name="Создать финансовую операцию" />
                     <TextBlock Margin="12,0,0,0"
                                VerticalAlignment="Center"
@@ -989,7 +1007,7 @@
                             <Button Grid.Column="1"
                                     Style="{StaticResource HubGhostButtonStyle}"
                                     Command="{Binding CancelCommand}"
-                                    Content="✕"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                     AutomationProperties.Name="Закрыть форму операции" />
                         </Grid>
                         <Border Grid.Row="1"
@@ -1243,7 +1261,13 @@
                             Visibility="{Binding HasRules, Converter={StaticResource BoolToVisibility}}">
                         <StackPanel>
                             <TextBlock FontWeight="SemiBold" Text="Правила SLA" />
-                            <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Rules}">
+                            <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Rules}"
+                                          AutomationProperties.Name="Правила SLA">
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Grid Margin="0,0,0,10">
@@ -1259,7 +1283,7 @@
                                                       Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                       CommandParameter="{Binding}"
                                                       IsEnabled="{Binding DataContext.CanEditRules, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                      AutomationProperties.Name="Включить правило уведомлений" />
+                                                      AutomationProperties.Name="{Binding Label, StringFormat='Включить правило уведомлений: {0}'}" />
                                             <StackPanel Grid.Column="1"
                                                         Margin="10,0,0,0"
                                                         VerticalAlignment="Center">
@@ -1279,13 +1303,13 @@
                                                          Style="{StaticResource HubTextBoxStyle}"
                                                          Text="{Binding ThresholdText, UpdateSourceTrigger=PropertyChanged}"
                                                          IsEnabled="{Binding DataContext.CanEditRules, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                         AutomationProperties.Name="Порог правила в днях" />
+                                                         AutomationProperties.Name="{Binding Label, StringFormat='Порог правила в днях: {0}'}" />
                                                 <Button Margin="6,0,0,0"
                                                         Style="{StaticResource HubGhostButtonStyle}"
                                                         Command="{Binding DataContext.SaveThresholdCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                         CommandParameter="{Binding}"
                                                         Content="Сохранить"
-                                                        AutomationProperties.Name="Сохранить порог правила" />
+                                                        AutomationProperties.Name="{Binding Label, StringFormat='Сохранить порог правила: {0}'}" />
                                             </StackPanel>
                                         </Grid>
                                     </DataTemplate>
@@ -1307,7 +1331,13 @@
                             CornerRadius="12">
                         <StackPanel>
                             <TextBlock FontWeight="SemiBold" Text="Отложенные уведомления" />
-                            <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Pending}">
+                            <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding Pending}"
+                                          AutomationProperties.Name="Отложенные уведомления">
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Border Margin="0,0,0,8"

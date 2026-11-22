@@ -86,10 +86,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Подразделение: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedDepartmentFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <Button Margin="6,0,0,0"
@@ -105,10 +104,9 @@
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
                                        Text="Город: " />
                             <TextBlock FontSize="12" Text="{Binding SelectedCityFilterText}" />
-                            <TextBlock Margin="4,0,0,0"
-                                       FontSize="12"
+                            <local:VectorIcon Size="11" Margin="4,0,0,0"
                                        Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                       Text="▾" />
+                                         Data="{x:Static local:VectorIcons.ArrowDown}" />
                         </StackPanel>
                     </Button>
                     <Button Margin="6,0,0,0"
@@ -156,7 +154,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -379,7 +377,13 @@
                                         <TextBlock Margin="0,0,0,4"
                                                    Style="{StaticResource MetaLabelStyle}"
                                                    Text="Телефоны" />
-                                        <ItemsControl ItemsSource="{Binding Phones}">
+                                        <ItemsControl ItemsSource="{Binding Phones}"
+                                                      AutomationProperties.Name="Телефоны">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayText}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <TextBlock Margin="0,0,0,6"
@@ -393,7 +397,13 @@
                                         <TextBlock Margin="0,0,0,4"
                                                    Style="{StaticResource MetaLabelStyle}"
                                                    Text="E-mail" />
-                                        <ItemsControl ItemsSource="{Binding Emails}">
+                                        <ItemsControl ItemsSource="{Binding Emails}"
+                                                      AutomationProperties.Name="Адреса электронной почты">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayText}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <TextBlock Margin="0,0,0,6"

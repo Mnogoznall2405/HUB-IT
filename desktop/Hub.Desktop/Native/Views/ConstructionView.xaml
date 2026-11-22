@@ -160,7 +160,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку строительства" />
             </Grid>
         </Border>
@@ -397,7 +397,13 @@
                                                    FontWeight="SemiBold"
                                                    Text="Направления" />
                                         <ItemsControl Margin="0,8,-10,0"
-                                                      ItemsSource="{Binding Detail.Directions}">
+                                                      ItemsSource="{Binding Detail.Directions}"
+                                                      AutomationProperties.Name="Направления">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding AutomationName}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemsPanel>
                                                 <ItemsPanelTemplate>
                                                     <WrapPanel />
@@ -445,7 +451,13 @@
                                                    FontWeight="SemiBold"
                                                    Text="Команда объекта" />
                                         <ItemsControl Margin="0,6,0,0"
-                                                      ItemsSource="{Binding Detail.Team}">
+                                                      ItemsSource="{Binding Detail.Team}"
+                                                      AutomationProperties.Name="Команда объекта">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding FullName}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <StackPanel Margin="0,4,0,0">

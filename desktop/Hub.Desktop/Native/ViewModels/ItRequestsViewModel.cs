@@ -595,6 +595,22 @@ public sealed class ItRequestItemViewModel
 
     public string RequestRef { get; }
     public string Number { get; }
+    public string AutomationName
+    {
+        get
+        {
+            var parts = "Заявка " + Number + ": " + StateLabel;
+            if (!string.IsNullOrEmpty(WarehouseName))
+            {
+                parts += ", " + WarehouseName;
+            }
+            if (Overdue)
+            {
+                parts += ", просрочена";
+            }
+            return parts;
+        }
+    }
     public string StateLabel { get; }
     public string StateDescription { get; }
     public string WarehouseName { get; }

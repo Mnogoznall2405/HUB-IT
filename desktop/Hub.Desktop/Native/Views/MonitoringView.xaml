@@ -178,7 +178,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку мониторинга" />
             </Grid>
         </Border>
@@ -702,16 +702,16 @@
                                                             <ColumnDefinition Width="*" />
                                                             <ColumnDefinition Width="Auto" />
                                                         </Grid.ColumnDefinitions>
-                                                        <TextBlock VerticalAlignment="Center"
-                                                                   FontSize="13"
-                                                                   Text="⚠">
-                                                            <TextBlock.Style>
-                                                                <Style TargetType="TextBlock">
-                                                                    <Setter Property="Text" Value="⚠" />
+                                                        <local:VectorIcon Size="13"
+                                                                          VerticalAlignment="Center"
+                                                                          Data="{x:Static local:VectorIcons.Warning}">
+                                                            <local:VectorIcon.Style>
+                                                                <Style TargetType="local:VectorIcon">
+                                                                    <Setter Property="Data" Value="{x:Static local:VectorIcons.Warning}" />
                                                                     <Setter Property="Foreground" Value="{DynamicResource HubWarningBrush}" />
                                                                     <Style.Triggers>
                                                                         <DataTrigger Binding="{Binding IsOpen}" Value="False">
-                                                                            <Setter Property="Text" Value="✓" />
+                                                                            <Setter Property="Data" Value="{x:Static local:VectorIcons.Check}" />
                                                                             <Setter Property="Foreground" Value="{DynamicResource HubSuccessBrush}" />
                                                                         </DataTrigger>
                                                                         <DataTrigger Binding="{Binding StateTone}" Value="error">
@@ -719,8 +719,8 @@
                                                                         </DataTrigger>
                                                                     </Style.Triggers>
                                                                 </Style>
-                                                            </TextBlock.Style>
-                                                        </TextBlock>
+                                                            </local:VectorIcon.Style>
+                                                        </local:VectorIcon>
                                                         <StackPanel Grid.Column="1" Margin="10,0,0,0">
                                                             <TextBlock FontSize="13"
                                                                        Text="{Binding Title}"

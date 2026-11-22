@@ -4965,6 +4965,11 @@ public class FakeHubApiClient : IHubApiClient
         }
 
         DownloadCalls.Add((messageId, attachmentId));
+        if (DownloadGate is not null)
+        {
+            await DownloadGate();
+        }
+
         var bytes = DownloadBytes ?? [];
         await destination.WriteAsync(bytes, cancellationToken);
         return DownloadFileName ?? string.Empty;
@@ -4979,6 +4984,9 @@ public class FakeHubApiClient : IHubApiClient
     public HubChatMessage? UploadCompletedMessage { get; set; }
     public byte[]? DownloadBytes { get; set; }
     public string? DownloadFileName { get; set; }
+    /// <summary>Точка ожидания внутри загрузки — для теста дедупликации
+    /// параллельных скачиваний (UI-026).</summary>
+    public Func<Task>? DownloadGate { get; set; }
     public List<(string ConversationId, string? Body, string? ReplyId, string? ClientMessageId, IReadOnlyList<HubChatUploadFileRequest> Files)>
         UploadSessionRequests { get; } = [];
     public List<(string SessionId, string FileId, int ChunkIndex, long Offset, byte[] Data)>
@@ -7189,6 +7197,7 @@ public class FakeHubApiClient : IHubApiClient
 
     /// <summary>Ответ по запрошенному пути/URL; иначе — общий ImageDownloadBytes.</summary>
     public Func<string, byte[]?>? ImageDownloadBytesFactory { get; set; }
+    public Func<string, Task<byte[]>>? ImageDownloadAsyncFactory { get; set; }
     public List<string> ImageDownloadCalls { get; } = [];
 
     public Task<byte[]> DownloadImageAsync(string uriOrPath, CancellationToken cancellationToken)
@@ -7199,7 +7208,7 @@ public class FakeHubApiClient : IHubApiClient
             return Task.FromException<byte[]>(ImageDownloadException);
         }
 
-        return Task.FromResult(
+        return ImageDownloadAsyncFactory?.Invoke(uriOrPath) ?? Task.FromResult(
             ImageDownloadBytesFactory?.Invoke(uriOrPath) ?? ImageDownloadBytes ?? []);
     }
 

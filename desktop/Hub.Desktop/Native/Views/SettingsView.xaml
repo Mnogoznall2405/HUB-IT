@@ -77,7 +77,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -93,17 +93,20 @@
                 <RadioButton GroupName="SettingsNav"
                              Style="{StaticResource HubNavItemStyle}"
                              IsChecked="{Binding IsAppearanceSection, Mode=TwoWay}"
-                             Content="🎨  Внешний вид"
+                             Content="Внешний вид"
+                             local:NavGlyph.Icon="{x:Static local:VectorIcons.Palette}"
                              AutomationProperties.Name="Раздел настроек: внешний вид" />
                 <RadioButton GroupName="SettingsNav"
                              Style="{StaticResource HubNavItemStyle}"
                              IsChecked="{Binding IsNotificationsSection, Mode=TwoWay}"
-                             Content="🔔  Уведомления"
+                             Content="Уведомления"
+                             local:NavGlyph.Icon="{x:Static local:VectorIcons.Bell}"
                              AutomationProperties.Name="Раздел настроек: уведомления" />
                 <RadioButton GroupName="SettingsNav"
                              Style="{StaticResource HubNavItemStyle}"
                              IsChecked="{Binding IsSecuritySection, Mode=TwoWay}"
-                             Content="🛡  Безопасность"
+                             Content="Безопасность"
+                             local:NavGlyph.Icon="{x:Static local:VectorIcons.Shield}"
                              AutomationProperties.Name="Раздел настроек: безопасность" />
             </StackPanel>
 

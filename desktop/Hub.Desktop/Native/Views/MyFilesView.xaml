@@ -117,14 +117,15 @@
                     <Button Style="{StaticResource HubGhostButtonStyle}"
                             HorizontalContentAlignment="Left"
                             Command="{Binding NewLibraryCommand}"
-                            Content="＋ Общая папка"
+                            Content="Общая папка" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                             Visibility="{Binding CanManageLibraries, Converter={StaticResource BoolToVisibility}}"
                             AutomationProperties.Name="Создать общую папку" />
                     <Button Margin="0,4,0,0"
                             Style="{StaticResource HubGhostButtonStyle}"
                             HorizontalContentAlignment="Left"
                             Command="{Binding ShowPersonalTrashCommand}"
-                            Content="🗑 Корзина"
+                            Content="Корзина"
+                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Trash}"
                             AutomationProperties.Name="Открыть корзину диска" />
                     <Border Margin="0,10,0,0"
                             Padding="10,8"
@@ -186,7 +187,13 @@
                                 AutomationProperties.Name="На уровень выше" />
                         <ItemsControl Margin="8,0,0,0"
                                       ItemsSource="{Binding Breadcrumbs}"
-                                      VerticalAlignment="Center">
+                                      VerticalAlignment="Center"
+                                      AutomationProperties.Name="Путь к папке">
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
                                     <StackPanel Orientation="Horizontal" />
@@ -202,7 +209,8 @@
                                         <Button Style="{StaticResource CrumbButtonStyle}"
                                                 Command="{Binding DataContext.GoToCrumbCommand, ElementName=Root}"
                                                 CommandParameter="{Binding}"
-                                                Content="{Binding Name}" />
+                                                Content="{Binding Name}"
+                                                AutomationProperties.Name="{Binding Name, StringFormat='Перейти в папку {0}'}" />
                                     </StackPanel>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -225,10 +233,9 @@
                                            Foreground="{DynamicResource HubTextSecondaryBrush}"
                                            Text="Хранить: " />
                                 <TextBlock FontSize="12" Text="{Binding RetentionLabel}" />
-                                <TextBlock Margin="4,0,0,0"
-                                           FontSize="12"
+                                <local:VectorIcon Size="11" Margin="4,0,0,0"
                                            Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                           Text="▾" />
+                                             Data="{x:Static local:VectorIcons.ArrowDown}" />
                             </StackPanel>
                         </Button>
                         <Button Margin="8,0,0,0"
@@ -378,7 +385,7 @@
                     <Button Grid.Column="2"
                             Style="{StaticResource HubGhostButtonStyle}"
                             Command="{Binding DismissBannerCommand}"
-                            Content="✕"
+                            local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                             AutomationProperties.Name="Скрыть ошибку" />
                 </Grid>
             </Border>
@@ -478,11 +485,12 @@
                                                Text="{Binding Name}"
                                                TextTrimming="CharacterEllipsis" />
                                     <StackPanel Margin="0,4,0,0" Orientation="Horizontal">
-                                        <TextBlock Margin="0,0,6,0"
-                                                   FontSize="12"
-                                                   Text="🔗"
-                                                   Visibility="{Binding IsShared, Converter={StaticResource BoolToVisibility}}"
-                                                   AutomationProperties.Name="Есть публичная ссылка" />
+                                        <local:VectorIcon Size="12"
+                                                          Margin="0,0,6,0"
+                                                          VerticalAlignment="Center"
+                                                          Data="{x:Static local:VectorIcons.Link}"
+                                                          Visibility="{Binding IsShared, Converter={StaticResource BoolToVisibility}}"
+                                                          AutomationProperties.Name="Есть публичная ссылка" />
                                         <TextBlock FontSize="12"
                                                    Foreground="{DynamicResource HubTextSecondaryBrush}"
                                                    Text="{Binding SizeText}" />
@@ -583,7 +591,7 @@
                         <Button Grid.Row="0" Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseSharePanelCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть панель ссылки" />
 
                         <ProgressBar Grid.Row="1" Grid.ColumnSpan="2"
@@ -618,7 +626,13 @@
                         <!-- Активные ссылки: статус и срок + отзыв (контракт — одна на объект) -->
                         <ItemsControl Grid.Row="3" Grid.ColumnSpan="2"
                                       Margin="0,8,0,0"
-                                      ItemsSource="{Binding ShareLinks}">
+                                      ItemsSource="{Binding ShareLinks}"
+                                      AutomationProperties.Name="Активные ссылки">
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding StatusText, StringFormat='Ссылка: {0}'}" />
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Grid Margin="0,0,0,4">

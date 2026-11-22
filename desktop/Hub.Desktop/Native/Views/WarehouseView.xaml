@@ -121,7 +121,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку склада 1С" />
             </Grid>
         </Border>
@@ -396,7 +396,7 @@
                                     Padding="6,0"
                                     FontSize="11"
                                     Command="{Binding ClearSeriesCommand}"
-                                    Content="✕"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                     AutomationProperties.Name="Сбросить фильтр серии" />
                         </StackPanel>
                     </Border>
@@ -567,7 +567,7 @@
                                     MinHeight="26"
                                     Padding="8,0"
                                     Command="{Binding CloseMovementDetailCommand}"
-                                    Content="✕"
+                                    local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                     AutomationProperties.Name="Закрыть карточку документа" />
                         </Grid>
                         <Grid Grid.Row="1">
@@ -640,7 +640,13 @@
                                                Text="{Binding FilesMessage}"
                                                TextWrapping="Wrap"
                                                Visibility="{Binding FilesMessage, Converter={StaticResource NonEmptyStringToVisibility}}" />
-                                    <ItemsControl ItemsSource="{Binding Files}">
+                                    <ItemsControl ItemsSource="{Binding Files}"
+                                                  AutomationProperties.Name="Файлы номенклатуры">
+                                        <ItemsControl.ItemContainerStyle>
+                                            <Style TargetType="ContentPresenter">
+                                                <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                            </Style>
+                                        </ItemsControl.ItemContainerStyle>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Border Margin="0,0,0,6"
@@ -883,7 +889,13 @@
                                            FontSize="12"
                                            FontWeight="SemiBold"
                                            Text="Остатки на складе" />
-                                <ItemsControl ItemsSource="{Binding Balances}">
+                                <ItemsControl ItemsSource="{Binding Balances}"
+                                              AutomationProperties.Name="Остатки на складе">
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="AutomationProperties.Name" Value="{Binding NomenclatureTitle}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border Margin="0,0,0,4"

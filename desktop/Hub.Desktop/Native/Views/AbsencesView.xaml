@@ -69,7 +69,7 @@
                             Padding="10,2"
                             Command="{Binding PrevDayCommand}"
                             AutomationProperties.Name="Предыдущий день">
-                        <TextBlock FontSize="15" FontWeight="SemiBold" Text="❮" />
+                        <local:VectorIcon Size="14" Data="{x:Static local:VectorIcons.ChevronLeft}" />
                     </Button>
                     <Button Margin="6,0,0,0"
                             Style="{StaticResource HubSecondaryButtonStyle}"
@@ -77,7 +77,7 @@
                             Padding="10,2"
                             Command="{Binding NextDayCommand}"
                             AutomationProperties.Name="Следующий день">
-                        <TextBlock FontSize="15" FontWeight="SemiBold" Text="❯" />
+                        <local:VectorIcon Size="14" Data="{x:Static local:VectorIcons.ChevronRight}" />
                     </Button>
                     <Button Margin="6,0,0,0"
                             Style="{StaticResource HubSecondaryButtonStyle}"
@@ -223,7 +223,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -376,7 +376,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог отсутствия" />
                     </Grid>
 

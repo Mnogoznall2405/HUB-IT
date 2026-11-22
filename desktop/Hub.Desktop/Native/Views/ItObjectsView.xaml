@@ -212,7 +212,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -737,7 +737,13 @@
                                                                     </Grid>
                                                                     <ItemsControl Margin="0,8,0,0"
                                                                                   ItemsSource="{Binding NetworkDevices}"
-                                                                                  Visibility="{Binding HasNetworkDevices, Converter={StaticResource BoolToVisibility}}">
+                                                                                  Visibility="{Binding HasNetworkDevices, Converter={StaticResource BoolToVisibility}}"
+                                                                                  AutomationProperties.Name="Сетевые устройства">
+                                                                        <ItemsControl.ItemContainerStyle>
+                                                                            <Style TargetType="ContentPresenter">
+                                                                                <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                                                            </Style>
+                                                                        </ItemsControl.ItemContainerStyle>
                                                                         <ItemsControl.ItemTemplate>
                                                                             <DataTemplate>
                                                                                 <Border Margin="0,0,0,6"
@@ -768,7 +774,13 @@
                                                                                Text="Диски и тома"
                                                                                Visibility="{Binding HasDisks, Converter={StaticResource BoolToVisibility}}" />
                                                                     <ItemsControl ItemsSource="{Binding Disks}"
-                                                                                  Visibility="{Binding HasDisks, Converter={StaticResource BoolToVisibility}}">
+                                                                                  Visibility="{Binding HasDisks, Converter={StaticResource BoolToVisibility}}"
+                                                                                  AutomationProperties.Name="Диски и тома">
+                                                                        <ItemsControl.ItemContainerStyle>
+                                                                            <Style TargetType="ContentPresenter">
+                                                                                <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                                                                            </Style>
+                                                                        </ItemsControl.ItemContainerStyle>
                                                                         <ItemsControl.ItemTemplate>
                                                                             <DataTemplate>
                                                                                 <Border Margin="0,0,0,6"

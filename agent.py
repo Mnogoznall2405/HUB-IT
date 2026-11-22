@@ -379,19 +379,6 @@ def bootstrap_env_from_files() -> List[str]:
     return loaded
 
 
-def _run_fs_egress_sidecar() -> None:
-    if not _is_truthy(os.getenv("ITINV_FS_EGRESS_ENABLED", "1"), default=True):
-        logging.info("fs_egress sidecar is disabled by ITINV_FS_EGRESS_ENABLED")
-        return
-    try:
-        from fs_egress import run_fs_egress_forever
-
-        logging.info("Starting fs_egress sidecar")
-        run_fs_egress_forever()
-    except Exception as exc:
-        logging.exception("fs_egress sidecar crashed: %s", exc)
-
-
 def lower_process_priority() -> bool:
     """Run below normal priority so inventory collection never competes with the user's work.
 
@@ -408,176 +395,18 @@ def lower_process_priority() -> bool:
         return False
 
 
-def _process_running_by_name(names: set) -> bool:
-    for proc in psutil.process_iter(["name"]):
-        try:
-            name = str(proc.info.get("name") or "").strip().lower()
-            if name in names:
-                return True
-        except Exception:
-            continue
-    return False
-
-
-def _telegram_probe_process_running() -> bool:
-    return _process_running_by_name({"itinventtelegramprobe", "itinventtelegramprobe.exe"})
-
-
-def _browser_probe_process_running() -> bool:
-    return _process_running_by_name({"itinventbrowserprobe", "itinventbrowserprobe.exe"})
-
-
-_BROWSER_PROBE_LIVENESS_MAX_AGE_SEC = 600
-
-
-def _browser_probe_liveness_stale() -> bool:
-    """True when the probe's tick loop stopped writing liveness.ts.
-
-    A missing file means the probe predates liveness marks (or just started):
-    treat it as undecidable rather than hung.
-    """
-    try:
-        mtime = (
-            agent_installer.DEFAULT_BROWSER_PROBE_RUNTIME_ROOT / "liveness.ts"
-        ).stat().st_mtime
-    except OSError:
-        return False
-    return (time.time() - mtime) > _BROWSER_PROBE_LIVENESS_MAX_AGE_SEC
-
-
 _SIDECAR_THREADS: Dict[str, threading.Thread] = {}
 
 
 def collect_sidecar_health() -> Dict[str, Any]:
-    """What the server cannot see otherwise: are the optional modules alive and is their spool draining."""
-    health: Dict[str, Any] = {}
-    fs_enabled = _is_truthy(os.getenv("ITINV_FS_EGRESS_ENABLED", "1"), default=True)
-    fs_thread = _SIDECAR_THREADS.get("fs_egress")
-    fs_info: Dict[str, Any] = {"enabled": fs_enabled, "alive": bool(fs_thread is not None and fs_thread.is_alive())}
-    if fs_enabled:
-        try:
-            from fs_egress.spool import read_spool_stats, spool_root_from_env
-
-            fs_info.update(read_spool_stats(spool_root_from_env()))
-        except Exception as exc:
-            fs_info["stats_error"] = sanitize_text(exc)[:120]
-    health["fs_egress"] = fs_info
+    """Keep legacy health fields explicit: DLP is no longer part of this agent."""
     scan_thread = _SIDECAR_THREADS.get("scan")
-    health["scan"] = {"alive": bool(scan_thread is not None and scan_thread.is_alive())}
-    probe_enabled = _is_truthy(os.getenv("ITINV_TELEGRAM_PROBE_ENABLED", "1"), default=True)
-    health["telegram_probe"] = {
-        "enabled": probe_enabled,
-        "running": _telegram_probe_process_running() if probe_enabled else False,
+    return {
+        "scan": {"alive": bool(scan_thread is not None and scan_thread.is_alive())},
+        "fs_egress": {"enabled": False, "alive": False},
+        "telegram_probe": {"enabled": False, "running": False},
+        "browser_probe": {"enabled": False, "running": False, "liveness_stale": False},
     }
-    browser_probe_enabled = _is_truthy(
-        os.getenv("ITINV_BROWSER_PROBE_ENABLED", "1"), default=True
-    )
-    health["browser_probe"] = {
-        "enabled": browser_probe_enabled,
-        "running": _browser_probe_process_running() if browser_probe_enabled else False,
-        "liveness_stale": _browser_probe_liveness_stale() if browser_probe_enabled else False,
-    }
-    return health
-
-
-def _ensure_telegram_probe_task(now_ts: int, *, last_check_ts: int) -> int:
-    """Best-effort: if probe enabled and not running, kick scheduled task."""
-    if not _is_truthy(os.getenv("ITINV_TELEGRAM_PROBE_ENABLED", "1"), default=True):
-        return last_check_ts
-    # Don't thrash Task Scheduler.
-    if last_check_ts and (now_ts - last_check_ts) < 120:
-        return last_check_ts
-    if _telegram_probe_process_running():
-        return now_ts
-    task_name = str(
-        os.getenv("ITINV_TELEGRAM_PROBE_TASK_NAME", "") or agent_installer.TELEGRAM_PROBE_TASK_NAME
-    ).strip() or agent_installer.TELEGRAM_PROBE_TASK_NAME
-    try:
-        result = subprocess.run(
-            ["schtasks.exe", "/Run", "/TN", task_name],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            creationflags=CREATE_NO_WINDOW,
-            check=False,
-        )
-        if result.returncode == 0:
-            logging.info("Started Telegram probe task '%s' (was not running)", task_name)
-        else:
-            detail = (result.stderr or result.stdout or "").strip()
-            logging.debug(
-                "Telegram probe task '%s' start skipped/failed: %s",
-                task_name,
-                detail,
-            )
-    except Exception as exc:
-        logging.debug("Telegram probe task watchdog error: %s", exc)
-    return now_ts
-
-
-def _run_probe_task(task_name: str, *args: str) -> int:
-    result = subprocess.run(
-        ["schtasks.exe", *args, "/TN", task_name],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        creationflags=CREATE_NO_WINDOW,
-        check=False,
-    )
-    return int(result.returncode or 0)
-
-
-def _ensure_browser_probe_task(now_ts: int, *, last_check_ts: int) -> int:
-    """Best-effort self-heal: restart the browser probe when dead or hung.
-
-    Dead  → schtasks /Run (killed by MSI updates / logon races).
-    Hung  → process exists but liveness.ts is stale → /End then /Run.
-    No interactive session → /Run simply fails; retried next check.
-    """
-    if not _is_truthy(os.getenv("ITINV_BROWSER_PROBE_ENABLED", "1"), default=True):
-        return last_check_ts
-    # Don't thrash Task Scheduler.
-    if last_check_ts and (now_ts - last_check_ts) < 300:
-        return last_check_ts
-    task_name = str(
-        os.getenv("ITINV_BROWSER_PROBE_TASK_NAME", "") or agent_installer.BROWSER_PROBE_TASK_NAME
-    ).strip() or agent_installer.BROWSER_PROBE_TASK_NAME
-    try:
-        running = _browser_probe_process_running()
-        if running and not _browser_probe_liveness_stale():
-            return now_ts
-        if running:
-            # Process alive but tick loop wedged (blocking WinAPI/UIA call):
-            # end the stale instance, then let the task start fresh.
-            if _run_probe_task(task_name, "/End") != 0:
-                logging.debug("Browser probe task '%s' end failed (not running?)", task_name)
-            time.sleep(2)
-        if _run_probe_task(task_name, "/Run") == 0:
-            logging.info(
-                "Started Browser probe task '%s' (running=%s)",
-                task_name,
-                running,
-            )
-        else:
-            logging.debug(
-                "Browser probe task '%s' start skipped/failed (no interactive session?)",
-                task_name,
-            )
-    except Exception as exc:
-        logging.debug("Browser probe task watchdog error: %s", exc)
-    return now_ts
-
-
-def _run_browser_history_sidecar() -> None:
-    if not _is_truthy(os.getenv("ITINV_BROWSER_HISTORY_ENABLED", "0"), default=False):
-        return
-    try:
-        from browser_probe.history_agent import run_browser_history_forever
-
-        logging.info("Starting browser history sidecar")
-        run_browser_history_forever()
-    except Exception as exc:
-        logging.exception("Browser history sidecar crashed: %s", exc)
 
 
 def _run_scan_sidecar(run_once: bool = False) -> None:
@@ -4160,14 +3989,6 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
     scan_thread: Optional[threading.Thread] = None
     scan_restart_attempt = 0
     next_scan_restart_ts = 0
-    fs_egress_thread: Optional[threading.Thread] = None
-    fs_egress_restart_attempt = 0
-    next_fs_egress_restart_ts = 0
-    browser_history_thread: Optional[threading.Thread] = None
-    browser_history_restart_attempt = 0
-    next_browser_history_restart_ts = 0
-    last_telegram_probe_check_ts = 0
-    last_browser_probe_check_ts = 0
     last_inventory_ok_at: Optional[int] = None
     last_error = ""
     last_status_write_ts = 0
@@ -4200,73 +4021,10 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
         next_scan_restart_ts = now_ts + delay
         logging.warning("Scan sidecar failed to start, next retry in %ss", delay)
 
-    def ensure_fs_egress_alive(now_ts: int) -> None:
-        nonlocal fs_egress_thread, fs_egress_restart_attempt, next_fs_egress_restart_ts
-        if fs_egress_thread is not None and fs_egress_thread.is_alive():
-            fs_egress_restart_attempt = 0
-            return
-        if now_ts < next_fs_egress_restart_ts:
-            return
-        if fs_egress_thread is not None:
-            logging.warning("fs_egress thread is not alive; restarting")
-        fs_egress_thread = threading.Thread(
-            target=_run_fs_egress_sidecar,
-            daemon=True,
-            name="fs-egress",
-        )
-        _SIDECAR_THREADS["fs_egress"] = fs_egress_thread
-        fs_egress_thread.start()
-        if fs_egress_thread.is_alive():
-            logging.info("fs_egress thread started")
-            fs_egress_restart_attempt = 0
-            next_fs_egress_restart_ts = now_ts
-            return
-        delays = [10, 30, 60, 300]
-        delay = delays[min(fs_egress_restart_attempt, len(delays) - 1)]
-        fs_egress_restart_attempt += 1
-        next_fs_egress_restart_ts = now_ts + delay
-        logging.warning("fs_egress failed to start, next retry in %ss", delay)
-
-    def ensure_browser_history_alive(now_ts: int) -> None:
-        nonlocal browser_history_thread, browser_history_restart_attempt, next_browser_history_restart_ts
-        if not _is_truthy(os.getenv("ITINV_BROWSER_HISTORY_ENABLED", "0"), default=False):
-            return
-        if browser_history_thread is not None and browser_history_thread.is_alive():
-            browser_history_restart_attempt = 0
-            return
-        if now_ts < next_browser_history_restart_ts:
-            return
-        if browser_history_thread is not None:
-            logging.warning("Browser history thread is not alive; restarting")
-        browser_history_thread = threading.Thread(
-            target=_run_browser_history_sidecar,
-            daemon=True,
-            name="browser-history",
-        )
-        browser_history_thread.start()
-        if browser_history_thread.is_alive():
-            logging.info("browser history thread started")
-            browser_history_restart_attempt = 0
-            next_browser_history_restart_ts = now_ts
-            return
-        delays = [10, 30, 60, 300]
-        delay = delays[min(browser_history_restart_attempt, len(delays) - 1)]
-        browser_history_restart_attempt += 1
-        next_browser_history_restart_ts = now_ts + delay
-        logging.warning("browser history failed to start, next retry in %ss", delay)
-
     next_full_snapshot_ts = 0
     while True:
         now_ts = int(time.time())
         ensure_scan_sidecar_alive(now_ts)
-        ensure_fs_egress_alive(now_ts)
-        ensure_browser_history_alive(now_ts)
-        last_telegram_probe_check_ts = _ensure_telegram_probe_task(
-            now_ts, last_check_ts=last_telegram_probe_check_ts
-        )
-        last_browser_probe_check_ts = _ensure_browser_probe_task(
-            now_ts, last_check_ts=last_browser_probe_check_ts
-        )
         include_full_snapshot = now_ts >= next_full_snapshot_ts
         report_type = "full_snapshot" if include_full_snapshot else "heartbeat"
         try:

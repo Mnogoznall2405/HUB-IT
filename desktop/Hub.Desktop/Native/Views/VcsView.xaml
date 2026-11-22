@@ -87,7 +87,7 @@
                         <Button Margin="8,0,0,0"
                                 Style="{StaticResource HubPrimaryButtonStyle}"
                                 Command="{Binding OpenCreateCommand}"
-                                Content="＋ Добавить"
+                                Content="Добавить" local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                                 AutomationProperties.Name="Добавить терминал ВКС" />
                     </StackPanel>
                     <Button Margin="8,0,0,0"
@@ -129,7 +129,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -193,7 +193,7 @@
                                             Command="{Binding DataContext.MoveComputerUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                             CommandParameter="{Binding}"
                                             IsEnabled="{Binding CanMoveUp}"
-                                            Content="↑"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.ArrowUp}"
                                             AutomationProperties.Name="{Binding Title, StringFormat='Переместить терминал {0} выше'}" />
                                     <Button Margin="4,0,0,0"
                                             Padding="8,2"
@@ -201,7 +201,7 @@
                                             Command="{Binding DataContext.MoveComputerDownCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                             CommandParameter="{Binding}"
                                             IsEnabled="{Binding CanMoveDown}"
-                                            Content="↓"
+                                            local:NavGlyph.Icon="{x:Static local:VectorIcons.ArrowDown}"
                                             AutomationProperties.Name="{Binding Title, StringFormat='Переместить терминал {0} ниже'}" />
                                     <Button Margin="4,0,0,0"
                                             Padding="8,2"
@@ -294,7 +294,7 @@
                         <Button Grid.Column="1"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть диалог терминала ВКС" />
                     </Grid>
 
@@ -452,7 +452,7 @@
                                 VerticalAlignment="Top"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseConfigCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть настройки пароля VNC" />
                     </Grid>
 
@@ -556,7 +556,7 @@
                                 VerticalAlignment="Top"
                                 Style="{StaticResource HubGhostButtonStyle}"
                                 Command="{Binding CloseInfoCommand}"
-                                Content="✕"
+                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                 AutomationProperties.Name="Закрыть справочник ВКС" />
                     </Grid>
 

@@ -102,7 +102,8 @@
                          IsChecked="{Binding IsFilterBookmarks, Mode=TwoWay}"
                          Command="{Binding SelectFilterCommand}"
                          CommandParameter="bookmarks"
-                         Content="🔖 Закладки"
+                         Content="Закладки"
+                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Bookmark}"
                          AutomationProperties.Name="Фильтр: закладки" />
         </StackPanel>
 
@@ -174,7 +175,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -498,7 +499,13 @@
                                     <!-- Реакции: чипы со счётами (своя подсвечена) + «+»-меню -->
                                     <WrapPanel Margin="0,16,0,0"
                                                Visibility="{Binding ReactionsEnabled, Converter={StaticResource BoolToVisibility}}">
-                                        <ItemsControl ItemsSource="{Binding ReactionChips}">
+                                        <ItemsControl ItemsSource="{Binding ReactionChips}"
+                                                      AutomationProperties.Name="Реакции на новость">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding TooltipText}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemsPanel>
                                                 <ItemsPanelTemplate>
                                                     <WrapPanel />
@@ -522,7 +529,7 @@
                                                 MinHeight="28"
                                                 Padding="10,4"
                                                 Click="ReactionMenu_Click"
-                                                Content="＋"
+                                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
                                                 ToolTip="Добавить реакцию"
                                                 AutomationProperties.Name="Добавить реакцию">
                                             <Button.ContextMenu>
@@ -547,21 +554,29 @@
                                                       ToolTip="{Binding LikeTooltip}"
                                                       Visibility="{Binding ReactionsEnabled, Converter={StaticResource BoolToVisibility}}"
                                                       AutomationProperties.Name="Нравится" />
-                                        <TextBlock Margin="4,0,12,0"
-                                                   VerticalAlignment="Center"
-                                                   FontSize="13"
-                                                   Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                   Text="{Binding CommentsTotal, StringFormat='💬 {0}'}">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding CommentsTotal}" Value="0">
-                                                            <Setter Property="Text" Value="💬" />
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
+                                        <StackPanel Margin="4,0,12,0"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center">
+                                            <local:VectorIcon Size="13"
+                                                              VerticalAlignment="Center"
+                                                              Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                              Data="{x:Static local:VectorIcons.Chat}" />
+                                            <TextBlock Margin="4,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                       Text="{Binding CommentsTotal}">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock" BasedOn="{StaticResource HubMutedTextStyle}">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding CommentsTotal}" Value="0">
+                                                                <Setter Property="Text" Value="" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </StackPanel>
                                         <ToggleButton Style="{StaticResource HubChipToggleStyle}"
                                                       IsChecked="{Binding IsBookmarked, Mode=OneWay}"
                                                       Command="{Binding DataContext.ToggleBookmarkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
@@ -589,7 +604,13 @@
                                                        Text="{Binding PollMetaText}"
                                                        Visibility="{Binding PollMetaText, Converter={StaticResource NonEmptyStringToVisibility}}" />
                                             <ItemsControl Margin="0,10,0,0"
-                                                          ItemsSource="{Binding PollOptions}">
+                                                          ItemsSource="{Binding PollOptions}"
+                                                          AutomationProperties.Name="Варианты опроса">
+                                                <ItemsControl.ItemContainerStyle>
+                                                    <Style TargetType="ContentPresenter">
+                                                        <Setter Property="AutomationProperties.Name" Value="{Binding Text, StringFormat='Вариант опроса: {0}'}" />
+                                                    </Style>
+                                                </ItemsControl.ItemContainerStyle>
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
                                                         <Border Margin="0,0,0,6"
@@ -644,10 +665,11 @@
                                                                                 Margin="8,0,0,0"
                                                                                 VerticalAlignment="Center"
                                                                                 Orientation="Horizontal">
-                                                                        <TextBlock FontSize="12"
-                                                                                   Foreground="{DynamicResource HubAccentBrush}"
-                                                                                   Text="✓"
-                                                                                   Visibility="{Binding IsViewerVote, Converter={StaticResource BoolToVisibility}}" />
+                                                                        <local:VectorIcon Size="12"
+                                                                                          VerticalAlignment="Center"
+                                                                                          Foreground="{DynamicResource HubAccentBrush}"
+                                                                                          Data="{x:Static local:VectorIcons.Check}"
+                                                                                          Visibility="{Binding IsViewerVote, Converter={StaticResource BoolToVisibility}}" />
                                                                         <TextBlock Margin="4,0,0,0"
                                                                                    FontSize="12"
                                                                                    Foreground="{DynamicResource HubTextSecondaryBrush}"
@@ -696,7 +718,13 @@
                                                    FontSize="14"
                                                    Text="Вложения" />
                                         <ItemsControl Margin="0,8,0,0"
-                                                      ItemsSource="{Binding Attachments}">
+                                                      ItemsSource="{Binding Attachments}"
+                                                      AutomationProperties.Name="Вложения новости">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemsPanel>
                                                 <ItemsPanelTemplate>
                                                     <WrapPanel />
@@ -741,7 +769,13 @@
                                                      Foreground="{DynamicResource HubAccentBrush}"
                                                      Background="{DynamicResource HubSurfaceRaisedBrush}"
                                                      Visibility="{Binding ShowCommentsLoading, Converter={StaticResource BoolToVisibility}}" />
-                                        <ItemsControl ItemsSource="{Binding Comments}">
+                                        <ItemsControl ItemsSource="{Binding Comments}"
+                                                      AutomationProperties.Name="Комментарии">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding AuthorText, StringFormat='Комментарий: {0}'}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <Border Margin="0,8,0,0"
@@ -817,7 +851,13 @@
                                                             </StackPanel>
                                                             <ItemsControl Margin="0,6,0,0"
                                                                           ItemsSource="{Binding Attachments}"
-                                                                          Visibility="{Binding HasAttachments, Converter={StaticResource BoolToVisibility}}">
+                                                                          Visibility="{Binding HasAttachments, Converter={StaticResource BoolToVisibility}}"
+                                                                          AutomationProperties.Name="Вложения комментария">
+                                                                <ItemsControl.ItemContainerStyle>
+                                                                    <Style TargetType="ContentPresenter">
+                                                                        <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
+                                                                    </Style>
+                                                                </ItemsControl.ItemContainerStyle>
                                                                 <ItemsControl.ItemsPanel>
                                                                     <ItemsPanelTemplate>
                                                                         <WrapPanel />
@@ -832,13 +872,20 @@
                                                                                 Command="{Binding DataContext.OpenAttachmentCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                                                                 CommandParameter="{Binding}"
                                                                                 Content="{Binding DisplayText}"
-                                                                                ToolTip="{Binding Name}" />
+                                                                                ToolTip="{Binding Name}"
+                                                                                AutomationProperties.Name="{Binding Name}" />
                                                                     </DataTemplate>
                                                                 </ItemsControl.ItemTemplate>
                                                             </ItemsControl>
                                                             <WrapPanel Margin="0,4,0,0"
                                                                        Visibility="{Binding ShowReactions, Converter={StaticResource BoolToVisibility}}">
-                                                                <ItemsControl ItemsSource="{Binding ReactionChips}">
+                                                                <ItemsControl ItemsSource="{Binding ReactionChips}"
+                                                                              AutomationProperties.Name="Реакции на комментарий">
+                                                                    <ItemsControl.ItemContainerStyle>
+                                                                        <Style TargetType="ContentPresenter">
+                                                                            <Setter Property="AutomationProperties.Name" Value="{Binding TooltipText}" />
+                                                                        </Style>
+                                                                    </ItemsControl.ItemContainerStyle>
                                                                     <ItemsControl.ItemsPanel>
                                                                         <ItemsPanelTemplate>
                                                                             <WrapPanel />
@@ -854,7 +901,8 @@
                                                                                           Command="{Binding DataContext.ToggleCommentReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                                                                           CommandParameter="{Binding}"
                                                                                           Content="{Binding DisplayText}"
-                                                                                          ToolTip="{Binding TooltipText}" />
+                                                                                          ToolTip="{Binding TooltipText}"
+                                                                                          AutomationProperties.Name="{Binding TooltipText}" />
                                                                         </DataTemplate>
                                                                     </ItemsControl.ItemTemplate>
                                                                 </ItemsControl>
@@ -863,8 +911,9 @@
                                                                         Padding="7,1"
                                                                         Style="{StaticResource HubGhostButtonStyle}"
                                                                         Click="ReactionMenu_Click"
-                                                                        Content="＋"
-                                                                        ToolTip="Добавить реакцию">
+                                                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
+                                                                        ToolTip="Добавить реакцию"
+                                                                        AutomationProperties.Name="Добавить реакцию">
                                                                     <Button.ContextMenu>
                                                                         <ContextMenu>
                                                                             <MenuItem Header="👍 Нравится" Command="{Binding PickReactionCommand}" CommandParameter="like" />
@@ -903,7 +952,13 @@
                                                                              Visibility="{Binding IsRepliesLoading, Converter={StaticResource BoolToVisibility}}" />
                                                                 <ItemsControl Margin="16,4,0,0"
                                                                               ItemsSource="{Binding Replies}"
-                                                                              Visibility="{Binding RepliesExpanded, Converter={StaticResource BoolToVisibility}}">
+                                                                              Visibility="{Binding RepliesExpanded, Converter={StaticResource BoolToVisibility}}"
+                                                                              AutomationProperties.Name="Ответы на комментарий">
+                                                                    <ItemsControl.ItemContainerStyle>
+                                                                        <Style TargetType="ContentPresenter">
+                                                                            <Setter Property="AutomationProperties.Name" Value="{Binding AuthorText, StringFormat='Ответ: {0}'}" />
+                                                                        </Style>
+                                                                    </ItemsControl.ItemContainerStyle>
                                                                     <ItemsControl.ItemTemplate>
                                                                         <DataTemplate>
                                                                             <Border Margin="0,0,0,6"
@@ -930,7 +985,13 @@
                                                                                                Text="{Binding DisplayBody}"
                                                                                                TextWrapping="Wrap" />
                                                                                     <WrapPanel Margin="0,4,0,0">
-                                                                                        <ItemsControl ItemsSource="{Binding ReactionChips}">
+                                                                                        <ItemsControl ItemsSource="{Binding ReactionChips}"
+                                                                                                      AutomationProperties.Name="Реакции на ответ">
+                                                                                            <ItemsControl.ItemContainerStyle>
+                                                                                                <Style TargetType="ContentPresenter">
+                                                                                                    <Setter Property="AutomationProperties.Name" Value="{Binding TooltipText}" />
+                                                                                                </Style>
+                                                                                            </ItemsControl.ItemContainerStyle>
                                                                                             <ItemsControl.ItemsPanel>
                                                                                                 <ItemsPanelTemplate>
                                                                                                     <WrapPanel />
@@ -945,7 +1006,9 @@
                                                                                                                   IsChecked="{Binding IsMine, Mode=OneWay}"
                                                                                                                   Command="{Binding DataContext.ToggleCommentReactionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                                                                                                                   CommandParameter="{Binding}"
-                                                                                                                  Content="{Binding DisplayText}" />
+                                                                                                                  Content="{Binding DisplayText}"
+                                                                                                                  ToolTip="{Binding TooltipText}"
+                                                                                                                  AutomationProperties.Name="{Binding TooltipText}" />
                                                                                                 </DataTemplate>
                                                                                             </ItemsControl.ItemTemplate>
                                                                                         </ItemsControl>
@@ -954,7 +1017,9 @@
                                                                                                 Padding="6,1"
                                                                                                 Style="{StaticResource HubGhostButtonStyle}"
                                                                                                 Click="ReactionMenu_Click"
-                                                                                                Content="＋">
+                                                                                                local:NavGlyph.Icon="{x:Static local:VectorIcons.Plus}"
+                                                                                                ToolTip="Добавить реакцию"
+                                                                                                AutomationProperties.Name="Добавить реакцию">
                                                                                             <Button.ContextMenu>
                                                                                                 <ContextMenu>
                                                                                                     <MenuItem Header="👍" Command="{Binding PickReactionCommand}" CommandParameter="like" />
@@ -1022,7 +1087,7 @@
                                                         Margin="8,0,0,0"
                                                         Style="{StaticResource HubGhostButtonStyle}"
                                                         Command="{Binding DataContext.CancelReplyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                                        Content="✕"
+                                                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                                                         AutomationProperties.Name="Отменить ответ" />
                                             </Grid>
                                         </Border>
@@ -1073,10 +1138,17 @@
                                                    Text="Требует подтверждения прочтения"
                                                    TextWrapping="Wrap"
                                                    Visibility="{Binding IsAckPending, Converter={StaticResource BoolToVisibility}}" />
-                                        <TextBlock FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource HubSuccessBrush}"
-                                                   Text="✓ Подтверждено"
-                                                   Visibility="{Binding ShowAckDone, Converter={StaticResource BoolToVisibility}}" />
+                                        <StackPanel Orientation="Horizontal"
+                                                    Visibility="{Binding ShowAckDone, Converter={StaticResource BoolToVisibility}}">
+                                            <local:VectorIcon Size="13"
+                                                              VerticalAlignment="Center"
+                                                              Margin="0,0,5,0"
+                                                              Foreground="{DynamicResource HubSuccessBrush}"
+                                                              Data="{x:Static local:VectorIcons.Check}" />
+                                            <TextBlock FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource HubSuccessBrush}"
+                                                       Text="Подтверждено" />
+                                        </StackPanel>
                                     </StackPanel>
                                     <Button Grid.Column="1"
                                             Margin="16,0,0,0"

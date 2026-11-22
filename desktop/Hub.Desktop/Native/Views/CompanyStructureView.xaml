@@ -161,7 +161,7 @@
                 <Button Grid.Column="2"
                         Style="{StaticResource HubGhostButtonStyle}"
                         Command="{Binding DismissBannerCommand}"
-                        Content="✕"
+                        local:NavGlyph.Icon="{x:Static local:VectorIcons.Close}"
                         AutomationProperties.Name="Скрыть ошибку" />
             </Grid>
         </Border>
@@ -284,14 +284,13 @@
                                                     <ToggleButton.Template>
                                                         <ControlTemplate TargetType="ToggleButton">
                                                             <Border Padding="4,3" Background="Transparent">
-                                                                <TextBlock x:Name="ChevronText"
-                                                                           HorizontalAlignment="Center"
-                                                                           VerticalAlignment="Center"
-                                                                           FontSize="13"
-                                                                           FontWeight="SemiBold"
-                                                                           Foreground="{DynamicResource HubTextSecondaryBrush}"
-                                                                           RenderTransformOrigin="0.5,0.55"
-                                                                           Text="❯" />
+                                                                <local:VectorIcon x:Name="ChevronText"
+                                                                                  Size="13"
+                                                                                  HorizontalAlignment="Center"
+                                                                                  VerticalAlignment="Center"
+                                                                                  Foreground="{DynamicResource HubTextSecondaryBrush}"
+                                                                                  RenderTransformOrigin="0.5,0.55"
+                                                                                  Data="{x:Static local:VectorIcons.ChevronRight}" />
                                                             </Border>
                                                             <ControlTemplate.Triggers>
                                                                 <Trigger Property="IsChecked" Value="True">
@@ -607,7 +606,13 @@
                                         <TextBlock Margin="0,0,0,4"
                                                    Style="{StaticResource MetaLabelStyle}"
                                                    Text="Телефоны" />
-                                        <ItemsControl ItemsSource="{Binding Phones}">
+                                        <ItemsControl ItemsSource="{Binding Phones}"
+                                                      AutomationProperties.Name="Телефоны">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <TextBlock Margin="0,0,0,6"
@@ -621,7 +626,13 @@
                                         <TextBlock Margin="0,0,0,4"
                                                    Style="{StaticResource MetaLabelStyle}"
                                                    Text="E-mail" />
-                                        <ItemsControl ItemsSource="{Binding Emails}">
+                                        <ItemsControl ItemsSource="{Binding Emails}"
+                                                      AutomationProperties.Name="Адреса электронной почты">
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="AutomationProperties.Name" Value="{Binding}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <TextBlock Margin="0,0,0,6"

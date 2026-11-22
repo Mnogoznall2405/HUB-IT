@@ -179,26 +179,28 @@
                                 Style="{StaticResource HubTitleBarButtonStyle}"
                                 Click="NavToggleButton_Click"
                                 AutomationProperties.Name="Свернуть или развернуть главное меню">
-                            <TextBlock FontFamily="Segoe MDL2 Assets"
-                                       FontSize="13"
-                                       Text="&#xE700;" />
+                            <local:VectorIcon Size="13"
+                                              Data="{x:Static local:VectorIcons.Menu}" />
                         </Button>
                     </StackPanel>
                     <Button Grid.Column="1"
                             Style="{StaticResource HubTitleBarButtonStyle}"
                             Click="MinimizeButton_Click"
-                            Content="—"
-                            AutomationProperties.Name="Свернуть окно HUB" />
+                            AutomationProperties.Name="Свернуть окно HUB">
+                        <local:VectorIcon Size="10" Data="{x:Static local:VectorIcons.Minimize}" />
+                    </Button>
                     <Button Grid.Column="2"
                             Style="{StaticResource HubTitleBarButtonStyle}"
                             Click="MaximizeButton_Click"
-                            Content="▢"
-                            AutomationProperties.Name="Развернуть или восстановить окно HUB" />
+                            AutomationProperties.Name="Развернуть или восстановить окно HUB">
+                        <local:VectorIcon Size="10" Data="{x:Static local:VectorIcons.Maximize}" />
+                    </Button>
                     <Button Grid.Column="3"
                             Style="{StaticResource HubTitleBarCloseButtonStyle}"
                             Click="CloseButton_Click"
-                            Content="✕"
-                            AutomationProperties.Name="Закрыть окно HUB" />
+                            AutomationProperties.Name="Закрыть окно HUB">
+                        <local:VectorIcon Size="10" Data="{x:Static local:VectorIcons.Close}" />
+                    </Button>
                 </Grid>
             </Border>
 
@@ -383,73 +385,82 @@
                                      IsChecked="{Binding IsDashboardPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="dashboard"
-                                     Content="🏠"
                                      ToolTip="Главная (Ctrl+1)"
-                                     AutomationProperties.Name="Страница: главная" />
+                                     AutomationProperties.Name="Страница: главная">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.Home}" />
+                            </RadioButton>
                         <RadioButton GroupName="ShellNavCompact"
                                      Style="{StaticResource HubNavRailItemStyle}"
                                      IsChecked="{Binding IsTasksPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="tasks"
-                                     Content="✅"
                                      ToolTip="Мои задачи (Ctrl+2)"
-                                     AutomationProperties.Name="Страница: мои задачи" />
+                                     AutomationProperties.Name="Страница: мои задачи">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.CheckBox}" />
+                            </RadioButton>
                         <RadioButton GroupName="ShellNavCompact"
                                      Style="{StaticResource HubNavRailItemStyle}"
                                      IsChecked="{Binding IsTicketsPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="tickets"
-                                     Content="🎫"
                                      ToolTip="Билеты (Ctrl+8)"
-                                     AutomationProperties.Name="Страница: билеты" />
+                                     AutomationProperties.Name="Страница: билеты">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.Ticket}" />
+                            </RadioButton>
                         <RadioButton GroupName="ShellNavCompact"
                                      Style="{StaticResource HubNavRailItemStyle}"
                                      IsChecked="{Binding IsNewsPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="news"
-                                     Content="📰"
                                      ToolTip="Новости (Ctrl+3)"
-                                     AutomationProperties.Name="Страница: новости" />
+                                     AutomationProperties.Name="Страница: новости">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.News}" />
+                            </RadioButton>
                         <RadioButton GroupName="ShellNavCompact"
                                      Style="{StaticResource HubNavRailItemStyle}"
                                      IsChecked="{Binding IsChatPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="chat"
-                                     Content="💬"
                                      ToolTip="Чат (Ctrl+4)"
-                                     AutomationProperties.Name="Страница: чат" />
+                                     AutomationProperties.Name="Страница: чат">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.Chat}" />
+                            </RadioButton>
                         <RadioButton GroupName="ShellNavCompact"
                                      Style="{StaticResource HubNavRailItemStyle}"
                                      IsChecked="{Binding IsMailPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="mail"
-                                     Content="✉"
                                      ToolTip="Почта (Ctrl+M)"
-                                     AutomationProperties.Name="Страница: почта" />
+                                     AutomationProperties.Name="Страница: почта">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.Mail}" />
+                            </RadioButton>
                         <RadioButton GroupName="ShellNavCompact"
                                      Style="{StaticResource HubNavRailItemStyle}"
                                      IsChecked="{Binding IsDocflowPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="docflow"
-                                     Content="📄"
                                      ToolTip="Документы (Ctrl+7)"
-                                     AutomationProperties.Name="Страница: документы" />
+                                     AutomationProperties.Name="Страница: документы">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.Document}" />
+                            </RadioButton>
                         <RadioButton GroupName="ShellNavCompact"
                                      Style="{StaticResource HubNavRailItemStyle}"
                                      IsChecked="{Binding IsMyFilesPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="myfiles"
-                                     Content="📁"
                                      ToolTip="Файлы (Ctrl+0)"
-                                     AutomationProperties.Name="Страница: файлы" />
+                                     AutomationProperties.Name="Страница: файлы">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.Folder}" />
+                            </RadioButton>
                         <RadioButton GroupName="ShellNavCompact"
                                      Style="{StaticResource HubNavRailItemStyle}"
                                      IsChecked="{Binding IsAddressBookPage, Mode=TwoWay}"
                                      Command="{Binding NavigateToPageCommand}"
                                      CommandParameter="addressbook"
-                                     Content="👥"
                                      ToolTip="Контакты (Ctrl+9)"
-                                     AutomationProperties.Name="Страница: контакты" />
+                                     AutomationProperties.Name="Страница: контакты">
+                                <local:VectorIcon Size="18" Data="{x:Static local:VectorIcons.Group}" />
+                            </RadioButton>
                     </StackPanel>
                 </ScrollViewer>
 
@@ -474,7 +485,8 @@
                                          IsChecked="{Binding IsDashboardPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="dashboard"
-                                         Content="🏠  Главная"
+                                         Content="Главная"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Home}"
                                          ToolTip="Главная (Ctrl+1)"
                                          AutomationProperties.Name="Страница: главная" />
                             <RadioButton GroupName="ShellNav"
@@ -482,7 +494,8 @@
                                          IsChecked="{Binding IsTasksPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="tasks"
-                                         Content="✅  Мои задачи"
+                                         Content="Мои задачи"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.CheckBox}"
                                          ToolTip="Мои задачи (Ctrl+2)"
                                          AutomationProperties.Name="Страница: мои задачи" />
                             <RadioButton GroupName="ShellNav"
@@ -490,7 +503,8 @@
                                          IsChecked="{Binding IsTicketsPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="tickets"
-                                         Content="🎫  Билеты"
+                                         Content="Билеты"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Ticket}"
                                          ToolTip="Билеты (Ctrl+8)"
                                          AutomationProperties.Name="Страница: билеты" />
                             <RadioButton GroupName="ShellNav"
@@ -498,6 +512,7 @@
                                          IsChecked="{Binding IsNewsPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="news"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.News}"
                                          ToolTip="Новости (Ctrl+3)"
                                          AutomationProperties.Name="Страница: новости">
                                 <RadioButton.Content>
@@ -506,7 +521,7 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="📰  Новости" />
+                                        <TextBlock Text="Новости" />
                                         <Border Grid.Column="1"
                                                 MinWidth="18"
                                                 Padding="5,1"
@@ -530,6 +545,7 @@
                                          IsChecked="{Binding IsChatPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="chat"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Chat}"
                                          ToolTip="Чат (Ctrl+4)"
                                          AutomationProperties.Name="Страница: чат">
                                 <RadioButton.Content>
@@ -538,7 +554,7 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="💬  Чат" />
+                                        <TextBlock Text="Чат" />
                                         <Border Grid.Column="1"
                                                 MinWidth="18"
                                                 Padding="5,1"
@@ -562,6 +578,7 @@
                                          IsChecked="{Binding IsMailPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="mail"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Mail}"
                                          ToolTip="Почта (Ctrl+M)"
                                          AutomationProperties.Name="Страница: почта">
                                 <RadioButton.Content>
@@ -570,7 +587,7 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="✉  Почта" />
+                                        <TextBlock Text="Почта" />
                                         <Border Grid.Column="1"
                                                 MinWidth="18"
                                                 Padding="5,1"
@@ -594,6 +611,7 @@
                                          IsChecked="{Binding IsDocflowPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="docflow"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Document}"
                                          ToolTip="Документы (Ctrl+7)"
                                          AutomationProperties.Name="Страница: документооборот">
                                 <RadioButton.Content>
@@ -602,7 +620,7 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="📄  Документы" />
+                                        <TextBlock Text="Документы" />
                                         <Border Grid.Column="1"
                                                 MinWidth="18"
                                                 Padding="5,1"
@@ -626,7 +644,8 @@
                                          IsChecked="{Binding IsConstructionPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="construction"
-                                         Content="🏗  Строительство"
+                                         Content="Строительство"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Apartment}"
                                          ToolTip="Строительство"
                                          Visibility="{Binding IsConstructionVisible, Converter={StaticResource BoolToVisibility}}"
                                          AutomationProperties.Name="Страница: строительство" />
@@ -636,7 +655,8 @@
                                          IsChecked="{Binding IsWarehousePage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="warehouse"
-                                         Content="📦  Склад 1С"
+                                         Content="Склад 1С"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.InventoryBox}"
                                          ToolTip="Склад 1С"
                                          Visibility="{Binding IsWarehouseVisible, Converter={StaticResource BoolToVisibility}}"
                                          AutomationProperties.Name="Страница: склад 1С" />
@@ -645,7 +665,8 @@
                                          IsChecked="{Binding IsItRequestsPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="itrequests"
-                                         Content="🛒  Заявки ИТ"
+                                         Content="Заявки ИТ"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Assignment}"
                                          ToolTip="Заявки на МПЗ"
                                          Visibility="{Binding IsItRequestsVisible, Converter={StaticResource BoolToVisibility}}"
                                          AutomationProperties.Name="Страница: заявки на МПЗ" />
@@ -654,7 +675,8 @@
                                          IsChecked="{Binding IsMyFilesPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="myfiles"
-                                         Content="📁  Файлы"
+                                         Content="Файлы"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Folder}"
                                          ToolTip="Файлы (Ctrl+0)"
                                          AutomationProperties.Name="Страница: файлы" />
                             <RadioButton GroupName="ShellNav"
@@ -662,7 +684,8 @@
                                          IsChecked="{Binding IsAbsencesPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="absences"
-                                         Content="🗓  Отсутствия"
+                                         Content="Отсутствия"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Calendar}"
                                          ToolTip="Отсутствия (Ctrl+5)"
                                          AutomationProperties.Name="Страница: отсутствия" />
                             <RadioButton GroupName="ShellNav"
@@ -670,7 +693,8 @@
                                          IsChecked="{Binding IsAddressBookPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="addressbook"
-                                         Content="📇  Контакты"
+                                         Content="Контакты"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Contacts}"
                                          ToolTip="Контакты (Ctrl+9)"
                                          AutomationProperties.Name="Страница: контакты" />
                             <!-- Ctrl+цифра уже заняты 0-9 — раздел без горячей клавиши. -->
@@ -679,7 +703,8 @@
                                          IsChecked="{Binding IsCompanyStructurePage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="structure"
-                                         Content="🏢  Структура"
+                                         Content="Структура"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.AccountTree}"
                                          ToolTip="Структура компании"
                                          AutomationProperties.Name="Страница: структура компании" />
                             <!-- «ИТ-объекты» — без горячей клавиши (Ctrl+цифра заняты). -->
@@ -688,7 +713,8 @@
                                          IsChecked="{Binding IsItObjectsPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="itobjects"
-                                         Content="🖥  ИТ-объекты"
+                                         Content="ИТ-объекты"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Monitor}"
                                          ToolTip="ИТ-объекты"
                                          AutomationProperties.Name="Страница: ИТ-объекты" />
                             <!-- «Сети» — без горячей клавиши (Ctrl+цифра заняты). -->
@@ -697,7 +723,8 @@
                                          IsChecked="{Binding IsNetworksPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="networks"
-                                         Content="🌐  Сети"
+                                         Content="Сети"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Globe}"
                                          ToolTip="Сети"
                                          AutomationProperties.Name="Страница: сети" />
                             <!-- «Компьютеры» — без горячей клавиши (Ctrl+цифра заняты). -->
@@ -706,7 +733,8 @@
                                          IsChecked="{Binding IsComputersPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="computers"
-                                         Content="💻  Компьютеры"
+                                         Content="Компьютеры"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Computer}"
                                          ToolTip="Компьютеры"
                                          AutomationProperties.Name="Страница: компьютеры" />
                             <!-- «База» — учёт оборудования ITINVENT, read-срез (поиск + карточка; без передач, актов и историй). -->
@@ -715,7 +743,8 @@
                                          IsChecked="{Binding IsDatabasePage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="database"
-                                         Content="🗄  База"
+                                         Content="База"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Database}"
                                          ToolTip="База оборудования ITINVENT"
                                          AutomationProperties.Name="Страница: база оборудования" />
                             <!-- «Доступы» — матрица доступа AD, без горячей клавиши (Ctrl+цифра заняты). -->
@@ -724,7 +753,8 @@
                                          IsChecked="{Binding IsGroupsAccessPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="groupsaccess"
-                                         Content="🔐  Доступы"
+                                         Content="Доступы"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.VpnKey}"
                                          ToolTip="Доступ к папкам по группам AD"
                                          AutomationProperties.Name="Страница: доступ к группам" />
                             <!-- «VCS» — терминалы ВКС, без горячей клавиши (Ctrl+цифра заняты). -->
@@ -733,7 +763,8 @@
                                          IsChecked="{Binding IsVcsPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="vcs"
-                                         Content="🖧  VCS"
+                                         Content="VCS"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.DeviceHub}"
                                          ToolTip="Терминалы ВКС"
                                          AutomationProperties.Name="Страница: VCS" />
                             <!-- «Мониторинг» — наблюдение за сетевыми устройствами, read-срез (только статусы и текущие метрики, без управления и графиков). -->
@@ -742,7 +773,8 @@
                                          IsChecked="{Binding IsMonitoringPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="monitoring"
-                                         Content="📈  Мониторинг"
+                                         Content="Мониторинг"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.TrendingUp}"
                                          ToolTip="Мониторинг сетевых устройств"
                                          AutomationProperties.Name="Страница: мониторинг" />
                             <!-- «МФУ» — принтеры и плоттеры, read-срез (статусы, расходники, печать; без записи работ), горячей клавиши нет. -->
@@ -751,7 +783,8 @@
                                          IsChecked="{Binding IsMfuPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="mfu"
-                                         Content="🖨  МФУ"
+                                         Content="МФУ"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Print}"
                                          ToolTip="МФУ, принтеры и плоттеры"
                                          AutomationProperties.Name="Страница: МФУ" />
                             <!-- «Статистика» — работы по инвентарю за период, read-срез (числа и таблицы, без графиков и экспорта), горячей клавиши нет. -->
@@ -760,7 +793,8 @@
                                          IsChecked="{Binding IsStatisticsPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="statistics"
-                                         Content="📊  Статистика"
+                                         Content="Статистика"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.BarChart}"
                                          ToolTip="Статистика работ"
                                          AutomationProperties.Name="Страница: статистика" />
                             <!-- «Помощь» — как и «Структура», без горячей клавиши (Ctrl+цифра заняты). -->
@@ -769,7 +803,8 @@
                                          IsChecked="{Binding IsHelpPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="help"
-                                         Content="❓  Помощь"
+                                         Content="Помощь"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Help}"
                                          ToolTip="Справка и база знаний"
                                          AutomationProperties.Name="Страница: помощь" />
                             <RadioButton GroupName="ShellNav"
@@ -777,7 +812,8 @@
                                          IsChecked="{Binding IsProfilePage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="profile"
-                                         Content="👤  Профиль"
+                                         Content="Профиль"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Person}"
                                          ToolTip="Профиль (Ctrl+6)"
                                          AutomationProperties.Name="Страница: профиль" />
                             <!-- «Настройки» — как «Помощь» и «Структура», без горячей клавиши (Ctrl+цифра заняты). -->
@@ -786,7 +822,8 @@
                                          IsChecked="{Binding IsSettingsPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="settings"
-                                         Content="⚙  Настройки"
+                                         Content="Настройки"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Settings}"
                                          ToolTip="Настройки"
                                          AutomationProperties.Name="Страница: настройки" />
                             <!-- «Админ» — read-срез веб-админки, без горячей клавиши (Ctrl+цифра заняты). -->
@@ -795,7 +832,8 @@
                                          IsChecked="{Binding IsAdminPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="admin"
-                                         Content="🛠  Админ"
+                                         Content="Админ"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Build}"
                                          ToolTip="Администрирование"
                                          AutomationProperties.Name="Страница: администрирование" />
                             <!-- «DLP» — /dlp (adminOnly): пункт виден только при role=admin
@@ -805,7 +843,8 @@
                                          IsChecked="{Binding IsDlpPage, Mode=TwoWay}"
                                          Command="{Binding NavigateToPageCommand}"
                                          CommandParameter="dlp"
-                                         Content="🛡  DLP"
+                                         Content="DLP"
+                                         local:NavGlyph.Icon="{x:Static local:VectorIcons.Shield}"
                                          ToolTip="Мониторинг утечек (DLP)"
                                          Visibility="{Binding IsDlpVisible, Converter={StaticResource BoolToVisibility}}"
                                          AutomationProperties.Name="Страница: мониторинг утечек DLP" />
@@ -833,9 +872,9 @@
                                         ToolTip="Уведомления"
                                         AutomationProperties.Name="{Binding NotificationsBadgeName}">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock VerticalAlignment="Center"
-                                                   FontSize="15"
-                                                   Text="🔔" />
+                                        <local:VectorIcon Size="18"
+                                                          VerticalAlignment="Center"
+                                                          Data="{x:Static local:VectorIcons.Bell}" />
                                         <Border Margin="4,0,0,0"
                                                 MinWidth="18"
                                                 Padding="5,1"
@@ -921,8 +960,9 @@
                                     Padding="8,2"
                                     Style="{StaticResource HubGhostButtonStyle}"
                                     Command="{Binding ClosePanelCommand}"
-                                    Content="✕"
-                                    AutomationProperties.Name="Закрыть центр уведомлений" />
+                                    AutomationProperties.Name="Закрыть центр уведомлений">
+                                <local:VectorIcon Size="12" Data="{x:Static local:VectorIcons.Close}" />
+                            </Button>
                         </Grid>
 
                         <!-- Полоска загрузки (как бегущая ProgressBar шелла). -->
@@ -980,8 +1020,9 @@
                                         Padding="8,2"
                                         Style="{StaticResource HubGhostButtonStyle}"
                                         Command="{Binding DismissBannerCommand}"
-                                        Content="✕"
-                                        AutomationProperties.Name="Скрыть ошибку уведомлений" />
+                                        AutomationProperties.Name="Скрыть ошибку уведомлений">
+                                    <local:VectorIcon Size="12" Data="{x:Static local:VectorIcons.Close}" />
+                                </Button>
                             </Grid>
                         </Border>
 
@@ -1088,10 +1129,11 @@
                                                     Style="{StaticResource HubGhostButtonStyle}"
                                                     Command="{Binding DataContext.MarkReadCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
                                                     CommandParameter="{Binding}"
-                                                    Content="✓"
                                                     ToolTip="Отметить прочитанным"
                                                     Visibility="{Binding IsUnread, Converter={StaticResource BoolToVisibility}}"
-                                                    AutomationProperties.Name="Отметить уведомление прочитанным" />
+                                                    AutomationProperties.Name="Отметить уведомление прочитанным">
+                                                <local:VectorIcon Size="14" Data="{x:Static local:VectorIcons.Check}" />
+                                            </Button>
                                         </Grid>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>

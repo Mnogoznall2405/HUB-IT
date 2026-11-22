@@ -384,7 +384,7 @@ public sealed class TicketAttachmentViewModel : ObservableObject
     public bool IsDeleteEnabled => !IsDeleteBusy;
 
     /// <summary>Подпись кнопки удаления: armed просит повторное нажатие.</summary>
-    public string DeleteText => IsDeleteBusy ? "…" : DeleteArmed ? "Удалить?" : "✕";
+    public string DeleteText => IsDeleteBusy ? "…" : DeleteArmed ? "Удалить?" : "";
 
     public string DisplayText => IsDownloading
         ? "Скачиваем…"

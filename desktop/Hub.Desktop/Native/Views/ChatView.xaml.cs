@@ -2,19 +2,23 @@ using System.Collections.Specialized;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Hub.Desktop.Native.ViewModels;
 using DataFormats = System.Windows.DataFormats;
 using DataObject = System.Windows.DataObject;
 using DragDropEffects = System.Windows.DragDropEffects;
 using DragEventArgs = System.Windows.DragEventArgs;
 using IDataObject = System.Windows.IDataObject;
+using IInputElement = System.Windows.IInputElement;
 using ICommand = System.Windows.Input.ICommand;
 using Key = System.Windows.Input.Key;
 using Keyboard = System.Windows.Input.Keyboard;
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using ModifierKeys = System.Windows.Input.ModifierKeys;
 using MouseButtonEventArgs = System.Windows.Input.MouseButtonEventArgs;
+using MouseEventArgs = System.Windows.Input.MouseEventArgs;
 using UserControl = System.Windows.Controls.UserControl;
 
 namespace Hub.Desktop.Native.Views;
@@ -34,12 +38,30 @@ public partial class ChatView : UserControl
     private string? _activeConversationId;
     private double _pendingRestoreFraction = -1;
     private ScrollViewer? _messagesScroller;
+    private DispatcherOperation? _loadOlderOperation;
+    private DispatcherOperation? _restoreHistoryAnchorOperation;
+    private const double OlderHistoryThreshold = 160;
+    private readonly DispatcherTimer _stickerHoverTimer = new();
+    private bool _stickerHoverOpening;
+    private bool _stickerHoverPreview;
 
     public ChatView()
     {
         InitializeComponent();
         NativeThemeManager.EnsureFallbackPalette(this);
         DataContextChanged += ChatView_DataContextChanged;
+        _stickerHoverTimer.Tick += OnStickerHoverTick;
+        _mediaPositionTimer.Tick += OnMediaPositionTick;
+        Unloaded += (_, _) =>
+        {
+            _stickerHoverTimer.Stop();
+            _mediaPositionTimer.Stop();
+            StopViewerPlayback();
+            if (_stickerHoverPreview && DataContext is ChatViewModel model)
+            {
+                model.CloseStickerPanelCommand.Execute(null);
+            }
+        };
         // Ctrl+V перехватываем до TextBox: файлы/картинка из буфера уходят
         // в upload-пайплайн, обычный текст вставляется как раньше.
         DataObject.AddPastingHandler(ComposerInput, OnComposerPasting);
@@ -49,7 +71,7 @@ public partial class ChatView : UserControl
             ScrollViewer.ScrollChangedEvent,
             new ScrollChangedEventHandler(OnMessagesScrollChanged));
         // UI-002: на узком окне «Информация» уходит в оверлей поверх ленты,
-        // иначе колонка 330 оставляет истории ~90px (1024−216−380−5−330).
+        // иначе колонка 380 оставляет истории ~30px (1024−216−420−5−380).
         // Сплиттер меняет колонку без изменения общей ширины — слушаем оба.
         ChatAreaGrid.SizeChanged += (_, _) => UpdateInfoOverlayMode();
         SidebarHost.SizeChanged += (_, _) => UpdateInfoOverlayMode();
@@ -58,7 +80,7 @@ public partial class ChatView : UserControl
     // Ширина панели «Информация» в колоночном режиме и минимально читаемая
     // лента; значение feedWouldBe не зависит от текущего режима — гистерезис
     // не нужен, оверлей не мечется на пороге.
-    private const double InfoPanelWidth = 330;
+    private const double InfoPanelWidth = 380;
     private const double MinReadableFeedWidth = 360;
 
     private void UpdateInfoOverlayMode()
@@ -77,6 +99,9 @@ public partial class ChatView : UserControl
     {
         if (e.OldValue is ChatViewModel oldModel)
         {
+            _stickerHoverTimer.Stop();
+            _stickerHoverPreview = false;
+            _focusBeforeMessageSearch = null;
             oldModel.Messages.CollectionChanged -= Messages_CollectionChanged;
             oldModel.PropertyChanged -= ChatModel_PropertyChanged;
             oldModel.RequestComposerCaret = null;
@@ -109,6 +134,7 @@ public partial class ChatView : UserControl
 
         if (e.PropertyName == nameof(ChatViewModel.SelectedConversation))
         {
+            _stickerHoverTimer.Stop();
             _activeConversationId = model.SelectedConversation?.Id;
             _pendingRestoreFraction =
                 _activeConversationId is { } id && _scrollFractions.TryGetValue(id, out var fraction)
@@ -125,6 +151,32 @@ public partial class ChatView : UserControl
                 System.Windows.Threading.DispatcherPriority.Loaded,
                 new Action(() => _messagesScroller?.ScrollToVerticalOffset(
                     fraction * _messagesScroller.ScrollableHeight)));
+        }
+        else if (e.PropertyName == nameof(ChatViewModel.IsStickerPanelOpen) && !model.IsStickerPanelOpen)
+        {
+            _stickerHoverTimer.Stop();
+            _stickerHoverPreview = false;
+            if (StickerPanel.IsKeyboardFocusWithin)
+            {
+                StickerPanelButton.Focus();
+            }
+        }
+        else if (e.PropertyName == nameof(ChatViewModel.IsMessageSearchOpen))
+        {
+            if (model.IsMessageSearchOpen)
+            {
+                _focusBeforeMessageSearch = Keyboard.FocusedElement;
+                FocusMessageSearchInput(model);
+            }
+            else
+            {
+                if (MessageSearchPanel.IsKeyboardFocusWithin || Keyboard.FocusedElement is null)
+                {
+                    RestoreOverlayFocus(_focusBeforeMessageSearch);
+                }
+
+                _focusBeforeMessageSearch = null;
+            }
         }
         else if (e.PropertyName == nameof(ChatViewModel.IsDeleteConfirmOpen))
         {
@@ -161,12 +213,48 @@ public partial class ChatView : UserControl
                 _focusBeforeGroupSettings = null;
             }
         }
+        else if (e.PropertyName == nameof(ChatViewModel.MediaViewerMediaSource))
+        {
+            // UI-026: VM отдал локальный путь — играем в нужном элементе;
+            // null (смена элемента/закрытие) — гасим звук детерминированно.
+            ApplyViewerMediaSource(model);
+        }
+        else if (e.PropertyName == nameof(ChatViewModel.IsMediaViewerOpen) && !model.IsMediaViewerOpen)
+        {
+            StopViewerPlayback();
+        }
+        else if (e.PropertyName is nameof(ChatViewModel.MediaViewerIsVideo)
+            or nameof(ChatViewModel.MediaViewerIsAudio)
+            or nameof(ChatViewModel.MediaViewerIsUnsupported))
+        {
+            UpdateMediaViewerTransport(model);
+        }
+        else if (e.PropertyName is nameof(ChatViewModel.VoicePreviewSource)
+            or nameof(ChatViewModel.IsVoicePreviewPlaying)
+            or nameof(ChatViewModel.VoiceBarVisible))
+        {
+            ApplyVoicePreviewState(model);
+        }
     }
 
     // Фокус, который был до оверлея; элемент мог исчезнуть (контекстное меню,
     // удалённая строка) — тогда логичная замена: поле ввода.
     private IInputElement? _focusBeforeDeleteConfirm;
     private IInputElement? _focusBeforeGroupSettings;
+    private IInputElement? _focusBeforeMessageSearch;
+
+    private void FocusMessageSearchInput(ChatViewModel model)
+    {
+        Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.Background,
+            new Action(() =>
+            {
+                if (ReferenceEquals(DataContext, model) && model.IsMessageSearchOpen)
+                {
+                    MessageSearchInput.Focus();
+                }
+            }));
+    }
 
     private void RestoreOverlayFocus(IInputElement? element)
     {
@@ -176,17 +264,133 @@ public partial class ChatView : UserControl
         }
     }
 
-    private void OnMessagesScrollChanged(object sender, ScrollChangedEventArgs e)
+    private void StickerPanelButton_MouseEnter(object sender, MouseEventArgs e)
     {
-        if (e.OriginalSource is ScrollViewer scroller)
+        _stickerHoverTimer.Stop();
+        if (DataContext is ChatViewModel { IsStickerPanelOpen: false } && StickerPanelButton.IsEnabled)
         {
-            _messagesScroller = scroller;
+            QueueStickerHover(opening: true);
+        }
+    }
+
+    private void StickerPanel_MouseEnter(object sender, MouseEventArgs e) => _stickerHoverTimer.Stop();
+
+    private void StickerPanel_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _stickerHoverTimer.Stop();
+        if (_stickerHoverPreview)
+        {
+            QueueStickerHover(opening: false);
+        }
+    }
+
+    private void QueueStickerHover(bool opening)
+    {
+        _stickerHoverOpening = opening;
+        _stickerHoverTimer.Interval = TimeSpan.FromMilliseconds(opening ? 250 : 400);
+        _stickerHoverTimer.Start();
+    }
+
+    private void OnStickerHoverTick(object? sender, EventArgs e)
+    {
+        _stickerHoverTimer.Stop();
+        if (DataContext is not ChatViewModel model || !IsVisible)
+        {
+            return;
         }
 
-        if (_messagesScroller is { ScrollableHeight: > 0 } && _activeConversationId is { } id)
+        if (_stickerHoverOpening && !model.IsStickerPanelOpen && !model.IsAttachmentConfirmOpen
+            && model.ToggleStickerPanelCommand.CanExecute(null))
         {
-            _scrollFractions[id] = _messagesScroller.VerticalOffset / _messagesScroller.ScrollableHeight;
+            _stickerHoverPreview = true;
+            model.ToggleStickerPanelCommand.Execute(null);
         }
+        else if (!_stickerHoverOpening && _stickerHoverPreview && !StickerPanel.IsKeyboardFocusWithin)
+        {
+            model.CloseStickerPanelCommand.Execute(null);
+        }
+    }
+
+    private void StickerPanelButton_Click(object sender, RoutedEventArgs e)
+    {
+        _stickerHoverTimer.Stop();
+        if (DataContext is not ChatViewModel model)
+        {
+            return;
+        }
+
+        if (model.IsStickerPanelOpen && !_stickerHoverPreview)
+        {
+            model.CloseStickerPanelCommand.Execute(null);
+            return;
+        }
+
+        _stickerHoverPreview = false;
+        if (!model.IsStickerPanelOpen && model.ToggleStickerPanelCommand.CanExecute(null))
+        {
+            model.ToggleStickerPanelCommand.Execute(null);
+        }
+
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            if (ReferenceEquals(DataContext, model) && model.IsStickerPanelOpen)
+            {
+                (model.IsEmojiTab ? StickerEmojiTab : StickerPacksTab).Focus();
+            }
+        }));
+    }
+
+    private void OnMessagesScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.OriginalSource is not ScrollViewer scroller
+            || !ReferenceEquals(scroller, MessagesList.Template.FindName("HistoryScrollViewer", MessagesList)))
+        {
+            return;
+        }
+
+        _messagesScroller = scroller;
+        if (scroller.ScrollableHeight > 0 && _activeConversationId is { } id)
+        {
+            _scrollFractions[id] = scroller.VerticalOffset / scroller.ScrollableHeight;
+        }
+
+        if (e.VerticalChange < 0 && e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0)
+        {
+            QueueOlderHistory(scroller);
+        }
+    }
+
+    private void MessagesList_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+    {
+        if (e.Delta > 0 && _messagesScroller is { } scroller)
+        {
+            QueueOlderHistory(scroller);
+        }
+    }
+
+    private void QueueOlderHistory(ScrollViewer scroller)
+    {
+        if (scroller.VerticalOffset > OlderHistoryThreshold
+            || _loadOlderOperation is { Status: DispatcherOperationStatus.Pending }
+            || DataContext is not ChatViewModel
+                { IsLoadingMessages: false, IsLoadingOlder: false, HasOlderHistoryError: false } model
+            || !model.LoadOlderCommand.CanExecute(null))
+        {
+            return;
+        }
+
+        var conversation = model.SelectedConversation;
+        _loadOlderOperation = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (IsLoaded && IsVisible && ReferenceEquals(DataContext, model)
+                && ReferenceEquals(model.SelectedConversation, conversation)
+                && !model.IsLoadingMessages && !model.HasOlderHistoryError
+                && scroller.VerticalOffset <= OlderHistoryThreshold
+                && model.LoadOlderCommand.CanExecute(null))
+            {
+                model.LoadOlderCommand.Execute(null);
+            }
+        }));
     }
 
     /// <summary>Каретка в точный индекс после вставки меншна (FocusComposer — в конец).</summary>
@@ -226,14 +430,18 @@ public partial class ChatView : UserControl
             }
         });
 
-    /// <summary>Диалог выбора файлов для «скрепки» — view-слой, VM не тянет Win32.</summary>
-    private IReadOnlyList<string> PickAttachmentFiles()
+    /// <summary>Диалог выбора файлов для «скрепки» — view-слой, VM не тянет Win32.
+    /// «media» фильтрует изображения+видео (пункт «Фото или видео»),
+    /// остальное — общий «Документ» (UI-027).</summary>
+    private IReadOnlyList<string> PickAttachmentFiles(string? kind)
     {
         var dialog = new Microsoft.Win32.OpenFileDialog
         {
             Multiselect = true,
-            Title = "Прикрепить файлы к сообщению",
-            Filter = "Все файлы (*.*)|*.*",
+            Title = kind == "media" ? "Прикрепить фото или видео" : "Прикрепить документ",
+            Filter = kind == "media"
+                ? "Изображения и видео|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.mp4;*.mov;*.mkv;*.webm;*.avi|Все файлы (*.*)|*.*"
+                : "Все файлы (*.*)|*.*",
         };
         var owner = Window.GetWindow(this);
         var result = owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
@@ -281,15 +489,97 @@ public partial class ChatView : UserControl
 
     private void Messages_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (e.Action == NotifyCollectionChangedAction.Add && e.NewStartingIndex == 0
+            && DataContext is ChatViewModel { IsLoadingOlder: true } model
+            && _messagesScroller is { } scroller
+            && _restoreHistoryAnchorOperation is not { Status: DispatcherOperationStatus.Pending })
+        {
+            PreserveHistoryAnchor(model, scroller);
+        }
+
         // Скроллим только при добавлении в конец: подгрузка «ранее» вверх
         // ленты не должна дёргать позицию пользователя.
         var appendedAtEnd = e.Action == NotifyCollectionChangedAction.Add
             && e.NewItems is not null
             && e.NewStartingIndex >= MessagesList.Items.Count - e.NewItems.Count;
-        if (appendedAtEnd)
+        if (appendedAtEnd && (DataContext is ChatViewModel { IsLoadingMessages: true }
+            || !ChatScrollAssist.GetIsAwayFromEnd(MessagesList)))
         {
             ScrollToLastMessage();
         }
+    }
+
+    private void PreserveHistoryAnchor(ChatViewModel model, ScrollViewer scroller)
+    {
+        if (scroller.Template.FindName("PART_ScrollContentPresenter", scroller) is not FrameworkElement viewport)
+        {
+            return;
+        }
+
+        var panel = FindHistoryPanel(viewport);
+        if (panel is null)
+        {
+            return;
+        }
+
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(panel); i++)
+        {
+            if (VisualTreeHelper.GetChild(panel, i) is not ListBoxItem { DataContext: ChatMessageViewModel message } row)
+            {
+                continue;
+            }
+
+            var y = row.TranslatePoint(new System.Windows.Point(), viewport).Y;
+            if (y < 0 || y >= viewport.ActualHeight)
+            {
+                continue;
+            }
+
+            var conversation = model.SelectedConversation;
+            _restoreHistoryAnchorOperation = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (!IsLoaded || !ReferenceEquals(DataContext, model)
+                    || !ReferenceEquals(model.SelectedConversation, conversation)
+                    || !MessagesList.Items.Contains(message))
+                {
+                    return;
+                }
+
+                if (MessagesList.ItemContainerGenerator.ContainerFromItem(message) is not ListBoxItem)
+                {
+                    MessagesList.ScrollIntoView(message);
+                    MessagesList.UpdateLayout();
+                }
+
+                if (MessagesList.ItemContainerGenerator.ContainerFromItem(message) is ListBoxItem anchor)
+                {
+                    var delta = anchor.TranslatePoint(new System.Windows.Point(), viewport).Y - y;
+                    if (Math.Abs(delta) >= 0.5)
+                    {
+                        scroller.ScrollToVerticalOffset(scroller.VerticalOffset + delta);
+                    }
+                }
+            }));
+            return;
+        }
+    }
+
+    private static VirtualizingStackPanel? FindHistoryPanel(DependencyObject element)
+    {
+        if (element is VirtualizingStackPanel panel)
+        {
+            return panel;
+        }
+
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+        {
+            if (FindHistoryPanel(VisualTreeHelper.GetChild(element, i)) is { } found)
+            {
+                return found;
+            }
+        }
+
+        return null;
     }
 
     private void ScrollToLastMessage()
@@ -614,18 +904,13 @@ public partial class ChatView : UserControl
         // просто вернуть фокус в поле; повторное нажатие панель не закрывает.
         if (e.Key == Key.F && Keyboard.Modifiers == ModifierKeys.Control)
         {
-            if (!model.IsMessageSearchOpen && model.ToggleMessageSearchCommand.CanExecute(null))
-            {
-                model.ToggleMessageSearchCommand.Execute(null);
-            }
-
             if (model.IsMessageSearchOpen)
             {
-                // Background-приоритет: панель только что раскрылась биндингом —
-                // Normal-очередь выполнила бы Focus до её layout-прохода.
-                Dispatcher.BeginInvoke(
-                    System.Windows.Threading.DispatcherPriority.Background,
-                    () => MessageSearchInput.Focus());
+                MessageSearchInput.Focus();
+            }
+            else if (model.ToggleMessageSearchCommand.CanExecute(null))
+            {
+                model.ToggleMessageSearchCommand.Execute(null);
             }
 
             e.Handled = true;
@@ -633,7 +918,13 @@ public partial class ChatView : UserControl
         }
 
         ICommand? handled = null;
-        if (model.IsDeleteConfirmOpen)
+        if (model.IsAttachmentConfirmOpen)
+        {
+            // UI-027: модал подтверждения вложений — верхний слой (ZIndex 4),
+            // Esc отменяет очередь, черновик не трогается.
+            handled = e.Key == Key.Escape ? model.CancelAttachmentsCommand : null;
+        }
+        else if (model.IsDeleteConfirmOpen)
         {
             handled = e.Key == Key.Escape ? model.CancelDeleteCommand : null;
         }
@@ -643,6 +934,17 @@ public partial class ChatView : UserControl
         }
         else if (model.IsMediaViewerOpen)
         {
+            // Space — пауза/продолжить (tdesktop); только когда фокус не на
+            // кнопке, чтобы не спорить с её собственной обработкой Space.
+            if (e.Key == Key.Space
+                && (model.MediaViewerIsVideo || model.MediaViewerIsAudio)
+                && Keyboard.FocusedElement is not System.Windows.Controls.Primitives.ButtonBase)
+            {
+                ToggleViewerPlayback();
+                e.Handled = true;
+                return;
+            }
+
             handled = e.Key switch
             {
                 Key.Escape => model.CloseMediaViewerCommand,
@@ -651,16 +953,41 @@ public partial class ChatView : UserControl
                 _ => null,
             };
         }
+        else if (model.IsReportDialogOpen)
+        {
+            // Вложенные панели настроек по z-порядку разметки: диалог жалобы
+            // (4873) > жалобы (4764) > заявки (4647) > настройки (4493).
+            // Esc снимает только верхний слой — настройки и черновик живут.
+            handled = e.Key == Key.Escape ? model.CancelReportCommand : null;
+        }
+        else if (model.IsReportsPanelOpen)
+        {
+            handled = e.Key == Key.Escape ? model.CloseReportsPanelCommand : null;
+        }
+        else if (model.IsJoinRequestsPanelOpen)
+        {
+            handled = e.Key == Key.Escape ? model.CloseJoinRequestsPanelCommand : null;
+        }
         else if (model.IsGroupSettingsOpen)
         {
             // UI-004: Esc закрывает настройки — но только когда выше их ничего
-            // нет (ветка ниже удаления/пересылки/просмотрщика).
+            // нет (ветка ниже удаления/пересылки/просмотрщика/подпанелей).
             handled = e.Key == Key.Escape ? model.CloseGroupSettingsCommand : null;
+        }
+        else if (model.IsStickerPanelOpen)
+        {
+            handled = e.Key == Key.Escape ? model.CloseStickerPanelCommand : null;
         }
         else if (model.IsMessageSearchOpen)
         {
             // Esc закрывает панель поиска по чату (tdesktop).
             handled = e.Key == Key.Escape ? model.ToggleMessageSearchCommand : null;
+        }
+        else if (model.VoiceBarVisible)
+        {
+            // UI-028: Esc обрывает запись/черновик без сети — нижний слой
+            // композера, оверлеи выше обрабатывают Esc раньше.
+            handled = e.Key == Key.Escape ? model.CancelVoiceRecordingCommand : null;
         }
 
         if (handled?.CanExecute(null) == true)
@@ -699,4 +1026,261 @@ public partial class ChatView : UserControl
             e.Handled = true;
         }
     }
+
+    /// <summary>Клик по затемнению модала вложений = «Отмена» (UI-027, tg-send-files):
+    /// очередь и подпись сбрасываются, черновик composer не затрагивается.</summary>
+    private void OnAttachmentConfirmBackdropClick(object sender, MouseButtonEventArgs e)
+    {
+        if (DataContext is ChatViewModel model
+            && model.CancelAttachmentsCommand.CanExecute(null))
+        {
+            model.CancelAttachmentsCommand.Execute(null);
+            e.Handled = true;
+        }
+    }
+
+    // ---- Встроенное воспроизведение медиа в просмотрщике (UI-026) ----
+
+    /// <summary>Элемент, который сейчас играет: видео — с кадром, аудио — без.</summary>
+    private MediaElement? _activeViewerPlayer;
+    private readonly DispatcherTimer _mediaPositionTimer =
+        new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private bool _mediaSeeking;
+    private bool _mediaPlaying;
+
+    /// <summary>VM отдал локальный файл — назначаем Source нужному элементу
+    /// и стартуем; null (смена элемента/закрытие) — полная остановка.</summary>
+    private void ApplyViewerMediaSource(ChatViewModel model)
+    {
+        StopViewerPlayback();
+        if (model.MediaViewerMediaSource is not { } path)
+        {
+            UpdateMediaViewerTransport(model);
+            return;
+        }
+
+        var player = model.MediaViewerIsVideo ? MediaViewerPlayer : MediaViewerAudioPlayer;
+        _activeViewerPlayer = player;
+        try
+        {
+            player.Source = new Uri(path);
+            player.Play();
+            _mediaPlaying = true;
+            MediaViewerPlayPauseIcon.Data = VectorIcons.Pause;
+            _mediaPositionTimer.Start();
+        }
+        catch (Exception)
+        {
+            _mediaPlaying = false;
+            _activeViewerPlayer = null;
+            model.MarkMediaViewerPlaybackFailed();
+        }
+
+        UpdateMediaViewerTransport(model);
+    }
+
+    /// <summary>Полная остановка обоих элементов: звука после закрытия
+    /// просмотрщика или переключения элемента быть не должно (UI-026).</summary>
+    private void StopViewerPlayback()
+    {
+        _mediaPositionTimer.Stop();
+        foreach (var player in new[] { MediaViewerPlayer, MediaViewerAudioPlayer })
+        {
+            try
+            {
+                player.Stop();
+                player.Source = null;
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        _activeViewerPlayer = null;
+        _mediaPlaying = false;
+        _mediaSeeking = false;
+        MediaViewerPlayPauseIcon.Data = VectorIcons.Play;
+        MediaViewerPosition.Value = 0;
+        MediaViewerTimeText.Text = "0:00 / 0:00";
+    }
+
+    /// <summary>Транспорт виден только для проигрываемого элемента (video/audio).</summary>
+    private void UpdateMediaViewerTransport(ChatViewModel model)
+    {
+        MediaViewerTransport.Visibility =
+            model.MediaViewerIsVideo || model.MediaViewerIsAudio
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        if (DataContext is ChatViewModel current
+            && !current.MediaViewerIsVideo
+            && !current.MediaViewerIsAudio
+            && _activeViewerPlayer is not null)
+        {
+            // Элемент сменился на непроигрываемый — гасим звук сразу.
+            StopViewerPlayback();
+        }
+    }
+
+    private void OnMediaViewerPlayPauseClick(object sender, RoutedEventArgs e) =>
+        ToggleViewerPlayback();
+
+    /// <summary>Space/кнопка: пауза ↔ продолжить активный элемент.</summary>
+    private void ToggleViewerPlayback()
+    {
+        if (_activeViewerPlayer is not { } player)
+        {
+            return;
+        }
+
+        if (_mediaPlaying)
+        {
+            player.Pause();
+            _mediaPlaying = false;
+            MediaViewerPlayPauseIcon.Data = VectorIcons.Play;
+        }
+        else
+        {
+            player.Play();
+            _mediaPlaying = true;
+            MediaViewerPlayPauseIcon.Data = VectorIcons.Pause;
+        }
+    }
+
+    private void OnMediaViewerMediaOpened(object sender, RoutedEventArgs e)
+    {
+        if (sender is MediaElement player && player.NaturalDuration.HasTimeSpan)
+        {
+            MediaViewerPosition.Maximum = player.NaturalDuration.TimeSpan.TotalSeconds;
+            UpdateMediaViewerTimeText(player);
+        }
+    }
+
+    private void OnMediaViewerMediaEnded(object sender, RoutedEventArgs e)
+    {
+        if (sender is MediaElement player)
+        {
+            player.Stop();
+            player.Position = TimeSpan.Zero;
+        }
+
+        _mediaPlaying = false;
+        MediaViewerPlayPauseIcon.Data = VectorIcons.Play;
+        if (ReferenceEquals(sender, _activeViewerPlayer))
+        {
+            _activeViewerPlayer = null;
+            _mediaPositionTimer.Stop();
+        }
+    }
+
+    private void OnMediaViewerMediaFailed(object sender, ExceptionRoutedEventArgs e)
+    {
+        if (DataContext is ChatViewModel model)
+        {
+            StopViewerPlayback();
+            model.MarkMediaViewerPlaybackFailed();
+        }
+    }
+
+    /// <summary>UI-028: превью черновика — скрытый MediaElement; смена
+    /// источника или снятие флага останавливает звук детерминированно.</summary>
+    private void ApplyVoicePreviewState(ChatViewModel model)
+    {
+        var path = model.VoicePreviewSource;
+        if (path is null || !model.VoiceBarVisible)
+        {
+            StopVoicePreview();
+            return;
+        }
+
+        var source = new Uri(path);
+        if (VoicePreviewPlayer.Source != source)
+        {
+            try
+            {
+                VoicePreviewPlayer.Source = source;
+            }
+            catch (Exception)
+            {
+                StopVoicePreview();
+                return;
+            }
+        }
+
+        if (model.IsVoicePreviewPlaying)
+        {
+            VoicePreviewPlayer.Play();
+        }
+        else
+        {
+            VoicePreviewPlayer.Pause();
+        }
+    }
+
+    private void StopVoicePreview()
+    {
+        try
+        {
+            VoicePreviewPlayer.Stop();
+            VoicePreviewPlayer.Source = null;
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private void OnVoicePreviewMediaEnded(object sender, RoutedEventArgs e)
+    {
+        VoicePreviewPlayer.Position = TimeSpan.Zero;
+        (DataContext as ChatViewModel)?.NotifyVoicePreviewEnded();
+    }
+
+    private void OnVoicePreviewMediaFailed(object sender, ExceptionRoutedEventArgs e)
+    {
+        StopVoicePreview();
+        (DataContext as ChatViewModel)?.NotifyVoicePreviewEnded();
+    }
+
+    private void OnMediaViewerSeekDown(object sender, MouseButtonEventArgs e) =>
+        _mediaSeeking = true;
+
+    private void OnMediaViewerSeekUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_activeViewerPlayer is { } player && player.NaturalDuration.HasTimeSpan)
+        {
+            player.Position = TimeSpan.FromSeconds(MediaViewerPosition.Value);
+        }
+
+        _mediaSeeking = false;
+        if (_activeViewerPlayer is { } active)
+        {
+            UpdateMediaViewerTimeText(active);
+        }
+    }
+
+    private void OnMediaPositionTick(object? sender, EventArgs e)
+    {
+        if (_activeViewerPlayer is not { } player || _mediaSeeking
+            || !player.NaturalDuration.HasTimeSpan)
+        {
+            return;
+        }
+
+        MediaViewerPosition.Value = player.Position.TotalSeconds;
+        UpdateMediaViewerTimeText(player);
+    }
+
+    private void UpdateMediaViewerTimeText(MediaElement player)
+    {
+        var position = player.Position;
+        var duration = player.NaturalDuration.HasTimeSpan
+            ? player.NaturalDuration.TimeSpan
+            : TimeSpan.Zero;
+        MediaViewerTimeText.Text =
+            $"{FormatPlaybackTime(position)} / {FormatPlaybackTime(duration)}";
+    }
+
+    private static string FormatPlaybackTime(TimeSpan value) =>
+        value.TotalHours >= 1
+            ? value.ToString(@"h\:mm\:ss")
+            : value.ToString(@"m\:ss");
 }

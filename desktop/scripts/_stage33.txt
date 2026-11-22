@@ -1,0 +1,29 @@
+
+## Этап 33 — все ItemsControl чата поименованы (контейнеры + элементы)
+
+- Системный свип: скрипт scan-itemscontrol.ps1 находит ItemsControl без имени списка
+  и без ItemContainerStyle. ChatView: 17 списков получили имена контейнеров элементов
+  (DataItem больше не озвучивается именем типа VM):
+  GlobalSearchResults -> {Preview}, SelectedGroupMembers -> {DisplayName},
+  AiConversations -> «Диалог с ассистентом: {Title}», AiBots -> «Помощник: {Title}»,
+  LinkPreviewItems -> «Превью ссылки: {HeaderText}», PollOptions -> «Вариант опроса:
+  {Text}», AttachmentItems -> «Вложение: {FileName}», Items/Warnings (строки) ->
+  сам текст, ReactionItems -> «Реакция {Emoji}», MessageReaders -> {DisplayName},
+  ScheduledMessages -> «Запланированное сообщение: {Body}», MediaItems ->
+  «Медиафайл: {FileName}», EmojiSections -> «Категория эмодзи: {Title}»,
+  Emojis -> глиф, SelectedStickerPack.Stickers -> {AutomationName},
+  PeerPanelMembers -> {DisplayName}.
+- Безымянные списки-обёртки получили AutomationProperties.Name: «Диалоги с
+  ассистентом», «Помощники», «Превью ссылки», «Варианты опроса», «Вложения
+  сообщения», «Состав сообщения», «Предупреждения», «Реакции на сообщение»,
+  «Прочитавшие сообщение».
+- Кнопки эмодзи: статичное «Вставить эмодзи» на всех -> «Вставить эмодзи {глиф}».
+- Остаток свипа по другим вью (имя списка и контейнеров нет у ItemsControl):
+  TasksView 12, DlpView 8, NewsView 8, MfuView 6, TicketsView 5, DocflowView 4,
+  DashboardView 5, DatabaseView 3, ItRequestsView 3, мелкие 2-3 на вью.
+- XAML-грабля: {Binding, StringFormat=...} (запятая) не парсится — нужен вид
+  {Binding StringFormat='...'}.
+
+Проверки: Release-сборка 0/0; тесты 2066/2066. Живой прогон чата в этой итерации
+недоступен: SSO-сессия истекла, «Войти через Windows» не завершается автоматически
+(паттерн доказан живьём на вкладках папок ранее).

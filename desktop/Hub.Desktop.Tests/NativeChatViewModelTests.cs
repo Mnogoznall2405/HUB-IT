@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Hub.Desktop.Native.Api;
 using Hub.Desktop.Native.ViewModels;
+using Hub.Desktop.Native.Voice;
 using Hub.Desktop.Tests.Fakes;
 using Xunit;
 
@@ -94,6 +95,42 @@ public sealed class NativeChatViewModelTests
         var read = new ConversationItemViewModel(new HubChatConversation { Id = "n1", Kind = "direct" });
         Assert.Equal(string.Empty, read.UnreadBadgeText);
         Assert.False(read.HasUnread);
+    }
+
+    [Fact]
+    public void ConversationRowTickTracksConfirmedReadNotJustOwn()
+    {
+        // UI-017: список диалогов не отдаёт read-статус — честное «отправлено»,
+        // а не ложное прочтение.
+        var item = new ConversationItemViewModel(new HubChatConversation
+        {
+            Id = "c1",
+            Kind = "direct",
+            Title = "A",
+            LastMessageIsOwn = true,
+        });
+        Assert.Equal("✓", item.LastMessageStatusText);
+
+        var incoming = new ConversationItemViewModel(new HubChatConversation
+        {
+            Id = "c2",
+            Kind = "direct",
+            Title = "B",
+        });
+        Assert.Null(incoming.LastMessageStatusText);
+
+        // Свежая своя реплика без read — всё ещё «отправлено».
+        item.UpdateLastMessage(new HubChatMessage { Id = "m1", IsOwn = true });
+        Assert.Equal("✓", item.LastMessageStatusText);
+        Assert.Equal("m1", item.LastMessageId);
+
+        // Подтверждённый read из DTO — двойная галочка.
+        item.UpdateLastMessage(new HubChatMessage { Id = "m2", IsOwn = true, DeliveryStatus = "read", ReadByCount = 1 });
+        Assert.Equal("✓✓", item.LastMessageStatusText);
+
+        // Чужое сообщение снимает галочки строки.
+        item.UpdateLastMessage(new HubChatMessage { Id = "m3", IsOwn = false });
+        Assert.Null(item.LastMessageStatusText);
     }
 
     [Fact]
@@ -1928,9 +1965,11 @@ public sealed class NativeChatViewModelTests
             await WaitFor(() => !model.IsLoadingMessages);
 
             // Тот же путь, что у драга на ленту и вставки файла в composer —
-            // одна upload-сессия, без второго пайплайна.
+            // очередь подтверждения (UI-027), без второго пайплайна.
             await ((NativeAsyncCommand)model.AttachDroppedFilesCommand).ExecuteAsync(
                 new[] { filePath });
+            Assert.True(model.IsAttachmentConfirmOpen);
+            await ((NativeAsyncCommand)model.ConfirmAttachmentsCommand).ExecuteAsync(null);
 
             Assert.Single(api.UploadSessionRequests);
             Assert.Equal(["upload-1"], api.CompletedSessions);
@@ -2340,11 +2379,14 @@ public sealed class NativeChatViewModelTests
             await model.LoadAsync();
             model.SelectedConversation = model.Conversations[0];
             await WaitFor(() => !model.IsLoadingMessages);
-            model.ComposerText = "подпись к файлу";
 
             await model.AttachFilesAsync([filePath], CancellationToken.None);
+            Assert.True(model.IsAttachmentConfirmOpen);
+            model.AttachmentCaption = "подпись к файлу";
+            model.ComposerText = "черновик не расходуется";
+            await ((NativeAsyncCommand)model.ConfirmAttachmentsCommand).ExecuteAsync(null);
 
-            // Сессия: body и метаданные файла.
+            // Сессия: body — подпись из модала, черновик composer не тронут.
             var request = Assert.Single(api.UploadSessionRequests);
             Assert.Equal("c1", request.ConversationId);
             Assert.Equal("подпись к файлу", request.Body);
@@ -2361,10 +2403,12 @@ public sealed class NativeChatViewModelTests
             Assert.Equal([5, 6, 7], api.UploadedChunks[1].Data);
             Assert.All(api.UploadedChunks, c => Assert.Equal("upload-1", c.SessionId));
 
-            // Complete → сообщение в ленте, composer очищен.
+            // Complete → сообщение в ленте; черновик и подпись модала —
+            // разные поля, composer остаётся нетронутым (UI-027).
             Assert.Equal(["upload-1"], api.CompletedSessions);
             Assert.Equal("m-up", Assert.Single(model.Messages).Id);
-            Assert.Equal(string.Empty, model.ComposerText);
+            Assert.Equal("черновик не расходуется", model.ComposerText);
+            Assert.False(model.IsAttachmentConfirmOpen);
             Assert.False(model.IsUploading);
             Assert.False(model.HasUploadStatus);
         }
@@ -2392,6 +2436,491 @@ public sealed class NativeChatViewModelTests
         Assert.Empty(api.UploadSessionRequests);
         Assert.Empty(api.CompletedSessions);
         Assert.False(model.IsUploading);
+    }
+
+    // ---- UI-027: очередь подтверждения вложений ----
+
+    [Fact]
+    public async Task AttachFilesStagesPendingWithoutNetwork()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"hub-test-{Guid.NewGuid():N}.png");
+        var filePath2 = Path.Combine(Path.GetTempPath(), $"hub-test-{Guid.NewGuid():N}.txt");
+        await File.WriteAllBytesAsync(filePath, [137, 80, 78]);
+        await File.WriteAllBytesAsync(filePath2, [65, 66]);
+        try
+        {
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessages = new HubChatMessageList { Items = [] },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            await model.LoadAsync();
+            model.SelectedConversation = model.Conversations[0];
+            await WaitFor(() => !model.IsLoadingMessages);
+
+            await model.AttachFilesAsync([filePath], CancellationToken.None);
+            Assert.True(model.IsAttachmentConfirmOpen);
+            Assert.Equal("Отправить файл", model.PendingAttachmentTitleText);
+
+            // Повторный выбор в том же диалоге дополняет очередь.
+            await model.AttachFilesAsync([filePath2], CancellationToken.None);
+            Assert.Equal(2, model.PendingAttachments.Count);
+            Assert.Equal("Отправить 2 файла", model.PendingAttachmentTitleText);
+
+            // Главное: сеть не тронута до подтверждения.
+            Assert.Empty(api.UploadSessionRequests);
+            Assert.Empty(api.UploadedChunks);
+            Assert.Empty(api.CompletedSessions);
+        }
+        finally
+        {
+            File.Delete(filePath);
+            File.Delete(filePath2);
+        }
+    }
+
+    [Fact]
+    public async Task CancelAttachmentsClearsQueueWithoutNetwork()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"hub-test-{Guid.NewGuid():N}.txt");
+        await File.WriteAllBytesAsync(filePath, [1]);
+        try
+        {
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessages = new HubChatMessageList { Items = [] },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            await model.LoadAsync();
+            model.SelectedConversation = model.Conversations[0];
+            await WaitFor(() => !model.IsLoadingMessages);
+
+            await model.AttachFilesAsync([filePath], CancellationToken.None);
+            model.AttachmentCaption = "не отправится";
+
+            model.CancelAttachmentsCommand.Execute(null);
+
+            Assert.False(model.IsAttachmentConfirmOpen);
+            Assert.Empty(model.PendingAttachments);
+            Assert.Null(model.AttachmentCaption);
+            Assert.Empty(api.UploadSessionRequests);
+            Assert.Empty(api.CompletedSessions);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [Fact]
+    public async Task RemovePendingAttachmentClosesModalOnLastItem()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"hub-test-{Guid.NewGuid():N}.txt");
+        await File.WriteAllBytesAsync(filePath, [1]);
+        try
+        {
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessages = new HubChatMessageList { Items = [] },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            await model.LoadAsync();
+            model.SelectedConversation = model.Conversations[0];
+            await WaitFor(() => !model.IsLoadingMessages);
+
+            await model.AttachFilesAsync([filePath], CancellationToken.None);
+            Assert.Single(model.PendingAttachments);
+
+            model.RemovePendingAttachmentCommand.Execute(model.PendingAttachments[0]);
+
+            Assert.False(model.IsAttachmentConfirmOpen);
+            Assert.Empty(api.UploadSessionRequests);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [Fact]
+    public async Task PendingAttachmentsClearOnConversationSwitch()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"hub-test-{Guid.NewGuid():N}.txt");
+        await File.WriteAllBytesAsync(filePath, [1]);
+        try
+        {
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1"), Conv("c2")] },
+                ChatMessages = new HubChatMessageList { Items = [] },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            await model.LoadAsync();
+            model.SelectedConversation = model.Conversations[0];
+            await WaitFor(() => !model.IsLoadingMessages);
+
+            await model.AttachFilesAsync([filePath], CancellationToken.None);
+            Assert.True(model.IsAttachmentConfirmOpen);
+
+            // Переключаемся на объект, гарантированно отличный от выбранного —
+            // порядок списка не предполагает, кто из c1/c2 окажется первым.
+            var other = model.Conversations.First(c => !ReferenceEquals(c, model.SelectedConversation));
+            model.SelectedConversation = other;
+            await WaitFor(() => !model.IsLoadingMessages);
+
+            Assert.False(model.IsAttachmentConfirmOpen);
+            Assert.Empty(model.PendingAttachments);
+            Assert.Empty(api.UploadSessionRequests);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    // ---- UI-028: запись/прослушивание/отправка голосовых ----
+
+    [Fact]
+    public async Task MicFabShowsOnlyOnEmptyComposerAndRecordNeedsExplicitCommand()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        // Без диалога микрофона нет — записывать некуда.
+        Assert.False(model.ShowMicFab);
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.True(model.ShowMicFab);
+        Assert.False(model.ShowSendFab);
+        Assert.False(model.IsVoiceRecording);
+
+        // Текст в поле — классический ➤, микрофон прячется.
+        model.ComposerText = "текст";
+        Assert.True(model.ShowSendFab);
+        Assert.False(model.ShowMicFab);
+    }
+
+    [Fact]
+    public async Task VoiceRecordStopCreatesDraftAndPreviewToggle()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var recorder = new FakeNativeVoiceRecorder();
+        var model = new ChatViewModel(api, new FakeChatRealtime())
+        {
+            VoiceRecorderFactory = () => recorder,
+        };
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.StartVoiceRecordingCommand).ExecuteAsync(null);
+        Assert.True(recorder.Started);
+        Assert.True(model.IsVoiceRecording);
+        Assert.True(model.VoiceBarVisible);
+        Assert.False(model.ShowMicFab);
+        Assert.False(model.ShowSendFab);
+        Assert.Empty(api.UploadSessionRequests);
+
+        await ((NativeAsyncCommand)model.StopVoiceRecordingCommand).ExecuteAsync(null);
+        Assert.True(recorder.Stopped);
+        Assert.True(recorder.Disposed);
+        Assert.False(model.IsVoiceRecording);
+        Assert.True(model.HasVoiceDraft);
+        Assert.Equal("Голосовое 0:07", model.VoiceElapsedText);
+        Assert.Equal(recorder.LastRecordingPath, model.VoicePreviewSource);
+        Assert.True(File.Exists(recorder.LastRecordingPath));
+        // Черновик ещё не ушёл — сети не было.
+        Assert.Empty(api.UploadSessionRequests);
+
+        // Прослушивание — флагом для view: play/pause и возврат по окончании.
+        model.ToggleVoicePreviewCommand.Execute(null);
+        Assert.True(model.IsVoicePreviewPlaying);
+        model.NotifyVoicePreviewEnded();
+        Assert.False(model.IsVoicePreviewPlaying);
+    }
+
+    [Fact]
+    public async Task VoiceCancelDuringRecordingAbortsWithoutNetwork()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var recorder = new FakeNativeVoiceRecorder();
+        var model = new ChatViewModel(api, new FakeChatRealtime())
+        {
+            VoiceRecorderFactory = () => recorder,
+        };
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.StartVoiceRecordingCommand).ExecuteAsync(null);
+        Assert.True(model.IsVoiceRecording);
+
+        model.CancelVoiceRecordingCommand.Execute(null);
+        Assert.True(recorder.Aborted);
+        Assert.True(recorder.Disposed);
+        Assert.False(model.IsVoiceRecording);
+        Assert.False(model.VoiceBarVisible);
+        Assert.True(model.ShowMicFab);
+        Assert.Empty(api.UploadSessionRequests);
+        Assert.Empty(api.CompletedSessions);
+    }
+
+    [Fact]
+    public async Task VoiceCancelDraftDeletesTempFileWithoutNetwork()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var recorder = new FakeNativeVoiceRecorder();
+        var model = new ChatViewModel(api, new FakeChatRealtime())
+        {
+            VoiceRecorderFactory = () => recorder,
+        };
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.StartVoiceRecordingCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.StopVoiceRecordingCommand).ExecuteAsync(null);
+        var draftPath = recorder.LastRecordingPath!;
+        Assert.True(File.Exists(draftPath));
+
+        model.CancelVoiceRecordingCommand.Execute(null);
+        Assert.False(model.HasVoiceDraft);
+        Assert.False(model.VoiceBarVisible);
+        Assert.False(File.Exists(draftPath));
+        Assert.Empty(api.UploadSessionRequests);
+        Assert.Empty(api.CompletedSessions);
+    }
+
+    [Fact]
+    public async Task VoiceSendUploadsAudioWithDurationThroughUploadSession()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+            UploadChunkSize = 4,
+            UploadCompletedMessage = Msg("m-voice", "c1", "голосовое", DateTimeOffset.UtcNow),
+        };
+        var recorder = new FakeNativeVoiceRecorder();
+        var model = new ChatViewModel(api, new FakeChatRealtime())
+        {
+            VoiceRecorderFactory = () => recorder,
+        };
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.StartVoiceRecordingCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.StopVoiceRecordingCommand).ExecuteAsync(null);
+        var draftPath = recorder.LastRecordingPath!;
+        await ((NativeAsyncCommand)model.SendVoiceMessageCommand).ExecuteAsync(null);
+
+        // Web-контракт: тот же upload-session, файл media_kind=audio с
+        // duration_seconds и mime рекордера (UI-028).
+        var request = Assert.Single(api.UploadSessionRequests);
+        Assert.Equal("c1", request.ConversationId);
+        var fileMeta = Assert.Single(request.Files);
+        Assert.Equal("audio", fileMeta.MediaKind);
+        Assert.Equal("audio/mp4", fileMeta.MimeType);
+        Assert.Equal(7, fileMeta.DurationSeconds);
+        Assert.EndsWith(".m4a", fileMeta.FileName);
+        Assert.Equal(5, fileMeta.Size);
+        Assert.Equal(5, fileMeta.OriginalSize);
+
+        // 5 байт по 4 → два чанка, офсеты 0 и 4.
+        Assert.Equal(2, api.UploadedChunks.Count);
+        Assert.Equal(0, api.UploadedChunks[0].Offset);
+        Assert.Equal(4, api.UploadedChunks[1].Offset);
+        Assert.Equal([9, 8, 7, 6], api.UploadedChunks[0].Data);
+        Assert.Equal([5], api.UploadedChunks[1].Data);
+        Assert.Equal(["upload-1"], api.CompletedSessions);
+
+        // Сообщение в ленте, черновик и temp-файл расходованы, FAB вернулся.
+        Assert.Equal("m-voice", Assert.Single(model.Messages).Id);
+        Assert.False(model.HasVoiceDraft);
+        Assert.False(model.VoiceBarVisible);
+        Assert.False(File.Exists(draftPath));
+        Assert.False(model.IsUploading);
+        Assert.True(model.ShowMicFab);
+    }
+
+    [Fact]
+    public async Task VoiceRecordingAbortsOnConversationSwitch()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1"), Conv("c2")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var recorder = new FakeNativeVoiceRecorder();
+        var model = new ChatViewModel(api, new FakeChatRealtime())
+        {
+            VoiceRecorderFactory = () => recorder,
+        };
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.StartVoiceRecordingCommand).ExecuteAsync(null);
+        Assert.True(model.IsVoiceRecording);
+
+        var other = model.Conversations.First(c => !ReferenceEquals(c, model.SelectedConversation));
+        model.SelectedConversation = other;
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        // Запись оборвана без сети: черновик не может уйти в чужой диалог.
+        Assert.True(recorder.Aborted);
+        Assert.False(model.IsVoiceRecording);
+        Assert.False(model.VoiceBarVisible);
+        Assert.Empty(api.UploadSessionRequests);
+    }
+
+    [Fact]
+    public async Task VoiceDraftAbortsOnConversationSwitchAndDeletesFile()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1"), Conv("c2")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var recorder = new FakeNativeVoiceRecorder();
+        var model = new ChatViewModel(api, new FakeChatRealtime())
+        {
+            VoiceRecorderFactory = () => recorder,
+        };
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.StartVoiceRecordingCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.StopVoiceRecordingCommand).ExecuteAsync(null);
+        var draftPath = recorder.LastRecordingPath!;
+
+        var other = model.Conversations.First(c => !ReferenceEquals(c, model.SelectedConversation));
+        model.SelectedConversation = other;
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.False(model.HasVoiceDraft);
+        Assert.False(File.Exists(draftPath));
+        Assert.Empty(api.UploadSessionRequests);
+    }
+
+    [Theory]
+    [InlineData(NativeVoiceStartError.NoDevice, "Микрофон не найден")]
+    [InlineData(NativeVoiceStartError.PermissionDenied, "Нет доступа к микрофону")]
+    [InlineData(NativeVoiceStartError.Unavailable, "недоступна")]
+    public async Task VoiceStartFailureShowsActionableBanner(
+        NativeVoiceStartError kind, string bannerPart)
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var recorder = new FakeNativeVoiceRecorder
+        {
+            StartException = new NativeVoiceStartException(kind, new InvalidOperationException("hr")),
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime())
+        {
+            VoiceRecorderFactory = () => recorder,
+        };
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.StartVoiceRecordingCommand).ExecuteAsync(null);
+
+        Assert.False(recorder.Started);
+        Assert.True(recorder.Disposed);
+        Assert.False(model.IsVoiceRecording);
+        Assert.False(model.VoiceBarVisible);
+        Assert.Contains(bannerPart, model.BannerErrorText);
+        Assert.True(model.ShowMicFab);
+        Assert.Empty(api.UploadSessionRequests);
+    }
+
+    [Fact]
+    public async Task VoiceSendFailureKeepsDraftForRetry()
+    {
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+            UploadException = new InvalidOperationException("сеть упала"),
+        };
+        var recorder = new FakeNativeVoiceRecorder();
+        var model = new ChatViewModel(api, new FakeChatRealtime())
+        {
+            VoiceRecorderFactory = () => recorder,
+        };
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        await ((NativeAsyncCommand)model.StartVoiceRecordingCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.StopVoiceRecordingCommand).ExecuteAsync(null);
+        var draftPath = recorder.LastRecordingPath!;
+        await ((NativeAsyncCommand)model.SendVoiceMessageCommand).ExecuteAsync(null);
+
+        // Ошибка загрузки — черновик и файл живут, можно повторить или удалить.
+        Assert.True(model.HasVoiceDraft);
+        Assert.True(File.Exists(draftPath));
+        Assert.NotNull(model.BannerErrorText);
+        Assert.False(model.IsUploading);
+
+        model.CancelVoiceRecordingCommand.Execute(null);
+        Assert.False(File.Exists(draftPath));
+    }
+
+    [Fact]
+    public async Task ComposerTargetsEnableOnFirstConversationSelection()
+    {
+        // UI-014: из состояния «диалог не выбран» скрепка, эмодзи и
+        // «Поделиться задачей» обязаны включаться. Раньше уведомления не
+        // доходили: IsEnabled скрепки не переопрашивал CanAttach, а
+        // CanExecute эмодзи/задачи не пересчитывался.
+        var api = new FakeHubApiClient
+        {
+            ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            ChatMessages = new HubChatMessageList { Items = [] },
+        };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+
+        Assert.False(model.CanAttach);
+        Assert.False(model.AttachCommand.CanExecute(null));
+        Assert.False(model.ToggleStickerPanelCommand.CanExecute(null));
+        Assert.False(model.OpenTaskShareCommand.CanExecute(null));
+
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => !model.IsLoadingMessages);
+
+        Assert.True(model.CanAttach);
+        Assert.True(model.AttachCommand.CanExecute(null));
+        Assert.True(model.ToggleStickerPanelCommand.CanExecute(null));
+        Assert.True(model.OpenTaskShareCommand.CanExecute(null));
     }
 
     [Fact]
@@ -2434,6 +2963,7 @@ public sealed class NativeChatViewModelTests
             await WaitFor(() => !model.IsLoadingMessages);
 
             await model.AttachFilesAsync([filePath], CancellationToken.None);
+            await ((NativeAsyncCommand)model.ConfirmAttachmentsCommand).ExecuteAsync(null);
 
             Assert.Single(api.UploadSessionRequests);
             Assert.Empty(api.CompletedSessions);
@@ -2469,6 +2999,7 @@ public sealed class NativeChatViewModelTests
 
             model.BeginReplyCommand.Execute(model.Messages[0]);
             await model.AttachFilesAsync([filePath], CancellationToken.None);
+            await ((NativeAsyncCommand)model.ConfirmAttachmentsCommand).ExecuteAsync(null);
 
             Assert.Equal("m1", Assert.Single(api.UploadSessionRequests).ReplyId);
         }
@@ -2527,6 +3058,7 @@ public sealed class NativeChatViewModelTests
         Assert.Equal("отчёт.pdf", bubble.AttachmentItems[0].FileName);
         Assert.Equal($"{1536 / 1024.0:0.#} КБ", bubble.AttachmentItems[0].SizeText);
         Assert.Equal("🖼", bubble.AttachmentItems[1].Icon);
+        Assert.Same(Hub.Desktop.Native.Views.VectorIcons.Photo, bubble.AttachmentItems[1].IconData);
         Assert.Equal($"{2.0:0.#} МБ", bubble.AttachmentItems[1].SizeText);
 
         // Открытие идёт через AttachmentSaver — в тестах без Process.Start.
@@ -2766,6 +3298,7 @@ public sealed class NativeChatViewModelTests
             await WaitFor(() => !model.IsLoadingMessages);
 
             await model.AttachFilesAsync([filePath], CancellationToken.None);
+            await ((NativeAsyncCommand)model.ConfirmAttachmentsCommand).ExecuteAsync(null);
 
             Assert.Empty(api.UploadedChunks);
             Assert.Empty(api.CompletedSessions);
@@ -2796,6 +3329,7 @@ public sealed class NativeChatViewModelTests
             await WaitFor(() => !model.IsLoadingMessages);
 
             await model.AttachFilesAsync([filePath], CancellationToken.None);
+            await ((NativeAsyncCommand)model.ConfirmAttachmentsCommand).ExecuteAsync(null);
 
             Assert.False(string.IsNullOrEmpty(Assert.Single(api.UploadSessionRequests).ClientMessageId));
         }
@@ -3569,6 +4103,8 @@ public sealed class NativeChatViewModelTests
         {
             ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
             ChatMessages = new HubChatMessageList { Items = [] },
+            // Файл-плитка — не просматриваемый kind: UI-026 маршрутизирует
+            // только image/video/audio в просмотрщик, файл идёт в saver.
             ConversationAttachments = new HubChatConversationAttachmentPage
             {
                 Items =
@@ -3577,8 +4113,9 @@ public sealed class NativeChatViewModelTests
                     {
                         Id = "a9",
                         MessageId = "m9",
-                        Kind = "image",
-                        FileName = "pic.png",
+                        Kind = "file",
+                        FileName = "отчёт.pdf",
+                        MimeType = "application/pdf",
                     },
                 ],
             },
@@ -3588,6 +4125,7 @@ public sealed class NativeChatViewModelTests
         model.SelectedConversation = model.Conversations[0];
         await WaitFor(() => !model.IsLoadingMessages);
         await ((NativeAsyncCommand)model.ToggleMediaPanelCommand).ExecuteAsync(null);
+        await ((NativeAsyncCommand)model.SelectMediaTabCommand).ExecuteAsync("file");
         Assert.Single(model.MediaItems);
 
         // Тот же путь, что у чипа вложения: AttachmentSaver вместо Process.Start.
@@ -3656,6 +4194,7 @@ public sealed class NativeChatViewModelTests
         var video = model.MediaItems.Single(i => i.Id == "v1");
         Assert.False(video.HasThumbnail);
         Assert.Equal("🎬", video.Icon);
+        Assert.Same(Hub.Desktop.Native.Views.VectorIcons.Video, video.IconData);
     }
 
     [Fact]
@@ -3693,6 +4232,7 @@ public sealed class NativeChatViewModelTests
         Assert.False(image.HasThumbnail);
         Assert.Null(image.Thumbnail);
         Assert.Equal("🖼", image.Icon); // фолбэк на иконку, плитка цела
+        Assert.Same(Hub.Desktop.Native.Views.VectorIcons.Photo, image.IconData);
         Assert.False(model.HasBannerError); // превью — best-effort
     }
 
@@ -3926,6 +4466,7 @@ public sealed class NativeChatViewModelTests
         Assert.Equal("f1", file.Id);
         Assert.Equal("отчёт.pdf", file.FileName);
         Assert.Equal("📎", file.Icon);
+        Assert.Same(Hub.Desktop.Native.Views.VectorIcons.Document, file.IconData);
         Assert.Equal($"{4096 / 1024.0:0.#} КБ", file.SizeText);
         Assert.True(model.HasMoreMedia);
 
@@ -3942,6 +4483,7 @@ public sealed class NativeChatViewModelTests
         var audio = Assert.Single(model.MediaItems);
         Assert.Equal("au1", audio.Id);
         Assert.Equal("🎵", audio.Icon);
+        Assert.Same(Hub.Desktop.Native.Views.VectorIcons.Music, audio.IconData);
         Assert.Equal("1:05", audio.DurationText);
         Assert.False(model.HasMoreMedia);
         Assert.Null(model.MediaEmptyText);
@@ -3966,6 +4508,426 @@ public sealed class NativeChatViewModelTests
             ],
             api.ConversationAttachmentCalls
                 .Select(c => (c.ConversationId, c.Kind, c.BeforeAttachmentId)).ToArray());
+    }
+
+    // ---- Единый просмотрщик медиа (UI-026) ----
+
+    private static HubChatMessage MediaMsg(
+        string id,
+        string attachmentId,
+        string fileName,
+        string mediaKind,
+        long fileSize = 3)
+    {
+        return new HubChatMessage
+        {
+            Id = id,
+            ConversationId = "c1",
+            Kind = "text",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Attachments =
+            [
+                new HubChatAttachment
+                {
+                    Id = attachmentId,
+                    FileName = fileName,
+                    MediaKind = mediaKind,
+                    FileSize = fileSize,
+                },
+            ],
+        };
+    }
+
+    private static async Task<ChatViewModel> LoadedChatAsync(
+        FakeHubApiClient api, params HubChatMessage[] messages)
+    {
+        api.ChatConversations = new HubChatConversationList { Items = [Conv("c1")] };
+        api.ChatMessages = new HubChatMessageList { Items = [.. messages] };
+        var model = new ChatViewModel(api, new FakeChatRealtime());
+        await model.LoadAsync();
+        model.SelectedConversation = model.Conversations[0];
+        await WaitFor(() => model.Messages.Count == messages.Length);
+        return model;
+    }
+
+    private static void DeleteTempDownloads(params string[] names)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "hub-desktop", "attachments");
+        foreach (var name in names)
+        {
+            try
+            {
+                var path = Path.Combine(directory, name);
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task VideoAttachmentOpensEmbeddedViewerNotExternalApp()
+    {
+        var api = new FakeHubApiClient { DownloadBytes = [1, 2, 3] };
+        DeleteTempDownloads("m1-v1-кино.mp4");
+        try
+        {
+            var model = await LoadedChatAsync(
+                api, MediaMsg("m1", "v1", "кино.mp4", "video"));
+            (HubChatAttachment Attachment, string? MessageId)? saved = null;
+            model.AttachmentSaver = (attachment, messageId) =>
+            {
+                saved = (attachment, messageId);
+                return Task.CompletedTask;
+            };
+
+            model.Messages[0].AttachmentItems[0].OpenCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerIsVideo);
+
+            // Встроенный просмотрщик, не внешнее приложение: файл в temp,
+            // AttachmentSaver (оболочка ОС в тестах) не вызывался.
+            Assert.True(model.IsMediaViewerOpen);
+            Assert.True(model.MediaViewerIsVideo);
+            Assert.False(model.MediaViewerIsImage);
+            Assert.False(model.MediaViewerIsUnsupported);
+            Assert.Equal("кино.mp4", model.MediaViewerTitle);
+            var source = Assert.IsType<string>(model.MediaViewerMediaSource);
+            Assert.True(File.Exists(source));
+            Assert.Null(saved);
+            Assert.Equal([("m1", "v1")], api.DownloadCalls.ToArray());
+        }
+        finally
+        {
+            DeleteTempDownloads("m1-v1-кино.mp4");
+        }
+    }
+
+    [Fact]
+    public async Task AudioAttachmentOpensPlaybackCardInViewer()
+    {
+        var api = new FakeHubApiClient { DownloadBytes = [1, 2, 3] };
+        DeleteTempDownloads("m1-au1-трек.mp3");
+        try
+        {
+            var model = await LoadedChatAsync(
+                api, MediaMsg("m1", "au1", "трек.mp3", "audio"));
+
+            model.Messages[0].AttachmentItems[0].OpenCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerIsAudio);
+
+            Assert.True(model.IsMediaViewerOpen);
+            Assert.True(model.MediaViewerIsAudio);
+            Assert.False(model.MediaViewerIsVideo);
+            Assert.NotNull(model.MediaViewerMediaSource);
+            Assert.Equal([("m1", "au1")], api.DownloadCalls.ToArray());
+        }
+        finally
+        {
+            DeleteTempDownloads("m1-au1-трек.mp3");
+        }
+    }
+
+    [Fact]
+    public async Task UnsupportedContainerShowsFallbackWithoutExternalLaunch()
+    {
+        var api = new FakeHubApiClient { DownloadBytes = [1, 2, 3] };
+        var model = await LoadedChatAsync(
+            api, MediaMsg("m1", "v1", "кино.mkv", "video"));
+        (HubChatAttachment Attachment, string? MessageId)? saved = null;
+        model.AttachmentSaver = (attachment, messageId) =>
+        {
+            saved = (attachment, messageId);
+            return Task.CompletedTask;
+        };
+
+        model.Messages[0].AttachmentItems[0].OpenCommand.Execute(null);
+        await WaitFor(() => model.MediaViewerIsUnsupported);
+
+        // Контейнер вне списка MediaElement: понятный fallback, без сети и без
+        // внешнего запуска — действия остаются у пользователя («Сохранить»/«Открыть»).
+        Assert.True(model.IsMediaViewerOpen);
+        Assert.False(model.MediaViewerIsVideo);
+        Assert.Contains("кино.mkv", model.MediaViewerUnsupportedText);
+        Assert.Null(model.MediaViewerMediaSource);
+        Assert.Empty(api.DownloadCalls);
+        Assert.Null(saved);
+    }
+
+    [Fact]
+    public async Task DownloadFailureShowsFallbackAndBannerError()
+    {
+        var api = new FakeHubApiClient
+        {
+            DownloadException = new InvalidOperationException("сеть недоступна"),
+        };
+        var model = await LoadedChatAsync(
+            api, MediaMsg("m1", "v1", "кино.mp4", "video"));
+
+        model.Messages[0].AttachmentItems[0].OpenCommand.Execute(null);
+        await WaitFor(() => model.MediaViewerIsUnsupported);
+
+        Assert.Contains("недоступен", model.MediaViewerUnsupportedText);
+        Assert.NotNull(model.BannerErrorText);
+        Assert.Null(model.MediaViewerMediaSource);
+    }
+
+    [Fact]
+    public async Task MediaViewerNavigatesAcrossFeedAttachments()
+    {
+        var api = new FakeHubApiClient { DownloadBytes = [1, 2, 3] };
+        DeleteTempDownloads("m1-v1-первое.mp4", "m2-au1-второе.mp3");
+        try
+        {
+            var model = await LoadedChatAsync(
+                api,
+                MediaMsg("m1", "v1", "первое.mp4", "video"),
+                MediaMsg("m2", "au1", "второе.mp3", "audio"));
+
+            model.Messages[0].AttachmentItems[0].OpenCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerIsVideo);
+
+            Assert.Equal("1 из 2", model.MediaViewerCounterText);
+            Assert.False(model.MediaViewerCanGoBack);
+            Assert.True(model.MediaViewerCanGoForward);
+
+            model.MediaViewerNextCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerIsAudio);
+
+            Assert.Equal("второе.mp3", model.MediaViewerTitle);
+            Assert.Equal("2 из 2", model.MediaViewerCounterText);
+            Assert.True(model.MediaViewerCanGoBack);
+            Assert.False(model.MediaViewerCanGoForward);
+
+            model.MediaViewerPrevCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerIsVideo);
+            Assert.Equal("первое.mp4", model.MediaViewerTitle);
+        }
+        finally
+        {
+            DeleteTempDownloads("m1-v1-первое.mp4", "m2-au1-второе.mp3");
+        }
+    }
+
+    [Fact]
+    public async Task ClosingViewerStopsPlaybackSourceAndResetsState()
+    {
+        var api = new FakeHubApiClient { DownloadBytes = [1, 2, 3] };
+        try
+        {
+            var model = await LoadedChatAsync(
+                api, MediaMsg("m1", "v1", "кино.mp4", "video"));
+
+            model.Messages[0].AttachmentItems[0].OpenCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerIsVideo);
+            Assert.NotNull(model.MediaViewerMediaSource);
+
+            model.CloseMediaViewerCommand.Execute(null);
+
+            // Источник обнуляется: view получает null и останавливает
+            // MediaElement — звук не течёт после закрытия (UI-026).
+            Assert.False(model.IsMediaViewerOpen);
+            Assert.Null(model.MediaViewerMediaSource);
+            Assert.False(model.MediaViewerIsVideo);
+        }
+        finally
+        {
+            DeleteTempDownloads("m1-v1-кино.mp4");
+        }
+    }
+
+    [Fact]
+    public async Task SaveFromViewerDownloadsFileAndReportsStatus()
+    {
+        var api = new FakeHubApiClient { DownloadBytes = [1, 2, 3] };
+        try
+        {
+            var model = await LoadedChatAsync(
+                api, MediaMsg("m1", "v1", "кино.mp4", "video"));
+
+            model.Messages[0].AttachmentItems[0].OpenCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerIsVideo);
+            var callsAfterOpen = api.DownloadCalls.Count;
+
+            model.SaveMediaViewerCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerStatusText is not null);
+
+            Assert.StartsWith("Сохранено:", model.MediaViewerStatusText);
+            // Файл уже лежит в temp с тем же размером — повторной сети нет.
+            Assert.Equal(callsAfterOpen, api.DownloadCalls.Count);
+        }
+        finally
+        {
+            DeleteTempDownloads("m1-v1-кино.mp4");
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentOpensShareSingleDownloadTask()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = new FakeHubApiClient
+        {
+            DownloadBytes = [1, 2, 3],
+            DownloadGate = () => gate.Task,
+        };
+        DeleteTempDownloads("m1-v1-кино.mp4");
+        try
+        {
+            var model = await LoadedChatAsync(
+                api, MediaMsg("m1", "v1", "кино.mp4", "video"));
+
+            // Первая загрузка встала на gate; «Сохранить» того же файла
+            // делит задачу, а не стартует второй запрос.
+            model.Messages[0].AttachmentItems[0].OpenCommand.Execute(null);
+            await WaitFor(() => api.DownloadCalls.Count == 1);
+            model.SaveMediaViewerCommand.Execute(null);
+            await Task.Delay(50);
+            gate.SetResult();
+
+            await WaitFor(() => model.MediaViewerIsVideo);
+            await WaitFor(() => model.MediaViewerStatusText is not null);
+            Assert.Single(api.DownloadCalls);
+        }
+        finally
+        {
+            gate.TrySetResult();
+            DeleteTempDownloads("m1-v1-кино.mp4");
+        }
+    }
+
+    [Fact]
+    public async Task GalleryTileOpensSameViewerWithPaging()
+    {
+        var api = new FakeHubApiClient
+        {
+            DownloadBytes = [1, 2, 3],
+            ConversationAttachmentsFactory = (_, kind, cursor) =>
+            {
+                if (kind != "video")
+                {
+                    return new HubChatConversationAttachmentPage { Items = [] };
+                }
+
+                return cursor is null
+                    ? new HubChatConversationAttachmentPage
+                    {
+                        Items =
+                        [
+                            new HubChatConversationAttachmentItem
+                            {
+                                Id = "v2",
+                                MessageId = "m2",
+                                MediaKind = "video",
+                                FileName = "новое.mp4",
+                                FileSize = 3,
+                            },
+                        ],
+                        HasMore = true,
+                        NextBeforeAttachmentId = "cur-2",
+                    }
+                    : new HubChatConversationAttachmentPage
+                    {
+                        Items =
+                        [
+                            new HubChatConversationAttachmentItem
+                            {
+                                Id = "v1",
+                                MessageId = "m1",
+                                MediaKind = "video",
+                                FileName = "старое.mp4",
+                                FileSize = 3,
+                            },
+                        ],
+                    };
+            },
+        };
+        DeleteTempDownloads("m2-v2-новое.mp4", "m1-v1-старое.mp4");
+        try
+        {
+            var model = await LoadedChatAsync(api);
+            await ((NativeAsyncCommand)model.ToggleMediaPanelCommand).ExecuteAsync(null);
+            await WaitFor(() => model.MediaItems.Count == 1);
+            var tile = Assert.Single(model.MediaItems);
+            (HubChatAttachment Attachment, string? MessageId)? saved = null;
+            model.AttachmentSaver = (attachment, messageId) =>
+            {
+                saved = (attachment, messageId);
+                return Task.CompletedTask;
+            };
+
+            tile.OpenCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerIsVideo);
+
+            // Та же модалка, что у ленты: видео плитки играется встроенно,
+            // без скачивания-в-оболочку.
+            Assert.True(model.IsMediaViewerOpen);
+            Assert.Equal("новое.mp4", model.MediaViewerTitle);
+            Assert.Null(saved);
+
+            // Последний загруженный элемент + HasMore: «вперёд» дотягивает
+            // следующую страницу галереи, а не глохнет.
+            Assert.True(model.MediaViewerCanGoForward);
+            model.MediaViewerNextCommand.Execute(null);
+            await WaitFor(() => model.MediaViewerTitle == "старое.mp4");
+            Assert.Equal("2 из 2", model.MediaViewerCounterText);
+            Assert.False(model.MediaViewerCanGoForward);
+        }
+        finally
+        {
+            DeleteTempDownloads("m2-v2-новое.mp4", "m1-v1-старое.mp4");
+        }
+    }
+
+    [Fact]
+    public async Task GalleryPhotosPageInViewerAndUnreadablePhotoShowsFallback()
+    {
+        var api = new FakeHubApiClient
+        {
+            ImageDownloadBytesFactory = path => path.Contains("/p2/", StringComparison.Ordinal)
+                ? TestImageBytes.Png1X1
+                : [1, 2, 3],
+            ConversationAttachmentsFactory = (_, kind, cursor) => kind != "image"
+                ? new HubChatConversationAttachmentPage { Items = [] }
+                : new HubChatConversationAttachmentPage
+                {
+                    Items =
+                    [
+                        new HubChatConversationAttachmentItem
+                        {
+                            Id = cursor is null ? "p2" : "p1",
+                            MessageId = cursor is null ? "m2" : "m1",
+                            MediaKind = "image",
+                            FileName = cursor is null ? "новое.png" : "старое.png",
+                        },
+                    ],
+                    HasMore = cursor is null,
+                    NextBeforeAttachmentId = cursor is null ? "p2" : null,
+                },
+        };
+        var model = await LoadedChatAsync(api);
+        await ((NativeAsyncCommand)model.ToggleMediaPanelCommand).ExecuteAsync(null);
+        Assert.Single(model.MediaItems).OpenCommand.Execute(null);
+        await WaitFor(() => model.MediaViewerImage is not null);
+        Assert.True(model.IsMediaViewerOpen);
+        Assert.Equal("новое.png", model.MediaViewerTitle);
+
+        Assert.True(model.MediaViewerCanGoForward);
+        model.MediaViewerNextCommand.Execute(null);
+        await WaitFor(() => model.MediaViewerTitle == "старое.png" && !model.IsMediaViewerLoading);
+        Assert.Equal("2 из 2", model.MediaViewerCounterText);
+        Assert.True(model.MediaViewerIsUnsupported);
+        Assert.Contains("старое.png", model.MediaViewerUnsupportedText);
+        Assert.False(model.MediaViewerCanGoForward);
+
+        model.MediaViewerPrevCommand.Execute(null);
+        await WaitFor(() => model.MediaViewerImage is not null);
+        Assert.Equal("новое.png", model.MediaViewerTitle);
+        Assert.False(model.MediaViewerIsUnsupported);
+        Assert.Empty(api.DownloadCalls);
     }
 
     // ---- Экспорт истории диалога ----
@@ -6174,6 +7136,50 @@ public sealed class NativeChatViewModelTests
     }
 
     [Fact]
+    public void HeaderSearchFocusesQueryAndEscapeRestoresDraft()
+    {
+        RunOnSta(() =>
+        {
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            Pump(model.LoadAsync());
+            model.SelectedConversation = model.Conversations[0];
+
+            var view = new Native.Views.ChatView { DataContext = model };
+            var window = ShowOffscreenView(view);
+            try
+            {
+                var composer = (System.Windows.Controls.TextBox)view.FindName("ComposerInput");
+                var query = (System.Windows.Controls.TextBox)view.FindName("MessageSearchInput");
+                var search = (System.Windows.Controls.Button)view.FindName("HeaderMessageSearchButton");
+                model.ComposerText = "Несохранённый черновик";
+                Assert.True(composer.Focus());
+
+                var peer = new System.Windows.Automation.Peers.ButtonAutomationPeer(search);
+                var invoke = (System.Windows.Automation.Provider.IInvokeProvider)peer.GetPattern(
+                    System.Windows.Automation.Peers.PatternInterface.Invoke)!;
+                invoke.Invoke();
+                PumpUntil(() => model.IsMessageSearchOpen, TimeSpan.FromSeconds(5));
+                Pump(view.Dispatcher.InvokeAsync(
+                    () => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle).Task);
+                Assert.True(query.IsKeyboardFocused);
+
+                RaiseKey(query, System.Windows.Input.Key.Escape);
+                Assert.False(model.IsMessageSearchOpen);
+                Assert.True(composer.IsKeyboardFocused);
+                Assert.Equal("Несохранённый черновик", composer.Text);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
     public void EscapeClosesOnlyTopmostOverlay_GroupSettingsUnderDeleteConfirm()
     {
         RunOnSta(() =>
@@ -6259,6 +7265,217 @@ public sealed class NativeChatViewModelTests
                 TotalVoters = 0,
             },
         };
+
+    // ---- Производительность истории: виртуализация ленты ----
+
+    [Fact]
+    public void ScrollingNearTopLoadsOlderPageWithoutMovingVisibleMessage()
+    {
+        RunOnSta(() =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessagesFactory = before => before is null
+                    ? new HubChatMessageList
+                    {
+                        Items = Enumerable.Range(10, 40)
+                            .Select(i => Msg($"m{i}", "c1", $"Сообщение {i}", now.AddMinutes(i)))
+                            .ToList(),
+                        HasOlder = true,
+                        OlderCursorMessageId = "m10",
+                    }
+                    : new HubChatMessageList
+                    {
+                        Items = Enumerable.Range(0, 10)
+                            .Select(i => Msg($"m{i}", "c1", $"Старая строка {i}\nВторая строка", now.AddMinutes(i)))
+                            .ToList(),
+                    },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            Pump(model.LoadAsync());
+            model.SelectedConversation = model.Conversations[0];
+            PumpUntil(() => !model.IsLoadingMessages && model.Messages.Count == 40, TimeSpan.FromSeconds(5));
+
+            var view = new Native.Views.ChatView { DataContext = model };
+            var window = ShowOffscreenView(view);
+            try
+            {
+                window.Width = 1024;
+                window.Height = 640;
+                window.UpdateLayout();
+                var list = (System.Windows.Controls.ListBox)view.FindName("MessagesList");
+                var scroller = Assert.IsType<System.Windows.Controls.ScrollViewer>(
+                    list.Template.FindName("HistoryScrollViewer", list));
+                var page = new TaskCompletionSource<HubChatMessageList>();
+                var loadRequests = 0;
+                api.ChatMessagesAsyncFactory = (_, before) =>
+                {
+                    Assert.Equal("m10", before);
+                    loadRequests++;
+                    return page.Task;
+                };
+                scroller.ScrollToEnd();
+                PumpUntil(() => scroller.VerticalOffset > 250, TimeSpan.FromSeconds(5));
+                Assert.True(scroller.VerticalOffset > 250, $"Extent={scroller.ExtentHeight}, viewport={scroller.ViewportHeight}");
+                scroller.ScrollToVerticalOffset(100);
+                PumpUntil(() => loadRequests > 0, TimeSpan.FromSeconds(5));
+                Assert.Equal(1, loadRequests);
+                page.SetException(new IOException("Ошибка запроса старых сообщений"));
+                PumpUntil(() => model.HasOlderHistoryError && !model.IsLoadingOlder, TimeSpan.FromSeconds(5));
+                Assert.True(model.HasOlderHistoryError);
+                scroller.ScrollToVerticalOffset(65);
+                PumpUntil(() => Math.Abs(scroller.VerticalOffset - 65) < 2, TimeSpan.FromSeconds(5));
+                Assert.InRange(scroller.VerticalOffset, 63, 67);
+                Assert.Equal(1, loadRequests);
+                page = new TaskCompletionSource<HubChatMessageList>();
+                var retry = Assert.IsType<System.Windows.Controls.Button>(view.FindName("RetryOlderHistoryButton"));
+                var retryPeer = new System.Windows.Automation.Peers.ButtonAutomationPeer(retry);
+                ((System.Windows.Automation.Provider.IInvokeProvider)retryPeer).Invoke();
+                PumpUntil(() => loadRequests == 2, TimeSpan.FromSeconds(5));
+                Assert.True(model.IsLoadingOlder);
+                var anchor = model.Messages[3];
+                var container = Assert.IsType<System.Windows.Controls.ListBoxItem>(
+                    list.ItemContainerGenerator.ContainerFromItem(anchor));
+                var y = container.TranslatePoint(new System.Windows.Point(), scroller).Y;
+                page.SetResult(api.ChatMessagesFactory("m10"));
+                PumpUntil(() => model.Messages.Count == 50 && !model.IsLoadingOlder, TimeSpan.FromSeconds(5));
+                bool IsAnchorPreserved() =>
+                    list.ItemContainerGenerator.ContainerFromItem(anchor) is System.Windows.FrameworkElement row
+                    && Math.Abs(row.TranslatePoint(new System.Windows.Point(), scroller).Y - y) < 2;
+                PumpUntil(IsAnchorPreserved, TimeSpan.FromSeconds(5));
+                Assert.True(IsAnchorPreserved());
+                Assert.Equal(2, loadRequests);
+                Assert.False(model.HasOlderHistoryError);
+                Assert.False(model.HasOlder);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public void PhotoPreviewKeepsBubbleHeightWhenDownloadCompletes()
+    {
+        RunOnSta(() =>
+        {
+            var photo = new TaskCompletionSource<byte[]>();
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessages = new HubChatMessageList
+                {
+                    Items = [MediaMsg("m1", "p1", "Фото.png", "image")],
+                },
+                ImageDownloadAsyncFactory = path => path.Contains("attachments/p1/", StringComparison.Ordinal)
+                    ? photo.Task
+                    : Task.FromResult(Array.Empty<byte>()),
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            Pump(model.LoadAsync());
+            model.SelectedConversation = model.Conversations[0];
+            PumpUntil(() => !model.IsLoadingMessages && model.Messages.Count == 1, TimeSpan.FromSeconds(5));
+
+            var view = new Native.Views.ChatView { DataContext = model };
+            var window = ShowOffscreenView(view);
+            try
+            {
+                window.Width = 1024;
+                window.Height = 600;
+                window.UpdateLayout();
+                var list = (System.Windows.Controls.ListBox)view.FindName("MessagesList");
+                var message = Assert.Single(model.Messages);
+                var attachment = Assert.Single(message.AttachmentItems);
+                var row = Assert.IsType<System.Windows.Controls.ListBoxItem>(
+                    list.ItemContainerGenerator.ContainerFromItem(message));
+                var heightWhileLoading = row.ActualHeight;
+                Assert.False(attachment.HasPreview);
+                photo.SetResult(TestImageBytes.Png1X1);
+                PumpUntil(() => attachment.HasPreview, TimeSpan.FromSeconds(5));
+                Assert.True(attachment.HasPreview);
+                window.UpdateLayout();
+                Assert.InRange(row.ActualHeight, heightWhileLoading - 1, heightWhileLoading + 1);
+                attachment.OpenCommand.Execute(null);
+                PumpUntil(() => model.MediaViewerImage is not null, TimeSpan.FromSeconds(5));
+                Assert.True(model.IsMediaViewerOpen);
+                Assert.NotNull(model.MediaViewerImage);
+                Assert.Equal("Фото.png", model.MediaViewerTitle);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public void LongHistoryRealizesOnlyVisibleMessageItems()
+    {
+        RunOnSta(() =>
+        {
+            // 500 сообщений в одном диалоге — лента обязана держать в визуальном
+            // дереве только видимые элементы (VirtualizingStackPanel + Recycling).
+            var messages = Enumerable.Range(1, 500)
+                .Select(i => Msg(
+                    $"m{i}",
+                    "c1",
+                    $"сообщение {i}",
+                    DateTimeOffset.UtcNow.AddMinutes(-i)))
+                .ToList();
+            var api = new FakeHubApiClient
+            {
+                ChatConversations = new HubChatConversationList { Items = [Conv("c1")] },
+                ChatMessages = new HubChatMessageList { Items = messages },
+            };
+            var model = new ChatViewModel(api, new FakeChatRealtime());
+            Pump(model.LoadAsync());
+            model.SelectedConversation = model.Conversations[0];
+            PumpUntil(() => model.Messages.Count == 500, TimeSpan.FromSeconds(15));
+
+            var view = new Native.Views.ChatView { DataContext = model };
+            var window = ShowOffscreenView(view);
+            try
+            {
+                // Явный размер окна — иначе viewport ListBox не ограничен.
+                window.Width = 1024;
+                window.Height = 640;
+                window.UpdateLayout();
+
+                var list = (System.Windows.Controls.ListBox)view.FindName("MessagesList");
+                Assert.NotNull(list);
+                PumpUntil(() => list.Items.Count == 500, TimeSpan.FromSeconds(10));
+
+                var realized = 0;
+                var stack = new Stack<System.Windows.DependencyObject>();
+                stack.Push(list);
+                while (stack.Count > 0)
+                {
+                    var node = stack.Pop();
+                    if (node is System.Windows.Controls.ListBoxItem)
+                    {
+                        realized++;
+                    }
+
+                    var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(node);
+                    for (var i = 0; i < count; i++)
+                    {
+                        stack.Push(System.Windows.Media.VisualTreeHelper.GetChild(node, i));
+                    }
+                }
+
+                // Видимых строк при 640px — порядка десятка; без виртуализации
+                // реализовались бы все 500 контейнеров.
+                Assert.InRange(realized, 1, 60);
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
 
     private static HubChatConversation Conv(
         string id,
