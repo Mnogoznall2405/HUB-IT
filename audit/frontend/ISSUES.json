@@ -1,83 +1,1541 @@
 {
   "audit": "frontend",
-  "generatedAt": "2026-11-22T23:05+03:00",
-  "restoredAfterIncident": true,
-  "sources": ["live production read-only checks", "mutation tests with test data (owner-approved)", "agent A (uiux) summary", "agent C (perf) summary", "agent D (state) summary"],
-  "issueCounters": { "critical": 0, "high": 4, "medium": 25, "low": 41, "info": 4, "suspected": 9 },
+  "generatedAt": "2026-11-23T00:40+03:00",
+  "reviewedAt": "2026-11-23",
+  "pathConvention": "все file/relatedFiles — от корня репозитория",
+  "statusEnum": [
+    "Confirmed",
+    "Suspected"
+  ],
+  "verificationEnum": [
+    "static (чтение кода)",
+    "live-production (живая проверка prod, read-only)",
+    "tooling (линтер/тесты/логи)"
+  ],
+  "issueCounters": {
+    "critical": 0,
+    "high": 3,
+    "medium": 26,
+    "low": 42,
+    "info": 4,
+    "suspected": 9
+  },
   "issues": [
-    { "id": "FE-0001", "title": "Ошибка входа на английском при русском интерфейсе", "category": "UX/Localization", "severity": "Medium", "status": "Confirmed", "page": "/login", "file": "WEB-itinvent/frontend/src/pages/Login.jsx", "lines": "593-616", "backendSource": "WEB-itinvent/backend/api/v1/auth.py:801,818", "evidence": ["a11y snapshot", "POST /auth/login -> 401"], "related": ["FE-0002"] },
-    { "id": "FE-0002", "title": "Вложенные live-регионы role=status (двойное объявление)", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "page": "/login", "file": "WEB-itinvent/frontend/src/pages/Login.jsx", "lines": "282-294,416-439", "evidence": ["a11y snapshot: status x2"] },
-    { "id": "FE-0003", "title": "Кнопка показа пароля 25x25px (< минимума 36px)", "category": "UI/TouchTarget", "severity": "Low", "status": "Confirmed", "page": "/login", "file": "WEB-itinvent/frontend/src/pages/Login.jsx", "evidence": ["DOM measurement w:25 h:25"] },
-    { "id": "FE-0004", "title": "Анонимный /shared-folders/:invalid ведёт на /login вместо ошибки", "category": "Functional/PublicRoute", "severity": "High", "status": "Confirmed (behavior x2)", "page": "/shared-folders/:token", "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx", "lines": "47-57", "notes": "с сессией ошибка показывается корректно; API отдаёт 404 даже анонимно; механизм не установлен (web.config и 401-перехватчик исключены)", "evidence": ["live check x2", "контроль /shared-files/:invalid PASS"], "related": ["FE-0006"], "needsBackendCheck": true },
-    { "id": "FE-0005", "title": "Дубли идентичных poll-запросов уведомлений на загрузке", "category": "Performance/DuplicateRequests", "severity": "Low", "status": "Confirmed", "page": "/dashboard", "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx", "lines": "1413-1611", "evidence": ["resource timing: 2x poll?since=…&limit=20 (841B, 51/50ms)"] },
-    { "id": "FE-0006", "title": "Мёртвый whitelist публичных my-files URL в 401-перехватчике", "category": "Reliability", "severity": "Medium", "status": "Confirmed", "page": "global", "file": "WEB-itinvent/frontend/src/api/http.js", "lines": "176-184", "notes": "матчит /my-files/public/ (файлы), не матчит /my-files/public-folders/ (папки); folder-запросы без suppressAuthRequired; тест client.test.js:200 на нереальный URL", "related": ["FE-0004"] },
-    { "id": "FE-0007", "title": "Сломанные вложения ленты (410 Gone) — 8 шт. за загрузку", "category": "Data/UX", "severity": "Medium", "status": "Confirmed", "page": "/feed", "evidence": ["console capture: 8x 410 attachments"], "needsBackendCheck": true },
-    { "id": "FE-0008", "title": "Computers: поиск scope=all 3.2 c на загрузке; дубли в списке изменений (BELG-ENRGY-0001-D x2)", "category": "Performance/Data", "severity": "Medium", "status": "Confirmed", "page": "/computers", "file": "WEB-itinvent/frontend/src/pages/Computers.jsx", "evidence": ["network 3250ms", "a11y snapshot"], "needsBackendCheck": true },
-    { "id": "FE-0009", "title": "Безымянные combobox-фильтры (ZWSP) на нескольких страницах", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "page": "/tickets,/database,/mail,/my-files,/statistics,/warehouse-1c", "evidence": ["a11y snapshots: combobox \"​\""] },
-    { "id": "FE-0010", "title": "Английские MUI-лейблы в русском UI («Open», «Loading...\")", "category": "Localization/UI", "severity": "Low", "status": "Confirmed", "page": "/database,/scan-center,/company-structure,/warehouse-1c; App.jsx:164-166", "evidence": ["a11y snapshots button \"Open\"", "на /address-book — «Открыть» (непоследовательно)"] },
-    { "id": "FE-0011", "title": "Scan Center: переполнение 12px при 1920 -> горизонтальный скролл", "category": "UI/Layout", "severity": "Low", "status": "Confirmed", "page": "/scan-center", "evidence": ["scrollWidth 1922 vs vw 1910", "screenshot scan-center-1920-overflow.png"], "notes": "1366/1280 чисто (lg-брейкпоинт)" },
-    { "id": "FE-0012", "title": "Docflow: дубль идентичных tasks?scope=inbox на загрузке", "category": "Performance/DuplicateRequests", "severity": "Low", "status": "Confirmed", "page": "/docflow", "evidence": ["network: 222+195ms"] },
-    { "id": "FE-0013", "title": "Address book: docflow/absences 2x 3.4-3.8 c на загрузке", "category": "Performance", "severity": "Medium", "status": "Confirmed", "page": "/address-book", "evidence": ["network 3841+3359ms"], "needsBackendCheck": true },
-    { "id": "FE-0014", "title": "Панель уведомлений без семантики диалога (role=presentation на корне Drawer)", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "page": "global (MainLayout)", "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx", "evidence": ["DOM: Paper без role=dialog/aria-modal/aria-label; фокус-менеджмент корректен"] },
-    { "id": "FE-0015", "title": "Сессия сброшена при смене UA (mobile-эмуляция) — вероятен UA-пиннинг сессии", "category": "Auth/Observation", "severity": "Low", "status": "Suspected", "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx", "evidence": ["live: после emulate mobile все роуты -> /login, localStorage user удалён; 401-шторм me/refresh в консоли"], "needsBackendCheck": true },
-    { "id": "FE-0016", "title": "Транзиентные 5x401 в консоли при rapid-switch вкладок /tasks (при повторе не воспроизведены)", "category": "Reliability", "severity": "Low", "status": "Suspected" },
-    { "id": "FE-0017", "title": "ESLint: 1 error + 1143/735 warnings (chat/mail)", "category": "TechDebt/Tooling", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/chat/chatRegressionFlows.test.jsx", "lines": "426:1", "evidence": ["npm run lint: 1144 problems (1 error)"] },
-    { "id": "FE-0018", "title": "Voice: три запроса по ~1.2-1.3 c на загрузку", "category": "Performance", "severity": "Low", "status": "Confirmed", "page": "/voice", "evidence": ["network jobs 1296ms, meetings 1263ms, meetings?limit=1 1237ms"], "needsBackendCheck": true },
-    { "id": "FE-0019", "title": "Admin: 30 API-вызовов на загрузку, auth/sessions 1.1 c", "category": "Performance", "severity": "Low", "status": "Confirmed", "page": "/admin", "evidence": ["network capture"] },
-    { "id": "FE-0020", "title": "Возраст снимка 1С в сырых секундах + интеграция отстаёт на 2 дня", "category": "UX/BackendHealth", "severity": "Low", "status": "Confirmed", "page": "/construction,/it/requests", "evidence": ["alert «169 979 сек»", "«Обновлено 20.11.2026» при 22.11"], "needsBackendCheck": true },
-    { "id": "FE-0022", "title": "Warehouse1C: кликабельные строки недоступны с клавиатуры (desktop)", "category": "Accessibility", "severity": "High", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx", "lines": "2163-2216,1976-1980", "source": "agent A" },
-    { "id": "FE-0023", "title": "Networks: мобильная вкладка «Оборудование» без виртуализации (до 10000 карточек); SocketsTab аналогично", "category": "Performance", "severity": "High", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx", "lines": "351-433", "source": "agent C", "related": ["SocketsTab.jsx:220-229"] },
-    { "id": "FE-0024", "title": "Networks: 16+ IconButton без aria-label", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "file": "Networks.jsx:2132,2214,2704,2712,2748,3006; EquipmentTab.jsx:249,313,320,417,513,568; SocketsTab.jsx:198,285,381; InteractiveMapCanvas.jsx:409,414,419; BranchDialogs.jsx:146", "source": "agent A" },
-    { "id": "FE-0025", "title": "TaskCard: Открыть/Редактировать/Скопировать без доступного имени", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/hub/tasks/TaskCard.jsx", "lines": "322,335,363", "source": "agent A" },
-    { "id": "FE-0026", "title": "Невидимый фокус: ChatBubble, ToastHistoryList (outline:none без focus-visible)", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/chat/ChatBubble.jsx:1820-1856; components/layout/ToastHistoryList.jsx:70-86", "source": "agent A" },
-    { "id": "FE-0027", "title": "VoiceLogViewer: «Загрузка…» тёмное на тёмном", "category": "UI/Contrast", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/voice-video/VoiceLogViewer.jsx", "lines": "242", "source": "agent A" },
-    { "id": "FE-0028", "title": "Mfu: Drawer 360px шире экранов <360px", "category": "UI/Responsive", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/Mfu.jsx", "lines": "1297-1298", "source": "agent A" },
-    { "id": "FE-0029", "title": "Networks: keydown-листенер переустанавливается на каждый рендер", "category": "Performance", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/Networks.jsx", "lines": "2055-2074", "source": "agent C" },
-    { "id": "FE-0030", "title": "Networks.jsx: ~80 useState (3300 строк) — god component", "category": "Architecture/Performance", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/Networks.jsx", "lines": "138-311", "source": "agent C" },
-    { "id": "FE-0031", "title": "InteractiveMapCanvas: полный ре-рендер карты на каждый pointermove", "category": "Performance", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx", "lines": "530-544,55-105", "source": "agent C" },
-    { "id": "FE-0032", "title": "MyFiles: bulk download без очереди/лимита", "category": "Performance/Reliability", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx", "lines": "1332-1337", "source": "agent C" },
-    { "id": "FE-0033", "title": "Warehouse1C: списки 200-1000 строк без виртуализации/memo", "category": "Performance", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx", "lines": "903/923,1922/1970,2121/2162", "source": "agent C" },
-    { "id": "FE-0034", "title": "IconButton без aria-label: SharedFolder (публичная!), Mail, Voice, Passwords, Vcs, Mfu, UsersTab", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "file": "SharedFolder.jsx:231,248; MailTemplatesDialog.jsx:183,190,196; VoiceLogViewer.jsx:229,234; Passwords.jsx:900; PasswordFiltersPanel.jsx:39; Vcs.jsx:686; Mfu.jsx:990; UsersTab.jsx:321", "source": "agent A" },
-    { "id": "FE-0035", "title": "Networks: кликабельные TableRow без клавиатуры", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "file": "Networks.jsx:2243; SocketsTab.jsx:351", "source": "agent A" },
-    { "id": "FE-0036", "title": "Мёртвые состояния loading в Networks (сеттеры не вызываются)", "category": "TechDebt", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/Networks.jsx", "lines": "302-304", "source": "agent A" },
-    { "id": "FE-0037", "title": "Вечно disabled кнопка-индикатор «Установлена»", "category": "UI", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/account/admin/HubDesktopDeploySection.jsx", "lines": "422", "source": "agent A" },
-    { "id": "FE-0038", "title": "Двойная система стилей: Tailwind (Login/чат) vs MUI sx (остальное)", "category": "Architecture", "severity": "Low", "status": "Confirmed", "source": "agent A" },
-    { "id": "FE-0039", "title": "Тема light-only; AGENTS.md требует dark theme — противоречие", "category": "Architecture/Docs", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/theme/index.js", "lines": "31", "source": "agent A" },
-    { "id": "FE-0040", "title": "qrcode статически в чанке Login/Passwords (нужен только для TOTP-QR)", "category": "Performance/Bundle", "severity": "Low", "status": "Confirmed", "file": "Login.jsx:3; PasswordUnlockDialog.jsx:2", "source": "agent C" },
-    { "id": "FE-0041", "title": "SharedFile: ежесекундный setNowMs безусловно", "category": "Performance", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/SharedFile.jsx", "lines": "576-579", "source": "agent C" },
-    { "id": "FE-0042", "title": "Statistics: повторный fetch при переключении вкладки/периода (без swrCache)", "category": "Performance/Cache", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/Statistics.jsx", "lines": "290-296", "source": "agent C" },
-    { "id": "FE-0043", "title": "FeedCommentsPanel: опрос 15 c -> K+1 запрос при K раскрытых ветках", "category": "Performance", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/feed/FeedCommentsPanel.jsx", "lines": "130-138", "source": "agent C" },
-    { "id": "FE-0044", "title": "Безымянные tablist («Tab list») на страницах с несколькими наборами вкладок", "category": "Accessibility", "severity": "Low", "status": "Confirmed", "page": "/tasks,/database,/statistics,/voice", "evidence": ["a11y snapshots"] },
-    { "id": "FE-0045", "title": "Tasks: каждая вкладка перезабирает список (rapid-switch: 7 кликов -> 10 запросов)", "category": "Performance/Cache", "severity": "Low", "status": "Confirmed", "page": "/tasks", "evidence": ["network capture"] },
-    { "id": "FE-0046", "title": "ItObjectDetail: сводка «Пароли» без AbortSignal; passwordsAPI.getEntries не поддерживает signal", "category": "State/Async", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/ItObjectDetail.jsx:60; src/api/passwords.js:6-9", "source": "agent D" },
-    { "id": "FE-0047", "title": "Эпоха отказа auth не сбрасывается входом passkey/trusted-device", "category": "Auth/State", "severity": "Low", "status": "Confirmed (код)", "file": "WEB-itinvent/frontend/src/api/http.js", "lines": "61-64,281-283", "source": "agent D" },
-    { "id": "FE-0048", "title": "swrCache: force-чтение присоединяется к идущему запросу — «Обновить» не гарантирует fetch", "category": "Cache", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/lib/swrCache.js", "lines": "114-117", "source": "agent D" },
-    { "id": "FE-0049", "title": "Computers: loadChangesDeferred без abort/cancelled (setState после unmount)", "category": "State/Async", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/Computers.jsx", "lines": "950-960", "source": "agent D" },
-    { "id": "FE-0050", "title": "ChatOpen: createDirectConversation дважды в StrictMode dev", "category": "State/Async", "severity": "Low", "status": "Suspected (dev-only)", "file": "WEB-itinvent/frontend/src/pages/ChatOpen.jsx", "lines": "56", "source": "agent D" },
-    { "id": "FE-0051", "title": "swrCache: потребитель может применить «отсоединённый» ответ без перепроверки", "category": "Cache/Race", "severity": "Low", "status": "Suspected", "file": "WEB-itinvent/frontend/src/lib/swrCache.js", "source": "agent D" },
-    { "id": "FE-0052", "title": "Мобильный заголовок /scan-center — «Scan Center» (английский), десктоп — «Контроль документов»", "category": "Localization/UI", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx", "lines": "2028", "evidence": ["mobile a11y snapshot", "код"] },
-    { "id": "FE-0053", "title": "Диалог создания задачи: пустой заголовок (ZWSP), доступное имя — дефолтное «Dialog»", "category": "Accessibility/UI", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/hub/tasks/TasksCreateDialog.jsx", "evidence": ["a11y snapshot: dialog \"Dialog\", текст начинается с ZWSP"] },
-    { "id": "FE-0054", "title": "При открытии диалога создания задачи — 2 идентичных GET /hub/users/controllers", "category": "Performance/DuplicateRequests", "severity": "Low", "status": "Confirmed", "evidence": ["network capture"] },
-    { "id": "FE-0056", "title": "Удаление/перемещение черновика письма: API 400 (delete и move), UI без обратной связи", "category": "Functional/Mail", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/api/mailMessageActions.js:28-29 (клиент); backend services/mail_message_actions.py:303-313 (причина)", "evidence": ["network: POST /mail/messages/{id}/delete -> 400, POST /mail/messages/{id}/move -> 400", "UI: ни тоста, ни диалога", "черновик исчез только после ресинка"], "needsBackendCheck": true },
-    { "id": "FE-0057", "title": "Панель чтения письма: блок даты наезжает на кнопки «Удалить»/«Ещё действия» (клик по центру кнопки попадает в дату)", "category": "UI/Layout", "severity": "Low", "status": "Confirmed", "page": "/mail", "evidence": ["геометрия: date box 76x42 @ (708,168), pointer-events:auto, перекрывает центры кнопок"] },
-    { "id": "FE-0058", "title": "Удаление задачи через нативный window.confirm vs MUI-диалоги в других местах", "category": "UX/Consistency", "severity": "Low", "status": "Confirmed", "page": "/tasks", "evidence": ["native confirm перехвачен: «Удалить \\\"AUDIT-TEST…?\\»»"] },
-    { "id": "FE-0059", "title": "Обрыв сети >15 с во время ротации refresh-токена принудительно разлогинивает", "category": "Auth/NetworkReliability", "severity": "High", "status": "Confirmed", "file": "backend/api/v1/auth.py:1648,135,1656-1687 (причина); фронт — восстановления нет", "evidence": ["live: offline 5 c на /chat -> post-online auth/me 401 + auth/refresh 401 -> logout -> /login", "консоль: ERR_INTERNET_DISCONNECTED xN, WS failed xN", "AUTH_SECURITY_STACK.md:18-19 — задокументированный компромисс"], "notes": "grace окно ротации 15 c, MAX_HITS=1; вероятная причина FE-0015/0016; решение о расширении grace — за владельцем (auth-политику не менять как side effect)", "related": ["FE-0015", "FE-0016"] },
-    { "id": "FE-0060", "title": "Чат: во время офлайна не появляется индикатор потери связи (5 c)", "category": "UX/ConnectionState", "severity": "Low", "status": "Suspected", "page": "/chat", "evidence": ["offline-тест: banner отсутствует в DOM/innerText в течение 5 c офлайна; проверить порог показа"], "related": ["FE-0059"] },
-    { "id": "FE-0061", "title": "Страница входа без landmark <main> (axe landmark-one-main)", "category": "Accessibility", "severity": "Low", "status": "Confirmed", "page": "/login", "file": "WEB-itinvent/frontend/src/pages/Login.jsx", "evidence": ["Lighthouse a11y 0.9: landmark-one-main", "SharedFile.jsx:732 имеет component=main — login (Tailwind) нет"] },
-    { "id": "FE-0062", "title": "Viewport-мета запрещает масштабирование (maximum-scale=1.0, user-scalable=no) — WCAG 1.4.4", "category": "Accessibility", "severity": "Medium", "status": "Confirmed", "file": "WEB-itinvent/frontend/index.html", "lines": "7", "evidence": ["Lighthouse meta-viewport failure", "закреплено тестом indexHtml.test.js:10-11 — осознанное решение; предложить пересмотр (напр., 16px+ inputs вместо запрета зума)"] },
-    { "id": "FE-0063", "title": "/robots.txt отдаёт SPA index.html (IIS fallback)", "category": "Config/SEO", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/public/web.config", "lines": "150-161", "evidence": ["live GET /robots.txt -> 200 text/html", "Lighthouse: robots-txt invalid"] },
-    { "id": "FE-0064", "title": "Self-XSS через вставку: contentEditable редактор описания задачи (mobile) без перехвата paste", "category": "Security/XSS", "severity": "Medium", "status": "Confirmed (код)", "file": "WEB-itinvent/frontend/src/components/hub/tasks/MobileCreateDescriptionEditor.jsx", "lines": "27-33,84-91", "evidence": ["единственный contentEditable в кодовой базе; paste-санитайзера нет (в MailRichTextEditor.jsx:161-192 есть)"], "source": "agent E (E-1)", "notes": "runtime-подтверждение желательно" },
-    { "id": "FE-0065", "title": "CSP только Report-Only; enforce сломает drawio (нет frame-src)", "category": "Security/CSP", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/public/web.config", "lines": "186", "evidence": ["Content-Security-Policy-Report-Only; drawio iframe наследует default-src 'self'"], "source": "agent E (E-2)" },
-    { "id": "FE-0066", "title": "Почтовые вложения: нет клиентских лимитов размера/типа/количества (IIS 64 МБ режет с неявной ошибкой)", "category": "Files/Reliability", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx", "lines": "993-1008", "evidence": ["web.config:12-16 maxAllowedContentLength=64MB; в чате лимиты есть"], "needsBackendCheck": true, "source": "agent E (E-3)" },
-    { "id": "FE-0067", "title": "VoiceMeetingSummary: ReactMarkdown без rehype-sanitize", "category": "Security/Markdown", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingSummary.jsx", "lines": "301", "evidence": ["MarkdownRenderer.jsx:12 использует [rehypeSanitize] — здесь нет"], "source": "agent E (E-4)" },
-    { "id": "FE-0068", "title": "target=_blank из HTML-подписи без гарантированного rel=noopener", "category": "Security/TargetWindows", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/mail/mailHtmlContent.js", "lines": "23-24,80-92", "evidence": ["applySafeBlankLinkRel есть только в buildRenderedMailHtml; sanitizeMailHtmlFragment его не добавляет"], "source": "agent E (E-5)" },
-    { "id": "FE-0069", "title": "Клиентские права — UX-слой; обязательна серверная сверка (alwaysGrantedPermissions, rolePermissionFallback, admin-bypass)", "category": "Authorization", "severity": "Info", "status": "Confirmed (код)", "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx", "lines": "17-34,132-141,698-707", "evidence": ["hasPermission: role==='admin' -> true; alwaysGrantedPermissions всем ролям"], "needsBackendCheck": true, "source": "agent E (E-6)" },
-    { "id": "FE-0070", "title": "Нет глобального сбора ошибок (window.onerror/unhandledrejection) — только chunk-ошибки", "category": "Reliability/Observability", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/main.jsx", "lines": "44-54", "source": "agent E (E-7)" },
-    { "id": "FE-0071", "title": "Сырые axios-сообщения могут попасть в UI (fallback)", "category": "ErrorHandling", "severity": "Low", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/components/mail/mailErrorModel.js", "lines": "16-24,72-74", "needsBackendCheck": true, "source": "agent E (E-8)" },
-    { "id": "FE-0072", "title": "403 приравнен к «сессия отклонена» -> лишние logout", "category": "Auth/ErrorHandling", "severity": "Low", "status": "Suspected", "file": "WEB-itinvent/frontend/src/api/http.js", "lines": "186-189", "needsBackendCheck": true, "source": "agent E (E-9)" },
-    { "id": "FE-0073", "title": "quill 2.0.2 pin (история XSS); обвязка безопасна; npm audit не проводился", "category": "Dependencies", "severity": "Info", "status": "Confirmed (обвязка)", "file": "WEB-itinvent/frontend/package.json", "lines": "42", "source": "agent E (E-10)" },
-    { "id": "FE-0074", "title": "MyFiles: window.open same-origin без noopener (единственное исключение из ~20 вызовов)", "category": "TargetWindows", "severity": "Info", "status": "Confirmed", "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx", "lines": "401", "source": "agent E (E-12)" },
-    { "id": "FE-0075", "title": "drawio postMessage: при невалидном конфиге ответ на '*' (fail-open edge)", "category": "postMessage", "severity": "Info", "status": "Suspected", "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx", "lines": "122-135", "notes": "event.source-чек остаётся; рекомендация fail-closed", "source": "agent E (E-13)" },
-    { "id": "FE-0076", "title": "AI-письмо: plain-text body с is_html=true", "category": "HtmlInjection", "severity": "Low", "status": "Suspected", "file": "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx", "lines": "119-129", "needsBackendCheck": true, "source": "agent E (E-14)" }
+    {
+      "id": "FE-0001",
+      "title": "Ошибка входа на английском при русском интерфейсе",
+      "category": "UX/Localization",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "/login",
+      "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "lines": "593-616",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/backend/api/v1/auth.py",
+          "lines": "801,818"
+        }
+      ],
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "a11y snapshot 2026-11-22: баннер «Incorrect username or password»",
+        "POST /auth/login -> 401",
+        "строка отсутствует в src фронтенда (rg) — приходит из backend detail"
+      ],
+      "impact": "Пользователь не понимает причину отказа",
+      "recommendation": "Маппинг известных ошибок авторизации на русские тексты",
+      "regressionRisk": "low",
+      "related": [
+        "FE-0002"
+      ]
+    },
+    {
+      "id": "FE-0002",
+      "title": "Вложенные live-регионы role=status в уведомлении входа (двойное объявление)",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "/login",
+      "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "lines": "282-294,416-439",
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "a11y snapshot: status x2 (InfoBanner role=status внутри обёртки role=status aria-live=polite)"
+      ],
+      "impact": "Скринридеры объявляют сообщение дважды; live-region в live-region — ARIA-антипаттерн",
+      "recommendation": "Оставить live-семантику на одном уровне",
+      "regressionRisk": "low",
+      "related": [
+        "FE-0001"
+      ]
+    },
+    {
+      "id": "FE-0003",
+      "title": "Кнопка показа пароля 25x25px (< минимума 36px)",
+      "category": "UI/TouchTarget",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/login",
+      "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "lines": "1919-1936",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "DOM measurement: w:25 h:25 при соседних полях 376x56; норматив дизайн-системы: >=36px desktop / >=44px mobile"
+      ],
+      "impact": "Сложное попадание на тач-устройствах"
+    },
+    {
+      "id": "FE-0004",
+      "title": "Анонимный /shared-folders/:invalid показал экран входа вместо ошибки — в одном долгоживущем профиле Chrome; в чистом профиле НЕ воспроизводится",
+      "category": "PublicRoute/ServiceWorker",
+      "severity": "Medium",
+      "status": "Suspected",
+      "statusNote": "наблюдение зафиксировано дважды 2026-11-22 17:16-17:18 в Chrome владельца; независимая проверка 2026-11-23 в чистом профиле (включая точную последовательность /dashboard -> /nonexistent -> /shared-folders/invalid) показала КОРРЕКТНУЮ ошибку «Папка недоступна…»; деплой в окне наблюдения исключён (файлы IIS-сайта не менялись с 20.11 15:10)",
+      "page": "/shared-folders/:token",
+      "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+      "lines": "47-57",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "17:16/17:18: a11y-снапшоты login UI на /shared-folders/invalid (x2)",
+        "23:5x: чистый профиль — корректная ошибка (a11y + innerText)",
+        "IIS site files: последняя публикация 20.11 15:10 (без изменений в окне наблюдения)",
+        "контроль /shared-files/:invalid PASS в обоих окружениях"
+      ],
+      "impact": "Вероятная причина: устаревший service-worker app-shell в долгоживущем профиле (skipWaiting только по явному сообщению — agent E, раздел SW) — пользователи со старым shell после деплоев могут видеть устаревшие маршруты до перезагрузки",
+      "recommendation": "Повторить наблюдение в профиле владельца; рассмотреть UX обновления SW после деплоев (подсказка «доступна новая версия»); текущий production-бандл обрабатывает сценарий корректно",
+      "related": [
+        "FE-0006"
+      ]
+    },
+    {
+      "id": "FE-0005",
+      "title": "Дубли идентичных poll-запросов уведомлений на загрузке",
+      "category": "Performance/DuplicateRequests",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/dashboard (MainLayout)",
+      "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+      "lines": "1413-1611 (tick 1577-1588, onVisible 1589-1593)",
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "resource timing: 2x GET /hub/notifications/poll?since=…&limit=20 (841B, 51/50ms) за одну загрузку; in-flight guard (1431) сериализует, но не дедуплицирует"
+      ],
+      "impact": "Лишняя нагрузка на backend"
+    },
+    {
+      "id": "FE-0006",
+      "title": "Мёртвый whitelist публичных my-files URL в 401-перехватчике",
+      "category": "Reliability",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "global",
+      "file": "WEB-itinvent/frontend/src/api/http.js",
+      "lines": "176-184",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/api/myFiles.js",
+          "lines": "353,360,368,381 (public-folders), 682-696 (public)"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "isMyFilesPublicRequestUrl матчит только /my-files/public/ и /my-files/public? — реальные папочные эндпоинты /my-files/public-folders/ не матчатся; folder-запросы идут без suppressAuthRequired; тест client.test.js:200 проверяет URL-паттерн, отсутствующий в рантайме"
+      ],
+      "impact": "Любой 401 на public-folder запросе запустит refresh-цепочку/auth-required, чего нет у public-file",
+      "recommendation": "Добавить public-folders в whitelist + suppressAuthRequired; поправить тест на реальные URL",
+      "regressionRisk": "medium (общий 401-интерцептор; client.test.js)",
+      "related": [
+        "FE-0004"
+      ]
+    },
+    {
+      "id": "FE-0007",
+      "title": "Сломанные вложения публикаций ленты (410 Gone) — 8 шт. за загрузку, UI не показывает заглушку",
+      "category": "Data/UX",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "/feed",
+      "file": "WEB-itinvent/frontend/src/components/feed/FeedPostCard.jsx",
+      "lines": "40-82",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "console capture 2026-11-22: 8x GET /api/v1/hub/announcements/{id}/attachments/{id}/file -> 410 за одну загрузку /feed"
+      ],
+      "impact": "Битые вложения у старых новостей; шум ошибок в консоли",
+      "needsBackendCheck": true,
+      "recommendation": "Фронт: тихая обработка 410/404 + placeholder «вложение недоступно»; бэк: состояние вложений"
+    },
+    {
+      "id": "FE-0008",
+      "title": "Computers: поиск scope=all 3.2 c на загрузке; дубли имён в алерте изменений",
+      "category": "Performance/Data",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "/computers",
+      "file": "WEB-itinvent/frontend/src/api/equipmentComputers.js",
+      "lines": "84",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/pages/Computers.jsx",
+          "lines": "950-960 (loadChangesDeferred)"
+        }
+      ],
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "network: GET /inventory/computers/search?scope=all 3250ms (1001 ПК)",
+        "a11y snapshot: BELG-ENRGY-0001-D x2 в алерте «Новые изменения…: 40»"
+      ],
+      "impact": "Медленная загрузка дашборда; возможен дедуп-пропуск при слиянии баз",
+      "needsBackendCheck": true
+    },
+    {
+      "id": "FE-0009",
+      "title": "Безымянные combobox-фильтры (ZWSP) на нескольких страницах",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "/tickets,/database,/mail,/my-files,/statistics,/warehouse-1c",
+      "file": "WEB-itinvent/frontend/src/components/tickets/TicketRequestList.jsx",
+      "lines": "151-166",
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "a11y snapshots: combobox \"​\" / group \"​\" на 6+ страницах",
+        "код: FormControl + InputLabel без явной связи с Select (representative TicketRequestList.jsx:151-166)"
+      ],
+      "impact": "Скринридер объявляет безымянные фильтры",
+      "recommendation": "Единый паттерн связывания label<->control (id/htmlFor или aria-label)"
+    },
+    {
+      "id": "FE-0010",
+      "title": "Английские MUI-лейблы/aria в русском UI («Open», «Loading...», «toggle password visibility»)",
+      "category": "Localization/UI",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/database,/scan-center,/company-structure,/warehouse-1c,/login",
+      "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "lines": "1930 (aria-label \"toggle password visibility\")",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
+          "lines": "955 (Autocomplete, popup «Open»)"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/App.jsx",
+          "lines": "164-166 (\"Loading...\")"
+        }
+      ],
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "a11y snapshots: button \"Open\" на /database, /scan-center, /company-structure, /warehouse-1c; на /address-book — «Открыть» (непоследовательно)",
+        "Login.jsx:1930 — английский aria-label у кнопки показа пароля"
+      ],
+      "impact": "Непоследовательная локализация, англ. фразы для скринридеров"
+    },
+    {
+      "id": "FE-0011",
+      "title": "Scan Center: переполнение 12px при 1920 и 1536 (=125% масштаб) -> горизонтальный скролл; при 1366/1280 чисто",
+      "category": "UI/Layout",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/scan-center",
+      "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterOverview.jsx",
+      "lines": "159-160",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "scrollWidth 1922 vs vw 1910; воспроизведено при 1920 и 1536; MuiGrid-spacing-xs-1.5 (Grid container spacing 1.5, item lg=8) без компенсации отрицательных margin",
+        "screenshot evidence/screenshots/scan-center-1920-overflow.png"
+      ],
+      "impact": "Горизонтальная прокрутка всей страницы на широких экранах",
+      "recommendation": "Компенсировать отрицательные margin Grid или обернуть с padding"
+    },
+    {
+      "id": "FE-0012",
+      "title": "Docflow: дубль идентичных tasks?scope=inbox на загрузке",
+      "category": "Performance/DuplicateRequests",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/docflow",
+      "file": "WEB-itinvent/frontend/src/pages/Docflow.jsx",
+      "lines": "1296",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "network: 2x GET /docflow/tasks?scope=inbox&limit=50 (222+195ms) за одну загрузку; два триггера вызывают один loader (требует трассировки эффектов для точечного фикса)"
+      ],
+      "impact": "Лишний запрос"
+    },
+    {
+      "id": "FE-0013",
+      "title": "Address book: два запроса docflow/absences по 3.4-3.8 c на загрузке (общий + по сотруднику)",
+      "category": "Performance",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "/address-book",
+      "file": "WEB-itinvent/frontend/src/components/addressBook/useDocflowAbsenceMarks.js",
+      "lines": "15",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/components/docflow/DocflowAbsencesPanel.jsx",
+          "lines": "24"
+        }
+      ],
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "network: /docflow/absences 3841ms + /docflow/absences?employee_code=… 3359ms",
+        "два независимых компонента делают по запросу (общие отметки + панель отсутствий) — дубль объяснён"
+      ],
+      "impact": "Загрузка адресной книги тянет два тяжёлых запроса",
+      "needsBackendCheck": true,
+      "recommendation": "Кэшировать/объединить; причина медленности — backend (COM-bridge)"
+    },
+    {
+      "id": "FE-0014",
+      "title": "Панель уведомлений без семантики диалога (role=presentation на корне Drawer)",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "global (MainLayout)",
+      "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+      "lines": "2810-2870 (Drawer-блоки)",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "DOM открытого Drawer: корень role=presentation; Paper без role=dialog/aria-modal/aria-label; фокус-менеджмент при этом корректен (фокус внутри, Tab не уходит, Esc, возврат на колокольчик)"
+      ],
+      "impact": "Скринридер не объявляет открытие панели",
+      "recommendation": "role=dialog + aria-modal=true + aria-label на Paper"
+    },
+    {
+      "id": "FE-0015",
+      "title": "Сессия сброшена при смене UA (mobile-эмуляция) — вероятнее всего экземпляр FE-0059 (ротация в окне перезагрузки)",
+      "category": "Auth/Observation",
+      "severity": "Low",
+      "status": "Suspected",
+      "page": "global",
+      "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+      "lines": "171-174,256-258",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "после emulate(mobile UA) все роуты -> /login, localStorage user удалён; 401-шторм me/refresh в консоли; grace-механика FE-0059 объясняет без UA-пиннинга (UA-пиннинг не подтверждён)"
+      ],
+      "related": [
+        "FE-0059"
+      ],
+      "needsBackendCheck": true
+    },
+    {
+      "id": "FE-0016",
+      "title": "Транзиентные 5x401 в консоли при rapid-switch вкладок /tasks (при повторе не воспроизведены)",
+      "category": "Reliability",
+      "severity": "Low",
+      "status": "Suspected",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "console capture 2026-11-22 (URL ресурсов не сохранён — проба без захвата); при повторе с захватом — чисто",
+        "вероятно связано с окном разлогина FE-0059"
+      ],
+      "related": [
+        "FE-0059"
+      ]
+    },
+    {
+      "id": "FE-0017",
+      "title": "ESLint: 1 error + 1143/735 warnings (chat/mail)",
+      "category": "TechDebt/Tooling",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/chat/chatRegressionFlows.test.jsx",
+      "lines": "426:1",
+      "verification": [
+        "tooling"
+      ],
+      "evidence": [
+        "npm run lint: 1144 problems (1 error 'describe' no-undef — нет vitest-globals в ESLint-конфиге); lint:mail — 735 warnings (в основном no-unused-vars в Mail.jsx)"
+      ],
+      "impact": "Шум скрывает реальные проблемы"
+    },
+    {
+      "id": "FE-0018",
+      "title": "Voice: три медленных запроса ~1.2-1.3 c на загрузку",
+      "category": "Performance",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/voice",
+      "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx",
+      "lines": "146,151,178,220",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "network: /voice/jobs?limit=100 1296ms, /voice/meetings?limit=20 1263ms, /voice/meetings?limit=1 1237ms"
+      ],
+      "impact": "Медленное открытие раздела",
+      "needsBackendCheck": true
+    },
+    {
+      "id": "FE-0019",
+      "title": "Admin: 30 API-вызовов на загрузку, auth/sessions 1.1 c",
+      "category": "Performance",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/admin",
+      "file": "WEB-itinvent/frontend/src/api/authSessions.js",
+      "lines": "5",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "network capture: 30 API-вызовов за загрузку /admin; GET /auth/sessions 1090ms; GET /auth/users 285ms"
+      ],
+      "impact": "Тяжёлая загрузка админки"
+    },
+    {
+      "id": "FE-0020",
+      "title": "Возраст снимка 1С в сырых секундах; интеграция отстаёт на ~2 дня",
+      "category": "UX/BackendHealth",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/construction,/it/requests",
+      "file": "WEB-itinvent/frontend/src/pages/ConstructionObjects.jsx",
+      "lines": "604",
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "alert: «…снимок возрастом {formatNumber(cache.age_seconds)} сек.» (169 979 сек)",
+        "«Обновлено 20.11.2026, 23:15» при текущей дате 22.11"
+      ],
+      "impact": "Нечитаемое сообщение; симптом отстающей интеграции 1С",
+      "needsBackendCheck": true
+    },
+    {
+      "id": "FE-0022",
+      "title": "Warehouse1C: кликабельные строки недоступны с клавиатуры (desktop)",
+      "category": "Accessibility",
+      "severity": "High",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
+      "lines": "2163-2216,1975-1980",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "TableRow onClick + cursor:pointer без role/tabIndex/onKeyDown (2163-2167)",
+        "TableCell onClick handleOpenHubMatch без клавиатуры (1975-1980)",
+        "мобильный рядок (:487) корректно имеет role/tabIndex/Enter — асимметрия"
+      ],
+      "impact": "Пользователи клавиатуры/скринридеров не могут открыть документы и сопоставления",
+      "recommendation": "Дублировать паттерн мобильного рядка или добавить кнопку «Открыть»",
+      "regressionRisk": "low"
+    },
+    {
+      "id": "FE-0023",
+      "title": "Networks: мобильная вкладка «Оборудование» без виртуализации (до 10000 карточек); SocketsTab аналогично",
+      "category": "Performance",
+      "severity": "High",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx",
+      "lines": "351-433",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+          "lines": "871 (getBranchPorts limit 10000); 765 (sockets limit 10000)"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx",
+          "lines": "220-229"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "isMobile-ветка: displayedPorts.map -> Card без виртуализации (351-433)",
+        "desktop виртуализируется (rowHeights:203, slice(startIndex,endIndex):218)",
+        "лимит 10000 подтверждён (Networks.jsx:871,765)"
+      ],
+      "impact": "На филиале с тысячами портов мобильная вкладка фризит/падает",
+      "recommendation": "react-window (в зависимостях) или пагинация для мобильной раскладки",
+      "regressionRisk": "low"
+    },
+    {
+      "id": "FE-0024",
+      "title": "Networks: 16+ IconButton без aria-label",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+      "lines": "2132,2214,2704,2712,2748,3006",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx",
+          "lines": "249,313,320,417,513,568"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx",
+          "lines": "198,285,381"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+          "lines": "409,414,419"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/components/networks/BranchDialogs.jsx",
+          "lines": "146"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "перечисленные IconButton не имеют aria-label (у части только Tooltip)"
+      ],
+      "source": "agent A (evidence/agent-A-uiux-report.md)"
+    },
+    {
+      "id": "FE-0025",
+      "title": "TaskCard: Открыть/Редактировать/Скопировать без доступного имени",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/hub/tasks/TaskCard.jsx",
+      "lines": "322,335,363",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "«Удалить» (:352) подписан — непоследовательность"
+      ],
+      "source": "agent A"
+    },
+    {
+      "id": "FE-0026",
+      "title": "Невидимый фокус: ChatBubble (кнопка выделения), ToastHistoryList (role=button)",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/chat/ChatBubble.jsx",
+      "lines": "1820-1856 (outline none: 1853-1856)",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/components/layout/ToastHistoryList.jsx",
+          "lines": "70-86"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "sx: outline:'none' и '&:focus, &:focus-visible': { outline:'none' } (1853-1856); aria-label при этом есть (1825)"
+      ],
+      "source": "agent A + независимая перепроверка"
+    },
+    {
+      "id": "FE-0027",
+      "title": "VoiceLogViewer: «Загрузка…» тёмное на тёмном",
+      "category": "UI/Contrast",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx",
+      "lines": "240-242",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "DialogContent bgcolor #1a1b23; loading Box color text.secondary; соседний empty-state корректно использует rgba(255,255,255,0.4)"
+      ],
+      "source": "agent A + независимая перепроверка (путь исправлен: pages/, не components/)"
+    },
+    {
+      "id": "FE-0028",
+      "title": "Mfu: Drawer 360px шире экранов <360px",
+      "category": "UI/Responsive",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Mfu.jsx",
+      "lines": "1297-1298",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "Drawer Box width:{xs:360, sm:480}"
+      ],
+      "source": "agent A + независимая перепроверка"
+    },
+    {
+      "id": "FE-0029",
+      "title": "Networks: keydown-листенер переустанавливается на каждый рендер",
+      "category": "Performance",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+      "lines": "2055-2074",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "deps — незамемоизированные cancelEditPort/savePortEdit + displayedPorts"
+      ],
+      "source": "agent C"
+    },
+    {
+      "id": "FE-0030",
+      "title": "Networks.jsx: ~80 useState (3300 строк) — god-component",
+      "category": "Architecture/Performance",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+      "lines": "138-311",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "любой ввод перерисовывает всю страницу с картой"
+      ],
+      "source": "agent C"
+    },
+    {
+      "id": "FE-0031",
+      "title": "InteractiveMapCanvas: полный ре-рендер карты на каждый pointermove",
+      "category": "Performance",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+      "lines": "530-544,55-105",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "setDraggedPoint без троттлинга -> пересчёт кластеризации всех точек"
+      ],
+      "source": "agent C"
+    },
+    {
+      "id": "FE-0032",
+      "title": "MyFiles: массовое скачивание без очереди/лимита параллельности",
+      "category": "Performance/Reliability",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+      "lines": "1332-1337",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "выбор десятков файлов -> десятки параллельных загрузок"
+      ],
+      "source": "agent C"
+    },
+    {
+      "id": "FE-0033",
+      "title": "Warehouse1C: списки 200-1000 строк без виртуализации/memo",
+      "category": "Performance",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
+      "lines": "903,923,1922,1970,2121,2162",
+      "verification": [
+        "static"
+      ],
+      "source": "agent C",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-C-perf-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0034",
+      "title": "IconButton без aria-label: SharedFolder (публичная!), Mail, Voice, Passwords, Vcs, Mfu, UsersTab",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+      "lines": "231,248",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/components/mail/MailTemplatesDialog.jsx",
+          "lines": "183,190,196"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx",
+          "lines": "229,234"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/pages/Passwords.jsx",
+          "lines": "900"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/components/passwords/PasswordFiltersPanel.jsx",
+          "lines": "39"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/pages/Vcs.jsx",
+          "lines": "686"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/pages/Mfu.jsx",
+          "lines": "990"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/pages/account/admin/UsersTab.jsx",
+          "lines": "321"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "source": "agent A",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-A-uiux-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0035",
+      "title": "Networks: кликабельные TableRow без клавиатуры",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+      "lines": "2243",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx",
+          "lines": "351"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "source": "agent A",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-A-uiux-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0036",
+      "title": "Мёртвые состояния loading в Networks (сеттеры не вызываются)",
+      "category": "TechDebt",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+      "lines": "302-304",
+      "verification": [
+        "static"
+      ],
+      "source": "agent A",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-A-uiux-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0037",
+      "title": "Вечно disabled кнопка-индикатор «Установлена»",
+      "category": "UI",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/account/admin/HubDesktopDeploySection.jsx",
+      "lines": "422",
+      "verification": [
+        "static"
+      ],
+      "source": "agent A",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-A-uiux-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0038",
+      "title": "Двойная система стилей: Tailwind (Login/чат) vs MUI sx (остальное)",
+      "category": "Architecture",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/vite.config.js",
+      "lines": "3 (import), ~30 (plugins: tailwindcss())",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "Login.jsx/чат — Tailwind-разметка; остальной портал — MUI sx + переменные --chat-*"
+      ],
+      "source": "agent A"
+    },
+    {
+      "id": "FE-0039",
+      "title": "Тема light-only; AGENTS.md требует dark theme — противоречие",
+      "category": "Architecture/Docs",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/theme/index.js",
+      "lines": "31",
+      "verification": [
+        "static"
+      ],
+      "source": "agent A",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-A-uiux-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0040",
+      "title": "qrcode статически в чанке Login/Passwords (нужен только для TOTP-QR)",
+      "category": "Performance/Bundle",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "lines": "3",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/components/passwords/PasswordUnlockDialog.jsx",
+          "lines": "2"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "source": "agent C",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-C-perf-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0041",
+      "title": "SharedFile: ежесекундный setNowMs безусловно",
+      "category": "Performance",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/SharedFile.jsx",
+      "lines": "576-579",
+      "verification": [
+        "static"
+      ],
+      "source": "agent C",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-C-perf-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0042",
+      "title": "Statistics: повторный fetch при переключении вкладки/периода (без swrCache)",
+      "category": "Performance/Cache",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Statistics.jsx",
+      "lines": "290-296",
+      "verification": [
+        "static"
+      ],
+      "source": "agent C",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-C-perf-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0043",
+      "title": "FeedCommentsPanel: опрос 15 c -> K+1 запрос при K раскрытых ветках",
+      "category": "Performance",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/feed/FeedCommentsPanel.jsx",
+      "lines": "130-138",
+      "verification": [
+        "static"
+      ],
+      "source": "agent C",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-C-perf-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0044",
+      "title": "Безымянные tablist («Tab list») на страницах с несколькими наборами вкладок",
+      "category": "Accessibility",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/tasks (2 шт.),/database,/statistics,/voice",
+      "file": "WEB-itinvent/frontend/src/pages/Tasks.jsx",
+      "lines": "n/a (Tab-наборы без aria-label)",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "a11y snapshots: два tablist с именем «Tab list» на /tasks и др."
+      ],
+      "recommendation": "aria-label каждому Tab-набору"
+    },
+    {
+      "id": "FE-0045",
+      "title": "Tasks: каждая вкладка перезабирает список (rapid-switch: 7 кликов -> 10 запросов, 3x sort_by=due_at)",
+      "category": "Performance/Cache",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/tasks",
+      "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTasksListQuery.js",
+      "lines": "169 (focus_mode; перезапрос при смене режима)",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "network capture: 7 кликов по вкладкам -> 10 запросов; все 200, гонок не видно (последовательные)"
+      ]
+    },
+    {
+      "id": "FE-0046",
+      "title": "ItObjectDetail: сводка «Пароли» без AbortSignal; passwordsAPI.getEntries не поддерживает signal",
+      "category": "State/Async",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/ItObjectDetail.jsx",
+      "lines": "58-60",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/api/passwords.js",
+          "lines": "6-9"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "loadSectionSummary принимает signal, но ветка passwords не передаёт его в getEntries; getEntries вообще без signal — дублирование при remount, не отменяется при смене :objectRef"
+      ],
+      "source": "agent D + независимая перепроверка"
+    },
+    {
+      "id": "FE-0047",
+      "title": "«Эпоха отказа auth» не сбрасывается входом passkey/trusted-device (окно <=12 мин)",
+      "category": "Auth/State",
+      "severity": "Low",
+      "status": "Confirmed",
+      "statusNote": "подтверждено статически; влияние требует live-прогона",
+      "file": "WEB-itinvent/frontend/src/api/http.js",
+      "lines": "61-64,281-283",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "resetAuthRejectionEpoch только после /auth/login и /auth/verify-2fa*; passkey (/auth/passkey-login/verify) и trusted-device (/auth/trusted-devices/auth/verify) её не сбрасывают"
+      ],
+      "source": "agent D"
+    },
+    {
+      "id": "FE-0048",
+      "title": "swrCache: force-чтение присоединяется к уже идущему обычному запросу — «Обновить» не гарантирует fetch",
+      "category": "Cache",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/lib/swrCache.js",
+      "lines": "114-117",
+      "verification": [
+        "static"
+      ],
+      "source": "agent D",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-D-state-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0049",
+      "title": "Computers: loadChangesDeferred без abort/cancelled (setState после unmount)",
+      "category": "State/Async",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/Computers.jsx",
+      "lines": "950-960",
+      "verification": [
+        "static"
+      ],
+      "source": "agent D",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-D-state-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0050",
+      "title": "ChatOpen: createDirectConversation дважды в StrictMode dev",
+      "category": "State/Async",
+      "severity": "Low",
+      "status": "Suspected",
+      "statusNote": "dev-only; прод не затронут",
+      "file": "WEB-itinvent/frontend/src/pages/ChatOpen.jsx",
+      "lines": "56",
+      "verification": [
+        "static"
+      ],
+      "source": "agent D",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-D-state-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0051",
+      "title": "swrCache: потребитель может применить «отсоединённый» ответ без перепроверки",
+      "category": "Cache/Race",
+      "severity": "Low",
+      "status": "Suspected",
+      "file": "WEB-itinvent/frontend/src/lib/swrCache.js",
+      "verification": [
+        "static"
+      ],
+      "source": "agent D",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-D-state-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0052",
+      "title": "Мобильный заголовок /scan-center — «Scan Center» (английский), десктоп — «Контроль документов»",
+      "category": "Localization/UI",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
+      "lines": "2028",
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "mobile a11y snapshot: heading «Scan Center»; остальные MobileShellPageHeader — русские"
+      ]
+    },
+    {
+      "id": "FE-0053",
+      "title": "Диалог создания задачи: пустой заголовок (ZWSP), доступное имя — дефолтное «Dialog»",
+      "category": "Accessibility/UI",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/hub/tasks/TasksCreateDialog.jsx",
+      "lines": "n/a (DialogTitle отсутствует/пуст)",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "a11y snapshot: dialog \"Dialog\", текст начинается с ZWSP",
+        "контраст: «Новая папка»/«Удалить папку»/«Удалить сообщение?» — с корректными заголовками"
+      ]
+    },
+    {
+      "id": "FE-0054",
+      "title": "При открытии диалога создания задачи — 2 идентичных GET /hub/users/controllers",
+      "category": "Performance/DuplicateRequests",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/hub/TaskWorkspacePanel.jsx",
+      "lines": "235",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTasksListQuery.js",
+          "lines": "72"
+        }
+      ],
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "network: 2x GET /hub/users/controllers при открытии диалога; два независимых fetch-сайта без дедупа"
+      ]
+    },
+    {
+      "id": "FE-0056",
+      "title": "Удаление/перемещение черновика письма: API 400; путь ошибки в UI существует, но исходная проба его не зафиксировала",
+      "category": "Functional/Mail",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "statusNote": "400 подтверждён дважды (delete и move); «UI молчит» из первичного отчёта скорректировано: код показывает ошибку через setError (Alert панели чтения) — нужна live-проверка с корректной пробой",
+      "page": "/mail",
+      "file": "WEB-itinvent/frontend/src/api/mailMessageActions.js",
+      "lines": "28-29",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/components/mail/useMailSelectedPreviewActions.js",
+          "lines": "28-31,41-46 (setError -> Alert)"
+        },
+        {
+          "file": "WEB-itinvent/backend/services/mail_message_actions.py",
+          "lines": "83-94 (resolve_folder/get -> Message not found)"
+        }
+      ],
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "network: POST /mail/messages/{id}/delete -> 400 и POST /mail/messages/{id}/move -> 400 (черновик, сохранённый из композера)",
+        "черновик исчез из папки только после ресинка",
+        "console: «Failed to load resource: 400»"
+      ],
+      "impact": "Сценарий «удалить только что сохранённый черновик» ломается на уровне API; состояние самовосстанавливается синком",
+      "needsBackendCheck": true,
+      "recommendation": "Backend: воспроизвести с сохранением тела 400 (вероятно Message not found при резолве drafts-папки/ящика); фронт: проверить видимость Alert при неудаче"
+    },
+    {
+      "id": "FE-0057",
+      "title": "Панель чтения письма: noWrap-дата наезжает на кнопки «Удалить»/«Ещё действия»",
+      "category": "UI/Layout",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/mail",
+      "file": "WEB-itinvent/frontend/src/components/mail/MailPreviewHeader.jsx",
+      "lines": "398-400 (дата noWrap), 403-474 (тулбар)",
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "геометрия: блок даты 76x42 @ (708,168), pointer-events:auto, перекрывает центры кнопок; клик по центру «Удалить» попадает в дату (потребовался force)",
+        "левый мета-блок без minWidth:0 — noWrap-дата расширяется под тулбар"
+      ],
+      "recommendation": "minWidth:0 + overflow:hidden на мета-блоке либо перенос даты"
+    },
+    {
+      "id": "FE-0058",
+      "title": "Нативные window.confirm для удалений (задачи и др.) vs MUI-диалоги в других местах — непоследовательный паттерн",
+      "category": "UX/Consistency",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/tasks и др.",
+      "file": "WEB-itinvent/frontend/src/components/hub/TaskWorkspacePanel.jsx",
+      "lines": "356",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js",
+          "lines": "750,873"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/pages/account/profile/ProfileTab.jsx",
+          "lines": "311"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVoicesSection.jsx",
+          "lines": "118"
+        },
+        {
+          "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx",
+          "lines": "455"
+        }
+      ],
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "native confirm перехвачен при удалении тестовой задачи; паттерн встречается в 6+ местах (область шире, чем заявлено изначально)"
+      ]
+    },
+    {
+      "id": "FE-0059",
+      "title": "Обрыв сети >15 с во время ротации refresh-токена принудительно разлогинивает",
+      "category": "Auth/NetworkReliability",
+      "severity": "High",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/backend/api/v1/auth.py",
+      "lines": "135,1648,1656-1687",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+          "lines": "171-174,256-258"
+        }
+      ],
+      "verification": [
+        "live-production",
+        "static"
+      ],
+      "evidence": [
+        "live: офлайн 5+ c на /chat при сессии ~50 мин -> post-online auth/me 401 + auth/refresh 401 -> logout -> /login; localStorage user удалён",
+        "консоль: ERR_INTERNET_DISCONNECTED xN, WS failed xN",
+        "AUTH_SECURITY_STACK.md:18-19 — задокументированный компромисс («recovered only within the configured grace window»)"
+      ],
+      "impact": "Пользователи нестабильных сетей (Wi-Fi-роуминг, мобильный интернет, VPN) теряют сессию и несохранённый ввод",
+      "recommendation": "Решение владельца: рассмотреть grace 60-120 c для web или мягкое восстановление; замерить refresh_reuse_detected/refresh_expired_or_already_used в метриках",
+      "regressionRisk": "high (политика auth — согласовать отдельно)",
+      "related": [
+        "FE-0015",
+        "FE-0016"
+      ]
+    },
+    {
+      "id": "FE-0060",
+      "title": "Чат: индикатор потери связи — исходное утверждение «не появляется» вероятно ошибочно",
+      "category": "UX/ConnectionState",
+      "severity": "Low",
+      "status": "Suspected",
+      "statusNote": "индикатор СУЩЕСТВУЕТ в коде (ChatThreadHeader.jsx:37-61 «Нет сети»); исходная проба искала «нет связи» и не могла его увидеть; требуется повторная проба с корректным шаблоном",
+      "page": "/chat",
+      "file": "WEB-itinvent/frontend/src/components/chat/ChatThreadHeader.jsx",
+      "lines": "37-61",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "resolveChatConnectionLabel: offline -> «Нет сети» (:40); слушатели online/offline (:46-61)",
+        "исходная offline-проба: banner:null — проба с нерелевантным regex"
+      ],
+      "related": [
+        "FE-0059"
+      ]
+    },
+    {
+      "id": "FE-0061",
+      "title": "Страница входа без landmark <main> (axe landmark-one-main)",
+      "category": "Accessibility",
+      "severity": "Low",
+      "status": "Confirmed",
+      "page": "/login",
+      "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "lines": "n/a (корень рендера Login — div-сеть без <main>)",
+      "verification": [
+        "tooling"
+      ],
+      "evidence": [
+        "Lighthouse a11y 0.9: landmark-one-main; SharedFile.jsx:732 имеет component=main — login (Tailwind) нет"
+      ]
+    },
+    {
+      "id": "FE-0062",
+      "title": "Viewport-мета запрещает масштабирование (maximum-scale=1.0, user-scalable=no) — WCAG 1.4.4",
+      "category": "Accessibility",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/index.html",
+      "lines": "7",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/indexHtml.test.js",
+          "lines": "10-11"
+        }
+      ],
+      "verification": [
+        "tooling"
+      ],
+      "evidence": [
+        "Lighthouse meta-viewport failure",
+        "закреплено тестом indexHtml.test.js:10-11 — осознанное решение; предложить пересмотр (напр., 16px+ inputs против iOS-зума вместо запрета)"
+      ]
+    },
+    {
+      "id": "FE-0063",
+      "title": "/robots.txt отдаёт SPA index.html (IIS fallback)",
+      "category": "Config/SEO",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/public/web.config",
+      "lines": "150-161",
+      "verification": [
+        "live-production"
+      ],
+      "evidence": [
+        "live GET /robots.txt -> 200 text/html; Lighthouse: robots-txt invalid"
+      ]
+    },
+    {
+      "id": "FE-0064",
+      "title": "Self-XSS через вставку: contentEditable редактор описания задачи (моб.) без перехвата paste",
+      "category": "Security/XSS",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "statusNote": "статическое подтверждение; исполнение в рантайме не проверялось (по политике — только тестовое окружение)",
+      "file": "WEB-itinvent/frontend/src/components/hub/tasks/MobileCreateDescriptionEditor.jsx",
+      "lines": "27-33,81-91",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/components/mail/MailRichTextEditor.jsx",
+          "lines": "161-192 (контраст: paste санируется)"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "единственный contentEditable в кодовой базе без onPaste (81-91); начальное значение санируется (:30 markdownToEditorHtml), чтение безопасно (:37 editorHtmlToMarkdown), вставка из буфера — сырой HTML в DOM origin до конвертации",
+        "почтовый редактор paste перехватывает и санирует (sanitizeComposePasteHtml -> DOMPurify)"
+      ],
+      "impact": "Вектор — social engineering («скопируйте этот текст в описание задачи»): вставленный onerror исполняется в момент вставки; данные при сохранении нейтрализуются",
+      "recommendation": "Обработчик paste по образцу MailRichTextEditor либо вставка только text/plain",
+      "regressionRisk": "low"
+    },
+    {
+      "id": "FE-0065",
+      "title": "CSP только Report-Only; enforce сломает drawio (нет frame-src)",
+      "category": "Security/CSP",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/public/web.config",
+      "lines": "186",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "Content-Security-Policy-Report-Only; drawio iframe наследует default-src 'self'"
+      ],
+      "source": "agent E (evidence/agent-E-security-report.md)"
+    },
+    {
+      "id": "FE-0066",
+      "title": "Почтовые вложения: нет клиентских лимитов размера/типа/количества (IIS 64 МБ режет с неявной ошибкой)",
+      "category": "Files/Reliability",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+      "lines": "993-1008",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/public/web.config",
+          "lines": "12-16"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "файлы добавляются без проверок; web.config maxAllowedContentLength=67108864; в чате лимиты есть (chatHelpers.js:10-11, FeedComposerDialog.jsx:345, ImportDialog.jsx:34)"
+      ],
+      "needsBackendCheck": true,
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0067",
+      "title": "VoiceMeetingSummary: ReactMarkdown без rehype-sanitize",
+      "category": "Security/Markdown",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingSummary.jsx",
+      "lines": "301",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "MarkdownRenderer.jsx:12 использует [rehypeSanitize] — здесь нет; прямого XSS нет (react-markdown v9 без rehype-raw), защита держится на дефолтах библиотеки"
+      ],
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0068",
+      "title": "target=_blank из HTML-подписи без гарантированного rel=noopener",
+      "category": "Security/TargetWindows",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/mail/mailHtmlContent.js",
+      "lines": "23-24,80-92",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx",
+          "lines": "96,186"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "applySafeBlankLinkRel есть только в buildRenderedMailHtml; sanitizeMailHtmlFragment его не добавляет; современные браузеры неявно изолируют opener"
+      ],
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0069",
+      "title": "Клиентские права — UX-слой; обязательна серверная сверка (alwaysGrantedPermissions, rolePermissionFallback, admin-bypass)",
+      "category": "Authorization",
+      "severity": "Info",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+      "lines": "17-34,132-141,698-707",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/App.jsx",
+          "lines": "108-149,260-273"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "hasPermission: role==='admin' -> true; alwaysGrantedPermissions даёт всем ролям mail.access/my_files.write/tasks.create и др.; при отсутствии permissions от сервера — rolePermissionFallback",
+        "требует серверной проверки всех routePermissions/adminOnly эндпоинтов (вкл. персональные данные: tickets.personal_data.read, address_book.*)"
+      ],
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0070",
+      "title": "Нет глобального сбора ошибок (window.onerror/unhandledrejection) — только chunk-ошибки",
+      "category": "Reliability/Observability",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/main.jsx",
+      "lines": "44-54",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "unhandledrejection обрабатывает только 'Failed to fetch dynamically imported module'"
+      ],
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0071",
+      "title": "Сырые axios-сообщения могут попасть в UI (fallback)",
+      "category": "ErrorHandling",
+      "severity": "Low",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/components/mail/mailErrorModel.js",
+      "lines": "16-24,72-74",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "«Request failed with status code 500»/«Network Error» в fallback; не-HTML не-JSON текст ответа показывается целиком"
+      ],
+      "needsBackendCheck": true,
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0072",
+      "title": "403 приравнен к «сессия отклонена» -> лишние logout",
+      "category": "Auth/ErrorHandling",
+      "severity": "Low",
+      "status": "Suspected",
+      "file": "WEB-itinvent/frontend/src/api/http.js",
+      "lines": "186-189",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+          "lines": "171-174"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "isDefinitiveAuthRejection: 401 ИЛИ 403; если сервер отдаёт 403-из-за-прав на auth-цепочке — незапланированный logout"
+      ],
+      "needsBackendCheck": true,
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0073",
+      "title": "quill 2.0.2 pin (история XSS); обвязка безопасна; npm audit не проводился",
+      "category": "Dependencies",
+      "severity": "Info",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/package.json",
+      "lines": "42",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "все входы/выходы quill обёрнуты DOMPurify-санитайзерами (MailRichTextEditor.jsx:161-192 и др.)"
+      ],
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0074",
+      "title": "MyFiles: window.open same-origin без noopener (единственное исключение из ~20 вызовов)",
+      "category": "TargetWindows",
+      "severity": "Info",
+      "status": "Confirmed",
+      "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+      "lines": "401",
+      "verification": [
+        "static"
+      ],
+      "source": "agent E",
+      "evidence": [
+        "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-E-security-report.md (позиции перепроверены: файл/строки указаны выше)"
+      ]
+    },
+    {
+      "id": "FE-0075",
+      "title": "drawio postMessage: при невалидном конфиге ответ на '*' (fail-open edge)",
+      "category": "postMessage",
+      "severity": "Info",
+      "status": "Suspected",
+      "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx",
+      "lines": "122-135",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/frontend/src/lib/drawio.js",
+          "lines": "72-79"
+        }
+      ],
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "event.source-чек остаётся; при дефолтном embed.diagrams.net origin валиден"
+      ],
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0076",
+      "title": "AI-письмо: plain-text body с is_html=true",
+      "category": "HtmlInjection",
+      "severity": "Low",
+      "status": "Suspected",
+      "file": "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx",
+      "lines": "119-129",
+      "verification": [
+        "static"
+      ],
+      "evidence": [
+        "тело из TextField (plain) отправляется с is_html:true — если сервер не экранирует, пользовательские < станут разметкой у получателя"
+      ],
+      "needsBackendCheck": true,
+      "source": "agent E"
+    },
+    {
+      "id": "FE-0077",
+      "title": "Почта: сохранение черновиков с вложениями (POST /drafts/upsert-multipart) местами 7-26 c (http.slow в логах backend)",
+      "category": "Performance/Mail",
+      "severity": "Low",
+      "status": "Confirmed",
+      "statusNote": "факт медленных запросов подтверждён логами; причина и частота требуют backend-анализа",
+      "file": "WEB-itinvent/backend/services/mail_service.py",
+      "lines": "4777-4856 (save_draft -> upsert_draft)",
+      "verification": [
+        "tooling"
+      ],
+      "evidence": [
+        "pm2-лог itinvent-backend (http.slow): /drafts/upsert-multipart 7213ms, 7629ms, 7574ms, 26032ms, 22487ms за 19-20.11; 1827ms 22.11"
+      ],
+      "impact": "Пользователь ждёт сохранения черновика десятки секунд",
+      "needsBackendCheck": true,
+      "related": [
+        "FE-0056"
+      ]
+    }
   ]
 }

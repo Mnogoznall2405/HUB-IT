@@ -10,7 +10,7 @@ ST (state/cache/async), ERR (ошибки/надёжность).
 | `/login` | Login | FAIL | PASS | PASS | PASS | FAIL | FE-0001/0002/0003; сценарии входа/ошибок проверены |
 | `/` | RootRoute | PASS | PASS | — | PASS | PASS | redirect по правам OK |
 | `/shared-files/:token` | SharedFile | PASS | PASS | PASS | PASS | PASS | невалидный токен → корректная ошибка; FE-0041 |
-| `/shared-folders/:token` | SharedFolder | PASS | FAIL | PASS | PASS | FAIL | FE-0004 (анонимно → /login), FE-0034 |
+| `/shared-folders/:token` | SharedFolder | PASS | IN_PROGRESS | PASS | PASS | PASS | FE-0004 понижен до Suspected после независимой проверки (чистый профиль — корректная ошибка; см. AUDIT_REVIEW.md), FE-0034 |
 | `/about` | About | TODO | TODO | TODO | TODO | TODO | онбординг не достигнут (пользователь прошёл) |
 | `/dashboard` | Dashboard | PASS | IN_PROGRESS | PASS | PASS | PASS | мутационные кнопки не проверялись |
 | `/feed` | Feed | PASS | TODO | IN_PROGRESS | PASS | FAIL | FE-0007 (410 вложения ×8) |
