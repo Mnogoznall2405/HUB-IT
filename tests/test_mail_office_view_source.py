@@ -69,13 +69,14 @@ def _client(session_id: str = "") -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def _onlyoffice_env(monkeypatch):
+def _onlyoffice_env(monkeypatch, tmp_path):
     monkeypatch.setenv("ONLYOFFICE_ENABLED", "1")
     monkeypatch.setenv("ONLYOFFICE_JWT_SECRET", SECRET)
     monkeypatch.setenv("ONLYOFFICE_INTERNAL_URL", "http://ds.internal:8080")
     monkeypatch.setenv("ONLYOFFICE_APP_BASE_URL", "https://hub.example")
-    source_store_module.office_view_source_store._records.clear()
-    source_store_module.office_view_source_store._total_bytes = 0
+    monkeypatch.setattr(
+        source_store_module.office_view_source_store, "_root", tmp_path / "mvsrc"
+    )
 
 
 def _office_view(client: TestClient, **params):
@@ -183,3 +184,95 @@ def test_office_source_rejects_token_for_another_attachment(monkeypatch):
         settings, user_id=100, message_id="msg-2", attachment_ref="att-9", mailbox_id=""
     )
     assert client.get(f"/mail/office-source?t={other}").status_code == 410
+
+
+def test_source_survives_second_backend_process_and_restart(monkeypatch, tmp_path):
+    """office-view on process A parks bytes on shared disk; a *separate* store
+    instance (process B, or A after restart) serves them — nothing in memory."""
+    monkeypatch.setattr(
+        mail_api_module.mail_service,
+        "download_attachment",
+        lambda **kwargs: ("memo.docx", DOCX_MIME, b"shared-bytes"),
+    )
+    shared_root = source_store_module.office_view_source_store._root
+    client_a = _client()
+    view = _office_view(client_a)
+    assert view.status_code == 200, view.text
+    token = _source_token(view.json())
+
+    # Simulate backend B / post-restart A: a fresh store object on the same dir.
+    other_process_store = source_store_module.OfficeViewSourceStore(root=shared_root)
+    monkeypatch.setattr(mail_api_module, "office_view_source_store", other_process_store)
+    client_b = _client()
+    response = client_b.get(f"/mail/office-source?t={token}")
+    assert response.status_code == 200
+    assert response.content == b"shared-bytes"
+
+
+def test_parallel_opens_same_and_different_attachments(monkeypatch):
+    payloads = {("msg-1", "att-1"): b"one", ("msg-1", "att-2"): b"two"}
+    monkeypatch.setattr(
+        mail_api_module.mail_service,
+        "download_attachment",
+        lambda **kwargs: ("memo.docx", DOCX_MIME, payloads[(kwargs["message_id"], kwargs["attachment_ref"])]),
+    )
+    client = _client()
+
+    def open_view(mid, ref):
+        resp = client.get(f"/mail/messages/{mid}/attachments/{ref}/office-view",
+                          params={"name": "memo.docx", "content_type": DOCX_MIME})
+        assert resp.status_code == 200, resp.text
+        return _source_token(resp.json())
+
+    t1a, t1b = open_view("msg-1", "att-1"), open_view("msg-1", "att-1")
+    t2 = open_view("msg-1", "att-2")
+    for token, expected in ((t1a, b"one"), (t1b, b"one"), (t2, b"two")):
+        resp = client.get(f"/mail/office-source?t={token}")
+        assert resp.status_code == 200
+        assert resp.content == expected
+
+
+def test_expired_entry_is_gone_and_files_removed(monkeypatch):
+    monkeypatch.setattr(
+        mail_api_module.mail_service,
+        "download_attachment",
+        lambda **kwargs: ("memo.docx", DOCX_MIME, b"docx-bytes"),
+    )
+    client = _client()
+    token = _source_token(_office_view(client).json())
+    key = mail_api_module._office_source_key(token)
+    root = source_store_module.office_view_source_store._root
+    meta_path = root / f"{key}.json"
+    assert meta_path.is_file() and (root / f"{key}.bin").is_file()
+
+    import json as _json
+    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["expires_at"] = time.time() - 1
+    meta_path.write_text(_json.dumps(meta), encoding="utf-8")
+
+    assert client.get(f"/mail/office-source?t={token}").status_code == 410
+    assert not meta_path.exists() and not (root / f"{key}.bin").exists()
+
+
+def test_oversized_attachment_refused_and_falls_back(monkeypatch):
+    monkeypatch.setenv("MAIL_OFFICE_VIEW_SOURCE_ENTRY_BYTES", "4")
+    monkeypatch.setattr(
+        mail_api_module.mail_service,
+        "download_attachment",
+        lambda **kwargs: ("memo.docx", DOCX_MIME, b"docx-bytes"),
+    )
+    client = _client()
+    # Entry exceeds the parked-source cap → 413 → frontend PDF/SheetJS fallback.
+    assert _office_view(client).status_code == 413
+
+
+def test_store_evicts_oldest_when_total_cap_exceeded(monkeypatch):
+    store = source_store_module.office_view_source_store
+    monkeypatch.setenv("MAIL_OFFICE_VIEW_SOURCE_MAX_BYTES", "10")
+    assert store.put("k1", filename="a", content_type="x", content=b"12345", ttl_sec=60)
+    assert store.put("k2", filename="b", content_type="x", content=b"12345", ttl_sec=600)
+    # Third entry can't fit alongside both → evicts the soonest-expiring (k1).
+    assert store.put("k3", filename="c", content_type="x", content=b"12345", ttl_sec=600)
+    assert store.get("k1") is None
+    assert store.get("k2") is not None
+    assert store.get("k3") is not None
