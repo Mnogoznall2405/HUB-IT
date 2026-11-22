@@ -24,13 +24,13 @@ viewer-режимов — см. раздел «Что осталось».
 
 ### 2.2. Компактный просмотр (compact preview) без редактирующей сессии
 - `oo.build_viewer_config()` — `type:"embedded"`, `editorConfig.mode:"view"`, `permissions{edit,comment,review,fillForms:false}`, `coEditing{mode:"strict",change:false}`, `autosave:false`, без `callbackUrl` — сохранять нечего, сессия редактирования не создаётся (embedded = Common Viewer).
-- `document.key` вида `view-<key>`: просмотрщики не попадают в сессию редактирования и не засоряют presence.
-- Токен на `document.url` — подписанный JWT с TTL 600 с; DS забирает файл server-to-server один раз.
+- `document.key` вида `view-{file_id}-{blob_id}` (мои файлы) — привязан к blob содержимого: после «открыть → редактировать → сохранить → просмотр» ключ меняется и DS не отдаёт устаревший кэш; ключ редактирующей сессии не затрагивается. Для почты — `view-mail-<sha256(uid|mbx|mid|ref)>`: коллизий между пользователями/ящиками нет, повторное открытие того же вложения — кэш-хит.
+- Токен на `document.url` — подписанный JWT с TTL 600 с; DS забирает файл server-to-server.
 - Эндпоинты:
   - `GET /api/v1/my-files/{id}/office/view` — тот же ACL, что и `/office/config` (`PERM_MY_FILES_READ`); права на редактирование клиенту не выдаются.
-  - `GET /api/v1/mail/messages/{mid}/attachments/{ref}/office-view` — конфиг для вложения (метаданные `name`/`content_type` от клиента только для fileType/documentType).
-  - `GET /api/v1/mail/office-source?t=` — отдаёт байты вложения по `mvsrc`-токену `{uid,mid,ref,mbx}` (DS ходит без сессии пользователя).
-- Фронт: `OfficeViewFrame.jsx` — ленивая загрузка `api.js` (переиспользован `loadDocsApi`), `DocEditor` в view-режиме, `destroyEditor()` на размонтировании.
+  - `GET /api/v1/mail/messages/{mid}/attachments/{ref}/office-view` — конфиг для вложения; **под сессией пользователя** скачивает вложение и паркует байты в `OfficeViewSourceStore` (TTL = TTL токена, LRU с лимитами `MAIL_OFFICE_VIEW_SOURCE_*`) — так `primary_session`-креды живут только в запросе пользователя.
+  - `GET /api/v1/mail/office-source?t=` — анонимный для DS: проверяет подпись/`mvsrc`-тип/срок токена и отдаёт припаркованные байты по `sha256(t)`; без записи — 410, поддельный токен — 403, выключенная интеграция — 503 (`require_enabled`, пустой секрет не проходит).
+- Фронт: `OfficeViewFrame.jsx` — ленивая загрузка `api.js` (переиспользован `loadDocsApi`), `DocEditor` в view-режиме, `destroyEditor()` на размонтировании; таймаут готовности 60 с без `onDocumentReady`/`onError` → `onError` → откат на PDF/excel; ошибка SDK → тот же откат (однократно).
 - Подключено: «Мои файлы» (`useMyFilesPreviewController` → `kind:'office_view'`), почта (`buildOfficeAttachmentPreviewState` → `office_view`). При недоступности DS — автоматический откат на прежний PDF/excel путь.
 - XLSX: прямой табличный просмотр в OO (листы, прокрутка, формулы, ширины колонок) вместо PDF по каждому листу; клиентский SheetJS-грид остаётся запасным путём.
 
@@ -50,11 +50,11 @@ ONLYOFFICE ConvertService → PDF: малые файлы ≈ 1 с холодно
 
 ## 4. Тесты
 
-- `tests/test_onlyoffice_viewer.py` — 9 тестов: read-only конфиг, тип документа, `mvsrc`-токены, провайдер-резолюция, маршрутизация `_convert_source_to_pdf`, async-poll с файлом, маппинг ошибок DS, отказ от не-PDF.
+- `tests/test_onlyoffice_viewer.py` — 13: read-only конфиг, тип документа, `mvsrc`-токены, провайдер-резолюция, маршрутизация `_convert_source_to_pdf`, async-poll с файлом, маппинг ошибок DS, отказ от не-PDF/oversize, failover auto→LO, флаг `ONLYOFFICE_ENABLED` в scan_server.
+- `tests/test_mail_office_view_source.py` — 7: roundtrip office-view→office-source с пробросом session-context (primary_session), `ENABLED=0` → 503, пустой секрет → 503, поддельный/мусорный токен → 403 без обращения к почте, валидная подпись без припаркованной записи → 410, чужой токен → 410.
 - `test_mail_attachment_preview_service.py` — 15, `test_e2e_transfer_act_pdf.py` — 12 (реальный LO + отказные режимы под `OFFICE_PREVIEW_PROVIDER=libreoffice`).
-- `test_my_files_office_e2e.py` — 96 (совместное редактирование, версии, коллбэки — регрессий нет).
-- Чат/задачи/my_files preview-сьюты — 79 зелёные.
-- Фронт: mail preview-тесты 29 зелёные.
+- `test_my_files_office_e2e.py` — 97: совместное редактирование, версии, коллбэки + свежесть view-ключа через edit→save (регрессий нет).
+- Фронт: `OfficeViewFrame.test.jsx` — 3 (таймаут готовности, подавление после ready, одиночный onError), `useMailMessageFileActions.test.js` — 16 (включая rebuild после падения office_view), `DocumentPreviewDialog.test.jsx` — 13.
 
 ## 5. Откат
 
@@ -69,3 +69,18 @@ ONLYOFFICE ConvertService → PDF: малые файлы ≈ 1 с холодно
    отображение, RAM браузера/DS, конкурентные просмотры) и скриншоты.
 2. `office-view`-эндпоинты для чата/задач/документооборота/1С.
 3. Финальное удаление LO-кода после приёмки в проде (сейчас оставлен как откат).
+
+## 7. Второй раунд ревью (PR #8) — исправления
+
+Коммиты: `4729c676` (исправления + тесты), `3b2ce1ee` (merge актуального `main`).
+
+| Замечание | Разбор | Результат |
+|---|---|---|
+| P0: `_office_settings_or_503` звал `load_settings()` — мёртвый `except`, пустой JWT-секрет = подпись известным ключом на анонимном роуте | Верно: `load_settings` не кидает | `oo.require_enabled()` в обеих точках; `ENABLED=0` и пустой секрет → 503 до декодирования токена |
+| P1: view-ключ от `office_session_key` переживает сохранения → DS отдаёт устаревший кэш | Верно: ключ сессии пинned | Ключ `view-{file_id}-{blob_id}` — по содержимому; edit-ключ не тронут; e2e-тест edit→save→re-view |
+| P1: `office-source` дёргал `download_attachment` из анонимного запроса — `primary_session` без request-context не достаёт креды | Верно: кэш спасал лишь частично (большие файлы пропускают кэш) | Префетч под сессией пользователя в `office-view` → TTL-стор по `sha256(token)`; source отдаёт байты без юзер-кредов; интеграционный тест с пробросом `sess-1` |
+| P2: scan `_onlyoffice_configured` считал `"0"` истиной | Верно | Общая `conversion_configured()`; тест `ENABLED=0` |
+| P2: зависание viewer без событий SDK | Верно: спиннер навсегда | Таймаут 60 с → `onError` → PDF/excel-откат; 3 фронт-теста |
+| PR показывал 578+ файлов | Метаданные `gh pr view` отставали: считались от merge-base до того, как WIP-коммиты попали в `origin/main`; compare API был точен всегда | После мержа main в ветку и compare, и метаданные согласны: 29 файлов, все миграционные |
+
+Фактические проверки после мержа: backend 47+97 зелёные, фронт (viewer/mail/documentPreview) зелёные, `git diff --check` чисто. Браузерные замеры не выполнялись — unit/e2e-тесты не подменяют реальный браузер.
