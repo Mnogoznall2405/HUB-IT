@@ -24,7 +24,7 @@
 
 ### P0-3. Два run одного диалога исполняются параллельно [код]
 Claim-запрос (`service.py:4647-4657`) не исключает conversation с уже `running` run. Два быстрых сообщения → два потока → оба читают контекст до ответа друг друга: ответы могут прийти в обратном порядке; rolling summary и memory-ивенты пишутся дважды (память защищена revision-CAS `memory.py:106-115`, summary — нет).
-**Решение**: `NOT EXISTS (running run того же conversation_id)` в claim или per-conversation очередь; e2e-тест «два сообщения подряд → порядок ответов сохранён».
+**Решение**: атомарная сериализация run по `conversation_id` — проверка `NOT EXISTS` без конкурентной блокировки недостаточна (две параллельные claim-транзакции видят одинаковый снапшот). Нужен один из механизмов (детали в `AI_IMPLEMENTATION_ROADMAP.md` A4): частичный уникальный индекс `…(conversation_id) WHERE status='running'`, `pg_advisory_xact_lock` в claim-транзакции или conditional-UPDATE флага в `chat_conversations`; e2e-тест «два сообщения подряд → порядок ответов сохранён» + конкурентный тест двух claim.
 
 ## P1 — существенные
 

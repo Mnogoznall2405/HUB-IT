@@ -19,7 +19,7 @@
 
 **Область действия результатов — важно.** Скрипт `experiments/kb_search_quality.py` прогоняет реальный `AiKbRetrievalService.retrieve()` на одноразовой SQLite с 13 синтетическими статьями. На SQLite активен **Python-fallback-скоринг** (`retrieval.py:327-371`: подсчёт вхождений подстрок токенов ≥3 символов, без порога релевантности). **Production PostgreSQL FTS-путь (`retrieval_interface.py`, `to_tsvector`/`websearch_to_tsquery`) в этом эксперименте не измерялся** — это другой алгоритм с другим профилем ошибок. Выводы о прод-пути в отчётах основаны на статическом анализе кода, а не на измерении; переносить приведённые цифры на production recall нельзя ни в большую, ни в меньшую сторону.
 
-Набор: 19 запросов — 17 «позитивных» (ожидаемый документ есть в корпусе) по классам paraphrase/colloquial/exact/wordform/typo/attachment/filename/mixed_lang/exact_id/department/ё-варианты и 4 «негативных» (релевантного документа в корпусе нет).
+Набор: 21 запрос — 17 «позитивных» (ожидаемый документ есть в корпусе) по классам paraphrase/colloquial/exact/wordform/typo/attachment/filename/mixed_lang/exact_id/department/ё-варианты и 4 «негативных» (релевантного документа в корпусе нет).
 
 | Метрика | Результат |
 |---|---|
