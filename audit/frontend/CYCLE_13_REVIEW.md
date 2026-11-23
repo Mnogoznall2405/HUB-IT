@@ -108,12 +108,14 @@ Token family отозвана; все вкладки с общей cookie jar р
 
 ## 4. Перепроверка 50 Suspected
 
-Все 50 записей распределены по 6 направлениям и проверены независимыми агентами; каждый вердикт содержит code refs и confidence. Итог:
+Все 50 записей распределены по 6 направлениям и проверены независимыми агентами; каждый вердикт содержит code refs и confidence. Итог по 50 Suspected:
 
-- **Подтверждено (confirmed)** — 27 (включая live/High);
+- **Подтверждено (confirmed)** — 18;
 - **Опровергнуто (refuted)** — 23;
 - **Unverifiable** — 9;
-- **Fixed-externally** — 1.
+- **Fixed-externally** — 0.
+
+С учётом 9 live/High-записей и FE-0325 общий итог цикла 13: 27 confirmed, 23 refuted, 9 unverifiable, 1 fixed-externally.
 
 Ключевые опровержения:
 

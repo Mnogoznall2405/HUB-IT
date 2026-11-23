@@ -251,8 +251,8 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
   backup-коды и trusted-device sheet не появляются); FE-0083 подтверждён API-пробой
   [401,200,200] -> /auth/me 401; FE-0078 прошёл E2E chat-realtime 3/3 и переведён в Fixed-externally.
 - FE-0230: попытка live-симуляции позднего desktop.hostReady не дала React-ошибки; статус Confirmed (static).
-- 50 Suspected перепроверены 6 независимыми агентами: подтверждено 24, опровергнуто 23,
-  unverifiable 9, fixed-externally 1 (без учёта live-ручных High).
+- 50 Suspected перепроверены 6 независимыми агентами: подтверждено 18, опровергнуто 23,
+  unverifiable 9; с live/High и FE-0325 итого 27 confirmed / 23 refuted / 9 unverifiable / 1 fixed.
 - Новый дефект FE-0325 (Medium, Confirmed): offline cold reload PWA висит на «Загружаем раздел…»
   >65 c; AuthContext бесконечно ретраит refresh при status=0, SW отдаёт shell 200.
 - Глубокие тесты: 12 раундов x 8 маршрутов с принудительным GC — heap плато 49-51 MB,
