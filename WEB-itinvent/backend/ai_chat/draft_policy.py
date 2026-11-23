@@ -24,6 +24,20 @@ _EMPLOYEE_EMAIL = re.compile(
     r"[^.!?\n]{0,80}(?:электро[н]+\w*\s+адрес|адрес\s+электро[н]+\w*\s+почт\w*)",
     re.IGNORECASE,
 )
+# A communication draft may be created only when the USER asked for a
+# send/reply/message action. Grounding (a resolved peer/mail/conversation from
+# tool results) is a separate check and never substitutes intent.
+_SEND_INTENT = re.compile(
+    r"\b(?:напиш\w*|отправ\w*|состав\w*|подготов\w*\s+письм\w*|ответь\w*|ответить|"
+    r"перешл\w*|пересл\w*|передай\w*|скаж\w*|сообщ\w*|скинь\w*|сбрось\w*)"
+    r"|\b(?:send|write|reply|forward|draft)\b",
+    re.IGNORECASE,
+)
+_MAIL_CHANNEL = re.compile(
+    r"письм\w*|почт\w*|e-?mail|\bmail\b|ответ\w*|\breply\b|forward|перешл\w*|пересл\w*",
+    re.IGNORECASE,
+)
+_CHAT_CHANNEL = re.compile(r"\bчат\w*|сообщени\w*|мессендж\w*|\bhub\b|\bchat\b|\bmessage\b", re.IGNORECASE)
 
 
 def draft_retry(text: str) -> bool:
@@ -69,6 +83,7 @@ class AiDraftPolicy:
     observed_mail_senders: dict[str, str] = field(default_factory=dict)
     observed_peer_user_ids: set[int] = field(default_factory=set)
     observed_conversation_ids: set[str] = field(default_factory=set)
+    observed_person_names: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         for text in [self.trigger_text, *self.user_messages]:
@@ -113,7 +128,7 @@ class AiDraftPolicy:
         selected_channel = explicit_channel(self.trigger_text)
         if self.previous_action and draft_followup(self.trigger_text):
             previous_channel = (
-                MAIL_DRAFT if self.previous_action["action_type"] == "office.mail.send" else CHAT_DRAFT
+                MAIL_DRAFT if self.previous_action["action_type"] in ("office.mail.send", "office.mail.reply") else CHAT_DRAFT
             )
             selected_channel = selected_channel or previous_channel
             # A change of channel replaces the same pending intent too.
@@ -125,60 +140,58 @@ class AiDraftPolicy:
         if selected_channel == CHAT_DRAFT and tool_id != CHAT_DRAFT:
             self.rejection = "Сохраните выбранный канал: обновите черновик сообщения в чате."
             raise AiToolValidationError(self.rejection)
-        if tool_id == MAIL_DRAFT:
-            from backend.ai_chat.tools.office import coerce_mail_recipients
-
-            recipients = [address for key in ("to", "cc", "bcc") for address in coerce_mail_recipients(args.get(key))]
-            if any(address.lower() not in self.verified_addresses for address in recipients):
-                self.rejection = (
-                    "Адрес получателя не подтверждён. Выполните office.mail.contacts.resolve "
-                    "и используйте адрес из результата либо попросите пользователя указать его."
-                )
+        # A replace_action_id is valid only for the pending action the server
+        # actually surfaced for this request — an arbitrary id cannot launder
+        # a destination change past the checks below.
+        replace_id = _norm(args.get("replace_action_id"))
+        stored = None
+        if replace_id:
+            if self.previous_action and replace_id == _norm(self.previous_action.get("id")):
+                stored = self.previous_action.get("payload") or {}
+            else:
+                self.rejection = "Указанный черновик не является активным в этом запросе. Создайте действие заново или уточните, какой черновик нужен."
                 raise AiToolValidationError(self.rejection)
+        destination_unchanged = stored is not None and self._same_destination(tool_id, args, stored)
+        if not destination_unchanged:
+            # (1) Intent: the user must have asked for a send/reply/message action.
+            self._enforce_intent(tool_id, args, is_replace=stored is not None)
+        if tool_id == MAIL_DRAFT:
+            if not destination_unchanged:
+                from backend.ai_chat.tools.office import coerce_mail_recipients
+
+                recipients = [address for key in ("to", "cc", "bcc") for address in coerce_mail_recipients(args.get(key))]
+                if any(address.lower() not in self.verified_addresses for address in recipients):
+                    self.rejection = (
+                        "Адрес получателя не подтверждён. Выполните office.mail.contacts.resolve "
+                        "и используйте адрес из результата либо попросите пользователя указать его."
+                    )
+                    raise AiToolValidationError(self.rejection)
             self.validate_employee_email(str(args.get("body") or ""))
         elif tool_id == MAIL_REPLY_DRAFT:
-            from backend.ai_chat.tools.office import coerce_mail_recipients
+            if not destination_unchanged:
+                from backend.ai_chat.tools.office import coerce_mail_recipients
 
-            anchor = _norm(args.get("reply_to_message_id"))
-            if anchor not in self.observed_mail_message_ids:
-                self.rejection = (
-                    "Черновик ответа отклонён: исходное письмо не было получено инструментом "
-                    "office.mail.get_message/office.mail.search в этом запросе. Сначала найдите и откройте письмо."
-                )
-                raise AiToolValidationError(self.rejection)
-            recipients = [address for key in ("to", "cc", "bcc") for address in coerce_mail_recipients(args.get(key))]
-            allowed = set(self.verified_addresses)
-            original_sender = self.observed_mail_senders.get(anchor)
-            if original_sender:
-                allowed.add(original_sender)
-            if any(address.lower() not in allowed for address in recipients):
-                self.rejection = (
-                    "Адрес получателя в ответе не подтверждён: используйте отправителя исходного письма "
-                    "или адрес, явно указанный пользователем."
-                )
-                raise AiToolValidationError(self.rejection)
+                anchor = _norm(args.get("reply_to_message_id"))
+                if anchor not in self.observed_mail_message_ids:
+                    self.rejection = (
+                        "Черновик ответа отклонён: исходное письмо не было получено инструментом "
+                        "office.mail.get_message/office.mail.search в этом запросе. Сначала найдите и откройте письмо."
+                    )
+                    raise AiToolValidationError(self.rejection)
+                recipients = [address for key in ("to", "cc", "bcc") for address in coerce_mail_recipients(args.get(key))]
+                allowed = set(self.verified_addresses)
+                original_sender = self.observed_mail_senders.get(anchor)
+                if original_sender:
+                    allowed.add(original_sender)
+                if any(address.lower() not in allowed for address in recipients):
+                    self.rejection = (
+                        "Адрес получателя в ответе не подтверждён: используйте отправителя исходного письма "
+                        "или адрес, явно указанный пользователем."
+                    )
+                    raise AiToolValidationError(self.rejection)
             self.validate_employee_email(str(args.get("body") or ""))
-        elif tool_id == CHAT_DRAFT and not args.get("replace_action_id"):
-            # The destination must be grounded in this run's server tool results or in
-            # the user's own text — a document/mail/KB snippet cannot pick the target.
-            trusted_text = " ".join([self.trigger_text, *self.user_messages]).lower()
-            peer_id = args.get("peer_user_id")
-            peer_name = _norm(args.get("peer_name"))
-            conversation_id = _norm(args.get("conversation_id"))
-            conversation_title = _norm(args.get("conversation_title"))
-            grounded = False
-            if peer_id and int(peer_id) in self.observed_peer_user_ids:
-                grounded = True
-            if conversation_id and conversation_id in self.observed_conversation_ids:
-                grounded = True
-            if not grounded:
-                # Name tokens are matched by a 4-char stem so Cyrillic declension
-                # ("Мария" -> "Марии", "Иван" -> "Ивану") still grounds the target.
-                for name in (peer_name, conversation_title):
-                    if name and any(token[:4] in trusted_text for token in _name_tokens(name)):
-                        grounded = True
-                        break
-            if not grounded:
+        elif tool_id == CHAT_DRAFT:
+            if not destination_unchanged and not self._chat_target_grounded(args):
                 self.rejection = (
                     "Черновик сообщения отклонён: получатель не подтверждён запросом пользователя. "
                     "Сначала найдите сотрудника (chat.users.search) или чат (chat.conversations.search) "
@@ -187,6 +200,113 @@ class AiDraftPolicy:
                 raise AiToolValidationError(self.rejection)
         self.rejection = ""
         return tool_id, args
+
+    def _trusted_text(self) -> str:
+        return " ".join([self.trigger_text, *self.user_messages]).lower()
+
+    def _chat_target_grounded(self, args: dict[str, Any]) -> bool:
+        # The destination must be grounded in this run's server tool results or in
+        # the user's own text — a document/mail/KB snippet cannot pick the target.
+        trusted_text = self._trusted_text()
+        peer_id = args.get("peer_user_id")
+        peer_name = _norm(args.get("peer_name"))
+        conversation_id = _norm(args.get("conversation_id"))
+        conversation_title = _norm(args.get("conversation_title"))
+        if peer_id:
+            try:
+                if int(peer_id) in self.observed_peer_user_ids:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        if conversation_id and conversation_id in self.observed_conversation_ids:
+            return True
+        # Name tokens are matched by a 4-char stem so Cyrillic declension
+        # ("Мария" -> "Марии", "Иван" -> "Ивану") still grounds the target.
+        for name in (peer_name, conversation_title):
+            if name and any(token[:4] in trusted_text for token in _name_tokens(name)):
+                return True
+        # A person resolved this run by a server lookup whose name the user
+        # themselves mentioned grounds a peer target ("напиши Антоновой" ->
+        # contacts.resolve -> peer_user_id). The numeric id alone never does.
+        if (peer_id or peer_name) and any(
+            token[:4] in trusted_text for token in self.observed_person_names
+        ):
+            return True
+        return False
+
+    def _same_destination(self, tool_id: str, args: dict[str, Any], stored_payload: dict[str, Any]) -> bool:
+        if tool_id in (MAIL_DRAFT, MAIL_REPLY_DRAFT):
+            from backend.ai_chat.tools.office import coerce_mail_recipients
+
+            def recipients(source: dict[str, Any]) -> list[str]:
+                return sorted(
+                    address.lower()
+                    for key in ("to", "cc", "bcc")
+                    for address in coerce_mail_recipients(source.get(key))
+                )
+            try:
+                if recipients(args) != recipients(stored_payload):
+                    return False
+            except ValueError:
+                return False
+            if tool_id == MAIL_REPLY_DRAFT:
+                return _norm(args.get("reply_to_message_id")) == _norm(stored_payload.get("reply_to_message_id"))
+            return True
+        if tool_id == CHAT_DRAFT:
+            return all(
+                _norm(args.get(key)) == _norm(stored_payload.get(key))
+                for key in ("peer_user_id", "conversation_id", "peer_name", "conversation_title")
+            )
+        return False
+
+    def _enforce_intent(self, tool_id: str, args: dict[str, Any], *, is_replace: bool = False) -> None:
+        """Require an explicit user instruction to send/reply/message.
+
+        A resolved tool result never counts as intent: it is data produced
+        inside this run and can be steered by injected content. Intent comes
+        from the current request, or — for draft-edit phrasing — from the
+        pending action the user already created plus its original request.
+        """
+        text = self.trigger_text
+        if draft_followup(text) and not _SEND_INTENT.search(text):
+            # A pending draft the server surfaced + draft-edit phrasing is itself
+            # user direction: the intent was established when the draft was made.
+            if is_replace:
+                return
+            # Otherwise inherit intent from the last non-retry user request —
+            # the one that created the draft being edited.
+            text = next(
+                (item for item in reversed(self.user_messages) if item != text and not draft_retry(item)),
+                text,
+            )
+        if not _SEND_INTENT.search(text):
+            self.rejection = (
+                "В запросе пользователя нет поручения отправить письмо или сообщение. "
+                "Уточните у пользователя, нужно ли готовить черновик."
+            )
+            raise AiToolValidationError(self.rejection)
+        if tool_id == CHAT_DRAFT:
+            if _CHAT_CHANNEL.search(text):
+                return
+            # A peer/conversation name present in the user's own text is also a
+            # chat-channel signal ("напиши Ивану" without the word "чат").
+            trusted = self._trusted_text()
+            for name in (_norm(args.get("peer_name")), _norm(args.get("conversation_title"))):
+                if name and any(token[:4] in trusted for token in _name_tokens(name)):
+                    return
+            self.rejection = (
+                "Канал не подтверждён: в запросе нет указания отправить сообщение в чат. "
+                "Уточните у пользователя."
+            )
+            raise AiToolValidationError(self.rejection)
+        else:
+            if _MAIL_CHANNEL.search(text) or _EMAIL.search(text):
+                return
+            self.rejection = (
+                "Канал не подтверждён: в запросе нет указания написать или ответить письмом. "
+                "Уточните у пользователя."
+            )
+            raise AiToolValidationError(self.rejection)
 
     def observe(self, result: dict[str, Any]) -> None:
         if not result.get("ok"):
@@ -198,6 +318,13 @@ class AiDraftPolicy:
         if str(tool_id).startswith("ad."):
             self.ad_checked = True
         contacts: list[dict[str, Any]] = []
+        person_fields = ("name", "full_name", "display_name", "username")
+        if tool_id in ("office.mail.contacts.resolve", "directory.people.search",
+                       "chat.users.search", "ad.user.password_status"):
+            for item in data.get("items") or ([data.get("user") or {}] if tool_id == "ad.user.password_status" else []):
+                if isinstance(item, dict):
+                    for field_name in person_fields:
+                        self.observed_person_names.update(_name_tokens(str(item.get(field_name) or "")))
         if tool_id == "office.mail.contacts.resolve":
             contacts = data.get("items") or []
         elif tool_id in ("office.mail.search", "office.mail.get_message"):

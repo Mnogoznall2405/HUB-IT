@@ -48,6 +48,20 @@
   отклонял `mail_reply_draft` как «не тот канал» (легитимный сценарий «ответь на
   письмо»). Исправлено: mail-канал допускает send и reply.
 
+### Цикл 2 — дефекты независимого ревью (нумерация ревьюера)
+
+- **P1-1. Grounding ≠ intent.** `prepare()` пропускал chat/reply-draft, если в
+  ране был успешный search/get — намерение «отправить» не проверялось отдельно.
+  Воспроизведено: «Перескажи документ» + инъекция → `chat.users.search` →
+  попытка `chat.action.message_send_draft` создавала карточку; «Прочитай письмо»
+  → `office.mail.get_message` → `mail_reply_draft` создавался.
+- **P1-2. `replace_action_id` bypass.** Наличие `replace_action_id` полностью
+  отключало destination grounding для `chat.action.message_send_draft` — модель
+  могла «исправить» pending-draft с подменой `peer_user_id`/`conversation_id`.
+- **P1-3. Неизолированный running summary.** `_build_running_summary` попадал в
+  follow-up prompt вне untrusted-обёртки; атакующий `display_name`/текст ошибки
+  инструмента читался моделью как доверенный текст.
+
 ## 3. Реализованная защита
 
 ### 3.1 Сериализация недоверенного контекста
@@ -70,23 +84,49 @@
   приоритет при конфликте.
 - `user_prompt` во всех последующих раундах переиспользуется → метки сохраняются
   без повторного повышения доверия.
+- Цикл 2: `running_summary`, `round_validation_errors`, состояние задачи и
+  payload активного черновика в follow-up/budget/forced промптах обёрнуты
+  `<<UNTRUSTED_*>>` — атакующий `display_name`/текст ошибки инструмента остаётся
+  внутри помеченного блока (проверяется перехватом реальных аргументов
+  LLM-клиента, не поиском строк по исходнику).
 
 ### 3.3 Серверный grounding черновиков (`draft_policy.py`)
 `observe()` теперь записывает серверно-полученные якоря рассылки **этого** ра̣на:
 - `office.mail.search/get_message` → `observed_mail_message_ids` + sender;
-- `chat.users.search` → `observed_peer_user_ids`;
-- `chat.conversations.search` → `observed_conversation_ids`.
+- `chat.users.search` → `observed_peer_user_ids` + person-name токены;
+- `chat.conversations.search` → `observed_conversation_ids`;
+- `office.mail.contacts.resolve` / `directory.people.search` / `ad.*` →
+  `verified_addresses` + person-name токены (`observed_person_names`).
 
-`prepare()`:
+`prepare()` — две независимые проверки (одна не заменяет другую):
+
+1. **Intent** (`_enforce_intent`): в тексте пользователя должно быть поручение
+   отправить/написать/ответить/переслать (`_SEND_INTENT`, без голых
+   существительных — `\bemail\b` убран как источник false-positive).
+   «Перескажи», «прочитай», «покажи последние письма», «Show me the latest
+   email» — отклоняются с просьбой уточнить, карточка не создаётся.
+   Tool-search сам по себе намерением не считается. Follow-up «исправь/
+   повтори» наследует намерение от последнего неретрайного запроса либо —
+   при реальном replace pending-драфта — трактуется как правка (намерение
+   зафиксировано при создании черновика). Проверяется и канал: «в чат»
+   разрешает только chat-draft, «письмо» — mail send/reply.
+2. **Destination grounding**: получатель обязан быть подтверждён сервером —
+   verified-адрес из user-текста/contacts/people-search, sender реально
+   полученного письма (для reply), resolved `peer_user_id`/`conversation_id`,
+   либо имя получателя в тексте пользователя (стем ≥4 симв., склонения).
+
 - `mail_reply_draft`: `reply_to_message_id` обязан быть среди реально полученных
   писем рана; все адресаты ⊆ verified_addresses ∪ {sender исходного письма} —
   инъектированный «перешли на x@evil» отклоняется;
 - `chat.message_send_draft`: `peer_user_id`/`conversation_id` обязаны быть
-  resolved в этом ране через chat-инструменты, либо `peer_name`/
-  `conversation_title` — с >=4-символьным стемом в тексте пользователя
-  (покрывает склонения «Мария→Марии», «Иван→Ивану»);
-- `replace_action_id` (правка существующего черновика) — grounding пропускается:
-  черновик уже создан под политикой.
+  resolved в этом ране, либо `peer_name`/`conversation_title`/resolved-имя
+  человека — стемом в тексте пользователя («напиши Антоновой» + contacts.resolve
+  → peer_user_id допустим; произвольный id без имени — нет);
+- `replace_action_id` проверяется против **реально сохранённого** сервером
+  pending-action: если `peer_user_id`/`conversation_id`/получатели совпадают —
+  правка текста, grounding не нужен; если назначение изменилось — полный
+  intent+grounding к новому получателю. Произвольный ID черновика пропуском не
+  является — сверка идёт по серверному payload, не по тексту модели.
 
 Существующие инварианты сохранены: draft-card требует пользовательского
 подтверждения, права перепроверяются в `registry.execute`, идемпотентность и
@@ -95,27 +135,38 @@
 
 ## 4. Тесты
 
-`tests/test_ai_prompt_injection.py` — **37 тестов, 37 PASS**:
-- сериализатор: nonce-делимитеры, escape-попытки (11 payload), source-метки;
+`tests/test_ai_prompt_injection.py` — **62 теста, 62 PASS**:
+- сериализатор: nonce-делимитеры, escape-попытки (11 payload: поддельные роли,
+  JSON `role=system`, фейковые tool_calls, fake close-tag, override RU/EN),
+  source-метки;
 - prompt-инварианты: нет `HIGHEST PRIORITY`, правило во всех 4 system-промптах,
-  tool-results обёрнуты во всех 3 раундах, недоверенные поля не идут в промпт сырыми;
-- grounding: mail send (3), mail reply (4: якорь, sender, подмена, cc), chat (6:
-  unresolved/resolved peer/conversation/name/из документа/update);
+  tool-results/running-summary/validation-errors/draft-payload обёрнуты во всех
+  раундах — проверяется перехватом аргументов реального LLM-вызова;
+- intent-гейт: «перескажи/прочитай/покажи/latest email» отклоняются и при
+  resolved-цели, и при якоре письма; «напиши/ответь/передай» разрешены;
+- grounding: mail send (3), mail reply (4: якорь, sender, подмена, cc), chat
+  (unresolved/resolved peer/conversation/name/из документа/update/replace);
+- replace-bypass: смена `peer_user_id`/`conversation_id` у pending-draft без
+  пользовательского указания отклоняется; правка текста с тем же получателем —
+  разрешена; чужой `replace_action_id` не пропускает проверку;
+- e2e-путь `_execute_tool_calls` с подставными tool-results: инъекция не создаёт
+  action cards;
 - отсутствие эскалации из doc-экстрактора в verified_addresses;
 - perf-guard сериализации.
 
-Регрессия смежных: `test_e2e_ai_draft_reliability` + routing/permissions/new-tools —
-**122/123 PASS**; 1 фейл `test_claude_transport_keeps_recipient_arguments_through_http_worker`
-— **воспроизводится идентично на базе `2fdb29bc`** (транспорт-симуляция
-обнуляет args → resolve ничего не вернул → адрес не верифицирован): pre-existing,
-вне A3.
+Регрессия смежных (e2e draft reliability + mail draft lifecycle + routing +
+permissions + A4 conversation serialization): **186/187 PASS**; единственный
+фейл `test_claude_transport_keeps_recipient_arguments_through_http_worker`
+**воспроизводится идентично на базе `2fdb29bc`** в отдельном worktree
+(транспорт-симуляция обнуляет args → resolve ничего не возвращает → адрес не
+верифицирован): pre-existing, вне A3.
 
 ## 5. Производительность
 
 | Замер | Результат |
 |---|---|
-| `wrap()` на документе 24KB ×1000 | 34.1 мс → **0.034 мс/блок** |
-| `prepare()` ×10000 | 223.5 мс → **~22 мкс/вызов** |
+| `wrap()` на документе 24KB ×1000 | 17.8 мс → **0.018 мс/блок** |
+| `prepare()` ×10000 (intent+grounding+pending-сверка) | 384.5 мс → **~38 мкс/вызов** |
 | Добавлено в system-промпт | ~120 токенов (`AI_UNTRUSTED_DATA_RULE`) |
 | Делимитеры на untrusted-блок | ~15 токенов × ~6 блоков ≈ 90 токенов |
 | Дополнительных LLM/DB вызовов | **0** |
@@ -124,16 +175,18 @@ LLM-evals на внешней модели не выполнялись (изол
 
 ## 6. Остаточные риски и ограничения
 
-- Grounding `peer_name`/`conversation_title` — стем-эвристика ≥4 символов: при
-  совпадении коротких корней возможен false-positive (остаётся draft-card с
-  подтверждением пользователя — не исполняемое действие).
+- Grounding имён — стем-эвристика ≥4 символов: при совпадении коротких корней
+  возможен false-positive; peer по resolved-имени не привязывает числовой
+  `peer_user_id` к конкретному человеку (смягчается draft-card с явным
+  получателем — подтверждение пользователя обязательно).
+- Replace-path: follow-up «исправь…» + реальный pending-draft допускает смену
+  получателя при grounding нового назначения — инъекция может попытаться
+  подтолкнуть модель к «правке», но новый получатель всё равно обязан быть
+  resolved/из текста пользователя и проходит confirm.
 - Инъекция, заставляющая модель вызвать *чтение* инструментов (поиск/просмотр),
   не блокируется — это read-only в рамках прав пользователя.
 - Атаки на качество ответа (answer contamination) смягчаются меткой+правилом, но
   100% не гарантируются без LLM-фильтра — заявления о «полной неуязвимости» нет.
-- `policy.previous_action` (серверное состояние черновика) идёт в промпт без
-  untrusted-обёртки — серверный JSON, текст тела черновика генерировался моделью;
-  низкий риск, задокументировано.
 - mail_reply_draft подставляет `to` из модели с проверкой на sender/verified;
   sender берётся из данных сервера — доверие на уровне «реально получено
   инструментом в этом ране».
