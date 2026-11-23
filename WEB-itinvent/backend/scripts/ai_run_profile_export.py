@@ -31,6 +31,7 @@ Usage (from WEB-itinvent):
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import statistics
@@ -41,6 +42,70 @@ JEV_RE = re.compile(r"ai_jev_routing(?:\(mode=\w+\))?.*latency_ms=([\d.]+).*run_
 CACHE_RE = re.compile(r"ai_jev_routing_cache\s+(hit|miss)\s+.*run_id=(\S+)")
 PROFILE_RE = re.compile(r"ai_run_profile(_final)?\s+(.*)")
 KV_RE = re.compile(r"(\w+)=([^\s]+)")
+
+
+def _parse_profile_fields(text: str) -> dict[str, str]:
+    """Strict ``key=value`` parser for profile lines.
+
+    Values may be Python-formatted lists containing spaces and commas
+    (``used_tools=['a', 'b']``). The previous ``\\w+=\\S+`` regex truncated
+    such values at the first space and silently dropped every element after
+    the first — this parser walks balanced brackets instead. No ``eval``.
+    """
+    fields: dict[str, str] = {}
+    i, n = 0, len(text)
+    while i < n:
+        m = re.match(r"\s*(\w+)=", text[i:])
+        if not m:
+            break
+        key = m.group(1)
+        i += m.end()
+        if i < n and text[i] == "[":
+            depth, j, quote = 0, i, None
+            while j < n:
+                ch = text[j]
+                if quote:
+                    if ch == quote and text[j - 1] != "\\":
+                        quote = None
+                elif ch in "'\"":
+                    quote = ch
+                elif ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                j += 1
+            fields[key] = text[i:j]
+            i = j
+        else:
+            m2 = re.match(r"[^\s]+", text[i:])
+            if not m2:
+                break
+            fields[key] = m2.group(0)
+            i += m2.end()
+    return fields
+
+
+def _parse_list(value: object) -> list[str]:
+    """Parse a Python-formatted list literal into strings.
+
+    ``ast.literal_eval`` only (never ``eval``). A malformed literal falls
+    back to splitting on commas so one bad list cannot hide the rest.
+    """
+    raw = str(value or "").strip()
+    if not raw or raw in ("[]", "-", "None"):
+        return []
+    if not raw.startswith("["):
+        return [raw.strip("'\"")]
+    try:
+        parsed = ast.literal_eval(raw)
+    except (ValueError, SyntaxError, MemoryError, TypeError):
+        return [item.strip().strip("'\"") for item in raw.strip("[]").split(",") if item.strip()]
+    if isinstance(parsed, (list, tuple, set)):
+        return [str(item) for item in parsed]
+    return [str(parsed)]
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -78,6 +143,7 @@ def main() -> int:
 
     lines = sys.stdin if args.log == "-" else open(args.log, encoding="utf-8", errors="replace")
     runs: dict[str, dict] = {}
+    parse_errors = 0
 
     def run(rid: str) -> dict:
         return runs.setdefault(rid, {"laps": {}})
@@ -106,13 +172,20 @@ def main() -> int:
             continue
         m = PROFILE_RE.search(line)
         if m:
-            kv = dict(KV_RE.findall(m.group(2)))
+            try:
+                kv = _parse_profile_fields(m.group(2))
+            except Exception:  # a damaged line must not stop the whole file
+                parse_errors += 1
+                continue
             rid = kv.get("run_id", "-")
             if not m.group(1):
                 run(rid)["profile"] = kv
                 continue
-            used = (kv.get("used_tools") or "[]").strip("[]'\" ")
-            errs = (kv.get("error_tools") or "[]").strip("[]'\" ")
+            if len(kv) < 3:
+                # A final profile with a lone run_id is a damaged line —
+                # count it, never turn it into a phantom completed run.
+                parse_errors += 1
+                continue
             run(rid)["final"] = {
                 "outcome": kv.get("outcome") or "completed",
                 "intent": kv.get("intent"),
@@ -120,8 +193,8 @@ def main() -> int:
                 "processing_ms": _f(kv.get("processing_ms") or kv.get("elapsed_ms")),
                 "server_total_ms": _f(kv.get("server_total_ms") or kv.get("elapsed_ms")),
                 "mode_denied": int(_f(kv.get("mode_denied"))),
-                "used_tools": [t for t in used.replace("'", "").split(",") if t.strip()] if used else [],
-                "error_tools": [t for t in errs.replace("'", "").split(",") if t.strip()] if errs else [],
+                "used_tools": _parse_list(kv.get("used_tools")),
+                "error_tools": _parse_list(kv.get("error_tools")),
                 "meta_calls": int(_f(kv.get("meta_calls"))),
                 "prompt_tokens": kv.get("prompt_tokens"),
                 "completion_tokens": kv.get("completion_tokens"),
@@ -194,6 +267,7 @@ def main() -> int:
             "complete": sum(1 for r in runs.values() if "final" in r),
             "incomplete": sum(1 for r in runs.values() if "final" not in r),
         },
+        "parse_errors": parse_errors,
         "jev_cache": {
             "hit": sum(1 for r in runs.values() if r.get("jev_cache") == "hit"),
             "miss": sum(1 for r in runs.values() if r.get("jev_cache") == "miss"),

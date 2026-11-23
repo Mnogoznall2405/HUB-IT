@@ -13,6 +13,19 @@
 >
 > Тесты цикла 2: `test_mode_chat_label_with_routed_group_is_read_not_chat`, `test_read_run_profile_final_records_executed_tool` (e2e, caplog).
 
+> **Цикл 3 (ревью PR #22) — потеря инструментов в экспортёре (P1):**
+>
+> **Причина**: `KV_RE = (\w+)=([^\s]+)` обрезал значения-списки по первому пробелу — `used_tools=['a', 'b']` превращался в `'a'`, теряя второй и последующие элементы. Воспроизведено до исправления: на строке ревью `executed_calls` было 1 вместо 2.
+>
+> **Исправление**: `_parse_profile_fields()` — строгий парсер `key=value`, где значение `[...]` читается по сбалансированным скобкам с учётом кавычек; `_parse_list()` — `ast.literal_eval` (не `eval`) с фолбэком на запятые. Профиль с единственным `run_id` считается повреждённой строкой → `parse_errors`, а не фантомный run. Парсер применён и к нефинальному `ai_run_profile` (те же list-поля). Безопасность: логируются только id/метрики — текстов сообщений, документов, писем и секретов в строках нет.
+>
+> **Полный путь проверен**: e2e `test_read_run_profile_final_two_tools_exported` — READ с двумя инструментами в одном раунде (`directory.people.search` + `office.mail.contacts.resolve`): оба в `ai_run_profile_final` и оба в экспортированном JSON; `test_read_run_profile_ok_and_error_tools` — ok/error разведены.
+>
+> **Пример** (строка ревью → JSON):
+> `used_tools=['directory.people.search', 'office.mail.search'] error_tools=['office.tasks.search', 'kb.articles.search']` → `{"executed_calls": 2, "error_calls": 2, "mode_denied_calls": 0, "meta_calls": 0}`.
+>
+> **Тесты**: `test_ai_run_profile_export.py` — **12/12** (включая реальный CLI-запуск на файле); `test_e2e_ai_intent_modes.py` — **11/11**.
+
 ## 1. Противоречивая классификация в tool-mode — ИСПРАВЛЕНО
 
 Дефект (подтверждён кодом): при `m_mode_chat >= threshold` **и** одновременно выбранном core-tool `_route_tools_jev` классифицировал ран как уверенный CHAT и отбрасывал выбранные инструменты — модель противоречила сама себе, а сервер принимал «разговорную» сторону конфликта.
@@ -54,9 +67,9 @@
 
 | Suite | Итог |
 |---|---|
-| intent_modes + jev_routing + tool_routing + e2e_intent_modes (цикл 2) | **172/172 PASS** |
-| e2e_draft + serialization + injection + mail_lifecycle + stability (флаг 0) | **202/203** (1 pre-existing FAIL) |
-| Экспортёр на синтетических логах | верный разбор: per-run агрегация многораундовых laps, outcome, cache, completeness |
+| Полный прогон (все A5/A5.1 suite + экспортёр, цикл 3) | **398/399 PASS**, 1 FAIL — `test_claude_transport_...` (pre-existing на `2fdb29bc`, вне scope) |
+| `AI_JEV_ROUTING=0` legacy (e2e draft, serialization, injection, mail, stability) | зелёные в том же прогоне — фикстура держит флаг 0 |
+| Экспортёр (unit + реальный CLI) | **12/12 PASS** |
 
 ## Оставшиеся ограничения
 
