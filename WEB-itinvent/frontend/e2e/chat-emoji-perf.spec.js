@@ -38,7 +38,7 @@ async function openChat(page) {
 // компонентов в каждом коммите (обход fiber-дерева по флагу PerformedWork),
 // а также DOM-мутации внутри ленты сообщений — «лишние обновления истории».
 const installMeasure = () => {
-  window.__perf = { t0: null, commits: [], scrollMuts: [] };
+  window.__perf = { t0: null, commits: [], scrollMuts: [], profiles: {} };
   window.__longTasks = [];
   const listeners = {};
   const hook = {
@@ -389,6 +389,7 @@ const collectAttribution = (page, t0, windowMs = 4000) => page.evaluate(
       renderedComponents: commits.reduce((s, c) => s + Math.max(0, c.rendered), 0),
       maxRenderedPerCommit: commits.reduce((m, c) => Math.max(m, c.rendered), 0),
       threadRenderedComponents: commits.reduce((s, c) => s + Math.max(0, c.threadRendered || 0), 0),
+      profiles: JSON.parse(JSON.stringify(window.__perf.profiles || {})),
       scrollMutations: scrollMuts,
       longTasks: (window.__longTasks || []).filter((lt) => lt.start >= t - 2 && lt.start <= t + w)
         .map((lt) => Math.round(lt.duration)),
@@ -444,7 +445,7 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
     // CDP-трейс отключён: cpu_profiler замедляет страницу в 5–10 раз и
     // ломает бюджет теста. Атрибуция Layout/JS собрана в отдельном прогоне.
     const stopTrace = null;
-    const t0 = await page.evaluate(() => { window.__perf.t0 = performance.now(); return performance.now(); });
+    const t0 = await page.evaluate(() => { window.__perf.t0 = performance.now(); window.__perf.profiles = {}; return performance.now(); });
     await button.click();
     console.log(`[attr] iter ${i} clicked ${Date.now()}`);
     const marks = await measureStages(page);
@@ -456,7 +457,7 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
     console.log(`[attr] iter ${i} trace done ${Date.now()}`);
 
     // ── Pinned close ──
-    const t1 = await page.evaluate(() => performance.now());
+    const t1 = await page.evaluate(() => { window.__perf.profiles = {}; return performance.now(); });
     await closeDockIfOpen();
     await page.waitForTimeout(150);
     attr.pinnedClose.push(await collectAttribution(page, t1));
@@ -474,6 +475,7 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
     // fallback вместо бесконечного ожидания.
     await page.evaluate(() => {
       window.__perf.hoverT0 = null;
+      window.__perf.profiles = {};
       document.addEventListener('pointerenter', (e) => {
         if (window.__perf.hoverT0 === null
             && e.target instanceof Element
@@ -518,7 +520,7 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
       console.log(`[attr] tab iter ${i} ${tag}: ${s}`);
     };
     const stopTrace = null;
-    const t0 = await page.evaluate(() => performance.now());
+    const t0 = await page.evaluate(() => { window.__perf.profiles = {}; return performance.now(); });
     await dockState('pre-stickers');
     await dock.getByRole('tab', { name: 'Стикеры' }).click();
     await expect(
@@ -529,7 +531,7 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
     attr.toStickers.push(a);
     if (stopTrace) attr.traceTabSwitch = traceSummary(await stopTrace());
     await dockState('pre-emoji');
-    const t1 = await page.evaluate(() => performance.now());
+    const t1 = await page.evaluate(() => { window.__perf.profiles = {}; return performance.now(); });
     await dock.getByRole('tab', { name: 'Эмодзи' }).click();
     await dockState('post-emoji');
     await expect(dock.locator('.EmojiPickerReact button.epr-emoji').first()).toBeVisible({ timeout: 15_000 });
@@ -560,6 +562,7 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
     hoverMs: stats(list.map((x) => x.hoverMs).filter(Number.isFinite)),
     stageDockVisible: stats(list.map((x) => x.stageMs?.dockVisible).filter(Number.isFinite)),
     stageFirstLoaded: stats(list.map((x) => x.stageMs?.firstEmojiLoaded).filter(Number.isFinite)),
+    profiles: list.map((x) => x.profiles),
   });
 
   const report2 = {

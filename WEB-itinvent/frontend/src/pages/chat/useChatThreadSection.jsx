@@ -193,19 +193,8 @@ export default function useChatThreadSection(ctx) {
     ],
   );
 
-  const threadPane = useMemo(
+  const threadPaneContent = useMemo(
     () => (
-      <Box
-        data-testid="chat-thread-pane-wrap"
-        sx={{
-          display: 'flex',
-          flex: 1,
-          minWidth: 0,
-          minHeight: 0,
-          position: 'relative',
-        }}
-      >
-      <ChatEmojiUiContext.Provider value={emojiUiValue}>
       <ChatThread
         theme={theme}
         ui={ui}
@@ -313,19 +302,6 @@ export default function useChatThreadSection(ctx) {
         onCancelVoiceRecording={cancelVoiceRecording}
         onBindPinnedScroll={bindPinnedScroll}
       />
-      {emojiDockEverOpened ? (
-        <ChatEmojiDock
-          hidden={!emojiDockOpen}
-          theme={theme}
-          ui={ui}
-          currentUserId={user?.id}
-          onInsertEmoji={insertEmojiAtSelection}
-          onSendSticker={handleSendSticker}
-          onClose={handleCloseEmojiPicker}
-        />
-      ) : null}
-      </ChatEmojiUiContext.Provider>
-      </Box>
     ),
     [
       activeAiStatus,
@@ -352,9 +328,6 @@ export default function useChatThreadSection(ctx) {
       conversationMetaSubtitle,
       editAiAction,
       effectiveLastReadMessageId,
-      emojiDockEverOpened,
-      emojiDockOpen,
-      emojiUiValue,
       fileCaption,
       fileDialogOpen,
       fileDragActive,
@@ -366,7 +339,6 @@ export default function useChatThreadSection(ctx) {
       handleComposerFocusChange,
       handleComposerPaste,
       handleComposerSend,
-      handleCloseEmojiPicker,
       handleOpenComposerMenu,
       handleOpenInfo,
       handleOpenMenu,
@@ -378,7 +350,6 @@ export default function useChatThreadSection(ctx) {
       handlePollVote,
       handleUnpinPinnedMessage,
       highlightedMessageId,
-      insertEmojiAtSelection,
       isMobile,
       isPhone,
       jumpToLatest,
@@ -436,6 +407,37 @@ export default function useChatThreadSection(ctx) {
       voiceRecordingLevelRef,
       editingMessage,
     ],
+  );
+
+  // Phase 2.1: Provider и док — вне мемо треда. При смене emoji-состояния
+  // пересоздаются только Provider/Box/dock-элементы (3 узла); ChatThread
+  // держит стабильную ссылку на элемент и reconciliation не заходит внутрь.
+  const threadPane = (
+    <ChatEmojiUiContext.Provider value={emojiUiValue}>
+      <Box
+        data-testid="chat-thread-pane-wrap"
+        sx={{
+          display: 'flex',
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          position: 'relative',
+        }}
+      >
+        {threadPaneContent}
+        {emojiDockEverOpened ? (
+          <ChatEmojiDock
+            hidden={!emojiDockOpen}
+            theme={theme}
+            ui={ui}
+            currentUserId={user?.id}
+            onInsertEmoji={insertEmojiAtSelection}
+            onSendSticker={handleSendSticker}
+            onClose={handleCloseEmojiPicker}
+          />
+        ) : null}
+      </Box>
+    </ChatEmojiUiContext.Provider>
   );
 
   const desktopRightPanelContent = useMemo(

@@ -29,6 +29,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatComposer from './ChatComposer';
+import { ChatPerfProbe } from './ChatPerfProbe';
 import ChatDesktopEmojiPopover from './ChatDesktopEmojiPopover';
 import ChatFileDropOverlay from './ChatFileDropOverlay';
 import ChatMessageList from './ChatMessageList';
@@ -1618,6 +1619,7 @@ function ChatThread({
           }}
         >
           <Box sx={{ maxWidth: { xs: '100%', md: feedFullWidth ? '100%' : `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
+            <ChatPerfProbe id="chat-message-list">
             <ChatMessageList
               theme={theme}
               ui={conversationUi}
@@ -1664,6 +1666,7 @@ function ChatThread({
               onRetryAiRun={onRetryAiRun}
               onStopAiRun={onStopAiRun}
             />
+            </ChatPerfProbe>
           </Box>
         </Box>
 
@@ -1932,6 +1935,7 @@ function ChatThread({
           }}
         />
       ) : (
+        <ChatPerfProbe id="chat-composer">
         <ChatComposer
           theme={theme}
           ui={conversationUi}
@@ -1979,6 +1983,7 @@ function ChatThread({
           onStopAiRun={onStopAiRun}
           scheduled={scheduledMessages}
         />
+        </ChatPerfProbe>
       )}
 
       <ChatDesktopEmojiPopover

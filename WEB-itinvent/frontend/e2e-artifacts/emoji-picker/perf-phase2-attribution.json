@@ -5,23 +5,23 @@
       "commits": {
         "n": 5,
         "p50": 5,
-        "p95": 5,
+        "p95": 7,
         "min": 5,
-        "max": 5
+        "max": 7
       },
       "renderedComponents": {
         "n": 5,
-        "p50": 12192,
-        "p95": 12192,
-        "min": 12192,
-        "max": 12192
+        "p50": 12178,
+        "p95": 18767,
+        "min": 12178,
+        "max": 18767
       },
       "maxRenderedPerCommit": {
         "n": 5,
-        "p50": 3005,
-        "p95": 3005,
-        "min": 3005,
-        "max": 3005
+        "p50": 3002,
+        "p95": 3129,
+        "min": 3002,
+        "max": 3129
       },
       "threadRenderedComponents": {
         "n": 5,
@@ -37,7 +37,7 @@
         "min": 0,
         "max": 0
       },
-      "longTasks": 2,
+      "longTasks": 0,
       "ms": {
         "n": 0,
         "p50": null,
@@ -54,40 +54,47 @@
       },
       "stageDockVisible": {
         "n": 5,
-        "p50": 232,
-        "p95": 321,
-        "min": 205,
-        "max": 321
+        "p50": 158,
+        "p95": 200,
+        "min": 136,
+        "max": 200
       },
       "stageFirstLoaded": {
         "n": 5,
-        "p50": 232,
-        "p95": 321,
-        "min": 205,
-        "max": 321
-      }
+        "p50": 158,
+        "p95": 200,
+        "min": 136,
+        "max": 200
+      },
+      "profiles": [
+        {},
+        {},
+        {},
+        {},
+        {}
+      ]
     },
     "pinnedClose": {
       "commits": {
         "n": 5,
         "p50": 4,
-        "p95": 4,
+        "p95": 6,
         "min": 4,
-        "max": 4
+        "max": 6
       },
       "renderedComponents": {
         "n": 5,
-        "p50": 10835,
-        "p95": 10835,
-        "min": 10835,
-        "max": 10835
+        "p50": 10824,
+        "p95": 17034,
+        "min": 10824,
+        "max": 17034
       },
       "maxRenderedPerCommit": {
         "n": 5,
-        "p50": 3015,
-        "p95": 3015,
-        "min": 3015,
-        "max": 3015
+        "p50": 3013,
+        "p95": 3129,
+        "min": 3013,
+        "max": 3129
       },
       "threadRenderedComponents": {
         "n": 5,
@@ -131,29 +138,36 @@
         "p95": null,
         "min": 0,
         "max": 0
-      }
+      },
+      "profiles": [
+        {},
+        {},
+        {},
+        {},
+        {}
+      ]
     },
     "popoverOpen": {
       "commits": {
         "n": 5,
-        "p50": 10,
+        "p50": 11,
         "p95": 18,
         "min": 10,
         "max": 18
       },
       "renderedComponents": {
         "n": 5,
-        "p50": 28551,
-        "p95": 38397,
-        "min": 28551,
-        "max": 38397
+        "p50": 31866,
+        "p95": 38953,
+        "min": 28545,
+        "max": 38953
       },
       "maxRenderedPerCommit": {
         "n": 5,
-        "p50": 3310,
-        "p95": 3310,
-        "min": 2620,
-        "max": 3310
+        "p50": 3329,
+        "p95": 3329,
+        "min": 2639,
+        "max": 3329
       },
       "threadRenderedComponents": {
         "n": 5,
@@ -169,7 +183,7 @@
         "min": 0,
         "max": 0
       },
-      "longTasks": 4,
+      "longTasks": 0,
       "ms": {
         "n": 0,
         "p50": null,
@@ -179,10 +193,10 @@
       },
       "hoverMs": {
         "n": 5,
-        "p50": 353,
-        "p95": 594,
-        "min": 348,
-        "max": 594
+        "p50": 287,
+        "p95": 439,
+        "min": 277,
+        "max": 439
       },
       "stageDockVisible": {
         "n": 0,
@@ -197,7 +211,14 @@
         "p95": null,
         "min": 0,
         "max": 0
-      }
+      },
+      "profiles": [
+        {},
+        {},
+        {},
+        {},
+        {}
+      ]
     },
     "toStickers": {
       "commits": {
@@ -209,82 +230,16 @@
       },
       "renderedComponents": {
         "n": 5,
-        "p50": 17825,
-        "p95": 21577,
-        "min": 17806,
-        "max": 21577
+        "p50": 17827,
+        "p95": 21556,
+        "min": 17802,
+        "max": 21556
       },
       "maxRenderedPerCommit": {
         "n": 5,
-        "p50": 3777,
-        "p95": 3777,
-        "min": 3773,
-        "max": 3777
-      },
-      "threadRenderedComponents": {
-        "n": 5,
-        "p50": 0,
-        "p95": 0,
-        "min": 0,
-        "max": 0
-      },
-      "scrollMutations": {
-        "n": 5,
-        "p50": 0,
-        "p95": 0,
-        "min": 0,
-        "max": 0
-      },
-      "longTasks": 0,
-      "ms": {
-        "n": 5,
-        "p50": 193,
-        "p95": 231,
-        "min": 181,
-        "max": 231
-      },
-      "hoverMs": {
-        "n": 0,
-        "p50": null,
-        "p95": null,
-        "min": 0,
-        "max": 0
-      },
-      "stageDockVisible": {
-        "n": 0,
-        "p50": null,
-        "p95": null,
-        "min": 0,
-        "max": 0
-      },
-      "stageFirstLoaded": {
-        "n": 0,
-        "p50": null,
-        "p95": null,
-        "min": 0,
-        "max": 0
-      }
-    },
-    "backToEmoji": {
-      "commits": {
-        "n": 5,
-        "p50": 6,
-        "p95": 7,
-        "min": 6,
-        "max": 7
-      },
-      "renderedComponents": {
-        "n": 5,
-        "p50": 18658,
-        "p95": 22402,
-        "min": 18616,
-        "max": 22402
-      },
-      "maxRenderedPerCommit": {
-        "n": 5,
-        "p50": 3773,
+        "p50": 3775,
         "p95": 3775,
-        "min": 3756,
+        "min": 3771,
         "max": 3775
       },
       "threadRenderedComponents": {
@@ -304,10 +259,10 @@
       "longTasks": 0,
       "ms": {
         "n": 5,
-        "p50": 281,
-        "p95": 333,
-        "min": 249,
-        "max": 333
+        "p50": 163,
+        "p95": 183,
+        "min": 145,
+        "max": 183
       },
       "hoverMs": {
         "n": 0,
@@ -329,11 +284,91 @@
         "p95": null,
         "min": 0,
         "max": 0
-      }
+      },
+      "profiles": [
+        {},
+        {},
+        {},
+        {},
+        {}
+      ]
+    },
+    "backToEmoji": {
+      "commits": {
+        "n": 5,
+        "p50": 6,
+        "p95": 7,
+        "min": 6,
+        "max": 7
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 18653,
+        "p95": 21400,
+        "min": 18627,
+        "max": 21400
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3772,
+        "p95": 3772,
+        "min": 3755,
+        "max": 3772
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 5,
+        "p50": 212,
+        "p95": 247,
+        "min": 197,
+        "max": 247
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {},
+        {},
+        {},
+        {},
+        {}
+      ]
     }
   },
   "threadWidthClosed": 1019,
   "threadWidthOpen": 659,
   "traces": {},
-  "measuredAt": "2026-11-23T13:03:39.233Z"
+  "measuredAt": "2026-11-23T18:17:14.226Z"
 }

@@ -4,6 +4,7 @@ import { alpha } from '@mui/material/styles';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
 import StickyNote2RoundedIcon from '@mui/icons-material/StickyNote2Rounded';
 import TelegramStickersTab from './TelegramStickersTab';
+import { ChatPerfProbe } from './ChatPerfProbe';
 import { emojiImageUrl } from '../../lib/chat/emojiImages';
 
 const getChatEmojiPickerUrl = (unified) => emojiImageUrl(unified);
@@ -118,6 +119,7 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
   const panelBg = ui.composerBg || ui.panelBg || theme.palette.background.paper;
 
   return (
+    <ChatPerfProbe id="chat-emoji-panel">
     <Box
       data-testid="chat-emoji-panel"
       data-layout={desktopDocked ? 'desktop-docked' : 'compact'}
@@ -240,6 +242,7 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
         />
       </TabPanel>
     </Box>
+    </ChatPerfProbe>
   );
 });
 
