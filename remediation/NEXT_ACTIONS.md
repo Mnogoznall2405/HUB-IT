@@ -5,7 +5,9 @@
 ## Текущее состояние (2026-11-23, checkpoint 2)
 
 - **P0.1 закрыт по коду**: FE-0197/0198/0199 → PR **#23** (`fix/auth-2fa-flow`, `0f310c9d`, open, не merged). Механизм: `postAuthUiHold` в AuthContext; LoginRoute держит `<Login/>` пока идёт post-auth UI. Тесты: 7 новых + 42 регрессии зелёные; build ок. Независимое ревью diff — проведено автором по differential-review (auth-политика не тронута).
-- Следующая задача: **P0.3 FE-0232** (delegates data loss) — строгий repro в `audit/frontend/evidence/`.
+- **P0.3 FE-0232 в работе**: фикс закоммичен в `fix/account-delegate-integrity` @`5bc077f9` (origin/main `8c31457c`, ветка запушена, PR НЕ создан). Механизм: `taskDelegatesLoadFailed` в `useAccountSectionData.js` — при падении `getTaskDelegatesBulk` save пропускает `updateTaskDelegates` + notifyInfo вместо записи `items:[]`.
+  Осталось: (1) регрессионный тест по scaffold `useAccountSectionData.preferences.test.jsx` — bulk reject → `handleUpdateUser` не вызывает `updateTaskDelegates` + info-нотификация; control: bulk ok → PUT шлётся; (2) `vitest run` + build; (3) ревью; (4) PR → статус FIXED.
+- Далее по очереди: P0.4 FE-0239 → P0.2 FE-0059/0083 → P1.
 
 ## Стартовое состояние (2026-11-23)
 

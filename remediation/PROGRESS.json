@@ -3961,7 +3961,7 @@
       "id": "FE-0232",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "IN_PROGRESS",
       "priority": "P0",
       "batch": "account-delegates",
       "page": null,
@@ -3972,7 +3972,10 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "branch": "fix/account-delegate-integrity",
+      "commit": "5bc077f9",
+      "note": "Fix committed+pushed; regression test + PR pending next session. Design: taskDelegatesLoadFailed flag skips updateTaskDelegates when bulk load failed."
     },
     {
       "id": "FE-0233",
