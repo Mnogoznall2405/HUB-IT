@@ -38,6 +38,13 @@ class SingleflightCall:
     event: Event = field(default_factory=Event)
     result: Any = None
     error: Exception | None = None
+    # A1 (cycle 3): at most ONE fallback producer per key — claimed under the
+    # group lock so 20 timed-out followers do not fan out 20 extra calls.
+    fallback_started: bool = False
+
+
+class MailSingleflightTimeoutError(RuntimeError):
+    """Leader AND fallback producer both exceeded the wait bound (A1)."""
 
 
 def normalize_text(value: Any, default: str = "") -> str:
@@ -211,16 +218,49 @@ class SingleflightGroup:
                     on_hit(1)
 
         if not leader:
-            # A1: never wait on a leader forever — if the leader hangs, run
-            # the producer ourselves instead of blocking the caller.
+            # A1/cycle 3: bounded wait on the leader, then at most ONE fallback
+            # producer per key (claimed under the lock). Followers that lose
+            # the claim keep waiting on the same event; if the fallback also
+            # hangs, they fail fast — never 20 parallel producers per key.
             from backend.ai_chat.timeouts import mail_singleflight_wait_sec
 
-            if not call.event.wait(timeout=mail_singleflight_wait_sec()):
+            wait_sec = mail_singleflight_wait_sec()
+            if not call.event.wait(timeout=wait_sec):
+                became_fallback = False
+                with self._lock:
+                    if not call.event.is_set() and not call.fallback_started:
+                        call.fallback_started = True
+                        became_fallback = True
+                if became_fallback:
+                    logger.warning(
+                        "mail_singleflight_fallback_leader key=%s — running producer",
+                        key,
+                    )
+                    try:
+                        call.result = producer()
+                    except BaseException as exc:
+                        call.error = exc
+                    finally:
+                        call.event.set()
+                        # Remove the call so the NEXT request starts a fresh
+                        # leader instead of waiting on a stale event/result.
+                        with self._lock:
+                            if self._calls.get(key) is call:
+                                self._calls.pop(key, None)
+                    if call.error is not None:
+                        raise call.error
+                    return call.result
+                # Another follower became the fallback leader — wait for ITS
+                # result once, then fail fast if it also hangs.
                 logger.warning(
-                    "mail_singleflight_leader_timeout key=%s — running own call",
+                    "mail_singleflight_leader_timeout key=%s — waiting for fallback",
                     key,
                 )
-                return producer()
+                if not call.event.wait(timeout=wait_sec):
+                    raise MailSingleflightTimeoutError(
+                        f"Данные почты не получены за {int(wait_sec * 2)} с — "
+                        "внешняя система не отвечает, повторите позже."
+                    )
             if call.error is not None:
                 raise call.error
             return call.result

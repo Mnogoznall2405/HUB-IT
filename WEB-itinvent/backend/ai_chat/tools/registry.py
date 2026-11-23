@@ -281,8 +281,6 @@ class AiToolRegistry:
             raw_args=raw_args,
             context=context,
         )
-        future = _tool_executor().submit(ctx.run, call)
-
         # Done callback: the ONLY place capacity is released — on actual task
         # completion (or successful pre-start cancellation), never on caller
         # timeout. ``state`` is shared with the timeout path under the lock.
@@ -297,7 +295,36 @@ class AiToolRegistry:
                 if _state["leaked"]:
                     _leaked_now -= 1
 
-        future.add_done_callback(_on_done)
+        # P1 (cycle 3): submit()/callback registration may raise (shut-down or
+        # wedged executor, thread spawn failure). The capacity was reserved
+        # above — release it deterministically here; a created-but-running
+        # future has no callback attached, so nothing will double-release.
+        future = None
+        try:
+            future = _tool_executor().submit(ctx.run, call)
+            future.add_done_callback(_on_done)
+        except Exception:
+            if future is not None:
+                future.cancel()
+            with _capacity_lock:
+                _in_flight -= 1
+                _rejected_total += 1
+            logger.exception(
+                "ai_tool_submit_failed run_id=%s tool_id=%s — capacity released",
+                getattr(context, "run_id", None) or "-",
+                normalized_tool_id or "-",
+            )
+            return self._error_result(
+                tool_id=normalized_tool_id,
+                context=context,
+                error_code="tool_submit_failed",
+                error_text="Не удалось поставить вызов инструмента в обработку — операция не выполнялась.",
+                message=(
+                    "Внутренняя ошибка планировщика инструментов: вызов не был "
+                    "запущен и гарантированно не выполнялся. Повтор безопасен."
+                ),
+                latency_ms=0,
+            )
         try:
             return future.result(timeout=timeout_sec)
         except FutureTimeoutError:

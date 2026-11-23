@@ -8,6 +8,7 @@ boundary without real infrastructure stalls.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -28,7 +29,13 @@ from backend.ai_chat.tools.registry import (
     ai_tool_executor_stats,
     ai_tool_leaked_count,
 )
-from backend.appdb.models import AppAiBot, AppAiBotConversation, AppAiBotRun, AppUser
+from backend.appdb.models import (
+    AppAiBot,
+    AppAiBotConversation,
+    AppAiBotRun,
+    AppGlobalSetting,
+    AppUser,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -62,8 +69,10 @@ class _StubPool:
         self.conn = conn
         self.released: list[_FakePooledConn] = []
         self.discarded: list[_FakePooledConn] = []
+        self.ping_timeout = None
 
-    def acquire(self) -> _FakePooledConn:
+    def acquire(self, *, ping_timeout=None) -> _FakePooledConn:
+        self.ping_timeout = ping_timeout
         return self.conn
 
     def release(self, conn) -> None:
@@ -85,10 +94,12 @@ def _manager_with_pool(pool: _StubPool, **overrides):
 def test_scoped_query_timeout_applied_and_restored_before_release():
     conn = _FakePooledConn()
     conn.timeout = 0
-    mgr = _manager_with_pool(_StubPool(conn), query_timeout=45)
+    pool = _StubPool(conn)
+    mgr = _manager_with_pool(pool, query_timeout=45)
     with mgr.get_connection() as c:
         assert c.timeout == 45
     assert conn.timeout == 0  # restored — pooled conn must not leak the AI timeout
+    assert pool.ping_timeout == 45  # P0: the AI timeout covers the idle ping too
     assert mgr._pool.released == [conn]
     assert mgr._pool.discarded == []
 
@@ -249,7 +260,7 @@ def test_next_request_gets_healthy_connection_after_discard():
             self.released = []
             self.discarded = []
 
-        def acquire(self):
+        def acquire(self, *, ping_timeout=None):
             return self.conns.pop(0)
 
     class _NoTimeout(_FakePooledConn):
@@ -297,6 +308,110 @@ def test_non_ai_path_never_touches_timeout_attribute():
         assert c is conn
     assert conn.commits == 1
     assert mgr._pool.released == [conn]
+
+
+# --- P0 (cycle 3): idle-ping must run under the AI-scoped timeout ---
+
+
+class _FakePyodbcConn:
+    """pyodbc-like conn whose ping records the timeout in effect at execute."""
+
+    def __init__(self) -> None:
+        self.timeout = 0
+        self.ping_timeout_seen = None
+        self.cursor_calls = 0
+        self.closed = False
+
+    def cursor(self):
+        conn = self
+
+        class _Cur:
+            def execute(self, _sql):
+                conn.cursor_calls += 1
+                conn.ping_timeout_seen = conn.timeout
+                return self
+
+            def close(self):
+                pass
+
+        return _Cur()
+
+    def close(self):
+        self.closed = True
+
+
+def _pool_with(conn, *, idle_ping_sec: float = 0.0):
+    """Real pool, pool slot pre-filled with a conn released 100s ago (=> ping)."""
+    from backend.database.connection import _PyodbcConnectionPool
+
+    pool = _PyodbcConnectionPool("cs", pool_size=1, idle_ping_sec=idle_ping_sec)
+    pool._created = 1
+    pool._pool.put_nowait((conn, time.monotonic() - 100))
+    return pool
+
+
+def test_idle_ping_runs_under_ai_timeout():
+    from backend.database.connection import SqlStatementTimeoutUnsupportedError  # noqa: F401
+
+    conn = _FakePyodbcConn()
+    pool = _pool_with(conn)
+    got = pool.acquire(ping_timeout=30)
+    assert got is conn
+    assert conn.cursor_calls == 1
+    assert conn.ping_timeout_seen == 30  # a hung ping IS bounded by the driver now
+    assert conn.timeout == 0  # restored before the conn is handed out
+
+
+def test_idle_ping_without_override_untouched():
+    conn = _FakePyodbcConn()
+    pool = _pool_with(conn)
+    pool.acquire()  # non-AI path: no timeout requested
+    assert conn.cursor_calls == 1
+    assert conn.ping_timeout_seen == 0  # driver default — never touched
+
+
+def test_idle_ping_timeout_refusal_fails_closed():
+    from backend.database.connection import SqlStatementTimeoutUnsupportedError
+
+    class _Refusing(_FakePyodbcConn):
+        def __init__(self) -> None:
+            self._stored = 0
+            self.cursor_calls = 0
+            self.closed = False
+            self.ping_timeout_seen = None
+
+        @property
+        def timeout(self):
+            return self._stored
+
+        @timeout.setter
+        def timeout(self, value):
+            raise RuntimeError("driver refuses")
+
+    conn = _Refusing()
+    pool = _pool_with(conn)
+    with pytest.raises(SqlStatementTimeoutUnsupportedError):
+        pool.acquire(ping_timeout=30)
+    assert conn.closed is True  # abandoned — never handed out, never repooled
+    assert conn.cursor_calls == 0  # ping never ran unbounded
+
+
+def test_idle_ping_broken_conn_recovers_with_fresh_connection(monkeypatch):
+    class _DeadConn:
+        timeout = 0
+
+        def cursor(self):
+            raise RuntimeError("link dead")
+
+        def close(self):
+            pass
+
+    dead = _DeadConn()
+    pool = _pool_with(dead)
+    healthy = _FakePyodbcConn()
+    monkeypatch.setattr(pool, "_create_connection", lambda: healthy)
+    got = pool.acquire(ping_timeout=30)
+    assert got is healthy  # ping failure dropped the conn; next request is fine
 
 
 def test_get_db_accepts_optional_query_timeout(monkeypatch):
@@ -747,6 +862,7 @@ def test_watchdog_queued_uses_longer_threshold(database, monkeypatch):
     _add_run(session, run_id="r-stale", status="running", updated_at=mid,
              started_at=mid, created_at=mid)
     monkeypatch.setenv("AI_RUN_WATCHDOG_QUEUED_STALE_SEC", "1800")
+    svc.worker_heartbeat()  # live claim loop — queued reap is allowed
     result = svc.reap_stale_runs(stale_after_sec=60)
     assert sorted(result["reaped_run_ids"]) == ["q-dead", "r-stale"]
     with session() as db:
@@ -766,6 +882,55 @@ def test_watchdog_second_run_is_idempotent(database, monkeypatch):
     assert first["reaped_run_ids"] == ["r-old"]
     assert second["reaped_run_ids"] == []
     assert len(published) == 1
+
+
+def test_watchdog_preserves_queued_backlog_without_worker_heartbeat(database, monkeypatch):
+    """Cycle-3 P1: row age alone is not proof of loss — a wedged/missing
+    claim loop stops the heartbeat and queued rows stay queued for the
+    future worker, while stale running rows are still reaped."""
+    session, svc, _published, now = database
+    ancient = now - timedelta(hours=2)
+    _add_run(session, run_id="q-old", status="queued", updated_at=ancient, created_at=ancient)
+    _add_run(session, run_id="r-old", status="running", updated_at=ancient,
+             started_at=ancient, created_at=ancient)
+    result = svc.reap_stale_runs(stale_after_sec=60)
+    assert result["worker_alive"] is False
+    assert result["skipped_queued"] == 1
+    assert result["reaped_run_ids"] == ["r-old"]
+    with session() as db:
+        assert db.get(AppAiBotRun, "q-old").status == "queued"
+        assert db.get(AppAiBotRun, "r-old").status == "failed"
+
+
+def test_watchdog_reaps_queued_only_with_fresh_heartbeat(database, monkeypatch):
+    """Cycle-3 P1: fresh heartbeat + row still unclaimed past the queued
+    threshold = broken claim path → the row is genuinely lost and reaped."""
+    session, svc, _published, now = database
+    ancient = now - timedelta(hours=2)
+    _add_run(session, run_id="q-stuck", status="queued", updated_at=ancient, created_at=ancient)
+    svc.worker_heartbeat()
+    result = svc.reap_stale_runs(stale_after_sec=60)
+    assert result["worker_alive"] is True
+    assert result["reaped_run_ids"] == ["q-stuck"]
+    with session() as db:
+        assert db.get(AppAiBotRun, "q-stuck").status == "failed"
+
+
+def test_watchdog_stale_heartbeat_is_conservative(database, monkeypatch):
+    """Cycle-3 P1: a heartbeat older than the freshness window is treated
+    like no heartbeat — crash/restart cannot reap the backlog."""
+    session, svc, _published, now = database
+    ancient = now - timedelta(hours=2)
+    _add_run(session, run_id="q-old", status="queued", updated_at=ancient, created_at=ancient)
+    svc.worker_heartbeat()
+    with session() as db:
+        row = db.get(AppGlobalSetting, svc._WORKER_HEARTBEAT_KEY)
+        row.updated_at = now - timedelta(minutes=30)
+    result = svc.reap_stale_runs(stale_after_sec=60)
+    assert result["worker_alive"] is False
+    assert result["skipped_queued"] == 1
+    with session() as db:
+        assert db.get(AppAiBotRun, "q-old").status == "queued"
 
 
 def test_cancel_active_run_does_not_overwrite_completed(database):
@@ -881,3 +1046,242 @@ def test_timeout_env_knobs(monkeypatch):
     assert timeouts.ai_tool_wall_timeout_sec() == 120.0  # invalid -> default
     monkeypatch.setenv("AI_RUN_WATCHDOG_QUEUED_STALE_SEC", "100")
     assert timeouts.watchdog_queued_stale_sec() >= timeouts.watchdog_stale_sec()
+
+
+# --------------------------------------------------------------------------
+# P1 (cycle 3): submit() failure releases reserved capacity exactly once
+# --------------------------------------------------------------------------
+
+
+def test_submit_runtime_error_releases_capacity_and_recovers(monkeypatch):
+    """Executor.submit raising (shut-down / wedged executor / thread spawn
+    failure are all surfaced the same way) must return tool_submit_failed,
+    release the reservation exactly once and never go negative."""
+    class _BrokenExecutor:
+        def submit(self, *_a, **_k):
+            raise RuntimeError("executor wedged")
+
+    registry = _make_registry(_QuickTool())
+    context = _tool_context(["a1.test.quick"])
+    monkeypatch.setattr(registry_module, "_tool_executor", lambda: _BrokenExecutor())
+
+    before = ai_tool_executor_stats()["in_flight"]
+    result, _ = registry.execute_bounded(
+        tool_id="a1.test.quick", raw_args={}, context=context
+    )
+    assert result.ok is False
+    assert result.data["diagnostic"]["error_code"] == "tool_submit_failed"
+    assert "не выполнялся" in result.data["diagnostic"]["message"]
+    stats = ai_tool_executor_stats()
+    assert stats["in_flight"] == before  # released, not negative, not double-released
+    assert stats["leaked_now"] == 0
+
+    monkeypatch.undo()
+    result2, _ = registry.execute_bounded(
+        tool_id="a1.test.quick", raw_args={}, context=context
+    )
+    assert result2.ok is True  # executor recovered
+
+
+def test_submit_failure_between_reserve_and_callback_is_safe(monkeypatch):
+    """submit() succeeds but add_done_callback raises (failure between
+    reservation and callback registration): the future is cancelled and the
+    reservation released — done callback never attached, no double-release."""
+    from concurrent.futures import Future
+
+    class _FutureNoCallback(Future):
+        def add_done_callback(self, _fn):
+            raise RuntimeError("callback registration failed")
+
+    class _HalfBrokenExecutor:
+        def __init__(self):
+            self.last_future = None
+
+        def submit(self, fn, *a, **k):
+            self.last_future = _FutureNoCallback()
+            return self.last_future
+
+    broken = _HalfBrokenExecutor()
+    registry = _make_registry(_QuickTool())
+    context = _tool_context(["a1.test.quick"])
+    monkeypatch.setattr(registry_module, "_tool_executor", lambda: broken)
+
+    result, _ = registry.execute_bounded(
+        tool_id="a1.test.quick", raw_args={}, context=context
+    )
+    assert result.ok is False
+    assert result.data["diagnostic"]["error_code"] == "tool_submit_failed"
+    assert broken.last_future.cancelled()  # never ran
+    stats = ai_tool_executor_stats()
+    assert stats["in_flight"] == 0
+    assert stats["leaked_now"] == 0
+
+
+def test_shut_down_executor_rejects_without_negative_counters(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    pool.shutdown(wait=False)
+    monkeypatch.setattr(registry_module, "_tool_executor", lambda: pool)
+
+    registry = _make_registry(_QuickTool())
+    context = _tool_context(["a1.test.quick"])
+    for _ in range(3):
+        result, _ = registry.execute_bounded(
+            tool_id="a1.test.quick", raw_args={}, context=context
+        )
+        assert result.ok is False
+        assert result.data["diagnostic"]["error_code"] == "tool_submit_failed"
+    stats = ai_tool_executor_stats()
+    assert stats["in_flight"] == 0  # repeated failures never go negative
+
+
+# --------------------------------------------------------------------------
+# P1 (cycle 3): singleflight — bounded fallback, not follower fan-out
+# --------------------------------------------------------------------------
+
+
+def test_singleflight_many_waiters_one_fallback_producer(monkeypatch):
+    """Leader hangs; 10 followers time out. At most ONE may claim the fallback
+    slot — the rest wait on the fallback's event, then fail fast or share its
+    result. No 10x producer fan-out."""
+    from backend.services.mail_runtime_cache import SingleflightGroup
+    from backend.ai_chat import timeouts as timeouts_module
+
+    monkeypatch.setattr(timeouts_module, "mail_singleflight_wait_sec", lambda: 0.2)
+    gate = threading.Event()
+    group = SingleflightGroup()
+    produced: list[str] = []
+
+    def leader_producer():
+        produced.append("leader")
+        gate.wait(timeout=30)
+        return "leader-result"
+
+    leader = threading.Thread(
+        target=lambda: group.run(key="k", producer=leader_producer), daemon=True
+    )
+    leader.start()
+    time.sleep(0.05)
+
+    def follower_producer(index):
+        def _produce():
+            produced.append(f"follower-{index}")
+            return f"fallback-{index}"
+        return _produce
+
+    results: list = []
+    errors: list = []
+
+    def follower(index):
+        try:
+            results.append(group.run(key="k", producer=follower_producer(index)))
+        except Exception as exc:
+            errors.append(exc)
+
+    followers = [
+        threading.Thread(target=follower, args=(i,), daemon=True) for i in range(10)
+    ]
+    for thread in followers:
+        thread.start()
+    deadline = time.monotonic() + 15
+    for thread in followers:
+        thread.join(timeout=max(0.1, deadline - time.monotonic()))
+
+    assert produced.count("leader") == 1
+    fallback_calls = [name for name in produced if name.startswith("follower-")]
+    assert len(fallback_calls) <= 1  # bounded fallback — no fan-out
+    assert results or errors  # every follower resolved one way or the other
+
+    gate.set()
+    leader.join(timeout=10)
+    time.sleep(0.05)
+    # After the leader finishes, a brand-new request is a fresh leader.
+    assert group.run(key="k", producer=lambda: "fresh") == "fresh"
+
+
+def test_singleflight_fallback_hang_fails_fast_not_unbounded(monkeypatch):
+    """If the fallback producer also hangs, remaining waiters fail fast with
+    MailSingleflightTimeoutError instead of waiting forever."""
+    from backend.services.mail_runtime_cache import (
+        MailSingleflightTimeoutError,
+        SingleflightGroup,
+    )
+    from backend.ai_chat import timeouts as timeouts_module
+
+    monkeypatch.setattr(timeouts_module, "mail_singleflight_wait_sec", lambda: 0.15)
+    gate = threading.Event()
+    group = SingleflightGroup()
+
+    def hung_producer():
+        gate.wait(timeout=30)
+        return "never"
+
+    errors: list = []
+    results: list = []
+
+    def run():
+        try:
+            results.append(group.run(key="k", producer=hung_producer))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, daemon=True) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + 15
+    for thread in threads:
+        thread.join(timeout=max(0.1, deadline - time.monotonic()))
+
+    # The hung leader itself is still blocked on the gate; the other 4 either
+    # became the fallback (also blocked on the gate) or failed fast.
+    timed_out = [e for e in errors if isinstance(e, MailSingleflightTimeoutError)]
+    assert len(timed_out) >= 3
+    gate.set()
+    for thread in threads:
+        thread.join(timeout=10)
+
+
+# --------------------------------------------------------------------------
+# P2 (cycle 3): voice scan bounds filesystem operations, not just output
+# --------------------------------------------------------------------------
+
+
+def test_voice_scan_bounds_entries_inspected(tmp_path, monkeypatch):
+    from backend.ai_chat.tools import voice
+
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "sub").mkdir()
+    for index in range(30):
+        (output / "sub" / f"r{index:02d}_report.json").write_text(
+            '{"summary": "x"}', encoding="utf-8"
+        )
+    for index in range(30):
+        (output / f"top{index:02d}_report.json").write_text(
+            '{"summary": "x"}', encoding="utf-8"
+        )
+    monkeypatch.setenv("AI_VOICE_SCAN_MAX_ENTRIES", "100")  # min clamp
+    monkeypatch.setenv("AI_VOICE_REPORT_MAX_FILES", "300")
+    files = list(voice._iter_report_files(tmp_path))
+    # Entry budget stops the walk — never all 61 entries.
+    assert 0 < len(files) < 61
+
+
+def test_voice_scan_heap_keeps_newest_within_budget(tmp_path, monkeypatch):
+    from backend.ai_chat.tools import voice
+
+    output = tmp_path / "output"
+    output.mkdir()
+    newest_name = None
+    for index in range(20):
+        path = output / f"r{index:02d}_report.json"
+        path.write_text('{"summary": "x"}', encoding="utf-8")
+        stamp = time.time() - (20 - index) * 60
+        os.utime(path, (stamp, stamp))  # oldest first, newest last
+        newest_name = path.name
+    monkeypatch.setenv("AI_VOICE_REPORT_MAX_FILES", "10")  # min clamp is 10
+    monkeypatch.setenv("AI_VOICE_SCAN_MAX_ENTRIES", "5000")
+    files = list(voice._iter_report_files(tmp_path))
+    assert len(files) == 10
+    assert files[0].name == newest_name  # newest-first ordering preserved

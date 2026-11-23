@@ -49,6 +49,9 @@ def database(tmp_path, monkeypatch):
             AppAiBotRun(id='old-failed', bot_id='agent', conversation_id='conv', user_id=2,
                         trigger_message_id='m5', status='failed', created_at=stale, updated_at=stale),
         ])
+    # A1 (cycle 3): a live claim loop is the precondition for reaping stale
+    # queued rows; tests below exercise the reap mechanics under that proof.
+    svc.worker_heartbeat()
     yield session, svc, published
     engine.dispose()
 

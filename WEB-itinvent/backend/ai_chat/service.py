@@ -4595,7 +4595,10 @@ class AiChatService:
             else os.environ.get("AI_RUN_WATCHDOG_BATCH_SIZE", "50") or 50
         )
         limit = max(1, min(500, limit))
-        from backend.ai_chat.timeouts import watchdog_queued_stale_sec
+        from backend.ai_chat.timeouts import (
+            ai_worker_heartbeat_fresh_sec,
+            watchdog_queued_stale_sec,
+        )
 
         # A1: queued rows use a separate, longer threshold. A live worker with
         # backlog legitimately holds queued runs for a while — only a dead
@@ -4608,6 +4611,15 @@ class AiChatService:
         # publishing after the session must not touch ORM attributes.
         reaped: list[dict[str, Any]] = []
         with app_session() as session:
+            # A1 (cycle 3): row age alone never proves a queued run is lost.
+            # Reap queued rows ONLY when the claim loop demonstrably lives —
+            # its heartbeat is fresh AND the row stayed unclaimed anyway,
+            # which is genuinely abnormal. Absent/stale heartbeat = unknown →
+            # leave the backlog alone; a future worker can still claim it.
+            heartbeat_age = self._worker_heartbeat_age_sec(session)
+            heartbeat_fresh = ai_worker_heartbeat_fresh_sec()
+            worker_alive = heartbeat_age is not None and heartbeat_age <= heartbeat_fresh
+            skipped_queued = 0
             rows = list(
                 session.execute(
                     select(AppAiBotRun)
@@ -4628,6 +4640,9 @@ class AiChatService:
                 ).scalars()
             )
             for run in rows:
+                if _normalize_text(run.status) == "queued" and not worker_alive:
+                    skipped_queued += 1
+                    continue
                 bot = session.get(AppAiBot, run.bot_id)
                 error_text = _normalize_text(run.error_text)
                 run_cutoff = queued_cutoff if _normalize_text(run.status) == "queued" else cutoff
@@ -4661,6 +4676,14 @@ class AiChatService:
                     "error_text": error_text,
                 })
         reaped_ids = [item["run_id"] for item in reaped]
+        if skipped_queued:
+            logger.info(
+                "ai_run_watchdog: skipped %d stale queued run(s) — worker heartbeat "
+                "absent or older than %ss (age=%s), backlog preserved",
+                skipped_queued,
+                int(heartbeat_fresh),
+                None if heartbeat_age is None else int(heartbeat_age),
+            )
         if dry_run:
             if reaped_ids:
                 logger.info("ai_run_watchdog dry-run: %d stale run(s): %s", len(reaped_ids), reaped_ids)
@@ -4668,6 +4691,9 @@ class AiChatService:
                 "dry_run": True,
                 "stale_after_sec": stale_after,
                 "batch_size": limit,
+                "worker_alive": worker_alive,
+                "worker_heartbeat_age_sec": heartbeat_age,
+                "skipped_queued": skipped_queued,
                 "reaped_count": len(reaped_ids),
                 "reaped_run_ids": reaped_ids,
             }
@@ -4694,9 +4720,44 @@ class AiChatService:
             "dry_run": False,
             "stale_after_sec": stale_after,
             "batch_size": limit,
+            "worker_alive": worker_alive,
+            "worker_heartbeat_age_sec": heartbeat_age,
+            "skipped_queued": skipped_queued,
             "reaped_count": len(reaped_ids),
             "reaped_run_ids": reaped_ids,
         }
+
+    _WORKER_HEARTBEAT_KEY = "ai_worker.heartbeat"
+
+    def worker_heartbeat(self) -> None:
+        """A1 (cycle 3): claim-loop liveness proof for the watchdog — one
+        app_settings upsert per throttle interval (no schema change). The
+        heartbeat is written by the worker's main loop, so a wedged claim loop
+        stops it and the watchdog turns conservative for queued rows."""
+        now = _utc_now()
+        payload = json.dumps(
+            {"ts": _iso(now), "pid": os.getpid()}, ensure_ascii=False
+        )
+        with app_session() as session:
+            row = session.get(AppGlobalSetting, self._WORKER_HEARTBEAT_KEY)
+            if row is None:
+                session.add(
+                    AppGlobalSetting(
+                        key=self._WORKER_HEARTBEAT_KEY,
+                        value_json=payload,
+                        updated_at=now,
+                    )
+                )
+            else:
+                row.value_json = payload
+                row.updated_at = now
+
+    def _worker_heartbeat_age_sec(self, session) -> float | None:
+        row = session.get(AppGlobalSetting, self._WORKER_HEARTBEAT_KEY)
+        stamp = _as_utc(row.updated_at) if row is not None else None
+        if stamp is None:
+            return None
+        return (_utc_now() - stamp).total_seconds()
 
     def _process_single_run(self) -> bool:
         global _AI_LAST_RUN_COMPLETED_AT, _AI_LAST_RUN_DURATION_MS

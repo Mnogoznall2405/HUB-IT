@@ -45,30 +45,62 @@ def _voicevideo_root() -> Optional[Path]:
 
 
 def _iter_report_files(root: Path):
-    """A1: bounded scan — newest first, capped by count so a huge output dir
-    cannot turn one tool call into an unbounded filesystem walk."""
-    from backend.ai_chat.timeouts import ai_voice_report_max_files
+    """A1/P2: bounded scan — at most AI_VOICE_SCAN_MAX_ENTRIES filesystem
+    entries inspected and AI_VOICE_REPORT_MAX_FILES kept in memory (bounded
+    heap by mtime, newest first).
+
+    Limitation: "newest" here is newest-among-inspected — without an index a
+    strict newest-of-everything pick needs a full walk. Minimal index for
+    that: producer-maintained manifest (append-only index.jsonl of report
+    paths + mtimes); out of A1 scope."""
+    import heapq
+
+    from backend.ai_chat.timeouts import (
+        ai_voice_report_max_files,
+        ai_voice_scan_max_entries,
+    )
 
     output = root / "output"
     if not output.exists():
         return
     max_files = ai_voice_report_max_files()
-    candidates: list[Path] = []
-    for entry in sorted(output.iterdir(), key=lambda p: p.name.lower()):
-        if entry.is_dir():
-            for report in sorted(entry.glob("*_report.json")):
-                if report.is_file():
-                    candidates.append(report)
-        elif entry.is_file() and entry.name.endswith("_report.json"):
-            candidates.append(entry)
-    def _mtime(path: Path) -> float:
-        try:
-            return path.stat().st_mtime
-        except OSError:
-            return 0.0
+    max_entries = ai_voice_scan_max_entries()
+    newest: list[tuple[float, int, Path]] = []
+    inspected = 0
+    order = 0
 
-    candidates.sort(key=_mtime, reverse=True)
-    for report in candidates[:max_files]:
+    def _consider(path: Path) -> None:
+        nonlocal order
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
+        order += 1
+        item = (mtime, order, path)
+        if len(newest) < max_files:
+            heapq.heappush(newest, item)
+        elif item > newest[0]:
+            heapq.heapreplace(newest, item)
+
+    # No sorted(): materializing the whole dir is exactly the unbounded walk
+    # being bounded. Traversal stops once the entry budget is spent.
+    for entry in output.iterdir():
+        if inspected >= max_entries:
+            break
+        inspected += 1
+        try:
+            if entry.is_dir():
+                for report in entry.glob("*_report.json"):
+                    if inspected >= max_entries:
+                        break
+                    inspected += 1
+                    if report.is_file():
+                        _consider(report)
+            elif entry.is_file() and entry.name.endswith("_report.json"):
+                _consider(entry)
+        except OSError:
+            continue
+    for _mtime, _idx, report in sorted(newest, key=lambda item: item[0], reverse=True):
         yield report
 
 

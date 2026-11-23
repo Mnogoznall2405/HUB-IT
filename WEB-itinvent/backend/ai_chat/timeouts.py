@@ -98,6 +98,23 @@ def watchdog_queued_stale_sec() -> int:
     )
 
 
+def ai_worker_heartbeat_interval_sec() -> float:
+    """How often the claim loop writes its liveness heartbeat (default 15s)."""
+    return _env_seconds("AI_WORKER_HEARTBEAT_SEC", 15.0, 5.0, 300.0)
+
+
+def ai_worker_heartbeat_fresh_sec() -> float:
+    """Max heartbeat age for the watchdog to treat the claim loop as alive.
+    Only a LIVE loop may reap stale queued rows; absent/stale heartbeat →
+    queued rows are left untouched (a future worker can still claim them)."""
+    return _env_seconds("AI_WORKER_HEARTBEAT_FRESH_SEC", 120.0, 30.0, 3600.0)
+
+
+def ai_voice_scan_max_entries() -> int:
+    """Hard bound on filesystem entries inspected per voice scan (P2)."""
+    return _env_int("AI_VOICE_SCAN_MAX_ENTRIES", 5000, 100, 100000)
+
+
 def ai_action_confirm_timeout_sec() -> float:
     """HTTP-level bound for action-card confirm calls (default 130s, just
     above the mail-send budget so the driver's own timeout fires first)."""

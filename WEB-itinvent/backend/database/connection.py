@@ -153,24 +153,66 @@ class _PyodbcConnectionPool:
         configure_pyodbc_encoding(conn)
         return conn
 
-    def acquire(self) -> pyodbc.Connection:
+    def _abandon(self, conn: pyodbc.Connection) -> None:
+        """Close + drop a conn from pool accounting (broken or unverifiable)."""
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with self._lock:
+            self._created = max(0, self._created - 1)
+
+    def _ping(self, conn: pyodbc.Connection, *, ping_timeout: Optional[float]) -> None:
+        """SELECT 1 health check. When ``ping_timeout`` is requested (AI path)
+        the driver timeout covers the ping itself — fail closed on refusal,
+        verify the restore, never run an unbounded statement."""
+        if ping_timeout is None:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT 1")
+            finally:
+                cursor.close()
+            return
+        try:
+            prev_timeout = conn.timeout
+            conn.timeout = int(ping_timeout)
+            if conn.timeout != int(ping_timeout):
+                raise RuntimeError("driver ignored statement timeout")
+        except Exception as exc:
+            self._abandon(conn)
+            raise SqlStatementTimeoutUnsupportedError(
+                "SQL driver rejected the ping timeout — соединение выброшено, "
+                "запрос не выполнялся."
+            ) from exc
+        try:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT 1")
+            finally:
+                cursor.close()
+        finally:
+            try:
+                conn.timeout = prev_timeout
+                if conn.timeout != prev_timeout:
+                    raise RuntimeError("ping timeout restore not reflected")
+            except Exception:
+                # Conn state unknown — let acquire's generic handler abandon
+                # it and continue with the next pooled connection.
+                raise
+
+    def acquire(self, *, ping_timeout: Optional[float] = None) -> pyodbc.Connection:
         try:
             conn, released_at = self._pool.get_nowait()
             try:
                 # Ping only when the connection sat idle long enough to risk a
                 # server-side/network timeout — a fresh borrow needs no SELECT 1.
                 if time.monotonic() - released_at > self._idle_ping_sec:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT 1")
-                    cursor.close()
+                    self._ping(conn, ping_timeout=ping_timeout)
                 return conn
+            except SqlStatementTimeoutUnsupportedError:
+                raise  # fail-closed: do NOT fall through to another connection
             except Exception:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                with self._lock:
-                    self._created = max(0, self._created - 1)
+                self._abandon(conn)
         except queue.Empty:
             pass
 
@@ -266,11 +308,13 @@ class DatabaseConnectionManager:
         conn = None
         broken = False
         prev_timeout: Optional[float] = None
+        timeout_override = getattr(self, "_query_timeout", None)
+        if timeout_override is None:
+            timeout_override = ai_sql_query_timeout.get()
         try:
-            conn = self._pool.acquire()
-            timeout_override = getattr(self, "_query_timeout", None)
-            if timeout_override is None:
-                timeout_override = ai_sql_query_timeout.get()
+            # P0 (cycle 3): the AI-scoped timeout covers the idle SELECT 1
+            # ping inside acquire — it must not run unbounded either.
+            conn = self._pool.acquire(ping_timeout=timeout_override)
             if timeout_override is not None:
                 # A1/P0-2 fail-closed: when a timeout was requested we must be
                 # sure the driver actually accepted it — abort before any SQL
